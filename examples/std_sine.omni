@@ -1,0 +1,7 @@
+import std/osc
+
+init:
+  osc = std::osc::Sine()
+
+sample:
+  out1 = osc()

@@ -1,0 +1,80 @@
+params:
+  feedback = 0.94
+
+def wrap_idx(i: i32, n: i32):
+  if (i < 0):
+    return i + n
+  if (i >= n):
+    return i - n
+  return i
+
+struct Tap:
+  delay_samples = 0
+  gain: f32
+
+struct MultiTapDelay:
+  line: f32[SR * 4]
+  taps: Tap[3]
+  write_idx: i32
+  length: i32
+  fb_delay: i32
+  pluck_phase: f32
+  pluck_t: i32
+  pluck_len: i32
+  pluck_freq: f32 = 220.0
+  r0: f32
+  r1: f32
+  r2: f32
+  fb: f32
+  wet: f32
+  input: f32
+  env: f32
+
+  def init(self):
+    self.length = i32(SR * 4.0)
+    self.fb_delay = i32(SR * 0.67)
+    self.pluck_len = i32(SR * 0.02)
+
+    t0 = self.taps[0]
+    t0.delay_samples = i32(SR * 0.25)
+    t0.gain = 0.65
+
+    t1 = self.taps[1]
+    t1.delay_samples = i32(SR * 0.50)
+    t1.gain = 0.45
+
+    t2 = self.taps[2]
+    t2.delay_samples = i32(SR * 0.75)
+    t2.gain = 0.35
+
+init:
+  d = MultiTapDelay()
+  d.init()
+
+sample:
+  t0 = d.taps[0]
+  t1 = d.taps[1]
+  t2 = d.taps[2]
+
+  d.r0 = d.line[wrap_idx(d.write_idx - t0.delay_samples, d.length)] * t0.gain
+  d.r1 = d.line[wrap_idx(d.write_idx - t1.delay_samples, d.length)] * t1.gain
+  d.r2 = d.line[wrap_idx(d.write_idx - t2.delay_samples, d.length)] * t2.gain
+  d.fb = d.line[wrap_idx(d.write_idx - d.fb_delay, d.length)]
+  d.wet = d.r0 + d.r1 + d.r2
+
+  d.input = 0.0
+  if (d.pluck_t < d.pluck_len):
+    d.env = 1.0 - f32(d.pluck_t) / f32(d.pluck_len)
+    d.input = sin(d.pluck_phase) * d.env * 0.8
+    d.pluck_phase = d.pluck_phase + TWO_PI * d.pluck_freq / SR
+    if (d.pluck_phase > TWO_PI):
+      d.pluck_phase = d.pluck_phase - TWO_PI
+    d.pluck_t = d.pluck_t + 1
+
+  d.line[d.write_idx] = d.input + d.fb * feedback
+
+  d.write_idx = d.write_idx + 1
+  if (d.write_idx >= d.length):
+    d.write_idx = 0
+
+  out1 = d.input + d.wet

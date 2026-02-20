@@ -1,0 +1,9 @@
+import std/delay
+
+init:
+  comb = std::delay::Delay(feedback = 0.8)
+  impulse = 1.0
+
+sample:
+  out1 = comb(impulse)
+  impulse = 0.0

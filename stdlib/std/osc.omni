@@ -1,0 +1,59 @@
+namespace std::osc:
+  proc Phasor[T]:
+    outs[T] 1
+
+    params[T]:
+      freq = 1.0
+
+    init:
+      phase: T = 0.0
+
+    block:
+      incr = freq / SR
+      sample:
+        phase = phase + incr
+        if (phase >= 1.0):
+          phase = phase - 1.0
+        out1 = phase
+        
+  proc Sine[T]:
+    outs[T] 1
+
+    params[T]:
+      freq = 440.0
+
+    init:
+      phasor = Phasor(freq = freq)
+
+    block:
+      phasor.freq = freq
+      sample:
+        out1 = sin(phasor() * TWO_PI)
+  
+  def poly_blep(t, dt):
+    if dt <= 0.0:
+      return 0.0
+    if t < dt:
+      x = t / dt
+      return x + x - x * x - 1.0
+    elif t > 1.0 - dt:
+      x = (t - 1.0) / dt
+      return x * x + x + x + 1.0
+    return 0.0
+
+  proc Saw[T]:
+    outs[T] 1
+
+    params[T]:
+      freq = 440.0
+
+    init:
+      phasor = Phasor(freq = freq)
+
+    block:
+      phasor.freq = freq
+      dt = freq / SR
+      sample:
+        phase = phasor()
+        base = phase + phase - 1.0
+        out1 = base - poly_blep(phase, dt)

@@ -1,0 +1,20 @@
+[workspace]
+members = [
+  "crates/omni_cli",
+  "crates/omni_frontend",
+  "crates/omni_semantics",
+  "crates/omni_codegen_llvm",
+  "crates/omni_runtime",
+  "crates/omni_api",
+  "crates/omni_examples",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+authors = ["omni-llvm contributors"]
+
+[workspace.lints.clippy]
+unwrap_used = "deny"

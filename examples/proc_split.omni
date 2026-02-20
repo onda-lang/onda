@@ -1,0 +1,19 @@
+proc SplitProc:
+  ins:
+    in1
+
+  outs:
+    out1, out2
+
+  sample:
+    out1 = in1
+    out2 = in1 * 2.0
+
+outs:
+  out1
+
+init:
+  s = SplitProc()
+
+sample:
+  out1 = s(0.25)[1]

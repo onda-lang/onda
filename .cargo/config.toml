@@ -1,0 +1,2 @@
+[env]
+LLVM_SYS_211_PREFIX = { value = ".deps/llvm/21.1.2", relative = true }

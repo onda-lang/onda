@@ -1,0 +1,16 @@
+namespace std::filter:
+  proc OnePole[T]:
+    ins[T] 1
+    outs[T] 1
+
+    params[T]:
+      cutoff = 1000.0
+
+    init:
+      z: T = 0.0
+
+    block:
+      a = 1.0 - exp(-TWO_PI * cutoff / SR)
+      sample:
+        z = z + a * (in1 - z)
+        out1 = z

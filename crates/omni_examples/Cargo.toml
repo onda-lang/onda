@@ -1,0 +1,20 @@
+[package]
+name = "omni_examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+llvm-orc = ["omni_codegen_llvm/llvm-orc"]
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+omni_frontend = { path = "../omni_frontend" }
+omni_semantics = { path = "../omni_semantics" }
+omni_codegen_llvm = { path = "../omni_codegen_llvm" }
+omni_runtime = { path = "../omni_runtime" }
+hound = "3.5.1"

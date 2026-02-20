@@ -1,0 +1,13 @@
+[package]
+name = "omni_runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+omni_codegen_llvm = { path = "../omni_codegen_llvm" }
+omni_frontend = { path = "../omni_frontend" }
+
+[lib]
+path = "src/lib.rs"

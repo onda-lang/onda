@@ -1,0 +1,123 @@
+import std/delay
+import std/filter
+import std/osc
+
+outs 2
+
+params:
+  drive = 0.90 {0.4, 2.0}
+  spray = 0.35 {0.0, 1.0}
+  density = 0.42 {0.0, 1.0}
+  damp = 0.09 {0.01, 0.35}
+  cutoff = 6200.0 {200.0, 19000.0}
+  ping: i32 = 2200 {64, 12000}
+
+def sat(x):
+  return clamp(x - 0.18 * x * x * x, -1.0, 1.0)
+
+init:
+  o1 = std::osc::Saw[f32](freq = 9.0)
+  o2 = std::osc::Saw[f32](freq = 17.0)
+  o3 = std::osc::Sine[f32](freq = 21.0)
+  o4 = std::osc::Sine[f32](freq = 23.0)
+
+  m1 = std::osc::Phasor[f32](freq = 0.013)
+  m2 = std::osc::Phasor[f32](freq = 0.021)
+  m3 = std::osc::Phasor[f32](freq = 0.034)
+
+  d1 = std::delay::Delay[f32](delay_s = 0.041, feedback = 0.68, mix = 1.0)
+  d2 = std::delay::Delay[f32](delay_s = 0.053, feedback = 0.67, mix = 1.0)
+  d3 = std::delay::Delay[f32](delay_s = 0.067, feedback = 0.66, mix = 1.0)
+  d4 = std::delay::Delay[f32](delay_s = 0.079, feedback = 0.65, mix = 1.0)
+
+  lp_l = std::filter::OnePole[f32](cutoff = 7600.0)
+  lp_r = std::filter::OnePole[f32](cutoff = 6800.0)
+
+  fb1: f32 = 0.0
+  fb2: f32 = 0.0
+  fb3: f32 = 0.0
+  fb4: f32 = 0.0
+  fb1_lp: f32 = 0.0
+  fb2_lp: f32 = 0.0
+  fb3_lp: f32 = 0.0
+  fb4_lp: f32 = 0.0
+  burst_left: i32 = 0
+  burst_env: f32 = 0.0
+  n: i32 = 0
+
+sample:
+  p1 = m1()
+  p2 = m2()
+  p3 = m3()
+  ma = sin(p1 * TWO_PI)
+  mb = sin((p1 + p2 * 0.7) * TWO_PI * 1.37 + 1.2)
+  mc = sin((p3 + p2 * 0.3) * TWO_PI * 2.11 + 2.4)
+
+  mod_a = 0.5 + 0.5 * ma
+  mod_b = 0.5 + 0.5 * mb
+  mod_c = 0.5 + 0.5 * mc
+
+  o1.freq = 44.0 + 122.0 * mod_a
+  o2.freq = 57.0 + 111.0 * mod_b
+  o3.freq = 71.0 + 104.0 * mod_c
+  o4.freq = 88.0 + 95.0 * (0.5 + 0.5 * sin((p1 + p2 + p3) * TWO_PI))
+
+  d1.feedback = 0.58 + 0.16 * mod_a
+  d2.feedback = 0.56 + 0.16 * mod_b
+  d3.feedback = 0.55 + 0.17 * mod_c
+  d4.feedback = 0.54 + 0.17 * (1.0 - mod_a)
+
+  d1.delay_s = 0.031 + 0.028 * mod_c
+  d2.delay_s = 0.037 + 0.024 * mod_a
+  d3.delay_s = 0.045 + 0.022 * mod_b
+  d4.delay_s = 0.053 + 0.020 * (1.0 - mod_c)
+
+  stride_a: i32 = ping / 3 + 17
+  stride_b: i32 = ping / 5 + 29
+  hit: f32 = 0.0
+  if ((n % ping) == 0):
+    hit = hit + spray
+  if ((n % stride_a) == 0 && (ma + mb * 0.7 > 1.18)):
+    hit = hit + spray * 0.33
+  if ((n % stride_b) == 0 && (ma * 0.63 + mb * 0.51 + mc * 0.41 > 0.96)):
+    burst_left = 40
+    burst_env = 1.0
+    hit = hit + spray * 0.22
+
+  if (burst_left > 0):
+    burst_left = burst_left - 1
+    burst_env = burst_env * 0.975
+    hit = hit + burst_env * density * 0.25
+
+  n = n + 1
+
+  s1 = o1() * 0.22
+  s2 = o2() * 0.21
+  s3 = o3() * 0.23
+  s4 = o4() * 0.20
+
+  x1 = sat((s1 + fb2 * (0.62 + 0.08 * ma) - fb4 * (0.18 + 0.05 * mb) + hit) * drive)
+  x2 = sat((s2 + fb3 * (0.60 - 0.07 * mb) + fb1 * (0.17 + 0.04 * mc) + hit * 0.45) * drive)
+  x3 = sat((s3 + fb4 * (0.58 + 0.09 * mc) - fb2 * (0.16 + 0.04 * ma) + hit * 0.30) * drive)
+  x4 = sat((s4 + fb1 * (0.61 - 0.08 * ma) + fb3 * (0.17 + 0.05 * mb) + hit * 0.25) * drive)
+
+  y1 = d1(x1)
+  y2 = d2(x2)
+  y3 = d3(x3)
+  y4 = d4(x4)
+
+  fb1_lp = fb1_lp + damp * (y1 - fb1_lp)
+  fb2_lp = fb2_lp + damp * (y2 - fb2_lp)
+  fb3_lp = fb3_lp + damp * (y3 - fb3_lp)
+  fb4_lp = fb4_lp + damp * (y4 - fb4_lp)
+  fb1 = fb1_lp
+  fb2 = fb2_lp
+  fb3 = fb3_lp
+  fb4 = fb4_lp
+
+  lp_l.cutoff = cutoff
+  lp_r.cutoff = cutoff * 0.91
+  left = sat((y1 + y3 * 0.74 + (y2 - y4) * 0.28) * 0.72)
+  right = sat((y2 + y4 * 0.74 + (y1 - y3) * 0.28) * 0.72)
+  out1 = lp_l(left)
+  out2 = lp_r(right)

@@ -1,0 +1,133 @@
+WHITESPACE = _{ " " | "\t" | "\r" }
+COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
+NEWLINE = _{ "\n" }
+
+program = { SOI ~ NEWLINE* ~ block* ~ EOI }
+block = _{ ins_block | outs_block | params_block | buffers_block | proc_block | struct_block | def_block | namespace_block | init_block | block_exec_block | sample_block }
+
+namespace_block = { "namespace" ~ namespace_name ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
+namespace_item = _{ struct_block | def_block | proc_block | namespace_block }
+namespace_name = @{ ident ~ ("::" ~ ident)* }
+
+ins_block = {
+  ins_kw ~ section_default_elem_type? ~ (
+    (int_lit? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ port_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
+    | (int_lit ~ NEWLINE*)
+  )
+}
+outs_block = {
+  outs_kw ~ section_default_elem_type? ~ (
+    (int_lit? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ port_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
+    | (int_lit ~ NEWLINE*)
+  )
+}
+params_block = {
+  "params" ~ section_default_elem_type? ~ (
+    (int_lit? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ param_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
+    | (int_lit ~ NEWLINE*)
+  )
+}
+buffers_block = {
+  "buffers" ~ section_default_elem_type? ~ (
+    (NEWLINE* ~ "{" ~ NEWLINE* ~ buffer_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
+    | (int_lit ~ NEWLINE*)
+  )
+}
+proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
+proc_item = _{ ins_block | outs_block | params_block | buffers_block | init_block | block_exec_block | sample_block }
+struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+def_block = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
+init_block = { "init" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+block_exec_block = { "block" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ block_exec_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+block_exec_list = { block_exec_item ~ (stmt_sep+ ~ block_exec_item)* ~ stmt_sep* }
+block_exec_item = _{ sample_nested_block | stmt }
+sample_nested_block = { "sample" ~ NEWLINE* ~ stmt_block }
+sample_block = { "sample" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+
+ins_kw = { "ins" | "inputs" }
+outs_kw = { "outs" | "outputs" }
+proc_kw = { "proc" | "processor" }
+section_default_elem_type = { "[" ~ (type_name | qualified_ident) ~ "]" }
+
+port_list = { port_decl ~ (list_sep+ ~ port_decl)* ~ list_sep* }
+decl_type = { array_type | type_name | qualified_ident }
+decl_range = { "{" ~ expr ~ ("," ~ expr)? ~ "}" }
+port_decl = { ident ~ (":" ~ decl_type)? ~ ("=" ~ expr)? ~ decl_range? }
+param_list = { param_decl ~ (list_sep+ ~ param_decl)* ~ list_sep* }
+param_decl = { ident ~ (":" ~ decl_type)? ~ ("=" ~ expr)? ~ decl_range? }
+buffer_list = { buffer_decl ~ (list_sep+ ~ buffer_decl)* ~ list_sep* }
+buffer_decl = { ident ~ (":" ~ buffer_decl_type)? }
+buffer_decl_type = { buffer_type | buffer_inner }
+buffer_type = { "buffer" ~ "[" ~ buffer_inner ~ "]" }
+buffer_inner = { (type_name | qualified_ident) ~ ("[" ~ (expr)? ~ "]")? }
+field_list = { field_decl ~ (field_sep+ ~ field_decl)* ~ field_sep* }
+field_decl = {
+  (ident ~ ":" ~ field_type ~ ("=" ~ expr)?)
+  | (ident ~ "=" ~ expr)
+  | (ident ~ &field_sep)
+}
+field_type = { data_type | array_type | type_name | qualified_ident }
+array_type = { (type_name | qualified_ident) ~ "[" ~ expr ~ "]" }
+data_elem_type = { type_name | qualified_ident }
+data_type = {
+  ("Data" ~ "[" ~ data_elem_type ~ "," ~ expr ~ "]")
+  | ("Data" ~ "[" ~ expr ~ "]")
+}
+type_name = { "f32" | "f64" | "i32" | "i64" | "bool" }
+generic_param_list = { "[" ~ ident ~ ("," ~ ident)* ~ "]" }
+generic_type_arg_list = { "[" ~ generic_type_arg ~ ("," ~ generic_type_arg)* ~ "]" }
+generic_type_arg = { type_name | ident }
+fn_param_list = { fn_param_decl ~ ("," ~ fn_param_decl)* }
+fn_param_type = { buffer_type | type_name | qualified_ident }
+fn_param_decl = { ident ~ (":" ~ fn_param_type)? ~ ("=" ~ expr)? }
+struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ NEWLINE* }
+struct_method_decl = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block }
+
+stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
+stmt = _{ if_stmt | for_stmt | loop_stmt | return_stmt | assign_stmt | call_stmt }
+assign_stmt = { typed_assign_stmt | plain_assign_stmt }
+typed_decl_type = { array_type | type_name | ident }
+typed_assign_stmt = { ident ~ ":" ~ typed_decl_type ~ ("=" ~ expr)? }
+plain_assign_stmt = { assign_target ~ "=" ~ expr }
+assign_target = _{ index_target | path_ident }
+index_target = { path_ident ~ "[" ~ expr ~ "]" ~ ("[" ~ expr ~ "]")? }
+return_stmt = { "return" ~ expr }
+call_stmt = { call_expr }
+if_cond = { "(" ~ expr ~ ")" | expr }
+if_stmt = { "if" ~ if_cond ~ stmt_block ~ elif_clause* ~ (NEWLINE* ~ "else" ~ stmt_block)? }
+elif_clause = { NEWLINE* ~ "elif" ~ if_cond ~ stmt_block }
+for_stmt = { "for" ~ ident ~ "in" ~ for_bound ~ ".." ~ for_bound ~ stmt_block }
+loop_stmt = { "loop" ~ for_bound ~ stmt_block }
+for_bound = { int_lit | path_ident }
+stmt_block = { "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" }
+
+list_sep = _{ "," | ";" | NEWLINE+ }
+field_sep = _{ "," | ";" | NEWLINE+ }
+stmt_sep = _{ ";" | NEWLINE+ }
+
+expr = { prefix* ~ term ~ ((or_op | and_op | cmp_op | add_op | mul_op) ~ prefix* ~ term)* }
+term = _{ call_index_expr | call_expr | data_ctor | index_expr | array_lit | bool_lit | number | path_ident | "(" ~ expr ~ ")" }
+array_lit = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
+call_index_expr = { call_expr ~ "[" ~ expr ~ "]" }
+call_expr = { path_ident ~ generic_type_arg_list? ~ "(" ~ arg_list? ~ ")" }
+arg_list = { call_arg ~ ("," ~ call_arg)* }
+call_arg = { (ident ~ "=")? ~ expr }
+index_expr = { path_ident ~ "[" ~ expr ~ "]" ~ ("[" ~ expr ~ "]")? }
+data_ctor = {
+  ("Data" ~ "[" ~ data_elem_type ~ "," ~ expr ~ "]")
+  | ("Data" ~ "[" ~ expr ~ "]")
+}
+bool_lit = { "true" | "false" }
+path_ident = @{ ident ~ (("." | "::") ~ ident)* }
+qualified_ident = @{ ident ~ ("::" ~ ident)* }
+
+prefix = { "-" | "!" }
+or_op = { "||" }
+and_op = { "&&" }
+add_op = { "+" | "-" }
+mul_op = { "*" | "/" | "%" }
+cmp_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" }
+
+ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+int_lit = @{ ASCII_DIGIT+ }
+number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }
