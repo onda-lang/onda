@@ -1963,6 +1963,27 @@ sample {
 }
 "#;
 
+const PROC_I32_ARRAY_INCREMENT_PRESERVED_EXAMPLE: &str = r#"
+proc CounterArrProc {
+  outs { out1 }
+  init {
+    idx: i32[4]
+    idx[0] = 0
+  }
+  sample {
+    idx[0] = idx[0] + 1
+    out1 = f32(idx[0])
+  }
+}
+outs { out1 }
+init {
+  p = CounterArrProc()
+}
+sample {
+  out1 = p()
+}
+"#;
+
 const PROC_DATA_LEN_METHOD_EXAMPLE: &str = r#"
 proc LenProc {
   outs { out1 }
@@ -5437,6 +5458,22 @@ fn proc_state_typed_in_init_keeps_type_in_sample() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
         compile_instance(PROC_TYPED_STATE_PRESERVED_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 1.0, 1e-6);
+    assert_near(output[1], 2.0, 1e-6);
+    assert_near(output[2], 3.0, 1e-6);
+    assert_near(output[3], 4.0, 1e-6);
+}
+
+#[test]
+fn proc_i32_array_increment_keeps_integer_inference() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_I32_ARRAY_INCREMENT_PRESERVED_EXAMPLE, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 1);
 

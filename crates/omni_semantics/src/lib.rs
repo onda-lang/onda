@@ -5803,8 +5803,11 @@ fn rewrite_proc_calls_in_stmt(
             maybe_clamp_proc_param_assignment_expr(target, expr, proc_vars, proc_api);
         }
         Stmt::Expr { expr, .. } => {
-            rewrite_proc_calls_in_expr(expr, proc_vars, proc_api, errors);
+            let mut handled_proc_stmt_call = false;
             if let Expr::UserCall { name, args, .. } = expr {
+                for arg in args.iter_mut() {
+                    rewrite_proc_calls_in_expr(&mut arg.expr, proc_vars, proc_api, errors);
+                }
                 if let Some(instance) = proc_vars.get(name) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
@@ -5827,7 +5830,11 @@ fn rewrite_proc_calls_in_stmt(
                     rewritten.extend(expanded_buffers);
                     *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
                     *args = rewritten;
+                    handled_proc_stmt_call = true;
                 }
+            }
+            if !handled_proc_stmt_call {
+                rewrite_proc_calls_in_expr(expr, proc_vars, proc_api, errors);
             }
         }
         Stmt::Return { expr, .. } => rewrite_proc_calls_in_expr(expr, proc_vars, proc_api, errors),
@@ -12003,6 +12010,35 @@ fn infer_scalar_expr_type(
                     return Some(alias.elem_ty);
                 }
             }
+            if let Some((root, field)) = split_field_path(base, errors) {
+                if let Some(struct_name) = struct_instances.get(root) {
+                    if let Some(fields) = struct_defs.get(struct_name) {
+                        if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
+                            if let TypedFieldType::Data(_) = field_decl.ty {
+                                if let Some(elem_ty) = field_decl.data_elem_ty {
+                                    return Some(elem_ty);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Proc-lowered state fields are often addressed as `self.field[...]` while
+                // declared element metadata is keyed by bare field name.
+                if let Some(ty) = get_declared_symbol_type(
+                    state_scalars,
+                    &field,
+                    DECLARED_DATA_ELEM_TYPE_PREFIX,
+                ) {
+                    return Some(ty);
+                }
+                if let Some(ty) = get_declared_symbol_type(
+                    state_scalars,
+                    &field,
+                    DECLARED_BUFFER_ELEM_TYPE_PREFIX,
+                ) {
+                    return Some(ty);
+                }
+            }
             if let Some(ty) =
                 get_declared_symbol_type(state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX)
             {
@@ -12183,7 +12219,7 @@ fn infer_scalar_expr_type(
 fn infer_expr_type_for_semantics(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
-    _param_structs: Option<&HashMap<String, String>>,
+    param_structs: Option<&HashMap<String, String>>,
     locals: &HashSet<String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
@@ -12196,7 +12232,7 @@ fn infer_expr_type_for_semantics(
     infer_expr_type_for_semantics_with_local_data(
         expr,
         state_scalars,
-        _param_structs,
+        param_structs,
         &empty_local_data_aliases,
         locals,
         input_names,
@@ -12212,7 +12248,7 @@ fn infer_expr_type_for_semantics(
 fn infer_expr_type_for_semantics_with_local_data(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
-    _param_structs: Option<&HashMap<String, String>>,
+    param_structs: Option<&HashMap<String, String>>,
     local_data_aliases: &HashMap<String, LocalDataAliasInfo>,
     locals: &HashSet<String>,
     input_names: &HashSet<String>,
@@ -12222,6 +12258,28 @@ fn infer_expr_type_for_semantics_with_local_data(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
+    let merged_struct_instances;
+    let struct_instance_ctx = if let Some(param_structs) = param_structs {
+        if struct_instances.is_empty() {
+            param_structs
+        } else if param_structs.is_empty() {
+            struct_instances
+        } else {
+            merged_struct_instances = {
+                let mut merged = struct_instances.clone();
+                for (name, struct_name) in param_structs {
+                    merged
+                        .entry(name.clone())
+                        .or_insert_with(|| struct_name.clone());
+                }
+                merged
+            };
+            &merged_struct_instances
+        }
+    } else {
+        struct_instances
+    };
+
     infer_scalar_expr_type(
         expr,
         state_scalars,
@@ -12230,7 +12288,7 @@ fn infer_expr_type_for_semantics_with_local_data(
         input_names,
         output_names,
         param_names,
-        struct_instances,
+        struct_instance_ctx,
         struct_defs,
         errors,
     )
@@ -14621,7 +14679,9 @@ fn analyze_def_stmt(
 ) {
     with_stmt_diag_context(stmt, || {
         let empty_data = HashMap::<String, usize>::new();
-        let empty_struct_instances = HashMap::<String, String>::new();
+        // In def analysis, struct-typed parameters (for example `self`) should be
+        // visible to expression type inference, including indexed Data field reads.
+        let struct_instance_ctx = param_structs;
         let empty_outputs = HashSet::<String>::new();
         let data_vars = merged_data_vars_for_sample(&empty_data, local_data_aliases);
 
@@ -14719,7 +14779,7 @@ fn analyze_def_stmt(
                                                     outputs: &empty_outputs,
                                                     data_vars: &data_vars,
                                                     param_structs,
-                                                    struct_instances: &empty_struct_instances,
+                                                    struct_instances: struct_instance_ctx,
                                                     struct_defs,
                                                     fn_signatures,
                                                     allow_data_ctor: false,
@@ -14737,7 +14797,7 @@ fn analyze_def_stmt(
                                                     input_names,
                                                     output_names,
                                                     param_names,
-                                                    &empty_struct_instances,
+                                                    struct_instance_ctx,
                                                     struct_defs,
                                                     errors,
                                                 );
@@ -14781,7 +14841,7 @@ fn analyze_def_stmt(
                                 outputs: &empty_outputs,
                                 data_vars: &data_vars,
                                 param_structs,
-                                struct_instances: &empty_struct_instances,
+                                struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
                                 allow_data_ctor: false,
@@ -14798,7 +14858,7 @@ fn analyze_def_stmt(
                             input_names,
                             output_names,
                             param_names,
-                            &empty_struct_instances,
+                            struct_instance_ctx,
                             struct_defs,
                             errors,
                         );
@@ -14868,7 +14928,7 @@ fn analyze_def_stmt(
                                         outputs: &empty_outputs,
                                         data_vars: &data_vars,
                                         param_structs,
-                                        struct_instances: &empty_struct_instances,
+                                        struct_instances: struct_instance_ctx,
                                         struct_defs,
                                         fn_signatures,
                                         allow_data_ctor: false,
@@ -14885,7 +14945,7 @@ fn analyze_def_stmt(
                                     input_names,
                                     output_names,
                                     param_names,
-                                    &empty_struct_instances,
+                                    struct_instance_ctx,
                                     struct_defs,
                                     errors,
                                 );
@@ -14962,7 +15022,7 @@ fn analyze_def_stmt(
                                         outputs: &empty_outputs,
                                         data_vars: &data_vars,
                                         param_structs,
-                                        struct_instances: &empty_struct_instances,
+                                        struct_instances: struct_instance_ctx,
                                         struct_defs,
                                         fn_signatures,
                                         allow_data_ctor: false,
@@ -14979,7 +15039,7 @@ fn analyze_def_stmt(
                                     input_names,
                                     output_names,
                                     param_names,
-                                    &empty_struct_instances,
+                                    struct_instance_ctx,
                                     struct_defs,
                                     errors,
                                 );
@@ -15062,7 +15122,7 @@ fn analyze_def_stmt(
                             outputs: &empty_outputs,
                             data_vars: &data_vars,
                             param_structs,
-                            struct_instances: &empty_struct_instances,
+                            struct_instances: struct_instance_ctx,
                             struct_defs,
                             fn_signatures,
                             allow_data_ctor: false,
@@ -15079,7 +15139,7 @@ fn analyze_def_stmt(
                         input_names,
                         output_names,
                         param_names,
-                        &empty_struct_instances,
+                        struct_instance_ctx,
                         struct_defs,
                         errors,
                     );
@@ -15140,7 +15200,7 @@ fn analyze_def_stmt(
                                 outputs: &empty_outputs,
                                 data_vars: &data_vars,
                                 param_structs,
-                                struct_instances: &empty_struct_instances,
+                                struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
                                 allow_data_ctor: false,
@@ -15156,7 +15216,7 @@ fn analyze_def_stmt(
                                 outputs: &empty_outputs,
                                 data_vars: &data_vars,
                                 param_structs,
-                                struct_instances: &empty_struct_instances,
+                                struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
                                 allow_data_ctor: false,
@@ -15173,7 +15233,7 @@ fn analyze_def_stmt(
                             input_names,
                             output_names,
                             param_names,
-                            &empty_struct_instances,
+                            struct_instance_ctx,
                             struct_defs,
                             errors,
                         );
@@ -15187,7 +15247,7 @@ fn analyze_def_stmt(
                             input_names,
                             output_names,
                             param_names,
-                            &empty_struct_instances,
+                            struct_instance_ctx,
                             struct_defs,
                             errors,
                         );
@@ -15217,7 +15277,7 @@ fn analyze_def_stmt(
                                 outputs: &empty_outputs,
                                 data_vars: &data_vars,
                                 param_structs,
-                                struct_instances: &empty_struct_instances,
+                                struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
                                 allow_data_ctor: false,
@@ -15233,7 +15293,7 @@ fn analyze_def_stmt(
                                 outputs: &empty_outputs,
                                 data_vars: &data_vars,
                                 param_structs,
-                                struct_instances: &empty_struct_instances,
+                                struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
                                 allow_data_ctor: false,
@@ -15250,7 +15310,7 @@ fn analyze_def_stmt(
                             input_names,
                             output_names,
                             param_names,
-                            &empty_struct_instances,
+                            struct_instance_ctx,
                             struct_defs,
                             errors,
                         );
@@ -15264,7 +15324,7 @@ fn analyze_def_stmt(
                             input_names,
                             output_names,
                             param_names,
-                            &empty_struct_instances,
+                            struct_instance_ctx,
                             struct_defs,
                             errors,
                         );
@@ -15325,7 +15385,7 @@ fn analyze_def_stmt(
                                 outputs: &empty_outputs,
                                 data_vars: &data_vars,
                                 param_structs,
-                                struct_instances: &empty_struct_instances,
+                                struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
                                 allow_data_ctor: false,
@@ -15341,7 +15401,7 @@ fn analyze_def_stmt(
                                 outputs: &empty_outputs,
                                 data_vars: &data_vars,
                                 param_structs,
-                                struct_instances: &empty_struct_instances,
+                                struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
                                 allow_data_ctor: false,
@@ -15358,7 +15418,7 @@ fn analyze_def_stmt(
                             input_names,
                             output_names,
                             param_names,
-                            &empty_struct_instances,
+                            struct_instance_ctx,
                             struct_defs,
                             errors,
                         );
@@ -15372,7 +15432,7 @@ fn analyze_def_stmt(
                             input_names,
                             output_names,
                             param_names,
-                            &empty_struct_instances,
+                            struct_instance_ctx,
                             struct_defs,
                             errors,
                         );
@@ -15402,7 +15462,7 @@ fn analyze_def_stmt(
                         outputs: &empty_outputs,
                         data_vars: &data_vars,
                         param_structs,
-                        struct_instances: &empty_struct_instances,
+                        struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
                         allow_data_ctor: false,
@@ -15419,7 +15479,7 @@ fn analyze_def_stmt(
                     input_names,
                     output_names,
                     param_names,
-                    &empty_struct_instances,
+                    struct_instance_ctx,
                     struct_defs,
                     errors,
                 );
@@ -15433,7 +15493,7 @@ fn analyze_def_stmt(
                         outputs: &empty_outputs,
                         data_vars: &data_vars,
                         param_structs,
-                        struct_instances: &empty_struct_instances,
+                        struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
                         allow_data_ctor: false,
@@ -15450,7 +15510,7 @@ fn analyze_def_stmt(
                     input_names,
                     output_names,
                     param_names,
-                    &empty_struct_instances,
+                    struct_instance_ctx,
                     struct_defs,
                     errors,
                 );
@@ -15469,7 +15529,7 @@ fn analyze_def_stmt(
                         outputs: &empty_outputs,
                         data_vars: &data_vars,
                         param_structs,
-                        struct_instances: &empty_struct_instances,
+                        struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
                         allow_data_ctor: false,
@@ -15486,7 +15546,7 @@ fn analyze_def_stmt(
                     input_names,
                     output_names,
                     param_names,
-                    &empty_struct_instances,
+                    struct_instance_ctx,
                     struct_defs,
                     errors,
                 );
@@ -15563,7 +15623,7 @@ fn analyze_def_stmt(
                         outputs: &empty_outputs,
                         data_vars: &data_vars,
                         param_structs,
-                        struct_instances: &empty_struct_instances,
+                        struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
                         allow_data_ctor: false,
@@ -15579,7 +15639,7 @@ fn analyze_def_stmt(
                         outputs: &empty_outputs,
                         data_vars: &data_vars,
                         param_structs,
-                        struct_instances: &empty_struct_instances,
+                        struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
                         allow_data_ctor: false,
@@ -15596,7 +15656,7 @@ fn analyze_def_stmt(
                     input_names,
                     output_names,
                     param_names,
-                    &empty_struct_instances,
+                    struct_instance_ctx,
                     struct_defs,
                     errors,
                 );
@@ -15610,7 +15670,7 @@ fn analyze_def_stmt(
                     input_names,
                     output_names,
                     param_names,
-                    &empty_struct_instances,
+                    struct_instance_ctx,
                     struct_defs,
                     errors,
                 );
@@ -17398,3 +17458,4 @@ fn check_local_duplicates(names: &[String], kind: &str, errors: &mut Vec<Diagnos
         }
     }
 }
+
