@@ -1,3 +1,4 @@
 /target
 Cargo.lock
 /.deps
+omni_out.wav
