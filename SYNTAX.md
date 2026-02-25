@@ -1,0 +1,284 @@
+# Omni Syntax (Current)
+
+This document describes the syntax currently implemented in `omni-llvm`.
+
+## 1 Program structure
+
+Omni supports both brace style and indentation style.
+
+```omni
+outs { out1 }
+sample { out1 = 0.0 }
+```
+
+```omni
+outs:
+  out1
+sample:
+  out1 = 0.0
+```
+
+Statements can be separated by newline or `;`.
+Line comments use `#`.
+
+Top-level blocks:
+- `ins`
+- `outs`
+- `params`
+- `buffers`
+- `init`
+- `block`
+- `sample`
+- `def`
+- `struct`
+- `proc` / `processor`
+- `namespace`
+
+## 2 Types
+
+Primitive types:
+- `f32`
+- `f64`
+- `i32`
+- `i64`
+- `bool`
+
+Array type syntax:
+- `T[N]` (for example `f32[2]`, `i32[SR * 2]`)
+
+Buffer declaration types:
+- `buffer[T]` (mono)
+- `buffer[T[2]]` (static channel count)
+- `buffer[T[]]` (dynamic channel count)
+
+## 3 Ports, params, buffers
+
+Basic declarations:
+
+```omni
+ins:
+  in1
+  side: f64
+
+outs:
+  out1
+  out2
+
+params:
+  gain = 1.0
+  mode: i32 = 0
+
+buffers:
+  ext: buffer[f32]
+  bus: buffer[f32[2]]
+```
+
+Count shorthand:
+
+```omni
+ins 2
+outs 2
+params 3
+buffers 2
+```
+
+Count prefix with explicit declarations (`ins`/`outs`/`params`):
+
+```omni
+params 2:
+  freq = 500 {8000}
+  mix = 0.5 {0.0, 1.0}
+```
+
+Section default type shorthand:
+
+```omni
+ins[f64] 2
+outs[f64]:
+  out1
+  meter: f32
+params[i32]:
+  mode
+buffers[f32]:
+  line
+```
+
+Array-typed ports/params are supported:
+
+```omni
+ins:
+  in_st: f32[2]
+outs:
+  out_st: f32[2]
+params:
+  gains: f32[2] = [1.0, 1.0]
+```
+
+Rules:
+- Explicit entry type overrides section default type.
+- For `ins`/`outs`/`params`, count prefix must match explicit declaration count.
+- Ranges are supported on scalar `ins` and scalar `params` only:
+  - `name = default {min, max}`
+  - `name = default {max}` (max-only)
+- Ranges on arrays are rejected.
+- If `inN`/`outN` are used without declaration, they are implicitly created as `f32`.
+
+## 4 Variables, assignment, expressions
+
+First assignment infers type by default:
+
+```omni
+sample:
+  x = 0
+  y = 0.0
+```
+
+Explicit declaration pins type:
+
+```omni
+sample:
+  x: i64 = 0
+```
+
+Operators:
+- Arithmetic: `+`, `-`, `*`, `/`, `%`
+- Comparisons and logical operators are supported in conditions/expressions.
+
+Constants:
+- `PI` / `pi`
+- `TWO_PI` / `TWOPI` / `two_pi` / `twopi`
+- `SAMPLE_RATE` / `SAMPLERATE` / `SR` / `sample_rate` / `samplerate`
+- `BLOCK_SIZE` / `BLOCKSIZE` / `BS` / `block_size` / `blocksize`
+
+## 5 Control flow
+
+Supported:
+- `if (...) { ... } else { ... }`
+- `if (...) { ... } elif (...) { ... } else { ... }`
+- `for i in A..B { ... }` (exclusive end)
+- `for i in A..=B { ... }` (inclusive end)
+- `for i @ STEP in A..B { ... }` (`@ STEP` optional; default step is `1`)
+- Descending loops use a negative step (for example `for i @ -1 in 10..0`)
+- `@ 0` is invalid
+- `loop N { ... }` (sugar)
+- `while (...) { ... }`
+- `break`
+- `continue`
+- `return`
+
+## 6 Functions (`def`)
+
+Supported:
+- Positional and named arguments
+- Default arguments
+- Early return
+
+```omni
+def wrap_phase(p, upper = TWO_PI):
+  if (p > upper):
+    return p - upper
+  return p
+```
+
+`def` generics are intentionally unsupported.
+
+## 7 Structs
+
+Struct fields and methods are supported.
+Methods must have `self` as the first argument.
+
+```omni
+struct Voice:
+  phase: f32
+  sig: f32
+
+  def tick(self, hz):
+    self.phase = self.phase + hz * TWO_PI / SR
+    self.sig = sin(self.phase)
+```
+
+## 8 Processors (`proc`)
+
+Processor blocks:
+- `init` (optional)
+- `sample` (required)
+- optional `block` wrapper with pre/sample/post sections
+
+```omni
+proc Gain:
+  ins:
+    in1
+  params:
+    g = 1.0
+  outs:
+    out1
+  sample:
+    out1 = in1 * g
+```
+
+Construction/calls:
+- Construct in `init`: `p = Gain(g = 0.5)`
+- Call in `sample`: `out1 = p(0.25)` (single-out scalar sugar)
+- Direct endpoint call read: `out1 = p(0.25).out1` (or endpoint name)
+- Endpoint read: `p.<endpointName>`
+- Ordinal endpoint alias: `p.outN` (1-based)
+- Statement call form is supported
+
+Single-out procs also support endpoint access forms (`p.out1` and named endpoint aliases).
+
+Processor constructors use named arguments for params/buffers.
+
+## 9 Generics
+
+Supported for `struct` and `proc` with primitive specialization:
+
+```omni
+struct Pair[T]:
+  a: T
+  b: T
+
+proc OnePole[T]:
+  ins[T] 1
+  outs[T] 1
+  sample:
+    out1 = in1
+```
+
+Type arguments can be explicit (`Name[f64](...)`) or inferred in many constructor cases.
+
+## 10 Data and arrays
+
+`Data[...]` state is supported, including typed forms and capacity expressions.
+Array indexing and assignment are supported in `init`/`sample`/`def` where valid.
+
+## 11 Imports and namespaces
+
+Imports:
+- `import module/path`
+- Built-in std modules include:
+  - `std/math`
+  - `std/osc`
+  - `std/filter`
+  - `std/env`
+  - `std/delay`
+
+Include:
+- `include "path.omni"`
+
+Namespaces:
+
+```omni
+namespace my::dsp:
+  def sat(x):
+    return clamp(x, -1.0, 1.0)
+```
+
+## 12 Example-driven starting points
+
+Useful examples in `examples/`:
+- Basic oscillator: `sine.omni`, `std_sine.omni`
+- Block/sample structure: `block_counter.omni`, `saw_blep.omni`
+- Struct + methods: `cross_fm.omni`
+- Processor usage and output forms: `proc_gain.omni`, `proc_split.omni`, `proc_array_stereo_sine.omni`, `reverb.omni`
+- Arrays/data-heavy DSP: `karplus_strong_data.omni`, `multitap_feedback_struct_data.omni`
+- Stdlib and generics: `stdlib_f32.omni`, `stdlib_f64.omni`

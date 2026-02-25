@@ -3,14 +3,6 @@ import std/osc
 import std/env
 
 proc Reverb:
-    ins:
-        in_l
-        in_r
-
-    outs:
-        out_l
-        out_r
-
     params:
         mix = 1.0 {0.0, 1.0}
         decay = 5.0 {0.1, 20.0}         # RT60 decay time in seconds
@@ -19,6 +11,8 @@ proc Reverb:
         diffusion = 0.6 {0.0, 0.99}     # Allpass diffuser coefficient
 
     init:
+        impulse = 0.0
+        
         # ------------------------------------------------------------------
         # Pre-delay Buffer (Supports up to 100ms at 192kHz = ~19200 samples)
         # ------------------------------------------------------------------
@@ -39,6 +33,9 @@ proc Reverb:
         diff_len[2] = i32(541.0 * SR / 48000.0)
         diff_len[3] = i32(787.0 * SR / 48000.0)
         
+        for i in 0..4:
+            diff_idx[i] = 0
+
         # ------------------------------------------------------------------
         # Main 8-Way FDN (Feedback Delay Network)
         # ------------------------------------------------------------------
@@ -76,7 +73,7 @@ proc Reverb:
 
         sample:
             # Mono downmix for algorithmic reverb input
-            mono_in = (in_l + in_r) * 0.5
+            mono_in = (in1 + in2) * 0.5
             
             # ------------------------------------------------------------------
             # 1. Pre-delay
@@ -151,7 +148,7 @@ proc Reverb:
                 # is fully orthogonal to the reflection matrix, completely
                 # eliminating unwanted phase buildup.
                 inj = inject
-                if i % 2 == 1:
+                if (i % 2) == 1:
                     inj = 0.0 - inject
                     
                 in_val = fdn_out[i] - m + inj
@@ -172,8 +169,8 @@ proc Reverb:
             wet_l = wet_l * 0.35
             wet_r = wet_r * 0.35
             
-            out_l = in_l * (1.0 - mix) + wet_l * mix
-            out_r = in_r * (1.0 - mix) + wet_r * mix
+            out1 = in1 * (1.0 - mix) + wet_l * mix
+            out2 = in2 * (1.0 - mix) + wet_r * mix
             
 init:
     reverb = Reverb()
@@ -183,5 +180,5 @@ init:
 sample:
     sig = osc() * env()
     reverb(sig, sig)
-    out1 = reverb.out_l
-    out2 = reverb.out_r
+    out1 = reverb.out1
+    out2 = reverb.out2

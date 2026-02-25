@@ -239,9 +239,22 @@ pub enum Stmt {
     For {
         loc: Option<SourceLoc>,
         var: String,
+        step: Option<Expr>,
         start: Expr,
         end: Expr,
+        end_inclusive: bool,
         body: Vec<Stmt>,
+    },
+    While {
+        loc: Option<SourceLoc>,
+        cond: Expr,
+        body: Vec<Stmt>,
+    },
+    Break {
+        loc: Option<SourceLoc>,
+    },
+    Continue {
+        loc: Option<SourceLoc>,
     },
 }
 
@@ -253,6 +266,9 @@ impl Stmt {
             Self::Return { loc, .. } => loc.as_ref(),
             Self::If { loc, .. } => loc.as_ref(),
             Self::For { loc, .. } => loc.as_ref(),
+            Self::While { loc, .. } => loc.as_ref(),
+            Self::Break { loc, .. } => loc.as_ref(),
+            Self::Continue { loc, .. } => loc.as_ref(),
         }
     }
 }

@@ -21,6 +21,7 @@ pub struct CompileOptions {
     pub backend: ExecutionBackend,
     pub sample_rate: f32,
     pub block_size: usize,
+    pub fast_math: bool,
 }
 
 impl Default for CompileOptions {
@@ -29,6 +30,7 @@ impl Default for CompileOptions {
             backend: ExecutionBackend::Auto,
             sample_rate: 48_000.0,
             block_size: 512,
+            fast_math: false,
         }
     }
 }
@@ -361,9 +363,12 @@ pub fn lower_and_jit_with_options(
         )]);
     }
     match options.backend {
-        ExecutionBackend::Auto | ExecutionBackend::OrcJit => {
-            build_orc_program(typed, options.sample_rate, options.block_size)
-        }
+        ExecutionBackend::Auto | ExecutionBackend::OrcJit => build_orc_program(
+            typed,
+            options.sample_rate,
+            options.block_size,
+            options.fast_math,
+        ),
     }
 }
 
@@ -382,9 +387,12 @@ pub fn lower_to_llvm_ir_with_options(
         )]);
     }
     match options.backend {
-        ExecutionBackend::Auto | ExecutionBackend::OrcJit => {
-            emit_orc_ir(typed, options.sample_rate, options.block_size)
-        }
+        ExecutionBackend::Auto | ExecutionBackend::OrcJit => emit_orc_ir(
+            typed,
+            options.sample_rate,
+            options.block_size,
+            options.fast_math,
+        ),
     }
 }
 
@@ -393,6 +401,7 @@ fn build_orc_program(
     typed: TypedProgram,
     sample_rate: f32,
     block_size: usize,
+    fast_math: bool,
 ) -> Result<JitProgram, Vec<Diagnostic>> {
     let empty_defaults = HashMap::<String, TypedConstValue>::new();
     let empty_ranges = HashMap::<String, TypedValueRange>::new();
@@ -412,8 +421,8 @@ fn build_orc_program(
     );
     let params = build_declared_param_ios(&typed);
     let buffers = build_declared_buffers(&typed);
-    let compiled =
-        orc_backend::compile_orc(&typed, sample_rate, block_size).map_err(|d| vec![d])?;
+    let compiled = orc_backend::compile_orc(&typed, sample_rate, block_size, fast_math)
+        .map_err(|d| vec![d])?;
     Ok(JitProgram {
         typed: Arc::new(typed),
         block_size,
@@ -440,8 +449,9 @@ fn emit_orc_ir(
     typed: TypedProgram,
     sample_rate: f32,
     block_size: usize,
+    fast_math: bool,
 ) -> Result<String, Vec<Diagnostic>> {
-    orc_backend::emit_optimized_ir(&typed, sample_rate, block_size).map_err(|d| vec![d])
+    orc_backend::emit_optimized_ir(&typed, sample_rate, block_size, fast_math).map_err(|d| vec![d])
 }
 
 #[cfg(not(feature = "llvm-orc"))]
@@ -449,6 +459,7 @@ fn emit_orc_ir(
     _typed: TypedProgram,
     _sample_rate: f32,
     _block_size: usize,
+    _fast_math: bool,
 ) -> Result<String, Vec<Diagnostic>> {
     Err(vec![Diagnostic::internal(
         "ORC backend is required but omni_codegen_llvm was built without 'llvm-orc' feature",
@@ -460,6 +471,7 @@ fn build_orc_program(
     _typed: TypedProgram,
     _sample_rate: f32,
     _block_size: usize,
+    _fast_math: bool,
 ) -> Result<JitProgram, Vec<Diagnostic>> {
     Err(vec![Diagnostic::internal(
         "ORC backend is required but omni_codegen_llvm was built without 'llvm-orc' feature",

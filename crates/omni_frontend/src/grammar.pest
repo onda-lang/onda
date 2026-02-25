@@ -84,7 +84,7 @@ struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ N
 struct_method_decl = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block }
 
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
-stmt = _{ if_stmt | for_stmt | loop_stmt | return_stmt | assign_stmt | call_stmt }
+stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | assign_stmt | call_stmt }
 assign_stmt = { typed_assign_stmt | plain_assign_stmt }
 typed_decl_type = { array_type | type_name | ident }
 typed_assign_stmt = { ident ~ ":" ~ typed_decl_type ~ ("=" ~ expr)? }
@@ -96,8 +96,13 @@ call_stmt = { call_expr }
 if_cond = { expr }
 if_stmt = { "if" ~ if_cond ~ stmt_block ~ elif_clause* ~ (NEWLINE* ~ "else" ~ stmt_block)? }
 elif_clause = { NEWLINE* ~ "elif" ~ if_cond ~ stmt_block }
-for_stmt = { "for" ~ ident ~ "in" ~ for_bound ~ ".." ~ for_bound ~ stmt_block }
+for_stmt = { "for" ~ ident ~ for_step? ~ "in" ~ for_bound ~ for_range_op ~ for_bound ~ stmt_block }
+for_step = { "@" ~ expr }
+for_range_op = { "..=" | ".." }
+while_stmt = { "while" ~ expr ~ stmt_block }
 loop_stmt = { "loop" ~ for_bound ~ stmt_block }
+break_stmt = { "break" }
+continue_stmt = { "continue" }
 for_bound = { int_lit | path_ident }
 stmt_block = { "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" }
 
@@ -106,9 +111,9 @@ field_sep = _{ "," | ";" | NEWLINE+ }
 stmt_sep = _{ ";" | NEWLINE+ }
 
 expr = { prefix* ~ term ~ ((or_op | and_op | cmp_op | add_op | mul_op) ~ prefix* ~ term)* }
-term = _{ call_index_expr | call_expr | data_ctor | index_expr | array_lit | bool_lit | number | path_ident | "(" ~ expr ~ ")" }
+term = _{ call_field_expr | call_expr | data_ctor | index_expr | array_lit | bool_lit | number | path_ident | "(" ~ expr ~ ")" }
 array_lit = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
-call_index_expr = { call_expr ~ "[" ~ expr ~ "]" }
+call_field_expr = { call_expr ~ "." ~ ident }
 call_expr = { path_ident ~ generic_type_arg_list? ~ "(" ~ arg_list? ~ ")" }
 arg_list = { call_arg ~ ("," ~ call_arg)* }
 call_arg = { (ident ~ "=")? ~ expr }
@@ -128,6 +133,8 @@ add_op = { "+" | "-" }
 mul_op = { "*" | "/" | "%" }
 cmp_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" }
 
-ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+ident_char = _{ ASCII_ALPHANUMERIC | "_" }
+keyword = _{ ("while" | "break" | "continue") ~ !ident_char }
+ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 int_lit = @{ ASCII_DIGIT+ }
 number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }

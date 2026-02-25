@@ -1,7 +1,9 @@
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 
-use omni_codegen_llvm::{lower_and_jit, DeclaredBufferChannels, JitProgram};
+use omni_codegen_llvm::{
+    lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, JitProgram,
+};
 use omni_frontend::{parse_program, DiagCode, Diagnostic, PrimitiveType};
 use omni_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
@@ -120,7 +122,16 @@ fn write_diag(out_diag: *mut omni_diag_t, diag: omni_diag_t) {
 #[no_mangle]
 pub unsafe extern "C" fn omni_compile(
     src_utf8: *const c_char,
+    fast_math: i32,
     out_diag: *mut omni_diag_t,
+) -> *mut omni_program {
+    omni_compile_impl(src_utf8, out_diag, fast_math != 0)
+}
+
+unsafe fn omni_compile_impl(
+    src_utf8: *const c_char,
+    out_diag: *mut omni_diag_t,
+    fast_math: bool,
 ) -> *mut omni_program {
     if src_utf8.is_null() {
         write_diag(
@@ -178,7 +189,9 @@ pub unsafe extern "C" fn omni_compile(
         }
     };
 
-    let jit = match lower_and_jit(typed) {
+    let mut compile_options = CompileOptions::default();
+    compile_options.fast_math = fast_math;
+    let jit = match lower_and_jit_with_options(typed, compile_options) {
         Ok(j) => j,
         Err(mut errs) => {
             let diag = errs

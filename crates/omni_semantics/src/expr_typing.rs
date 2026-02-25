@@ -1,0 +1,436 @@
+use std::collections::{HashMap, HashSet};
+
+use omni_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType};
+
+use crate::builtins::{
+    builtin_name, is_builtin_constant_name, is_builtin_unsafe_data_fn, is_float_type,
+    is_internal_buffer_2d_fn, parse_buffer_chans_instance_base, parse_data_len_instance_base,
+};
+use crate::decl_symbols::{
+    get_declared_symbol_type, DECLARED_BUFFER_ELEM_TYPE_PREFIX, DECLARED_DATA_ELEM_TYPE_PREFIX,
+    DECLARED_FUNCTION_RETURN_TYPE_PREFIX, DECLARED_INPUT_TYPE_PREFIX, DECLARED_OUTPUT_TYPE_PREFIX,
+    DECLARED_PARAM_TYPE_PREFIX, DECLARED_STRUCT_FIELD_TYPE_PREFIX,
+};
+use crate::def_inference::{can_implicitly_assign, merge_numeric_types};
+use crate::{split_field_path, LocalDataAliasInfo, TypedFieldType, TypedStructField};
+
+pub(crate) fn infer_scalar_expr_type(
+    expr: &Expr,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    local_data_aliases: &HashMap<String, LocalDataAliasInfo>,
+    locals: &HashSet<String>,
+    input_names: &HashSet<String>,
+    output_names: &HashSet<String>,
+    param_names: &HashSet<String>,
+    struct_instances: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    match expr {
+        Expr::Number(_) => Some(PrimitiveType::F32),
+        Expr::Int(v) => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+            PrimitiveType::I32
+        } else {
+            PrimitiveType::I64
+        }),
+        Expr::Bool(_) => Some(PrimitiveType::Bool),
+        Expr::ArrayLiteral(_) => None,
+        Expr::Var(name) => {
+            if is_builtin_constant_name(name) {
+                return Some(PrimitiveType::F32);
+            }
+            if let Some((base, field)) = split_field_path(name, errors) {
+                let flat = format!("{base}.{field}");
+                if let Some(ty) = state_scalars.get(&flat).copied() {
+                    return Some(ty);
+                }
+                if let Some(ty) = get_declared_symbol_type(
+                    state_scalars,
+                    &flat,
+                    DECLARED_STRUCT_FIELD_TYPE_PREFIX,
+                ) {
+                    return Some(ty);
+                }
+                if let Some(struct_name) = struct_instances.get(base) {
+                    if let Some(fields) = struct_defs.get(struct_name) {
+                        if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
+                            return Some(match field_decl.ty {
+                                TypedFieldType::Scalar(prim) => prim,
+                                TypedFieldType::Data(_) => PrimitiveType::F32,
+                            });
+                        }
+                    }
+                }
+                if let Some(ty) = get_declared_symbol_type(
+                    state_scalars,
+                    &field,
+                    DECLARED_STRUCT_FIELD_TYPE_PREFIX,
+                ) {
+                    return Some(ty);
+                }
+                None
+            } else if let Some(ty) = state_scalars.get(name).copied() {
+                Some(ty)
+            } else if locals.contains(name) {
+                Some(PrimitiveType::I32)
+            } else if input_names.contains(name) {
+                Some(
+                    get_declared_symbol_type(state_scalars, name, DECLARED_INPUT_TYPE_PREFIX)
+                        .unwrap_or(PrimitiveType::F32),
+                )
+            } else if output_names.contains(name) {
+                Some(
+                    get_declared_symbol_type(state_scalars, name, DECLARED_OUTPUT_TYPE_PREFIX)
+                        .unwrap_or(PrimitiveType::F32),
+                )
+            } else if param_names.contains(name) {
+                Some(
+                    get_declared_symbol_type(state_scalars, name, DECLARED_PARAM_TYPE_PREFIX)
+                        .unwrap_or(PrimitiveType::F32),
+                )
+            } else {
+                None
+            }
+        }
+        Expr::Index { base, .. } => {
+            if let Some(alias) = local_data_aliases.get(base) {
+                if alias.elem_struct.is_none() {
+                    return Some(alias.elem_ty);
+                }
+            }
+            if let Some((root, field)) = split_field_path(base, errors) {
+                if let Some(struct_name) = struct_instances.get(root) {
+                    if let Some(fields) = struct_defs.get(struct_name) {
+                        if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
+                            if let TypedFieldType::Data(_) = field_decl.ty {
+                                if let Some(elem_ty) = field_decl.data_elem_ty {
+                                    return Some(elem_ty);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Proc-lowered state fields are often addressed as `self.field[...]` while
+                // declared element metadata is keyed by bare field name.
+                if let Some(ty) =
+                    get_declared_symbol_type(state_scalars, &field, DECLARED_DATA_ELEM_TYPE_PREFIX)
+                {
+                    return Some(ty);
+                }
+                if let Some(ty) = get_declared_symbol_type(
+                    state_scalars,
+                    &field,
+                    DECLARED_BUFFER_ELEM_TYPE_PREFIX,
+                ) {
+                    return Some(ty);
+                }
+            }
+            if let Some(ty) =
+                get_declared_symbol_type(state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX)
+            {
+                return Some(ty);
+            }
+            if let Some(ty) =
+                get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
+            {
+                return Some(ty);
+            }
+            Some(PrimitiveType::F32)
+        }
+        Expr::DataCtor { .. } => None,
+        Expr::Cast { to, .. } => Some(*to),
+        Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
+            Some(PrimitiveType::Bool)
+        }
+        Expr::Call { func, args } => {
+            let arg_types = args
+                .iter()
+                .map(|arg| {
+                    infer_scalar_expr_type(
+                        arg,
+                        state_scalars,
+                        local_data_aliases,
+                        locals,
+                        input_names,
+                        output_names,
+                        param_names,
+                        struct_instances,
+                        struct_defs,
+                        errors,
+                    )
+                })
+                .collect::<Vec<_>>();
+            if arg_types.iter().any(|t| t.is_none()) {
+                return None;
+            }
+            let arg_types = arg_types.into_iter().flatten().collect::<Vec<_>>();
+
+            match func {
+                BuiltinFn::Abs => {
+                    let ty = arg_types.first().copied().unwrap_or(PrimitiveType::F32);
+                    if ty == PrimitiveType::Bool {
+                        errors.push(Diagnostic::semantic(
+                            "builtin 'abs' requires numeric argument (bool is not supported)",
+                            0,
+                            0,
+                        ));
+                        None
+                    } else {
+                        Some(ty)
+                    }
+                }
+                BuiltinFn::Min | BuiltinFn::Max => {
+                    let lhs = arg_types.first().copied().unwrap_or(PrimitiveType::F32);
+                    let rhs = arg_types.get(1).copied().unwrap_or(PrimitiveType::F32);
+                    merge_numeric_types(
+                        lhs,
+                        rhs,
+                        &format!("builtin '{}'", builtin_name(*func)),
+                        errors,
+                    )
+                }
+                BuiltinFn::Pow => {
+                    for ty in &arg_types {
+                        if *ty == PrimitiveType::Bool {
+                            errors.push(Diagnostic::semantic(
+                                "builtin 'pow' requires numeric arguments (bool is not supported)",
+                                0,
+                                0,
+                            ));
+                            return None;
+                        }
+                    }
+                    Some(if arg_types.iter().any(|t| *t == PrimitiveType::F64) {
+                        PrimitiveType::F64
+                    } else {
+                        PrimitiveType::F32
+                    })
+                }
+                _ => {
+                    for ty in &arg_types {
+                        if !is_float_type(*ty) {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "builtin '{}' requires float arguments (f32/f64), got {:?}",
+                                    builtin_name(*func),
+                                    ty
+                                ),
+                                0,
+                                0,
+                            ));
+                            return None;
+                        }
+                    }
+                    Some(if arg_types.iter().any(|t| *t == PrimitiveType::F64) {
+                        PrimitiveType::F64
+                    } else {
+                        PrimitiveType::F32
+                    })
+                }
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            if parse_data_len_instance_base(name).is_some()
+                || parse_buffer_chans_instance_base(name).is_some()
+            {
+                return Some(PrimitiveType::I32);
+            }
+            if is_internal_buffer_2d_fn(name) {
+                if let Some(CallArg {
+                    expr: Expr::Var(base),
+                    ..
+                }) = args.first()
+                {
+                    if let Some(ty) = get_declared_symbol_type(
+                        state_scalars,
+                        base,
+                        DECLARED_BUFFER_ELEM_TYPE_PREFIX,
+                    ) {
+                        return Some(ty);
+                    }
+                }
+                return Some(PrimitiveType::F32);
+            }
+            if is_builtin_unsafe_data_fn(name) {
+                if let Some(CallArg {
+                    expr: Expr::Var(base),
+                    ..
+                }) = args.first()
+                {
+                    if let Some(alias) = local_data_aliases.get(base) {
+                        if alias.elem_struct.is_none() {
+                            return Some(alias.elem_ty);
+                        }
+                    }
+                }
+            }
+            get_declared_symbol_type(state_scalars, name, DECLARED_FUNCTION_RETURN_TYPE_PREFIX)
+                .or(Some(PrimitiveType::F32))
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            let l = infer_scalar_expr_type(
+                lhs,
+                state_scalars,
+                local_data_aliases,
+                locals,
+                input_names,
+                output_names,
+                param_names,
+                struct_instances,
+                struct_defs,
+                errors,
+            );
+            let r = infer_scalar_expr_type(
+                rhs,
+                state_scalars,
+                local_data_aliases,
+                locals,
+                input_names,
+                output_names,
+                param_names,
+                struct_instances,
+                struct_defs,
+                errors,
+            );
+            if let (Some(l), Some(r)) = (l, r) {
+                merge_numeric_types(l, r, "binary expression", errors)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn infer_expr_type_for_semantics(
+    expr: &Expr,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    param_structs: Option<&HashMap<String, String>>,
+    locals: &HashSet<String>,
+    input_names: &HashSet<String>,
+    output_names: &HashSet<String>,
+    param_names: &HashSet<String>,
+    struct_instances: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    let empty_local_data_aliases = HashMap::<String, LocalDataAliasInfo>::new();
+    infer_expr_type_for_semantics_with_local_data(
+        expr,
+        state_scalars,
+        param_structs,
+        &empty_local_data_aliases,
+        locals,
+        input_names,
+        output_names,
+        param_names,
+        struct_instances,
+        struct_defs,
+        errors,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn infer_expr_type_for_semantics_with_local_data(
+    expr: &Expr,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    param_structs: Option<&HashMap<String, String>>,
+    local_data_aliases: &HashMap<String, LocalDataAliasInfo>,
+    locals: &HashSet<String>,
+    input_names: &HashSet<String>,
+    output_names: &HashSet<String>,
+    param_names: &HashSet<String>,
+    struct_instances: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    let merged_struct_instances;
+    let struct_instance_ctx = if let Some(param_structs) = param_structs {
+        if struct_instances.is_empty() {
+            param_structs
+        } else if param_structs.is_empty() {
+            struct_instances
+        } else {
+            merged_struct_instances = {
+                let mut merged = struct_instances.clone();
+                for (name, struct_name) in param_structs {
+                    merged
+                        .entry(name.clone())
+                        .or_insert_with(|| struct_name.clone());
+                }
+                merged
+            };
+            &merged_struct_instances
+        }
+    } else {
+        struct_instances
+    };
+
+    infer_scalar_expr_type(
+        expr,
+        state_scalars,
+        local_data_aliases,
+        locals,
+        input_names,
+        output_names,
+        param_names,
+        struct_instance_ctx,
+        struct_defs,
+        errors,
+    )
+}
+
+pub(crate) fn require_assignable_type(
+    src: Option<PrimitiveType>,
+    dst: PrimitiveType,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(src) = src {
+        if src != dst && !can_implicitly_assign(src, dst) {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "{context} type mismatch: cannot assign {:?} to {:?}",
+                    src, dst
+                ),
+                0,
+                0,
+            ));
+        }
+    }
+}
+
+pub(crate) fn require_numeric_type(
+    ty: Option<PrimitiveType>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(ty) = ty {
+        if !matches!(
+            ty,
+            PrimitiveType::F32 | PrimitiveType::F64 | PrimitiveType::I32 | PrimitiveType::I64
+        ) {
+            errors.push(Diagnostic::semantic(
+                format!("{context} requires numeric type, got {:?}", ty),
+                0,
+                0,
+            ));
+        }
+    }
+}
+
+pub(crate) fn require_bool_type(
+    ty: Option<PrimitiveType>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(ty) = ty {
+        if ty != PrimitiveType::Bool {
+            errors.push(Diagnostic::semantic(
+                format!("{context} requires bool type, got {:?}", ty),
+                0,
+                0,
+            ));
+        }
+    }
+}

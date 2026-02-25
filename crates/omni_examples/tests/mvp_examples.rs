@@ -60,6 +60,16 @@ sample {
 }
 "#;
 
+const FOR_DESCENDING_STEP_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  out1 = 0.0
+  for i @ -1 in 3..=1 {
+    out1 = out1 + i / 10.0
+  }
+}
+"#;
+
 const LOOP_VAR_BOUND_EXAMPLE: &str = r#"
 outs { out1 }
 init {
@@ -975,6 +985,35 @@ sample {
 }
 "#;
 
+const BUILTIN_CONSTS_SAMPLERATE_ALIAS_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  phase = 0.0
+}
+sample {
+  phase = phase + TWO_PI / SAMPLERATE
+  out1 = sin(phase)
+}
+"#;
+
+const BUILTIN_CONSTS_LOWERCASE_ALIASES_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  out1 = pi + two_pi + twopi + samplerate - sample_rate + blocksize - block_size
+}
+"#;
+
+const BUILTIN_CONSTS_LOWERCASE_SR_ALIAS_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  phase = 0.0
+}
+sample {
+  phase = phase + twopi / samplerate
+  out1 = sin(phase)
+}
+"#;
+
 const BUILTIN_INTRINSICS_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
@@ -998,6 +1037,16 @@ def clamp(x, lo, hi) {
 }
 sample {
   out1 = clamp(2.0, 0.0, 1.0) + std::math::clamp(2.0, 0.0, 1.0)
+}
+"#;
+
+const FLOOR_FRACT_WRAP_NUMERIC_BEHAVIOR_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  x: i64 = i64(9007199254740993)
+}
+sample {
+  out1 = floor(1.8) + fract(2.25) + wrap(5.5, 0.0, 2.0) + f32(x - i64(9007199254740993))
 }
 "#;
 
@@ -1033,6 +1082,16 @@ block {
   sample {
     out1 = v
   }
+}
+"#;
+
+const BLOCK_SIZE_ALIASES_CONST_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  v = blocksize + BLOCKSIZE - block_size
+}
+sample {
+  out1 = v
 }
 "#;
 
@@ -1077,6 +1136,14 @@ const BUILTIN_CONST_ASSIGN_ERROR_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
   PI = 0.0
+  out1 = 0.0
+}
+"#;
+
+const BUILTIN_CONST_ASSIGN_LOWERCASE_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  pi = 0.0
   out1 = 0.0
 }
 "#;
@@ -1813,7 +1880,25 @@ sample {
 }
 "#;
 
-const PROC_MULTI_OUT_INDEXED_CALL_EXAMPLE: &str = r#"
+const PROC_SINGLE_OUT_FIELD_ACCESS_EXAMPLE: &str = r#"
+proc NamedGainProc {
+  ins { in1 }
+  outs { wet }
+  sample {
+    wet = in1 * 3.0
+  }
+}
+outs { out1 }
+init {
+  p = NamedGainProc()
+}
+sample {
+  p(0.5)
+  out1 = p.wet + p.out1
+}
+"#;
+
+const PROC_MULTI_OUT_CALL_FIELD_EXAMPLE: &str = r#"
 proc SplitProc {
   ins { in1 }
   outs { out1, out2 }
@@ -1828,7 +1913,27 @@ init {
   s = SplitProc()
 }
 sample {
-  out1 = s(0.25)[1]
+  out1 = s(0.25).out2
+}
+"#;
+
+const PROC_MULTI_OUT_FIELD_ALIAS_EXAMPLE: &str = r#"
+proc NamedSplitProc {
+  ins { in1 }
+  outs { dry, wet }
+  init { }
+  sample {
+    dry = in1
+    wet = in1 * 2.0
+  }
+}
+outs { out1 }
+init {
+  p = NamedSplitProc()
+}
+sample {
+  p(0.25)
+  out1 = p.out2
 }
 "#;
 
@@ -2116,7 +2221,7 @@ init {
   p = PairProc()
 }
 sample {
-  out1 = p(0.5)[1]
+  out1 = p(0.5).out2
 }
 "#;
 
@@ -2187,7 +2292,8 @@ init {
   p = UnsafeWriteProc()
 }
 sample {
-  out1 = p()[1]
+  p()
+  out1 = p.out2
 }
 "#;
 
@@ -2406,6 +2512,7 @@ fn compile_instance(src: &str, frames: usize) -> (omni_runtime::Instance, usize,
             backend: ExecutionBackend::Auto,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     )
 }
@@ -2897,6 +3004,21 @@ fn for_loop_accepts_variable_bound() {
 }
 
 #[test]
+fn for_loop_supports_descending_step_and_inclusive_end() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(FOR_DESCENDING_STEP_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.6, 1e-6);
+    }
+}
+
+#[test]
 fn loop_sugar_compiles_and_runs() {
     let frames = 8;
     let (mut instance, in_channels, out_channels) = compile_instance(LOOP_SUGAR_EXAMPLE, frames);
@@ -3220,6 +3342,7 @@ sample {
             backend: ExecutionBackend::Auto,
             sample_rate: 48_000.0,
             block_size: 64,
+            fast_math: false,
         },
     )
     .expect("jit lowering");
@@ -4396,6 +4519,22 @@ fn builtin_consts_compile_and_run() {
 }
 
 #[test]
+fn builtin_consts_support_lowercase_aliases() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUILTIN_CONSTS_LOWERCASE_ALIASES_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    let expected = 5.0 * std::f32::consts::PI;
+    for sample in &output {
+        assert_near(*sample, expected, 2e-3);
+    }
+}
+
+#[test]
 fn builtin_consts_use_compile_time_sample_rate() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
@@ -4405,6 +4544,55 @@ fn builtin_consts_use_compile_time_sample_rate() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 4.0,
             block_size: frames,
+            fast_math: false,
+        },
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 1.0, 1e-5);
+    assert_near(output[1], 0.0, 1e-5);
+    assert_near(output[2], -1.0, 1e-5);
+    assert_near(output[3], 0.0, 1e-5);
+}
+
+#[test]
+fn builtin_consts_support_samplerate_alias() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        BUILTIN_CONSTS_SAMPLERATE_ALIAS_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+            sample_rate: 4.0,
+            block_size: frames,
+            fast_math: false,
+        },
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 1.0, 1e-5);
+    assert_near(output[1], 0.0, 1e-5);
+    assert_near(output[2], -1.0, 1e-5);
+    assert_near(output[3], 0.0, 1e-5);
+}
+
+#[test]
+fn builtin_consts_support_lowercase_samplerate_alias() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        BUILTIN_CONSTS_LOWERCASE_SR_ALIAS_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+            sample_rate: 4.0,
+            block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);
@@ -4473,6 +4661,21 @@ fn stdlib_math_auto_import_allows_local_symbol_override() {
 }
 
 #[test]
+fn floor_fract_wrap_numeric_behavior_is_stable() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(FLOOR_FRACT_WRAP_NUMERIC_BEHAVIOR_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 2.75, 1e-6);
+    }
+}
+
+#[test]
 fn builtin_int_intrinsics_compile_and_run() {
     let frames = 2;
     let (mut instance, in_channels, out_channels) =
@@ -4508,6 +4711,7 @@ fn data_capacity_supports_compile_time_constants() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 16_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);
@@ -4530,6 +4734,7 @@ fn data_ctor_capacity_supports_compile_time_constants() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);
@@ -4552,6 +4757,7 @@ fn block_size_constant_is_available_in_init_and_block() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);
@@ -4561,6 +4767,29 @@ fn block_size_constant_is_available_in_init_and_block() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, (frames as f32) * 2.0, 1e-6);
+    }
+}
+
+#[test]
+fn block_size_aliases_are_available() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        BLOCK_SIZE_ALIASES_CONST_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+            sample_rate: 48_000.0,
+            block_size: frames,
+            fast_math: false,
+        },
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, frames as f32, 1e-6);
     }
 }
 
@@ -4618,6 +4847,17 @@ fn builtin_const_assignment_is_rejected() {
     assert!(
         result.is_err(),
         "semantic analysis should reject builtin constant assignment"
+    );
+}
+
+#[test]
+fn builtin_const_lowercase_assignment_is_rejected() {
+    let parsed =
+        parse_program(BUILTIN_CONST_ASSIGN_LOWERCASE_ERROR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject lowercase builtin constant assignment"
     );
 }
 
@@ -4689,6 +4929,7 @@ fn data_constant_out_of_range_index_is_rejected_in_codegen() {
             backend: ExecutionBackend::Auto,
             sample_rate: 48_000.0,
             block_size: 64,
+            fast_math: false,
         },
     );
     assert!(
@@ -5041,6 +5282,7 @@ fn generic_proc_buffer_decl_type_analyzes_and_codegen_compiles() {
             backend: ExecutionBackend::Auto,
             sample_rate: 48_000.0,
             block_size: 64,
+            fast_math: false,
         },
     );
     assert!(
@@ -5409,10 +5651,40 @@ fn proc_single_out_call_compiles_and_runs() {
 }
 
 #[test]
-fn proc_multi_out_indexed_call_compiles_and_runs() {
+fn proc_single_out_field_access_compiles_and_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
-        compile_instance(PROC_MULTI_OUT_INDEXED_CALL_EXAMPLE, frames);
+        compile_instance(PROC_SINGLE_OUT_FIELD_ACCESS_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn proc_multi_out_call_field_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_MULTI_OUT_CALL_FIELD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.5, 1e-6);
+    }
+}
+
+#[test]
+fn proc_multi_out_field_alias_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_MULTI_OUT_FIELD_ALIAS_EXAMPLE, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 1);
 
@@ -5658,7 +5930,7 @@ fn proc_array_input_from_local_array_symbol_compiles_and_runs() {
 }
 
 #[test]
-fn proc_array_output_indexed_call_compiles_and_runs() {
+fn proc_array_output_field_read_compiles_and_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
         compile_instance(PROC_ARRAY_OUTPUT_INDEXED_CALL_EXAMPLE, frames);
@@ -5883,6 +6155,7 @@ fn explicit_orc_gain_compiles_and_runs() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     set_param_f32(&mut instance, "gain", 0.5);
@@ -5910,6 +6183,7 @@ fn explicit_orc_sine_compiles_and_runs() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);
@@ -5938,6 +6212,7 @@ fn explicit_orc_one_pole_compiles_and_runs() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 1);
@@ -5964,6 +6239,7 @@ fn explicit_orc_if_compiles_and_runs() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);
@@ -5993,6 +6269,7 @@ fn explicit_orc_for_compiles_and_runs() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);
@@ -6016,6 +6293,7 @@ fn explicit_orc_def_call_compiles_and_runs() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);
@@ -6039,6 +6317,7 @@ fn explicit_orc_def_return_exits_early() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);
@@ -6062,6 +6341,7 @@ fn explicit_orc_struct_compiles_and_runs() {
             backend: ExecutionBackend::OrcJit,
             sample_rate: 48_000.0,
             block_size: frames,
+            fast_math: false,
         },
     );
     assert_eq!(in_channels, 0);

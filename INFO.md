@@ -3,6 +3,61 @@
 ## Overview
 `omni-llvm` is a Rust compiler/runtime for an Omni-syntax audio DSL, targeting LLVM ORC JIT for host embedding (C ABI first-class).
 
+## Validation snapshot (2026-02-25)
+
+- `cargo check --workspace`: pass
+- `cargo test -p omni_examples`: pass (`187 passed`)
+- Repository-root `examples/*.omni` compile via CLI: pass
+  - command:
+    - `Get-ChildItem examples -Filter *.omni | Sort-Object Name | ForEach-Object { cargo run -p omni_cli -- compile $_.FullName }`
+
+## Source navigation status (2026-02)
+
+### High-level verdict
+- `omni_semantics`: good navigation now. `lib.rs` is mostly type definitions + module wiring, with heavy logic split into focused files.
+- `omni_codegen_llvm`: mostly good navigation. ORC backend internals are split into domain modules; a few files are still intentionally large but now grouped by responsibility.
+
+### Module map: semantics (`crates/omni_semantics/src`)
+- Entry:
+  - `lib.rs` (public types + orchestration wiring)
+- Key analysis/lowering modules:
+  - `processor_lowering.rs` + `processor_lowering/*` (proc desugaring and lowering pipeline)
+  - `proc_call_rewrite.rs` (proc call lowering/rewrite)
+  - `stmt_analysis/*` (init/sample/def statement analysis)
+  - `expr_validation.rs`, `expr_typing.rs`, `port_coercion.rs`, `namespacing.rs`
+- Recently split helpers:
+  - `proc_state_rewrite.rs` (proc state discovery + symbol rewrite helpers + proc metadata structs/constants)
+  - `declaration_coercion.rs` (`coerce_struct_fields`, `coerce_params`, `coerce_buffers`, `split_field_path`)
+  - `io_state_helpers.rs`
+  - `def_inference/call_inference.rs`, `def_inference/return_inference.rs`
+  - `generic_specialization/proc_specialization.rs`
+  - `processor_lowering/generic_proc_rewrite.rs`
+  - `processor_lowering/global_proc_rewrite.rs`
+  - `processor_lowering/generated_blocks.rs`
+
+### Module map: codegen (`crates/omni_codegen_llvm/src`)
+- Entry:
+  - `lib.rs` (public JIT API + metadata extraction)
+  - `orc_backend.rs` (backend assembly/wiring)
+- ORC backend modules:
+  - `proc_ir.rs`, `user_fn_ir.rs`, `specialization.rs`, `data_access.rs`, `call_helpers.rs`
+  - `builtin_intrinsics.rs`, `layout.rs`, `jit_utils.rs`, `llvm_helpers.rs`, `pointer_helpers.rs`, `orc_locals.rs`
+- Recently split helpers:
+  - `orc_backend/orc_expr_stmt.rs` as thin wrapper +:
+    - `orc_backend/orc_expr_stmt/expr_lowering.rs`
+    - `orc_backend/orc_expr_stmt/stmt_lowering.rs`
+  - `orc_backend/def_lowering.rs` as orchestrator +:
+    - `orc_backend/def_lowering/expr_lowering.rs`
+    - `orc_backend/def_lowering/stmt_lowering.rs`
+    - `orc_backend/def_lowering/struct_helpers.rs`
+
+### Practical navigation entrypoints
+- Language/front-end behavior: `omni_frontend/src/parser/*`, `omni_semantics/src/lib.rs`
+- Proc lowering path: `processor_lowering.rs` -> `processor_lowering/*` -> `proc_call_rewrite.rs`
+- ORC lowering path: `orc_backend.rs` -> `{proc_ir,user_fn_ir}` -> `{orc_expr_stmt,def_lowering}` -> `{data_access,call_helpers}`
+- Runtime API usage: `omni_runtime/src/lib.rs`
+- C ABI surface: `omni_api/src/lib.rs`
+
 ## Current implementation snapshot (2026-02)
 
 ### Language and parser
@@ -43,9 +98,14 @@
   - Ranges on array declarations are rejected.
 - `Data[...]` is supported for stateful storage, including typed forms and compile-time capacity expressions.
 - Scalar assignment typing follows first-assignment inference by default; explicit declaration typing (`x: i64 = ...`) pins the symbol type.
-- Constants available in compile-time expressions and runtime code paths: `PI`, `TWO_PI`/`TWOPI`, `SAMPLE_RATE`/`SR`, `BLOCK_SIZE`.
+- Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
 - `std/math` is auto-imported during semantic analysis; local symbols with the same name take precedence, while qualified calls remain available via `std::math::...`.
-- Control flow and calls: `if`, `for`, `loop N`, `return`, call statements.
+- Control flow and calls:
+  - `if`, `for`, `loop N`, `while`, `break`, `continue`, `return`, call statements.
+  - `for` syntax supports:
+    - `for i in A..B` (exclusive end)
+    - `for i in A..=B` (inclusive end)
+    - `for i @ STEP in A..B` (`@ STEP` optional, defaults to `1`; use negative step for descending)
 - Functions (`def`):
   - positional + named args, default values, early return.
   - generic type parameters are intentionally unsupported on `def`; polymorphism is through typed/untyped parameters and call-site monomorphization.
@@ -63,9 +123,11 @@
 - `sample` is required; `init` is optional (top-level `init` is also optional).
 - generic typed local declarations (`x: T = ...`) are currently supported in `init` only.
 - Processor call forms:
-  - `p(...)`
-  - indexed multi-out: `p(...)[k]` (compile-time constant index)
-  - statement call + field reads
+  - `p(...)` (scalar return for single-out procs; sugar for `p.out1` / endpoint name)
+  - direct endpoint call read: `p(...).<endpointName>` (also supports `.outN` alias)
+  - endpoint reads: `p.<endpointName>`
+  - ordinal reads: `p.outN` (1-based alias to the Nth declared endpoint)
+  - statement call + field reads is supported for stateful updates + explicit output access
 - Nested processor state/composition is supported, including deep nesting.
 - Processor constructor arguments for params/buffers are enforced as named-only.
 
@@ -105,6 +167,10 @@
 
 ## LLVM dependency strategy
 - Prebuilt LLVM is vendored under `.deps/llvm/21.1.2`.
+- Source bootstrap supports linkage modes:
+  - static install: `.deps/llvm-src/21.1.2-static` (`scripts/bootstrap-llvm-source.ps1 -Linkage Static`)
+  - shared install: `.deps/llvm-src/21.1.2-shared` (`scripts/bootstrap-llvm-source.ps1 -Linkage Shared`)
+- `scripts/use-llvm-env.ps1` can select a flavor (`auto`, `prebuilt`, `source-static`, `source-shared`, `source`).
 - `llvm-sys` line is `211.x` (compatible with LLVM 21.1.x C API).
 - ORC path is implemented through `llvm-sys`.
 

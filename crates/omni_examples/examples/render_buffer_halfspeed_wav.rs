@@ -56,6 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             backend: ExecutionBackend::OrcJit,
             sample_rate: sample_rate_hz as f32,
             block_size: BLOCK_FRAMES,
+            fast_math: false,
         },
     )
     .map_err(|d| format_diagnostics("ORC JIT lowering failed", &d))?;

@@ -15,8 +15,8 @@ const DEFAULT_DUR_SECONDS: u32 = 5;
 const DEFAULT_BLOCK_FRAMES: usize = 512;
 
 const USAGE: &str = r#"Usage:
-  omni compile <input.omni> [--ir] [--meta]
-  omni render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--ir]
+  omni compile <input.omni> [--ir] [--meta] [--fast-math]
+  omni render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--ir] [--fast-math]
 
 Options:
   --output, -o   Output wav path (default: ./omni_out.wav)
@@ -25,6 +25,7 @@ Options:
   --block, -b    Block size in frames (default: 512)
   --ir           Print optimized LLVM IR before compile/render
   --meta         Print declared ins/outs/params metadata
+  --fast-math    Enable LLVM fast-math flags for floating-point operations
   --help, -h     Show this help
 "#;
 
@@ -33,6 +34,7 @@ enum Command {
         input: PathBuf,
         dump_ir: bool,
         show_meta: bool,
+        fast_math: bool,
     },
     Render {
         input: PathBuf,
@@ -41,6 +43,7 @@ enum Command {
         sample_rate_hz: u32,
         block_frames: usize,
         dump_ir: bool,
+        fast_math: bool,
     },
 }
 
@@ -58,7 +61,8 @@ fn main() {
             input,
             dump_ir,
             show_meta,
-        } => run_compile(&input, dump_ir, show_meta),
+            fast_math,
+        } => run_compile(&input, dump_ir, show_meta, fast_math),
         Command::Render {
             input,
             output,
@@ -66,6 +70,7 @@ fn main() {
             sample_rate_hz,
             block_frames,
             dump_ir,
+            fast_math,
         } => run_render(
             &input,
             &output,
@@ -73,6 +78,7 @@ fn main() {
             sample_rate_hz,
             block_frames,
             dump_ir,
+            fast_math,
         ),
     };
 
@@ -104,10 +110,12 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     };
     let mut dump_ir = false;
     let mut show_meta = false;
+    let mut fast_math = false;
     for arg in args {
         match arg.as_str() {
             "--ir" => dump_ir = true,
             "--meta" => show_meta = true,
+            "--fast-math" => fast_math = true,
             "--help" | "-h" => return Err(USAGE.to_owned()),
             _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
         }
@@ -116,6 +124,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         input: PathBuf::from(input),
         dump_ir,
         show_meta,
+        fast_math,
     })
 }
 
@@ -129,6 +138,7 @@ fn parse_render_args(mut args: impl Iterator<Item = String>) -> Result<Command, 
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
     let mut dump_ir = false;
+    let mut fast_math = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -158,6 +168,9 @@ fn parse_render_args(mut args: impl Iterator<Item = String>) -> Result<Command, 
             }
             "--ir" => {
                 dump_ir = true;
+            }
+            "--fast-math" => {
+                fast_math = true;
             }
             "--help" | "-h" => return Err(USAGE.to_owned()),
             _ if arg.starts_with("--output=") => {
@@ -194,6 +207,7 @@ fn parse_render_args(mut args: impl Iterator<Item = String>) -> Result<Command, 
         sample_rate_hz,
         block_frames,
         dump_ir,
+        fast_math,
     })
 }
 
@@ -227,7 +241,12 @@ fn parse_block_frames(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
-fn run_compile(input: &Path, dump_ir: bool, show_meta: bool) -> Result<(), String> {
+fn run_compile(
+    input: &Path,
+    dump_ir: bool,
+    show_meta: bool,
+    fast_math: bool,
+) -> Result<(), String> {
     let typed = parse_and_analyze(input, DEFAULT_SAMPLE_RATE as f32, DEFAULT_BLOCK_FRAMES)?;
     if dump_ir {
         let ir = lower_to_llvm_ir_with_options(
@@ -236,6 +255,7 @@ fn run_compile(input: &Path, dump_ir: bool, show_meta: bool) -> Result<(), Strin
                 backend: ExecutionBackend::OrcJit,
                 sample_rate: DEFAULT_SAMPLE_RATE as f32,
                 block_size: DEFAULT_BLOCK_FRAMES,
+                fast_math,
             },
         )
         .map_err(|diags| format_diagnostics("IR lowering failed", &diags))?;
@@ -380,6 +400,7 @@ fn run_render(
     sample_rate_hz: u32,
     block_frames: usize,
     dump_ir: bool,
+    fast_math: bool,
 ) -> Result<(), String> {
     let typed = parse_and_analyze(input, sample_rate_hz as f32, block_frames)?;
     let declared_outs = build_declared_ports(&typed.outs, &typed.out_types, &typed.out_arrays);
@@ -390,6 +411,7 @@ fn run_render(
                 backend: ExecutionBackend::OrcJit,
                 sample_rate: sample_rate_hz as f32,
                 block_size: block_frames,
+                fast_math,
             },
         )
         .map_err(|diags| format_diagnostics("IR lowering failed", &diags))?;
@@ -408,6 +430,7 @@ fn run_render(
             backend: ExecutionBackend::OrcJit,
             sample_rate: sample_rate_hz as f32,
             block_size: block_frames,
+            fast_math,
         },
     )
     .map_err(|diags| format_diagnostics("ORC JIT lowering failed", &diags))?;

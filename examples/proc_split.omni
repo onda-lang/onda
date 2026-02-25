@@ -16,4 +16,4 @@ init:
   s = SplitProc()
 
 sample:
-  out1 = s(0.25)[1]
+  out1 = s(0.25).out2

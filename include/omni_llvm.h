@@ -34,8 +34,13 @@ typedef struct {
   const char* trace;
 } omni_diag_t;
 
-/* Compiles Omni source and returns a program handle, or NULL on failure. */
-omni_program_t* omni_compile(const char* src_utf8, omni_diag_t* out_diag);
+/* Compiles Omni source and returns a program handle, or NULL on failure.
+   fast_math != 0 enables LLVM fast-math lowering. */
+omni_program_t* omni_compile(
+  const char* src_utf8,
+  int fast_math,
+  omni_diag_t* out_diag
+);
 /* Destroys a program handle created by omni_compile. */
 void omni_program_destroy(omni_program_t* program);
 
@@ -59,7 +64,12 @@ int omni_set_param_by_index(
   int value_bytes
 );
 
-/* Binds one input entry to host memory; returns 0 on success, negative on error. */
+/* Binds one input entry to host memory; returns 0 on success, negative on error.
+   Zero-copy contract: runtime stores src_ptr and reads from it directly (no internal copy).
+   src_ptr must remain valid, correctly sized, and at a stable address until this slot is
+   rebound/unbound (null + 0 bytes) or the instance is destroyed.
+   src_ptr memory must be readable during processing.
+   Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
 int omni_bind_input(
   omni_instance_t* instance,
   int index,
@@ -67,7 +77,12 @@ int omni_bind_input(
   int src_bytes
 );
 
-/* Binds one output entry to host memory; returns 0 on success, negative on error. */
+/* Binds one output entry to host memory; returns 0 on success, negative on error.
+   Zero-copy contract: runtime stores dst_ptr and writes to it directly (no internal copy).
+   dst_ptr must remain valid, correctly sized, and at a stable address until this slot is
+   rebound/unbound (null + 0 bytes) or the instance is destroyed.
+   dst_ptr memory must be writable during processing.
+   Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
 int omni_bind_output(
   omni_instance_t* instance,
   int index,
@@ -75,7 +90,12 @@ int omni_bind_output(
   int dst_bytes
 );
 
-/* Binds one buffer entry; elem_type must be an OMNI_PRIMITIVE_* value. */
+/* Binds one buffer entry; elem_type must be an OMNI_PRIMITIVE_* value.
+   Zero-copy contract: runtime stores ptr and accesses it directly (no internal copy).
+   ptr must remain valid, correctly sized for the declared shape, and at a stable address until
+   this slot is rebound/unbound (null + 0 frames + 0 channels) or the instance is destroyed.
+   ptr memory must be writable during processing.
+   Contract for optimized codegen: bound input/output/buffer memory regions must not overlap. */
 int omni_bind_buffer(
   omni_instance_t* instance,
   int index,
