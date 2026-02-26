@@ -790,6 +790,14 @@ sample {
 }
 "#;
 
+const UNTYPED_LOCAL_ARRAY_SAMPLE_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  b = [1, 2, 3]
+  out1 = b[0] + b[2]
+}
+"#;
+
 const TYPED_LOCAL_ARRAY_DEF_EXAMPLE: &str = r#"
 outs { out1 }
 def mk(x) {
@@ -800,6 +808,17 @@ def mk(x) {
 }
 sample {
   out1 = mk(0.5)
+}
+"#;
+
+const UNTYPED_LOCAL_ARRAY_DEF_EXAMPLE: &str = r#"
+outs { out1 }
+def pick() {
+  b = [1, 2, 3]
+  return b[1]
+}
+sample {
+  out1 = pick()
 }
 "#;
 
@@ -2333,6 +2352,258 @@ sample {
 }
 "#;
 
+const PROC_INSTANCE_ARRAY_INDEXED_CALL_EXAMPLE: &str = r#"
+proc Voice {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = in1 * gain
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(gain = 2.0), Voice(gain = 3.0)]
+}
+sample {
+  out1 = voices[1](0.5)
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_INDEXED_FIELD_CALL_EXAMPLE: &str = r#"
+proc Pair {
+  ins { in1 }
+  outs { a, b }
+  sample {
+    a = in1
+    b = in1 * 2.0
+  }
+}
+outs { out1 }
+init {
+  voices: Pair[2] = [Pair(), Pair()]
+}
+sample {
+  out1 = voices[0](0.5).out2
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_INDEXED_CALL_NON_LITERAL_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  ins { in1 }
+  outs { out1 }
+  sample {
+    out1 = in1
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 1
+}
+sample {
+  out1 = voices[idx](0.5)
+}
+"#;
+
+const NESTED_PROC_INSTANCE_ARRAY_INDEXED_CALL_EXAMPLE: &str = r#"
+proc Voice {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = in1 * gain
+  }
+}
+proc Bank {
+  ins { in1 }
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(gain = 1.0), Voice(gain = 4.0)]
+  }
+  sample {
+    out1 = voices[1](in1)
+  }
+}
+outs { out1 }
+init {
+  b = Bank()
+}
+sample {
+  out1 = b(0.25)
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_BROADCAST_CTOR_EXAMPLE: &str = r#"
+proc Voice {
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = gain
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = Voice(gain = 0.5)
+}
+sample {
+  out1 = voices[1]()
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_BROADCAST_CTOR_ARRAY_LITERAL_ARG_EXAMPLE: &str = r#"
+proc Voice {
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = gain
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = Voice(gain = [0.5, 0.8])
+}
+sample {
+  out1 = voices[1]()
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_BROADCAST_CTOR_ARRAY_SYMBOL_ARG_EXAMPLE: &str = r#"
+proc Voice {
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = gain
+  }
+}
+outs { out1 }
+init {
+  g = [0.5, 0.8]
+  voices: Voice[2] = Voice(gain = g)
+}
+sample {
+  out1 = voices[1]()
+}
+"#;
+
+const UNTYPED_INIT_ARRAY_FIRST_ELEMENT_TYPE_MISMATCH_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  a = [0, i64(1)]
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_BROADCAST_CTOR_MIXED_BUFFER_ARRAY_ARG_EXAMPLE: &str = r#"
+proc Voice {
+  params { gain = 1.0 }
+  buffers { buf: f32 }
+  outs { out1 }
+  sample {
+    out1 = buf[0] * gain
+  }
+}
+buffers {
+  buf1: f32
+  buf2: f32
+}
+outs { out1 }
+init {
+  voices: Voice[2] = Voice(gain = 0.5, buf = [buf1, buf2])
+}
+sample {
+  out1 = voices[1]()
+}
+"#;
+
+const NESTED_PROC_INIT_UNTYPED_ARRAY_SYMBOL_ARG_EXAMPLE: &str = r#"
+proc Voice {
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = gain
+  }
+}
+proc Bank {
+  outs { out1 }
+  init {
+    g = [0.2, 0.6]
+    voices: Voice[2] = Voice(gain = g)
+  }
+  sample {
+    out1 = voices[1]()
+  }
+}
+outs { out1 }
+init {
+  b = Bank()
+}
+sample {
+  out1 = b()
+}
+"#;
+
+const TOP_LEVEL_PROC_INSTANCE_ARRAY_CONST_EXPR_EXAMPLE: &str = r#"
+proc Voice {
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = gain
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[BLOCK_SIZE / 2] = [Voice(gain = 0.5), Voice(gain = 0.75)]
+  p = Voice(gain = 1.25)
+}
+sample {
+  out1 = p()
+}
+"#;
+
+const NESTED_PROC_INSTANCE_ARRAY_CONST_EXPR_EXAMPLE: &str = r#"
+proc Voice {
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = gain
+  }
+}
+proc Bank {
+  outs { out1 }
+  init {
+    voices: Voice[BLOCK_SIZE / 2] = [Voice(gain = 0.2), Voice(gain = 0.4)]
+    p = Voice(gain = 1.5)
+  }
+  sample {
+    out1 = p()
+  }
+}
+outs { out1 }
+init {
+  b = Bank()
+}
+sample {
+  out1 = b()
+}
+"#;
+
+const TOP_LEVEL_PROC_INSTANCE_ARRAY_INIT_ARITY_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1 }
+  sample { out1 = 1.0 }
+}
+outs { out1 }
+init {
+  voices: Voice[BLOCK_SIZE / 2] = [Voice(), Voice(), Voice()]
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
 const PROC_NESTED_STATE_EXAMPLE: &str = r#"
 proc InnerAcc {
   ins { in1 }
@@ -2702,6 +2973,22 @@ outs { out1 }
 events {
   set_curve(values: f32[2]) {
     amp = values[0] + values[1]
+  }
+}
+init {
+  amp = 0.0
+}
+sample {
+  out1 = amp
+}
+"#;
+
+const EVENT_LOCAL_ARRAY_LITERAL_EXAMPLE: &str = r#"
+outs { out1 }
+events {
+  ping() {
+    b = [1, 2, 3]
+    amp = f32(b[2])
   }
 }
 init {
@@ -3303,6 +3590,27 @@ fn event_array_payload_dispatch_and_unknown_index_ignore() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn event_handler_local_array_literal_declaration_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_LOCAL_ARRAY_LITERAL_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
+
+    trigger_event_by_index(&mut instance, 0, &[]).expect("event trigger should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
     }
 }
 
@@ -4217,6 +4525,21 @@ fn typed_local_array_declaration_in_sample_compiles_and_runs() {
 }
 
 #[test]
+fn untyped_local_array_declaration_in_sample_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(UNTYPED_LOCAL_ARRAY_SAMPLE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 4.0, 1e-6);
+    }
+}
+
+#[test]
 fn typed_local_array_declaration_in_def_compiles_and_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -4228,6 +4551,21 @@ fn typed_local_array_declaration_in_def_compiles_and_runs() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+fn untyped_local_array_declaration_in_def_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(UNTYPED_LOCAL_ARRAY_DEF_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
     }
 }
 
@@ -6816,6 +7154,189 @@ fn proc_array_constant_index_out_of_range_is_rejected() {
     assert!(
         result.is_err(),
         "semantic analysis should reject out-of-range constant proc-array indexing"
+    );
+}
+
+#[test]
+fn proc_instance_array_indexed_call_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_INDEXED_CALL_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+fn proc_instance_array_indexed_field_call_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_INDEXED_FIELD_CALL_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn proc_instance_array_indexed_call_non_literal_index_is_rejected() {
+    let parsed = parse_program(PROC_INSTANCE_ARRAY_INDEXED_CALL_NON_LITERAL_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject non-literal processor-array call indices"
+    );
+}
+
+#[test]
+fn nested_proc_instance_array_indexed_call_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(NESTED_PROC_INSTANCE_ARRAY_INDEXED_CALL_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn top_level_proc_instance_array_broadcast_ctor_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_BROADCAST_CTOR_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.5, 1e-6);
+    }
+}
+
+#[test]
+fn top_level_proc_instance_array_broadcast_ctor_array_literal_arg_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_BROADCAST_CTOR_ARRAY_LITERAL_ARG_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.8, 1e-6);
+    }
+}
+
+#[test]
+fn top_level_proc_instance_array_broadcast_ctor_array_symbol_arg_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_BROADCAST_CTOR_ARRAY_SYMBOL_ARG_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.8, 1e-6);
+    }
+}
+
+#[test]
+fn untyped_init_array_first_element_type_is_enforced() {
+    let parsed = parse_program(UNTYPED_INIT_ARRAY_FIRST_ELEMENT_TYPE_MISMATCH_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject untyped init array literals whose later elements are not assignable to the first element type"
+    );
+}
+
+#[test]
+fn top_level_proc_instance_array_broadcast_ctor_mixed_buffer_array_arg_analyzes() {
+    let parsed = parse_program(PROC_INSTANCE_ARRAY_BROADCAST_CTOR_MIXED_BUFFER_ARRAY_ARG_EXAMPLE)
+        .expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_ok(),
+        "semantic analysis should allow broadcast processor-array ctor with scalar and per-slot buffer arguments"
+    );
+}
+
+#[test]
+fn nested_proc_init_untyped_array_symbol_arg_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(NESTED_PROC_INIT_UNTYPED_ARRAY_SYMBOL_ARG_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.6, 1e-6);
+    }
+}
+
+#[test]
+fn top_level_proc_instance_array_const_expr_size_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_PROC_INSTANCE_ARRAY_CONST_EXPR_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[test]
+fn nested_proc_instance_array_const_expr_size_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(NESTED_PROC_INSTANCE_ARRAY_CONST_EXPR_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+fn top_level_proc_instance_array_initializer_arity_is_rejected() {
+    let parsed = parse_program(TOP_LEVEL_PROC_INSTANCE_ARRAY_INIT_ARITY_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject mismatched constructor count for top-level processor arrays"
     );
 }
 

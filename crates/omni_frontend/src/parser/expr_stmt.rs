@@ -250,16 +250,21 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                     })
                 }
                 Rule::array_type => {
+                    let spec = parse_array_type_as_data_spec(ty_pair)?;
                     let init = if let Some(expr_pair) = expr_pair {
                         let init_expr = parse_expr(expr_pair)?;
                         match init_expr {
                             Expr::ArrayLiteral(values) => Some(values),
-                            _ => {
-                                return Err(vec![Diagnostic::syntax(
-                                    "array typed declaration initializer must be an array literal like [a, b, ...]",
-                                    0,
-                                    0,
-                                )])
+                            other => {
+                                if matches!(spec.elem, DataElemType::Struct(_)) {
+                                    Some(vec![other])
+                                } else {
+                                    return Err(vec![Diagnostic::syntax(
+                                        "array typed declaration initializer must be an array literal like [a, b, ...]",
+                                        0,
+                                        0,
+                                    )]);
+                                }
                             }
                         }
                     } else {
@@ -271,10 +276,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: true,
-                        expr: Expr::DataCtor {
-                            spec: parse_array_type_as_data_spec(ty_pair)?,
-                            init,
-                        },
+                        expr: Expr::DataCtor { spec, init },
                     })
                 }
                 Rule::ident => {
@@ -877,13 +879,43 @@ pub(super) fn parse_call_expr_parts(
         "parse_call_expr_parts expects call_expr pair"
     );
     let mut inner = pair.into_inner();
-    let name_pair = inner
+    let target_pair = inner
         .next()
-        .expect("call_expr rule must include function name");
-    let name = name_pair.as_str().to_owned();
+        .expect("call_expr rule must include call target");
+    let (mut name, mut args) = parse_call_target(target_pair);
 
     let mut type_args = Vec::new();
-    let mut args = Vec::new();
+    if name == PROC_INDEX_CALL_SENTINEL {
+        let mut base_name = None::<String>;
+        let mut index_var = None::<String>;
+        for arg in &args {
+            match (arg.name.as_deref(), &arg.expr) {
+                (Some(PROC_INDEX_BASE_ARG), Expr::Var(base)) => base_name = Some(base.clone()),
+                (Some(PROC_INDEX_EXPR_ARG), Expr::Var(idx)) => index_var = Some(idx.clone()),
+                _ => {}
+            }
+        }
+        if let (Some(base), Some(idx)) = (base_name, index_var) {
+            let is_primitive_type_arg = parse_primitive_type(&idx).is_ok();
+            let is_generic_type_arg = idx
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_uppercase())
+                .unwrap_or(false);
+            if is_primitive_type_arg || is_generic_type_arg {
+                name = base;
+                args.clear();
+                if is_primitive_type_arg {
+                    type_args
+                        .push(CallTypeArg::Primitive(parse_primitive_type(&idx).expect(
+                            "primitive type arg should parse from call index target",
+                        )));
+                } else {
+                    type_args.push(CallTypeArg::Generic(idx));
+                }
+            }
+        }
+    }
     for item in inner {
         match item.as_rule() {
             Rule::generic_type_arg_list => {
@@ -938,4 +970,43 @@ pub(super) fn parse_call_expr_parts(
         }
     }
     (name, type_args, args)
+}
+
+fn parse_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
+    match pair.as_rule() {
+        Rule::path_ident => (pair.as_str().to_owned(), Vec::new()),
+        Rule::call_index_target => parse_call_index_target(pair),
+        Rule::call_target => {
+            let mut inner = pair.into_inner();
+            let Some(actual) = inner.next() else {
+                return ("".to_owned(), Vec::new());
+            };
+            parse_call_target(actual)
+        }
+        _ => ("".to_owned(), Vec::new()),
+    }
+}
+
+fn parse_call_index_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
+    let mut inner = pair.into_inner();
+    let Some(base_pair) = inner.next() else {
+        return (PROC_INDEX_CALL_SENTINEL.to_owned(), Vec::new());
+    };
+    let Some(index_pair) = inner.next() else {
+        return (PROC_INDEX_CALL_SENTINEL.to_owned(), Vec::new());
+    };
+    let base = base_pair.as_str().to_owned();
+    (
+        PROC_INDEX_CALL_SENTINEL.to_owned(),
+        vec![
+            CallArg {
+                name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                expr: Expr::Var(base),
+            },
+            CallArg {
+                name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                expr: parse_expr_inner(index_pair),
+            },
+        ],
+    )
 }

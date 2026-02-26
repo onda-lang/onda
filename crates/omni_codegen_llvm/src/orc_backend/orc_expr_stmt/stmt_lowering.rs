@@ -243,6 +243,106 @@ pub(super) unsafe fn lower_stmt(
                     return Ok(());
                 }
 
+                if let Expr::ArrayLiteral(values) = expr {
+                    if ctx.data_struct_len.contains_key(name) {
+                        return Err(Diagnostic::internal(format!(
+                            "Data[Struct] symbol '{name}' must be assigned via indexed field writes"
+                        )));
+                    }
+                    if let Some(expected_len) = ctx.data_len.get(name).copied() {
+                        if values.len() != expected_len {
+                            return Err(Diagnostic::internal(format!(
+                                "Data symbol '{name}' initializer expects {expected_len} elements, got {}",
+                                values.len()
+                            )));
+                        }
+                        for (idx, value_expr) in values.iter().enumerate() {
+                            let typed = lower_expr(
+                                value_expr,
+                                ctx,
+                                locals,
+                                local_aliases,
+                                local_data_aliases,
+                            )?;
+                            let data = lower_data_element_ptr(
+                                ctx,
+                                name,
+                                &Expr::Int(idx as i64),
+                                locals,
+                                local_aliases,
+                                local_data_aliases,
+                            )?;
+                            let casted = cast_orc_value_to(
+                                ctx,
+                                typed,
+                                data.elem_ty,
+                                b"data_array_store_cast\0",
+                            );
+                            LLVMBuildStore(ctx.builder, casted, data.ptr);
+                        }
+                        return Ok(());
+                    }
+                    if local_data_aliases.contains_key(name) {
+                        return Err(Diagnostic::internal(format!(
+                            "Data alias '{name}' must be assigned via index syntax in ORC lowering"
+                        )));
+                    }
+                    if local_aliases.contains_key(name)
+                        || locals.contains_key(name)
+                        || ctx.out_slots.contains_key(name)
+                        || ctx.state_slots.contains_key(name)
+                        || ctx.param_byte_offset.contains_key(name)
+                        || ctx.input_index.contains_key(name)
+                        || ctx.buffer_index.contains_key(name)
+                    {
+                        return Err(Diagnostic::internal(format!(
+                            "array declaration for '{name}' conflicts with existing symbol in ORC lowering"
+                        )));
+                    }
+                    if values.is_empty() {
+                        return Err(Diagnostic::internal(format!(
+                            "array initializer for symbol '{name}' cannot be empty in ORC lowering"
+                        )));
+                    }
+                    let first_typed =
+                        lower_expr(&values[0], ctx, locals, local_aliases, local_data_aliases)?;
+                    let elem_ty = first_typed.ty;
+                    let len = values.len();
+                    let ptr = build_local_array_slot(
+                        ctx.builder,
+                        llvm_ty_for_primitive(ctx.context, elem_ty),
+                        len,
+                        &format!("d_{name}"),
+                    )?;
+                    for (idx, value_expr) in values.iter().enumerate() {
+                        let typed = if idx == 0 {
+                            first_typed
+                        } else {
+                            lower_expr(value_expr, ctx, locals, local_aliases, local_data_aliases)?
+                        };
+                        let casted =
+                            cast_orc_value_to(ctx, typed, elem_ty, b"local_arr_init_cast\0");
+                        let idx_v = LLVMConstInt(ctx.i32_ty, idx as u64, 0);
+                        let elem_ptr = build_f32_ptr_offset(
+                            ctx.builder,
+                            llvm_ty_for_primitive(ctx.context, elem_ty),
+                            ptr,
+                            idx_v,
+                            b"local_arr_init_ptr\0",
+                        );
+                        LLVMBuildStore(ctx.builder, casted, elem_ptr);
+                    }
+                    local_data_aliases.insert(
+                        name.clone(),
+                        LocalDataAlias::Primitive {
+                            base_ptr: ptr,
+                            len,
+                            elem_ty,
+                        },
+                    );
+                    return Ok(());
+                }
+
                 if let Some(alias) = local_aliases.get(name) {
                     let typed = lower_expr(expr, ctx, locals, local_aliases, local_data_aliases)?;
                     let value = cast_orc_value_to(ctx, typed, alias.ty, b"alias_store_cast\0");

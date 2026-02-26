@@ -16,18 +16,25 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
     expr: &mut Expr,
     owner_proc: &str,
     nested_instances: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
-        Expr::Index { index, .. } => {
-            rewrite_nested_proc_calls_in_expr(index, owner_proc, nested_instances, proc_api, errors)
-        }
+        Expr::Index { index, .. } => rewrite_nested_proc_calls_in_expr(
+            index,
+            owner_proc,
+            nested_instances,
+            proc_array_slots,
+            proc_api,
+            errors,
+        ),
         Expr::DataCtor { spec, init } => {
             rewrite_nested_proc_calls_in_expr(
                 &mut spec.size,
                 owner_proc,
                 nested_instances,
+                proc_array_slots,
                 proc_api,
                 errors,
             );
@@ -37,6 +44,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         value,
                         owner_proc,
                         nested_instances,
+                        proc_array_slots,
                         proc_api,
                         errors,
                     );
@@ -46,8 +54,22 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_nested_proc_calls_in_expr(lhs, owner_proc, nested_instances, proc_api, errors);
-            rewrite_nested_proc_calls_in_expr(rhs, owner_proc, nested_instances, proc_api, errors);
+            rewrite_nested_proc_calls_in_expr(
+                lhs,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                errors,
+            );
+            rewrite_nested_proc_calls_in_expr(
+                rhs,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                errors,
+            );
         }
         Expr::Call { args, .. } => {
             for arg in args {
@@ -55,6 +77,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     arg,
                     owner_proc,
                     nested_instances,
+                    proc_array_slots,
                     proc_api,
                     errors,
                 );
@@ -66,6 +89,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     value,
                     owner_proc,
                     nested_instances,
+                    proc_array_slots,
                     proc_api,
                     errors,
                 );
@@ -77,12 +101,37 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     &mut arg.expr,
                     owner_proc,
                     nested_instances,
+                    proc_array_slots,
                     proc_api,
                     errors,
                 );
             }
-            if let Some(var) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
-                if let Some(instance) = nested_instances.get(var) {
+            if *name == PROC_INDEX_CALL_SENTINEL {
+                let Some(resolved_slot) = extract_proc_index_slot_mut(
+                    args,
+                    proc_array_slots,
+                    "nested processor indexed call",
+                    errors,
+                ) else {
+                    return;
+                };
+                *name = resolved_slot;
+            }
+            if let Some(var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
+                let var = if var_raw == PROC_INDEX_CALL_SENTINEL {
+                    let Some(resolved_slot) = extract_proc_index_slot_mut(
+                        args,
+                        proc_array_slots,
+                        "nested processor indexed field call",
+                        errors,
+                    ) else {
+                        return;
+                    };
+                    resolved_slot
+                } else {
+                    var_raw.to_owned()
+                };
+                if let Some(instance) = nested_instances.get(var.as_str()) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
                         errors.push(Diagnostic::semantic(
@@ -151,11 +200,12 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         name: None,
                         expr: Expr::Var("self".to_owned()),
                     });
-                    let expanded_args = expand_proc_call_args(args, api, var, errors);
+                    let expanded_args = expand_proc_call_args(args, api, var.as_str(), errors);
                     rewritten.extend(expanded_args);
-                    let expanded_buffers = expand_proc_buffer_call_args(instance, api, var, errors);
+                    let expanded_buffers =
+                        expand_proc_buffer_call_args(instance, api, var.as_str(), errors);
                     rewritten.extend(expanded_buffers);
-                    *name = nested_call_out_fn_name(owner_proc, var, out_idx);
+                    *name = nested_call_out_fn_name(owner_proc, var.as_str(), out_idx);
                     *args = rewritten;
                 }
                 return;
@@ -238,7 +288,14 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
-            rewrite_nested_proc_calls_in_expr(inner, owner_proc, nested_instances, proc_api, errors)
+            rewrite_nested_proc_calls_in_expr(
+                inner,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                errors,
+            )
         }
         Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
     }
@@ -248,16 +305,40 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
     stmt: &mut Stmt,
     owner_proc: &str,
     nested_instances: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
-        Stmt::Assign { expr, .. } => {
-            rewrite_nested_proc_calls_in_expr(expr, owner_proc, nested_instances, proc_api, errors)
-        }
+        Stmt::Assign { expr, .. } => rewrite_nested_proc_calls_in_expr(
+            expr,
+            owner_proc,
+            nested_instances,
+            proc_array_slots,
+            proc_api,
+            errors,
+        ),
         Stmt::Expr { expr, .. } => {
-            rewrite_nested_proc_calls_in_expr(expr, owner_proc, nested_instances, proc_api, errors);
+            rewrite_nested_proc_calls_in_expr(
+                expr,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                errors,
+            );
             if let Expr::UserCall { name, args, .. } = expr {
+                if *name == PROC_INDEX_CALL_SENTINEL {
+                    let Some(resolved_slot) = extract_proc_index_slot_mut(
+                        args,
+                        proc_array_slots,
+                        "nested processor indexed statement call",
+                        errors,
+                    ) else {
+                        return;
+                    };
+                    *name = resolved_slot;
+                }
                 if let Some(instance) = nested_instances.get(name) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
@@ -284,21 +365,34 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                 }
             }
         }
-        Stmt::Return { expr, .. } => {
-            rewrite_nested_proc_calls_in_expr(expr, owner_proc, nested_instances, proc_api, errors)
-        }
+        Stmt::Return { expr, .. } => rewrite_nested_proc_calls_in_expr(
+            expr,
+            owner_proc,
+            nested_instances,
+            proc_array_slots,
+            proc_api,
+            errors,
+        ),
         Stmt::If {
             cond,
             then_branch,
             else_branch,
             ..
         } => {
-            rewrite_nested_proc_calls_in_expr(cond, owner_proc, nested_instances, proc_api, errors);
+            rewrite_nested_proc_calls_in_expr(
+                cond,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                errors,
+            );
             for s in then_branch {
                 rewrite_nested_proc_calls_in_stmt(
                     s,
                     owner_proc,
                     nested_instances,
+                    proc_array_slots,
                     proc_api,
                     errors,
                 );
@@ -308,6 +402,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     s,
                     owner_proc,
                     nested_instances,
+                    proc_array_slots,
                     proc_api,
                     errors,
                 );
@@ -324,15 +419,24 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                 start,
                 owner_proc,
                 nested_instances,
+                proc_array_slots,
                 proc_api,
                 errors,
             );
-            rewrite_nested_proc_calls_in_expr(end, owner_proc, nested_instances, proc_api, errors);
+            rewrite_nested_proc_calls_in_expr(
+                end,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                errors,
+            );
             if let Some(step_expr) = step {
                 rewrite_nested_proc_calls_in_expr(
                     step_expr,
                     owner_proc,
                     nested_instances,
+                    proc_array_slots,
                     proc_api,
                     errors,
                 );
@@ -342,18 +446,27 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     s,
                     owner_proc,
                     nested_instances,
+                    proc_array_slots,
                     proc_api,
                     errors,
                 );
             }
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_nested_proc_calls_in_expr(cond, owner_proc, nested_instances, proc_api, errors);
+            rewrite_nested_proc_calls_in_expr(
+                cond,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                errors,
+            );
             for s in body {
                 rewrite_nested_proc_calls_in_stmt(
                     s,
                     owner_proc,
                     nested_instances,
+                    proc_array_slots,
                     proc_api,
                     errors,
                 );
@@ -371,6 +484,7 @@ pub(super) fn rewrite_owner_proc_stmt(
     ins_names: &HashSet<String>,
     field_array_slots: &HashMap<String, Vec<String>>,
     in_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
     nested_fields: &HashMap<String, HashSet<String>>,
     nested_instances: &HashMap<String, ProcCallInstance>,
     proc_api: &HashMap<String, ProcApi>,
@@ -378,7 +492,14 @@ pub(super) fn rewrite_owner_proc_stmt(
 ) -> Option<Stmt> {
     normalize_proc_output_aliases_in_stmt(&mut stmt, nested_instances, proc_api);
     rewrite_nested_field_paths_in_stmt(&mut stmt, nested_fields);
-    rewrite_nested_proc_calls_in_stmt(&mut stmt, owner_proc, nested_instances, proc_api, errors);
+    rewrite_nested_proc_calls_in_stmt(
+        &mut stmt,
+        owner_proc,
+        nested_instances,
+        proc_array_slots,
+        proc_api,
+        errors,
+    );
     rewrite_proc_stmt_symbols(
         &stmt,
         owner_proc,
@@ -489,6 +610,7 @@ pub(super) fn expand_nested_proc_ctor_assign(
     ctor_args: &[CallArg],
     callee_param_specs: &[ProcParamSpec],
     callee_buffer_specs: &[ProcBufferSpec],
+    proc_array_slot: Option<(usize, usize)>,
     errors: &mut Vec<Diagnostic>,
 ) -> (Vec<Stmt>, Vec<Expr>) {
     let mut param_names = callee_param_specs
@@ -526,15 +648,32 @@ pub(super) fn expand_nested_proc_ctor_assign(
     let mut bound_buffers = Vec::<Expr>::new();
     for (idx, param) in callee_param_specs.iter().enumerate() {
         let values = match resolved.get(idx).copied().flatten() {
-            Some(expr) => expand_expr_to_slots(
-                expr,
-                param.slots.len(),
-                &format!(
-                    "processor constructor '{}(...)' argument '{}'",
-                    ctor_name, param.name
-                ),
-                errors,
-            ),
+            Some(expr) => {
+                let expr = if let Some((array_slot_idx, array_len)) = proc_array_slot {
+                    select_proc_array_initializer_expr_for_slot(
+                        expr,
+                        array_slot_idx,
+                        array_len,
+                        &format!(
+                            "processor constructor '{}(...)' argument '{}' for nested state '{}'",
+                            ctor_name, param.name, nested_var
+                        ),
+                        true,
+                        errors,
+                    )
+                } else {
+                    expr.clone()
+                };
+                expand_expr_to_slots(
+                    &expr,
+                    param.slots.len(),
+                    &format!(
+                        "processor constructor '{}(...)' argument '{}'",
+                        ctor_name, param.name
+                    ),
+                    errors,
+                )
+            }
             None => param
                 .slots
                 .iter()
@@ -563,7 +702,7 @@ pub(super) fn expand_nested_proc_ctor_assign(
     }
     for (buffer_idx, buffer_spec) in callee_buffer_specs.iter().enumerate() {
         let resolved_idx = callee_param_specs.len() + buffer_idx;
-        let Some(expr) = resolved.get(resolved_idx).copied().flatten().cloned() else {
+        let Some(mut expr) = resolved.get(resolved_idx).copied().flatten().cloned() else {
             errors.push(Diagnostic::semantic(
                 format!(
                     "processor constructor '{ctor_name}(...)' for nested state '{nested_var}' is missing required buffer argument '{}'",
@@ -574,6 +713,19 @@ pub(super) fn expand_nested_proc_ctor_assign(
             ));
             continue;
         };
+        if let Some((array_slot_idx, array_len)) = proc_array_slot {
+            expr = select_proc_array_initializer_expr_for_slot(
+                &expr,
+                array_slot_idx,
+                array_len,
+                &format!(
+                    "processor constructor '{}(...)' buffer argument '{}' for nested state '{}'",
+                    ctor_name, buffer_spec.name, nested_var
+                ),
+                false,
+                errors,
+            );
+        }
         if !matches!(expr, Expr::Var(_)) {
             errors.push(Diagnostic::semantic(
                 format!(
@@ -606,6 +758,7 @@ pub(super) fn expand_proc_instance_ctor_assign(
     ctor_args: &[CallArg],
     param_specs: &[ProcParamSpec],
     buffer_specs: &[ProcBufferSpec],
+    proc_array_slot: Option<(usize, usize)>,
     errors: &mut Vec<Diagnostic>,
 ) -> (Vec<Stmt>, Vec<Expr>) {
     let mut param_names = param_specs
@@ -640,15 +793,32 @@ pub(super) fn expand_proc_instance_ctor_assign(
     let mut bound_buffers = Vec::<Expr>::new();
     for (idx, param) in param_specs.iter().enumerate() {
         let values = match resolved.get(idx).copied().flatten() {
-            Some(expr) => expand_expr_to_slots(
-                expr,
-                param.slots.len(),
-                &format!(
-                    "processor constructor '{}(...)' argument '{}'",
-                    ctor_name, param.name
-                ),
-                errors,
-            ),
+            Some(expr) => {
+                let expr = if let Some((array_slot_idx, array_len)) = proc_array_slot {
+                    select_proc_array_initializer_expr_for_slot(
+                        expr,
+                        array_slot_idx,
+                        array_len,
+                        &format!(
+                            "processor constructor '{}(...)' argument '{}' for instance '{}'",
+                            ctor_name, param.name, instance_var
+                        ),
+                        true,
+                        errors,
+                    )
+                } else {
+                    expr.clone()
+                };
+                expand_expr_to_slots(
+                    &expr,
+                    param.slots.len(),
+                    &format!(
+                        "processor constructor '{}(...)' argument '{}'",
+                        ctor_name, param.name
+                    ),
+                    errors,
+                )
+            }
             None => param
                 .slots
                 .iter()
@@ -677,7 +847,7 @@ pub(super) fn expand_proc_instance_ctor_assign(
     }
     for (buffer_idx, buffer_spec) in buffer_specs.iter().enumerate() {
         let resolved_idx = param_specs.len() + buffer_idx;
-        let Some(expr) = resolved.get(resolved_idx).copied().flatten().cloned() else {
+        let Some(mut expr) = resolved.get(resolved_idx).copied().flatten().cloned() else {
             errors.push(Diagnostic::semantic(
                 format!(
                     "processor constructor '{ctor_name}(...)' for instance '{instance_var}' is missing required buffer argument '{}'",
@@ -688,6 +858,19 @@ pub(super) fn expand_proc_instance_ctor_assign(
             ));
             continue;
         };
+        if let Some((array_slot_idx, array_len)) = proc_array_slot {
+            expr = select_proc_array_initializer_expr_for_slot(
+                &expr,
+                array_slot_idx,
+                array_len,
+                &format!(
+                    "processor constructor '{}(...)' buffer argument '{}' for instance '{}'",
+                    ctor_name, buffer_spec.name, instance_var
+                ),
+                false,
+                errors,
+            );
+        }
         if !matches!(expr, Expr::Var(_)) {
             errors.push(Diagnostic::semantic(
                 format!(
@@ -736,6 +919,7 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
     callee_ins_names: &HashSet<String>,
     callee_field_array_slots: &HashMap<String, Vec<String>>,
     callee_in_array_slots: &HashMap<String, Vec<String>>,
+    callee_proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Stmt> {
@@ -765,12 +949,25 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
                 (mapped_name, mapped_instance)
             })
             .collect::<HashMap<_, _>>();
+        let mapped_proc_array_slots = callee_proc_array_slots
+            .iter()
+            .map(|(base, slots)| {
+                (
+                    base.clone(),
+                    slots
+                        .iter()
+                        .map(|slot| nested_field_name(nested_path, slot))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         normalize_proc_output_aliases_in_stmt(&mut stmt, &nested_instances, proc_api);
         rewrite_nested_field_paths_in_stmt(&mut stmt, &nested_fields);
         rewrite_nested_proc_calls_in_stmt(
             &mut stmt,
             owner_proc,
             &nested_instances,
+            &mapped_proc_array_slots,
             proc_api,
             errors,
         );

@@ -60,8 +60,11 @@ pub(super) fn compute_effective_proc_block_flags(
                         )
                     })
                     .collect::<HashMap<_, _>>();
-                let called_nested =
-                    collect_called_proc_instances_in_stmts(&proc_def.sample, &nested_instances);
+                let called_nested = collect_called_proc_instances_in_stmts(
+                    &proc_def.sample,
+                    &nested_instances,
+                    &shape.nested_proc_array_slots,
+                );
                 for nested_var in called_nested {
                     let Some(instance) = nested_instances.get(&nested_var) else {
                         continue;
@@ -373,6 +376,72 @@ pub(super) fn compute_proc_shape(
         );
     }
 
+    let mut nested_proc_array_slots = HashMap::<String, Vec<String>>::new();
+    let mut nested_proc_array_names = state.nested_proc_arrays.keys().cloned().collect::<Vec<_>>();
+    nested_proc_array_names.sort();
+    for array_name in nested_proc_array_names {
+        let Some(array_state) = state.nested_proc_arrays.get(&array_name).cloned() else {
+            continue;
+        };
+        let size_context = format!(
+            "processor '{}.{}' processor-array size",
+            proc.name, array_name
+        );
+        let Some(len) = eval_data_size_expr(&array_state.size_expr, options, &size_context, errors)
+        else {
+            continue;
+        };
+        let mut slots = Vec::<String>::with_capacity(len);
+        for idx in 0..len {
+            let slot = format!("{array_name}[{idx}]");
+            if reserved.contains(&slot) {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "processor '{}' processor-array slot '{}' conflicts with reserved symbol",
+                        proc.name, slot
+                    ),
+                    0,
+                    0,
+                ));
+                continue;
+            }
+            if let Some(existing) = state.nested_procs.get(&slot) {
+                if existing.proc_name != array_state.proc_name {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "processor '{}' processor-array slot '{}' has conflicting processor types '{}' and '{}'",
+                            proc.name, slot, existing.proc_name, array_state.proc_name
+                        ),
+                        0,
+                        0,
+                    ));
+                }
+            } else if state.scalars.contains_key(&slot)
+                || state.data.contains_key(&slot)
+                || state.struct_instances.contains_key(&slot)
+            {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "processor '{}' processor-array slot '{}' conflicts with existing state symbol",
+                        proc.name, slot
+                    ),
+                    0,
+                    0,
+                ));
+                continue;
+            } else {
+                state.nested_procs.insert(
+                    slot.clone(),
+                    ProcNestedState {
+                        proc_name: array_state.proc_name.clone(),
+                    },
+                );
+            }
+            slots.push(slot);
+        }
+        nested_proc_array_slots.insert(array_name, slots);
+    }
+
     let mut state_scalar_names = state.scalars.keys().cloned().collect::<Vec<_>>();
     state_scalar_names.sort();
     let mut state_data_names = state.data.keys().cloned().collect::<Vec<_>>();
@@ -534,6 +603,7 @@ pub(super) fn compute_proc_shape(
         out_types,
         in_array_slots,
         field_array_slots,
+        nested_proc_array_slots,
         state,
         instance_fields,
         fields,
@@ -624,6 +694,7 @@ pub(super) fn build_proc_lowering_shape(
     let mut field_names = base.field_names.clone();
     let mut data_field_names = base.data_field_names.clone();
     let mut field_array_slots = base.field_array_slots.clone();
+    let mut nested_proc_array_slots = base.nested_proc_array_slots.clone();
     let mut nested_fields = base.instance_fields.clone();
 
     let mut nested_vars = base.state.nested_procs.keys().cloned().collect::<Vec<_>>();
@@ -652,6 +723,14 @@ pub(super) fn build_proc_lowering_shape(
                 .map(|slot| nested_field_name(&nested_var, slot))
                 .collect::<Vec<_>>();
             field_array_slots.insert(prefixed_base, prefixed_slots);
+        }
+        for (array_base, slots) in &callee_shape.nested_proc_array_slots {
+            let prefixed_base = nested_field_name(&nested_var, array_base);
+            let prefixed_slots = slots
+                .iter()
+                .map(|slot| nested_field_name(&nested_var, slot))
+                .collect::<Vec<_>>();
+            nested_proc_array_slots.insert(prefixed_base, prefixed_slots);
         }
 
         let mut nested_callee_fields = callee_shape.fields.clone();
@@ -690,6 +769,7 @@ pub(super) fn build_proc_lowering_shape(
         out_types: base.out_types,
         in_array_slots: base.in_array_slots,
         field_array_slots,
+        nested_proc_array_slots,
         state: base.state,
         fields,
         field_names,

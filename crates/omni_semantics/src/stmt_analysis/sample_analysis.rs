@@ -724,6 +724,115 @@ fn analyze_assign_sample(
                     return;
                 }
             }
+            if let Expr::ArrayLiteral(values) = expr {
+                if decl_ty.is_some() {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "typed declaration for '{name}' with array literals must use explicit array type syntax like '{name}: T[N] = [...]'"
+                        ),
+                        0,
+                        0,
+                    ));
+                    return;
+                }
+                if split_field_path(name, errors).is_some() {
+                    errors.push(Diagnostic::semantic(
+                        "array declaration target must be a plain variable name",
+                        0,
+                        0,
+                    ));
+                    return;
+                }
+                if known_scalars.contains(name)
+                    || local_aliases.contains_key(name)
+                    || local_data_aliases.contains_key(name)
+                    || state_scalars.contains_key(name)
+                    || state_data.contains_key(name)
+                    || state_data_struct_roots.contains_key(name)
+                    || struct_instances.contains_key(name)
+                    || input_names.contains(name)
+                    || output_names.contains(name)
+                    || param_names.contains(name)
+                {
+                    errors.push(Diagnostic::semantic(
+                        format!("array declaration for '{name}' conflicts with existing symbol"),
+                        0,
+                        0,
+                    ));
+                    return;
+                }
+                if values.is_empty() {
+                    errors.push(Diagnostic::semantic(
+                        format!("array initializer for symbol '{name}' cannot be empty"),
+                        0,
+                        0,
+                    ));
+                    return;
+                }
+                for value in values {
+                    validate_expr(
+                        value,
+                        ExprEnv {
+                            known_scalars,
+                            locals,
+                            outputs: output_names,
+                            data_vars: &data_vars,
+                            param_structs: &HashMap::new(),
+                            struct_instances,
+                            struct_defs,
+                            fn_signatures,
+                            allow_data_ctor: false,
+                            scope: ScopeKind::Sample,
+                        },
+                        errors,
+                    );
+                }
+                let elem_ty = infer_expr_type_for_semantics_with_local_data(
+                    &values[0],
+                    state_scalars,
+                    None,
+                    local_data_aliases,
+                    locals,
+                    input_names,
+                    output_names,
+                    param_names,
+                    struct_instances,
+                    struct_defs,
+                    errors,
+                )
+                .unwrap_or(PrimitiveType::F32);
+                for (idx, value) in values.iter().enumerate() {
+                    let value_ty = infer_expr_type_for_semantics_with_local_data(
+                        value,
+                        state_scalars,
+                        None,
+                        local_data_aliases,
+                        locals,
+                        input_names,
+                        output_names,
+                        param_names,
+                        struct_instances,
+                        struct_defs,
+                        errors,
+                    );
+                    require_assignable_type(
+                        value_ty,
+                        elem_ty,
+                        &format!("array initializer assignment to '{name}[{idx}]'"),
+                        errors,
+                    );
+                }
+                local_data_aliases.insert(
+                    name.clone(),
+                    LocalDataAliasInfo {
+                        len: values.len(),
+                        elem_ty,
+                        elem_struct: None,
+                        writable: true,
+                    },
+                );
+                return;
+            }
 
             if local_aliases.contains_key(name) {
                 if matches!(expr, Expr::DataCtor { .. }) {

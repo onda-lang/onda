@@ -74,7 +74,8 @@
 - Generic primitive specialization is supported for `struct` and `proc` via type parameters (for example `Name[T]`).
 - Specialization is monomorphized at use sites with explicit type args (`Name[f64](...)`) or inferred type args from constructor arguments/defaults where possible.
 - Array type syntax: `T[N]` across declarations (with current scope rules enforced in semantics).
-- In `ins`/`outs`/`params`/`buffers`, missing per-entry types can be filled by a section default type (`section[T]`); explicit entry types always win.
+- Typed primitive array declarations with inline array-literal initializers are supported in `init` / `sample` / `def` (for example `a: f32[2] = [0.5, 0.8]`).
+- Untyped array literal declarations are supported for local/state array declarations in executable blocks (`init` top-level + proc init, `sample`/`block`, `def`, and event handlers), with first-element type inference (for example `a = [0.5, 0.8]`, `a = [f64(0.0), 1.0]`, `a = [0, 1]`, `a = [i64(0), 1]`).
 - Scalar `ins` and scalar `params` support optional declaration ranges and defaults:
   - `in1 = 440 {0.01, 22000}` (min+max)
   - `in1 = 440 {22000}` (max-only)
@@ -95,7 +96,10 @@
 - Events:
   - Top-level and proc-level `events` blocks are supported.
   - Event params support primitive scalars and fixed-size primitive arrays.
+  - Event array params are passed as read-only references.
   - Event params without explicit type default to `f32`.
+  - Event handlers can declare local fixed-size primitive arrays via untyped literals (for example `b = [1, 2, 3]`).
+  - Event handlers can write init-root state only (plus local symbols); output/input/event-param writes are rejected.
   - Top-level handlers are host-triggered and run immediately on the audio thread.
   - Unknown host event indices are ignored; payload-size mismatches are runtime errors.
   - Proc events are reached through explicit calls/forwarding (for example `voice.note_on(...)`).
@@ -124,6 +128,19 @@
   - statement call + field reads is supported for stateful updates + explicit output access
 - Nested processor state/composition is supported, including deep nesting.
 - Processor constructor arguments for params/buffers are enforced as named-only.
+- Processor instance arrays are supported in `init` (top-level and proc-level) via typed declarations such as:
+  - `voices: Voice[N_EXPR] = [Voice(...), ...]`
+  - `voices: Voice[N_EXPR] = Voice(...)` (broadcast constructor sugar)
+  - `N_EXPR` can be any compile-time constant expression (not only integer literals).
+  - These declarations currently desugar to per-slot instances (`voices[idx]`) during processor/top-level desugaring.
+  - For broadcast constructor sugar, constructor args can be mixed:
+    - scalar expression: broadcast to every slot (`gain = 0.5`)
+    - array literal: per-slot value (`gain = [0.5, 0.8]`, `buf = [buf1, buf2]`)
+    - array symbol for non-buffer args: per-slot indexed read (`g: f32[2] = [...]`, then `gain = g`)
+  - Indexed proc-array calls are supported with literal indices:
+    - `voices[1](...)`
+    - `voices[1](...).outN` / named output endpoint
+  - Non-literal proc-array call indices are currently rejected.
 - Sample oversampling is implemented for both top-level and proc sample blocks:
   - syntax: `sample N:` where `N` is one of `{1,2,4,8,16,32,64}`.
   - oversampling path is compiler-managed (input interpolation, held params, filtered decimation).
@@ -180,5 +197,3 @@
 - C++ single-header backend.
 - Standard library expansion/versioning beyond MVP module set.
 - RT-safety instrumentation/audit suite and stricter host-facing diagnostics lifecycle.
-
-

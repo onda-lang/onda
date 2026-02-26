@@ -26,6 +26,7 @@ struct ProcBaseShape {
     out_types: HashMap<String, PrimitiveType>,
     in_array_slots: HashMap<String, Vec<String>>,
     field_array_slots: HashMap<String, Vec<String>>,
+    nested_proc_array_slots: HashMap<String, Vec<String>>,
     state: ProcStateFields,
     instance_fields: HashMap<String, HashSet<String>>,
     fields: Vec<StructField>,
@@ -44,6 +45,7 @@ struct ProcLoweringShape {
     out_types: HashMap<String, PrimitiveType>,
     in_array_slots: HashMap<String, Vec<String>>,
     field_array_slots: HashMap<String, Vec<String>>,
+    nested_proc_array_slots: HashMap<String, Vec<String>>,
     state: ProcStateFields,
     fields: Vec<StructField>,
     field_names: HashSet<String>,
@@ -696,7 +698,7 @@ pub(crate) fn desugar_processors(
     program.blocks.extend(generated_structs);
     program.blocks.extend(generated_defs);
 
-    rewrite_top_level_proc_calls(&mut program, &lowering_shapes, &proc_api, errors);
+    rewrite_top_level_proc_calls(&mut program, options, &lowering_shapes, &proc_api, errors);
     ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,
@@ -1722,6 +1724,7 @@ pub fn analyze_with_options(
 
         let mut event_param_immutable = param_names.clone();
         event_param_immutable.extend(scalar_event_params.iter().cloned());
+        let event_loop_vars = HashSet::<String>::new();
 
         for stmt in &event.body {
             validate_event_stmt_restrictions(
@@ -1740,7 +1743,7 @@ pub fn analyze_with_options(
                 &mut event_known_scalars,
                 &mut event_local_aliases,
                 &mut event_local_data_aliases,
-                &event_locals,
+                &event_loop_vars,
                 &state_scalars,
                 &state_data,
                 &state_data_struct_roots,

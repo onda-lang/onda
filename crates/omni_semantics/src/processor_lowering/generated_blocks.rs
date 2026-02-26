@@ -102,6 +102,7 @@ fn generate_nested_wrapper_defs(
                         args,
                         &nested_callee_shape.param_specs,
                         &nested_callee_shape.buffer_specs,
+                        None,
                         errors,
                     );
                     if let Some(instance) = callee_nested_instances.get_mut(var) {
@@ -116,6 +117,7 @@ fn generate_nested_wrapper_defs(
                             &ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
+                            &shape.nested_proc_array_slots,
                             &shape.nested_fields,
                             &nested_instances,
                             &proc_api,
@@ -182,6 +184,7 @@ fn generate_nested_wrapper_defs(
                             &ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
+                            &shape.nested_proc_array_slots,
                             &shape.nested_fields,
                             &nested_instances,
                             &proc_api,
@@ -202,6 +205,7 @@ fn generate_nested_wrapper_defs(
                 &callee_ins_names,
                 &callee_shape.field_array_slots,
                 &callee_shape.in_array_slots,
+                &callee_shape.nested_proc_array_slots,
                 &proc_api,
                 errors,
             ) {
@@ -233,6 +237,7 @@ fn generate_nested_wrapper_defs(
                     &callee_ins_names,
                     &callee_shape.field_array_slots,
                     &callee_shape.in_array_slots,
+                    &callee_shape.nested_proc_array_slots,
                     &proc_api,
                     errors,
                 )
@@ -379,6 +384,7 @@ fn generate_nested_wrapper_defs(
                             &callee_event_ins_names,
                             &callee_shape.field_array_slots,
                             &callee_event_in_array_slots,
+                            &callee_shape.nested_proc_array_slots,
                             &proc_api,
                             errors,
                         )
@@ -422,6 +428,7 @@ fn generate_nested_wrapper_defs(
                     &callee_ins_names,
                     &callee_shape.field_array_slots,
                     &callee_shape.in_array_slots,
+                    &callee_shape.nested_proc_array_slots,
                     &proc_api,
                     errors,
                 ) {
@@ -431,6 +438,7 @@ fn generate_nested_wrapper_defs(
             let called_callee_nested = collect_called_proc_instances_in_stmts(
                 &callee_proc.sample,
                 &callee_nested_instances,
+                &callee_shape.nested_proc_array_slots,
             );
             let mut callee_nested_vars =
                 callee_nested_instances.keys().cloned().collect::<Vec<_>>();
@@ -517,6 +525,7 @@ fn generate_nested_wrapper_defs(
                     &callee_ins_names,
                     &callee_shape.field_array_slots,
                     &callee_shape.in_array_slots,
+                    &callee_shape.nested_proc_array_slots,
                     &proc_api,
                     errors,
                 ) {
@@ -691,7 +700,273 @@ pub(super) fn generate_lowered_proc_blocks(
         }
 
         let mut init_body = Vec::<Stmt>::new();
+        let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
+        let proc_ns = namespace_of_symbol(&proc.name);
         for stmt in &proc.init {
+            if let Stmt::Assign {
+                target: AssignTarget::Var(array_var),
+                expr: Expr::DataCtor { init, .. },
+                ..
+            } = stmt
+            {
+                if let Some(slot_names) = shape.nested_proc_array_slots.get(array_var) {
+                    let Some(array_state) = shape.state.nested_proc_arrays.get(array_var) else {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "processor '{}' processor-array '{}' is missing state metadata",
+                                proc.name, array_var
+                            ),
+                            0,
+                            0,
+                        ));
+                        continue;
+                    };
+
+                    if let Some(values) = init {
+                        if values.len() != slot_names.len() && values.len() != 1 {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor '{}.{}' initializer expects {} constructor entries (or a single broadcast constructor), got {}",
+                                    proc.name,
+                                    array_var,
+                                    slot_names.len(),
+                                    values.len()
+                                ),
+                                0,
+                                0,
+                            ));
+                        }
+                    }
+
+                    for (slot_idx, slot_name) in slot_names.iter().enumerate() {
+                        let mut slot_ctor_args = Vec::<CallArg>::new();
+                        let mut proc_array_slot = None;
+                        if let Some(values) = init {
+                            let value = if values.len() == 1 {
+                                proc_array_slot = Some((slot_idx, slot_names.len()));
+                                values.first()
+                            } else {
+                                values.get(slot_idx)
+                            };
+                            if let Some(value) = value {
+                                if let Expr::UserCall {
+                                    name: ctor_name,
+                                    type_args,
+                                    args,
+                                } = value
+                                {
+                                    let resolved_ctor = if ctor_name.contains("::") {
+                                        if proc_symbols.contains(ctor_name) {
+                                            Some(ctor_name.clone())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        resolve_unqualified_symbol_name(
+                                            ctor_name,
+                                            &proc_ns,
+                                            &proc_symbols,
+                                        )
+                                    };
+                                    if let Some(resolved_ctor) = resolved_ctor {
+                                        if resolved_ctor != array_state.proc_name {
+                                            errors.push(Diagnostic::semantic(
+                                                format!(
+                                                    "processor '{}.{}' initializer entry {} uses constructor '{}' but '{}' is required",
+                                                    proc.name,
+                                                    array_var,
+                                                    slot_idx,
+                                                    resolved_ctor,
+                                                    array_state.proc_name
+                                                ),
+                                                0,
+                                                0,
+                                            ));
+                                        }
+                                    } else {
+                                        errors.push(Diagnostic::semantic(
+                                            format!(
+                                                "processor '{}.{}' initializer entry {} references unknown processor constructor '{}'",
+                                                proc.name, array_var, slot_idx, ctor_name
+                                            ),
+                                            0,
+                                            0,
+                                        ));
+                                    }
+                                    if !type_args.is_empty() {
+                                        errors.push(Diagnostic::semantic(
+                                            format!(
+                                                "processor '{}' is not generic and cannot take type arguments",
+                                                ctor_name
+                                            ),
+                                            0,
+                                            0,
+                                        ));
+                                    }
+                                    slot_ctor_args = args.clone();
+                                } else {
+                                    errors.push(Diagnostic::semantic(
+                                        format!(
+                                            "processor '{}.{}' initializer entry {} must be a processor constructor call",
+                                            proc.name, array_var, slot_idx
+                                        ),
+                                        0,
+                                        0,
+                                    ));
+                                }
+                            }
+                        }
+
+                        let Some(slot_state) = shape.state.nested_procs.get(slot_name) else {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor '{}' processor-array slot '{}' is missing nested processor state",
+                                    proc.name, slot_name
+                                ),
+                                0,
+                                0,
+                            ));
+                            continue;
+                        };
+                        let Some(callee_shape) = lowering_shapes.get(&slot_state.proc_name) else {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor '{}' nested state '{}' references unknown processor '{}'",
+                                    proc.name, slot_name, slot_state.proc_name
+                                ),
+                                0,
+                                0,
+                            ));
+                            continue;
+                        };
+                        let (expanded, bound_buffers) = expand_nested_proc_ctor_assign(
+                            &proc.name,
+                            slot_name,
+                            &slot_state.proc_name,
+                            &slot_ctor_args,
+                            &callee_shape.param_specs,
+                            &callee_shape.buffer_specs,
+                            proc_array_slot,
+                            errors,
+                        );
+                        if let Some(instance) = nested_instances.get_mut(slot_name) {
+                            instance.buffer_args = bound_buffers;
+                        }
+                        for expanded_stmt in expanded {
+                            if let Some(rewritten) = rewrite_owner_proc_stmt(
+                                expanded_stmt,
+                                &proc.name,
+                                &shape.field_names,
+                                &shape.data_field_names,
+                                &ins_names,
+                                &shape.field_array_slots,
+                                &shape.in_array_slots,
+                                &shape.nested_proc_array_slots,
+                                &shape.nested_fields,
+                                &nested_instances,
+                                &proc_api,
+                                errors,
+                            ) {
+                                init_body.push(rewritten);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if let Some(values) = init {
+                    let mut decl_stmt = stmt.clone();
+                    if let Stmt::Assign {
+                        expr: Expr::DataCtor { init, .. },
+                        ..
+                    } = &mut decl_stmt
+                    {
+                        *init = None;
+                    }
+                    if let Some(rewritten) = rewrite_owner_proc_stmt(
+                        decl_stmt,
+                        &proc.name,
+                        &shape.field_names,
+                        &shape.data_field_names,
+                        &ins_names,
+                        &shape.field_array_slots,
+                        &shape.in_array_slots,
+                        &shape.nested_proc_array_slots,
+                        &shape.nested_fields,
+                        &nested_instances,
+                        &proc_api,
+                        errors,
+                    ) {
+                        init_body.push(rewritten);
+                    }
+                    for (idx, value) in values.iter().cloned().enumerate() {
+                        let write_stmt = Stmt::Assign {
+                            loc: None,
+                            target: AssignTarget::Index {
+                                base: array_var.clone(),
+                                index: Expr::Int(idx as i64),
+                            },
+                            decl_ty: None,
+                            generic_decl_ty: None,
+                            is_typed_decl: false,
+                            expr: value,
+                        };
+                        if let Some(rewritten) = rewrite_owner_proc_stmt(
+                            write_stmt,
+                            &proc.name,
+                            &shape.field_names,
+                            &shape.data_field_names,
+                            &ins_names,
+                            &shape.field_array_slots,
+                            &shape.in_array_slots,
+                            &shape.nested_proc_array_slots,
+                            &shape.nested_fields,
+                            &nested_instances,
+                            &proc_api,
+                            errors,
+                        ) {
+                            init_body.push(rewritten);
+                        }
+                    }
+                    continue;
+                }
+            }
+            if let Stmt::Assign {
+                target: AssignTarget::Var(array_var),
+                expr: Expr::ArrayLiteral(values),
+                ..
+            } = stmt
+            {
+                for (idx, value) in values.iter().cloned().enumerate() {
+                    let write_stmt = Stmt::Assign {
+                        loc: None,
+                        target: AssignTarget::Index {
+                            base: array_var.clone(),
+                            index: Expr::Int(idx as i64),
+                        },
+                        decl_ty: None,
+                        generic_decl_ty: None,
+                        is_typed_decl: false,
+                        expr: value,
+                    };
+                    if let Some(rewritten) = rewrite_owner_proc_stmt(
+                        write_stmt,
+                        &proc.name,
+                        &shape.field_names,
+                        &shape.data_field_names,
+                        &ins_names,
+                        &shape.field_array_slots,
+                        &shape.in_array_slots,
+                        &shape.nested_proc_array_slots,
+                        &shape.nested_fields,
+                        &nested_instances,
+                        &proc_api,
+                        errors,
+                    ) {
+                        init_body.push(rewritten);
+                    }
+                }
+                continue;
+            }
             if let Stmt::Assign {
                 target: AssignTarget::Var(var),
                 expr:
@@ -744,6 +1019,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         args,
                         &callee_shape.param_specs,
                         &callee_shape.buffer_specs,
+                        None,
                         errors,
                     );
                     if let Some(instance) = nested_instances.get_mut(var) {
@@ -758,6 +1034,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             &ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
+                            &shape.nested_proc_array_slots,
                             &shape.nested_fields,
                             &nested_instances,
                             &proc_api,
@@ -819,6 +1096,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             &ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
+                            &shape.nested_proc_array_slots,
                             &shape.nested_fields,
                             &nested_instances,
                             &proc_api,
@@ -838,6 +1116,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 &ins_names,
                 &shape.field_array_slots,
                 &shape.in_array_slots,
+                &shape.nested_proc_array_slots,
                 &shape.nested_fields,
                 &nested_instances,
                 &proc_api,
@@ -920,6 +1199,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             &event_ins_names,
                             &shape.field_array_slots,
                             &event_in_array_slots,
+                            &shape.nested_proc_array_slots,
                             &shape.nested_fields,
                             &nested_instances,
                             &proc_api,
@@ -963,6 +1243,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     &ins_names,
                     &shape.field_array_slots,
                     &shape.in_array_slots,
+                    &shape.nested_proc_array_slots,
                     &shape.nested_fields,
                     &nested_instances,
                     &proc_api,
@@ -971,8 +1252,11 @@ pub(super) fn generate_lowered_proc_blocks(
                     block_pre_body.push(rewritten);
                 }
             }
-            let called_nested =
-                collect_called_proc_instances_in_stmts(&proc.sample, &nested_instances);
+            let called_nested = collect_called_proc_instances_in_stmts(
+                &proc.sample,
+                &nested_instances,
+                &shape.nested_proc_array_slots,
+            );
             let mut nested_vars = nested_instances.keys().cloned().collect::<Vec<_>>();
             nested_vars.sort();
             for nested_var in &nested_vars {
@@ -1050,6 +1334,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     &ins_names,
                     &shape.field_array_slots,
                     &shape.in_array_slots,
+                    &shape.nested_proc_array_slots,
                     &shape.nested_fields,
                     &nested_instances,
                     &proc_api,
@@ -1078,6 +1363,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     &ins_names,
                     &shape.field_array_slots,
                     &shape.in_array_slots,
+                    &shape.nested_proc_array_slots,
                     &shape.nested_fields,
                     &nested_instances,
                     &proc_api,

@@ -2,6 +2,9 @@ use super::*;
 
 pub(crate) const PROC_FIELD_SENTINEL_PREFIX: &str = "__omni_proc_field__";
 pub(crate) const PROC_FIELD_SENTINEL_ARG: &str = "__proc_field";
+pub(crate) const PROC_INDEX_CALL_SENTINEL: &str = "__omni_proc_index_call";
+pub(crate) const PROC_INDEX_BASE_ARG: &str = "__proc_index_base";
+pub(crate) const PROC_INDEX_EXPR_ARG: &str = "__proc_index_expr";
 pub(crate) const PROC_INIT_FN_SUFFIX: &str = ".__proc_init";
 pub(crate) const PROC_BLOCK_PRE_FN_SUFFIX: &str = ".__proc_block_pre";
 pub(crate) const PROC_BLOCK_POST_FN_SUFFIX: &str = ".__proc_block_post";
@@ -79,12 +82,19 @@ pub(crate) struct ProcStateFields {
     pub(crate) scalars: HashMap<String, PrimitiveType>,
     pub(crate) data: HashMap<String, omni_frontend::DataTypeSpec>,
     pub(crate) nested_procs: HashMap<String, ProcNestedState>,
+    pub(crate) nested_proc_arrays: HashMap<String, ProcNestedArrayState>,
     pub(crate) struct_instances: HashMap<String, ProcStructState>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProcNestedState {
     pub(crate) proc_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProcNestedArrayState {
+    pub(crate) proc_name: String,
+    pub(crate) size_expr: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +124,7 @@ pub(crate) fn record_proc_state_scalar_assignment(
     if out.data.contains_key(name)
         || out.struct_instances.contains_key(name)
         || out.nested_procs.contains_key(name)
+        || out.nested_proc_arrays.contains_key(name)
     {
         errors.push(Diagnostic::semantic(
             format!("processor state symbol '{name}' is used as both scalar and non-scalar value"),
@@ -235,6 +246,7 @@ pub(crate) fn is_declared_proc_symbol(
         || out.scalars.contains_key(name)
         || out.data.contains_key(name)
         || out.nested_procs.contains_key(name)
+        || out.nested_proc_arrays.contains_key(name)
         || out.struct_instances.contains_key(name)
 }
 
@@ -412,7 +424,236 @@ pub(crate) fn collect_proc_state_fields(
                                     0,
                                 ));
                                 }
-                                out.data.entry(name.clone()).or_insert_with(|| spec.clone());
+                                let resolved_proc_ctor = match &spec.elem {
+                                    DataElemType::Struct(elem_name) => {
+                                        if elem_name.contains("::") {
+                                            if proc_symbols.contains(elem_name) {
+                                                Some(elem_name.clone())
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            resolve_unqualified_symbol_name(
+                                                elem_name,
+                                                current_ns,
+                                                proc_symbols,
+                                            )
+                                        }
+                                    }
+                                    DataElemType::Primitive(_) => None,
+                                };
+                                if let Some(proc_ctor) = resolved_proc_ctor {
+                                    if !in_init_scope {
+                                        errors.push(Diagnostic::semantic(
+                                            format!(
+                                                "processor state constructor '{name}: {proc_ctor}[N]' is only allowed in processor init block"
+                                            ),
+                                            0,
+                                            0,
+                                        ));
+                                    }
+                                    if out.scalars.contains_key(name)
+                                        || out.data.contains_key(name)
+                                        || out.nested_procs.contains_key(name)
+                                        || out.struct_instances.contains_key(name)
+                                    {
+                                        errors.push(Diagnostic::semantic(
+                                            format!(
+                                                "processor state symbol '{name}' is used as both processor array and non-processor value"
+                                            ),
+                                            0,
+                                            0,
+                                        ));
+                                    } else if let Some(existing) = out.nested_proc_arrays.get(name)
+                                    {
+                                        if existing.proc_name != proc_ctor
+                                            || existing.size_expr != *spec.size
+                                        {
+                                            errors.push(Diagnostic::semantic(
+                                                format!(
+                                                    "processor state symbol '{name}' has conflicting processor array declarations"
+                                                ),
+                                                0,
+                                                0,
+                                            ));
+                                        }
+                                    } else {
+                                        out.nested_proc_arrays.insert(
+                                            name.clone(),
+                                            ProcNestedArrayState {
+                                                proc_name: proc_ctor,
+                                                size_expr: *spec.size.clone(),
+                                            },
+                                        );
+                                    }
+                                } else {
+                                    out.data.entry(name.clone()).or_insert_with(|| spec.clone());
+                                }
+                            }
+                            Expr::ArrayLiteral(values) => {
+                                if !in_init_scope {
+                                    errors.push(Diagnostic::semantic(
+                                        format!(
+                                            "processor state array initializer '{name} = [...]' is only allowed in processor init block"
+                                        ),
+                                        0,
+                                        0,
+                                    ));
+                                }
+                                if out.scalars.contains_key(name)
+                                    || out.struct_instances.contains_key(name)
+                                {
+                                    errors.push(Diagnostic::semantic(
+                                        format!(
+                                            "processor state symbol '{name}' is used as both Data and non-Data value"
+                                        ),
+                                        0,
+                                        0,
+                                    ));
+                                }
+                                if out.nested_procs.contains_key(name)
+                                    || out.nested_proc_arrays.contains_key(name)
+                                {
+                                    errors.push(Diagnostic::semantic(
+                                        format!(
+                                            "processor state symbol '{name}' is used as both Data and processor instance"
+                                        ),
+                                        0,
+                                        0,
+                                    ));
+                                }
+                                if values.is_empty() {
+                                    errors.push(Diagnostic::semantic(
+                                        format!(
+                                            "processor state array initializer '{name} = [...]' cannot be empty"
+                                        ),
+                                        0,
+                                        0,
+                                    ));
+                                } else {
+                                    let mut inference_scalars = state_type_hints.clone();
+                                    for (state_name, state_ty) in &out.scalars {
+                                        inference_scalars.insert(state_name.clone(), *state_ty);
+                                    }
+                                    for (data_name, spec) in &out.data {
+                                        if let DataElemType::Primitive(elem_ty) = spec.elem {
+                                            inference_scalars.insert(
+                                                declared_type_key(
+                                                    DECLARED_DATA_ELEM_TYPE_PREFIX,
+                                                    data_name,
+                                                ),
+                                                elem_ty,
+                                            );
+                                        }
+                                    }
+                                    for (instance_name, state) in &out.struct_instances {
+                                        let Some(struct_template) =
+                                            struct_defs.get(&state.struct_name)
+                                        else {
+                                            continue;
+                                        };
+                                        let resolved_struct = if state.type_args.is_empty() {
+                                            Some(struct_template.clone())
+                                        } else {
+                                            specialize_generic_struct_template(
+                                                struct_template,
+                                                &state.type_args,
+                                                errors,
+                                            )
+                                        };
+                                        let Some(resolved_struct) = resolved_struct else {
+                                            continue;
+                                        };
+                                        for field in &resolved_struct.fields {
+                                            let flat = format!("{instance_name}.{}", field.name);
+                                            match field.ty {
+                                                FieldType::Scalar(prim) => {
+                                                    inference_scalars.insert(
+                                                        declared_type_key(
+                                                            DECLARED_STRUCT_FIELD_TYPE_PREFIX,
+                                                            &flat,
+                                                        ),
+                                                        prim,
+                                                    );
+                                                }
+                                                FieldType::Data(ref spec) => {
+                                                    if let DataElemType::Primitive(elem_ty) =
+                                                        spec.elem
+                                                    {
+                                                        inference_scalars.insert(
+                                                            declared_type_key(
+                                                                DECLARED_DATA_ELEM_TYPE_PREFIX,
+                                                                &flat,
+                                                            ),
+                                                            elem_ty,
+                                                        );
+                                                    }
+                                                }
+                                                FieldType::Generic(_) => {}
+                                            }
+                                        }
+                                    }
+                                    for (instance, nested) in &out.nested_procs {
+                                        if let Some(ty) = proc_primary_output_types
+                                            .get(&nested.proc_name)
+                                            .copied()
+                                        {
+                                            inference_scalars.insert(
+                                                declared_type_key(
+                                                    DECLARED_FUNCTION_RETURN_TYPE_PREFIX,
+                                                    instance,
+                                                ),
+                                                ty,
+                                            );
+                                        }
+                                    }
+                                    let struct_instances = out
+                                        .struct_instances
+                                        .iter()
+                                        .map(|(instance_name, state)| {
+                                            (instance_name.clone(), state.struct_name.clone())
+                                        })
+                                        .collect::<HashMap<_, _>>();
+
+                                    let elem_ty = infer_proc_state_scalar_type(
+                                        &values[0],
+                                        &inference_scalars,
+                                        input_names,
+                                        output_names,
+                                        param_names,
+                                        &struct_instances,
+                                        typed_struct_defs,
+                                        errors,
+                                    )
+                                    .unwrap_or(PrimitiveType::F32);
+                                    for (idx, value) in values.iter().enumerate() {
+                                        let value_ty = infer_proc_state_scalar_type(
+                                            value,
+                                            &inference_scalars,
+                                            input_names,
+                                            output_names,
+                                            param_names,
+                                            &struct_instances,
+                                            typed_struct_defs,
+                                            errors,
+                                        );
+                                        require_assignable_type(
+                                            value_ty,
+                                            elem_ty,
+                                            &format!(
+                                                "processor state array initializer assignment to '{name}[{idx}]'"
+                                            ),
+                                            errors,
+                                        );
+                                    }
+
+                                    out.data.entry(name.clone()).or_insert(
+                                        omni_frontend::DataTypeSpec {
+                                            elem: DataElemType::Primitive(elem_ty),
+                                            size: Box::new(Expr::Int(values.len() as i64)),
+                                        },
+                                    );
+                                }
                             }
                             Expr::UserCall {
                                 name: ctor,
@@ -463,6 +704,7 @@ pub(crate) fn collect_proc_state_fields(
                                         }
                                         if out.scalars.contains_key(name)
                                             || out.data.contains_key(name)
+                                            || out.nested_proc_arrays.contains_key(name)
                                             || out.struct_instances.contains_key(name)
                                         {
                                             errors.push(Diagnostic::semantic(
@@ -569,6 +811,7 @@ pub(crate) fn collect_proc_state_fields(
                                             if out.scalars.contains_key(name)
                                                 || out.data.contains_key(name)
                                                 || out.nested_procs.contains_key(name)
+                                                || out.nested_proc_arrays.contains_key(name)
                                             {
                                                 errors.push(Diagnostic::semantic(
                                                 format!(
@@ -659,6 +902,7 @@ pub(crate) fn collect_proc_state_fields(
                         && !out.data.contains_key(name)
                         && !out.struct_instances.contains_key(name)
                         && !out.nested_procs.contains_key(name)
+                        && !out.nested_proc_arrays.contains_key(name)
                     {
                         match expr {
                             Expr::DataCtor { .. } | Expr::UserCall { .. } => {}

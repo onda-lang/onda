@@ -26,13 +26,14 @@ pub(crate) fn analyze_init_stmt(
                 target,
                 decl_ty,
                 generic_decl_ty,
-                is_typed_decl: _,
+                is_typed_decl,
                 expr,
                 ..
             } => analyze_assign_init(
                 target,
                 decl_ty,
                 generic_decl_ty,
+                *is_typed_decl,
                 expr,
                 known_scalars,
                 local_aliases,
@@ -462,6 +463,7 @@ fn analyze_assign_init(
     target: &AssignTarget,
     decl_ty: &Option<PrimitiveType>,
     generic_decl_ty: &Option<String>,
+    is_typed_decl: bool,
     expr: &Expr,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
@@ -716,6 +718,106 @@ fn analyze_assign_init(
                 return;
             }
 
+            if let Expr::ArrayLiteral(values) = expr {
+                if declared_ty.is_some() {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "typed declaration for '{name}' with array literals must use explicit array type syntax like '{name}: T[N] = [...]'"
+                        ),
+                        0,
+                        0,
+                    ));
+                    return;
+                }
+                if state_data.contains_key(name) || state_data_struct_roots.contains_key(name) {
+                    errors.push(Diagnostic::semantic(
+                        format!("Data symbol '{name}' can only be initialized once"),
+                        0,
+                        0,
+                    ));
+                    return;
+                }
+                if state_scalars.contains_key(name) || struct_instances.contains_key(name) {
+                    errors.push(Diagnostic::semantic(
+                        format!("symbol '{name}' already used with a different state type"),
+                        0,
+                        0,
+                    ));
+                    return;
+                }
+                if values.is_empty() {
+                    errors.push(Diagnostic::semantic(
+                        format!("array initializer for symbol '{name}' cannot be empty"),
+                        0,
+                        0,
+                    ));
+                    return;
+                }
+
+                for value in values {
+                    validate_expr(
+                        value,
+                        ExprEnv {
+                            known_scalars,
+                            locals,
+                            outputs: output_names,
+                            data_vars: &data_vars,
+                            param_structs: &HashMap::new(),
+                            struct_instances,
+                            struct_defs,
+                            fn_signatures,
+                            allow_data_ctor: false,
+                            scope: ScopeKind::Init,
+                        },
+                        errors,
+                    );
+                }
+
+                let elem_ty = infer_expr_type_for_semantics_with_local_data(
+                    &values[0],
+                    state_scalars,
+                    None,
+                    local_data_aliases,
+                    locals,
+                    input_names,
+                    output_names,
+                    param_names,
+                    struct_instances,
+                    struct_defs,
+                    errors,
+                )
+                .unwrap_or(PrimitiveType::F32);
+                for (idx, value) in values.iter().enumerate() {
+                    let value_ty = infer_expr_type_for_semantics_with_local_data(
+                        value,
+                        state_scalars,
+                        None,
+                        local_data_aliases,
+                        locals,
+                        input_names,
+                        output_names,
+                        param_names,
+                        struct_instances,
+                        struct_defs,
+                        errors,
+                    );
+                    require_assignable_type(
+                        value_ty,
+                        elem_ty,
+                        &format!("array initializer assignment to '{name}[{idx}]'"),
+                        errors,
+                    );
+                }
+
+                state_scalars.insert(
+                    declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, name),
+                    elem_ty,
+                );
+                state_data.insert(name.clone(), values.len());
+                known_scalars.insert(name.clone());
+                return;
+            }
+
             if let Expr::UserCall {
                 name: struct_name,
                 type_args,
@@ -773,7 +875,7 @@ fn analyze_assign_init(
                 }
                 let context = format!("Data constructor for symbol '{name}'");
                 let size_context = format!("Data constructor size for symbol '{name}'");
-                if init.is_some() {
+                if init.is_some() && !is_typed_decl {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "Data constructor for symbol '{name}' does not support inline array initializers"
@@ -810,6 +912,57 @@ fn analyze_assign_init(
                             *elem_ty,
                         );
                         state_data.insert(name.clone(), size_value);
+                        if let Some(values) = init {
+                            if values.len() != size_value {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "typed array declaration '{name}' initializer expects {size_value} elements, got {}",
+                                        values.len()
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                            }
+                            for (idx, value) in values.iter().take(size_value).enumerate() {
+                                validate_expr(
+                                    value,
+                                    ExprEnv {
+                                        known_scalars,
+                                        locals,
+                                        outputs: output_names,
+                                        data_vars: &data_vars,
+                                        param_structs: &HashMap::new(),
+                                        struct_instances,
+                                        struct_defs,
+                                        fn_signatures,
+                                        allow_data_ctor: false,
+                                        scope: ScopeKind::Init,
+                                    },
+                                    errors,
+                                );
+                                let value_ty = infer_expr_type_for_semantics_with_local_data(
+                                    value,
+                                    state_scalars,
+                                    None,
+                                    local_data_aliases,
+                                    locals,
+                                    input_names,
+                                    output_names,
+                                    param_names,
+                                    struct_instances,
+                                    struct_defs,
+                                    errors,
+                                );
+                                require_assignable_type(
+                                    value_ty,
+                                    *elem_ty,
+                                    &format!(
+                                        "typed array initializer assignment to '{name}[{idx}]'"
+                                    ),
+                                    errors,
+                                );
+                            }
+                        }
                     }
                     DataElemType::Struct(struct_name) => {
                         if !register_data_struct_root(

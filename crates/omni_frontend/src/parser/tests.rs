@@ -3,12 +3,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
-    BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DataElemType, DeclType,
+    AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DataElemType, DeclType,
     EventParamType, Expr, FieldType, PrimitiveType, Stmt,
 };
 
 use super::{
     parse_program, parse_program_file, PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX,
+    PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
 
 fn mk_temp_dir(prefix: &str) -> PathBuf {
@@ -2107,6 +2108,110 @@ block {
 }
 
 #[test]
+fn parses_proc_indexed_call_expression() {
+    let src = r#"
+sample {
+  out1 = voices[1](0.25)
+}
+"#;
+
+    let program = parse_program(src).expect("parse_program should succeed");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign { expr, .. } = &sample[0] else {
+        panic!("expected assignment");
+    };
+    match expr {
+        Expr::UserCall { name, args, .. } => {
+            assert_eq!(name, PROC_INDEX_CALL_SENTINEL);
+            assert!(
+                args.iter().any(|a| {
+                    a.name
+                        .as_ref()
+                        .map(|n| n == PROC_INDEX_BASE_ARG)
+                        .unwrap_or(false)
+                }),
+                "expected encoded index base argument"
+            );
+            assert!(
+                args.iter().any(|a| {
+                    a.name
+                        .as_ref()
+                        .map(|n| n == PROC_INDEX_EXPR_ARG)
+                        .unwrap_or(false)
+                }),
+                "expected encoded index expression argument"
+            );
+        }
+        _ => panic!("expected encoded proc indexed call expression"),
+    }
+}
+
+#[test]
+fn parses_proc_indexed_field_call_expression() {
+    let src = r#"
+sample {
+  out1 = voices[1](0.25).out2
+}
+"#;
+
+    let program = parse_program(src).expect("parse_program should succeed");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign { expr, .. } = &sample[0] else {
+        panic!("expected assignment");
+    };
+    match expr {
+        Expr::UserCall { name, args, .. } => {
+            assert!(
+                name.starts_with(PROC_FIELD_SENTINEL_PREFIX),
+                "expected proc field sentinel call"
+            );
+            assert!(
+                args.iter().any(|a| {
+                    a.name
+                        .as_ref()
+                        .map(|n| n == PROC_INDEX_BASE_ARG)
+                        .unwrap_or(false)
+                }),
+                "expected encoded index base argument"
+            );
+            assert!(
+                args.iter().any(|a| {
+                    a.name
+                        .as_ref()
+                        .map(|n| n == PROC_INDEX_EXPR_ARG)
+                        .unwrap_or(false)
+                }),
+                "expected encoded index expression argument"
+            );
+            assert!(
+                args.iter().any(|a| {
+                    a.name
+                        .as_ref()
+                        .map(|n| n == PROC_FIELD_SENTINEL_ARG)
+                        .unwrap_or(false)
+                }),
+                "expected encoded field argument"
+            );
+        }
+        _ => panic!("expected encoded proc indexed field call expression"),
+    }
+}
+
+#[test]
 fn parses_sample_oversample_factor_brace_form() {
     let src = r#"
 outs { out1 }
@@ -2445,6 +2550,84 @@ sample {
             init: Some(values), ..
         } => assert_eq!(values.len(), 2),
         _ => panic!("expected DataCtor with array initializer"),
+    }
+}
+
+#[test]
+fn parses_untyped_array_literal_assignment_expression() {
+    let src = r#"
+outs { out1 }
+sample {
+  b = [1, 2, 3]
+  out1 = b[1]
+}
+"#;
+    let program = parse_program(src).expect("untyped array literal assignment should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(sb) => Some(&sb.body),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign {
+        target,
+        decl_ty,
+        expr,
+        is_typed_decl,
+        ..
+    } = &sample[0]
+    else {
+        panic!("expected assignment");
+    };
+    assert!(matches!(target, AssignTarget::Var(name) if name == "b"));
+    assert!(decl_ty.is_none());
+    assert!(!is_typed_decl);
+    match expr {
+        Expr::ArrayLiteral(values) => assert_eq!(values.len(), 3),
+        _ => panic!("expected untyped array literal expression"),
+    }
+}
+
+#[test]
+fn parses_struct_typed_array_single_ctor_initializer_expression() {
+    let src = r#"
+proc Voice {
+  outs { out1 }
+  sample {
+    out1 = 0.0
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = Voice()
+}
+sample {
+  out1 = 0.0
+}
+"#;
+    let program =
+        parse_program(src).expect("struct typed array single ctor initializer should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("init block");
+    let Stmt::Assign { expr, .. } = &init[0] else {
+        panic!("expected assignment");
+    };
+    match expr {
+        Expr::DataCtor {
+            init: Some(values), ..
+        } => {
+            assert_eq!(values.len(), 1);
+            assert!(matches!(values[0], Expr::UserCall { .. }));
+        }
+        _ => panic!("expected DataCtor with single ctor initializer"),
     }
 }
 

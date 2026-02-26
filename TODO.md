@@ -2,7 +2,11 @@
 
 ## Next Features
 
-- Array procs
+- Array procs (partial)
+  - Status: core typed proc-array declarations/calls and broadcast ctor sugar are implemented.
+  - Remaining:
+    - Decide/implement policy for non-literal indexed proc-array dispatch (currently rejected).
+    - Add indexed proc-array event-call syntax (currently not expanded; existing event calls still use named proc-instance targets).
 
 - Graph composition syntax
   - Locked MVP syntax:
@@ -124,17 +128,14 @@
       - semantic tests for graph/sample exclusivity, node declaration requirements, param-destination rate inference/override, and delay-cycle legality;
       - runtime/codegen tests for multi-out routing, param modulation, and delayed feedback behavior.
 
-- Events follow-ups (MVP is implemented)
-  - Clarify/lock policy for triggering proc events from general Omni code paths outside event handlers (currently this is intentionally not expanded further).
-  - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.
+- Events follow-ups
+  - Status: MVP behavior is implemented (top-level/proc events, typed payloads, forwarding, runtime dispatch checks).
+  - Remaining:
+    - Clarify/lock policy for triggering proc events from general Omni code paths outside event handlers (currently intentionally not expanded further).
+    - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.
 
 - Oversampling follow-ups (core implementation is done)
-  - Implemented:
-    - `sample N:` is supported for both top-level `sample` and `proc sample`.
-    - Allowed factors are `{1,2,4,8,16,32,64}`.
-    - Invalid factors / non-literal factors are semantic errors.
-    - Input interpolation + output decimation/filtering are compiler-managed.
-    - Proc and top-level oversampling now share the same codegen specialization model (no proc-specific `SR` rewrite workaround).
+  - Status: current oversampling behavior is implemented and stable.
   - Remaining follow-ups:
     - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
     - Consider user-exposed quality/performance modes.

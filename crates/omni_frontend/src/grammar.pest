@@ -121,7 +121,9 @@ expr = { prefix* ~ term ~ ((or_op | and_op | cmp_op | add_op | mul_op) ~ prefix*
 term = _{ call_field_expr | call_expr | data_ctor | index_expr | array_lit | bool_lit | number | path_ident | "(" ~ expr ~ ")" }
 array_lit = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 call_field_expr = { call_expr ~ "." ~ ident }
-call_expr = { path_ident ~ generic_type_arg_list? ~ "(" ~ arg_list? ~ ")" }
+call_expr = { call_target ~ generic_type_arg_list? ~ "(" ~ arg_list? ~ ")" }
+call_target = { call_index_target | path_ident }
+call_index_target = { path_ident ~ "[" ~ expr ~ "]" }
 arg_list = { call_arg ~ ("," ~ call_arg)* }
 call_arg = { (ident ~ "=")? ~ expr }
 index_expr = { path_ident ~ "[" ~ expr ~ "]" ~ ("[" ~ expr ~ "]")? }

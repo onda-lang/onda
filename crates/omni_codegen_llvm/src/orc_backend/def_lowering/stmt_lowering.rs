@@ -85,6 +85,9 @@ unsafe fn lower_def_var_assign(
     if try_lower_def_typed_array_decl(target_name, decl_ty, is_typed_decl, expr, ctx)? {
         return Ok(false);
     }
+    if try_lower_def_untyped_array_decl(target_name, expr, ctx)? {
+        return Ok(false);
+    }
 
     if !ctx.local_slots.contains_key(target_name)
         && !ctx.local_data_aliases.contains_key(target_name)
@@ -190,6 +193,79 @@ unsafe fn try_lower_def_typed_array_decl(
             );
             LLVMBuildStore(ctx.builder, casted, elem_ptr);
         }
+    }
+    ctx.data_ptrs.insert(target_name.to_owned(), ptr);
+    ctx.data_len.insert(target_name.to_owned(), len);
+    ctx.data_elem_ty.insert(target_name.to_owned(), elem_ty);
+    Ok(true)
+}
+
+unsafe fn try_lower_def_untyped_array_decl(
+    target_name: &str,
+    expr: &Expr,
+    ctx: &mut DefLoweringCtx<'_>,
+) -> Result<bool, Diagnostic> {
+    let Expr::ArrayLiteral(values) = expr else {
+        return Ok(false);
+    };
+
+    if let Some(expected_len) = ctx.data_len.get(target_name).copied() {
+        if values.len() != expected_len {
+            return Err(Diagnostic::internal(format!(
+                "Data symbol '{target_name}' initializer expects {expected_len} elements, got {}",
+                values.len()
+            )));
+        }
+        for (idx, value_expr) in values.iter().enumerate() {
+            let typed = lower_def_expr(value_expr, ctx)?;
+            let data = lower_def_data_element_ptr(ctx, target_name, &Expr::Int(idx as i64), true)?;
+            let casted = cast_def_value_to(ctx, typed, data.elem_ty, b"def_data_store_cast\0");
+            LLVMBuildStore(ctx.builder, casted, data.ptr);
+        }
+        return Ok(true);
+    }
+
+    if ctx.local_data_aliases.contains_key(target_name) {
+        return Err(Diagnostic::internal(format!(
+            "Data alias '{target_name}' must be assigned via index syntax in def lowering"
+        )));
+    }
+    if ctx.local_slots.contains_key(target_name) || ctx.data_ptrs.contains_key(target_name) {
+        return Err(Diagnostic::internal(format!(
+            "array declaration for '{target_name}' conflicts with existing symbol in def lowering"
+        )));
+    }
+    if values.is_empty() {
+        return Err(Diagnostic::internal(format!(
+            "array initializer for symbol '{target_name}' cannot be empty in def lowering"
+        )));
+    }
+
+    let first_typed = lower_def_expr(&values[0], ctx)?;
+    let elem_ty = first_typed.ty;
+    let len = values.len();
+    let ptr = build_local_array_slot(
+        ctx.builder,
+        llvm_ty_for_primitive(ctx.context, elem_ty),
+        len,
+        &format!("d_{target_name}"),
+    )?;
+    for (idx, value_expr) in values.iter().enumerate() {
+        let typed = if idx == 0 {
+            first_typed
+        } else {
+            lower_def_expr(value_expr, ctx)?
+        };
+        let casted = cast_def_value_to(ctx, typed, elem_ty, b"def_local_arr_init_cast\0");
+        let idx_v = LLVMConstInt(ctx.i32_ty, idx as u64, 0);
+        let elem_ptr = build_f32_ptr_offset(
+            ctx.builder,
+            llvm_ty_for_primitive(ctx.context, elem_ty),
+            ptr,
+            idx_v,
+            b"def_local_arr_init_ptr\0",
+        );
+        LLVMBuildStore(ctx.builder, casted, elem_ptr);
     }
     ctx.data_ptrs.insert(target_name.to_owned(), ptr);
     ctx.data_len.insert(target_name.to_owned(), len);

@@ -20,6 +20,9 @@ use crate::diagnostics::Diagnostic;
 
 const PROC_FIELD_SENTINEL_PREFIX: &str = "__omni_proc_field__";
 const PROC_FIELD_SENTINEL_ARG: &str = "__proc_field";
+const PROC_INDEX_CALL_SENTINEL: &str = "__omni_proc_index_call";
+const PROC_INDEX_BASE_ARG: &str = "__proc_index_base";
+const PROC_INDEX_EXPR_ARG: &str = "__proc_index_expr";
 const BUFFER_READ2_INTERNAL_FN: &str = "__omni_buffer_read2";
 const BUFFER_WRITE2_INTERNAL_FN: &str = "__omni_buffer_write2";
 const STDLIB_AUTO_IMPORT_MODULE: &str = "std/math";

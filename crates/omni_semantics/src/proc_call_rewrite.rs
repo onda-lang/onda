@@ -292,6 +292,113 @@ pub(super) fn build_proc_write_helper(
     }
 }
 
+fn take_named_call_arg_expr(args: &mut Vec<CallArg>, arg_name: &str) -> Option<Expr> {
+    let pos = args
+        .iter()
+        .position(|arg| arg.name.as_deref().map(|n| n == arg_name).unwrap_or(false))?;
+    Some(args.remove(pos).expr)
+}
+
+fn named_call_arg_expr<'a>(args: &'a [CallArg], arg_name: &str) -> Option<&'a Expr> {
+    args.iter()
+        .find(|arg| arg.name.as_deref().map(|n| n == arg_name).unwrap_or(false))
+        .map(|arg| &arg.expr)
+}
+
+fn resolve_proc_array_slot_by_index(
+    array_base: &str,
+    index_expr: &Expr,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    let Some(slots) = proc_array_slots.get(array_base) else {
+        errors.push(Diagnostic::semantic(
+            format!("{context}: unknown processor array '{array_base}'"),
+            0,
+            0,
+        ));
+        return None;
+    };
+    let Some(raw_idx) = try_constant_index_i64(index_expr) else {
+        errors.push(Diagnostic::semantic(
+            format!("{context}: processor array index must be an integer literal"),
+            0,
+            0,
+        ));
+        return None;
+    };
+    let Some(slot_idx) = resolve_proc_constant_slot_index(raw_idx, slots.len(), context, errors)
+    else {
+        return None;
+    };
+    slots.get(slot_idx).cloned()
+}
+
+pub(super) fn extract_proc_index_slot_mut(
+    args: &mut Vec<CallArg>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    let Some(base_expr) = take_named_call_arg_expr(args, PROC_INDEX_BASE_ARG) else {
+        errors.push(Diagnostic::semantic(
+            format!("{context}: missing processor array base"),
+            0,
+            0,
+        ));
+        return None;
+    };
+    let Some(index_expr) = take_named_call_arg_expr(args, PROC_INDEX_EXPR_ARG) else {
+        errors.push(Diagnostic::semantic(
+            format!("{context}: missing processor array index"),
+            0,
+            0,
+        ));
+        return None;
+    };
+    let Expr::Var(array_base) = base_expr else {
+        errors.push(Diagnostic::semantic(
+            format!("{context}: processor array base must be a compile-time identifier"),
+            0,
+            0,
+        ));
+        return None;
+    };
+    resolve_proc_array_slot_by_index(&array_base, &index_expr, proc_array_slots, context, errors)
+}
+
+fn extract_proc_index_slot(
+    args: &[CallArg],
+    proc_array_slots: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    let Expr::Var(array_base) = named_call_arg_expr(args, PROC_INDEX_BASE_ARG)? else {
+        return None;
+    };
+    let index_expr = named_call_arg_expr(args, PROC_INDEX_EXPR_ARG)?;
+    let slots = proc_array_slots.get(array_base)?;
+    let raw_idx = try_constant_index_i64(index_expr)?;
+    let slot_idx = usize::try_from(raw_idx).ok()?;
+    slots.get(slot_idx).cloned()
+}
+
+fn collect_proc_array_call_targets(
+    args: &[CallArg],
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    out: &mut HashSet<String>,
+) {
+    if let Some(slot) = extract_proc_index_slot(args, proc_array_slots) {
+        out.insert(slot);
+        return;
+    }
+    let Some(Expr::Var(array_base)) = named_call_arg_expr(args, PROC_INDEX_BASE_ARG) else {
+        return;
+    };
+    if let Some(slots) = proc_array_slots.get(array_base) {
+        out.extend(slots.iter().cloned());
+    }
+}
+
 pub(super) fn expand_expr_to_slots(
     expr: &Expr,
     slot_count: usize,
@@ -336,6 +443,43 @@ pub(super) fn expand_expr_to_slots(
             ));
             vec![expr.clone(); slot_count]
         }
+    }
+}
+
+pub(super) fn select_proc_array_initializer_expr_for_slot(
+    expr: &Expr,
+    slot_idx: usize,
+    slot_count: usize,
+    context: &str,
+    allow_symbol_index: bool,
+    errors: &mut Vec<Diagnostic>,
+) -> Expr {
+    if slot_count <= 1 {
+        return expr.clone();
+    }
+    match expr {
+        Expr::ArrayLiteral(values) => {
+            if values.len() != slot_count {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "{context}: expected array argument with {slot_count} elements, got {}",
+                        values.len()
+                    ),
+                    0,
+                    0,
+                ));
+            }
+            values
+                .get(slot_idx)
+                .cloned()
+                .or_else(|| values.last().cloned())
+                .unwrap_or(Expr::Number(0.0))
+        }
+        Expr::Var(base) if allow_symbol_index => Expr::Index {
+            base: base.clone(),
+            index: Box::new(Expr::Int(slot_idx as i64)),
+        },
+        _ => expr.clone(),
     }
 }
 
@@ -797,50 +941,94 @@ pub(super) fn proc_buffer_fn_param_type(spec: &ProcBufferSpec) -> FnParamType {
 pub(super) fn rewrite_proc_calls_in_expr(
     expr: &mut Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
         Expr::Index { base, index } => {
-            rewrite_proc_calls_in_expr(index, proc_vars, proc_api, errors);
+            rewrite_proc_calls_in_expr(index, proc_vars, proc_array_slots, proc_api, errors);
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
         }
         Expr::DataCtor { spec, init } => {
-            rewrite_proc_calls_in_expr(&mut spec.size, proc_vars, proc_api, errors);
+            rewrite_proc_calls_in_expr(
+                &mut spec.size,
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+                errors,
+            );
             if let Some(values) = init {
                 for value in values {
-                    rewrite_proc_calls_in_expr(value, proc_vars, proc_api, errors);
+                    rewrite_proc_calls_in_expr(
+                        value,
+                        proc_vars,
+                        proc_array_slots,
+                        proc_api,
+                        errors,
+                    );
                 }
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_proc_calls_in_expr(lhs, proc_vars, proc_api, errors);
-            rewrite_proc_calls_in_expr(rhs, proc_vars, proc_api, errors);
+            rewrite_proc_calls_in_expr(lhs, proc_vars, proc_array_slots, proc_api, errors);
+            rewrite_proc_calls_in_expr(rhs, proc_vars, proc_array_slots, proc_api, errors);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                rewrite_proc_calls_in_expr(arg, proc_vars, proc_api, errors);
+                rewrite_proc_calls_in_expr(arg, proc_vars, proc_array_slots, proc_api, errors);
             }
         }
         Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
-            rewrite_proc_calls_in_expr(inner, proc_vars, proc_api, errors);
+            rewrite_proc_calls_in_expr(inner, proc_vars, proc_array_slots, proc_api, errors);
         }
         Expr::ArrayLiteral(values) => {
             for value in values {
-                rewrite_proc_calls_in_expr(value, proc_vars, proc_api, errors);
+                rewrite_proc_calls_in_expr(value, proc_vars, proc_array_slots, proc_api, errors);
             }
         }
         Expr::UserCall { name, args, .. } => {
             for arg in args.iter_mut() {
-                rewrite_proc_calls_in_expr(&mut arg.expr, proc_vars, proc_api, errors);
+                rewrite_proc_calls_in_expr(
+                    &mut arg.expr,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    errors,
+                );
             }
 
-            if let Some(proc_var) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
-                let Some(instance) = proc_vars.get(proc_var) else {
+            if *name == PROC_INDEX_CALL_SENTINEL {
+                let Some(resolved_slot) = extract_proc_index_slot_mut(
+                    args,
+                    proc_array_slots,
+                    "processor indexed call",
+                    errors,
+                ) else {
+                    return;
+                };
+                *name = resolved_slot;
+            }
+
+            if let Some(proc_var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
+                let proc_var = if proc_var_raw == PROC_INDEX_CALL_SENTINEL {
+                    let Some(resolved_slot) = extract_proc_index_slot_mut(
+                        args,
+                        proc_array_slots,
+                        "processor indexed field call",
+                        errors,
+                    ) else {
+                        return;
+                    };
+                    resolved_slot
+                } else {
+                    proc_var_raw.to_owned()
+                };
+                let Some(instance) = proc_vars.get(proc_var.as_str()) else {
                     errors.push(Diagnostic::semantic(
-                        format!("processor call target '{proc_var}' is not an instance"),
+                        format!("processor call target '{}' is not an instance", proc_var),
                         0,
                         0,
                     ));
@@ -913,10 +1101,10 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     name: None,
                     expr: Expr::Var(proc_var.to_owned()),
                 });
-                let expanded_args = expand_proc_call_args(args, api, proc_var, errors);
+                let expanded_args = expand_proc_call_args(args, api, proc_var.as_str(), errors);
                 rewritten.extend(expanded_args);
                 let expanded_buffers =
-                    expand_proc_buffer_call_args(instance, api, proc_var, errors);
+                    expand_proc_buffer_call_args(instance, api, proc_var.as_str(), errors);
                 rewritten.extend(expanded_buffers);
                 *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{out_idx}");
                 *args = rewritten;
@@ -1198,20 +1386,38 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
 pub(super) fn rewrite_proc_calls_in_stmt(
     stmt: &mut Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
         Stmt::Assign { target, expr, .. } => {
             normalize_proc_output_aliases_in_assign_target(target, proc_vars, proc_api);
-            rewrite_proc_calls_in_expr(expr, proc_vars, proc_api, errors);
+            rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors);
             maybe_clamp_proc_param_assignment_expr(target, expr, proc_vars, proc_api);
         }
         Stmt::Expr { expr, .. } => {
             let mut handled_proc_stmt_call = false;
             if let Expr::UserCall { name, args, .. } = expr {
                 for arg in args.iter_mut() {
-                    rewrite_proc_calls_in_expr(&mut arg.expr, proc_vars, proc_api, errors);
+                    rewrite_proc_calls_in_expr(
+                        &mut arg.expr,
+                        proc_vars,
+                        proc_array_slots,
+                        proc_api,
+                        errors,
+                    );
+                }
+                if *name == PROC_INDEX_CALL_SENTINEL {
+                    let Some(resolved_slot) = extract_proc_index_slot_mut(
+                        args,
+                        proc_array_slots,
+                        "processor indexed statement call",
+                        errors,
+                    ) else {
+                        return;
+                    };
+                    *name = resolved_slot;
                 }
                 if let Some(instance) = proc_vars.get(name) {
                     let proc_name = instance.proc_name.clone();
@@ -1239,22 +1445,24 @@ pub(super) fn rewrite_proc_calls_in_stmt(
                 }
             }
             if !handled_proc_stmt_call {
-                rewrite_proc_calls_in_expr(expr, proc_vars, proc_api, errors);
+                rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors);
             }
         }
-        Stmt::Return { expr, .. } => rewrite_proc_calls_in_expr(expr, proc_vars, proc_api, errors),
+        Stmt::Return { expr, .. } => {
+            rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors)
+        }
         Stmt::If {
             cond,
             then_branch,
             else_branch,
             ..
         } => {
-            rewrite_proc_calls_in_expr(cond, proc_vars, proc_api, errors);
+            rewrite_proc_calls_in_expr(cond, proc_vars, proc_array_slots, proc_api, errors);
             for s in then_branch {
-                rewrite_proc_calls_in_stmt(s, proc_vars, proc_api, errors);
+                rewrite_proc_calls_in_stmt(s, proc_vars, proc_array_slots, proc_api, errors);
             }
             for s in else_branch {
-                rewrite_proc_calls_in_stmt(s, proc_vars, proc_api, errors);
+                rewrite_proc_calls_in_stmt(s, proc_vars, proc_array_slots, proc_api, errors);
             }
         }
         Stmt::For {
@@ -1264,19 +1472,25 @@ pub(super) fn rewrite_proc_calls_in_stmt(
             body,
             ..
         } => {
-            rewrite_proc_calls_in_expr(start, proc_vars, proc_api, errors);
-            rewrite_proc_calls_in_expr(end, proc_vars, proc_api, errors);
+            rewrite_proc_calls_in_expr(start, proc_vars, proc_array_slots, proc_api, errors);
+            rewrite_proc_calls_in_expr(end, proc_vars, proc_array_slots, proc_api, errors);
             if let Some(step_expr) = step {
-                rewrite_proc_calls_in_expr(step_expr, proc_vars, proc_api, errors);
+                rewrite_proc_calls_in_expr(
+                    step_expr,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    errors,
+                );
             }
             for s in body {
-                rewrite_proc_calls_in_stmt(s, proc_vars, proc_api, errors);
+                rewrite_proc_calls_in_stmt(s, proc_vars, proc_array_slots, proc_api, errors);
             }
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_proc_calls_in_expr(cond, proc_vars, proc_api, errors);
+            rewrite_proc_calls_in_expr(cond, proc_vars, proc_array_slots, proc_api, errors);
             for s in body {
-                rewrite_proc_calls_in_stmt(s, proc_vars, proc_api, errors);
+                rewrite_proc_calls_in_stmt(s, proc_vars, proc_array_slots, proc_api, errors);
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -1286,56 +1500,64 @@ pub(super) fn rewrite_proc_calls_in_stmt(
 pub(super) fn rewrite_proc_calls_in_stmts(
     stmts: &mut [Stmt],
     proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
     for stmt in stmts {
-        rewrite_proc_calls_in_stmt(stmt, proc_vars, proc_api, errors);
+        rewrite_proc_calls_in_stmt(stmt, proc_vars, proc_array_slots, proc_api, errors);
     }
 }
 
 pub(super) fn collect_called_proc_instances_in_expr(
     expr: &Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
     out: &mut HashSet<String>,
 ) {
     match expr {
-        Expr::Index { index, .. } => collect_called_proc_instances_in_expr(index, proc_vars, out),
+        Expr::Index { index, .. } => {
+            collect_called_proc_instances_in_expr(index, proc_vars, proc_array_slots, out)
+        }
         Expr::DataCtor { spec, init } => {
-            collect_called_proc_instances_in_expr(&spec.size, proc_vars, out);
+            collect_called_proc_instances_in_expr(&spec.size, proc_vars, proc_array_slots, out);
             if let Some(values) = init {
                 for value in values {
-                    collect_called_proc_instances_in_expr(value, proc_vars, out);
+                    collect_called_proc_instances_in_expr(value, proc_vars, proc_array_slots, out);
                 }
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            collect_called_proc_instances_in_expr(lhs, proc_vars, out);
-            collect_called_proc_instances_in_expr(rhs, proc_vars, out);
+            collect_called_proc_instances_in_expr(lhs, proc_vars, proc_array_slots, out);
+            collect_called_proc_instances_in_expr(rhs, proc_vars, proc_array_slots, out);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                collect_called_proc_instances_in_expr(arg, proc_vars, out);
+                collect_called_proc_instances_in_expr(arg, proc_vars, proc_array_slots, out);
             }
         }
         Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
-            collect_called_proc_instances_in_expr(inner, proc_vars, out);
+            collect_called_proc_instances_in_expr(inner, proc_vars, proc_array_slots, out);
         }
         Expr::ArrayLiteral(values) => {
             for value in values {
-                collect_called_proc_instances_in_expr(value, proc_vars, out);
+                collect_called_proc_instances_in_expr(value, proc_vars, proc_array_slots, out);
             }
         }
         Expr::UserCall { name, args, .. } => {
             for arg in args {
-                collect_called_proc_instances_in_expr(&arg.expr, proc_vars, out);
+                collect_called_proc_instances_in_expr(&arg.expr, proc_vars, proc_array_slots, out);
             }
             if let Some(proc_var) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
-                if proc_vars.contains_key(proc_var) {
+                if proc_var == PROC_INDEX_CALL_SENTINEL {
+                    collect_proc_array_call_targets(args, proc_array_slots, out);
+                } else if proc_vars.contains_key(proc_var) {
                     out.insert(proc_var.to_owned());
                 }
+            } else if name == PROC_INDEX_CALL_SENTINEL {
+                collect_proc_array_call_targets(args, proc_array_slots, out);
             } else if proc_vars.contains_key(name) {
                 out.insert(name.clone());
             }
@@ -1347,11 +1569,12 @@ pub(super) fn collect_called_proc_instances_in_expr(
 pub(super) fn collect_called_proc_instances_in_stmt(
     stmt: &Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
     out: &mut HashSet<String>,
 ) {
     match stmt {
         Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } | Stmt::Expr { expr, .. } => {
-            collect_called_proc_instances_in_expr(expr, proc_vars, out);
+            collect_called_proc_instances_in_expr(expr, proc_vars, proc_array_slots, out);
         }
         Stmt::If {
             cond,
@@ -1359,12 +1582,12 @@ pub(super) fn collect_called_proc_instances_in_stmt(
             else_branch,
             ..
         } => {
-            collect_called_proc_instances_in_expr(cond, proc_vars, out);
+            collect_called_proc_instances_in_expr(cond, proc_vars, proc_array_slots, out);
             for nested in then_branch {
-                collect_called_proc_instances_in_stmt(nested, proc_vars, out);
+                collect_called_proc_instances_in_stmt(nested, proc_vars, proc_array_slots, out);
             }
             for nested in else_branch {
-                collect_called_proc_instances_in_stmt(nested, proc_vars, out);
+                collect_called_proc_instances_in_stmt(nested, proc_vars, proc_array_slots, out);
             }
         }
         Stmt::For {
@@ -1374,19 +1597,19 @@ pub(super) fn collect_called_proc_instances_in_stmt(
             body,
             ..
         } => {
-            collect_called_proc_instances_in_expr(start, proc_vars, out);
-            collect_called_proc_instances_in_expr(end, proc_vars, out);
+            collect_called_proc_instances_in_expr(start, proc_vars, proc_array_slots, out);
+            collect_called_proc_instances_in_expr(end, proc_vars, proc_array_slots, out);
             if let Some(step_expr) = step {
-                collect_called_proc_instances_in_expr(step_expr, proc_vars, out);
+                collect_called_proc_instances_in_expr(step_expr, proc_vars, proc_array_slots, out);
             }
             for nested in body {
-                collect_called_proc_instances_in_stmt(nested, proc_vars, out);
+                collect_called_proc_instances_in_stmt(nested, proc_vars, proc_array_slots, out);
             }
         }
         Stmt::While { cond, body, .. } => {
-            collect_called_proc_instances_in_expr(cond, proc_vars, out);
+            collect_called_proc_instances_in_expr(cond, proc_vars, proc_array_slots, out);
             for nested in body {
-                collect_called_proc_instances_in_stmt(nested, proc_vars, out);
+                collect_called_proc_instances_in_stmt(nested, proc_vars, proc_array_slots, out);
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -1396,10 +1619,11 @@ pub(super) fn collect_called_proc_instances_in_stmt(
 pub(super) fn collect_called_proc_instances_in_stmts(
     stmts: &[Stmt],
     proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
 ) -> HashSet<String> {
     let mut out = HashSet::<String>::new();
     for stmt in stmts {
-        collect_called_proc_instances_in_stmt(stmt, proc_vars, &mut out);
+        collect_called_proc_instances_in_stmt(stmt, proc_vars, proc_array_slots, &mut out);
     }
     out
 }
