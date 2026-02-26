@@ -7,8 +7,8 @@ use omni_examples::{GAIN, ONE_POLE, SINE};
 use omni_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use omni_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
-    set_param_by_index, trigger_event_by_index, validate_bindings, validate_buffers,
-    validate_outputs, InstanceConfig,
+    reset_instance_state, set_param_by_index, trigger_event_by_index, validate_bindings,
+    validate_buffers, validate_outputs, InstanceConfig,
 };
 use omni_semantics::{analyze, analyze_with_options, AnalysisOptions};
 
@@ -3561,6 +3561,34 @@ fn events_metadata_and_scalar_dispatch_work() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+fn reset_instance_state_restores_initial_runtime_state() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_SCALAR_UPDATE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
+
+    let payload = 0.5_f32.to_ne_bytes();
+    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.5, 1e-6);
+    }
+
+    reset_instance_state(&mut instance);
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
     }
 }
 

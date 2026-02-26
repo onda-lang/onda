@@ -7,8 +7,8 @@ use omni_codegen_llvm::{
 use omni_frontend::{parse_program, DiagCode, Diagnostic, PrimitiveType};
 use omni_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
-    set_param_by_index, trigger_event_by_index, validate_bindings, validate_buffers,
-    validate_inputs, validate_outputs, Instance, InstanceConfig,
+    reset_instance_state, set_param_by_index, trigger_event_by_index, validate_bindings,
+    validate_buffers, validate_inputs, validate_outputs, Instance, InstanceConfig,
 };
 use omni_semantics::analyze;
 
@@ -523,6 +523,15 @@ pub unsafe extern "C" fn omni_process_bound(instance: *mut omni_instance, frames
         Ok(_) => 0,
         Err(_) => -2,
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_reset_instance_state(instance: *mut omni_instance) -> i32 {
+    if instance.is_null() {
+        return -1;
+    }
+    reset_instance_state(&mut (*instance).inner);
+    0
 }
 
 #[no_mangle]

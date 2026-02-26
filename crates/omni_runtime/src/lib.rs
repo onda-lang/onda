@@ -16,6 +16,7 @@ pub struct Instance {
     pub(crate) process_frames_u32: u32,
     pub(crate) params: Vec<u8>,
     pub(crate) state: RuntimeState,
+    pub(crate) initial_state: RuntimeState,
     pub(crate) input_bindings: Vec<Option<BoundInput>>,
     pub(crate) output_bindings: Vec<Option<BoundOutput>>,
     pub(crate) buffer_bindings: Vec<Option<BoundBuffer>>,
@@ -208,6 +209,7 @@ pub fn create_instance(
 
     let params = program.default_param_bytes();
     let state = program.initialize_state(&params)?;
+    let initial_state = state.clone();
 
     let input_count = program.input_count();
     let output_count = program.output_count();
@@ -218,6 +220,7 @@ pub fn create_instance(
         process_frames_u32,
         params,
         state,
+        initial_state,
         input_bindings: vec![None; input_count],
         output_bindings: vec![None; output_count],
         buffer_bindings: vec![None; buffer_count],
@@ -230,6 +233,10 @@ pub fn create_instance(
         outputs_validated: required_out_channels == 0,
         buffers_validated: buffer_count == 0,
     })
+}
+
+pub fn reset_instance_state(instance: &mut Instance) {
+    instance.state = instance.initial_state.clone();
 }
 
 pub fn set_param_by_index(

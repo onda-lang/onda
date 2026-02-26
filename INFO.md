@@ -174,6 +174,7 @@
 - C ABI exposes compile/create/process/destroy and bind/set calls:
   - params: byte-typed `set_param_by_index`
   - events: `trigger_event_by_index`
+  - instance state lifecycle: `reset_instance_state`
   - inputs/outputs: pointer + byte-size binding
   - buffers: pointer + frames + channels + element type binding
   - outputs: `bind_output` and `copy_output`

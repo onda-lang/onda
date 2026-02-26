@@ -116,6 +116,8 @@ int omni_bind_buffer(
 
 /* Processes one block with current bindings and parameters; returns 0 on success. */
 int omni_process_bound(omni_instance_t* instance, int frames);
+/* Resets instance DSP/state memory to the initial post-init state captured at instance creation. */
+int omni_reset_instance_state(omni_instance_t* instance);
 /* Validates all required domains (buffers, inputs, outputs); returns 0 on success. */
 int omni_validate_bindings(omni_instance_t* instance);
 /* Validates input bindings only; returns 0 on success. */

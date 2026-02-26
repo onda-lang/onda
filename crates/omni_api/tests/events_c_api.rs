@@ -160,3 +160,70 @@ sample { out1 = amp }
         }
     }
 }
+
+#[test]
+fn c_api_reset_instance_state_restores_initial_state() {
+    unsafe {
+        let frames = 512_i32;
+        let program = compile_program(
+            r#"
+outs { out1 }
+events {
+  set_amp(value: f32) {
+    amp = value
+  }
+}
+init { amp = 0.0 }
+sample { out1 = amp }
+"#,
+        );
+
+        let mut diag = omni_diag_t {
+            code: 0,
+            line: 0,
+            column: 0,
+            message: std::ptr::null(),
+            file: std::ptr::null(),
+            trace: std::ptr::null(),
+        };
+        let instance = omni_instance_create(program.0, 48_000.0, frames, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            omni_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+
+        let payload = 0.5_f32.to_ne_bytes();
+        assert_eq!(
+            omni_trigger_event_by_index(
+                instance.0,
+                0,
+                payload.as_ptr().cast::<c_void>(),
+                payload.len() as i32,
+            ),
+            0
+        );
+        assert_eq!(omni_process_bound(instance.0, frames), 0);
+        for sample in &out {
+            assert!((*sample - 0.5).abs() < 1e-6);
+        }
+
+        assert_eq!(omni_reset_instance_state(instance.0), 0);
+        assert_eq!(omni_process_bound(instance.0, frames), 0);
+        for sample in &out {
+            assert!((*sample - 0.0).abs() < 1e-6);
+        }
+    }
+}
