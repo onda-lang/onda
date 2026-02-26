@@ -19,12 +19,73 @@ pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, 
     Ok(Vec::new())
 }
 
+pub(super) fn parse_sample_block(
+    block_pair: Pair<'_, Rule>,
+) -> Result<SampleBlock, Vec<Diagnostic>> {
+    let rule = block_pair.as_rule();
+    if rule != Rule::sample_block && rule != Rule::sample_nested_block {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected sample block",
+            0,
+            0,
+        )]);
+    }
+
+    let mut oversample_factor = None;
+    let mut body = Vec::new();
+    for child in block_pair.into_inner() {
+        match child.as_rule() {
+            Rule::sample_factor => {
+                if oversample_factor.is_some() {
+                    return Err(vec![Diagnostic::syntax(
+                        "sample block oversampling factor can only be specified once",
+                        0,
+                        0,
+                    )]);
+                }
+                oversample_factor = Some(parse_sample_factor(child)?);
+            }
+            Rule::stmt_list => {
+                body = parse_stmt_list_pair(child)?;
+            }
+            Rule::stmt_block => {
+                body = parse_stmt_block(child)?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(SampleBlock {
+        oversample_factor,
+        body,
+    })
+}
+
+fn parse_sample_factor(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::sample_factor {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected sample factor",
+            0,
+            0,
+        )]);
+    }
+    let mut inner = pair.into_inner();
+    let Some(expr_pair) = inner.next() else {
+        return Err(vec![Diagnostic::syntax(
+            "missing sample oversampling factor expression",
+            0,
+            0,
+        )]);
+    };
+    parse_expr(expr_pair)
+}
+
 pub(super) fn parse_block_exec_block(
     block_pair: Pair<'_, Rule>,
 ) -> Result<BlockExec, Vec<Diagnostic>> {
     let mut pre = Vec::new();
     let mut post = Vec::new();
-    let mut nested_sample: Option<Vec<Stmt>> = None;
+    let mut nested_sample: Option<SampleBlock> = None;
 
     for child in block_pair.into_inner() {
         if child.as_rule() != Rule::block_exec_list {
@@ -40,13 +101,7 @@ pub(super) fn parse_block_exec_block(
                         0,
                     )]);
                 }
-                let mut parsed_sample = Vec::new();
-                for sample_child in item.into_inner() {
-                    if sample_child.as_rule() == Rule::stmt_block {
-                        parsed_sample = parse_stmt_block(sample_child)?;
-                    }
-                }
-                nested_sample = Some(parsed_sample);
+                nested_sample = Some(parse_sample_block(item)?);
                 continue;
             }
 

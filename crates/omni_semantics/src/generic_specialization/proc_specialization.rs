@@ -551,6 +551,7 @@ pub(crate) fn specialize_generic_proc_template(
         has_init_block: template.has_init_block,
         has_block_block: template.has_block_block,
         has_sample_block: template.has_sample_block,
+        sample_oversample_factor: template.sample_oversample_factor.clone(),
         init,
         block_pre,
         sample,

@@ -200,7 +200,10 @@ pub(super) fn rewrite_top_level_proc_calls(
             {
                 let sample_body = match program.blocks.remove(sample_idx) {
                     Block::Sample(stmts) => stmts,
-                    _ => Vec::new(),
+                    _ => SampleBlock {
+                        oversample_factor: None,
+                        body: Vec::new(),
+                    },
                 };
                 program.blocks.insert(
                     sample_idx,

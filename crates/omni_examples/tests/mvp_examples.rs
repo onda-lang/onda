@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use omni_codegen_llvm::{CompileOptions, ExecutionBackend};
 use omni_examples::{GAIN, ONE_POLE, SINE};
@@ -2504,6 +2504,183 @@ sample {
 }
 "#;
 
+const SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE: &str = r#"
+outs { out1 }
+init { acc = 0.0 }
+sample 4 {
+  acc = acc + 1.0
+  out1 = acc
+}
+"#;
+
+const PROC_SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE: &str = r#"
+proc Counter {
+  outs { out1 }
+  init { x = 0.0 }
+  sample 2 {
+    x = x + 1.0
+    out1 = x
+  }
+}
+outs { out1 }
+init { c = Counter() }
+sample { out1 = c() }
+"#;
+
+const SAMPLE_OVERSAMPLE_INVALID_FACTOR_EXAMPLE: &str = r#"
+outs { out1 }
+sample 3 {
+  out1 = 0.0
+}
+"#;
+
+const SAMPLE_OVERSAMPLE_NON_LITERAL_FACTOR_EXAMPLE: &str = r#"
+outs { out1 }
+init { n = 2 }
+sample n {
+  out1 = 0.0
+}
+"#;
+
+const SAMPLE_OVERSAMPLE_INPUT_INTERP_EXAMPLE: &str = r#"
+ins { in1 }
+outs { out1 }
+sample 2 {
+  out1 = in1
+}
+"#;
+
+const SAMPLE_OVERSAMPLE_ALIAS_BASELINE_EXAMPLE: &str = r#"
+ins { in1 }
+outs { out1 }
+sample {
+  out1 = in1 * in1 * in1
+}
+"#;
+
+const SAMPLE_OVERSAMPLE_ALIAS_FILTERED_EXAMPLE: &str = r#"
+ins { in1 }
+outs { out1 }
+sample 4 {
+  out1 = in1 * in1 * in1
+}
+"#;
+
+const SAMPLE_OVERSAMPLE_STD_SINE_1X_EXAMPLE: &str = r#"
+import std/osc
+init:
+  osc = std::osc::Sine(freq = 50.0)
+sample:
+  out1 = osc()
+"#;
+
+const SAMPLE_OVERSAMPLE_STD_SINE_2X_EXAMPLE: &str = r#"
+import std/osc
+init:
+  osc = std::osc::Sine(freq = 50.0)
+sample 2:
+  out1 = osc()
+"#;
+
+const SAMPLE_OVERSAMPLE_STD_SINE_4X_EXAMPLE: &str = r#"
+import std/osc
+init:
+  osc = std::osc::Sine(freq = 50.0)
+sample 4:
+  out1 = osc()
+"#;
+
+const PROC_SAMPLE_OVERSAMPLE_LOCAL_SINE_1X_EXAMPLE: &str = r#"
+proc SineProc {
+  params { freq = 50.0 }
+  outs { out1 }
+  init { phase = 0.0 }
+  sample {
+    phase = phase + (freq * TWO_PI / SR)
+    if (phase >= TWO_PI) {
+      phase = phase - TWO_PI
+    }
+    out1 = sin(phase)
+  }
+}
+outs { out1 }
+init { osc = SineProc() }
+sample { out1 = osc() }
+"#;
+
+const PROC_SAMPLE_OVERSAMPLE_LOCAL_SINE_8X_EXAMPLE: &str = r#"
+proc SineProc {
+  params { freq = 50.0 }
+  outs { out1 }
+  init { phase = 0.0 }
+  sample 8 {
+    phase = phase + (freq * TWO_PI / SR)
+    if (phase >= TWO_PI) {
+      phase = phase - TWO_PI
+    }
+    out1 = sin(phase)
+  }
+}
+outs { out1 }
+init { osc = SineProc() }
+sample { out1 = osc() }
+"#;
+
+const SAMPLE_OVERSAMPLE_PERF_BASELINE_EXAMPLE: &str = r#"
+ins { in1 }
+outs { out1 }
+init {
+  s1 = 0.0
+  s2 = 0.0
+}
+sample {
+  x = in1 * 1.9
+  y = x - (x * x * x) * 0.33333334
+  s1 = s1 + (y - s1) * 0.22
+  s2 = s2 + (s1 - s2) * 0.17
+  out1 = s2 - (s2 * s2 * s2) * 0.1
+}
+"#;
+
+const SAMPLE_OVERSAMPLE_PERF_N4_EXAMPLE: &str = r#"
+ins { in1 }
+outs { out1 }
+init {
+  s1 = 0.0
+  s2 = 0.0
+}
+sample 4 {
+  x = in1 * 1.9
+  y = x - (x * x * x) * 0.33333334
+  s1 = s1 + (y - s1) * 0.22
+  s2 = s2 + (s1 - s2) * 0.17
+  out1 = s2 - (s2 * s2 * s2) * 0.1
+}
+"#;
+
+const SAMPLE_OVERSAMPLE_FACTOR_32_SMOKE_EXAMPLE: &str = r#"
+outs { out1 }
+init { x = 0.0 }
+sample 32 {
+  x = x + 1.0
+  out1 = x
+}
+"#;
+
+const PROC_SAMPLE_OVERSAMPLE_FACTOR_64_SMOKE_EXAMPLE: &str = r#"
+proc Counter {
+  outs { out1 }
+  init { x = 0.0 }
+  sample 64 {
+    x = x + 1.0
+    out1 = x
+  }
+}
+outs { out1 }
+init { c = Counter() }
+sample { out1 = c() }
+"#;
+
 fn compile_instance(src: &str, frames: usize) -> (omni_runtime::Instance, usize, usize) {
     compile_instance_with_options(
         src,
@@ -2709,6 +2886,38 @@ fn process_interleaved(
         }
     }
     Ok(())
+}
+
+fn benchmark_process_runtime(
+    instance: &mut omni_runtime::Instance,
+    in_interleaved: &[f32],
+    out_interleaved: &mut [f32],
+    frames: usize,
+    warmup_iters: usize,
+    timed_iters: usize,
+) -> f64 {
+    for _ in 0..warmup_iters {
+        process_interleaved(instance, in_interleaved, out_interleaved, frames)
+            .expect("warmup processing should succeed");
+    }
+    let start = Instant::now();
+    for _ in 0..timed_iters {
+        process_interleaved(instance, in_interleaved, out_interleaved, frames)
+            .expect("timed processing should succeed");
+    }
+    std::hint::black_box(out_interleaved.first().copied().unwrap_or(0.0));
+    start.elapsed().as_secs_f64()
+}
+
+fn estimate_positive_zero_cross_frequency(samples: &[f32], sample_rate: f32) -> f32 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    let crossings = samples
+        .windows(2)
+        .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+        .count() as f32;
+    crossings * sample_rate / samples.len() as f32
 }
 
 fn collect_flat_io_descs<TypeFn, BytesFn>(
@@ -5897,6 +6106,285 @@ fn nested_proc_ctor_positional_args_are_rejected() {
         result.is_err(),
         "semantic analysis should reject positional nested proc constructor arguments"
     );
+}
+
+#[test]
+fn sample_oversample_factor_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 2.3968143, 1e-6);
+    assert_near(output[1], 6.394737, 1e-6);
+    assert_near(output[2], 10.394737, 1e-6);
+    assert_near(output[3], 14.394737, 1e-6);
+}
+
+#[test]
+fn sample_oversample_factor_is_recorded_in_typed_program() {
+    let parsed = parse_program(SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE).expect("parse should succeed");
+    let typed = analyze(parsed).expect("semantic analysis should succeed");
+    assert_eq!(typed.sample_oversample_factor, 4);
+}
+
+#[test]
+fn proc_sample_oversample_factor_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 0.75, 1e-6);
+    assert_near(output[1], 2.4240382, 1e-6);
+    assert_near(output[2], 4.3591337, 1e-6);
+    assert_near(output[3], 6.3475933, 1e-6);
+}
+
+#[test]
+fn sample_oversample_factor_32_compiles_and_runs_smoke() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_FACTOR_32_SMOKE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert!(output.iter().all(|v| v.is_finite()));
+    assert!(output[frames - 1] > output[0]);
+}
+
+#[test]
+fn proc_sample_oversample_factor_64_compiles_and_runs_smoke() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_SAMPLE_OVERSAMPLE_FACTOR_64_SMOKE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert!(output.iter().all(|v| v.is_finite()));
+    assert!(output[frames - 1] > output[0]);
+}
+
+#[test]
+fn sample_oversample_invalid_factor_is_rejected() {
+    let parsed =
+        parse_program(SAMPLE_OVERSAMPLE_INVALID_FACTOR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "invalid oversample factor should be rejected"
+    );
+    let diags = result.expect_err("expected semantic diagnostics");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("{1,2,4,8,16,32,64}") && d.message.contains("got 3")),
+        "expected explicit allowed-factor diagnostic, got: {diags:?}"
+    );
+}
+
+#[test]
+fn sample_oversample_non_literal_factor_is_rejected() {
+    let parsed =
+        parse_program(SAMPLE_OVERSAMPLE_NON_LITERAL_FACTOR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "non-literal oversample factor should be rejected"
+    );
+    let diags = result.expect_err("expected semantic diagnostics");
+    assert!(
+        diags.iter().any(|d| {
+            d.message.contains("integer literal") && d.message.contains("{1,2,4,8,16,32,64}")
+        }),
+        "expected integer-literal diagnostic, got: {diags:?}"
+    );
+}
+
+#[test]
+fn sample_oversample_interpolates_input_reads() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_INPUT_INTERP_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![0.0_f32, 1.0, 2.0, 3.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 0.0, 1e-6);
+    assert_near(output[1], 0.651605, 1e-6);
+    assert_near(output[2], 1.6447935, 1e-6);
+    assert_near(output[3], 2.6447372, 1e-6);
+}
+
+#[test]
+fn sample_oversample_reduces_high_frequency_energy_on_nonlinear_patch() {
+    let frames = 64;
+    let (mut base_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_ALIAS_BASELINE_EXAMPLE, frames);
+    let (mut over_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_ALIAS_FILTERED_EXAMPLE, frames);
+
+    let input = (0..frames)
+        .map(|idx| if idx % 2 == 0 { 1.0_f32 } else { -1.0_f32 })
+        .collect::<Vec<_>>();
+    let mut base_output = vec![0.0_f32; frames];
+    let mut over_output = vec![0.0_f32; frames];
+    process_interleaved(&mut base_instance, &input, &mut base_output, frames)
+        .expect("baseline process should succeed");
+    process_interleaved(&mut over_instance, &input, &mut over_output, frames)
+        .expect("oversampled process should succeed");
+
+    let high_freq_energy = |samples: &[f32]| -> f32 {
+        samples
+            .windows(2)
+            .map(|w| {
+                let d = w[1] - w[0];
+                d * d
+            })
+            .sum::<f32>()
+    };
+    let base_energy = high_freq_energy(&base_output);
+    let over_energy = high_freq_energy(&over_output);
+    assert!(
+        over_energy < base_energy * 0.5,
+        "expected oversampling to reduce high-frequency energy, base={base_energy}, oversampled={over_energy}"
+    );
+}
+
+#[test]
+fn sample_oversample_keeps_proc_sine_pitch_constant() {
+    let frames = 48_000;
+    let sample_rate = 48_000.0_f32;
+    let (mut base_instance, _, _) = compile_instance(SAMPLE_OVERSAMPLE_STD_SINE_1X_EXAMPLE, frames);
+    let (mut os2_instance, _, _) = compile_instance(SAMPLE_OVERSAMPLE_STD_SINE_2X_EXAMPLE, frames);
+    let (mut os4_instance, _, _) = compile_instance(SAMPLE_OVERSAMPLE_STD_SINE_4X_EXAMPLE, frames);
+
+    let mut out_1x = vec![0.0_f32; frames];
+    let mut out_2x = vec![0.0_f32; frames];
+    let mut out_4x = vec![0.0_f32; frames];
+    process_interleaved(&mut base_instance, &[], &mut out_1x, frames)
+        .expect("1x process should succeed");
+    process_interleaved(&mut os2_instance, &[], &mut out_2x, frames)
+        .expect("2x process should succeed");
+    process_interleaved(&mut os4_instance, &[], &mut out_4x, frames)
+        .expect("4x process should succeed");
+
+    let f1 = estimate_positive_zero_cross_frequency(&out_1x, sample_rate);
+    let f2 = estimate_positive_zero_cross_frequency(&out_2x, sample_rate);
+    let f4 = estimate_positive_zero_cross_frequency(&out_4x, sample_rate);
+
+    assert!(
+        (f1 - 50.0).abs() < 1.5,
+        "expected ~50 Hz at 1x, got {f1} Hz"
+    );
+    assert!(
+        (f2 - f1).abs() < 1.5,
+        "expected 2x oversampling pitch to match 1x, got f1={f1}, f2={f2}"
+    );
+    assert!(
+        (f4 - f1).abs() < 1.5,
+        "expected 4x oversampling pitch to match 1x, got f1={f1}, f4={f4}"
+    );
+}
+
+#[test]
+fn proc_sample_oversample_keeps_local_sine_pitch_constant() {
+    let frames = 48_000;
+    let sample_rate = 48_000.0_f32;
+    let (mut base_instance, _, _) =
+        compile_instance(PROC_SAMPLE_OVERSAMPLE_LOCAL_SINE_1X_EXAMPLE, frames);
+    let (mut os8_instance, _, _) =
+        compile_instance(PROC_SAMPLE_OVERSAMPLE_LOCAL_SINE_8X_EXAMPLE, frames);
+
+    let mut out_1x = vec![0.0_f32; frames];
+    let mut out_8x = vec![0.0_f32; frames];
+    process_interleaved(&mut base_instance, &[], &mut out_1x, frames)
+        .expect("1x process should succeed");
+    process_interleaved(&mut os8_instance, &[], &mut out_8x, frames)
+        .expect("8x process should succeed");
+
+    let f1 = estimate_positive_zero_cross_frequency(&out_1x, sample_rate);
+    let f8 = estimate_positive_zero_cross_frequency(&out_8x, sample_rate);
+
+    assert!(
+        (f1 - 50.0).abs() < 1.5,
+        "expected ~50 Hz at 1x, got {f1} Hz"
+    );
+    assert!(
+        (f8 - f1).abs() < 1.5,
+        "expected proc sample 8 pitch to match 1x, got f1={f1}, f8={f8}"
+    );
+}
+
+#[test]
+#[ignore = "perf benchmark; run manually"]
+fn sample_oversample_n4_performance_budget_benchmark() {
+    const FRAMES: usize = 128;
+    const WARMUP_ITERS: usize = 256;
+    const TIMED_ITERS: usize = 4096;
+    const TARGET_RATIO: f64 = 2.5;
+
+    let (mut baseline, baseline_in_channels, baseline_out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_PERF_BASELINE_EXAMPLE, FRAMES);
+    let (mut oversampled, os_in_channels, os_out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_PERF_N4_EXAMPLE, FRAMES);
+    assert_eq!(baseline_in_channels, 1);
+    assert_eq!(baseline_out_channels, 1);
+    assert_eq!(os_in_channels, 1);
+    assert_eq!(os_out_channels, 1);
+
+    let input = (0..FRAMES)
+        .map(|idx| ((idx % 97) as f32 / 48.0) - 1.0)
+        .collect::<Vec<_>>();
+    let mut baseline_output = vec![0.0_f32; FRAMES];
+    let mut os_output = vec![0.0_f32; FRAMES];
+
+    let baseline_secs = benchmark_process_runtime(
+        &mut baseline,
+        &input,
+        &mut baseline_output,
+        FRAMES,
+        WARMUP_ITERS,
+        TIMED_ITERS,
+    );
+    let os_secs = benchmark_process_runtime(
+        &mut oversampled,
+        &input,
+        &mut os_output,
+        FRAMES,
+        WARMUP_ITERS,
+        TIMED_ITERS,
+    );
+    let ratio = os_secs / baseline_secs.max(f64::EPSILON);
+    eprintln!(
+        "oversample N=4 runtime ratio: {:.3}x (baseline={:.6}s, os4={:.6}s, frames={}, iters={})",
+        ratio, baseline_secs, os_secs, FRAMES, TIMED_ITERS
+    );
+
+    if std::env::var("OMNI_ENFORCE_OVERSAMPLE_PERF_BUDGET")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        assert!(
+            ratio <= TARGET_RATIO,
+            "oversample N=4 runtime ratio {:.3}x exceeded target {:.3}x",
+            ratio,
+            TARGET_RATIO
+        );
+    }
 }
 
 #[test]

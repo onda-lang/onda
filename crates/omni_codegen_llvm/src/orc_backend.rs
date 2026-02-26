@@ -25,8 +25,8 @@ use omni_frontend::{
     PrimitiveType, Stmt,
 };
 use omni_semantics::{
-    TypedArrayInfo, TypedBufferChannels, TypedFieldType, TypedFnParam, TypedFunction, TypedProgram,
-    TypedStructField,
+    ProcStepOversampleMeta, TypedArrayInfo, TypedBufferChannels, TypedFieldType, TypedFnParam,
+    TypedFunction, TypedProgram, TypedStructField,
 };
 
 mod builtin_intrinsics;
@@ -551,13 +551,18 @@ struct LoweringCtx<'a> {
     user_fn_param_kinds: &'a HashMap<String, Vec<TypedFnParam>>,
     user_fn_param_by_ref: &'a HashMap<String, Vec<bool>>,
     user_registry: *const UserFnRegistry,
+    oversample_factor: usize,
+    oversample_alpha: Option<LLVMValueRef>,
+    oversample_prev_inputs: Option<LLVMValueRef>,
+    oversample_input_cache: Option<LLVMValueRef>,
     loop_stack: Vec<LoopControl>,
 }
 
 struct UserFnRegistry {
     defs: HashMap<String, TypedFunction>,
+    sample_oversample_factors: HashMap<String, usize>,
+    proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     refs: HashMap<String, LLVMValueRef>,
-    tys: HashMap<String, LLVMTypeRef>,
     base_return_tys: HashMap<String, PrimitiveType>,
     mono_refs: HashMap<String, LLVMValueRef>,
     mono_tys: HashMap<String, LLVMTypeRef>,

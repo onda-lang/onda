@@ -1,5 +1,12 @@
 use super::*;
 
+fn oversample_iir_coeff(factor: usize) -> f64 {
+    if factor <= 1 {
+        return 1.0;
+    }
+    0.95
+}
+
 pub(super) unsafe fn build_process_ir(
     typed: &TypedProgram,
     module: LLVMModuleRef,
@@ -250,6 +257,106 @@ pub(super) unsafe fn build_process_ir(
                 },
             );
         }
+        let sample_oversample_factor = typed.sample_oversample_factor.max(1);
+        let oversampled_sample_rate = sample_rate * sample_oversample_factor as f32;
+        let oversample_iir = oversample_iir_coeff(sample_oversample_factor);
+        let oversample_up_iir_coeff = if sample_oversample_factor > 1 {
+            Some(LLVMConstReal(float_ty, oversample_iir))
+        } else {
+            None
+        };
+        let oversample_prev_inputs = if sample_oversample_factor > 1 && !typed.ins.is_empty() {
+            let prev =
+                build_local_array_slot(builder, float_ty, typed.ins.len(), "os_prev_inputs")?;
+            for idx in 0..typed.ins.len() {
+                let idx_v = LLVMConstInt(i32_ty, idx as u64, 0);
+                let prev_ptr =
+                    build_f32_ptr_offset(builder, float_ty, prev, idx_v, b"os_prev_input_ptr\0");
+                LLVMBuildStore(builder, LLVMConstReal(float_ty, 0.0), prev_ptr);
+            }
+            Some(prev)
+        } else {
+            None
+        };
+        let oversample_input_cache = if sample_oversample_factor > 1 && !typed.ins.is_empty() {
+            let cache =
+                build_local_array_slot(builder, float_ty, typed.ins.len(), "os_input_cache")?;
+            for idx in 0..typed.ins.len() {
+                let idx_v = LLVMConstInt(i32_ty, idx as u64, 0);
+                let ptr = build_f32_ptr_offset(builder, float_ty, cache, idx_v, b"os_cache_ptr\0");
+                LLVMBuildStore(builder, LLVMConstReal(float_ty, 0.0), ptr);
+            }
+            Some(cache)
+        } else {
+            None
+        };
+        let oversample_up_iir_stage1 = if sample_oversample_factor > 1 && !typed.ins.is_empty() {
+            let stage = build_local_array_slot(builder, float_ty, typed.ins.len(), "os_up_iir1")?;
+            for idx in 0..typed.ins.len() {
+                let idx_v = LLVMConstInt(i32_ty, idx as u64, 0);
+                let ptr =
+                    build_f32_ptr_offset(builder, float_ty, stage, idx_v, b"os_up_iir1_ptr\0");
+                LLVMBuildStore(builder, LLVMConstReal(float_ty, 0.0), ptr);
+            }
+            Some(stage)
+        } else {
+            None
+        };
+        let oversample_up_iir_stage2 = if sample_oversample_factor > 1 && !typed.ins.is_empty() {
+            let stage = build_local_array_slot(builder, float_ty, typed.ins.len(), "os_up_iir2")?;
+            for idx in 0..typed.ins.len() {
+                let idx_v = LLVMConstInt(i32_ty, idx as u64, 0);
+                let ptr =
+                    build_f32_ptr_offset(builder, float_ty, stage, idx_v, b"os_up_iir2_ptr\0");
+                LLVMBuildStore(builder, LLVMConstReal(float_ty, 0.0), ptr);
+            }
+            Some(stage)
+        } else {
+            None
+        };
+        let mut oversample_accum_slots = HashMap::<String, LLVMValueRef>::new();
+        let mut oversample_down_iir_stage1 = HashMap::<String, LLVMValueRef>::new();
+        let mut oversample_down_iir_stage2 = HashMap::<String, LLVMValueRef>::new();
+        if sample_oversample_factor > 1 {
+            let mut out_names = out_slots.keys().cloned().collect::<Vec<_>>();
+            out_names.sort();
+            for name in out_names {
+                let Some(slot) = out_slots.get(&name).copied() else {
+                    continue;
+                };
+                let safe_name = name.replace(['[', ']', '.'], "_");
+                let acc = build_local_slot(
+                    builder,
+                    llvm_ty_for_primitive(context, slot.ty),
+                    &format!("os_acc_{safe_name}"),
+                )?;
+                oversample_accum_slots.insert(name.clone(), acc);
+                if matches!(slot.ty, PrimitiveType::F32 | PrimitiveType::F64) {
+                    let stage1 = build_local_slot(
+                        builder,
+                        llvm_ty_for_primitive(context, slot.ty),
+                        &format!("os_down_iir1_{safe_name}"),
+                    )?;
+                    let stage2 = build_local_slot(
+                        builder,
+                        llvm_ty_for_primitive(context, slot.ty),
+                        &format!("os_down_iir2_{safe_name}"),
+                    )?;
+                    LLVMBuildStore(
+                        builder,
+                        LLVMConstReal(llvm_ty_for_primitive(context, slot.ty), 0.0),
+                        stage1,
+                    );
+                    LLVMBuildStore(
+                        builder,
+                        LLVMConstReal(llvm_ty_for_primitive(context, slot.ty), 0.0),
+                        stage2,
+                    );
+                    oversample_down_iir_stage1.insert(name.clone(), stage1);
+                    oversample_down_iir_stage2.insert(name, stage2);
+                }
+            }
+        }
 
         // Run optional block-level code once per process callback before per-sample loop.
         if !typed.block_pre.is_empty() {
@@ -262,7 +369,7 @@ pub(super) unsafe fn build_process_ir(
                 float_ptr_ty,
                 i32_ty,
                 fast_math_flags,
-                sample_rate,
+                sample_rate: oversampled_sample_rate,
                 block_size: block_size as f32,
                 in_ptrs,
                 params_ptr,
@@ -296,6 +403,10 @@ pub(super) unsafe fn build_process_ir(
                 user_fn_param_kinds: &user_fns.param_kinds,
                 user_fn_param_by_ref: &user_fns.param_by_ref,
                 user_registry: user_fns as *const UserFnRegistry,
+                oversample_factor: 1,
+                oversample_alpha: None,
+                oversample_prev_inputs: None,
+                oversample_input_cache: None,
                 loop_stack: Vec::new(),
             };
             let mut block_locals = HashMap::new();
@@ -326,13 +437,529 @@ pub(super) unsafe fn build_process_ir(
         LLVMBuildCondBr(builder, loop_cmp, loop_body, loop_exit);
 
         LLVMPositionBuilderAtEnd(builder, loop_body);
-        for slot in out_slots.values() {
-            LLVMBuildStore(builder, llvm_zero_for_primitive(context, slot.ty), slot.ptr);
-        }
-
         let frame_in_body =
             LLVMBuildLoad2(builder, i32_ty, frame_idx, b"frame_body\0".as_ptr().cast());
-        let mut lctx = LoweringCtx {
+        if sample_oversample_factor <= 1 {
+            for slot in out_slots.values() {
+                LLVMBuildStore(builder, llvm_zero_for_primitive(context, slot.ty), slot.ptr);
+            }
+            let mut lctx = LoweringCtx {
+                builder,
+                context,
+                module,
+                fn_ref,
+                float_ty,
+                float_ptr_ty,
+                i32_ty,
+                fast_math_flags,
+                sample_rate,
+                block_size: block_size as f32,
+                in_ptrs,
+                params_ptr,
+                buffer_ptrs,
+                buffer_frames_ptr,
+                buffer_channels_ptr,
+                frame_idx: frame_in_body,
+                state_slots: &state_slots,
+                data_base_ptrs: &data_base_ptrs,
+                out_slots: &out_slots,
+                out_array_base_ptrs: &out_array_base_ptrs,
+                input_index: &input_index,
+                input_types: &input_types,
+                input_arrays: &typed.in_arrays,
+                buffer_index: &buffer_index,
+                buffer_elem_types: &buffer_elem_types,
+                buffer_channels: &buffer_channels,
+                buffer_mono: &buffer_mono,
+                param_byte_offset: &param_byte_offset,
+                param_types: &param_types,
+                param_arrays: &typed.param_arrays,
+                output_arrays: &typed.out_arrays,
+                data_len: &data_len,
+                data_elem_ty: &data_elem_ty,
+                data_struct_roots: &data_struct_roots,
+                data_struct_len: &data_struct_len,
+                struct_fields: &struct_fields,
+                allow_struct_ctor: false,
+                user_fn_param_names: &user_fns.param_names,
+                user_fn_param_defaults: &user_fns.param_defaults,
+                user_fn_param_kinds: &user_fns.param_kinds,
+                user_fn_param_by_ref: &user_fns.param_by_ref,
+                user_registry: user_fns as *const UserFnRegistry,
+                oversample_factor: 1,
+                oversample_alpha: None,
+                oversample_prev_inputs: None,
+                oversample_input_cache: None,
+                loop_stack: Vec::new(),
+            };
+
+            let mut locals = HashMap::new();
+            let mut local_aliases = HashMap::new();
+            let mut local_data_aliases = HashMap::new();
+            for stmt in &typed.sample {
+                lower_stmt(
+                    stmt,
+                    &mut lctx,
+                    &mut locals,
+                    &mut local_aliases,
+                    &mut local_data_aliases,
+                )?;
+            }
+        } else {
+            for (name, slot) in &out_slots {
+                let Some(acc_ptr) = oversample_accum_slots.get(name).copied() else {
+                    continue;
+                };
+                LLVMBuildStore(builder, llvm_zero_for_primitive(context, slot.ty), acc_ptr);
+            }
+
+            let sub_preheader = LLVMGetInsertBlock(builder);
+            if sub_preheader.is_null() {
+                return Err(Diagnostic::internal(
+                    "failed to get current block for oversample lowering",
+                ));
+            }
+            let sub_cond =
+                LLVMAppendBasicBlockInContext(context, fn_ref, b"os_sub_cond\0".as_ptr().cast());
+            let sub_body =
+                LLVMAppendBasicBlockInContext(context, fn_ref, b"os_sub_body\0".as_ptr().cast());
+            let sub_latch =
+                LLVMAppendBasicBlockInContext(context, fn_ref, b"os_sub_latch\0".as_ptr().cast());
+            let sub_end =
+                LLVMAppendBasicBlockInContext(context, fn_ref, b"os_sub_end\0".as_ptr().cast());
+            LLVMBuildBr(builder, sub_cond);
+
+            LLVMPositionBuilderAtEnd(builder, sub_cond);
+            let sub_i = LLVMBuildPhi(builder, i32_ty, b"os_sub_i\0".as_ptr().cast());
+            let mut sub_incoming_vals = [zero_i32];
+            let mut sub_incoming_blocks = [sub_preheader];
+            LLVMAddIncoming(
+                sub_i,
+                sub_incoming_vals.as_mut_ptr(),
+                sub_incoming_blocks.as_mut_ptr(),
+                1,
+            );
+            let sub_factor_const = LLVMConstInt(i32_ty, sample_oversample_factor as u64, 0);
+            let sub_cmp = LLVMBuildICmp(
+                builder,
+                LLVMIntPredicate::LLVMIntULT,
+                sub_i,
+                sub_factor_const,
+                b"os_sub_cmp\0".as_ptr().cast(),
+            );
+            LLVMBuildCondBr(builder, sub_cmp, sub_body, sub_end);
+
+            LLVMPositionBuilderAtEnd(builder, sub_body);
+            for slot in out_slots.values() {
+                LLVMBuildStore(builder, llvm_zero_for_primitive(context, slot.ty), slot.ptr);
+            }
+            let sub_i_plus_one =
+                LLVMBuildAdd(builder, sub_i, one_i32, b"os_sub_i1\0".as_ptr().cast());
+            let sub_i_plus_one_f = LLVMBuildSIToFP(
+                builder,
+                sub_i_plus_one,
+                float_ty,
+                b"os_sub_i1_f\0".as_ptr().cast(),
+            );
+            let sub_factor_f = LLVMConstReal(float_ty, sample_oversample_factor as f64);
+            let sub_alpha = build_fdiv_fast(
+                builder,
+                sub_i_plus_one_f,
+                sub_factor_f,
+                b"os_sub_alpha\0",
+                fast_math_flags,
+            );
+            if let (Some(prev_inputs_ptr), Some(input_cache_ptr)) =
+                (oversample_prev_inputs, oversample_input_cache)
+            {
+                for (idx, name) in typed.ins.iter().enumerate() {
+                    let in_ty = *input_types.get(name).unwrap_or(&PrimitiveType::F32);
+                    let ch_v = LLVMConstInt(i32_ty, idx as u64, 0);
+                    let in_ptr_ptr = build_ptr_offset(
+                        builder,
+                        float_ptr_ty,
+                        in_ptrs,
+                        ch_v,
+                        b"os_sub_in_ch_ptr_ptr\0",
+                    );
+                    let in_ch_ptr = LLVMBuildLoad2(
+                        builder,
+                        float_ptr_ty,
+                        in_ptr_ptr,
+                        b"os_sub_in_ch_ptr\0".as_ptr().cast(),
+                    );
+                    let in_ch_ptr_typed = LLVMBuildBitCast(
+                        builder,
+                        in_ch_ptr,
+                        LLVMPointerType(llvm_ty_for_primitive(context, in_ty), 0),
+                        b"os_sub_in_ch_ptr_typed\0".as_ptr().cast(),
+                    );
+                    let in_sample_ptr = build_f32_ptr_offset(
+                        builder,
+                        llvm_ty_for_primitive(context, in_ty),
+                        in_ch_ptr_typed,
+                        frame_in_body,
+                        b"os_sub_in_sample_ptr\0",
+                    );
+                    let in_raw = LLVMBuildLoad2(
+                        builder,
+                        llvm_ty_for_primitive(context, in_ty),
+                        in_sample_ptr,
+                        b"os_sub_in_raw\0".as_ptr().cast(),
+                    );
+                    let in_f32 = match in_ty {
+                        PrimitiveType::F32 => in_raw,
+                        PrimitiveType::F64 => LLVMBuildFPTrunc(
+                            builder,
+                            in_raw,
+                            float_ty,
+                            b"os_sub_in_f32\0".as_ptr().cast(),
+                        ),
+                        PrimitiveType::I32 | PrimitiveType::I64 => LLVMBuildSIToFP(
+                            builder,
+                            in_raw,
+                            float_ty,
+                            b"os_sub_in_f32\0".as_ptr().cast(),
+                        ),
+                        PrimitiveType::Bool => LLVMBuildUIToFP(
+                            builder,
+                            in_raw,
+                            float_ty,
+                            b"os_sub_in_f32\0".as_ptr().cast(),
+                        ),
+                    };
+                    let prev_ptr = build_f32_ptr_offset(
+                        builder,
+                        float_ty,
+                        prev_inputs_ptr,
+                        ch_v,
+                        b"os_sub_prev_ptr\0",
+                    );
+                    let prev = LLVMBuildLoad2(
+                        builder,
+                        float_ty,
+                        prev_ptr,
+                        b"os_sub_prev\0".as_ptr().cast(),
+                    );
+                    let diff = build_fsub_fast(
+                        builder,
+                        in_f32,
+                        prev,
+                        b"os_sub_in_diff\0",
+                        fast_math_flags,
+                    );
+                    let scaled = build_fmul_fast(
+                        builder,
+                        diff,
+                        sub_alpha,
+                        b"os_sub_in_scaled\0",
+                        fast_math_flags,
+                    );
+                    let mut filtered =
+                        build_fadd_fast(builder, prev, scaled, b"os_sub_interp\0", fast_math_flags);
+                    if let (Some(up_coeff), Some(up_iir1), Some(up_iir2)) = (
+                        oversample_up_iir_coeff,
+                        oversample_up_iir_stage1,
+                        oversample_up_iir_stage2,
+                    ) {
+                        let up1_ptr = build_f32_ptr_offset(
+                            builder,
+                            float_ty,
+                            up_iir1,
+                            ch_v,
+                            b"os_sub_up1_ptr\0",
+                        );
+                        let up1_old = LLVMBuildLoad2(
+                            builder,
+                            float_ty,
+                            up1_ptr,
+                            b"os_sub_up1_old\0".as_ptr().cast(),
+                        );
+                        let up1_delta = build_fsub_fast(
+                            builder,
+                            filtered,
+                            up1_old,
+                            b"os_sub_up1_delta\0",
+                            fast_math_flags,
+                        );
+                        let up1_step = build_fmul_fast(
+                            builder,
+                            up1_delta,
+                            up_coeff,
+                            b"os_sub_up1_scaled\0",
+                            fast_math_flags,
+                        );
+                        let up1_new = build_fadd_fast(
+                            builder,
+                            up1_old,
+                            up1_step,
+                            b"os_sub_up1_new\0",
+                            fast_math_flags,
+                        );
+                        LLVMBuildStore(builder, up1_new, up1_ptr);
+
+                        let up2_ptr = build_f32_ptr_offset(
+                            builder,
+                            float_ty,
+                            up_iir2,
+                            ch_v,
+                            b"os_sub_up2_ptr\0",
+                        );
+                        let up2_old = LLVMBuildLoad2(
+                            builder,
+                            float_ty,
+                            up2_ptr,
+                            b"os_sub_up2_old\0".as_ptr().cast(),
+                        );
+                        let up2_delta = build_fsub_fast(
+                            builder,
+                            up1_new,
+                            up2_old,
+                            b"os_sub_up2_delta\0",
+                            fast_math_flags,
+                        );
+                        let up2_step = build_fmul_fast(
+                            builder,
+                            up2_delta,
+                            up_coeff,
+                            b"os_sub_up2_scaled\0",
+                            fast_math_flags,
+                        );
+                        let up2_new = build_fadd_fast(
+                            builder,
+                            up2_old,
+                            up2_step,
+                            b"os_sub_up2_new\0",
+                            fast_math_flags,
+                        );
+                        LLVMBuildStore(builder, up2_new, up2_ptr);
+                        filtered = up2_new;
+                    }
+                    let cache_ptr = build_f32_ptr_offset(
+                        builder,
+                        float_ty,
+                        input_cache_ptr,
+                        ch_v,
+                        b"os_sub_cache_ptr\0",
+                    );
+                    LLVMBuildStore(builder, filtered, cache_ptr);
+                }
+            }
+            let mut lctx = LoweringCtx {
+                builder,
+                context,
+                module,
+                fn_ref,
+                float_ty,
+                float_ptr_ty,
+                i32_ty,
+                fast_math_flags,
+                sample_rate: oversampled_sample_rate,
+                block_size: block_size as f32,
+                in_ptrs,
+                params_ptr,
+                buffer_ptrs,
+                buffer_frames_ptr,
+                buffer_channels_ptr,
+                frame_idx: frame_in_body,
+                state_slots: &state_slots,
+                data_base_ptrs: &data_base_ptrs,
+                out_slots: &out_slots,
+                out_array_base_ptrs: &out_array_base_ptrs,
+                input_index: &input_index,
+                input_types: &input_types,
+                input_arrays: &typed.in_arrays,
+                buffer_index: &buffer_index,
+                buffer_elem_types: &buffer_elem_types,
+                buffer_channels: &buffer_channels,
+                buffer_mono: &buffer_mono,
+                param_byte_offset: &param_byte_offset,
+                param_types: &param_types,
+                param_arrays: &typed.param_arrays,
+                output_arrays: &typed.out_arrays,
+                data_len: &data_len,
+                data_elem_ty: &data_elem_ty,
+                data_struct_roots: &data_struct_roots,
+                data_struct_len: &data_struct_len,
+                struct_fields: &struct_fields,
+                allow_struct_ctor: false,
+                user_fn_param_names: &user_fns.param_names,
+                user_fn_param_defaults: &user_fns.param_defaults,
+                user_fn_param_kinds: &user_fns.param_kinds,
+                user_fn_param_by_ref: &user_fns.param_by_ref,
+                user_registry: user_fns as *const UserFnRegistry,
+                oversample_factor: sample_oversample_factor,
+                oversample_alpha: Some(sub_alpha),
+                oversample_prev_inputs,
+                oversample_input_cache,
+                loop_stack: Vec::new(),
+            };
+            let mut locals = HashMap::new();
+            let mut local_aliases = HashMap::new();
+            let mut local_data_aliases = HashMap::new();
+            for stmt in &typed.sample {
+                lower_stmt(
+                    stmt,
+                    &mut lctx,
+                    &mut locals,
+                    &mut local_aliases,
+                    &mut local_data_aliases,
+                )?;
+            }
+            for (name, slot) in &out_slots {
+                let Some(acc_ptr) = oversample_accum_slots.get(name).copied() else {
+                    continue;
+                };
+                let cur_raw = LLVMBuildLoad2(
+                    builder,
+                    llvm_ty_for_primitive(context, slot.ty),
+                    slot.ptr,
+                    b"os_cur_out\0".as_ptr().cast(),
+                );
+                let cur = match slot.ty {
+                    PrimitiveType::F32 | PrimitiveType::F64 => {
+                        if let (Some(stage1_ptr), Some(stage2_ptr)) = (
+                            oversample_down_iir_stage1.get(name).copied(),
+                            oversample_down_iir_stage2.get(name).copied(),
+                        ) {
+                            let stage_ty = llvm_ty_for_primitive(context, slot.ty);
+                            let coeff = LLVMConstReal(stage_ty, oversample_iir);
+                            let stage1_old = LLVMBuildLoad2(
+                                builder,
+                                stage_ty,
+                                stage1_ptr,
+                                b"os_down_iir1_old\0".as_ptr().cast(),
+                            );
+                            let stage1_delta = build_fsub_fast(
+                                builder,
+                                cur_raw,
+                                stage1_old,
+                                b"os_down_iir1_delta\0",
+                                fast_math_flags,
+                            );
+                            let stage1_step = build_fmul_fast(
+                                builder,
+                                stage1_delta,
+                                coeff,
+                                b"os_down_iir1_scaled\0",
+                                fast_math_flags,
+                            );
+                            let stage1_new = build_fadd_fast(
+                                builder,
+                                stage1_old,
+                                stage1_step,
+                                b"os_down_iir1_new\0",
+                                fast_math_flags,
+                            );
+                            LLVMBuildStore(builder, stage1_new, stage1_ptr);
+                            let stage2_old = LLVMBuildLoad2(
+                                builder,
+                                stage_ty,
+                                stage2_ptr,
+                                b"os_down_iir2_old\0".as_ptr().cast(),
+                            );
+                            let stage2_delta = build_fsub_fast(
+                                builder,
+                                stage1_new,
+                                stage2_old,
+                                b"os_down_iir2_delta\0",
+                                fast_math_flags,
+                            );
+                            let stage2_step = build_fmul_fast(
+                                builder,
+                                stage2_delta,
+                                coeff,
+                                b"os_down_iir2_scaled\0",
+                                fast_math_flags,
+                            );
+                            let stage2_new = build_fadd_fast(
+                                builder,
+                                stage2_old,
+                                stage2_step,
+                                b"os_down_iir2_new\0",
+                                fast_math_flags,
+                            );
+                            LLVMBuildStore(builder, stage2_new, stage2_ptr);
+                            stage2_new
+                        } else {
+                            cur_raw
+                        }
+                    }
+                    _ => cur_raw,
+                };
+                let acc_old = LLVMBuildLoad2(
+                    builder,
+                    llvm_ty_for_primitive(context, slot.ty),
+                    acc_ptr,
+                    b"os_acc_old\0".as_ptr().cast(),
+                );
+                let acc_new = match slot.ty {
+                    PrimitiveType::F32 | PrimitiveType::F64 => {
+                        build_fadd_fast(builder, acc_old, cur, b"os_acc_add\0", fast_math_flags)
+                    }
+                    PrimitiveType::I32 | PrimitiveType::I64 => {
+                        LLVMBuildAdd(builder, acc_old, cur, b"os_acc_add_i\0".as_ptr().cast())
+                    }
+                    PrimitiveType::Bool => cur,
+                };
+                LLVMBuildStore(builder, acc_new, acc_ptr);
+            }
+            if !current_block_terminated(builder) {
+                LLVMBuildBr(builder, sub_latch);
+            }
+
+            LLVMPositionBuilderAtEnd(builder, sub_latch);
+            let sub_latch_block = LLVMGetInsertBlock(builder);
+            if sub_latch_block.is_null() {
+                return Err(Diagnostic::internal(
+                    "failed to get oversample latch block in ORC lowering",
+                ));
+            }
+            let sub_next = LLVMBuildAdd(builder, sub_i, one_i32, b"os_sub_next\0".as_ptr().cast());
+            LLVMBuildBr(builder, sub_cond);
+            let mut sub_back_vals = [sub_next];
+            let mut sub_back_blocks = [sub_latch_block];
+            LLVMAddIncoming(
+                sub_i,
+                sub_back_vals.as_mut_ptr(),
+                sub_back_blocks.as_mut_ptr(),
+                1,
+            );
+
+            LLVMPositionBuilderAtEnd(builder, sub_end);
+            for (name, slot) in &out_slots {
+                let Some(acc_ptr) = oversample_accum_slots.get(name).copied() else {
+                    continue;
+                };
+                let acc = LLVMBuildLoad2(
+                    builder,
+                    llvm_ty_for_primitive(context, slot.ty),
+                    acc_ptr,
+                    b"os_acc_load\0".as_ptr().cast(),
+                );
+                let decimated = match slot.ty {
+                    PrimitiveType::F32 | PrimitiveType::F64 => {
+                        let denom = LLVMConstReal(
+                            llvm_ty_for_primitive(context, slot.ty),
+                            sample_oversample_factor as f64,
+                        );
+                        build_fdiv_fast(builder, acc, denom, b"os_decim\0", fast_math_flags)
+                    }
+                    PrimitiveType::I32 | PrimitiveType::I64 => {
+                        let denom = LLVMConstInt(
+                            llvm_ty_for_primitive(context, slot.ty),
+                            sample_oversample_factor as u64,
+                            0,
+                        );
+                        LLVMBuildSDiv(builder, acc, denom, b"os_decim_i\0".as_ptr().cast())
+                    }
+                    PrimitiveType::Bool => acc,
+                };
+                LLVMBuildStore(builder, decimated, slot.ptr);
+            }
+        }
+
+        let io_cast_ctx = LoweringCtx {
             builder,
             context,
             module,
@@ -375,21 +1002,12 @@ pub(super) unsafe fn build_process_ir(
             user_fn_param_kinds: &user_fns.param_kinds,
             user_fn_param_by_ref: &user_fns.param_by_ref,
             user_registry: user_fns as *const UserFnRegistry,
+            oversample_factor: sample_oversample_factor,
+            oversample_alpha: None,
+            oversample_prev_inputs,
+            oversample_input_cache: None,
             loop_stack: Vec::new(),
         };
-
-        let mut locals = HashMap::new();
-        let mut local_aliases = HashMap::new();
-        let mut local_data_aliases = HashMap::new();
-        for stmt in &typed.sample {
-            lower_stmt(
-                stmt,
-                &mut lctx,
-                &mut locals,
-                &mut local_aliases,
-                &mut local_data_aliases,
-            )?;
-        }
 
         for (ch, name) in typed.outs.iter().enumerate() {
             let slot = out_slots.get(name).ok_or_else(|| {
@@ -406,7 +1024,7 @@ pub(super) unsafe fn build_process_ir(
                 raw_out_value
             } else {
                 cast_orc_value_to(
-                    &lctx,
+                    &io_cast_ctx,
                     OrcValue {
                         value: raw_out_value,
                         ty: slot.ty,
@@ -438,6 +1056,61 @@ pub(super) unsafe fn build_process_ir(
                 b"out_ptr\0",
             );
             LLVMBuildStore(builder, out_value, out_ptr_elt);
+        }
+        if let Some(prev_inputs_ptr) = oversample_prev_inputs {
+            for (idx, name) in typed.ins.iter().enumerate() {
+                let in_ty = *input_types.get(name).unwrap_or(&PrimitiveType::F32);
+                let ch_v = LLVMConstInt(i32_ty, idx as u64, 0);
+                let in_ptr_ptr = build_ptr_offset(
+                    builder,
+                    float_ptr_ty,
+                    in_ptrs,
+                    ch_v,
+                    b"os_prev_in_ch_ptr_ptr\0",
+                );
+                let in_ch_ptr = LLVMBuildLoad2(
+                    builder,
+                    float_ptr_ty,
+                    in_ptr_ptr,
+                    b"os_prev_in_ch_ptr\0".as_ptr().cast(),
+                );
+                let in_ch_ptr_typed = LLVMBuildBitCast(
+                    builder,
+                    in_ch_ptr,
+                    LLVMPointerType(llvm_ty_for_primitive(context, in_ty), 0),
+                    b"os_prev_in_ch_ptr_typed\0".as_ptr().cast(),
+                );
+                let in_sample_ptr = build_f32_ptr_offset(
+                    builder,
+                    llvm_ty_for_primitive(context, in_ty),
+                    in_ch_ptr_typed,
+                    frame_in_body,
+                    b"os_prev_in_sample_ptr\0",
+                );
+                let in_raw = LLVMBuildLoad2(
+                    builder,
+                    llvm_ty_for_primitive(context, in_ty),
+                    in_sample_ptr,
+                    b"os_prev_in_raw\0".as_ptr().cast(),
+                );
+                let in_f32 = cast_orc_value_to(
+                    &io_cast_ctx,
+                    OrcValue {
+                        value: in_raw,
+                        ty: in_ty,
+                    },
+                    PrimitiveType::F32,
+                    b"os_prev_in_cast\0",
+                );
+                let prev_ptr = build_f32_ptr_offset(
+                    builder,
+                    float_ty,
+                    prev_inputs_ptr,
+                    ch_v,
+                    b"os_prev_in_ptr\0",
+                );
+                LLVMBuildStore(builder, in_f32, prev_ptr);
+            }
         }
 
         let next_frame = LLVMBuildAdd(
@@ -496,6 +1169,10 @@ pub(super) unsafe fn build_process_ir(
                 user_fn_param_kinds: &user_fns.param_kinds,
                 user_fn_param_by_ref: &user_fns.param_by_ref,
                 user_registry: user_fns as *const UserFnRegistry,
+                oversample_factor: 1,
+                oversample_alpha: None,
+                oversample_prev_inputs: None,
+                oversample_input_cache: None,
                 loop_stack: Vec::new(),
             };
             let mut block_locals = HashMap::new();
@@ -731,6 +1408,10 @@ pub(super) unsafe fn build_init_ir(
             user_fn_param_kinds: &user_fns.param_kinds,
             user_fn_param_by_ref: &user_fns.param_by_ref,
             user_registry: user_fns as *const UserFnRegistry,
+            oversample_factor: 1,
+            oversample_alpha: None,
+            oversample_prev_inputs: None,
+            oversample_input_cache: None,
             loop_stack: Vec::new(),
         };
 

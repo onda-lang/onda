@@ -1,3 +1,5 @@
+use std::ops::{Deref, DerefMut};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub blocks: Vec<Block>,
@@ -20,7 +22,7 @@ pub enum Block {
     Def(FunctionDef),
     Init(Vec<Stmt>),
     Block(BlockExec),
-    Sample(Vec<Stmt>),
+    Sample(SampleBlock),
 }
 
 impl Block {
@@ -57,8 +59,28 @@ pub enum BlockKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockExec {
     pub pre: Vec<Stmt>,
-    pub sample: Option<Vec<Stmt>>,
+    pub sample: Option<SampleBlock>,
     pub post: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SampleBlock {
+    pub oversample_factor: Option<Expr>,
+    pub body: Vec<Stmt>,
+}
+
+impl Deref for SampleBlock {
+    type Target = Vec<Stmt>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.body
+    }
+}
+
+impl DerefMut for SampleBlock {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.body
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +122,7 @@ pub struct ProcessorDef {
     pub has_init_block: bool,
     pub has_block_block: bool,
     pub has_sample_block: bool,
+    pub sample_oversample_factor: Option<Expr>,
     pub init: Vec<Stmt>,
     pub block_pre: Vec<Stmt>,
     pub sample: Vec<Stmt>,

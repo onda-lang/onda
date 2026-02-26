@@ -10,6 +10,8 @@ fn generate_nested_wrapper_defs(
     proc_api: &HashMap<String, ProcApi>,
     nested_instances: &HashMap<String, ProcCallInstance>,
     ins_names: &HashSet<String>,
+    def_sample_oversample_factors: &mut HashMap<String, usize>,
+    proc_step_oversample_meta: &mut HashMap<String, ProcStepOversampleMeta>,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Block> {
     let mut nested_defs = Vec::<Block>::new();
@@ -255,9 +257,73 @@ fn generate_nested_wrapper_defs(
                 default: None,
             });
         }
+        let nested_step_name = nested_step_fn_name(&proc.name, &nested_path);
+        let callee_sample_oversample_factor = proc_api
+            .get(&callee_proc_name)
+            .map(|api| api.sample_oversample_factor)
+            .unwrap_or(1);
+        if callee_sample_oversample_factor > 1 {
+            let mut input_state_fields = HashMap::<String, ProcInputOversampleStateFields>::new();
+            for in_name in &callee_shape.ins {
+                input_state_fields.insert(
+                    in_name.clone(),
+                    ProcInputOversampleStateFields {
+                        prev: nested_field_name(
+                            &nested_path,
+                            &proc_os_prev_input_field_name(in_name),
+                        ),
+                        up1: nested_field_name(
+                            &nested_path,
+                            &proc_os_up1_input_field_name(in_name),
+                        ),
+                        up2: nested_field_name(
+                            &nested_path,
+                            &proc_os_up2_input_field_name(in_name),
+                        ),
+                    },
+                );
+            }
+            let mut output_state_fields = HashMap::<String, ProcOutputOversampleStateFields>::new();
+            for out_name in &callee_shape.outs {
+                let out_ty = *callee_shape
+                    .out_types
+                    .get(out_name)
+                    .unwrap_or(&PrimitiveType::F32);
+                let output_field = nested_field_name(&nested_path, out_name);
+                let (down1, down2) = if matches!(out_ty, PrimitiveType::F32 | PrimitiveType::F64) {
+                    (
+                        Some(nested_field_name(
+                            &nested_path,
+                            &proc_os_down1_output_field_name(out_name),
+                        )),
+                        Some(nested_field_name(
+                            &nested_path,
+                            &proc_os_down2_output_field_name(out_name),
+                        )),
+                    )
+                } else {
+                    (None, None)
+                };
+                output_state_fields.insert(
+                    output_field,
+                    ProcOutputOversampleStateFields { down1, down2 },
+                );
+            }
+            proc_step_oversample_meta.insert(
+                nested_step_name.clone(),
+                ProcStepOversampleMeta {
+                    input_state_fields,
+                    output_state_fields,
+                },
+            );
+        }
+        def_sample_oversample_factors.insert(
+            nested_step_name.clone(),
+            callee_sample_oversample_factor.max(1),
+        );
         nested_defs.push(Block::Def(FunctionDef {
             type_params: Vec::new(),
-            name: nested_step_fn_name(&proc.name, &nested_path),
+            name: nested_step_name.clone(),
             params: nested_step_params.clone(),
             body: nested_step_body,
         }));
@@ -425,7 +491,7 @@ fn generate_nested_wrapper_defs(
                     Stmt::Expr {
                         loc: None,
                         expr: Expr::UserCall {
-                            name: nested_step_fn_name(&proc.name, &nested_path),
+                            name: nested_step_name.clone(),
                             type_args: Vec::new(),
                             args: call_args,
                         },
@@ -452,9 +518,16 @@ pub(super) fn generate_lowered_proc_blocks(
     struct_defs_by_name: &HashMap<String, StructDef>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
-) -> (Vec<Block>, Vec<Block>) {
+) -> (
+    Vec<Block>,
+    Vec<Block>,
+    HashMap<String, usize>,
+    HashMap<String, ProcStepOversampleMeta>,
+) {
     let mut generated_structs = Vec::<Block>::new();
     let mut generated_defs = Vec::<Block>::new();
+    let mut def_sample_oversample_factors = HashMap::<String, usize>::new();
+    let mut proc_step_oversample_meta = HashMap::<String, ProcStepOversampleMeta>::new();
     for proc_name in proc_order {
         let Some(proc) = proc_defs_by_name.get(proc_name) else {
             continue;
@@ -719,6 +792,8 @@ pub(super) fn generate_lowered_proc_blocks(
             proc_api,
             &nested_instances,
             &ins_names,
+            &mut def_sample_oversample_factors,
+            &mut proc_step_oversample_meta,
             errors,
         ));
         let proc_has_effective_block = proc_api
@@ -892,9 +967,52 @@ pub(super) fn generate_lowered_proc_blocks(
                 default: None,
             });
         }
+        let step_fn_name = format!("{}{}", proc.name, PROC_STEP_FN_SUFFIX);
+        let proc_sample_oversample_factor = proc_api
+            .get(&proc.name)
+            .map(|api| api.sample_oversample_factor)
+            .unwrap_or(1)
+            .max(1);
+        def_sample_oversample_factors.insert(step_fn_name.clone(), proc_sample_oversample_factor);
+        if proc_sample_oversample_factor > 1 {
+            let mut input_state_fields = HashMap::<String, ProcInputOversampleStateFields>::new();
+            for in_name in &shape.ins {
+                input_state_fields.insert(
+                    in_name.clone(),
+                    ProcInputOversampleStateFields {
+                        prev: proc_os_prev_input_field_name(in_name),
+                        up1: proc_os_up1_input_field_name(in_name),
+                        up2: proc_os_up2_input_field_name(in_name),
+                    },
+                );
+            }
+            let mut output_state_fields = HashMap::<String, ProcOutputOversampleStateFields>::new();
+            for out_name in &shape.outs {
+                let out_ty = *shape.out_types.get(out_name).unwrap_or(&PrimitiveType::F32);
+                let (down1, down2) = if matches!(out_ty, PrimitiveType::F32 | PrimitiveType::F64) {
+                    (
+                        Some(proc_os_down1_output_field_name(out_name)),
+                        Some(proc_os_down2_output_field_name(out_name)),
+                    )
+                } else {
+                    (None, None)
+                };
+                output_state_fields.insert(
+                    out_name.clone(),
+                    ProcOutputOversampleStateFields { down1, down2 },
+                );
+            }
+            proc_step_oversample_meta.insert(
+                step_fn_name.clone(),
+                ProcStepOversampleMeta {
+                    input_state_fields,
+                    output_state_fields,
+                },
+            );
+        }
         generated_defs.push(Block::Def(FunctionDef {
             type_params: Vec::new(),
-            name: format!("{}{}", proc.name, PROC_STEP_FN_SUFFIX),
+            name: step_fn_name.clone(),
             params: step_params.clone(),
             body: step_body,
         }));
@@ -924,7 +1042,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     Stmt::Expr {
                         loc: None,
                         expr: Expr::UserCall {
-                            name: format!("{}{}", proc.name, PROC_STEP_FN_SUFFIX),
+                            name: step_fn_name.clone(),
                             type_args: Vec::new(),
                             args: call_args,
                         },
@@ -938,5 +1056,10 @@ pub(super) fn generate_lowered_proc_blocks(
         }
     }
 
-    (generated_structs, generated_defs)
+    (
+        generated_structs,
+        generated_defs,
+        def_sample_oversample_factors,
+        proc_step_oversample_meta,
+    )
 }

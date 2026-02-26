@@ -135,13 +135,100 @@ pub(super) unsafe fn lower_expr(
                     ctx.frame_idx,
                     b"in_ptr\0",
                 );
+                let raw = LLVMBuildLoad2(
+                    ctx.builder,
+                    llvm_ty_for_primitive(ctx.context, in_ty),
+                    ptr,
+                    b"in_load\0".as_ptr().cast(),
+                );
+                if ctx.oversample_factor > 1 {
+                    if let Some(input_cache_ptr) = ctx.oversample_input_cache {
+                        let cached_ptr = build_f32_ptr_offset(
+                            ctx.builder,
+                            ctx.float_ty,
+                            input_cache_ptr,
+                            ch_v,
+                            b"os_cached_in_expr_ptr\0",
+                        );
+                        let cached_f32 = LLVMBuildLoad2(
+                            ctx.builder,
+                            ctx.float_ty,
+                            cached_ptr,
+                            b"os_cached_in_expr\0".as_ptr().cast(),
+                        );
+                        let value = cast_orc_value_to(
+                            ctx,
+                            OrcValue {
+                                value: cached_f32,
+                                ty: PrimitiveType::F32,
+                            },
+                            in_ty,
+                            b"os_cached_in_expr_cast\0",
+                        );
+                        return Ok(OrcValue { value, ty: in_ty });
+                    }
+                }
+                if ctx.oversample_factor > 1 {
+                    if let (Some(alpha), Some(prev_inputs_ptr)) =
+                        (ctx.oversample_alpha, ctx.oversample_prev_inputs)
+                    {
+                        let prev_ptr = build_f32_ptr_offset(
+                            ctx.builder,
+                            ctx.float_ty,
+                            prev_inputs_ptr,
+                            ch_v,
+                            b"os_prev_in_expr_ptr\0",
+                        );
+                        let prev = LLVMBuildLoad2(
+                            ctx.builder,
+                            ctx.float_ty,
+                            prev_ptr,
+                            b"os_prev_in_expr\0".as_ptr().cast(),
+                        );
+                        let current_f32 = cast_orc_value_to(
+                            ctx,
+                            OrcValue {
+                                value: raw,
+                                ty: in_ty,
+                            },
+                            PrimitiveType::F32,
+                            b"os_in_curr_f32\0",
+                        );
+                        let diff = build_fsub_fast(
+                            ctx.builder,
+                            current_f32,
+                            prev,
+                            b"os_in_diff\0",
+                            ctx.fast_math_flags,
+                        );
+                        let scaled = build_fmul_fast(
+                            ctx.builder,
+                            diff,
+                            alpha,
+                            b"os_in_scaled\0",
+                            ctx.fast_math_flags,
+                        );
+                        let interp = build_fadd_fast(
+                            ctx.builder,
+                            prev,
+                            scaled,
+                            b"os_in_interp\0",
+                            ctx.fast_math_flags,
+                        );
+                        let value = cast_orc_value_to(
+                            ctx,
+                            OrcValue {
+                                value: interp,
+                                ty: PrimitiveType::F32,
+                            },
+                            in_ty,
+                            b"os_in_interp_cast\0",
+                        );
+                        return Ok(OrcValue { value, ty: in_ty });
+                    }
+                }
                 return Ok(OrcValue {
-                    value: LLVMBuildLoad2(
-                        ctx.builder,
-                        llvm_ty_for_primitive(ctx.context, in_ty),
-                        ptr,
-                        b"in_load\0".as_ptr().cast(),
-                    ),
+                    value: raw,
                     ty: in_ty,
                 });
             }

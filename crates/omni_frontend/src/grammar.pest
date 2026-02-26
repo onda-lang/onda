@@ -41,8 +41,9 @@ init_block = { "init" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" 
 block_exec_block = { "block" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ block_exec_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 block_exec_list = { block_exec_item ~ (stmt_sep+ ~ block_exec_item)* ~ stmt_sep* }
 block_exec_item = _{ sample_nested_block | stmt }
-sample_nested_block = { "sample" ~ NEWLINE* ~ stmt_block }
-sample_block = { "sample" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+sample_nested_block = { "sample" ~ sample_factor? ~ NEWLINE* ~ stmt_block }
+sample_block = { "sample" ~ sample_factor? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+sample_factor = { expr }
 
 ins_kw = { "ins" | "inputs" }
 outs_kw = { "outs" | "outputs" }

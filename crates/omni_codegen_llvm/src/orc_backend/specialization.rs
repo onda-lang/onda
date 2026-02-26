@@ -59,10 +59,17 @@ pub(super) fn mangle_user_fn_symbol_mono(
     scalar_types: &[PrimitiveType],
     buffer_types: &[(PrimitiveType, TypedBufferChannels)],
     generic_type_args: &[PrimitiveType],
+    sample_rate: f32,
+    block_size: usize,
 ) -> Result<CString, Diagnostic> {
+    let context_suffix = format!(
+        "__sr_{:08x}__bs_{:08x}",
+        sample_rate.to_bits(),
+        (block_size as u32)
+    );
     CString::new(format!(
         "omni_def_{}",
-        user_fn_mono_key(name, scalar_types, buffer_types, generic_type_args)
+        user_fn_mono_key(name, scalar_types, buffer_types, generic_type_args) + &context_suffix
     ))
     .map_err(|_| {
         Diagnostic::internal(format!(

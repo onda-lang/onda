@@ -1,5 +1,25 @@
 use super::*;
 
+pub(super) fn proc_os_prev_input_field_name(input_name: &str) -> String {
+    format!("__omni_os_prev_in__{input_name}")
+}
+
+pub(super) fn proc_os_up1_input_field_name(input_name: &str) -> String {
+    format!("__omni_os_up1_in__{input_name}")
+}
+
+pub(super) fn proc_os_up2_input_field_name(input_name: &str) -> String {
+    format!("__omni_os_up2_in__{input_name}")
+}
+
+pub(super) fn proc_os_down1_output_field_name(output_name: &str) -> String {
+    format!("__omni_os_down1_out__{output_name}")
+}
+
+pub(super) fn proc_os_down2_output_field_name(output_name: &str) -> String {
+    format!("__omni_os_down2_out__{output_name}")
+}
+
 pub(super) fn compute_effective_proc_block_flags(
     proc_order: &[String],
     proc_defs_by_name: &HashMap<String, omni_frontend::ProcessorDef>,
@@ -135,6 +155,7 @@ pub(super) fn struct_defs_for_scalar_expr_inference(
 
 pub(super) fn compute_proc_shape(
     proc: &omni_frontend::ProcessorDef,
+    sample_oversample_factor: usize,
     options: AnalysisOptions,
     proc_symbols: &HashSet<String>,
     proc_primary_output_types: &HashMap<String, PrimitiveType>,
@@ -345,6 +366,36 @@ pub(super) fn compute_proc_shape(
             default: None,
         });
     }
+    if sample_oversample_factor > 1 {
+        for in_name in &ins {
+            for state_name in [
+                proc_os_prev_input_field_name(in_name),
+                proc_os_up1_input_field_name(in_name),
+                proc_os_up2_input_field_name(in_name),
+            ] {
+                fields.push(StructField {
+                    name: state_name,
+                    ty: FieldType::Scalar(PrimitiveType::F32),
+                    default: Some(Expr::Number(0.0)),
+                });
+            }
+        }
+        for out_name in &outs {
+            let out_ty = *out_types.get(out_name).unwrap_or(&PrimitiveType::F32);
+            if matches!(out_ty, PrimitiveType::F32 | PrimitiveType::F64) {
+                fields.push(StructField {
+                    name: proc_os_down1_output_field_name(out_name),
+                    ty: FieldType::Scalar(out_ty),
+                    default: Some(Expr::Number(0.0)),
+                });
+                fields.push(StructField {
+                    name: proc_os_down2_output_field_name(out_name),
+                    ty: FieldType::Scalar(out_ty),
+                    default: Some(Expr::Number(0.0)),
+                });
+            }
+        }
+    }
     for name in &state_scalar_names {
         if reserved.contains(name) {
             continue;
@@ -447,6 +498,7 @@ pub(super) fn compute_proc_shape(
         param_specs,
         buffer_specs,
         in_types,
+        out_types,
         in_array_slots,
         field_array_slots,
         state,
@@ -602,6 +654,7 @@ pub(super) fn build_proc_lowering_shape(
         param_specs: base.param_specs,
         buffer_specs: base.buffer_specs,
         in_types: base.in_types,
+        out_types: base.out_types,
         in_array_slots: base.in_array_slots,
         field_array_slots,
         state: base.state,

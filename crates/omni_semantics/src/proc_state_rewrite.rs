@@ -17,6 +17,7 @@ pub(crate) struct ProcApi {
     pub(crate) outs: Vec<String>,
     pub(crate) buffers: Vec<ProcBufferSpec>,
     pub(crate) has_block: bool,
+    pub(crate) sample_oversample_factor: usize,
 }
 
 #[derive(Debug, Clone)]

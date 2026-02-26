@@ -4,8 +4,8 @@ use omni_frontend::{
     inject_auto_std_math, with_diagnostic_location, AssignTarget, BinaryOp, Block, BlockExec,
     BlockKind, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg,
     CallTypeArg, CmpOp, DataElemType, DeclRange, DeclType, Diagnostic, Expr, FieldType,
-    FnParamType, FunctionDef, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program, Stmt,
-    StructDef, StructField,
+    FnParamType, FunctionDef, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program,
+    SampleBlock, Stmt, StructDef, StructField,
 };
 
 mod builtins;
@@ -55,14 +55,36 @@ pub struct TypedProgram {
     pub buffers: Vec<TypedBufferDecl>,
     pub structs: Vec<TypedStruct>,
     pub defs: Vec<TypedFunction>,
+    pub def_sample_oversample_factors: HashMap<String, usize>,
+    pub proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub init: Vec<Stmt>,
     pub block_pre: Vec<Stmt>,
+    pub sample_oversample_factor: usize,
     pub sample: Vec<Stmt>,
     pub block_post: Vec<Stmt>,
     pub state_vars: Vec<String>,
     pub state_types: Vec<PrimitiveType>,
     pub data_vars: Vec<TypedDataVar>,
     pub data_struct_roots: Vec<TypedDataStructRoot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcStepOversampleMeta {
+    pub input_state_fields: HashMap<String, ProcInputOversampleStateFields>,
+    pub output_state_fields: HashMap<String, ProcOutputOversampleStateFields>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcInputOversampleStateFields {
+    pub prev: String,
+    pub up1: String,
+    pub up2: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcOutputOversampleStateFields {
+    pub down1: Option<String>,
+    pub down2: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

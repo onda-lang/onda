@@ -2102,8 +2102,96 @@ block {
         })
         .expect("block section");
     assert_eq!(block_exec.pre.len(), 1);
-    assert_eq!(block_exec.sample.as_ref().map(Vec::len), Some(1));
+    assert_eq!(block_exec.sample.as_ref().map(|s| s.len()), Some(1));
     assert_eq!(block_exec.post.len(), 1);
+}
+
+#[test]
+fn parses_sample_oversample_factor_brace_form() {
+    let src = r#"
+outs { out1 }
+sample 4 {
+  out1 = in1
+}
+"#;
+    let program = parse_program(src).expect("sample oversample factor should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+    assert_eq!(sample.oversample_factor, Some(Expr::Int(4)));
+    assert_eq!(sample.len(), 1);
+}
+
+#[test]
+fn parses_sample_oversample_factor_indentation_form() {
+    let src = r#"
+outs:
+  out1
+sample 8:
+  out1 = in1
+"#;
+    let program = parse_program(src).expect("indented sample oversample factor should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+    assert_eq!(sample.oversample_factor, Some(Expr::Int(8)));
+    assert_eq!(sample.len(), 1);
+}
+
+#[test]
+fn parses_proc_sample_oversample_factor() {
+    let src = r#"
+proc OS {
+  outs { out1 }
+  sample 2 { out1 = in1 }
+}
+sample { out1 = 0.0 }
+"#;
+    let program = parse_program(src).expect("proc sample oversample factor should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(proc) => Some(proc),
+            _ => None,
+        })
+        .expect("proc block");
+    assert_eq!(proc.sample_oversample_factor, Some(Expr::Int(2)));
+    assert_eq!(proc.sample.len(), 1);
+}
+
+#[test]
+fn parses_block_wrapped_sample_oversample_factor() {
+    let src = r#"
+outs { out1 }
+block {
+  sample 16 {
+    out1 = in1
+  }
+}
+"#;
+    let program = parse_program(src).expect("wrapped sample oversample factor should parse");
+    let block_exec = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Block(exec) => Some(exec),
+            _ => None,
+        })
+        .expect("block section");
+    let sample = block_exec.sample.as_ref().expect("nested sample");
+    assert_eq!(sample.oversample_factor, Some(Expr::Int(16)));
+    assert_eq!(sample.len(), 1);
 }
 
 #[test]

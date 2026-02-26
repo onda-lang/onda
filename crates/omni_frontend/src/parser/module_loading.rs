@@ -371,7 +371,7 @@ fn parse_program_preprocessed(
                 Rule::namespace_block => blocks.extend(parse_namespace_block(pair, "")?),
                 Rule::init_block => blocks.push(Block::Init(parse_exec_block(pair)?)),
                 Rule::block_exec_block => blocks.push(Block::Block(parse_block_exec_block(pair)?)),
-                Rule::sample_block => blocks.push(Block::Sample(parse_exec_block(pair)?)),
+                Rule::sample_block => blocks.push(Block::Sample(parse_sample_block(pair)?)),
                 _ => {}
             }
         }

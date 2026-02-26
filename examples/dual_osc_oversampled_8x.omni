@@ -1,0 +1,59 @@
+def add_phase(p, inc) {
+  next = p + inc
+  if (next >= TWO_PI) {
+    next = next - TWO_PI
+  }
+  return next
+}
+
+proc DualOsc:
+  params:
+    frequency = 110.0
+    modDepth = 1.5
+    detune = 1.0
+
+  outs:
+    out1, out2
+
+  init:
+    phaseA = 0.0
+    phaseB = 0.0
+    lastA = 0.0
+    lastB = 0.0
+
+  sample 8:
+    incA = frequency * TWO_PI / SR
+    incB = (frequency + detune) * TWO_PI / SR
+
+    phaseA = add_phase(phaseA, incA)
+    phaseB = add_phase(phaseB, incB)
+
+    currentA = sin(phaseA + (lastB * modDepth))
+    currentB = sin(phaseB + (lastA * modDepth))
+
+    out1 = currentA
+    out2 = currentB
+
+    lastA = currentA
+    lastB = currentB
+
+params:
+  frequency = 110.0
+  modDepth = 1.5
+  detune = 1.0
+
+outs:
+  out1, out2
+
+init:
+  osc = DualOsc(frequency = frequency, modDepth = modDepth, detune = detune)
+
+block:
+  osc.frequency = frequency
+  osc.modDepth = modDepth
+  osc.detune = detune
+
+  sample:
+    osc()
+    out1 = osc.out1
+    out2 = osc.out2

@@ -23,6 +23,7 @@ struct ProcBaseShape {
     param_specs: Vec<ProcParamSpec>,
     buffer_specs: Vec<ProcBufferSpec>,
     in_types: HashMap<String, PrimitiveType>,
+    out_types: HashMap<String, PrimitiveType>,
     in_array_slots: HashMap<String, Vec<String>>,
     field_array_slots: HashMap<String, Vec<String>>,
     state: ProcStateFields,
@@ -40,6 +41,7 @@ struct ProcLoweringShape {
     param_specs: Vec<ProcParamSpec>,
     buffer_specs: Vec<ProcBufferSpec>,
     in_types: HashMap<String, PrimitiveType>,
+    out_types: HashMap<String, PrimitiveType>,
     in_array_slots: HashMap<String, Vec<String>>,
     field_array_slots: HashMap<String, Vec<String>>,
     state: ProcStateFields,
@@ -57,12 +59,57 @@ struct ProcLoweringEnv {
     lowering_shapes: HashMap<String, ProcLoweringShape>,
 }
 
+pub(crate) struct ProcessorDesugarResult {
+    program: Program,
+    def_sample_oversample_factors: HashMap<String, usize>,
+    proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
+}
+
+const ALLOWED_SAMPLE_OVERSAMPLE_FACTORS: &[i64] = &[1, 2, 4, 8, 16, 32, 64];
+
+fn validated_sample_oversample_factor(
+    factor_expr: Option<&Expr>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> usize {
+    let Some(expr) = factor_expr else {
+        return 1;
+    };
+
+    match expr {
+        Expr::Int(value) => {
+            if ALLOWED_SAMPLE_OVERSAMPLE_FACTORS.contains(value) {
+                *value as usize
+            } else {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "{context} oversampling factor must be one of {{1,2,4,8,16,32,64}}; got {value}"
+                    ),
+                    0,
+                    0,
+                ));
+                1
+            }
+        }
+        _ => {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "{context} oversampling factor must be an integer literal in {{1,2,4,8,16,32,64}}"
+                ),
+                0,
+                0,
+            ));
+            1
+        }
+    }
+}
+
 fn build_proc_lowering_env(
     program: &Program,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcLoweringEnv> {
-    let proc_defs = program
+    let mut proc_defs = program
         .blocks
         .iter()
         .filter_map(|b| match b {
@@ -72,6 +119,16 @@ fn build_proc_lowering_env(
         .collect::<Vec<_>>();
     if proc_defs.is_empty() {
         return None;
+    }
+
+    let mut proc_sample_oversample_factors = HashMap::<String, usize>::new();
+    for proc in &mut proc_defs {
+        let factor = validated_sample_oversample_factor(
+            proc.sample_oversample_factor.as_ref(),
+            &format!("processor '{}' sample block", proc.name),
+            errors,
+        );
+        proc_sample_oversample_factors.insert(proc.name.clone(), factor);
     }
 
     let struct_symbols = program
@@ -153,6 +210,10 @@ fn build_proc_lowering_env(
         }
         let shape = compute_proc_shape(
             proc,
+            proc_sample_oversample_factors
+                .get(&proc.name)
+                .copied()
+                .unwrap_or(1),
             options,
             &proc_symbols,
             &proc_primary_output_types,
@@ -185,6 +246,10 @@ fn build_proc_lowering_env(
                 outs: shape.outs.clone(),
                 buffers: shape.buffer_specs.clone(),
                 has_block: proc.has_block_block,
+                sample_oversample_factor: proc_sample_oversample_factors
+                    .get(&proc.name)
+                    .copied()
+                    .unwrap_or(1),
             },
         );
         base_shapes.insert(proc.name.clone(), shape);
@@ -224,7 +289,7 @@ pub(crate) fn desugar_processors(
     mut program: Program,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
-) -> Program {
+) -> ProcessorDesugarResult {
     rewrite_and_materialize_generic_processors(&mut program, errors);
 
     let Some(ProcLoweringEnv {
@@ -235,10 +300,19 @@ pub(crate) fn desugar_processors(
         lowering_shapes,
     }) = build_proc_lowering_env(&program, options, errors)
     else {
-        return program;
+        return ProcessorDesugarResult {
+            program,
+            def_sample_oversample_factors: HashMap::new(),
+            proc_step_oversample_meta: HashMap::new(),
+        };
     };
 
-    let (generated_structs, generated_defs) = generate_lowered_proc_blocks(
+    let (
+        generated_structs,
+        generated_defs,
+        def_sample_oversample_factors,
+        proc_step_oversample_meta,
+    ) = generate_lowered_proc_blocks(
         &proc_order,
         &proc_defs_by_name,
         &lowering_shapes,
@@ -251,7 +325,11 @@ pub(crate) fn desugar_processors(
     program.blocks.extend(generated_defs);
 
     rewrite_top_level_proc_calls(&mut program, &lowering_shapes, &proc_api, errors);
-    program
+    ProcessorDesugarResult {
+        program,
+        def_sample_oversample_factors,
+        proc_step_oversample_meta,
+    }
 }
 
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
@@ -277,7 +355,11 @@ pub fn analyze_with_options(
     inject_auto_std_math(&mut program)?;
 
     let mut errors = Vec::new();
-    let program = desugar_processors(program, options, &mut errors);
+    let ProcessorDesugarResult {
+        program,
+        def_sample_oversample_factors,
+        proc_step_oversample_meta,
+    } = desugar_processors(program, options, &mut errors);
 
     let mut seen_singleton = HashSet::new();
     for block in &program.blocks {
@@ -350,19 +432,31 @@ pub fn analyze_with_options(
         _ => None,
     };
 
-    let mut sample = match (nested_block_sample, top_sample) {
+    let sample_block = match (nested_block_sample, top_sample) {
         (Some(_), Some(_)) => {
             errors.push(Diagnostic::semantic(
                 "sample block cannot be declared both at top-level and inside block",
                 0,
                 0,
             ));
-            Vec::new()
+            SampleBlock {
+                oversample_factor: None,
+                body: Vec::new(),
+            }
         }
         (Some(v), None) => v,
         (None, Some(v)) => v,
-        (None, None) => Vec::new(),
+        (None, None) => SampleBlock {
+            oversample_factor: None,
+            body: Vec::new(),
+        },
     };
+    let sample_oversample_factor = validated_sample_oversample_factor(
+        sample_block.oversample_factor.as_ref(),
+        "sample block",
+        &mut errors,
+    );
+    let mut sample = sample_block.body;
 
     if sample.is_empty() {
         errors.push(Diagnostic::semantic(
@@ -1410,8 +1504,11 @@ pub fn analyze_with_options(
             buffers: typed_buffers,
             structs: typed_structs,
             defs: typed_defs,
+            def_sample_oversample_factors,
+            proc_step_oversample_meta,
             init,
             block_pre,
+            sample_oversample_factor,
             sample,
             block_post,
             state_vars: sorted_state,

@@ -326,7 +326,7 @@ pub(super) fn parse_proc_block(
     let mut buffers = Vec::new();
     let mut init: Option<Vec<Stmt>> = None;
     let mut block_exec: Option<BlockExec> = None;
-    let mut sample: Option<Vec<Stmt>> = None;
+    let mut sample: Option<SampleBlock> = None;
 
     for child in block_pair.into_inner() {
         match child.as_rule() {
@@ -398,7 +398,7 @@ pub(super) fn parse_proc_block(
                         0,
                     )]);
                 }
-                sample = Some(parse_exec_block(child)?);
+                sample = Some(parse_sample_block(child)?);
             }
             _ => {}
         }
@@ -432,6 +432,13 @@ pub(super) fn parse_proc_block(
         sample = Some(nested_sample);
     }
 
+    let has_sample_block = sample.is_some();
+    let (sample_oversample_factor, sample_body) = if let Some(sample_block) = sample {
+        (sample_block.oversample_factor, sample_block.body)
+    } else {
+        (None, Vec::new())
+    };
+
     Ok(ProcessorDef {
         name,
         type_params,
@@ -441,10 +448,11 @@ pub(super) fn parse_proc_block(
         buffers,
         has_init_block: init.is_some(),
         has_block_block,
-        has_sample_block: sample.is_some(),
+        has_sample_block,
+        sample_oversample_factor,
         init: init.unwrap_or_default(),
         block_pre,
-        sample: sample.unwrap_or_default(),
+        sample: sample_body,
         block_post,
     })
 }

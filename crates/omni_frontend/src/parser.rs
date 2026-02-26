@@ -13,7 +13,8 @@ use crate::ast::{
     AssignTarget, BinaryOp, Block, BlockExec, BufferChannels, BufferDecl, BufferElemType,
     BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp, DataElemType, DataTypeSpec, DeclRange,
     DeclType, Expr, FieldType, FnParamDecl, FnParamType, FunctionDef, LogicalOp, ParamDecl,
-    PortDecl, PrimitiveType, ProcessorDef, Program, SourceLoc, Stmt, StructDef, StructField,
+    PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Stmt, StructDef,
+    StructField,
 };
 use crate::diagnostics::Diagnostic;
 

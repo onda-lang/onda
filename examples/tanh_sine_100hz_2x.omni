@@ -1,0 +1,10 @@
+import std/osc
+
+params:
+  drive = 80.0
+
+init:
+  osc = std::osc::Sine(freq = 100.0)
+
+sample 2:
+  out1 = tanh(osc() * drive)
