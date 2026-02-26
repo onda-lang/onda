@@ -4,7 +4,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use omni_codegen_llvm::{lower_and_jit_with_options, CompileOptions, ExecutionBackend};
-use omni_examples::SINE;
 use omni_frontend::{parse_program, Diagnostic};
 use omni_runtime::{bind_output, create_instance, process_bound, InstanceConfig};
 use omni_semantics::{analyze_with_options, AnalysisOptions};
@@ -13,11 +12,27 @@ const SAMPLE_RATE: u32 = 48_000;
 const DURATION_SECONDS: u32 = 3;
 const BLOCK_FRAMES: usize = 480;
 
+const SINE: &str = r#"
+outs {
+  out1
+}
+params {
+  freq = 440.0
+}
+init {
+  phase = 0.0
+}
+sample {
+  phase = phase + freq * TWO_PI / SR
+  out1 = sin(phase)
+}
+"#;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output_path = env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/sine_orc_3s.wav"));
+        .unwrap_or_else(|| PathBuf::from("target/sine.wav"));
 
     let parsed = parse_program(SINE).map_err(|d| format_diagnostics("parse failed", &d))?;
     let typed = analyze_with_options(

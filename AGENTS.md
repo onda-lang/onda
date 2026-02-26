@@ -1,1 +1,1 @@
-Read INFO.md and TODO.md
+Read README.md, INFO.md, SYNTAX.md and TODO.md

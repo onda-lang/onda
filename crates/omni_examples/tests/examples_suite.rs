@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use omni_codegen_llvm::{CompileOptions, ExecutionBackend};
-use omni_examples::{GAIN, ONE_POLE, SINE};
 use omni_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use omni_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
@@ -11,6 +10,56 @@ use omni_runtime::{
     validate_buffers, validate_outputs, InstanceConfig,
 };
 use omni_semantics::{analyze, analyze_with_options, AnalysisOptions};
+
+const GAIN: &str = r#"
+ins {
+  in1
+}
+outs {
+  out1
+}
+params {
+  gain = 1.0
+}
+sample {
+  out1 = in1 * gain
+}
+"#;
+
+const SINE: &str = r#"
+outs {
+  out1
+}
+params {
+  freq = 440.0
+}
+init {
+  phase = 0.0
+}
+sample {
+  phase = phase + freq * TWO_PI / SR
+  out1 = sin(phase)
+}
+"#;
+
+const ONE_POLE: &str = r#"
+ins {
+  in1
+}
+outs {
+  out1
+}
+params {
+  a = 0.1
+}
+init {
+  z = 0.0
+}
+sample {
+  z = z + a * (in1 - z)
+  out1 = z
+}
+"#;
 
 const IF_EXAMPLE: &str = r#"
 outs { out1 }

@@ -9,9 +9,6 @@ authors.workspace = true
 default = []
 llvm-orc = ["omni_codegen_llvm/llvm-orc"]
 
-[lib]
-path = "src/lib.rs"
-
 [dev-dependencies]
 omni_frontend = { path = "../omni_frontend" }
 omni_semantics = { path = "../omni_semantics" }
