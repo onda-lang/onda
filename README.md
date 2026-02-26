@@ -19,8 +19,12 @@ Current backend target is ORC JIT only.
 ## Quick start
 
 1. Bootstrap LLVM from source (default static-link setup):
-   - `pwsh ./scripts/bootstrap-llvm-source.ps1`
-   - `pwsh ./scripts/use-llvm-env.ps1`
+   - Windows (PowerShell):
+     - `pwsh ./scripts/bootstrap-llvm-source.ps1`
+     - `pwsh ./scripts/use-llvm-env.ps1`
+   - macOS/Linux (bash):
+     - `bash ./scripts/bootstrap-llvm-source.sh`
+     - `source ./scripts/use-llvm-env.sh`
 2. Build/check:
    - `cargo check --workspace`
 3. Compile an Omni file:
@@ -32,6 +36,10 @@ Notes:
 - `scripts/bootstrap-llvm-source.ps1` defaults to `-Linkage Static`.
 - `scripts/use-llvm-env.ps1` defaults to `-Flavor auto`, which prefers `source-static` when available.
 - If you use `scripts/bootstrap-llvm.ps1` (prebuilt LLVM), linking is dynamic (`LLVM-C.dll`).
+- Shell equivalents are available for macOS/Linux:
+  - `scripts/bootstrap-llvm-source.sh`
+  - `scripts/use-llvm-env.sh`
+  - `scripts/bootstrap-llvm.sh`
 
 ## C API quick start
 

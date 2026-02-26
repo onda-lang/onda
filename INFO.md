@@ -186,9 +186,11 @@
 ## LLVM dependency strategy
 - Prebuilt LLVM is vendored under `.deps/llvm/21.1.2`.
 - Source bootstrap supports linkage modes:
-  - static install: `.deps/llvm-src/21.1.2-static` (`scripts/bootstrap-llvm-source.ps1 -Linkage Static`)
-  - shared install: `.deps/llvm-src/21.1.2-shared` (`scripts/bootstrap-llvm-source.ps1 -Linkage Shared`)
-- `scripts/use-llvm-env.ps1` can select a flavor (`auto`, `prebuilt`, `source-static`, `source-shared`, `source`).
+  - static install: `.deps/llvm-src/21.1.2-static` (`scripts/bootstrap-llvm-source.ps1 -Linkage Static` or `scripts/bootstrap-llvm-source.sh --linkage Static`)
+  - shared install: `.deps/llvm-src/21.1.2-shared` (`scripts/bootstrap-llvm-source.ps1 -Linkage Shared` or `scripts/bootstrap-llvm-source.sh --linkage Shared`)
+- LLVM env-selection scripts can select flavor (`auto`, `prebuilt`, `source-static`, `source-shared`, `source`):
+  - PowerShell: `scripts/use-llvm-env.ps1`
+  - bash: `scripts/use-llvm-env.sh` (source it in the current shell)
 - `llvm-sys` line is `211.x` (compatible with LLVM 21.1.x C API).
 - ORC path is implemented through `llvm-sys`.
 
