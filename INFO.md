@@ -3,20 +3,6 @@
 ## Overview
 `omni-llvm` is a Rust compiler/runtime for an Omni-syntax audio DSL, targeting LLVM ORC JIT for host embedding (C ABI first-class).
 
-## Validation snapshot (2026-02-25)
-
-- `cargo check --workspace`: pass
-- `cargo test -p omni_examples`: pass (`187 passed`)
-- Repository-root `examples/*.omni` compile via CLI: pass
-  - command:
-    - `Get-ChildItem examples -Filter *.omni | Sort-Object Name | ForEach-Object { cargo run -p omni_cli -- compile $_.FullName }`
-
-## Source navigation status (2026-02)
-
-### High-level verdict
-- `omni_semantics`: good navigation now. `lib.rs` is mostly type definitions + module wiring, with heavy logic split into focused files.
-- `omni_codegen_llvm`: mostly good navigation. ORC backend internals are split into domain modules; a few files are still intentionally large but now grouped by responsibility.
-
 ### Module map: semantics (`crates/omni_semantics/src`)
 - Entry:
   - `lib.rs` (public types + orchestration wiring)
@@ -130,6 +116,10 @@
   - statement call + field reads is supported for stateful updates + explicit output access
 - Nested processor state/composition is supported, including deep nesting.
 - Processor constructor arguments for params/buffers are enforced as named-only.
+- Sample oversampling is implemented for both top-level and proc sample blocks:
+  - syntax: `sample N:` where `N` is one of `{1,2,4,8,16,32,64}`.
+  - oversampling path is compiler-managed (input interpolation, held params, filtered decimation).
+  - proc-level oversampling uses the same codegen-rate specialization model as top-level oversampling (unified behavior model, no source-level `SR` rewrite hack).
 
 ### External buffers
 - Implemented in language, semantics, runtime, and C API.

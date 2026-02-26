@@ -122,36 +122,17 @@
       - semantic tests for graph/sample exclusivity, node declaration requirements, param-destination rate inference/override, and delay-cycle legality;
       - runtime/codegen tests for multi-out routing, param modulation, and delayed feedback behavior.
 
-- Oversampling factor on `sample` block
-  - Locked MVP syntax:
-    - `sample:` keeps current behavior (`N = 1`).
-    - `sample N:` oversamples the entire sample block by `N` (both top-level `sample` and `proc sample`).
-    - `N` must be one of `{2, 4, 8, 16}`.
-    - No `up`/`down` nested blocks in MVP.
-  - Locked MVP semantics:
-    - `N = 1` is exactly current sample behavior (no interpolation/decimation path and no rate-conversion filtering).
-    - Invalid factors (`sample 3:`, non-literal factors, etc.) are semantic errors with explicit allowed set `{1,2,4,8,16}`.
-    - The whole sample body executes at substep rate when `N > 1`.
-    - Proc calls inside `sample N:` run at substep rate (`N` calls per base sample).
-    - `out*` assignments can remain in normal source order; final outputs return to base rate via compiler-managed decimation at sample-block boundary.
-    - Proc params/state assignments inside `sample N:` execute per substep.
-  - Locked MVP rate-conversion behavior:
-    - `ins` read in `sample N:` are interpolated to substeps (not ZOH hold).
-    - `params` read in `sample N:` are held constant across substeps within the base sample.
-    - Up/down conversion filters are compiler/runtime-managed with fixed high-quality settings in MVP.
-    - Chosen filter family for MVP: IIR polyphase.
-  - Delivery plan:
-    - Frontend: parser + AST support for optional oversampling factor on `sample` blocks.
-    - Semantics: factor validation and `sample` annotation rules (default `N=1`, allowed set `{1,2,4,8,16}`).
-    - Codegen: whole-sample substep loop lowering, interpolating input reads, held params, and output decimation at block boundary.
-    - Tests:
-      - parser/semantic conformance for valid/invalid `sample N:` usage;
-      - runtime tests that full-block oversampling matches deterministic execution order;
-      - audio quality regression tests for alias reduction on nonlinear patches;
-      - performance benchmark target at `N=4`: provisional budget `<= 2.5x` baseline cost on representative patches.
-  - Follow-up (post-MVP):
+- Oversampling follow-ups (core implementation is done)
+  - Implemented:
+    - `sample N:` is supported for both top-level `sample` and `proc sample`.
+    - Allowed factors are `{1,2,4,8,16,32,64}`.
+    - Invalid factors / non-literal factors are semantic errors.
+    - Input interpolation + output decimation/filtering are compiler-managed.
+    - Proc and top-level oversampling now share the same codegen specialization model (no proc-specific `SR` rewrite workaround).
+  - Remaining follow-ups:
     - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
     - Consider user-exposed quality/performance modes.
+    - Add explicit performance budget tracking for higher factors (`N=32`, `N=64`) on representative patches.
 
 - Standard library modules
   - Add more DSP coverage to the built-in stdlib (beyond current `std/math`, `std/osc`, `std/filter`, `std/env`, `std/delay` MVP set).

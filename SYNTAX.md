@@ -166,6 +166,39 @@ Supported:
 - `continue`
 - `return`
 
+## 5.1 Sample oversampling (`sample N`)
+
+`sample` blocks support an optional oversampling factor:
+
+```omni
+sample:
+  out1 = in1
+
+sample 4:
+  out1 = tanh(in1 * 8.0)
+```
+
+The same syntax is supported inside processors:
+
+```omni
+proc Drive:
+  ins: in1
+  outs: out1
+  sample 8:
+    out1 = tanh(in1 * 12.0)
+```
+
+Rules:
+- Allowed factors: `1`, `2`, `4`, `8`, `16`, `32`, `64`
+- `sample:` is equivalent to `sample 1:`
+- Factor must be an integer literal
+- Invalid factors and non-literal factors are semantic errors
+
+Runtime behavior:
+- input reads are interpolated across oversample substeps
+- params are held within the base sample
+- outputs are filtered/decimated back to base rate by compiler-managed conversion
+
 ## 6 Functions (`def`)
 
 Supported:
