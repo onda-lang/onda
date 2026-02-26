@@ -364,6 +364,7 @@ fn parse_program_preprocessed(
                 Rule::ins_block => blocks.push(Block::Ins(parse_port_block(pair)?)),
                 Rule::outs_block => blocks.push(Block::Outs(parse_port_block(pair)?)),
                 Rule::params_block => blocks.push(Block::Params(parse_params_block(pair)?)),
+                Rule::events_block => blocks.push(Block::Events(parse_events_block(pair)?)),
                 Rule::buffers_block => blocks.push(Block::Buffers(parse_buffers_block(pair)?)),
                 Rule::proc_block => blocks.push(Block::Proc(parse_proc_block(pair)?)),
                 Rule::struct_block => blocks.push(Block::Struct(parse_struct_block(pair)?)),

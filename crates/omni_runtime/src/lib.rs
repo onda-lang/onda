@@ -74,6 +74,10 @@ impl Instance {
         self.program.buffer_count()
     }
 
+    pub fn event_count(&self) -> usize {
+        self.program.event_count()
+    }
+
     pub fn input_name(&self, index: usize) -> Option<&str> {
         self.program.input_name(index)
     }
@@ -90,6 +94,10 @@ impl Instance {
         self.program.buffer_name(index)
     }
 
+    pub fn event_name(&self, index: usize) -> Option<&str> {
+        self.program.event_name(index)
+    }
+
     pub fn input_index(&self, name: &str) -> Option<usize> {
         self.program.input_index(name)
     }
@@ -104,6 +112,10 @@ impl Instance {
 
     pub fn buffer_index(&self, name: &str) -> Option<usize> {
         self.program.buffer_index(name)
+    }
+
+    pub fn event_index(&self, name: &str) -> Option<usize> {
+        self.program.event_index(name)
     }
 
     pub fn input_type(&self, index: usize) -> Option<String> {
@@ -132,6 +144,10 @@ impl Instance {
 
     pub fn param_type_bytes(&self, index: usize) -> Option<usize> {
         self.program.param_type_bytes(index)
+    }
+
+    pub fn event_payload_bytes(&self, index: usize) -> Option<usize> {
+        self.program.event_payload_bytes(index)
     }
 }
 
@@ -559,6 +575,45 @@ pub fn process_bound(instance: &mut Instance, frames: usize) -> Result<(), Diagn
         &instance.buffer_channels,
     )?;
     Ok(())
+}
+
+pub fn trigger_event_by_index(
+    instance: &mut Instance,
+    event_index: usize,
+    payload: &[u8],
+) -> Result<(), Diagnostic> {
+    if !instance.buffers_validated {
+        validate_buffers(instance)?;
+    }
+    instance.program.trigger_event_by_index(
+        &mut instance.state,
+        &instance.params,
+        event_index,
+        payload,
+        &instance.buffer_ptrs,
+        &instance.buffer_frames,
+        &instance.buffer_channels,
+    )
+}
+
+pub unsafe fn trigger_event_by_index_unchecked(
+    instance: &mut Instance,
+    event_index: usize,
+    payload: &[u8],
+) -> Result<(), Diagnostic> {
+    debug_assert!(
+        instance.buffers_validated,
+        "trigger_event_by_index_unchecked called without validating required buffer bindings"
+    );
+    instance.program.trigger_event_by_index_unchecked(
+        &mut instance.state,
+        &instance.params,
+        event_index,
+        payload,
+        &instance.buffer_ptrs,
+        &instance.buffer_frames,
+        &instance.buffer_channels,
+    )
 }
 
 pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<(), Diagnostic> {

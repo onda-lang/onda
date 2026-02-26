@@ -2,6 +2,8 @@
 
 ## Next Features
 
+- Array procs
+
 - Graph composition syntax
   - Locked MVP syntax:
     - `graph` is an alternative to `sample` (mutually exclusive), while `init` stays available.
@@ -121,6 +123,10 @@
       - parser coverage for all edge forms and invalid variants;
       - semantic tests for graph/sample exclusivity, node declaration requirements, param-destination rate inference/override, and delay-cycle legality;
       - runtime/codegen tests for multi-out routing, param modulation, and delayed feedback behavior.
+
+- Events follow-ups (MVP is implemented)
+  - Clarify/lock policy for triggering proc events from general Omni code paths outside event handlers (currently this is intentionally not expanded further).
+  - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.
 
 - Oversampling follow-ups (core implementation is done)
   - Implemented:

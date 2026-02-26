@@ -25,8 +25,8 @@ use omni_frontend::{
     PrimitiveType, Stmt,
 };
 use omni_semantics::{
-    ProcStepOversampleMeta, TypedArrayInfo, TypedBufferChannels, TypedFieldType, TypedFnParam,
-    TypedFunction, TypedProgram, TypedStructField,
+    ProcStepOversampleMeta, TypedArrayInfo, TypedBufferChannels, TypedEventParamType,
+    TypedFieldType, TypedFnParam, TypedFunction, TypedProgram, TypedStructField,
 };
 
 mod builtin_intrinsics;
@@ -67,6 +67,8 @@ type OrcProcessFn = unsafe extern "C" fn(
     *const i32,
 );
 type OrcInitFn = unsafe extern "C" fn(*const u8, *mut u8);
+type OrcEventFn =
+    unsafe extern "C" fn(*const u8, *const u8, *mut u8, *const *mut u8, *const i32, *const i32);
 
 fn is_proc_glue_function_name(name: &str) -> bool {
     name.contains(".__proc_")
@@ -118,7 +120,7 @@ pub(crate) fn compile_orc(
             ));
         }
 
-        let (process_fn, init_fn) =
+        let (process_fn, init_fn, event_fns) =
             match compile_module_into_jit(lljit, typed, sample_rate, block_size, fast_math) {
                 Ok(f) => f,
                 Err(diag) => {
@@ -131,6 +133,7 @@ pub(crate) fn compile_orc(
             lljit,
             process_fn,
             init_fn,
+            event_fns,
             param_size_bytes: typed
                 .params
                 .iter()
@@ -205,6 +208,7 @@ pub(crate) struct OrcProcess {
     lljit: LLVMOrcLLJITRef,
     process_fn: OrcProcessFn,
     init_fn: OrcInitFn,
+    event_fns: Vec<OrcEventFn>,
     param_size_bytes: usize,
     in_channels: usize,
     out_channels: usize,
@@ -263,6 +267,31 @@ impl OrcProcess {
             (self.init_fn)(params, state);
         }
     }
+
+    pub(crate) fn run_event(
+        &self,
+        event_index: u32,
+        payload: *const u8,
+        params: *const u8,
+        state: *mut u8,
+        buffer_ptrs: *const *mut u8,
+        buffer_frames: *const i32,
+        buffer_channels: *const i32,
+    ) {
+        let Some(fn_ref) = self.event_fns.get(event_index as usize).copied() else {
+            return;
+        };
+        unsafe {
+            (fn_ref)(
+                payload,
+                params,
+                state,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+            );
+        }
+    }
 }
 
 impl Drop for OrcProcess {
@@ -305,7 +334,7 @@ unsafe fn compile_module_into_jit(
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
-) -> Result<(OrcProcessFn, OrcInitFn), Diagnostic> {
+) -> Result<(OrcProcessFn, OrcInitFn, Vec<OrcEventFn>), Diagnostic> {
     let (module, ts_context) =
         build_optimized_module_for_jit(lljit, typed, sample_rate, block_size, fast_math)?;
 
@@ -333,9 +362,18 @@ unsafe fn compile_module_into_jit(
 
     let process_addr = lookup_symbol(lljit, "omni_process", "process function")?;
     let init_addr = lookup_symbol(lljit, "omni_init", "init function")?;
+    let mut event_fns = Vec::<OrcEventFn>::new();
+    for event_idx in 0..typed.events.len() {
+        let symbol_name = format!("omni_event_{event_idx}");
+        let event_addr = lookup_symbol(lljit, &symbol_name, "event function")?;
+        event_fns.push(std::mem::transmute::<usize, OrcEventFn>(
+            event_addr as usize,
+        ));
+    }
     Ok((
         std::mem::transmute::<usize, OrcProcessFn>(process_addr as usize),
         std::mem::transmute::<usize, OrcInitFn>(init_addr as usize),
+        event_fns,
     ))
 }
 
@@ -406,6 +444,19 @@ unsafe fn build_optimized_module_for_jit(
         return Err(diag);
     }
     if let Err(diag) = build_process_ir(
+        typed,
+        module,
+        context,
+        &mut user_fns,
+        sample_rate,
+        block_size,
+        fast_math,
+    ) {
+        LLVMDisposeModule(module);
+        LLVMOrcDisposeThreadSafeContext(ts_context);
+        return Err(diag);
+    }
+    if let Err(diag) = build_event_ir(
         typed,
         module,
         context,

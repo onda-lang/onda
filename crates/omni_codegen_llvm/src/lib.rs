@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use omni_frontend::{Diagnostic, PrimitiveType};
 use omni_semantics::{
-    TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedConstValue, TypedProgram,
-    TypedValueRange,
+    TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedConstValue, TypedEventParamType,
+    TypedProgram, TypedValueRange,
 };
 
 #[cfg(feature = "llvm-orc")]
@@ -42,10 +42,12 @@ pub struct JitProgram {
     inputs: Arc<Vec<DeclaredIo>>,
     outputs: Arc<Vec<DeclaredIo>>,
     params: Arc<Vec<DeclaredIo>>,
+    events: Arc<Vec<DeclaredEvent>>,
     buffers: Arc<Vec<DeclaredBuffer>>,
     input_index: Arc<HashMap<String, usize>>,
     output_index: Arc<HashMap<String, usize>>,
     param_index: Arc<HashMap<String, usize>>,
+    event_index: Arc<HashMap<String, usize>>,
     buffer_index: Arc<HashMap<String, usize>>,
     #[cfg(feature = "llvm-orc")]
     compiled: Arc<orc_backend::OrcProcess>,
@@ -160,6 +162,65 @@ impl DeclaredBuffer {
             DeclaredBufferChannels::Static(ch) => format!("buffer[{elem}[{ch}]]"),
             DeclaredBufferChannels::Dynamic => format!("buffer[{elem}[]]"),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeclaredEvent {
+    name: String,
+    params: Vec<DeclaredEventParam>,
+    payload_bytes: usize,
+}
+
+impl DeclaredEvent {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn params(&self) -> &[DeclaredEventParam] {
+        &self.params
+    }
+
+    pub fn payload_bytes(&self) -> usize {
+        self.payload_bytes
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeclaredEventParam {
+    name: String,
+    elem_ty: PrimitiveType,
+    array_len: usize,
+    byte_offset: usize,
+}
+
+impl DeclaredEventParam {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn elem_ty(&self) -> PrimitiveType {
+        self.elem_ty
+    }
+
+    pub fn array_len(&self) -> usize {
+        self.array_len
+    }
+
+    pub fn byte_offset(&self) -> usize {
+        self.byte_offset
+    }
+
+    pub fn type_repr(&self) -> String {
+        if self.array_len == 1 {
+            primitive_type_name(self.elem_ty).to_owned()
+        } else {
+            format!("{}[{}]", primitive_type_name(self.elem_ty), self.array_len)
+        }
+    }
+
+    pub fn byte_size(&self) -> usize {
+        primitive_type_bytes(self.elem_ty).saturating_mul(self.array_len)
     }
 }
 
@@ -328,6 +389,14 @@ fn build_name_to_index(entries: &[DeclaredIo]) -> HashMap<String, usize> {
         .collect()
 }
 
+fn build_event_name_to_index(entries: &[DeclaredEvent]) -> HashMap<String, usize> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(idx, e)| (e.name.clone(), idx))
+        .collect()
+}
+
 fn build_declared_buffers(typed: &TypedProgram) -> Vec<DeclaredBuffer> {
     typed
         .buffers
@@ -342,6 +411,45 @@ fn build_declared_buffers(typed: &TypedProgram) -> Vec<DeclaredBuffer> {
             },
         })
         .collect()
+}
+
+fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
+    typed
+        .events
+        .iter()
+        .map(|event| {
+            let mut params = Vec::<DeclaredEventParam>::new();
+            let mut byte_offset = 0usize;
+            for param in &event.params {
+                match param.ty {
+                    TypedEventParamType::Scalar(elem_ty) => {
+                        params.push(DeclaredEventParam {
+                            name: param.name.clone(),
+                            elem_ty,
+                            array_len: 1,
+                            byte_offset,
+                        });
+                        byte_offset = byte_offset.saturating_add(primitive_type_bytes(elem_ty));
+                    }
+                    TypedEventParamType::Array { elem, len } => {
+                        params.push(DeclaredEventParam {
+                            name: param.name.clone(),
+                            elem_ty: elem,
+                            array_len: len,
+                            byte_offset,
+                        });
+                        byte_offset = byte_offset
+                            .saturating_add(primitive_type_bytes(elem).saturating_mul(len));
+                    }
+                }
+            }
+            DeclaredEvent {
+                name: event.name.clone(),
+                params,
+                payload_bytes: byte_offset,
+            }
+        })
+        .collect::<Vec<_>>()
 }
 
 pub fn lower_and_jit(typed: TypedProgram) -> Result<JitProgram, Vec<Diagnostic>> {
@@ -420,6 +528,7 @@ fn build_orc_program(
         &empty_ranges,
     );
     let params = build_declared_param_ios(&typed);
+    let events = build_declared_events(&typed);
     let buffers = build_declared_buffers(&typed);
     let compiled = orc_backend::compile_orc(&typed, sample_rate, block_size, fast_math)
         .map_err(|d| vec![d])?;
@@ -429,6 +538,7 @@ fn build_orc_program(
         input_index: Arc::new(build_name_to_index(&inputs)),
         output_index: Arc::new(build_name_to_index(&outputs)),
         param_index: Arc::new(build_name_to_index(&params)),
+        event_index: Arc::new(build_event_name_to_index(&events)),
         buffer_index: Arc::new(
             buffers
                 .iter()
@@ -439,6 +549,7 @@ fn build_orc_program(
         inputs: Arc::new(inputs),
         outputs: Arc::new(outputs),
         params: Arc::new(params),
+        events: Arc::new(events),
         buffers: Arc::new(buffers),
         compiled: Arc::new(compiled),
     })
@@ -527,6 +638,10 @@ impl JitProgram {
         self.buffers.len()
     }
 
+    pub fn event_count(&self) -> usize {
+        self.events.len()
+    }
+
     pub fn input_name(&self, index: usize) -> Option<&str> {
         self.inputs.get(index).map(DeclaredIo::name)
     }
@@ -541,6 +656,10 @@ impl JitProgram {
 
     pub fn buffer_name(&self, index: usize) -> Option<&str> {
         self.buffers.get(index).map(DeclaredBuffer::name)
+    }
+
+    pub fn event_name(&self, index: usize) -> Option<&str> {
+        self.events.get(index).map(DeclaredEvent::name)
     }
 
     pub fn input_index(&self, name: &str) -> Option<usize> {
@@ -559,6 +678,10 @@ impl JitProgram {
         self.buffer_index.get(name).copied()
     }
 
+    pub fn event_index(&self, name: &str) -> Option<usize> {
+        self.event_index.get(name).copied()
+    }
+
     pub fn input_type(&self, index: usize) -> Option<String> {
         self.inputs.get(index).map(DeclaredIo::type_repr)
     }
@@ -573,6 +696,10 @@ impl JitProgram {
 
     pub fn buffer_type(&self, index: usize) -> Option<String> {
         self.buffers.get(index).map(DeclaredBuffer::type_repr)
+    }
+
+    pub fn event_payload_bytes(&self, index: usize) -> Option<usize> {
+        self.events.get(index).map(DeclaredEvent::payload_bytes)
     }
 
     pub fn input_type_bytes(&self, index: usize) -> Option<usize> {
@@ -601,6 +728,10 @@ impl JitProgram {
 
     pub fn block_size(&self) -> usize {
         self.block_size
+    }
+
+    pub fn event_descriptor(&self, index: usize) -> Option<&DeclaredEvent> {
+        self.events.get(index)
     }
 
     pub fn initialize_state(&self, params: &[u8]) -> Result<RuntimeState, Diagnostic> {
@@ -694,6 +825,106 @@ impl JitProgram {
                 frames,
                 in_ptrs,
                 out_ptrs,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+            );
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
+    pub fn trigger_event_by_index(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        payload: &[u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+    ) -> Result<(), Diagnostic> {
+        let Some(desc) = self.event_descriptor(event_index) else {
+            return Ok(());
+        };
+        let expected = desc.payload_bytes();
+        if payload.len() != expected {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "event '{}' expects {} payload bytes, got {}",
+                    desc.name(),
+                    expected,
+                    payload.len()
+                ),
+                0,
+                0,
+            ));
+        }
+        #[cfg(feature = "llvm-orc")]
+        {
+            return trigger_event_orc(
+                &self.compiled,
+                state,
+                params,
+                event_index,
+                payload,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+            );
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            let _ = (
+                state,
+                params,
+                event_index,
+                payload,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+            );
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
+    pub unsafe fn trigger_event_by_index_unchecked(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        payload: &[u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+    ) -> Result<(), Diagnostic> {
+        if self.event_descriptor(event_index).is_none() {
+            return Ok(());
+        }
+        #[cfg(feature = "llvm-orc")]
+        {
+            trigger_event_orc_unchecked(
+                &self.compiled,
+                state,
+                params,
+                event_index,
+                payload,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+            );
+            return Ok(());
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            let _ = (
+                state,
+                params,
+                event_index,
+                payload,
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
@@ -826,6 +1057,102 @@ unsafe fn process_bound_orc_unchecked(
         buffer_frames.as_ptr(),
         buffer_channels.as_ptr(),
     );
+}
+
+#[cfg(feature = "llvm-orc")]
+fn trigger_event_orc(
+    compiled: &orc_backend::OrcProcess,
+    state: &mut RuntimeState,
+    params: &[u8],
+    event_index: usize,
+    payload: &[u8],
+    buffer_ptrs: &[*mut u8],
+    buffer_frames: &[i32],
+    buffer_channels: &[i32],
+) -> Result<(), Diagnostic> {
+    if buffer_ptrs.len() != compiled.buffer_count()
+        || buffer_frames.len() != compiled.buffer_count()
+        || buffer_channels.len() != compiled.buffer_count()
+    {
+        return Err(Diagnostic::runtime(
+            format!(
+                "runtime buffer metadata count mismatch: ptrs={}, frames={}, chans={}, expected={}",
+                buffer_ptrs.len(),
+                buffer_frames.len(),
+                buffer_channels.len(),
+                compiled.buffer_count()
+            ),
+            0,
+            0,
+        ));
+    }
+    if state.state_size_bytes != compiled.state_size_bytes() {
+        return Err(Diagnostic::runtime(
+            "runtime state buffer size does not match compiled program state layout",
+            0,
+            0,
+        ));
+    }
+    let expected_param_bytes = compiled.param_size_bytes();
+    if params.len() != expected_param_bytes {
+        return Err(Diagnostic::runtime(
+            format!(
+                "runtime parameter byte count {} does not match compiled program ({expected_param_bytes})",
+                params.len()
+            ),
+            0,
+            0,
+        ));
+    }
+    let required_words = (state.state_size_bytes + 7) / 8;
+    if state.state_words.len() < required_words {
+        return Err(Diagnostic::runtime(
+            "runtime state backing storage is smaller than required by compiled program",
+            0,
+            0,
+        ));
+    }
+    let event_index_u32 = u32::try_from(event_index).map_err(|_| {
+        Diagnostic::runtime(
+            "event index does not fit u32 for ORC event entrypoint",
+            0,
+            0,
+        )
+    })?;
+    compiled.run_event(
+        event_index_u32,
+        payload.as_ptr(),
+        params.as_ptr(),
+        state.state_words.as_mut_ptr().cast::<u8>(),
+        buffer_ptrs.as_ptr(),
+        buffer_frames.as_ptr(),
+        buffer_channels.as_ptr(),
+    );
+    Ok(())
+}
+
+#[cfg(feature = "llvm-orc")]
+unsafe fn trigger_event_orc_unchecked(
+    compiled: &orc_backend::OrcProcess,
+    state: &mut RuntimeState,
+    params: &[u8],
+    event_index: usize,
+    payload: &[u8],
+    buffer_ptrs: &[*mut u8],
+    buffer_frames: &[i32],
+    buffer_channels: &[i32],
+) {
+    if let Ok(event_index_u32) = u32::try_from(event_index) {
+        compiled.run_event(
+            event_index_u32,
+            payload.as_ptr(),
+            params.as_ptr(),
+            state.state_words.as_mut_ptr().cast::<u8>(),
+            buffer_ptrs.as_ptr(),
+            buffer_frames.as_ptr(),
+            buffer_channels.as_ptr(),
+        );
+    }
 }
 
 #[cfg(feature = "llvm-orc")]

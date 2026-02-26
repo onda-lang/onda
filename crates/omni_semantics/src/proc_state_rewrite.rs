@@ -7,6 +7,7 @@ pub(crate) const PROC_BLOCK_PRE_FN_SUFFIX: &str = ".__proc_block_pre";
 pub(crate) const PROC_BLOCK_POST_FN_SUFFIX: &str = ".__proc_block_post";
 pub(crate) const PROC_STEP_FN_SUFFIX: &str = ".__proc_step";
 pub(crate) const PROC_CALL_OUT_FN_PREFIX: &str = ".__proc_call_out";
+pub(crate) const PROC_EVENT_FN_PREFIX: &str = ".__proc_event_";
 pub(crate) const INTERNAL_BUFFER_READ2_FN: &str = "__omni_buffer_read2";
 pub(crate) const INTERNAL_BUFFER_WRITE2_FN: &str = "__omni_buffer_write2";
 
@@ -15,6 +16,7 @@ pub(crate) struct ProcApi {
     pub(crate) ins: Vec<ProcPortSpec>,
     pub(crate) params: HashMap<String, ProcParamSlotSpec>,
     pub(crate) outs: Vec<String>,
+    pub(crate) events: HashMap<String, ProcEventSpec>,
     pub(crate) buffers: Vec<ProcBufferSpec>,
     pub(crate) has_block: bool,
     pub(crate) sample_oversample_factor: usize,
@@ -47,6 +49,23 @@ pub(crate) struct ProcBufferSpec {
     pub(crate) name: String,
     pub(crate) elem_ty: PrimitiveType,
     pub(crate) channels: TypedBufferChannels,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProcEventSpec {
+    pub(crate) params: Vec<ProcEventParamSpec>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProcEventParamSpec {
+    pub(crate) name: String,
+    pub(crate) slots: Vec<ProcEventParamSlotSpec>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProcEventParamSlotSpec {
+    pub(crate) name: String,
+    pub(crate) ty: PrimitiveType,
 }
 
 #[derive(Debug, Clone)]

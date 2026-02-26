@@ -7,8 +7,8 @@ use omni_codegen_llvm::{
 use omni_frontend::{parse_program, DiagCode, Diagnostic, PrimitiveType};
 use omni_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
-    set_param_by_index, validate_bindings, validate_buffers, validate_inputs, validate_outputs,
-    Instance, InstanceConfig,
+    set_param_by_index, trigger_event_by_index, validate_bindings, validate_buffers,
+    validate_inputs, validate_outputs, Instance, InstanceConfig,
 };
 use omni_semantics::analyze;
 
@@ -33,6 +33,7 @@ pub struct omni_program {
     param_types: Vec<CString>,
     buffer_names: Vec<CString>,
     buffer_types: Vec<CString>,
+    event_names: Vec<CString>,
 }
 
 #[allow(non_camel_case_types)]
@@ -298,6 +299,18 @@ unsafe fn omni_compile_impl(
             return ptr::null_mut();
         }
     };
+    let event_names = match build_cstring_cache(
+        (0..jit.event_count())
+            .filter_map(|idx| jit.event_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "event name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
 
     Box::into_raw(Box::new(omni_program {
         jit,
@@ -309,6 +322,7 @@ unsafe fn omni_compile_impl(
         param_types,
         buffer_names,
         buffer_types,
+        event_names,
     }))
 }
 
@@ -409,6 +423,30 @@ pub unsafe extern "C" fn omni_set_param_by_index(
     match set_param_by_index(&mut (*instance).inner, index as usize, bytes) {
         Ok(_) => 0,
         Err(_) => -3,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_trigger_event_by_index(
+    instance: *mut omni_instance,
+    index: i32,
+    payload_ptr: *const c_void,
+    payload_bytes: i32,
+) -> i32 {
+    if instance.is_null() || index < 0 || payload_bytes < 0 {
+        return -1;
+    }
+    if payload_bytes > 0 && payload_ptr.is_null() {
+        return -1;
+    }
+    let payload = if payload_bytes == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
+    };
+    match trigger_event_by_index(&mut (*instance).inner, index as usize, payload) {
+        Ok(_) => 0,
+        Err(_) => -2,
     }
 }
 
@@ -574,6 +612,14 @@ pub unsafe extern "C" fn omni_buffer_count(program: *const omni_program) -> i32 
     saturating_usize_to_i32((*program).jit.buffer_count())
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_count(program: *const omni_program) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*program).jit.event_count())
+}
+
 fn cstr_ptr_at(values: &[CString], index: i32) -> *const c_char {
     if index < 0 {
         return ptr::null();
@@ -734,6 +780,17 @@ pub unsafe extern "C" fn omni_buffer_name(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn omni_event_name(
+    program: *const omni_program,
+    index: i32,
+) -> *const c_char {
+    if program.is_null() {
+        return ptr::null();
+    }
+    cstr_ptr_at(&(*program).event_names, index)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn omni_input_index(
     program: *const omni_program,
     name: *const c_char,
@@ -775,6 +832,17 @@ pub unsafe extern "C" fn omni_buffer_index(
         return -1;
     }
     index_from_name(name, |key| (*program).jit.buffer_index(key))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_index(
+    program: *const omni_program,
+    name: *const c_char,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    index_from_name(name, |key| (*program).jit.event_index(key))
 }
 
 #[no_mangle]
@@ -843,6 +911,14 @@ pub unsafe extern "C" fn omni_param_type_bytes(program: *const omni_program, ind
         return -1;
     }
     bytes_from_index(index, |idx| (*program).jit.param_type_bytes(idx))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_payload_bytes(program: *const omni_program, index: i32) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    bytes_from_index(index, |idx| (*program).jit.event_payload_bytes(idx))
 }
 
 #[no_mangle]

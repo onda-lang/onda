@@ -7,7 +7,8 @@ use omni_examples::{GAIN, ONE_POLE, SINE};
 use omni_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use omni_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
-    set_param_by_index, validate_bindings, validate_buffers, validate_outputs, InstanceConfig,
+    set_param_by_index, trigger_event_by_index, validate_bindings, validate_buffers,
+    validate_outputs, InstanceConfig,
 };
 use omni_semantics::{analyze, analyze_with_options, AnalysisOptions};
 
@@ -2681,6 +2682,161 @@ init { c = Counter() }
 sample { out1 = c() }
 "#;
 
+const EVENT_SCALAR_UPDATE_EXAMPLE: &str = r#"
+outs { out1 }
+events {
+  set_amp(value: f32) {
+    amp = value
+  }
+}
+init {
+  amp = 0.0
+}
+sample {
+  out1 = amp
+}
+"#;
+
+const EVENT_ARRAY_UPDATE_EXAMPLE: &str = r#"
+outs { out1 }
+events {
+  set_curve(values: f32[2]) {
+    amp = values[0] + values[1]
+  }
+}
+init {
+  amp = 0.0
+}
+sample {
+  out1 = amp
+}
+"#;
+
+const EVENT_PROC_FORWARD_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+outs { out1 }
+events {
+  note_on(value: f32) {
+    voice.note_on(value)
+  }
+}
+init {
+  voice = Voice()
+}
+sample {
+  out1 = voice()
+}
+"#;
+
+const EVENT_WRITE_OUTPUT_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+events {
+  ping() {
+    out1 = 1.0
+  }
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
+const EVENT_WRITE_NON_INIT_STATE_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+events {
+  ping() {
+    lfo = 1.0
+  }
+}
+sample {
+  lfo: f32 = 0.0
+  out1 = lfo
+}
+"#;
+
+const EVENT_PARAM_IMMUTABLE_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+events {
+  set_curve(values: f32[2]) {
+    values[0] = 0.0
+  }
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
+const EVENT_DUPLICATE_NAME_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+events {
+  ping(value: f32) {
+    amp = value
+  }
+  ping(value: f32) {
+    amp = value * 2.0
+  }
+}
+init {
+  amp = 0.0
+}
+sample {
+  out1 = amp
+}
+"#;
+
+const PROC_EVENT_DUPLICATE_NAME_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1 }
+  init {
+    amp = 0.0
+  }
+  events {
+    note_on(v: f32) {
+      amp = v
+    }
+    note_on(v: f32) {
+      amp = v * 2.0
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
+const PROC_EVENT_NAME_CONFLICT_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  outs { note_on }
+  init {
+    gain = 0.0
+  }
+  events {
+    note_on(v: f32) {
+      gain = v
+    }
+  }
+  sample {
+    note_on = gain
+  }
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
 fn compile_instance(src: &str, frames: usize) -> (omni_runtime::Instance, usize, usize) {
     compile_instance_with_options(
         src,
@@ -3093,6 +3249,157 @@ fn gain_compiles_and_runs() {
     for (idx, out) in output.iter().enumerate() {
         assert_near(*out, input[idx] * 0.5, 1e-6);
     }
+}
+
+#[test]
+fn events_metadata_and_scalar_dispatch_work() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_SCALAR_UPDATE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.event_count(), 1);
+    assert_eq!(instance.event_name(0), Some("set_amp"));
+    assert_eq!(instance.event_index("set_amp"), Some(0));
+    assert_eq!(instance.event_payload_bytes(0), Some(4));
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
+
+    let payload = 0.75_f32.to_ne_bytes();
+    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+fn event_array_payload_dispatch_and_unknown_index_ignore() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_ARRAY_UPDATE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.event_count(), 1);
+    assert_eq!(instance.event_payload_bytes(0), Some(8));
+
+    trigger_event_by_index(&mut instance, 99, &[1, 2, 3])
+        .expect("unknown event index should be ignored");
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0.25_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.75_f32.to_ne_bytes());
+    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn event_payload_mismatch_returns_runtime_error() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(EVENT_SCALAR_UPDATE_EXAMPLE, frames);
+    let err = trigger_event_by_index(&mut instance, 0, &[])
+        .expect_err("payload mismatch should return runtime error");
+    assert!(
+        err.message.contains("expects"),
+        "expected payload-size error, got '{}'",
+        err.message
+    );
+}
+
+#[test]
+fn proc_event_forwarding_from_top_level_event_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_PROC_FORWARD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let idx = instance
+        .event_index("note_on")
+        .expect("top-level forwarding event must exist");
+    trigger_event_by_index(&mut instance, idx, &0.6_f32.to_ne_bytes())
+        .expect("forwarding event trigger should succeed");
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.6, 1e-6);
+    }
+}
+
+#[test]
+fn events_reject_forbidden_writes_and_immutability() {
+    let parsed = parse_program(EVENT_WRITE_OUTPUT_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("events should reject output writes");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("cannot assign to output symbol")),
+        "expected output-write error, got {:?}",
+        errs
+    );
+
+    let parsed =
+        parse_program(EVENT_WRITE_NON_INIT_STATE_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("events should reject non-init-root writes");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("init-root state") && d.message.contains("lfo")),
+        "expected init-root write restriction error, got {:?}",
+        errs
+    );
+
+    let parsed = parse_program(EVENT_PARAM_IMMUTABLE_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("events should reject param mutation");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("immutable event array parameter")),
+        "expected immutable event param error, got {:?}",
+        errs
+    );
+}
+
+#[test]
+fn events_reject_duplicate_and_conflicting_names() {
+    let errs = parse_program(EVENT_DUPLICATE_NAME_ERROR_EXAMPLE)
+        .expect_err("duplicate top-level events should fail at parse");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("duplicate event declaration 'ping'")),
+        "expected duplicate top-level event error, got {:?}",
+        errs
+    );
+
+    let errs = parse_program(PROC_EVENT_DUPLICATE_NAME_ERROR_EXAMPLE)
+        .expect_err("duplicate proc events should fail at parse");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("duplicate event declaration 'note_on'")),
+        "expected duplicate proc event error, got {:?}",
+        errs
+    );
+
+    let parsed =
+        parse_program(PROC_EVENT_NAME_CONFLICT_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("conflicting proc event names should fail");
+    assert!(
+        errs.iter().any(|d| {
+            d.message
+                .contains("event name conflicts with an existing callable/endpoint name")
+        }),
+        "expected proc event name conflict error, got {:?}",
+        errs
+    );
 }
 
 #[test]

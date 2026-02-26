@@ -25,6 +25,7 @@ Top-level blocks:
 - `ins`
 - `outs`
 - `params`
+- `events`
 - `buffers`
 - `init`
 - `block`
@@ -235,6 +236,7 @@ struct Voice:
 Processor blocks:
 - `init` (optional)
 - `sample` (required)
+- `events` (optional)
 - optional `block` wrapper with pre/sample/post sections
 
 ```omni
@@ -260,6 +262,59 @@ Construction/calls:
 Single-out procs also support endpoint access forms (`p.out1` and named endpoint aliases).
 
 Processor constructors use named arguments for params/buffers.
+
+## 8.1 Events (`events`)
+
+Events are host-triggered handlers that run immediately on the audio thread when invoked.
+
+Top-level example:
+
+```omni
+outs { out1 }
+events {
+  note_on(note: i32, vel: i32) {
+    amp = f32(vel) / 127.0
+  }
+}
+init { amp = 0.0 }
+sample { out1 = amp }
+```
+
+Proc-level example with explicit forwarding:
+
+```omni
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(v: f32) {
+      amp = v
+    }
+  }
+  sample { out1 = amp }
+}
+
+events {
+  note_on(v: f32) {
+    voice.note_on(v)
+  }
+}
+```
+
+Event parameter types:
+- Primitive scalars (`f32`, `f64`, `i32`, `i64`, `bool`)
+- Fixed-size primitive arrays (`T[N]`)
+- Untyped scalar event params default to `f32` (for example `note_on(note)` -> `note: f32`)
+
+Rules:
+- Top-level events are host-entry handlers; proc events are reached through explicit calls (for example `voice.note_on(...)`).
+- Event handlers may write only to state rooted in `init` declarations.
+- Event handlers cannot write `outN`.
+- Event parameters are immutable.
+- Array event parameters are read-only references in handlers.
+- Proc event names must not collide with callable endpoint names in the same proc.
+- Unknown host event indices are ignored.
+- Invalid payload size for a known event is a runtime error.
 
 ## 9 Generics
 

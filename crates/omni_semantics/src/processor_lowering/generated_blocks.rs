@@ -24,6 +24,7 @@ fn generate_nested_wrapper_defs(
         let Some(callee_shape) = lowering_shapes.get(&callee_proc_name).cloned() else {
             continue;
         };
+        let callee_api = proc_api.get(&callee_proc_name);
         let mut callee_ins_names = callee_shape.ins.iter().cloned().collect::<HashSet<_>>();
         for port in &callee_shape.in_ports {
             callee_ins_names.insert(port.name.clone());
@@ -328,6 +329,70 @@ fn generate_nested_wrapper_defs(
             body: nested_step_body,
         }));
 
+        if let Some(callee_api) = callee_api {
+            for event in &callee_proc.events {
+                let Some(event_spec) = callee_api.events.get(&event.name) else {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "processor '{}' nested event '{}' is missing lowered metadata",
+                            callee_proc_name, event.name
+                        ),
+                        0,
+                        0,
+                    ));
+                    continue;
+                };
+                let mut nested_event_params = Vec::<omni_frontend::FnParamDecl>::new();
+                nested_event_params.push(omni_frontend::FnParamDecl {
+                    name: "self".to_owned(),
+                    ty: Some(FnParamType::Struct(proc.name.clone())),
+                    default: None,
+                });
+                let mut callee_event_ins_names = callee_ins_names.clone();
+                let mut callee_event_in_array_slots = HashMap::<String, Vec<String>>::new();
+                for param in &event_spec.params {
+                    callee_event_ins_names.insert(param.name.clone());
+                    let mut slot_names = Vec::<String>::new();
+                    for slot in &param.slots {
+                        slot_names.push(slot.name.clone());
+                        callee_event_ins_names.insert(slot.name.clone());
+                        nested_event_params.push(omni_frontend::FnParamDecl {
+                            name: slot.name.clone(),
+                            ty: Some(FnParamType::Primitive(slot.ty)),
+                            default: None,
+                        });
+                    }
+                    if slot_names.len() > 1 {
+                        callee_event_in_array_slots.insert(param.name.clone(), slot_names);
+                    }
+                }
+                let nested_event_body = event
+                    .body
+                    .iter()
+                    .filter_map(|stmt| {
+                        lower_callee_stmt_for_nested_wrapper(
+                            stmt,
+                            &proc.name,
+                            &nested_path,
+                            &callee_shape,
+                            &callee_nested_instances,
+                            &callee_event_ins_names,
+                            &callee_shape.field_array_slots,
+                            &callee_event_in_array_slots,
+                            &proc_api,
+                            errors,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                nested_defs.push(Block::Def(FunctionDef {
+                    type_params: Vec::new(),
+                    name: nested_event_fn_name(&proc.name, &nested_path, &event.name),
+                    params: nested_event_params,
+                    body: nested_event_body,
+                }));
+            }
+        }
+
         let callee_has_effective_block = proc_api
             .get(&callee_proc_name)
             .map(|api| api.has_block)
@@ -577,6 +642,16 @@ pub(super) fn generate_lowered_proc_blocks(
             .map(|slots| slots.len())
             .filter(|len| *len > 1)
             .collect::<Vec<_>>();
+        if let Some(api) = proc_api.get(&proc.name) {
+            for event in api.events.values() {
+                for param in &event.params {
+                    let len = param.slots.len();
+                    if len > 1 {
+                        read_lens.push(len);
+                    }
+                }
+            }
+        }
         read_lens.sort_unstable();
         read_lens.dedup();
         for len in read_lens {
@@ -796,6 +871,70 @@ pub(super) fn generate_lowered_proc_blocks(
             &mut proc_step_oversample_meta,
             errors,
         ));
+        if let Some(owner_api) = proc_api.get(&proc.name) {
+            for event in &proc.events {
+                let Some(event_spec) = owner_api.events.get(&event.name) else {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "processor '{}' event '{}' is missing lowered event metadata",
+                            proc.name, event.name
+                        ),
+                        0,
+                        0,
+                    ));
+                    continue;
+                };
+                let mut event_params = Vec::<omni_frontend::FnParamDecl>::new();
+                event_params.push(omni_frontend::FnParamDecl {
+                    name: "self".to_owned(),
+                    ty: Some(FnParamType::Struct(proc.name.clone())),
+                    default: None,
+                });
+                let mut event_ins_names = ins_names.clone();
+                let mut event_in_array_slots = HashMap::<String, Vec<String>>::new();
+                for param in &event_spec.params {
+                    event_ins_names.insert(param.name.clone());
+                    let mut slot_names = Vec::<String>::new();
+                    for slot in &param.slots {
+                        slot_names.push(slot.name.clone());
+                        event_ins_names.insert(slot.name.clone());
+                        event_params.push(omni_frontend::FnParamDecl {
+                            name: slot.name.clone(),
+                            ty: Some(FnParamType::Primitive(slot.ty)),
+                            default: None,
+                        });
+                    }
+                    if slot_names.len() > 1 {
+                        event_in_array_slots.insert(param.name.clone(), slot_names);
+                    }
+                }
+                let event_body = event
+                    .body
+                    .iter()
+                    .filter_map(|stmt| {
+                        rewrite_owner_proc_stmt(
+                            stmt.clone(),
+                            &proc.name,
+                            &shape.field_names,
+                            &shape.data_field_names,
+                            &event_ins_names,
+                            &shape.field_array_slots,
+                            &event_in_array_slots,
+                            &shape.nested_fields,
+                            &nested_instances,
+                            &proc_api,
+                            errors,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                generated_defs.push(Block::Def(FunctionDef {
+                    type_params: Vec::new(),
+                    name: format!("{}{}{}", proc.name, PROC_EVENT_FN_PREFIX, event.name),
+                    params: event_params,
+                    body: event_body,
+                }));
+            }
+        }
         let proc_has_effective_block = proc_api
             .get(&proc.name)
             .map(|api| api.has_block)

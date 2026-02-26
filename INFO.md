@@ -47,7 +47,7 @@
 ## Current implementation snapshot (2026-02)
 
 ### Language and parser
-- Top-level and proc blocks: `ins`, `outs`, `params`, `buffers`, `init`, `block`, `sample`, `def`, `struct`, `proc`/`processor`, `namespace`.
+- Top-level and proc blocks: `ins`, `outs`, `params`, `events`, `buffers`, `init`, `block`, `sample`, `def`, `struct`, `proc`/`processor`, `namespace`.
 - Both brace and indentation syntaxes are supported.
 - Statement separators support both newline and `;`.
 - Import system is implemented:
@@ -92,6 +92,13 @@
     - `for i in A..B` (exclusive end)
     - `for i in A..=B` (inclusive end)
     - `for i @ STEP in A..B` (`@ STEP` optional, defaults to `1`; use negative step for descending)
+- Events:
+  - Top-level and proc-level `events` blocks are supported.
+  - Event params support primitive scalars and fixed-size primitive arrays.
+  - Event params without explicit type default to `f32`.
+  - Top-level handlers are host-triggered and run immediately on the audio thread.
+  - Unknown host event indices are ignored; payload-size mismatches are runtime errors.
+  - Proc events are reached through explicit calls/forwarding (for example `voice.note_on(...)`).
 - Functions (`def`):
   - positional + named args, default values, early return.
   - generic type parameters are intentionally unsupported on `def`; polymorphism is through typed/untyped parameters and call-site monomorphization.
@@ -107,6 +114,7 @@
 - `proc`/`processor` declarations lower to internal struct + helper defs.
 - generic processors are supported and specialized/monomorphized on constructor use.
 - `sample` is required; `init` is optional (top-level `init` is also optional).
+- `events` is optional inside `proc`.
 - generic typed local declarations (`x: T = ...`) are currently supported in `init` only.
 - Processor call forms:
   - `p(...)` (scalar return for single-out procs; sugar for `p.out1` / endpoint name)
@@ -143,14 +151,16 @@
   - all declared buffers must be bound before processing.
   - top-level ranged params are hoisted and clamped once per block in JITed code.
   - top-level ranged inputs are hoisted and clamped once per sample in JITed code.
+  - host-triggered events execute synchronously via index-based dispatch.
 
 ## C API and CLI
 - C ABI exposes compile/create/process/destroy and bind/set calls:
   - params: byte-typed `set_param_by_index`
+  - events: `trigger_event_by_index`
   - inputs/outputs: pointer + byte-size binding
   - buffers: pointer + frames + channels + element type binding
   - outputs: `bind_output` and `copy_output`
-- Metadata queries exposed for names, indices, types, and byte sizes (where applicable).
+- Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
 - CLI (`omni`) supports:
   - `compile <file> [--ir] [--meta]`
   - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--ir]`
@@ -170,6 +180,5 @@
 - C++ single-header backend.
 - Standard library expansion/versioning beyond MVP module set.
 - RT-safety instrumentation/audit suite and stricter host-facing diagnostics lifecycle.
-
 
 

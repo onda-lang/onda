@@ -200,6 +200,59 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
     Ok(out)
 }
 
+pub(super) fn parse_event_param_type(
+    pair: Pair<'_, Rule>,
+) -> Result<EventParamType, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::event_param_type {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected event parameter type",
+            0,
+            0,
+        )]);
+    }
+    let Some(inner) = pair.into_inner().next() else {
+        return Err(vec![Diagnostic::syntax(
+            "missing event parameter type",
+            0,
+            0,
+        )]);
+    };
+    match inner.as_rule() {
+        Rule::type_name => Ok(EventParamType::Scalar(
+            parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?,
+        )),
+        Rule::array_type => {
+            let mut array_inner = inner.into_inner();
+            let Some(elem_pair) = array_inner.next() else {
+                return Err(vec![Diagnostic::syntax(
+                    "missing event array element type",
+                    0,
+                    0,
+                )]);
+            };
+            let Some(size_pair) = array_inner.next() else {
+                return Err(vec![Diagnostic::syntax("missing event array size", 0, 0)]);
+            };
+            match elem_pair.as_rule() {
+                Rule::type_name => Ok(EventParamType::Array {
+                    elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+                    size: parse_expr_inner(size_pair),
+                }),
+                _ => Err(vec![Diagnostic::syntax(
+                    "event array parameters require primitive element type",
+                    0,
+                    0,
+                )]),
+            }
+        }
+        _ => Err(vec![Diagnostic::syntax(
+            "unsupported event parameter type",
+            0,
+            0,
+        )]),
+    }
+}
+
 pub(super) fn parse_buffer_type(pair: Pair<'_, Rule>) -> Result<BufferType, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::buffer_type {
         return Err(vec![Diagnostic::syntax(

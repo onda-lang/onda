@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use omni_frontend::{
     inject_auto_std_math, with_diagnostic_location, AssignTarget, BinaryOp, Block, BlockExec,
     BlockKind, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg,
-    CallTypeArg, CmpOp, DataElemType, DeclRange, DeclType, Diagnostic, Expr, FieldType,
-    FnParamType, FunctionDef, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program,
-    SampleBlock, Stmt, StructDef, StructField,
+    CallTypeArg, CmpOp, DataElemType, DeclRange, DeclType, Diagnostic, EventDef, EventParamType,
+    Expr, FieldType, FnParamType, FunctionDef, ParamDecl, PortDecl, PrimitiveType, ProcessorDef,
+    Program, SampleBlock, Stmt, StructDef, StructField,
 };
 
 mod builtins;
@@ -55,6 +55,7 @@ pub struct TypedProgram {
     pub buffers: Vec<TypedBufferDecl>,
     pub structs: Vec<TypedStruct>,
     pub defs: Vec<TypedFunction>,
+    pub events: Vec<TypedEvent>,
     pub def_sample_oversample_factors: HashMap<String, usize>,
     pub proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub init: Vec<Stmt>,
@@ -66,6 +67,25 @@ pub struct TypedProgram {
     pub state_types: Vec<PrimitiveType>,
     pub data_vars: Vec<TypedDataVar>,
     pub data_struct_roots: Vec<TypedDataStructRoot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedEvent {
+    pub name: String,
+    pub params: Vec<TypedEventParam>,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TypedEventParam {
+    pub name: String,
+    pub ty: TypedEventParamType,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum TypedEventParamType {
+    Scalar(PrimitiveType),
+    Array { elem: PrimitiveType, len: usize },
 }
 
 #[derive(Debug, Clone)]

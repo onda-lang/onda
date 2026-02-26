@@ -196,6 +196,45 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 rewritten.extend(expanded_buffers);
                 *name = nested_call_out_fn_name(owner_proc, &nested_var, 0);
                 *args = rewritten;
+                return;
+            }
+
+            if let Some((base, event_name)) = split_dot_path(name) {
+                if let Some(instance) = nested_instances.get(base) {
+                    let proc_name = instance.proc_name.clone();
+                    let Some(api) = proc_api.get(&proc_name) else {
+                        errors.push(Diagnostic::semantic(
+                            format!("unknown processor type '{proc_name}'"),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    let Some(event_spec) = api.events.get(event_name) else {
+                        let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
+                        known_events.sort();
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "unknown processor event '{}.{}'; expected one of [{}]",
+                                base,
+                                event_name,
+                                known_events.join(", ")
+                            ),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
+                    rewritten.push(CallArg {
+                        name: None,
+                        expr: Expr::Var("self".to_owned()),
+                    });
+                    let expanded = expand_proc_event_call_args(args, event_spec, name, errors);
+                    rewritten.extend(expanded);
+                    *name = nested_event_fn_name(owner_proc, base, event_name);
+                    *args = rewritten;
+                }
             }
         }
         Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {

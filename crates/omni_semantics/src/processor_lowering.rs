@@ -104,6 +104,377 @@ fn validated_sample_oversample_factor(
     }
 }
 
+fn is_runtime_state_symbol_name(name: &str) -> bool {
+    !name.starts_with(DECLARED_INPUT_TYPE_PREFIX)
+        && !name.starts_with(DECLARED_OUTPUT_TYPE_PREFIX)
+        && !name.starts_with(DECLARED_PARAM_TYPE_PREFIX)
+        && !name.starts_with(DECLARED_DATA_ELEM_TYPE_PREFIX)
+        && !name.starts_with(DECLARED_BUFFER_ELEM_TYPE_PREFIX)
+        && !name.starts_with(DECLARED_STRUCT_FIELD_TYPE_PREFIX)
+        && !name.starts_with(DECLARED_INVALID_PLACEHOLDER_PREFIX)
+        && !name.starts_with(DECLARED_BUFFER_MULTICHANNEL_PREFIX)
+        && !name.starts_with(DECLARED_BUFFER_DYNAMIC_CHANNELS_PREFIX)
+        && !name.starts_with(DECLARED_BUFFER_STATIC_CHANNELS_PREFIX)
+        && !name.starts_with(DECLARED_BUFFER_ELEM_F32_PREFIX)
+        && !name.starts_with(DECLARED_BUFFER_ELEM_F64_PREFIX)
+        && !name.starts_with(DECLARED_BUFFER_ELEM_I32_PREFIX)
+        && !name.starts_with(DECLARED_BUFFER_ELEM_I64_PREFIX)
+        && !name.starts_with(DECLARED_BUFFER_ELEM_BOOL_PREFIX)
+        && !name.starts_with(DECLARED_FUNCTION_RETURN_TYPE_PREFIX)
+}
+
+fn runtime_symbol_root(name: &str) -> &str {
+    name.split('.').next().unwrap_or(name)
+}
+
+fn collect_runtime_state_roots(state_scalars: &HashMap<String, PrimitiveType>) -> HashSet<String> {
+    state_scalars
+        .keys()
+        .filter(|name| is_runtime_state_symbol_name(name))
+        .map(|name| runtime_symbol_root(name).to_owned())
+        .collect::<HashSet<_>>()
+}
+
+fn coerce_typed_events(
+    events: &[EventDef],
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<TypedEvent> {
+    let mut out = Vec::<TypedEvent>::new();
+    let mut seen_events = HashSet::<String>::new();
+    for event in events {
+        if is_builtin_constant_name(&event.name) {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "event name '{}' is reserved as a builtin constant",
+                    event.name
+                ),
+                0,
+                0,
+            ));
+            continue;
+        }
+        if !seen_events.insert(event.name.clone()) {
+            errors.push(Diagnostic::semantic(
+                format!("duplicate event '{}'", event.name),
+                0,
+                0,
+            ));
+            continue;
+        }
+        let mut seen_params = HashSet::<String>::new();
+        let mut typed_params = Vec::<TypedEventParam>::new();
+        for param in &event.params {
+            if !seen_params.insert(param.name.clone()) {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "duplicate event parameter '{}' in '{}'",
+                        param.name, event.name
+                    ),
+                    0,
+                    0,
+                ));
+                continue;
+            }
+            let typed = match &param.ty {
+                EventParamType::Scalar(ty) => TypedEventParamType::Scalar(*ty),
+                EventParamType::Array { elem, size } => {
+                    let context = format!("event '{}.{}' array size", event.name, param.name);
+                    let len = eval_data_size_expr(size, options, &context, errors).unwrap_or(1);
+                    if len == 0 {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "event parameter '{}.{}' array size must be greater than zero",
+                                event.name, param.name
+                            ),
+                            0,
+                            0,
+                        ));
+                    }
+                    TypedEventParamType::Array { elem: *elem, len }
+                }
+            };
+            typed_params.push(TypedEventParam {
+                name: param.name.clone(),
+                ty: typed,
+            });
+        }
+        out.push(TypedEvent {
+            name: event.name.clone(),
+            params: typed_params,
+            body: event.body.clone(),
+        });
+    }
+    out
+}
+
+fn expand_proc_event_specs(
+    proc: &ProcessorDef,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> HashMap<String, ProcEventSpec> {
+    let mut out = HashMap::<String, ProcEventSpec>::new();
+    for event in &proc.events {
+        if is_builtin_constant_name(&event.name) {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "processor '{}' event name '{}' is reserved as a builtin constant",
+                    proc.name, event.name
+                ),
+                0,
+                0,
+            ));
+            continue;
+        }
+        if out.contains_key(&event.name) {
+            errors.push(Diagnostic::semantic(
+                format!("duplicate processor event '{}.{}'", proc.name, event.name),
+                0,
+                0,
+            ));
+            continue;
+        }
+        let mut params = Vec::<ProcEventParamSpec>::new();
+        for param in &event.params {
+            match &param.ty {
+                EventParamType::Scalar(ty) => params.push(ProcEventParamSpec {
+                    name: param.name.clone(),
+                    slots: vec![ProcEventParamSlotSpec {
+                        name: param.name.clone(),
+                        ty: *ty,
+                    }],
+                }),
+                EventParamType::Array { elem, size } => {
+                    let context = format!(
+                        "processor '{}.{}' event parameter '{}'",
+                        proc.name, event.name, param.name
+                    );
+                    let len = eval_data_size_expr(size, options, &context, errors).unwrap_or(1);
+                    if len == 0 {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "processor '{}.{}' event parameter '{}' array size must be greater than zero",
+                                proc.name, event.name, param.name
+                            ),
+                            0,
+                            0,
+                        ));
+                    }
+                    let mut slots = Vec::<ProcEventParamSlotSpec>::new();
+                    for idx in 0..len {
+                        slots.push(ProcEventParamSlotSpec {
+                            name: format!("{}[{idx}]", param.name),
+                            ty: *elem,
+                        });
+                    }
+                    params.push(ProcEventParamSpec {
+                        name: param.name.clone(),
+                        slots,
+                    });
+                }
+            }
+        }
+        out.insert(event.name.clone(), ProcEventSpec { params });
+    }
+    out
+}
+
+fn validate_event_assign_target_restrictions(
+    target: &AssignTarget,
+    locals: &mut HashSet<String>,
+    init_writable_roots: &HashSet<String>,
+    immutable_roots: &HashSet<String>,
+    input_names: &HashSet<String>,
+    output_names: &HashSet<String>,
+    scalar_param_names: &HashSet<String>,
+    array_param_names: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let (base, indexed) = match target {
+        AssignTarget::Var(name) => (name.as_str(), false),
+        AssignTarget::Index { base, .. } => (base.as_str(), true),
+    };
+    let root = runtime_symbol_root(base);
+
+    if scalar_param_names.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!("cannot assign to immutable event parameter '{}'", root),
+            0,
+            0,
+        ));
+        return;
+    }
+    if array_param_names.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!(
+                "cannot assign to immutable event array parameter '{}'",
+                root
+            ),
+            0,
+            0,
+        ));
+        return;
+    }
+    if input_names.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!("cannot assign to input symbol '{}' in event handler", root),
+            0,
+            0,
+        ));
+        return;
+    }
+    if output_names.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!("cannot assign to output symbol '{}' in event handler", root),
+            0,
+            0,
+        ));
+        return;
+    }
+    if immutable_roots.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!(
+                "event handlers can only write init-root state; '{}' is not init-root",
+                root
+            ),
+            0,
+            0,
+        ));
+        return;
+    }
+
+    if indexed {
+        if !init_writable_roots.contains(root) && !locals.contains(root) {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "event handlers can only write init-root state; '{}' is not init-root",
+                    root
+                ),
+                0,
+                0,
+            ));
+        }
+        return;
+    }
+
+    if base.contains('.') {
+        if !init_writable_roots.contains(root) && !locals.contains(root) {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "event handlers can only write init-root state; '{}' is not init-root",
+                    root
+                ),
+                0,
+                0,
+            ));
+        }
+        return;
+    }
+
+    if init_writable_roots.contains(root) || locals.contains(root) {
+        return;
+    }
+    locals.insert(base.to_owned());
+}
+
+fn validate_event_stmt_restrictions(
+    stmt: &Stmt,
+    locals: &mut HashSet<String>,
+    init_writable_roots: &HashSet<String>,
+    immutable_roots: &HashSet<String>,
+    input_names: &HashSet<String>,
+    output_names: &HashSet<String>,
+    scalar_param_names: &HashSet<String>,
+    array_param_names: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    with_stmt_diag_context(stmt, || match stmt {
+        Stmt::Assign { target, .. } => validate_event_assign_target_restrictions(
+            target,
+            locals,
+            init_writable_roots,
+            immutable_roots,
+            input_names,
+            output_names,
+            scalar_param_names,
+            array_param_names,
+            errors,
+        ),
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            let mut then_locals = locals.clone();
+            for nested in then_branch {
+                validate_event_stmt_restrictions(
+                    nested,
+                    &mut then_locals,
+                    init_writable_roots,
+                    immutable_roots,
+                    input_names,
+                    output_names,
+                    scalar_param_names,
+                    array_param_names,
+                    errors,
+                );
+            }
+            let mut else_locals = locals.clone();
+            for nested in else_branch {
+                validate_event_stmt_restrictions(
+                    nested,
+                    &mut else_locals,
+                    init_writable_roots,
+                    immutable_roots,
+                    input_names,
+                    output_names,
+                    scalar_param_names,
+                    array_param_names,
+                    errors,
+                );
+            }
+            locals.extend(then_locals);
+            locals.extend(else_locals);
+        }
+        Stmt::For { var, body, .. } => {
+            let mut loop_locals = locals.clone();
+            loop_locals.insert(var.clone());
+            for nested in body {
+                validate_event_stmt_restrictions(
+                    nested,
+                    &mut loop_locals,
+                    init_writable_roots,
+                    immutable_roots,
+                    input_names,
+                    output_names,
+                    scalar_param_names,
+                    array_param_names,
+                    errors,
+                );
+            }
+            locals.extend(loop_locals);
+        }
+        Stmt::While { body, .. } => {
+            let mut loop_locals = locals.clone();
+            for nested in body {
+                validate_event_stmt_restrictions(
+                    nested,
+                    &mut loop_locals,
+                    init_writable_roots,
+                    immutable_roots,
+                    input_names,
+                    output_names,
+                    scalar_param_names,
+                    array_param_names,
+                    errors,
+                );
+            }
+            locals.extend(loop_locals);
+        }
+        Stmt::Expr { .. } | Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    });
+}
+
 fn build_proc_lowering_env(
     program: &Program,
     options: AnalysisOptions,
@@ -244,6 +615,7 @@ fn build_proc_lowering_env(
                     .map(|slot| (slot.name.clone(), slot))
                     .collect::<HashMap<_, _>>(),
                 outs: shape.outs.clone(),
+                events: expand_proc_event_specs(proc, options, errors),
                 buffers: shape.buffer_specs.clone(),
                 has_block: proc.has_block_block,
                 sample_oversample_factor: proc_sample_oversample_factors
@@ -386,6 +758,10 @@ pub fn analyze_with_options(
     };
     let params = match program.block(BlockKind::Params) {
         Some(Block::Params(v)) => v.clone(),
+        _ => Vec::new(),
+    };
+    let mut events = match program.block(BlockKind::Events) {
+        Some(Block::Events(v)) => v.clone(),
         _ => Vec::new(),
     };
     let buffers = match program.block(BlockKind::Buffers) {
@@ -649,6 +1025,20 @@ pub fn analyze_with_options(
                 "sample",
             );
         }
+        for event in &mut events {
+            for stmt in &mut event.body {
+                qualify_stmt_namespaced_symbols(
+                    stmt,
+                    "",
+                    &callable_symbols,
+                    &callable_namespaces,
+                    &struct_symbols,
+                    &struct_namespaces,
+                    &mut errors,
+                    &format!("event '{}'", event.name),
+                );
+            }
+        }
     }
 
     {
@@ -738,6 +1128,14 @@ pub fn analyze_with_options(
             &mut generated_specializations,
             &mut errors,
         );
+        for event in &mut events {
+            rewrite_generic_struct_ctor_stmt_list(
+                &mut event.body,
+                &generic_templates,
+                &mut generated_specializations,
+                &mut errors,
+            );
+        }
 
         finalize_generated_generic_struct_specializations(
             &generic_templates,
@@ -973,6 +1371,11 @@ pub fn analyze_with_options(
     for stmt in &mut sample {
         desugar_sample_instance_method_calls(stmt, &desugar_struct_instances);
     }
+    for event in &mut events {
+        for stmt in &mut event.body {
+            desugar_sample_instance_method_calls(stmt, &desugar_struct_instances);
+        }
+    }
     let mut fn_signatures: HashMap<String, FnSignature> = HashMap::new();
     for def in &defs {
         if is_builtin_constant_name(&def.name) {
@@ -1183,6 +1586,7 @@ pub fn analyze_with_options(
             &mut errors,
         );
     }
+    let init_writable_roots = collect_runtime_state_roots(&state_scalars);
 
     register_block_assigned_scalars_as_state(
         block_pre.iter().chain(block_post.iter()),
@@ -1277,14 +1681,95 @@ pub fn analyze_with_options(
         );
     }
 
+    let typed_events = coerce_typed_events(&events, options, &mut errors);
+    let final_state_roots = collect_runtime_state_roots(&state_scalars);
+    let immutable_event_roots = final_state_roots
+        .difference(&init_writable_roots)
+        .cloned()
+        .collect::<HashSet<_>>();
+    let empty_event_inputs = HashSet::<String>::new();
+    let empty_event_outputs = HashSet::<String>::new();
+    for event in &typed_events {
+        let mut event_locals = HashSet::<String>::new();
+        let mut scalar_event_params = HashSet::<String>::new();
+        let mut array_event_params = HashSet::<String>::new();
+        let mut event_known_scalars = param_names.clone();
+        event_known_scalars.extend(state_scalars.keys().cloned());
+        let mut event_local_aliases = LocalAliasTypes::new();
+        let mut event_local_data_aliases = HashMap::new();
+        seed_top_level_array_aliases(&mut event_local_data_aliases, &param_arrays, false);
+        for param in &event.params {
+            match param.ty {
+                TypedEventParamType::Scalar(ty) => {
+                    scalar_event_params.insert(param.name.clone());
+                    event_known_scalars.insert(param.name.clone());
+                    event_local_aliases.insert(param.name.clone(), ty);
+                }
+                TypedEventParamType::Array { elem, len } => {
+                    array_event_params.insert(param.name.clone());
+                    event_local_data_aliases.insert(
+                        param.name.clone(),
+                        LocalDataAliasInfo {
+                            len,
+                            elem_ty: elem,
+                            elem_struct: None,
+                            writable: false,
+                        },
+                    );
+                }
+            }
+        }
+
+        let mut event_param_immutable = param_names.clone();
+        event_param_immutable.extend(scalar_event_params.iter().cloned());
+
+        for stmt in &event.body {
+            validate_event_stmt_restrictions(
+                stmt,
+                &mut event_locals,
+                &init_writable_roots,
+                &immutable_event_roots,
+                &input_names,
+                &output_names,
+                &scalar_event_params,
+                &array_event_params,
+                &mut errors,
+            );
+            analyze_sample_stmt(
+                stmt,
+                &mut event_known_scalars,
+                &mut event_local_aliases,
+                &mut event_local_data_aliases,
+                &event_locals,
+                &state_scalars,
+                &state_data,
+                &state_data_struct_roots,
+                &struct_instances,
+                &empty_event_inputs,
+                &empty_event_outputs,
+                &output_names,
+                &event_param_immutable,
+                &struct_defs,
+                &fn_signatures,
+                options,
+                0,
+                &mut errors,
+            );
+        }
+    }
+
     let mut block_exec = block_pre.clone();
     block_exec.extend(block_post.clone());
+    let mut sample_and_event_exec = sample.clone();
+    for event in &typed_events {
+        sample_and_event_exec.extend(event.body.clone());
+    }
 
     let (inferred_def_params, synthesized_struct_defs) = infer_def_param_kinds(
         &defs,
         &init,
         &block_exec,
-        &sample,
+        &sample_and_event_exec,
         &struct_instances,
         &typed_buffers
             .iter()
@@ -1504,6 +1989,7 @@ pub fn analyze_with_options(
             buffers: typed_buffers,
             structs: typed_structs,
             defs: typed_defs,
+            events: typed_events,
             def_sample_oversample_factors,
             proc_step_oversample_meta,
             init,

@@ -38,6 +38,10 @@ Notes:
 - Header: `include/omni_llvm.h`
 - Compile entrypoint: `omni_compile(src_utf8, fast_math, out_diag)` (`fast_math != 0` enables fast-math lowering)
 - Main runtime flow: compile -> create instance -> bind IO/params/buffers -> process -> destroy
+- Event flow (optional): query events (`omni_event_count` / `omni_event_name` / `omni_event_index` / `omni_event_payload_bytes`) then dispatch with `omni_trigger_event_by_index`
+  - Unknown event index is ignored.
+  - Known event with wrong payload size returns an error.
+  - Payload bytes are packed in declaration order (native-endian per primitive type; fixed arrays are contiguous).
 
 Binding contract for optimized codegen:
 - Bound input/output/buffer memory regions must not overlap (non-aliased).

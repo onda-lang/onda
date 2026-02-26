@@ -497,6 +497,7 @@ pub(crate) fn specialize_generic_proc_template(
     let mut block_pre = template.block_pre.clone();
     let mut sample = template.sample.clone();
     let mut block_post = template.block_post.clone();
+    let mut events = template.events.clone();
     for stmt in &mut init {
         specialize_generic_init_typed_decls(stmt, &type_bindings, &template.name, errors);
     }
@@ -536,10 +537,24 @@ pub(crate) fn specialize_generic_proc_template(
             errors,
         );
     }
+    for event in &mut events {
+        for stmt in &mut event.body {
+            rewrite_generic_data_ctor_stmt_types(stmt, &type_bindings);
+            substitute_call_type_args_with_bindings_stmt(
+                stmt,
+                &type_bindings,
+                &format!("processor '{}' event '{}'", template.name, event.name),
+                errors,
+            );
+        }
+    }
     expand_inline_data_ctor_initializers(&mut init);
     expand_inline_data_ctor_initializers(&mut block_pre);
     expand_inline_data_ctor_initializers(&mut sample);
     expand_inline_data_ctor_initializers(&mut block_post);
+    for event in &mut events {
+        expand_inline_data_ctor_initializers(&mut event.body);
+    }
 
     Some(ProcessorDef {
         name: specialized_struct_name(&template.name, type_args),
@@ -547,6 +562,7 @@ pub(crate) fn specialize_generic_proc_template(
         ins,
         outs,
         params,
+        events,
         buffers,
         has_init_block: template.has_init_block,
         has_block_block: template.has_block_block,
@@ -853,6 +869,16 @@ pub(crate) fn finalize_generated_generic_proc_specializations(
                 &spec_seed,
                 &spec_ns,
             );
+            for event in &mut spec.events {
+                rewrite_generic_proc_ctor_stmt_list(
+                    &mut event.body,
+                    templates,
+                    generated,
+                    errors,
+                    &spec_seed,
+                    &spec_ns,
+                );
+            }
             generated.insert(name.clone(), spec);
             processed.insert(name);
             progressed = true;

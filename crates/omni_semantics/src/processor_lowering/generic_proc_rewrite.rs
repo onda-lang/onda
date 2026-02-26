@@ -129,6 +129,16 @@ pub(super) fn rewrite_and_materialize_generic_processors(
                     &proc_seed,
                     &proc_ns,
                 );
+                for event in &mut p.events {
+                    rewrite_generic_proc_ctor_stmt_list(
+                        &mut event.body,
+                        &generic_proc_templates,
+                        &mut generated_specializations,
+                        errors,
+                        &proc_seed,
+                        &proc_ns,
+                    );
+                }
             }
             Block::Init(stmts) => {
                 rewrite_generic_proc_ctor_stmt_list(
@@ -177,6 +187,18 @@ pub(super) fn rewrite_and_materialize_generic_processors(
                     &top_level_seed,
                     "",
                 );
+            }
+            Block::Events(events) => {
+                for event in events {
+                    rewrite_generic_proc_ctor_stmt_list(
+                        &mut event.body,
+                        &generic_proc_templates,
+                        &mut generated_specializations,
+                        errors,
+                        &top_level_seed,
+                        "",
+                    );
+                }
             }
             _ => {}
         }

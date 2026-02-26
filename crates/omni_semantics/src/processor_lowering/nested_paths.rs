@@ -12,6 +12,10 @@ pub(super) fn nested_step_fn_name(owner_proc: &str, nested_var: &str) -> String 
     format!("{owner_proc}.__proc_nested_{nested_var}_step")
 }
 
+pub(super) fn nested_event_fn_name(owner_proc: &str, nested_var: &str, event_name: &str) -> String {
+    format!("{owner_proc}.__proc_nested_{nested_var}_event_{event_name}")
+}
+
 pub(super) fn nested_block_pre_fn_name(owner_proc: &str, nested_var: &str) -> String {
     format!("{owner_proc}.__proc_nested_{nested_var}_block_pre")
 }

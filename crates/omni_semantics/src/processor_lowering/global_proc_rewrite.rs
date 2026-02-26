@@ -256,6 +256,16 @@ pub(super) fn rewrite_top_level_proc_calls(
                 }
                 rewrite_proc_calls_in_stmts(&mut def.body, &proc_vars, &proc_api, errors);
             }
+            Block::Events(events) => {
+                for event in events {
+                    rewrite_proc_calls_in_stmts(
+                        &mut event.body,
+                        &global_proc_instances,
+                        &proc_api,
+                        errors,
+                    );
+                }
+            }
             _ => {}
         }
     }

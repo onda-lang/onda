@@ -16,6 +16,7 @@ pub enum Block {
     Ins(Vec<PortDecl>),
     Outs(Vec<PortDecl>),
     Params(Vec<ParamDecl>),
+    Events(Vec<EventDef>),
     Buffers(Vec<BufferDecl>),
     Proc(ProcessorDef),
     Struct(StructDef),
@@ -31,6 +32,7 @@ impl Block {
             Self::Ins(_) => BlockKind::Ins,
             Self::Outs(_) => BlockKind::Outs,
             Self::Params(_) => BlockKind::Params,
+            Self::Events(_) => BlockKind::Events,
             Self::Buffers(_) => BlockKind::Buffers,
             Self::Proc(_) => BlockKind::Proc,
             Self::Struct(_) => BlockKind::Struct,
@@ -47,6 +49,7 @@ pub enum BlockKind {
     Ins,
     Outs,
     Params,
+    Events,
     Buffers,
     Proc,
     Struct,
@@ -118,6 +121,7 @@ pub struct ProcessorDef {
     pub ins: Vec<PortDecl>,
     pub outs: Vec<PortDecl>,
     pub params: Vec<ParamDecl>,
+    pub events: Vec<EventDef>,
     pub buffers: Vec<BufferDecl>,
     pub has_init_block: bool,
     pub has_block_block: bool,
@@ -177,6 +181,25 @@ pub struct FnParamDecl {
     pub name: String,
     pub ty: Option<FnParamType>,
     pub default: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventDef {
+    pub name: String,
+    pub params: Vec<EventParamDecl>,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventParamDecl {
+    pub name: String,
+    pub ty: EventParamType,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EventParamType {
+    Scalar(PrimitiveType),
+    Array { elem: PrimitiveType, size: Expr },
 }
 
 #[derive(Debug, Clone, PartialEq)]

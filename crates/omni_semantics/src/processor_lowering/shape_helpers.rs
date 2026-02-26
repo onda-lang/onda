@@ -153,6 +153,19 @@ pub(super) fn struct_defs_for_scalar_expr_inference(
         .collect::<HashMap<_, _>>()
 }
 
+fn is_proc_output_alias_name(name: &str, out_count: usize) -> bool {
+    let Some(rest) = name.strip_prefix("out") else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    let Ok(idx) = rest.parse::<usize>() else {
+        return false;
+    };
+    idx >= 1 && idx <= out_count
+}
+
 pub(super) fn compute_proc_shape(
     proc: &omni_frontend::ProcessorDef,
     sample_oversample_factor: usize,
@@ -215,6 +228,26 @@ pub(super) fn compute_proc_shape(
     let mut out_names = outs.iter().cloned().collect::<HashSet<_>>();
     for port in &out_ports {
         out_names.insert(port.name.clone());
+    }
+    let mut seen_event_names = HashSet::<String>::new();
+    for event in &proc.events {
+        if !seen_event_names.insert(event.name.clone()) {
+            continue;
+        }
+        if ins_names.contains(&event.name)
+            || out_names.contains(&event.name)
+            || param_names.contains(&event.name)
+            || is_proc_output_alias_name(&event.name, outs.len())
+        {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "processor '{}.{}' event name conflicts with an existing callable/endpoint name",
+                    proc.name, event.name
+                ),
+                0,
+                0,
+            ));
+        }
     }
     let mut reserved = HashSet::<String>::new();
     reserved.extend(param_names.iter().cloned());

@@ -64,6 +64,15 @@ int omni_set_param_by_index(
   int value_bytes
 );
 
+/* Triggers one event by index with packed payload bytes; returns 0 on success, negative on error.
+   Unknown event indices are ignored and return success. */
+int omni_trigger_event_by_index(
+  omni_instance_t* instance,
+  int index,
+  const void* payload_ptr,
+  int payload_bytes
+);
+
 /* Binds one input entry to host memory; returns 0 on success, negative on error.
    Zero-copy contract: runtime stores src_ptr and reads from it directly (no internal copy).
    src_ptr must remain valid, correctly sized, and at a stable address until this slot is
@@ -126,6 +135,8 @@ int omni_output_count(const omni_program_t* program);
 int omni_param_count(const omni_program_t* program);
 /* Returns declared buffer entry count, or -1 on invalid program handle. */
 int omni_buffer_count(const omni_program_t* program);
+/* Returns declared event entry count, or -1 on invalid program handle. */
+int omni_event_count(const omni_program_t* program);
 
 /* Returns input name by index, or NULL if index/program is invalid. */
 const char* omni_input_name(const omni_program_t* program, int index);
@@ -135,6 +146,8 @@ const char* omni_output_name(const omni_program_t* program, int index);
 const char* omni_param_name(const omni_program_t* program, int index);
 /* Returns buffer name by index, or NULL if index/program is invalid. */
 const char* omni_buffer_name(const omni_program_t* program, int index);
+/* Returns event name by index, or NULL if index/program is invalid. */
+const char* omni_event_name(const omni_program_t* program, int index);
 
 /* Returns input index for a name, or -1 if not found/invalid. */
 int omni_input_index(const omni_program_t* program, const char* name);
@@ -144,6 +157,8 @@ int omni_output_index(const omni_program_t* program, const char* name);
 int omni_param_index(const omni_program_t* program, const char* name);
 /* Returns buffer index for a name, or -1 if not found/invalid. */
 int omni_buffer_index(const omni_program_t* program, const char* name);
+/* Returns event index for a name, or -1 if not found/invalid. */
+int omni_event_index(const omni_program_t* program, const char* name);
 
 /* Returns input type text (for example "f64[2]"), or NULL if invalid. */
 const char* omni_input_type(const omni_program_t* program, int index);
@@ -160,6 +175,8 @@ int omni_input_type_bytes(const omni_program_t* program, int index);
 int omni_output_type_bytes(const omni_program_t* program, int index);
 /* Returns parameter entry byte width, or -1 if invalid. */
 int omni_param_type_bytes(const omni_program_t* program, int index);
+/* Returns event payload byte width, or -1 if invalid. */
+int omni_event_payload_bytes(const omni_program_t* program, int index);
 /* Returns buffer element primitive type id, or -1 if invalid. */
 int omni_buffer_elem_type(const omni_program_t* program, int index);
 /* Returns buffer element byte width, or -1 if invalid. */

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
-    BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DataElemType, DeclType, Expr,
-    FieldType, PrimitiveType, Stmt,
+    BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DataElemType, DeclType,
+    EventParamType, Expr, FieldType, PrimitiveType, Stmt,
 };
 
 use super::{
@@ -2602,4 +2602,141 @@ sample { out1 = 0.0 }
         result.is_err(),
         "in-memory parser should reject non-std imports without file context"
     );
+}
+
+#[test]
+fn parses_top_level_events_block_with_scalar_and_array_params() {
+    let src = r#"
+outs { out1 }
+events {
+  note_on(note: i32, vel: i32) {
+    gate = vel
+  }
+  set_curve(values: f32[8]) {
+    gate = values[0]
+  }
+}
+init { gate = 0.0 }
+sample { out1 = gate }
+"#;
+
+    let program = parse_program(src).expect("events block should parse");
+    let events = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Events(v) => Some(v),
+            _ => None,
+        })
+        .expect("events block");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].name, "note_on");
+    assert_eq!(events[0].params.len(), 2);
+    assert_eq!(events[1].name, "set_curve");
+    assert_eq!(events[1].params.len(), 1);
+    match &events[1].params[0].ty {
+        EventParamType::Array { elem, .. } => assert_eq!(*elem, PrimitiveType::F32),
+        _ => panic!("expected fixed-size primitive array param"),
+    }
+}
+
+#[test]
+fn parses_proc_events_block_indentation_syntax() {
+    let src = r#"
+proc Voice:
+  outs 1
+  events:
+    note_on(note: i32):
+      gate = note
+  init:
+    gate = 0.0
+  sample:
+    out1 = gate
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("proc events indentation syntax should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert_eq!(proc.events.len(), 1);
+    assert_eq!(proc.events[0].name, "note_on");
+    assert_eq!(proc.events[0].params.len(), 1);
+}
+
+#[test]
+fn defaults_untyped_event_params_to_f32() {
+    let src = r#"
+outs { out1 }
+events {
+  note_on(note, vel: i32, curve: f32[2]) {
+    gate = note + f32(vel) + curve[0]
+  }
+}
+init { gate = 0.0 }
+sample { out1 = gate }
+"#;
+
+    let program = parse_program(src).expect("events block should parse");
+    let events = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Events(v) => Some(v),
+            _ => None,
+        })
+        .expect("events block");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].params.len(), 3);
+    match events[0].params[0].ty {
+        EventParamType::Scalar(PrimitiveType::F32) => {}
+        ref other => panic!("expected default f32 event param, got {other:?}"),
+    }
+    match events[0].params[1].ty {
+        EventParamType::Scalar(PrimitiveType::I32) => {}
+        ref other => panic!("expected explicit i32 event param, got {other:?}"),
+    }
+    match &events[0].params[2].ty {
+        EventParamType::Array { elem, .. } => assert_eq!(*elem, PrimitiveType::F32),
+        _ => panic!("expected fixed-size primitive array param"),
+    }
+}
+
+#[test]
+fn defaults_untyped_proc_event_params_to_f32() {
+    let src = r#"
+proc Voice:
+  outs 1
+  events:
+    note_on(note):
+      gate = note
+  init:
+    gate = 0.0
+  sample:
+    out1 = gate
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("proc events indentation syntax should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert_eq!(proc.events.len(), 1);
+    assert_eq!(proc.events[0].params.len(), 1);
+    match proc.events[0].params[0].ty {
+        EventParamType::Scalar(PrimitiveType::F32) => {}
+        ref other => panic!("expected default f32 proc event param, got {other:?}"),
+    }
 }

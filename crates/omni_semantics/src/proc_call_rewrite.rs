@@ -437,6 +437,59 @@ pub(super) fn expand_proc_buffer_call_args(
         .collect::<Vec<_>>()
 }
 
+pub(super) fn expand_proc_event_call_args(
+    call_args: &[CallArg],
+    event: &ProcEventSpec,
+    call_display_name: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<CallArg> {
+    let param_names = event
+        .params
+        .iter()
+        .map(|p| p.name.clone())
+        .collect::<Vec<_>>();
+    let param_defaults = vec![None; param_names.len()];
+    let resolved = resolve_call_args(
+        call_args,
+        &param_names,
+        &param_defaults,
+        false,
+        false,
+        &format!("processor event call '{call_display_name}(...)'"),
+        errors,
+    );
+    let mut expanded = Vec::<CallArg>::new();
+    for (idx, param) in event.params.iter().enumerate() {
+        let slot_count = param.slots.len();
+        let slot_exprs = match resolved.get(idx).and_then(|a| *a) {
+            Some(arg_expr) => expand_expr_to_slots(
+                arg_expr,
+                slot_count,
+                &format!(
+                    "processor event call '{call_display_name}(...)' argument '{}'",
+                    param.name
+                ),
+                errors,
+            ),
+            None => {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "processor event call '{call_display_name}(...)' is missing required argument '{}'",
+                        param.name
+                    ),
+                    0,
+                    0,
+                ));
+                continue;
+            }
+        };
+        for expr in slot_exprs {
+            expanded.push(CallArg { name: None, expr });
+        }
+    }
+    expanded
+}
+
 pub(super) fn expand_proc_port_specs(
     proc_name: &str,
     ports: &[PortDecl],
@@ -904,6 +957,45 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 rewritten.extend(expanded_buffers);
                 *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
                 *args = rewritten;
+                return;
+            }
+
+            if let Some((base, event_name)) = split_dot_path(name) {
+                if let Some(instance) = proc_vars.get(base) {
+                    let proc_name = instance.proc_name.clone();
+                    let Some(api) = proc_api.get(&proc_name) else {
+                        errors.push(Diagnostic::semantic(
+                            format!("unknown processor type '{proc_name}'"),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    let Some(event_spec) = api.events.get(event_name) else {
+                        let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
+                        known_events.sort();
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "unknown processor event '{}.{}'; expected one of [{}]",
+                                base,
+                                event_name,
+                                known_events.join(", ")
+                            ),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
+                    rewritten.push(CallArg {
+                        name: None,
+                        expr: Expr::Var(base.to_owned()),
+                    });
+                    let expanded = expand_proc_event_call_args(args, event_spec, name, errors);
+                    rewritten.extend(expanded);
+                    *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
+                    *args = rewritten;
+                }
             }
         }
         Expr::Var(name) => {

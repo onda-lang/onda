@@ -315,6 +315,86 @@ pub(super) fn parse_buffers_block(
     Ok(out)
 }
 
+pub(super) fn parse_events_block(
+    block_pair: Pair<'_, Rule>,
+) -> Result<Vec<EventDef>, Vec<Diagnostic>> {
+    let mut events = Vec::<EventDef>::new();
+    let mut seen = HashSet::<String>::new();
+
+    for child in block_pair.into_inner() {
+        if child.as_rule() != Rule::event_list {
+            continue;
+        }
+        for item in child.into_inner() {
+            if item.as_rule() != Rule::event_decl {
+                continue;
+            }
+            let mut name: Option<String> = None;
+            let mut params = Vec::<EventParamDecl>::new();
+            let mut body = None;
+            for part in item.into_inner() {
+                match part.as_rule() {
+                    Rule::ident => {
+                        if name.is_none() {
+                            name = Some(part.as_str().to_owned());
+                        }
+                    }
+                    Rule::event_param_list => {
+                        for event_param in part.into_inner() {
+                            if event_param.as_rule() != Rule::event_param_decl {
+                                continue;
+                            }
+                            let mut param_inner = event_param.into_inner();
+                            let Some(param_name_pair) = param_inner.next() else {
+                                return Err(vec![Diagnostic::syntax(
+                                    "missing event parameter name",
+                                    0,
+                                    0,
+                                )]);
+                            };
+                            let Some(param_ty_pair) = param_inner.next() else {
+                                params.push(EventParamDecl {
+                                    name: param_name_pair.as_str().to_owned(),
+                                    ty: EventParamType::Scalar(PrimitiveType::F32),
+                                });
+                                continue;
+                            };
+                            params.push(EventParamDecl {
+                                name: param_name_pair.as_str().to_owned(),
+                                ty: parse_event_param_type(param_ty_pair)?,
+                            });
+                        }
+                    }
+                    Rule::stmt_block => {
+                        body = Some(parse_stmt_block(part)?);
+                    }
+                    _ => {}
+                }
+            }
+            let Some(name) = name else {
+                return Err(vec![Diagnostic::syntax("missing event name", 0, 0)]);
+            };
+            if !seen.insert(name.clone()) {
+                return Err(vec![Diagnostic::syntax(
+                    format!("duplicate event declaration '{name}'"),
+                    0,
+                    0,
+                )]);
+            }
+            let Some(body) = body else {
+                return Err(vec![Diagnostic::syntax(
+                    format!("missing handler body for event '{name}'"),
+                    0,
+                    0,
+                )]);
+            };
+            events.push(EventDef { name, params, body });
+        }
+    }
+
+    Ok(events)
+}
+
 pub(super) fn parse_proc_block(
     block_pair: Pair<'_, Rule>,
 ) -> Result<ProcessorDef, Vec<Diagnostic>> {
@@ -323,6 +403,7 @@ pub(super) fn parse_proc_block(
     let mut ins = Vec::new();
     let mut outs = Vec::new();
     let mut params = Vec::new();
+    let mut events: Option<Vec<EventDef>> = None;
     let mut buffers = Vec::new();
     let mut init: Option<Vec<Stmt>> = None;
     let mut block_exec: Option<BlockExec> = None;
@@ -363,6 +444,16 @@ pub(super) fn parse_proc_block(
                     )]);
                 }
                 params = parse_params_block(child)?;
+            }
+            Rule::events_block => {
+                if events.is_some() {
+                    return Err(vec![Diagnostic::syntax(
+                        "duplicate proc events block",
+                        0,
+                        0,
+                    )]);
+                }
+                events = Some(parse_events_block(child)?);
             }
             Rule::buffers_block => {
                 if !buffers.is_empty() {
@@ -445,6 +536,7 @@ pub(super) fn parse_proc_block(
         ins,
         outs,
         params,
+        events: events.unwrap_or_default(),
         buffers,
         has_init_block: init.is_some(),
         has_block_block,
