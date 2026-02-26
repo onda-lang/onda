@@ -8,9 +8,10 @@
     - Proc instances/nodes are created in `init`; `graph` only declares connections.
     - Edge forms:
       - `src >> dst`
-      - `@block expr >> dst` (`@sample` optional; default rate is sample)
+      - `@block expr >> dst`
+      - `@sample src >> dst` (explicit sample-rate override)
       - `src >>[N] dst` (static sample delay, `N` compile-time integer `>= 0`)
-    - Edge sources can be endpoint outputs/inputs/params, literals, expressions, and graph-safe `def` calls.
+    - Edge sources can be endpoint outputs/inputs/params, literals, and expressions.
     - Endpoint sugar should work the same as outside graph (`p(...).endpoint`, `.outN`, named endpoint access).
   - Illustrative syntax examples:
     ```omni
@@ -22,96 +23,135 @@
 
       init
         rev = Reverb(mix: mix)
-        lfo = Sine(freq: 0.2)
 
       graph
         in1 >> rev.inL
         in2 >> rev.inR
-        @block (mix * 0.5 + 0.2) >> rev.mix
-        lfo.out1 >> rev.mix
+        mix >> rev.mix
         rev.outL >> out1
         rev.outR >> out2
-        rev.outL >>[1] rev.inL
+        rev.outL >>[1] rev.inL # single-sample delay
+    ```
+  - Rate-behavior examples:
+    ```omni
+    # 1) Sample-rate processing through proc nodes
+    proc Main
+      ins 1
+      outs 1
+
+      init
+        sat = SoftClip()
+
+      graph
+        in1 >> sat.in
+        sat.out1 >> out1
+    ```
+    ```omni
+    # 2) Param destination infers @block (no explicit annotation needed)
+    proc Main
+      ins 1
+      outs 1
+      params
+        mix = 0.25
+
+      init
+        lp = OnePole()
+
+      graph
+        in1 >> lp.in
+        mix >> lp.cutoff         # inferred @block because dst is a param endpoint
+        lp.out1 >> out1
+    ```
+    ```omni
+    # 3) Explicit @sample override for sample-rate modulation into a param
+    proc Main
+      ins 1
+      outs 1
+
+      init
+        lp = OnePole()
+        lfo = Sine(freq: 0.2)
+
+      graph
+        in1 >> lp.in
+        @sample lfo.out1 >> lp.cutoff
+        lp.out1 >> out1
+    ```
+    ```omni
+    # 4) Heavier block-rate control logic in `block`, then routed to graph
+    proc Main
+      ins 1
+      outs 1
+      params
+        target = 0.4
+
+      init
+        lp = OnePole()
+        cutoff_ctrl = 1000.0
+
+      block
+        cutoff_ctrl = cutoff_ctrl + (target * 9000.0 - cutoff_ctrl) * 0.03
+
+      graph
+        in1 >> lp.in
+        cutoff_ctrl >> lp.cutoff # inferred @block
+        lp.out1 >> out1
     ```
   - Locked MVP semantics:
     - Constructor args in `init` are initial/default values; incoming graph edges provide runtime drive.
-    - `mix >> rev.mix` style param routing is supported for block-time host params and sample-time modulation sources.
-    - `@block` edges evaluate once per block and are reused for all samples in the block.
-    - Unannotated edges are `@sample` by default.
+    - Unannotated edges targeting proc `param` endpoints are inferred as `@block`.
+    - Unannotated edges targeting non-param destinations are `@sample` by default.
+    - `@sample` can be used to override inferred `@block` on param destinations.
+    - `@block` edges (explicit or inferred) evaluate once per block and are reused for all samples in the block.
     - `@block` edges must be block-safe (no sample-rate dependencies).
+    - If a param edge is inferred `@block` but source is sample-rate, emit an error that suggests explicit `@sample`.
     - Single-writer rule per destination endpoint in MVP (duplicate drivers are semantic errors).
     - Fan-out is allowed.
     - Graph cycles are rejected unless total cycle delay is positive via `>>[N]`.
     - `>>[0]` does not break cycles; delayed feedback requires `N > 0` on at least one cycle edge.
     - Delayed edge state is per-edge and persistent across blocks.
-    - Graph expression/def usage must not mutate proc state (directly or indirectly).
-  - Locked MVP graph-safe def constraints:
-    - Must not write proc fields, endpoints, buffers, `Data`, or other non-local state.
-    - Local temporary mutation is allowed.
-    - Primitive arrays in graph expressions are treated as value inputs (local copy semantics for mutation).
-    - Array-transform defs and shape-generic transforms (`.len()`) are allowed as long as they stay graph-safe.
-  - Def usage in graph edges (examples to preserve in tests/docs):
-    ```omni
-    // allowed: graph-safe scalar transform
-    def shape(x, k)
-      return tanh(x * k)
-
-    // allowed: graph-safe array transform with local mutation
-    def scale_arr(v, k)
-      for i in 0..v.len()
-        v[i] = v[i] * k
-      return v
-
-    // rejected: writes non-local state
-    def poke_state(s, x)
-      s.acc = x
-      return s.acc
-
-    graph
-      shape(rev.outL, mix) >> out1
-      scale_arr(procA.outVec, 4.0) >> out_vec
-      // poke_state(...) >> out1    // semantic error (non-graph-safe def)
-    ```
+    - Function-call processing in graph edges is not part of graph MVP; use proc nodes for transforms.
+    - Complex block-rate control logic should run in `block`, then feed graph param edges.
   - Delivery plan:
     - Frontend: parser + AST for `graph` block, edge annotations (`@block/@sample`), and delayed edges `>>[N]`.
-    - Semantics: node/endpoint resolution from `init`, rate checking, graph-safe def validation, cycle detection with delay accounting, single-writer enforcement.
+    - Semantics: node/endpoint resolution from `init`, rate inference (`dst` param => `@block`), rate checking, cycle detection with delay accounting, single-writer enforcement.
     - Lowering/codegen: deterministic topological scheduling, per-edge delay state lowering, block-vs-sample edge scheduling, param-edge runtime drive.
-    - Diagnostics: unknown node/endpoint, type/shape mismatch, rate mismatch for `@block`, duplicate drivers, invalid cycles with cycle path reporting.
+    - Diagnostics: unknown node/endpoint, type/shape mismatch, inferred-`@block` source-rate errors (with `@sample` hint), duplicate drivers, invalid cycles with cycle path reporting.
     - Tests:
       - parser coverage for all edge forms and invalid variants;
-      - semantic tests for graph/sample exclusivity, node declaration requirements, and delay-cycle legality;
-      - runtime/codegen tests for multi-out routing, param modulation, delayed feedback behavior, and array/def edge transforms.
+      - semantic tests for graph/sample exclusivity, node declaration requirements, param-destination rate inference/override, and delay-cycle legality;
+      - runtime/codegen tests for multi-out routing, param modulation, and delayed feedback behavior.
 
-- Oversampling / downsampling blocks (`sample` scope)
+- Oversampling factor on `sample` block
   - Locked MVP syntax:
-    - `up N:` block inside `sample:` (both top-level `sample` and `proc sample`).
+    - `sample:` keeps current behavior (`N = 1`).
+    - `sample N:` oversamples the entire sample block by `N` (both top-level `sample` and `proc sample`).
     - `N` must be one of `{2, 4, 8, 16}`.
-    - `up` can appear inside conditionals/branches in `sample`.
-    - No explicit `down` block in MVP; returning to base rate is automatic after `up`.
+    - No `up`/`down` nested blocks in MVP.
   - Locked MVP semantics:
-    - Nested `up` blocks are rejected.
-    - Invalid factors (`up 3`, non-literal factors, etc.) are semantic errors with explicit allowed set `{2,4,8,16}`.
-    - Proc calls are allowed in `up` and run at substep rate (`N` calls per base sample).
-    - Same proc instance can be called both inside and outside `up` in the same sample tick; execution is deterministic by source order.
-    - Writing `out*` directly inside `up` is rejected; outputs must be assigned after returning to base rate.
-    - Symbols written in `up` and consumed after `up` cross the boundary via lowpass + decimate (not last-sample/average shortcuts).
-    - Proc params/state assignments inside `up` are allowed and execute per substep.
+    - `N = 1` is exactly current sample behavior (no interpolation/decimation path and no rate-conversion filtering).
+    - Invalid factors (`sample 3:`, non-literal factors, etc.) are semantic errors with explicit allowed set `{1,2,4,8,16}`.
+    - The whole sample body executes at substep rate when `N > 1`.
+    - Proc calls inside `sample N:` run at substep rate (`N` calls per base sample).
+    - `out*` assignments can remain in normal source order; final outputs return to base rate via compiler-managed decimation at sample-block boundary.
+    - Proc params/state assignments inside `sample N:` execute per substep.
   - Locked MVP rate-conversion behavior:
-    - `ins` read in `up` are interpolated to substeps (not ZOH hold).
-    - `params` read in `up` are held constant across substeps within the base sample.
+    - `ins` read in `sample N:` are interpolated to substeps (not ZOH hold).
+    - `params` read in `sample N:` are held constant across substeps within the base sample.
     - Up/down conversion filters are compiler/runtime-managed with fixed high-quality settings in MVP.
     - Chosen filter family for MVP: IIR polyphase.
   - Delivery plan:
-    - Frontend: parser + AST for `up N:` statements in `sample` bodies.
-    - Semantics: placement/factor/nesting validation, `out*`-write restrictions inside `up`, and boundary type/rate checks.
-    - Codegen: substep loop lowering, interpolating input reads, held params, proc-call substep execution, and decimating boundary exports.
+    - Frontend: parser + AST support for optional oversampling factor on `sample` blocks.
+    - Semantics: factor validation and `sample` annotation rules (default `N=1`, allowed set `{1,2,4,8,16}`).
+    - Codegen: whole-sample substep loop lowering, interpolating input reads, held params, and output decimation at block boundary.
     - Tests:
-      - parser/semantic conformance for valid/invalid `up` usage;
-      - deterministic mixed inside/outside proc-call ordering;
+      - parser/semantic conformance for valid/invalid `sample N:` usage;
+      - runtime tests that full-block oversampling matches deterministic execution order;
       - audio quality regression tests for alias reduction on nonlinear patches;
       - performance benchmark target at `N=4`: provisional budget `<= 2.5x` baseline cost on representative patches.
   - Follow-up (post-MVP):
-    - Consider explicit `down:` block and user-exposed quality/performance modes.
+    - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
+    - Consider user-exposed quality/performance modes.
 
 - Standard library modules
   - Add more DSP coverage to the built-in stdlib (beyond current `std/math`, `std/osc`, `std/filter`, `std/env`, `std/delay` MVP set).
