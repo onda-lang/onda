@@ -34,11 +34,18 @@ typedef struct {
   const char* trace;
 } omni_diag_t;
 
-/* Compiles Omni source and returns a program handle, or NULL on failure.
-   fast_math != 0 enables LLVM fast-math lowering. */
+/* Compile options for omni_compile. */
+typedef struct {
+  /* fast_math != 0 enables LLVM fast-math lowering. */
+  int fast_math;
+  /* Fixed compile-time block size. Must be > 0. */
+  int block_size;
+} omni_compile_options_t;
+
+/* Compiles Omni source and returns a program handle, or NULL on failure. */
 omni_program_t* omni_compile(
   const char* src_utf8,
-  int fast_math,
+  const omni_compile_options_t* options,
   omni_diag_t* out_diag
 );
 /* Destroys a program handle created by omni_compile. */
@@ -187,6 +194,8 @@ int omni_buffer_elem_type_bytes(const omni_program_t* program, int index);
 int omni_buffer_channels_kind(const omni_program_t* program, int index);
 /* Returns static channel count (mono=1), or -1 for dynamic/invalid. */
 int omni_buffer_channels_static(const omni_program_t* program, int index);
+/* Returns 1 if buffer may be written by program code, 0 if read-only, -1 if invalid. */
+int omni_buffer_may_write(const omni_program_t* program, int index);
 
 /* Returns input element primitive type id, or -1 if invalid. */
 int omni_input_elem_type(const omni_program_t* program, int index);

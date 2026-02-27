@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use omni_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType};
 
 use crate::builtins::{
-    builtin_name, is_builtin_constant_name, is_builtin_unsafe_data_fn, is_float_type,
+    builtin_constant_type, builtin_name, is_builtin_unsafe_data_fn, is_float_type,
     is_internal_buffer_2d_fn, parse_buffer_chans_instance_base, parse_data_len_instance_base,
+    parse_unsafe_read_instance_base, parse_unsafe_write_instance_base,
 };
 use crate::decl_symbols::{
     get_declared_symbol_type, DECLARED_BUFFER_ELEM_TYPE_PREFIX, DECLARED_DATA_ELEM_TYPE_PREFIX,
@@ -36,8 +37,8 @@ pub(crate) fn infer_scalar_expr_type(
         Expr::Bool(_) => Some(PrimitiveType::Bool),
         Expr::ArrayLiteral(_) => None,
         Expr::Var(name) => {
-            if is_builtin_constant_name(name) {
-                return Some(PrimitiveType::F32);
+            if let Some(ty) = builtin_constant_type(name) {
+                return Some(ty);
             }
             if let Some((base, field)) = split_field_path(name, errors) {
                 let flat = format!("{base}.{field}");
@@ -234,6 +235,26 @@ pub(crate) fn infer_scalar_expr_type(
                 || parse_buffer_chans_instance_base(name).is_some()
             {
                 return Some(PrimitiveType::I32);
+            }
+            if let Some(base) = parse_unsafe_read_instance_base(name)
+                .or_else(|| parse_unsafe_write_instance_base(name))
+            {
+                if let Some(alias) = local_data_aliases.get(base) {
+                    if alias.elem_struct.is_none() {
+                        return Some(alias.elem_ty);
+                    }
+                }
+                if let Some(ty) =
+                    get_declared_symbol_type(state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX)
+                {
+                    return Some(ty);
+                }
+                if let Some(ty) =
+                    get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
+                {
+                    return Some(ty);
+                }
+                return Some(PrimitiveType::F32);
             }
             if is_internal_buffer_2d_fn(name) {
                 if let Some(CallArg {

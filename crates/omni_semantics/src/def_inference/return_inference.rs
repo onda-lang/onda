@@ -15,13 +15,7 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
         }),
         Expr::Bool(_) => Some(PrimitiveType::Bool),
         Expr::ArrayLiteral(_) | Expr::DataCtor { .. } => None,
-        Expr::Var(name) => {
-            if is_builtin_constant_name(name) {
-                Some(PrimitiveType::F32)
-            } else {
-                locals.get(name).copied()
-            }
-        }
+        Expr::Var(name) => builtin_constant_type(name).or_else(|| locals.get(name).copied()),
         Expr::Index { base, .. } => locals.get(base).copied().or(Some(PrimitiveType::F32)),
         Expr::Cast { to, .. } => Some(*to),
         Expr::UnaryNot { .. } | Expr::Compare { .. } | Expr::Logical { .. } => {

@@ -12,7 +12,7 @@ use call_inference::infer_stmt_calls;
 pub(crate) use call_inference::resolve_call_args;
 
 use crate::builtins::{
-    eval_data_size_expr, is_builtin_constant_name, is_internal_buffer_2d_fn,
+    builtin_constant_type, eval_data_size_expr, is_builtin_constant_name, is_internal_buffer_2d_fn,
     parse_buffer_chans_instance_base, parse_data_len_instance_base,
 };
 use crate::{

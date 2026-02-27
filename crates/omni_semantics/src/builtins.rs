@@ -23,6 +23,17 @@ pub(crate) fn is_builtin_constant_name(name: &str) -> bool {
     )
 }
 
+pub(crate) fn builtin_constant_type(name: &str) -> Option<PrimitiveType> {
+    match name {
+        "PI" | "pi" | "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => Some(PrimitiveType::F64),
+        "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
+            Some(PrimitiveType::F32)
+        }
+        "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => Some(PrimitiveType::I32),
+        _ => None,
+    }
+}
+
 pub(crate) fn is_builtin_function_name(name: &str) -> bool {
     matches!(
         name,
@@ -84,6 +95,24 @@ pub(crate) fn parse_buffer_chans_instance_base(name: &str) -> Option<&str> {
     }
 }
 
+pub(crate) fn parse_unsafe_read_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = split_instance_method_path(name)?;
+    if method == "unsafe_read" {
+        Some(base)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn parse_unsafe_write_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = split_instance_method_path(name)?;
+    if method == "unsafe_write" {
+        Some(base)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn builtin_arity(func: BuiltinFn) -> usize {
     match func {
         BuiltinFn::Sin
@@ -133,8 +162,8 @@ pub(crate) fn is_float_type(ty: PrimitiveType) -> bool {
 
 fn builtin_constant_value_f64(name: &str, options: AnalysisOptions) -> Option<f64> {
     match name {
-        "PI" | "pi" => Some(std::f32::consts::PI as f64),
-        "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => Some((2.0 * std::f32::consts::PI) as f64),
+        "PI" | "pi" => Some(std::f64::consts::PI),
+        "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => Some(2.0 * std::f64::consts::PI),
         "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
             Some(options.sample_rate as f64)
         }

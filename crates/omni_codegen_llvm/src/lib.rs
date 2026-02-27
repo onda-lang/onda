@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use omni_frontend::{Diagnostic, PrimitiveType};
+use omni_frontend::{AssignTarget, CallArg, Diagnostic, Expr, PrimitiveType, Stmt};
 use omni_semantics::{
     TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedConstValue, TypedEventParamType,
-    TypedProgram, TypedValueRange,
+    TypedFnParam, TypedProgram, TypedValueRange,
 };
 
 #[cfg(feature = "llvm-orc")]
@@ -140,6 +140,7 @@ pub struct DeclaredBuffer {
     name: String,
     elem_ty: PrimitiveType,
     channels: DeclaredBufferChannels,
+    may_write: bool,
 }
 
 impl DeclaredBuffer {
@@ -153,6 +154,10 @@ impl DeclaredBuffer {
 
     pub fn channels(&self) -> DeclaredBufferChannels {
         self.channels
+    }
+
+    pub fn may_write(&self) -> bool {
+        self.may_write
     }
 
     pub fn type_repr(&self) -> String {
@@ -398,6 +403,7 @@ fn build_event_name_to_index(entries: &[DeclaredEvent]) -> HashMap<String, usize
 }
 
 fn build_declared_buffers(typed: &TypedProgram) -> Vec<DeclaredBuffer> {
+    let written_top_level_buffers = infer_written_top_level_buffers(typed);
     typed
         .buffers
         .iter()
@@ -409,8 +415,628 @@ fn build_declared_buffers(typed: &TypedProgram) -> Vec<DeclaredBuffer> {
                 TypedBufferChannels::Static(ch) => DeclaredBufferChannels::Static(ch),
                 TypedBufferChannels::Dynamic => DeclaredBufferChannels::Dynamic,
             },
+            may_write: written_top_level_buffers.contains(&b.name),
         })
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefBufferWriteSummary {
+    buffer_param_writes: Vec<bool>,
+    global_buffer_writes: HashSet<String>,
+}
+
+fn infer_written_top_level_buffers(typed: &TypedProgram) -> HashSet<String> {
+    let top_level_buffers = typed
+        .buffers
+        .iter()
+        .map(|b| b.name.clone())
+        .collect::<HashSet<_>>();
+    if top_level_buffers.is_empty() {
+        return HashSet::new();
+    }
+
+    let def_index_by_name = typed
+        .defs
+        .iter()
+        .enumerate()
+        .map(|(idx, def)| (def.name.as_str(), idx))
+        .collect::<HashMap<_, _>>();
+
+    let def_buffer_param_positions = typed
+        .defs
+        .iter()
+        .map(|def| {
+            def.param_kinds
+                .iter()
+                .enumerate()
+                .filter_map(|(param_idx, param_kind)| match param_kind {
+                    TypedFnParam::Buffer { .. } => Some(param_idx),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    let def_buffer_param_slot_by_name = typed
+        .defs
+        .iter()
+        .zip(def_buffer_param_positions.iter())
+        .map(|(def, positions)| {
+            positions
+                .iter()
+                .enumerate()
+                .filter_map(|(slot_idx, param_idx)| {
+                    def.params
+                        .get(*param_idx)
+                        .cloned()
+                        .map(|name| (name, slot_idx))
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .collect::<Vec<_>>();
+
+    let mut summaries = def_buffer_param_positions
+        .iter()
+        .map(|positions| DefBufferWriteSummary {
+            buffer_param_writes: vec![false; positions.len()],
+            global_buffer_writes: HashSet::new(),
+        })
+        .collect::<Vec<_>>();
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (def_idx, def) in typed.defs.iter().enumerate() {
+            let mut next = DefBufferWriteSummary {
+                buffer_param_writes: vec![false; def_buffer_param_positions[def_idx].len()],
+                global_buffer_writes: HashSet::new(),
+            };
+            for stmt in &def.body {
+                collect_stmt_buffer_write_usage(
+                    stmt,
+                    &top_level_buffers,
+                    &def_index_by_name,
+                    typed,
+                    &def_buffer_param_positions,
+                    &def_buffer_param_slot_by_name[def_idx],
+                    &summaries,
+                    &mut next.buffer_param_writes,
+                    &mut next.global_buffer_writes,
+                );
+            }
+            if summaries[def_idx] != next {
+                summaries[def_idx] = next;
+                changed = true;
+            }
+        }
+    }
+
+    let mut written = HashSet::<String>::new();
+    let no_param_slots = HashMap::<String, usize>::new();
+    for stmt in &typed.init {
+        collect_stmt_buffer_write_usage(
+            stmt,
+            &top_level_buffers,
+            &def_index_by_name,
+            typed,
+            &def_buffer_param_positions,
+            &no_param_slots,
+            &summaries,
+            &mut [],
+            &mut written,
+        );
+    }
+    for stmt in &typed.block_pre {
+        collect_stmt_buffer_write_usage(
+            stmt,
+            &top_level_buffers,
+            &def_index_by_name,
+            typed,
+            &def_buffer_param_positions,
+            &no_param_slots,
+            &summaries,
+            &mut [],
+            &mut written,
+        );
+    }
+    for stmt in &typed.sample {
+        collect_stmt_buffer_write_usage(
+            stmt,
+            &top_level_buffers,
+            &def_index_by_name,
+            typed,
+            &def_buffer_param_positions,
+            &no_param_slots,
+            &summaries,
+            &mut [],
+            &mut written,
+        );
+    }
+    for stmt in &typed.block_post {
+        collect_stmt_buffer_write_usage(
+            stmt,
+            &top_level_buffers,
+            &def_index_by_name,
+            typed,
+            &def_buffer_param_positions,
+            &no_param_slots,
+            &summaries,
+            &mut [],
+            &mut written,
+        );
+    }
+    for event in &typed.events {
+        for stmt in &event.body {
+            collect_stmt_buffer_write_usage(
+                stmt,
+                &top_level_buffers,
+                &def_index_by_name,
+                typed,
+                &def_buffer_param_positions,
+                &no_param_slots,
+                &summaries,
+                &mut [],
+                &mut written,
+            );
+        }
+    }
+    written
+}
+
+fn collect_stmt_buffer_write_usage(
+    stmt: &Stmt,
+    top_level_buffers: &HashSet<String>,
+    def_index_by_name: &HashMap<&str, usize>,
+    typed: &TypedProgram,
+    def_buffer_param_positions: &[Vec<usize>],
+    param_slot_by_name: &HashMap<String, usize>,
+    summaries: &[DefBufferWriteSummary],
+    param_writes: &mut [bool],
+    global_writes: &mut HashSet<String>,
+) {
+    match stmt {
+        Stmt::Assign { target, expr, .. } => {
+            if let AssignTarget::Index { base, index } = target {
+                mark_buffer_symbol_write(
+                    base,
+                    top_level_buffers,
+                    param_slot_by_name,
+                    param_writes,
+                    global_writes,
+                );
+                collect_expr_buffer_write_usage(
+                    index,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+            collect_expr_buffer_write_usage(
+                expr,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            collect_expr_buffer_write_usage(
+                expr,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_expr_buffer_write_usage(
+                cond,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+            for inner in then_branch {
+                collect_stmt_buffer_write_usage(
+                    inner,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+            for inner in else_branch {
+                collect_stmt_buffer_write_usage(
+                    inner,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+        }
+        Stmt::For {
+            step,
+            start,
+            end,
+            body,
+            ..
+        } => {
+            if let Some(step) = step {
+                collect_expr_buffer_write_usage(
+                    step,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+            collect_expr_buffer_write_usage(
+                start,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+            collect_expr_buffer_write_usage(
+                end,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+            for inner in body {
+                collect_stmt_buffer_write_usage(
+                    inner,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            collect_expr_buffer_write_usage(
+                cond,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+            for inner in body {
+                collect_stmt_buffer_write_usage(
+                    inner,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn collect_expr_buffer_write_usage(
+    expr: &Expr,
+    top_level_buffers: &HashSet<String>,
+    def_index_by_name: &HashMap<&str, usize>,
+    typed: &TypedProgram,
+    def_buffer_param_positions: &[Vec<usize>],
+    param_slot_by_name: &HashMap<String, usize>,
+    summaries: &[DefBufferWriteSummary],
+    param_writes: &mut [bool],
+    global_writes: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_expr_buffer_write_usage(
+                    item,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+        }
+        Expr::Index { index, .. } => {
+            collect_expr_buffer_write_usage(
+                index,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+        }
+        Expr::DataCtor { spec, init } => {
+            collect_expr_buffer_write_usage(
+                &spec.size,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+            if let Some(init) = init {
+                for item in init {
+                    collect_expr_buffer_write_usage(
+                        item,
+                        top_level_buffers,
+                        def_index_by_name,
+                        typed,
+                        def_buffer_param_positions,
+                        param_slot_by_name,
+                        summaries,
+                        param_writes,
+                        global_writes,
+                    );
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            collect_expr_buffer_write_usage(
+                lhs,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+            collect_expr_buffer_write_usage(
+                rhs,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_expr_buffer_write_usage(
+                    arg,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            apply_user_call_buffer_write_usage(
+                name,
+                args,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+            for arg in args {
+                collect_expr_buffer_write_usage(
+                    &arg.expr,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+            collect_expr_buffer_write_usage(
+                expr,
+                top_level_buffers,
+                def_index_by_name,
+                typed,
+                def_buffer_param_positions,
+                param_slot_by_name,
+                summaries,
+                param_writes,
+                global_writes,
+            );
+        }
+        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+    }
+}
+
+fn apply_user_call_buffer_write_usage(
+    name: &str,
+    args: &[CallArg],
+    top_level_buffers: &HashSet<String>,
+    def_index_by_name: &HashMap<&str, usize>,
+    typed: &TypedProgram,
+    def_buffer_param_positions: &[Vec<usize>],
+    param_slot_by_name: &HashMap<String, usize>,
+    summaries: &[DefBufferWriteSummary],
+    param_writes: &mut [bool],
+    global_writes: &mut HashSet<String>,
+) {
+    if name == "unsafe_write" || name == "__omni_buffer_write2" {
+        if let Some(first_arg) = args.first() {
+            if let Expr::Var(base) = &first_arg.expr {
+                mark_buffer_symbol_write(
+                    base,
+                    top_level_buffers,
+                    param_slot_by_name,
+                    param_writes,
+                    global_writes,
+                );
+            }
+        }
+    } else if let Some(base) = parse_unsafe_write_instance_base_for_metadata(name) {
+        mark_buffer_symbol_write(
+            base,
+            top_level_buffers,
+            param_slot_by_name,
+            param_writes,
+            global_writes,
+        );
+    }
+
+    let Some(&callee_idx) = def_index_by_name.get(name) else {
+        return;
+    };
+    let callee = &typed.defs[callee_idx];
+    let callee_summary = &summaries[callee_idx];
+    let bound_args = bind_call_args_to_params(&callee.params, args);
+
+    for (slot_idx, param_idx) in def_buffer_param_positions[callee_idx].iter().enumerate() {
+        if !callee_summary
+            .buffer_param_writes
+            .get(slot_idx)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(Some(arg_expr)) = bound_args.get(*param_idx) else {
+            continue;
+        };
+        if let Expr::Var(base) = arg_expr {
+            mark_buffer_symbol_write(
+                base,
+                top_level_buffers,
+                param_slot_by_name,
+                param_writes,
+                global_writes,
+            );
+        }
+    }
+
+    global_writes.extend(callee_summary.global_buffer_writes.iter().cloned());
+}
+
+fn bind_call_args_to_params<'a>(params: &[String], args: &'a [CallArg]) -> Vec<Option<&'a Expr>> {
+    let mut bound = vec![None; params.len()];
+    let mut next_positional = 0usize;
+    for arg in args {
+        if let Some(name) = &arg.name {
+            if let Some(param_idx) = params.iter().position(|p| p == name) {
+                bound[param_idx] = Some(&arg.expr);
+            }
+            continue;
+        }
+        while next_positional < bound.len() && bound[next_positional].is_some() {
+            next_positional = next_positional.saturating_add(1);
+        }
+        if next_positional >= bound.len() {
+            continue;
+        }
+        bound[next_positional] = Some(&arg.expr);
+        next_positional = next_positional.saturating_add(1);
+    }
+    bound
+}
+
+fn mark_buffer_symbol_write(
+    base: &str,
+    top_level_buffers: &HashSet<String>,
+    param_slot_by_name: &HashMap<String, usize>,
+    param_writes: &mut [bool],
+    global_writes: &mut HashSet<String>,
+) {
+    if top_level_buffers.contains(base) {
+        global_writes.insert(base.to_owned());
+    }
+    if let Some(slot_idx) = param_slot_by_name.get(base) {
+        if let Some(slot) = param_writes.get_mut(*slot_idx) {
+            *slot = true;
+        }
+    }
+}
+
+fn parse_unsafe_write_instance_base_for_metadata(name: &str) -> Option<&str> {
+    let (base, method) = name.rsplit_once('.')?;
+    if base.is_empty() || method != "unsafe_write" {
+        return None;
+    }
+    Some(base)
 }
 
 fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {

@@ -1047,15 +1047,7 @@ fn analyze_assign_sample(
                             errors,
                         );
                         require_numeric_type(idx_ty, "Data index expression", errors);
-                        if is_scalar_data_base {
-                            errors.push(Diagnostic::semantic(
-                                format!(
-                                    "local alias binding '{name} = {base}[...]' is not supported for primitive arrays; use direct indexed access"
-                                ),
-                                0,
-                                0,
-                            ));
-                        } else if let Some(struct_name) = data_struct_elem_struct {
+                        if let Some(struct_name) = data_struct_elem_struct {
                             if !add_struct_element_alias_bindings(
                                 name,
                                 &struct_name,
@@ -1068,8 +1060,11 @@ fn analyze_assign_sample(
                             ) {
                                 return;
                             }
+                            return;
                         }
-                        return;
+                        // Primitive array/buffer indexed reads are scalar expressions.
+                        // Allow normal first-assignment local inference to handle:
+                        //   x = arr[idx]
                     }
                 }
             }

@@ -408,11 +408,7 @@ pub(super) unsafe fn lower_stmt(
 
                         if let Some(alias) = local_data_aliases.get(base).cloned() {
                             match alias {
-                                LocalDataAlias::Primitive { .. } => {
-                                    return Err(Diagnostic::internal(format!(
-                                        "local alias binding '{name} = {base}[...]' is not supported for primitive arrays in ORC lowering; use direct indexed access"
-                                    )));
-                                }
+                                LocalDataAlias::Primitive { .. } => {}
                                 LocalDataAlias::Struct {
                                     root_base,
                                     elem_struct,
@@ -442,15 +438,9 @@ pub(super) unsafe fn lower_stmt(
                                         local_aliases,
                                         local_data_aliases,
                                     )?;
+                                    return Ok(());
                                 }
                             }
-                            return Ok(());
-                        }
-
-                        if ctx.data_base_ptrs.contains_key(base) {
-                            return Err(Diagnostic::internal(format!(
-                                "local alias binding '{name} = {base}[...]' is not supported for primitive arrays in ORC lowering; use direct indexed access"
-                            )));
                         }
                     }
                 }

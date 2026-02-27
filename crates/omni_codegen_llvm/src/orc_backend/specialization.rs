@@ -250,25 +250,15 @@ pub(super) fn merge_inferred_def_return_types(
     }
 }
 
-pub(super) fn is_builtin_constant_symbol(name: &str) -> bool {
-    matches!(
-        name,
-        "PI" | "TWO_PI"
-            | "TWOPI"
-            | "pi"
-            | "two_pi"
-            | "twopi"
-            | "SAMPLE_RATE"
-            | "SAMPLERATE"
-            | "SR"
-            | "sample_rate"
-            | "samplerate"
-            | "BLOCK_SIZE"
-            | "BLOCKSIZE"
-            | "BS"
-            | "block_size"
-            | "blocksize"
-    )
+fn builtin_constant_symbol_type(name: &str) -> Option<PrimitiveType> {
+    match name {
+        "PI" | "TWO_PI" | "TWOPI" | "pi" | "two_pi" | "twopi" => Some(PrimitiveType::F64),
+        "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
+            Some(PrimitiveType::F32)
+        }
+        "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => Some(PrimitiveType::I32),
+        _ => None,
+    }
 }
 
 pub(super) fn infer_specialized_expr_return_type(
@@ -285,13 +275,7 @@ pub(super) fn infer_specialized_expr_return_type(
         }),
         Expr::Bool(_) => Some(PrimitiveType::Bool),
         Expr::ArrayLiteral(_) | Expr::DataCtor { .. } => None,
-        Expr::Var(name) => {
-            if is_builtin_constant_symbol(name) {
-                Some(PrimitiveType::F32)
-            } else {
-                locals.get(name).copied()
-            }
-        }
+        Expr::Var(name) => builtin_constant_symbol_type(name).or_else(|| locals.get(name).copied()),
         Expr::Index { base, .. } => locals.get(base).copied().or(Some(PrimitiveType::F32)),
         Expr::Cast { to, .. } => Some(*to),
         Expr::UnaryNot { .. } | Expr::Compare { .. } | Expr::Logical { .. } => {

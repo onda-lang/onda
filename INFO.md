@@ -86,6 +86,7 @@
 - `Data[...]` is supported for stateful storage, including typed forms and compile-time capacity expressions.
 - Scalar assignment typing follows first-assignment inference by default; explicit declaration typing (`x: i64 = ...`) pins the symbol type.
 - Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
+  - Default constant types: `PI`/`TWO_PI` are `f64`; `SAMPLE_RATE` is `f32`; `BLOCK_SIZE` is `i32`.
 - `std/math` is auto-imported during semantic analysis; local symbols with the same name take precedence, while qualified calls remain available via `std::math::...`.
 - Control flow and calls:
   - `if`, `for`, `loop N`, `while`, `break`, `continue`, `return`, call statements.
@@ -155,7 +156,9 @@
   - mono: `buf[i]`
   - multi-channel: `buf[ch][i]`
   - `.len()` and `.chans()`
-  - `unsafe_read` / `unsafe_write` for unchecked access (UB on OOB).
+  - `unsafe_read` / `unsafe_write` for unchecked access (UB on OOB), via both
+    `unsafe_read(buf, i)` / `unsafe_write(buf, i, v)` and method-style
+    `buf.unsafe_read(i)` / `buf.unsafe_write(i, v)`.
 - Runtime binding validates element type and channel constraints.
 
 ## Runtime and codegen

@@ -31,6 +31,10 @@ impl Drop for InstanceHandle {
 
 unsafe fn compile_program(src: &str) -> ProgramHandle {
     let src_c = CString::new(src).expect("source contains no NUL bytes");
+    let options = omni_compile_options_t {
+        fast_math: 0,
+        block_size: 512,
+    };
     let mut diag = omni_diag_t {
         code: 0,
         line: 0,
@@ -39,7 +43,7 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
         file: std::ptr::null(),
         trace: std::ptr::null(),
     };
-    let program = omni_compile(src_c.as_ptr(), 0, &mut diag);
+    let program = omni_compile(src_c.as_ptr(), &options, &mut diag);
     assert!(
         !program.is_null(),
         "compile failed: {}",
@@ -224,6 +228,363 @@ sample { out1 = amp }
         assert_eq!(omni_process_bound(instance.0, frames), 0);
         for sample in &out {
             assert!((*sample - 0.0).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn c_api_compile_options_block_size_controls_runtime_block_size() {
+    unsafe {
+        let src = CString::new(
+            r#"
+outs { out1 }
+sample { out1 = 0.25 }
+"#,
+        )
+        .expect("source contains no NUL bytes");
+
+        let options = omni_compile_options_t {
+            fast_math: 0,
+            block_size: 128,
+        };
+        let mut diag = omni_diag_t {
+            code: 0,
+            line: 0,
+            column: 0,
+            message: std::ptr::null(),
+            file: std::ptr::null(),
+            trace: std::ptr::null(),
+        };
+        let program = omni_compile(src.as_ptr(), &options, &mut diag);
+        assert!(
+            !program.is_null(),
+            "compile failed: {}",
+            diag_message(&diag)
+        );
+        let program = ProgramHandle(program);
+
+        let instance = omni_instance_create(program.0, 48_000.0, 128, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out = vec![0.0_f32; 128];
+        assert_eq!(
+            omni_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(omni_process_bound(instance.0, 128), 0);
+        for sample in out {
+            assert!((sample - 0.25).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn c_api_buffer_may_write_metadata_tracks_reachable_writes() {
+    unsafe {
+        let program = compile_program(
+            r#"
+outs { out1 }
+buffers {
+  write_buf: buffer[f32]
+  read_buf: buffer[f32]
+}
+def touch(buf: buffer[f32]):
+  unsafe_write(buf, 0, 0.75)
+proc Writer:
+  ins:
+    in1
+  buffers:
+    b: buffer[f32]
+  outs:
+    out1
+  sample:
+    touch(b)
+    out1 = in1
+init:
+  w = Writer(b = write_buf)
+sample:
+  out1 = w(read_buf[0])
+"#,
+        );
+
+        let write_name = CString::new("write_buf").expect("valid cstr");
+        let read_name = CString::new("read_buf").expect("valid cstr");
+        let write_idx = omni_buffer_index(program.0, write_name.as_ptr());
+        let read_idx = omni_buffer_index(program.0, read_name.as_ptr());
+        assert!(write_idx >= 0);
+        assert!(read_idx >= 0);
+
+        assert_eq!(omni_buffer_may_write(program.0, write_idx), 1);
+        assert_eq!(omni_buffer_may_write(program.0, read_idx), 0);
+        assert_eq!(omni_buffer_may_write(program.0, -1), -1);
+        assert_eq!(omni_buffer_may_write(std::ptr::null(), write_idx), -1);
+    }
+}
+
+#[test]
+fn c_api_buffer_may_write_marks_conditional_and_multichannel_writes() {
+    unsafe {
+        let program = compile_program(
+            r#"
+outs { out1 }
+buffers {
+  branch_buf: buffer[f32]
+  stereo_buf: buffer[f32[2]]
+  read_buf: buffer[f32]
+}
+def write_if(buf: buffer[f32]):
+  if (1 > 0):
+    unsafe_write(buf, 0, 1.0)
+proc StereoWriter:
+  ins:
+    in1
+  outs:
+    out1
+  buffers:
+    b: buffer[f32[2]]
+  sample:
+    b[0][0] = 0.1
+    out1 = in1
+init:
+  sw = StereoWriter(b = stereo_buf)
+sample:
+  write_if(branch_buf)
+  out1 = sw(read_buf[0])
+"#,
+        );
+
+        let branch_name = CString::new("branch_buf").expect("valid cstr");
+        let stereo_name = CString::new("stereo_buf").expect("valid cstr");
+        let read_name = CString::new("read_buf").expect("valid cstr");
+        let branch_idx = omni_buffer_index(program.0, branch_name.as_ptr());
+        let stereo_idx = omni_buffer_index(program.0, stereo_name.as_ptr());
+        let read_idx = omni_buffer_index(program.0, read_name.as_ptr());
+        assert!(branch_idx >= 0);
+        assert!(stereo_idx >= 0);
+        assert!(read_idx >= 0);
+
+        assert_eq!(omni_buffer_may_write(program.0, branch_idx), 1);
+        assert_eq!(omni_buffer_may_write(program.0, stereo_idx), 1);
+        assert_eq!(omni_buffer_may_write(program.0, read_idx), 0);
+    }
+}
+
+#[test]
+fn c_api_buffer_may_write_is_true_when_buffer_is_read_and_written() {
+    unsafe {
+        let program = compile_program(
+            r#"
+outs { out1 }
+buffers {
+  rw_buf: buffer[f32]
+}
+sample:
+  x = rw_buf[0]
+  unsafe_write(rw_buf, 0, x)
+  out1 = x
+"#,
+        );
+
+        let rw_name = CString::new("rw_buf").expect("valid cstr");
+        let rw_idx = omni_buffer_index(program.0, rw_name.as_ptr());
+        assert!(rw_idx >= 0);
+        assert_eq!(omni_buffer_may_write(program.0, rw_idx), 1);
+    }
+}
+
+#[test]
+fn c_api_buffer_may_write_tracks_method_style_buffer_calls() {
+    unsafe {
+        let program = compile_program(
+            r#"
+outs { out1 }
+buffers {
+  method_write_buf: buffer[f32]
+  method_read_buf: buffer[f32]
+}
+def touch(buf: buffer[f32]):
+  buf.unsafe_write(0, 0.5)
+proc Writer:
+  ins:
+    in1
+  outs:
+    out1
+  buffers:
+    b: buffer[f32]
+  sample:
+    touch(b)
+    out1 = in1
+init:
+  w = Writer(b = method_write_buf)
+sample:
+  out1 = w(method_read_buf.unsafe_read(0))
+"#,
+        );
+
+        let write_name = CString::new("method_write_buf").expect("valid cstr");
+        let read_name = CString::new("method_read_buf").expect("valid cstr");
+        let write_idx = omni_buffer_index(program.0, write_name.as_ptr());
+        let read_idx = omni_buffer_index(program.0, read_name.as_ptr());
+        assert!(write_idx >= 0);
+        assert!(read_idx >= 0);
+        assert_eq!(omni_buffer_may_write(program.0, write_idx), 1);
+        assert_eq!(omni_buffer_may_write(program.0, read_idx), 0);
+    }
+}
+
+#[test]
+fn c_api_infers_local_from_primitive_array_index_read_in_sample() {
+    unsafe {
+        let _program = compile_program(
+            r#"
+ins { in1 }
+outs { out1 }
+params {
+  delayTime = 0.2 {0.01, 0.5}
+}
+init {
+  line: f32[SR]
+  writePos: i32 = 0
+  lineLen: i32 = i32(SR)
+}
+sample {
+  delaySamples: i32 = i32(delayTime * SR)
+  if (delaySamples < 1) { delaySamples = 1 }
+  if (delaySamples >= lineLen) { delaySamples = lineLen - 1 }
+
+  readPos: i32 = writePos - delaySamples
+  if (readPos < 0) { readPos = readPos + lineLen }
+
+  delayed = line[readPos]
+  line[writePos] = in1
+  writePos = writePos + 1
+  if (writePos >= lineLen) { writePos = 0 }
+  out1 = delayed
+}
+"#,
+        );
+    }
+}
+
+#[test]
+fn c_api_pi_and_two_pi_use_f64_precision_constants() {
+    unsafe {
+        let frames = 512_i32;
+        let program = compile_program(
+            r#"
+outs {
+  out1
+  out2
+}
+sample {
+  out1 = f32(PI - f64(f32(PI)))
+  out2 = f32(TWO_PI - f64(f32(TWO_PI)))
+}
+"#,
+        );
+
+        let mut diag = omni_diag_t {
+            code: 0,
+            line: 0,
+            column: 0,
+            message: std::ptr::null(),
+            file: std::ptr::null(),
+            trace: std::ptr::null(),
+        };
+        let instance = omni_instance_create(program.0, 48_000.0, frames, 0, 2, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out1 = vec![0.0_f32; frames as usize];
+        let mut out2 = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            omni_bind_output(
+                instance.0,
+                0,
+                out1.as_mut_ptr().cast::<c_void>(),
+                (out1.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(
+            omni_bind_output(
+                instance.0,
+                1,
+                out2.as_mut_ptr().cast::<c_void>(),
+                (out2.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(omni_process_bound(instance.0, frames), 0);
+
+        for sample in out1 {
+            assert!(sample.abs() > 1e-9);
+        }
+        for sample in out2 {
+            assert!(sample.abs() > 1e-9);
+        }
+    }
+}
+
+#[test]
+fn c_api_block_size_builtin_is_i32_typed() {
+    unsafe {
+        let frames = 512_i32;
+        let program = compile_program(
+            r#"
+outs { out1 }
+init {
+  bs: i32 = BLOCK_SIZE
+}
+sample {
+  out1 = f32(bs)
+}
+"#,
+        );
+
+        let mut diag = omni_diag_t {
+            code: 0,
+            line: 0,
+            column: 0,
+            message: std::ptr::null(),
+            file: std::ptr::null(),
+            trace: std::ptr::null(),
+        };
+        let instance = omni_instance_create(program.0, 48_000.0, frames, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            omni_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(omni_process_bound(instance.0, frames), 0);
+        for sample in out {
+            assert!((sample - 512.0).abs() < 1e-6);
         }
     }
 }

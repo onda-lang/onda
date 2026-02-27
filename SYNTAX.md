@@ -150,6 +150,10 @@ Constants:
 - `TWO_PI` / `TWOPI` / `two_pi` / `twopi`
 - `SAMPLE_RATE` / `SAMPLERATE` / `SR` / `sample_rate` / `samplerate`
 - `BLOCK_SIZE` / `BLOCKSIZE` / `BS` / `block_size` / `blocksize`
+- Default constant types:
+  - `PI`/`TWO_PI`: `f64`
+  - `SAMPLE_RATE`: `f32`
+  - `BLOCK_SIZE`: `i32`
 
 ## 5 Control flow
 

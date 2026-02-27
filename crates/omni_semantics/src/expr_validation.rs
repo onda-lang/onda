@@ -231,6 +231,26 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_buffer_chans_builtin_call(name, base, args, env, errors);
                 return;
             }
+            if let Some(base) = parse_unsafe_read_instance_base(name) {
+                let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                method_args.push(CallArg {
+                    name: None,
+                    expr: Expr::Var(base.to_owned()),
+                });
+                method_args.extend(args.iter().cloned());
+                validate_unsafe_data_builtin_call("unsafe_read", &method_args, env, errors);
+                return;
+            }
+            if let Some(base) = parse_unsafe_write_instance_base(name) {
+                let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                method_args.push(CallArg {
+                    name: None,
+                    expr: Expr::Var(base.to_owned()),
+                });
+                method_args.extend(args.iter().cloned());
+                validate_unsafe_data_builtin_call("unsafe_write", &method_args, env, errors);
+                return;
+            }
             if let Some(sig) = env.fn_signatures.get(name) {
                 if sig.type_params.is_empty() {
                     if !type_args.is_empty() {

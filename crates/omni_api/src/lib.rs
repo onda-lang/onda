@@ -22,6 +22,12 @@ pub struct omni_diag_t {
     pub trace: *const c_char,
 }
 
+#[repr(C)]
+pub struct omni_compile_options_t {
+    pub fast_math: i32,
+    pub block_size: i32,
+}
+
 #[allow(non_camel_case_types)]
 pub struct omni_program {
     jit: JitProgram,
@@ -123,18 +129,18 @@ fn write_diag(out_diag: *mut omni_diag_t, diag: omni_diag_t) {
 #[no_mangle]
 pub unsafe extern "C" fn omni_compile(
     src_utf8: *const c_char,
-    fast_math: i32,
+    options: *const omni_compile_options_t,
     out_diag: *mut omni_diag_t,
 ) -> *mut omni_program {
-    omni_compile_impl(src_utf8, out_diag, fast_math != 0)
+    omni_compile_impl(src_utf8, options, out_diag)
 }
 
 unsafe fn omni_compile_impl(
     src_utf8: *const c_char,
+    options: *const omni_compile_options_t,
     out_diag: *mut omni_diag_t,
-    fast_math: bool,
 ) -> *mut omni_program {
-    if src_utf8.is_null() {
+    if src_utf8.is_null() || options.is_null() {
         write_diag(
             out_diag,
             omni_diag_t {
@@ -142,6 +148,24 @@ unsafe fn omni_compile_impl(
                 line: 0,
                 column: 0,
                 message: STATIC_ERR_NULL_ARG.as_ptr().cast::<c_char>(),
+                file: ptr::null(),
+                trace: ptr::null(),
+            },
+        );
+        return ptr::null_mut();
+    }
+
+    let options = &*options;
+    if options.block_size <= 0 {
+        write_diag(
+            out_diag,
+            omni_diag_t {
+                code: DiagCode::Runtime as i32,
+                line: 0,
+                column: 0,
+                message: b"compile options require block_size > 0\0"
+                    .as_ptr()
+                    .cast::<c_char>(),
                 file: ptr::null(),
                 trace: ptr::null(),
             },
@@ -190,9 +214,10 @@ unsafe fn omni_compile_impl(
         }
     };
 
-    let mut compile_options = CompileOptions::default();
-    compile_options.fast_math = fast_math;
-    let jit = match lower_and_jit_with_options(typed, compile_options) {
+    let mut jit_options = CompileOptions::default();
+    jit_options.fast_math = options.fast_math != 0;
+    jit_options.block_size = options.block_size as usize;
+    let jit = match lower_and_jit_with_options(typed, jit_options) {
         Ok(j) => j,
         Err(mut errs) => {
             let diag = errs
@@ -996,6 +1021,20 @@ pub unsafe extern "C" fn omni_buffer_channels_static(
                 DeclaredBufferChannels::Static(ch) => i32::try_from(ch).ok(),
                 DeclaredBufferChannels::Dynamic => None,
             })
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_buffer_may_write(program: *const omni_program, index: i32) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    i32_from_index_or(index, -1, |idx| {
+        (*program)
+            .jit
+            .buffers()
+            .get(idx)
+            .map(|d| if d.may_write() { 1 } else { 0 })
     })
 }
 

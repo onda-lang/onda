@@ -18,115 +18,16 @@ pub(super) unsafe fn cast_def_value_to(
     to: PrimitiveType,
     name: &[u8],
 ) -> LLVMValueRef {
-    if value.ty == to {
-        return value.value;
-    }
-    let from = value.ty;
-    let builder = ctx.builder;
-    let context = ctx.context;
-    let i32_ty = ctx.i32_ty;
-    let f32_ty = ctx.float_ty;
-    let i64_ty = LLVMInt64TypeInContext(context);
-    let f64_ty = LLVMDoubleTypeInContext(context);
-
-    match (from, to) {
-        (PrimitiveType::F32, PrimitiveType::F64) => {
-            LLVMBuildFPExt(builder, value.value, f64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F64, PrimitiveType::F32) => {
-            LLVMBuildFPTrunc(builder, value.value, f32_ty, name.as_ptr().cast())
-        }
-
-        (PrimitiveType::F32, PrimitiveType::I32) => {
-            LLVMBuildFPToSI(builder, value.value, i32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F32, PrimitiveType::I64) => {
-            LLVMBuildFPToSI(builder, value.value, i64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F32, PrimitiveType::Bool) => {
-            let zero = LLVMConstReal(f32_ty, 0.0);
-            build_fcmp_fast(
-                builder,
-                LLVMRealPredicate::LLVMRealONE,
-                value.value,
-                zero,
-                name,
-                ctx.fast_math_flags,
-            )
-        }
-
-        (PrimitiveType::F64, PrimitiveType::I32) => {
-            LLVMBuildFPToSI(builder, value.value, i32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F64, PrimitiveType::I64) => {
-            LLVMBuildFPToSI(builder, value.value, i64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F64, PrimitiveType::Bool) => {
-            let zero = LLVMConstReal(f64_ty, 0.0);
-            build_fcmp_fast(
-                builder,
-                LLVMRealPredicate::LLVMRealONE,
-                value.value,
-                zero,
-                name,
-                ctx.fast_math_flags,
-            )
-        }
-
-        (PrimitiveType::I32, PrimitiveType::F32) => {
-            LLVMBuildSIToFP(builder, value.value, f32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I32, PrimitiveType::F64) => {
-            LLVMBuildSIToFP(builder, value.value, f64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I32, PrimitiveType::I64) => {
-            LLVMBuildSExt(builder, value.value, i64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I32, PrimitiveType::Bool) => {
-            let zero = LLVMConstInt(i32_ty, 0, 0);
-            LLVMBuildICmp(
-                builder,
-                LLVMIntPredicate::LLVMIntNE,
-                value.value,
-                zero,
-                name.as_ptr().cast(),
-            )
-        }
-
-        (PrimitiveType::I64, PrimitiveType::F32) => {
-            LLVMBuildSIToFP(builder, value.value, f32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I64, PrimitiveType::F64) => {
-            LLVMBuildSIToFP(builder, value.value, f64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I64, PrimitiveType::I32) => {
-            LLVMBuildTrunc(builder, value.value, i32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I64, PrimitiveType::Bool) => {
-            let zero = LLVMConstInt(i64_ty, 0, 0);
-            LLVMBuildICmp(
-                builder,
-                LLVMIntPredicate::LLVMIntNE,
-                value.value,
-                zero,
-                name.as_ptr().cast(),
-            )
-        }
-
-        (PrimitiveType::Bool, PrimitiveType::F32) => {
-            LLVMBuildUIToFP(builder, value.value, f32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::Bool, PrimitiveType::F64) => {
-            LLVMBuildUIToFP(builder, value.value, f64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::Bool, PrimitiveType::I32) => {
-            LLVMBuildZExt(builder, value.value, i32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::Bool, PrimitiveType::I64) => {
-            LLVMBuildZExt(builder, value.value, i64_ty, name.as_ptr().cast())
-        }
-        _ => value.value,
-    }
+    cast_value_to_common(
+        value,
+        to,
+        ctx.builder,
+        ctx.context,
+        ctx.i32_ty,
+        ctx.float_ty,
+        ctx.fast_math_flags,
+        name,
+    )
 }
 
 pub(super) unsafe fn lower_def_condition(
@@ -145,59 +46,28 @@ pub(super) unsafe fn lower_def_logical_expr(
 ) -> Result<OrcValue, Diagnostic> {
     let lhs_value = lower_def_expr(lhs, ctx)?;
     let lhs_bool = lower_def_condition(ctx, lhs_value, b"def_logical_lhs\0");
-    let pre_bb = LLVMGetInsertBlock(ctx.builder);
-    if pre_bb.is_null() {
-        return Err(Diagnostic::internal(
-            "failed to get insertion block for def logical expression",
-        ));
-    }
-
-    let rhs_bb = LLVMAppendBasicBlockInContext(
-        ctx.context,
-        ctx.fn_ref,
-        b"def_logical_rhs\0".as_ptr().cast(),
-    );
-    let merge_bb = LLVMAppendBasicBlockInContext(
-        ctx.context,
-        ctx.fn_ref,
-        b"def_logical_merge\0".as_ptr().cast(),
-    );
-
-    match op {
-        LogicalOp::And => LLVMBuildCondBr(ctx.builder, lhs_bool, rhs_bb, merge_bb),
-        LogicalOp::Or => LLVMBuildCondBr(ctx.builder, lhs_bool, merge_bb, rhs_bb),
-    };
-
-    LLVMPositionBuilderAtEnd(ctx.builder, rhs_bb);
-    let rhs_value = lower_def_expr(rhs, ctx)?;
-    let rhs_bool = lower_def_condition(ctx, rhs_value, b"def_logical_rhs_bool\0");
-    LLVMBuildBr(ctx.builder, merge_bb);
-    let rhs_end_bb = LLVMGetInsertBlock(ctx.builder);
-    if rhs_end_bb.is_null() {
-        return Err(Diagnostic::internal(
-            "failed to get rhs block for def logical expression",
-        ));
-    }
-
-    LLVMPositionBuilderAtEnd(ctx.builder, merge_bb);
-    let bool_ty = llvm_ty_for_primitive(ctx.context, PrimitiveType::Bool);
-    let phi = LLVMBuildPhi(ctx.builder, bool_ty, b"def_logical_phi\0".as_ptr().cast());
-    let lhs_short = match op {
-        LogicalOp::And => LLVMConstInt(bool_ty, 0, 0),
-        LogicalOp::Or => LLVMConstInt(bool_ty, 1, 0),
-    };
-    let mut incoming_vals = [lhs_short, rhs_bool];
-    let mut incoming_blocks = [pre_bb, rhs_end_bb];
-    LLVMAddIncoming(
-        phi,
-        incoming_vals.as_mut_ptr(),
-        incoming_blocks.as_mut_ptr(),
-        incoming_vals.len() as u32,
-    );
-    Ok(OrcValue {
-        value: phi,
-        ty: PrimitiveType::Bool,
-    })
+    let builder = ctx.builder;
+    let context = ctx.context;
+    let fn_ref = ctx.fn_ref;
+    lower_logical_short_circuit_common(
+        op,
+        builder,
+        context,
+        fn_ref,
+        lhs_bool,
+        b"def_logical_rhs\0",
+        b"def_logical_merge\0",
+        b"def_logical_phi\0",
+        "def logical expression",
+        || {
+            let rhs_value = lower_def_expr(rhs, ctx)?;
+            Ok(lower_def_condition(
+                ctx,
+                rhs_value,
+                b"def_logical_rhs_bool\0",
+            ))
+        },
+    )
 }
 
 pub(super) unsafe fn llvm_ty_for_primitive(
@@ -252,115 +122,16 @@ pub(super) unsafe fn cast_orc_value_to(
     to: PrimitiveType,
     name: &[u8],
 ) -> LLVMValueRef {
-    if value.ty == to {
-        return value.value;
-    }
-    let from = value.ty;
-    let builder = ctx.builder;
-    let context = ctx.context;
-    let i32_ty = ctx.i32_ty;
-    let f32_ty = ctx.float_ty;
-    let i64_ty = LLVMInt64TypeInContext(context);
-    let f64_ty = LLVMDoubleTypeInContext(context);
-
-    match (from, to) {
-        (PrimitiveType::F32, PrimitiveType::F64) => {
-            LLVMBuildFPExt(builder, value.value, f64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F64, PrimitiveType::F32) => {
-            LLVMBuildFPTrunc(builder, value.value, f32_ty, name.as_ptr().cast())
-        }
-
-        (PrimitiveType::F32, PrimitiveType::I32) => {
-            LLVMBuildFPToSI(builder, value.value, i32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F32, PrimitiveType::I64) => {
-            LLVMBuildFPToSI(builder, value.value, i64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F32, PrimitiveType::Bool) => {
-            let zero = LLVMConstReal(f32_ty, 0.0);
-            build_fcmp_fast(
-                builder,
-                LLVMRealPredicate::LLVMRealONE,
-                value.value,
-                zero,
-                name,
-                ctx.fast_math_flags,
-            )
-        }
-
-        (PrimitiveType::F64, PrimitiveType::I32) => {
-            LLVMBuildFPToSI(builder, value.value, i32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F64, PrimitiveType::I64) => {
-            LLVMBuildFPToSI(builder, value.value, i64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::F64, PrimitiveType::Bool) => {
-            let zero = LLVMConstReal(f64_ty, 0.0);
-            build_fcmp_fast(
-                builder,
-                LLVMRealPredicate::LLVMRealONE,
-                value.value,
-                zero,
-                name,
-                ctx.fast_math_flags,
-            )
-        }
-
-        (PrimitiveType::I32, PrimitiveType::F32) => {
-            LLVMBuildSIToFP(builder, value.value, f32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I32, PrimitiveType::F64) => {
-            LLVMBuildSIToFP(builder, value.value, f64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I32, PrimitiveType::I64) => {
-            LLVMBuildSExt(builder, value.value, i64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I32, PrimitiveType::Bool) => {
-            let zero = LLVMConstInt(i32_ty, 0, 0);
-            LLVMBuildICmp(
-                builder,
-                LLVMIntPredicate::LLVMIntNE,
-                value.value,
-                zero,
-                name.as_ptr().cast(),
-            )
-        }
-
-        (PrimitiveType::I64, PrimitiveType::F32) => {
-            LLVMBuildSIToFP(builder, value.value, f32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I64, PrimitiveType::F64) => {
-            LLVMBuildSIToFP(builder, value.value, f64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I64, PrimitiveType::I32) => {
-            LLVMBuildTrunc(builder, value.value, i32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::I64, PrimitiveType::Bool) => {
-            let zero = LLVMConstInt(i64_ty, 0, 0);
-            LLVMBuildICmp(
-                builder,
-                LLVMIntPredicate::LLVMIntNE,
-                value.value,
-                zero,
-                name.as_ptr().cast(),
-            )
-        }
-
-        (PrimitiveType::Bool, PrimitiveType::F32) => {
-            LLVMBuildUIToFP(builder, value.value, f32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::Bool, PrimitiveType::F64) => {
-            LLVMBuildUIToFP(builder, value.value, f64_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::Bool, PrimitiveType::I32) => {
-            LLVMBuildZExt(builder, value.value, i32_ty, name.as_ptr().cast())
-        }
-        (PrimitiveType::Bool, PrimitiveType::I64) => {
-            LLVMBuildZExt(builder, value.value, i64_ty, name.as_ptr().cast())
-        }
-        _ => value.value,
-    }
+    cast_value_to_common(
+        value,
+        to,
+        ctx.builder,
+        ctx.context,
+        ctx.i32_ty,
+        ctx.float_ty,
+        ctx.fast_math_flags,
+        name,
+    )
 }
 
 pub(super) unsafe fn lower_orc_condition(
@@ -382,53 +153,24 @@ pub(super) unsafe fn lower_orc_logical_expr(
 ) -> Result<OrcValue, Diagnostic> {
     let lhs_value = lower_expr(lhs, ctx, locals, local_aliases, local_data_aliases)?;
     let lhs_bool = lower_orc_condition(ctx, lhs_value, b"logical_lhs\0");
-    let pre_bb = LLVMGetInsertBlock(ctx.builder);
-    if pre_bb.is_null() {
-        return Err(Diagnostic::internal(
-            "failed to get insertion block for logical expression",
-        ));
-    }
-
-    let rhs_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"logical_rhs\0".as_ptr().cast());
-    let merge_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"logical_merge\0".as_ptr().cast());
-
-    match op {
-        LogicalOp::And => LLVMBuildCondBr(ctx.builder, lhs_bool, rhs_bb, merge_bb),
-        LogicalOp::Or => LLVMBuildCondBr(ctx.builder, lhs_bool, merge_bb, rhs_bb),
-    };
-
-    LLVMPositionBuilderAtEnd(ctx.builder, rhs_bb);
-    let rhs_value = lower_expr(rhs, ctx, locals, local_aliases, local_data_aliases)?;
-    let rhs_bool = lower_orc_condition(ctx, rhs_value, b"logical_rhs_bool\0");
-    LLVMBuildBr(ctx.builder, merge_bb);
-    let rhs_end_bb = LLVMGetInsertBlock(ctx.builder);
-    if rhs_end_bb.is_null() {
-        return Err(Diagnostic::internal(
-            "failed to get rhs block for logical expression",
-        ));
-    }
-
-    LLVMPositionBuilderAtEnd(ctx.builder, merge_bb);
-    let bool_ty = llvm_ty_for_primitive(ctx.context, PrimitiveType::Bool);
-    let phi = LLVMBuildPhi(ctx.builder, bool_ty, b"logical_phi\0".as_ptr().cast());
-    let lhs_short = match op {
-        LogicalOp::And => LLVMConstInt(bool_ty, 0, 0),
-        LogicalOp::Or => LLVMConstInt(bool_ty, 1, 0),
-    };
-    let mut incoming_vals = [lhs_short, rhs_bool];
-    let mut incoming_blocks = [pre_bb, rhs_end_bb];
-    LLVMAddIncoming(
-        phi,
-        incoming_vals.as_mut_ptr(),
-        incoming_blocks.as_mut_ptr(),
-        incoming_vals.len() as u32,
-    );
-    Ok(OrcValue {
-        value: phi,
-        ty: PrimitiveType::Bool,
-    })
+    let builder = ctx.builder;
+    let context = ctx.context;
+    let fn_ref = ctx.fn_ref;
+    lower_logical_short_circuit_common(
+        op,
+        builder,
+        context,
+        fn_ref,
+        lhs_bool,
+        b"logical_rhs\0",
+        b"logical_merge\0",
+        b"logical_phi\0",
+        "ORC logical expression",
+        || {
+            let rhs_value = lower_expr(rhs, ctx, locals, local_aliases, local_data_aliases)?;
+            Ok(lower_orc_condition(ctx, rhs_value, b"logical_rhs_bool\0"))
+        },
+    )
 }
 
 pub(super) unsafe fn lower_def_expr(

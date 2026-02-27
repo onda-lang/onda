@@ -74,6 +74,22 @@ pub(super) fn parse_buffer_chans_instance_base(name: &str) -> Option<&str> {
     Some(base)
 }
 
+pub(super) fn parse_unsafe_read_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = name.rsplit_once('.')?;
+    if base.is_empty() || method != "unsafe_read" {
+        return None;
+    }
+    Some(base)
+}
+
+pub(super) fn parse_unsafe_write_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = name.rsplit_once('.')?;
+    if base.is_empty() || method != "unsafe_write" {
+        return None;
+    }
+    Some(base)
+}
+
 pub(super) fn ensure_builtin_instance_call_no_args(
     method_name: &str,
     args: &[CallArg],
@@ -484,13 +500,76 @@ pub(super) unsafe fn lower_def_unsafe_data_write_call(
     })
 }
 
-pub(super) fn builtin_constant_value(name: &str, sample_rate: f32, block_size: f32) -> Option<f32> {
+pub(super) fn builtin_constant_value_and_type(
+    name: &str,
+    sample_rate: f32,
+    block_size: f32,
+) -> Option<(PrimitiveType, f64)> {
     match name {
-        "PI" | "pi" => Some(std::f32::consts::PI),
-        "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => Some(2.0 * std::f32::consts::PI),
-        "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => Some(sample_rate),
-        "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => Some(block_size),
+        "PI" | "pi" => Some((PrimitiveType::F64, std::f64::consts::PI)),
+        "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => {
+            Some((PrimitiveType::F64, 2.0 * std::f64::consts::PI))
+        }
+        "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
+            Some((PrimitiveType::F32, sample_rate as f64))
+        }
+        "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => {
+            Some((PrimitiveType::I32, (block_size as i32) as f64))
+        }
         _ => None,
+    }
+}
+
+fn merge_const_numeric_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<PrimitiveType> {
+    use PrimitiveType::*;
+    match (lhs, rhs) {
+        (F64, I32)
+        | (I32, F64)
+        | (F64, I64)
+        | (I64, F64)
+        | (F64, F32)
+        | (F32, F64)
+        | (F64, F64) => Some(F64),
+        (F32, I32) | (I32, F32) | (F32, F32) => Some(F32),
+        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
+        (I32, I32) => Some(I32),
+        _ => None,
+    }
+}
+
+pub(super) fn infer_const_default_expr_type(expr: &Expr) -> Result<PrimitiveType, Diagnostic> {
+    match expr {
+        Expr::Number(_) => Ok(PrimitiveType::F32),
+        Expr::Int(v) => Ok(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+            PrimitiveType::I32
+        } else {
+            PrimitiveType::I64
+        }),
+        Expr::Bool(_) => Ok(PrimitiveType::Bool),
+        Expr::Var(name) => builtin_constant_value_and_type(name, 0.0, 0.0)
+            .map(|(ty, _)| ty)
+            .ok_or_else(|| {
+                Diagnostic::internal(format!(
+                    "default expression uses non-constant symbol '{name}' in codegen"
+                ))
+            }),
+        Expr::Cast { to, .. } => Ok(*to),
+        Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
+            Ok(PrimitiveType::Bool)
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            let lhs_ty = infer_const_default_expr_type(lhs)?;
+            let rhs_ty = infer_const_default_expr_type(rhs)?;
+            merge_const_numeric_types(lhs_ty, rhs_ty).ok_or_else(|| {
+                Diagnostic::internal(format!(
+                    "default binary expression requires numeric operands, got {:?} and {:?}",
+                    lhs_ty, rhs_ty
+                ))
+            })
+        }
+        _ => Err(Diagnostic::internal(
+            "default expression must be compile-time constant in codegen",
+        )),
     }
 }
 
@@ -498,22 +577,25 @@ pub(super) fn eval_const_default_expr(
     expr: &Expr,
     sample_rate: f32,
     block_size: f32,
-) -> Result<f32, Diagnostic> {
+) -> Result<f64, Diagnostic> {
     match expr {
-        Expr::Number(v) => Ok(*v),
-        Expr::Int(v) => Ok(*v as f32),
+        Expr::Number(v) => Ok(*v as f64),
+        Expr::Int(v) => Ok(*v as f64),
         Expr::Bool(v) => Ok(if *v { 1.0 } else { 0.0 }),
-        Expr::Var(name) => builtin_constant_value(name, sample_rate, block_size).ok_or_else(|| {
-            Diagnostic::internal(format!(
-                "default expression uses non-constant symbol '{name}' in codegen"
-            ))
-        }),
+        Expr::Var(name) => builtin_constant_value_and_type(name, sample_rate, block_size)
+            .map(|(_, value)| value)
+            .ok_or_else(|| {
+                Diagnostic::internal(format!(
+                    "default expression uses non-constant symbol '{name}' in codegen"
+                ))
+            }),
         Expr::Cast { to, expr } => {
             let v = eval_const_default_expr(expr, sample_rate, block_size)?;
             let out = match to {
-                PrimitiveType::F32 | PrimitiveType::F64 => v,
-                PrimitiveType::I32 => (v as i32) as f32,
-                PrimitiveType::I64 => (v as i64) as f32,
+                PrimitiveType::F32 => (v as f32) as f64,
+                PrimitiveType::F64 => v,
+                PrimitiveType::I32 => (v as i32) as f64,
+                PrimitiveType::I64 => (v as i64) as f64,
                 PrimitiveType::Bool => {
                     if v != 0.0 {
                         1.0
@@ -603,7 +685,7 @@ pub(super) fn eval_const_data_size_expr(
             "Data size expression must be greater than zero",
         ));
     }
-    if truncated > usize::MAX as f32 {
+    if truncated > usize::MAX as f64 {
         return Err(Diagnostic::internal(
             "Data size expression exceeds supported range",
         ));
