@@ -22,6 +22,20 @@ pub(super) fn parse_section_default_decl_type(
     parse_decl_type(actual)
 }
 
+pub(super) fn parse_init_default_decl_type(
+    pair: Pair<'_, Rule>,
+) -> Result<DeclType, Vec<Diagnostic>> {
+    let ty = parse_section_default_decl_type(pair, "init")?;
+    match ty {
+        DeclType::Scalar(_) | DeclType::Generic(_) => Ok(ty),
+        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => Err(vec![Diagnostic::syntax(
+            "init section default type must be a scalar primitive or generic type",
+            0,
+            0,
+        )]),
+    }
+}
+
 pub(super) fn parse_section_default_buffer_type(
     pair: Pair<'_, Rule>,
     block_name: &str,

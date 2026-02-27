@@ -142,7 +142,7 @@ pub(super) fn rewrite_and_materialize_generic_processors(
             }
             Block::Init(stmts) => {
                 rewrite_generic_proc_ctor_stmt_list(
-                    stmts,
+                    &mut stmts.body,
                     &generic_proc_templates,
                     &mut generated_specializations,
                     errors,

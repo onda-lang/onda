@@ -17,7 +17,7 @@ pub(super) fn rewrite_top_level_proc_calls(
         .find(|b| b.kind() == BlockKind::Init)
     {
         let mut rewritten_init = Vec::<Stmt>::new();
-        for stmt in init.clone() {
+        for stmt in init.body.clone() {
             let mut pending_stmts = vec![stmt];
             if let Some(Stmt::Assign {
                 target: AssignTarget::Var(array_var),
@@ -277,7 +277,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 rewritten_init.push(stmt);
             }
         }
-        *init = rewritten_init;
+        init.body = rewritten_init;
     }
 
     let mut called_proc_instances = HashSet::<String>::new();

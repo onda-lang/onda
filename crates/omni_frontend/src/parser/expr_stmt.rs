@@ -10,13 +10,26 @@ pub(super) fn parse_stmt_list_pair(
     Ok(stmts)
 }
 
-pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, Vec<Diagnostic>> {
+pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, Vec<Diagnostic>> {
+    let mut default_ty = None;
     for child in block_pair.into_inner() {
-        if child.as_rule() == Rule::stmt_list {
-            return parse_stmt_list_pair(child);
+        match child.as_rule() {
+            Rule::section_default_elem_type => {
+                default_ty = Some(parse_init_default_decl_type(child)?);
+            }
+            Rule::stmt_list => {
+                return Ok(InitBlock {
+                    default_ty,
+                    body: parse_stmt_list_pair(child)?,
+                });
+            }
+            _ => {}
         }
     }
-    Ok(Vec::new())
+    Ok(InitBlock {
+        default_ty,
+        body: Vec::new(),
+    })
 }
 
 pub(super) fn parse_sample_block(

@@ -498,10 +498,36 @@ pub(crate) fn specialize_generic_proc_template(
     let mut sample = template.sample.clone();
     let mut block_post = template.block_post.clone();
     let mut events = template.events.clone();
-    for stmt in &mut init {
+    if let Some(init_default_ty) = init.default_ty.clone() {
+        let specialized = specialize_generic_proc_decl_type(
+            &init_default_ty,
+            &type_bindings,
+            &template.name,
+            "init section default type",
+            "init",
+            errors,
+        );
+        match specialized {
+            DeclType::Scalar(_) | DeclType::Generic(_) => {
+                init.default_ty = Some(specialized);
+            }
+            DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "processor '{}' init section default type must be a scalar primitive or generic type",
+                        template.name
+                    ),
+                    0,
+                    0,
+                ));
+                init.default_ty = None;
+            }
+        }
+    }
+    for stmt in &mut init.body {
         specialize_generic_init_typed_decls(stmt, &type_bindings, &template.name, errors);
     }
-    for stmt in &mut init {
+    for stmt in &mut init.body {
         rewrite_generic_data_ctor_stmt_types(stmt, &type_bindings);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
@@ -548,7 +574,7 @@ pub(crate) fn specialize_generic_proc_template(
             );
         }
     }
-    expand_inline_data_ctor_initializers(&mut init);
+    expand_inline_data_ctor_initializers(&mut init.body);
     expand_inline_data_ctor_initializers(&mut block_pre);
     expand_inline_data_ctor_initializers(&mut sample);
     expand_inline_data_ctor_initializers(&mut block_post);

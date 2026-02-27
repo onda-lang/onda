@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) fn analyze_init_stmt(
     stmt: &Stmt,
+    init_default_ty: Option<PrimitiveType>,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
     local_data_aliases: &mut HashMap<String, LocalDataAliasInfo>,
@@ -35,6 +36,7 @@ pub(crate) fn analyze_init_stmt(
                 generic_decl_ty,
                 *is_typed_decl,
                 expr,
+                init_default_ty,
                 known_scalars,
                 local_aliases,
                 local_data_aliases,
@@ -134,6 +136,7 @@ pub(crate) fn analyze_init_stmt(
                 for nested in then_branch {
                     analyze_init_stmt(
                         nested,
+                        init_default_ty,
                         &mut then_known,
                         &mut then_aliases,
                         &mut then_data_aliases,
@@ -163,6 +166,7 @@ pub(crate) fn analyze_init_stmt(
                 for nested in else_branch {
                     analyze_init_stmt(
                         nested,
+                        init_default_ty,
                         &mut else_known,
                         &mut else_aliases,
                         &mut else_data_aliases,
@@ -331,6 +335,7 @@ pub(crate) fn analyze_init_stmt(
                 for nested in body {
                     analyze_init_stmt(
                         nested,
+                        init_default_ty,
                         &mut loop_known,
                         &mut loop_aliases,
                         &mut loop_data_aliases,
@@ -405,6 +410,7 @@ pub(crate) fn analyze_init_stmt(
                 for nested in body {
                     analyze_init_stmt(
                         nested,
+                        init_default_ty,
                         &mut loop_known,
                         &mut loop_aliases,
                         &mut loop_data_aliases,
@@ -465,6 +471,7 @@ fn analyze_assign_init(
     generic_decl_ty: &Option<String>,
     is_typed_decl: bool,
     expr: &Expr,
+    init_default_ty: Option<PrimitiveType>,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
     local_data_aliases: &mut HashMap<String, LocalDataAliasInfo>,
@@ -1134,7 +1141,7 @@ fn analyze_assign_init(
                 }
                 (Some(declared), _) => declared,
                 (None, Some(existing)) => existing,
-                (None, None) => expr_ty.unwrap_or(PrimitiveType::F32),
+                (None, None) => init_default_ty.or(expr_ty).unwrap_or(PrimitiveType::F32),
             };
             require_assignable_type(
                 expr_ty,

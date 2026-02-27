@@ -68,6 +68,10 @@
   - `ins[T]: ...`, `outs[f64]: ...`, `params[i32]: ...`, `buffers[T]: ...`
   - Also works with count shorthand (`ins[f64] 2`, `buffers[T] 4`).
   - Per-entry explicit types override the section default.
+- `init` section default scalar type shorthand is supported:
+  - `init[f64]: ...`, `init[T]: ...`
+  - Applies to untyped scalar declarations in `init`.
+  - Explicit declaration types still override the section default.
 
 ### Types and semantics
 - Primitive types: `f32`, `f64`, `i32`, `i64`, `bool`.

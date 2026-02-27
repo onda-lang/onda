@@ -530,48 +530,39 @@ pub(super) unsafe fn lower_expr(
             )?;
 
             let mut arg_values = Vec::new();
-            let mut scalar_idx = 0usize;
-            for (idx, kind) in prepared.param_kinds.iter().enumerate() {
-                let resolved_arg = prepared.resolved.get(idx).copied().flatten();
-                match kind {
-                    TypedFnParam::Scalar => {
-                        let target_ty = prepared.scalar_types[scalar_idx];
-                        let value = cast_orc_value_to(
-                            ctx,
-                            prepared.scalar_values[scalar_idx],
-                            target_ty,
-                            b"call_arg\0",
-                        );
-                        scalar_idx += 1;
-                        arg_values.push(value);
-                    }
-                    TypedFnParam::Struct { struct_name } => {
-                        let arg_expr = resolved_arg.ok_or_else(|| {
-                            Diagnostic::internal(format!(
-                                "function '{name}' missing required struct argument '{}' in ORC expression lowering",
-                                prepared.param_names[idx]
-                            ))
-                        })?;
-                        lower_struct_call_args_in_orc(
-                            ctx,
-                            &mut arg_values,
-                            arg_expr,
-                            struct_name,
-                            name,
-                            prepared.param_by_ref[idx],
-                        )?;
-                    }
-                    TypedFnParam::Buffer { .. } => {
-                        let arg_expr = resolved_arg.ok_or_else(|| {
-                            Diagnostic::internal(format!(
-                                "function '{name}' missing required buffer argument '{}' in ORC expression lowering",
-                                prepared.param_names[idx]
-                            ))
-                        })?;
-                        lower_buffer_call_args_in_orc(ctx, &mut arg_values, arg_expr, name)?;
-                    }
+            let ctx_ptr: *mut LoweringCtx<'_> = ctx;
+            let mut cast_scalar_arg =
+                |value: OrcValue, target_ty: PrimitiveType, arg_name: &[u8]| unsafe {
+                    cast_orc_value_to(&*ctx_ptr, value, target_ty, arg_name)
+                };
+            let mut lower_struct_arg = |arg_values: &mut Vec<LLVMValueRef>,
+                                        arg_expr: &Expr,
+                                        struct_name: &str,
+                                        by_ref: bool| {
+                unsafe {
+                    lower_struct_call_args_in_orc(
+                        &mut *ctx_ptr,
+                        arg_values,
+                        arg_expr,
+                        struct_name,
+                        name,
+                        by_ref,
+                    )
                 }
-            }
+            };
+            let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+                lower_buffer_call_args_in_orc(&mut *ctx_ptr, arg_values, arg_expr, name)
+            };
+            materialize_user_call_args_common(
+                name,
+                &prepared,
+                &mut arg_values,
+                b"call_arg\0",
+                "ORC expression lowering",
+                &mut cast_scalar_arg,
+                &mut lower_struct_arg,
+                &mut lower_buffer_arg,
+            )?;
             let call = LLVMBuildCall2(
                 ctx.builder,
                 prepared.fn_ty,

@@ -146,6 +146,14 @@ pub(super) unsafe fn cast_value_to_common(
     }
 }
 
+pub(super) unsafe fn lower_condition_common(
+    value: OrcValue,
+    name: &[u8],
+    cast_value: &mut dyn FnMut(OrcValue, PrimitiveType, &[u8]) -> LLVMValueRef,
+) -> LLVMValueRef {
+    cast_value(value, PrimitiveType::Bool, name)
+}
+
 pub(super) unsafe fn lower_literal_expr_common(
     expr: &Expr,
     context: LLVMContextRef,
@@ -335,6 +343,75 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
         fn_ty,
         ret_ty,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) unsafe fn materialize_user_call_args_common(
+    callee_name: &str,
+    prepared: &PreparedUserCall<'_>,
+    arg_values: &mut Vec<LLVMValueRef>,
+    scalar_arg_name: &[u8],
+    call_context: &str,
+    cast_scalar_arg: &mut dyn FnMut(OrcValue, PrimitiveType, &[u8]) -> LLVMValueRef,
+    lower_struct_arg: &mut dyn FnMut(
+        &mut Vec<LLVMValueRef>,
+        &Expr,
+        &str,
+        bool,
+    ) -> Result<(), Diagnostic>,
+    lower_buffer_arg: &mut dyn FnMut(&mut Vec<LLVMValueRef>, &Expr) -> Result<(), Diagnostic>,
+) -> Result<(), Diagnostic> {
+    if prepared.scalar_values.len() != prepared.scalar_types.len() {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' scalar metadata length mismatch in {call_context}"
+        )));
+    }
+
+    let mut scalar_idx = 0usize;
+    for (idx, kind) in prepared.param_kinds.iter().enumerate() {
+        let resolved_arg = prepared.resolved.get(idx).copied().flatten();
+        match kind {
+            TypedFnParam::Scalar => {
+                if scalar_idx >= prepared.scalar_values.len() {
+                    return Err(Diagnostic::internal(format!(
+                        "function '{callee_name}' scalar argument index out of range in {call_context}"
+                    )));
+                }
+                let target_ty = prepared.scalar_types[scalar_idx];
+                let value = cast_scalar_arg(
+                    prepared.scalar_values[scalar_idx],
+                    target_ty,
+                    scalar_arg_name,
+                );
+                scalar_idx += 1;
+                arg_values.push(value);
+            }
+            TypedFnParam::Struct { struct_name } => {
+                let arg_expr = resolved_arg.ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "function '{callee_name}' missing required struct argument '{}' in {call_context}",
+                        prepared.param_names[idx]
+                    ))
+                })?;
+                lower_struct_arg(
+                    arg_values,
+                    arg_expr,
+                    struct_name,
+                    prepared.param_by_ref[idx],
+                )?;
+            }
+            TypedFnParam::Buffer { .. } => {
+                let arg_expr = resolved_arg.ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "function '{callee_name}' missing required buffer argument '{}' in {call_context}",
+                        prepared.param_names[idx]
+                    ))
+                })?;
+                lower_buffer_arg(arg_values, arg_expr)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) unsafe fn lower_binary_numeric_common(

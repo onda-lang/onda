@@ -1532,7 +1532,7 @@ sample { out1 = 0.0 }
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Init(v) => Some(v),
+            Block::Init(v) => Some(&v.body),
             _ => None,
         })
         .expect("init block");
@@ -1689,7 +1689,7 @@ sample { out1 = 0.0 }
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Init(v) => Some(v),
+            Block::Init(v) => Some(&v.body),
             _ => None,
         })
         .expect("init block");
@@ -1945,6 +1945,61 @@ sample:
         proc.buffers[0].ty.as_ref().map(|t| (&t.elem, &t.channels)),
         Some((BufferElemType::Generic(ref n), crate::ast::BufferChannels::Mono)) if n == "T"
     ));
+}
+
+#[test]
+fn parses_init_section_default_types() {
+    let src = r#"
+proc Voice[T]:
+  init[T]:
+    x = 0.0
+  sample:
+    out1 = f32(x)
+init[f64]:
+  acc = 0.0
+sample:
+  out1 = f32(acc)
+"#;
+    let program = parse_program(src).expect("init section defaults should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert!(matches!(
+        proc.init.default_ty,
+        Some(DeclType::Generic(ref n)) if n == "T"
+    ));
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(init) => Some(init),
+            _ => None,
+        })
+        .expect("top-level init block");
+    assert!(matches!(
+        init.default_ty,
+        Some(DeclType::Scalar(crate::ast::PrimitiveType::F64))
+    ));
+}
+
+#[test]
+fn rejects_non_scalar_init_section_default_type() {
+    let src = r#"
+init[f32[4]]:
+  x = 0.0
+sample:
+  out1 = x
+"#;
+    let result = parse_program(src);
+    assert!(
+        result.is_err(),
+        "init section default array type should be rejected"
+    );
 }
 
 #[test]
@@ -2366,7 +2421,7 @@ sample {
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Init(stmts) => Some(stmts),
+            Block::Init(stmts) => Some(&stmts.body),
             _ => None,
         })
         .expect("init block");
@@ -2485,7 +2540,7 @@ sample {
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Init(stmts) => Some(stmts),
+            Block::Init(stmts) => Some(&stmts.body),
             _ => None,
         })
         .expect("init block");
@@ -2538,7 +2593,7 @@ sample {
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Init(stmts) => Some(stmts),
+            Block::Init(stmts) => Some(&stmts.body),
             _ => None,
         })
         .expect("init block");
@@ -2613,7 +2668,7 @@ sample {
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Init(stmts) => Some(stmts),
+            Block::Init(stmts) => Some(&stmts.body),
             _ => None,
         })
         .expect("init block");

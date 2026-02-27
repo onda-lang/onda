@@ -405,7 +405,7 @@ pub(super) fn parse_proc_block(
     let mut params = Vec::new();
     let mut events: Option<Vec<EventDef>> = None;
     let mut buffers = Vec::new();
-    let mut init: Option<Vec<Stmt>> = None;
+    let mut init: Option<InitBlock> = None;
     let mut block_exec: Option<BlockExec> = None;
     let mut sample: Option<SampleBlock> = None;
 
@@ -542,7 +542,10 @@ pub(super) fn parse_proc_block(
         has_block_block,
         has_sample_block,
         sample_oversample_factor,
-        init: init.unwrap_or_default(),
+        init: init.unwrap_or(InitBlock {
+            default_ty: None,
+            body: Vec::new(),
+        }),
         block_pre,
         sample: sample_body,
         block_post,

@@ -111,6 +111,8 @@ pub(crate) fn record_proc_state_scalar_assignment(
     name: &str,
     decl_ty: Option<PrimitiveType>,
     expr: &Expr,
+    in_init_scope: bool,
+    init_default_ty: Option<PrimitiveType>,
     out: &mut ProcStateFields,
     state_type_hints: &HashMap<String, PrimitiveType>,
     input_names: &HashSet<String>,
@@ -207,17 +209,23 @@ pub(crate) fn record_proc_state_scalar_assignment(
         }
         (Some(existing_ty), None) => existing_ty,
         (None, Some(declared_ty)) => declared_ty,
-        (None, None) => infer_proc_state_scalar_type(
-            expr,
-            &inference_scalars,
-            input_names,
-            output_names,
-            param_names,
-            &struct_instances,
-            typed_struct_defs,
-            errors,
-        )
-        .unwrap_or(PrimitiveType::F32),
+        (None, None) => {
+            let inferred = infer_proc_state_scalar_type(
+                expr,
+                &inference_scalars,
+                input_names,
+                output_names,
+                param_names,
+                &struct_instances,
+                typed_struct_defs,
+                errors,
+            );
+            if in_init_scope {
+                init_default_ty.or(inferred).unwrap_or(PrimitiveType::F32)
+            } else {
+                inferred.unwrap_or(PrimitiveType::F32)
+            }
+        }
     };
     if let Some(existing_ty) = existing {
         if existing_ty != ty {
@@ -360,6 +368,7 @@ pub(crate) fn collect_proc_state_fields(
     struct_defs: &HashMap<String, omni_frontend::StructDef>,
     ctor_symbols: &HashSet<String>,
     in_init_scope: bool,
+    init_default_ty: Option<PrimitiveType>,
     out: &mut ProcStateFields,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -862,6 +871,8 @@ pub(crate) fn collect_proc_state_fields(
                                         name,
                                         *decl_ty,
                                         expr,
+                                        in_init_scope,
+                                        init_default_ty,
                                         out,
                                         state_type_hints,
                                         input_names,
@@ -879,6 +890,8 @@ pub(crate) fn collect_proc_state_fields(
                                     name,
                                     *decl_ty,
                                     expr,
+                                    in_init_scope,
+                                    init_default_ty,
                                     out,
                                     state_type_hints,
                                     input_names,
@@ -907,9 +920,9 @@ pub(crate) fn collect_proc_state_fields(
                         match expr {
                             Expr::DataCtor { .. } | Expr::UserCall { .. } => {}
                             _ => {
-                                out.scalars
-                                    .entry(name.clone())
-                                    .or_insert(decl_ty.unwrap_or(PrimitiveType::F32));
+                                out.scalars.entry(name.clone()).or_insert(
+                                    decl_ty.or(init_default_ty).unwrap_or(PrimitiveType::F32),
+                                );
                                 out.scalars.insert(
                                     declared_type_key(DECLARED_INVALID_PLACEHOLDER_PREFIX, name),
                                     PrimitiveType::Bool,
@@ -954,6 +967,7 @@ pub(crate) fn collect_proc_state_fields(
                     struct_defs,
                     ctor_symbols,
                     in_init_scope,
+                    init_default_ty,
                     out,
                     errors,
                 );
@@ -975,6 +989,7 @@ pub(crate) fn collect_proc_state_fields(
                     struct_defs,
                     ctor_symbols,
                     in_init_scope,
+                    init_default_ty,
                     out,
                     errors,
                 );
@@ -1018,6 +1033,7 @@ pub(crate) fn collect_proc_state_fields(
                     struct_defs,
                     ctor_symbols,
                     in_init_scope,
+                    init_default_ty,
                     out,
                     errors,
                 );
@@ -1044,6 +1060,7 @@ pub(crate) fn collect_proc_state_fields(
                     struct_defs,
                     ctor_symbols,
                     in_init_scope,
+                    init_default_ty,
                     out,
                     errors,
                 );

@@ -552,67 +552,60 @@ pub(super) unsafe fn lower_stmt(
             ..
         } => {
             let cond_value = lower_expr(cond, ctx, locals, local_aliases, local_data_aliases)?;
-            let cond_bool = lower_orc_condition(ctx, cond_value, b"if_cond\0");
-
-            let then_bb = LLVMAppendBasicBlockInContext(
+            let cond_bool = {
+                let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
+                    cast_orc_value_to(ctx, value, to, name)
+                };
+                lower_condition_common(cond_value, b"if_cond\0", &mut cast_value)
+            };
+            let ctx_ptr: *mut LoweringCtx<'_> = ctx;
+            lower_if_stmt_common(
+                ctx.builder,
                 ctx.context,
                 ctx.fn_ref,
-                b"if_then\0".as_ptr().cast(),
-            );
-            let else_bb = LLVMAppendBasicBlockInContext(
-                ctx.context,
-                ctx.fn_ref,
-                b"if_else\0".as_ptr().cast(),
-            );
-            let merge_bb = LLVMAppendBasicBlockInContext(
-                ctx.context,
-                ctx.fn_ref,
-                b"if_merge\0".as_ptr().cast(),
-            );
-
-            LLVMBuildCondBr(ctx.builder, cond_bool, then_bb, else_bb);
-
-            LLVMPositionBuilderAtEnd(ctx.builder, then_bb);
-            let mut then_locals = locals.clone();
-            let mut then_aliases = local_aliases.clone();
-            let mut then_data_aliases = local_data_aliases.clone();
-            for nested in then_branch {
-                lower_stmt(
-                    nested,
-                    ctx,
-                    &mut then_locals,
-                    &mut then_aliases,
-                    &mut then_data_aliases,
-                )?;
-                if current_block_terminated(ctx.builder) {
-                    break;
-                }
-            }
-            if !current_block_terminated(ctx.builder) {
-                LLVMBuildBr(ctx.builder, merge_bb);
-            }
-
-            LLVMPositionBuilderAtEnd(ctx.builder, else_bb);
-            let mut else_locals = locals.clone();
-            let mut else_aliases = local_aliases.clone();
-            let mut else_data_aliases = local_data_aliases.clone();
-            for nested in else_branch {
-                lower_stmt(
-                    nested,
-                    ctx,
-                    &mut else_locals,
-                    &mut else_aliases,
-                    &mut else_data_aliases,
-                )?;
-                if current_block_terminated(ctx.builder) {
-                    break;
-                }
-            }
-            if !current_block_terminated(ctx.builder) {
-                LLVMBuildBr(ctx.builder, merge_bb);
-            }
-
-            LLVMPositionBuilderAtEnd(ctx.builder, merge_bb);
+                cond_bool,
+                b"if_then\0",
+                b"if_else\0",
+                b"if_merge\0",
+                || unsafe {
+                    let ctx = &mut *ctx_ptr;
+                    let mut then_locals = locals.clone();
+                    let mut then_aliases = local_aliases.clone();
+                    let mut then_data_aliases = local_data_aliases.clone();
+                    for nested in then_branch {
+                        lower_stmt(
+                            nested,
+                            ctx,
+                            &mut then_locals,
+                            &mut then_aliases,
+                            &mut then_data_aliases,
+                        )?;
+                        if current_block_terminated(ctx.builder) {
+                            break;
+                        }
+                    }
+                    Ok(())
+                },
+                || unsafe {
+                    let ctx = &mut *ctx_ptr;
+                    let mut else_locals = locals.clone();
+                    let mut else_aliases = local_aliases.clone();
+                    let mut else_data_aliases = local_data_aliases.clone();
+                    for nested in else_branch {
+                        lower_stmt(
+                            nested,
+                            ctx,
+                            &mut else_locals,
+                            &mut else_aliases,
+                            &mut else_data_aliases,
+                        )?;
+                        if current_block_terminated(ctx.builder) {
+                            break;
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
             Ok(())
         }
         Stmt::For {
@@ -624,34 +617,6 @@ pub(super) unsafe fn lower_stmt(
             body,
             ..
         } => {
-            let preheader_bb = LLVMGetInsertBlock(ctx.builder);
-            if preheader_bb.is_null() {
-                return Err(Diagnostic::internal(
-                    "failed to get current block for for-loop lowering",
-                ));
-            }
-
-            let cond_bb = LLVMAppendBasicBlockInContext(
-                ctx.context,
-                ctx.fn_ref,
-                b"for_cond\0".as_ptr().cast(),
-            );
-            let body_bb = LLVMAppendBasicBlockInContext(
-                ctx.context,
-                ctx.fn_ref,
-                b"for_body\0".as_ptr().cast(),
-            );
-            let latch_bb = LLVMAppendBasicBlockInContext(
-                ctx.context,
-                ctx.fn_ref,
-                b"for_latch\0".as_ptr().cast(),
-            );
-            let end_bb = LLVMAppendBasicBlockInContext(
-                ctx.context,
-                ctx.fn_ref,
-                b"for_end\0".as_ptr().cast(),
-            );
-
             let start_value = lower_expr(start, ctx, locals, local_aliases, local_data_aliases)?;
             let start_v =
                 cast_orc_value_to(ctx, start_value, PrimitiveType::I32, b"for_start_i32\0");
@@ -665,170 +630,102 @@ pub(super) unsafe fn lower_stmt(
                 const_i32(ctx.i32_ty, 1)
             };
 
-            LLVMBuildBr(ctx.builder, cond_bb);
-
-            LLVMPositionBuilderAtEnd(ctx.builder, cond_bb);
-            let loop_i = LLVMBuildPhi(ctx.builder, ctx.i32_ty, b"for_i\0".as_ptr().cast());
-            let mut incoming_vals = [start_v];
-            let mut incoming_blocks = [preheader_bb];
-            LLVMAddIncoming(
-                loop_i,
-                incoming_vals.as_mut_ptr(),
-                incoming_blocks.as_mut_ptr(),
-                1,
-            );
-
-            let cmp_pos = LLVMBuildICmp(
+            let ctx_ptr: *mut LoweringCtx<'_> = ctx;
+            lower_for_stmt_common(
                 ctx.builder,
-                if *end_inclusive {
-                    LLVMIntPredicate::LLVMIntSLE
-                } else {
-                    LLVMIntPredicate::LLVMIntSLT
-                },
-                loop_i,
+                ctx.context,
+                ctx.fn_ref,
+                ctx.i32_ty,
+                start_v,
                 end_v,
-                b"for_cmp_pos\0".as_ptr().cast(),
-            );
-            let cmp_neg = LLVMBuildICmp(
-                ctx.builder,
-                if *end_inclusive {
-                    LLVMIntPredicate::LLVMIntSGE
-                } else {
-                    LLVMIntPredicate::LLVMIntSGT
-                },
-                loop_i,
-                end_v,
-                b"for_cmp_neg\0".as_ptr().cast(),
-            );
-            let step_pos = LLVMBuildICmp(
-                ctx.builder,
-                LLVMIntPredicate::LLVMIntSGT,
                 step_v,
-                const_i32(ctx.i32_ty, 0),
-                b"for_step_pos\0".as_ptr().cast(),
-            );
-            let step_neg = LLVMBuildICmp(
-                ctx.builder,
-                LLVMIntPredicate::LLVMIntSLT,
-                step_v,
-                const_i32(ctx.i32_ty, 0),
-                b"for_step_neg\0".as_ptr().cast(),
-            );
-            let pos_cond = LLVMBuildAnd(
-                ctx.builder,
-                step_pos,
-                cmp_pos,
-                b"for_pos_cond\0".as_ptr().cast(),
-            );
-            let neg_cond = LLVMBuildAnd(
-                ctx.builder,
-                step_neg,
-                cmp_neg,
-                b"for_neg_cond\0".as_ptr().cast(),
-            );
-            let cond = LLVMBuildOr(
-                ctx.builder,
-                pos_cond,
-                neg_cond,
-                b"for_cond\0".as_ptr().cast(),
-            );
-            LLVMBuildCondBr(ctx.builder, cond, body_bb, end_bb);
-
-            LLVMPositionBuilderAtEnd(ctx.builder, body_bb);
-            let mut loop_locals = locals.clone();
-            let mut loop_aliases = local_aliases.clone();
-            let mut loop_data_aliases = local_data_aliases.clone();
-            loop_locals.insert(
-                var.clone(),
-                OrcValue {
-                    value: loop_i,
-                    ty: PrimitiveType::I32,
+                *end_inclusive,
+                b"for_cond\0",
+                b"for_body\0",
+                b"for_latch\0",
+                b"for_end\0",
+                "for-loop lowering",
+                |loop_i, latch_bb, end_bb| unsafe {
+                    let ctx = &mut *ctx_ptr;
+                    let mut loop_locals = locals.clone();
+                    let mut loop_aliases = local_aliases.clone();
+                    let mut loop_data_aliases = local_data_aliases.clone();
+                    loop_locals.insert(
+                        var.clone(),
+                        OrcValue {
+                            value: loop_i,
+                            ty: PrimitiveType::I32,
+                        },
+                    );
+                    ctx.loop_stack.push(LoopControl {
+                        break_bb: end_bb,
+                        continue_bb: latch_bb,
+                    });
+                    for nested in body {
+                        lower_stmt(
+                            nested,
+                            ctx,
+                            &mut loop_locals,
+                            &mut loop_aliases,
+                            &mut loop_data_aliases,
+                        )?;
+                        if current_block_terminated(ctx.builder) {
+                            break;
+                        }
+                    }
+                    let _ = ctx.loop_stack.pop();
+                    Ok(())
                 },
-            );
-            ctx.loop_stack.push(LoopControl {
-                break_bb: end_bb,
-                continue_bb: latch_bb,
-            });
-            for nested in body {
-                lower_stmt(
-                    nested,
-                    ctx,
-                    &mut loop_locals,
-                    &mut loop_aliases,
-                    &mut loop_data_aliases,
-                )?;
-                if current_block_terminated(ctx.builder) {
-                    break;
-                }
-            }
-            let _ = ctx.loop_stack.pop();
-            if !current_block_terminated(ctx.builder) {
-                LLVMBuildBr(ctx.builder, latch_bb);
-            }
-            LLVMPositionBuilderAtEnd(ctx.builder, latch_bb);
-            let latch_end_bb = LLVMGetInsertBlock(ctx.builder);
-            if latch_end_bb.is_null() {
-                return Err(Diagnostic::internal("failed to get for-loop latch block"));
-            }
-            let next_i = LLVMBuildAdd(ctx.builder, loop_i, step_v, b"for_i_next\0".as_ptr().cast());
-            LLVMBuildBr(ctx.builder, cond_bb);
-            let mut back_vals = [next_i];
-            let mut back_blocks = [latch_end_bb];
-            LLVMAddIncoming(loop_i, back_vals.as_mut_ptr(), back_blocks.as_mut_ptr(), 1);
-
-            LLVMPositionBuilderAtEnd(ctx.builder, end_bb);
+            )?;
             Ok(())
         }
         Stmt::While { cond, body, .. } => {
-            let cond_bb = LLVMAppendBasicBlockInContext(
+            let ctx_ptr: *mut LoweringCtx<'_> = ctx;
+            lower_while_stmt_common(
+                ctx.builder,
                 ctx.context,
                 ctx.fn_ref,
-                b"while_cond\0".as_ptr().cast(),
-            );
-            let body_bb = LLVMAppendBasicBlockInContext(
-                ctx.context,
-                ctx.fn_ref,
-                b"while_body\0".as_ptr().cast(),
-            );
-            let end_bb = LLVMAppendBasicBlockInContext(
-                ctx.context,
-                ctx.fn_ref,
-                b"while_end\0".as_ptr().cast(),
-            );
-
-            LLVMBuildBr(ctx.builder, cond_bb);
-
-            LLVMPositionBuilderAtEnd(ctx.builder, cond_bb);
-            let cond_value = lower_expr(cond, ctx, locals, local_aliases, local_data_aliases)?;
-            let cond_bool = lower_orc_condition(ctx, cond_value, b"while_cond_bool\0");
-            LLVMBuildCondBr(ctx.builder, cond_bool, body_bb, end_bb);
-
-            LLVMPositionBuilderAtEnd(ctx.builder, body_bb);
-            let mut loop_locals = locals.clone();
-            let mut loop_aliases = local_aliases.clone();
-            let mut loop_data_aliases = local_data_aliases.clone();
-            ctx.loop_stack.push(LoopControl {
-                break_bb: end_bb,
-                continue_bb: cond_bb,
-            });
-            for nested in body {
-                lower_stmt(
-                    nested,
-                    ctx,
-                    &mut loop_locals,
-                    &mut loop_aliases,
-                    &mut loop_data_aliases,
-                )?;
-                if current_block_terminated(ctx.builder) {
-                    break;
-                }
-            }
-            let _ = ctx.loop_stack.pop();
-            if !current_block_terminated(ctx.builder) {
-                LLVMBuildBr(ctx.builder, cond_bb);
-            }
-
-            LLVMPositionBuilderAtEnd(ctx.builder, end_bb);
+                b"while_cond\0",
+                b"while_body\0",
+                b"while_end\0",
+                || unsafe {
+                    let ctx = &mut *ctx_ptr;
+                    let cond_value =
+                        lower_expr(cond, ctx, locals, local_aliases, local_data_aliases)?;
+                    let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
+                        cast_orc_value_to(ctx, value, to, name)
+                    };
+                    Ok(lower_condition_common(
+                        cond_value,
+                        b"while_cond_bool\0",
+                        &mut cast_value,
+                    ))
+                },
+                |cond_bb, end_bb| unsafe {
+                    let ctx = &mut *ctx_ptr;
+                    let mut loop_locals = locals.clone();
+                    let mut loop_aliases = local_aliases.clone();
+                    let mut loop_data_aliases = local_data_aliases.clone();
+                    ctx.loop_stack.push(LoopControl {
+                        break_bb: end_bb,
+                        continue_bb: cond_bb,
+                    });
+                    for nested in body {
+                        lower_stmt(
+                            nested,
+                            ctx,
+                            &mut loop_locals,
+                            &mut loop_aliases,
+                            &mut loop_data_aliases,
+                        )?;
+                        if current_block_terminated(ctx.builder) {
+                            break;
+                        }
+                    }
+                    let _ = ctx.loop_stack.pop();
+                    Ok(())
+                },
+            )?;
             Ok(())
         }
         Stmt::Break { .. } => {

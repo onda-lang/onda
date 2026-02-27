@@ -30,14 +30,6 @@ pub(super) unsafe fn cast_def_value_to(
     )
 }
 
-pub(super) unsafe fn lower_def_condition(
-    ctx: &DefLoweringCtx<'_>,
-    value: OrcValue,
-    name: &[u8],
-) -> LLVMValueRef {
-    cast_def_value_to(ctx, value, PrimitiveType::Bool, name)
-}
-
 pub(super) unsafe fn lower_def_logical_expr(
     op: LogicalOp,
     lhs: &Expr,
@@ -45,7 +37,12 @@ pub(super) unsafe fn lower_def_logical_expr(
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<OrcValue, Diagnostic> {
     let lhs_value = lower_def_expr(lhs, ctx)?;
-    let lhs_bool = lower_def_condition(ctx, lhs_value, b"def_logical_lhs\0");
+    let lhs_bool = {
+        let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
+            cast_def_value_to(ctx, value, to, name)
+        };
+        lower_condition_common(lhs_value, b"def_logical_lhs\0", &mut cast_value)
+    };
     let builder = ctx.builder;
     let context = ctx.context;
     let fn_ref = ctx.fn_ref;
@@ -61,10 +58,13 @@ pub(super) unsafe fn lower_def_logical_expr(
         "def logical expression",
         || {
             let rhs_value = lower_def_expr(rhs, ctx)?;
-            Ok(lower_def_condition(
-                ctx,
+            let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
+                cast_def_value_to(ctx, value, to, name)
+            };
+            Ok(lower_condition_common(
                 rhs_value,
                 b"def_logical_rhs_bool\0",
+                &mut cast_value,
             ))
         },
     )
@@ -134,14 +134,6 @@ pub(super) unsafe fn cast_orc_value_to(
     )
 }
 
-pub(super) unsafe fn lower_orc_condition(
-    ctx: &LoweringCtx<'_>,
-    value: OrcValue,
-    name: &[u8],
-) -> LLVMValueRef {
-    cast_orc_value_to(ctx, value, PrimitiveType::Bool, name)
-}
-
 pub(super) unsafe fn lower_orc_logical_expr(
     op: LogicalOp,
     lhs: &Expr,
@@ -152,7 +144,12 @@ pub(super) unsafe fn lower_orc_logical_expr(
     local_data_aliases: &HashMap<String, LocalDataAlias>,
 ) -> Result<OrcValue, Diagnostic> {
     let lhs_value = lower_expr(lhs, ctx, locals, local_aliases, local_data_aliases)?;
-    let lhs_bool = lower_orc_condition(ctx, lhs_value, b"logical_lhs\0");
+    let lhs_bool = {
+        let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
+            cast_orc_value_to(ctx, value, to, name)
+        };
+        lower_condition_common(lhs_value, b"logical_lhs\0", &mut cast_value)
+    };
     let builder = ctx.builder;
     let context = ctx.context;
     let fn_ref = ctx.fn_ref;
@@ -168,7 +165,14 @@ pub(super) unsafe fn lower_orc_logical_expr(
         "ORC logical expression",
         || {
             let rhs_value = lower_expr(rhs, ctx, locals, local_aliases, local_data_aliases)?;
-            Ok(lower_orc_condition(ctx, rhs_value, b"logical_rhs_bool\0"))
+            let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
+                cast_orc_value_to(ctx, value, to, name)
+            };
+            Ok(lower_condition_common(
+                rhs_value,
+                b"logical_rhs_bool\0",
+                &mut cast_value,
+            ))
         },
     )
 }

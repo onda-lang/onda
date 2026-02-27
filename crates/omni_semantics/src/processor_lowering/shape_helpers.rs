@@ -291,6 +291,32 @@ pub(super) fn compute_proc_shape(
     let mut state = ProcStateFields::default();
     let proc_ns = namespace_of_symbol(&proc.name);
     let proc_locals = HashSet::<String>::new();
+    let init_default_ty = match proc.init.default_ty.as_ref() {
+        Some(DeclType::Scalar(prim)) => Some(*prim),
+        Some(DeclType::Generic(param)) => {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "processor '{}': init section default type '[{param}]' is unresolved; expected a concrete primitive type",
+                    proc.name
+                ),
+                0,
+                0,
+            ));
+            None
+        }
+        Some(DeclType::Array { .. }) | Some(DeclType::ArrayGeneric { .. }) => {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "processor '{}': init section default type must be a scalar primitive type",
+                    proc.name
+                ),
+                0,
+                0,
+            ));
+            None
+        }
+        None => None,
+    };
     for stmt in &proc.init {
         collect_proc_state_fields(
             stmt,
@@ -308,6 +334,7 @@ pub(super) fn compute_proc_shape(
             struct_defs,
             ctor_symbols,
             true,
+            init_default_ty,
             &mut state,
             errors,
         );
@@ -329,6 +356,7 @@ pub(super) fn compute_proc_shape(
             struct_defs,
             ctor_symbols,
             false,
+            None,
             &mut state,
             errors,
         );
@@ -350,6 +378,7 @@ pub(super) fn compute_proc_shape(
             struct_defs,
             ctor_symbols,
             false,
+            None,
             &mut state,
             errors,
         );
@@ -371,6 +400,7 @@ pub(super) fn compute_proc_shape(
             struct_defs,
             ctor_symbols,
             false,
+            None,
             &mut state,
             errors,
         );

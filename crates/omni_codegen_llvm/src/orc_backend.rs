@@ -42,6 +42,7 @@ mod orc_locals;
 mod pointer_helpers;
 mod proc_ir;
 mod specialization;
+mod stmt_common;
 mod user_fn_ir;
 use builtin_intrinsics::*;
 use call_helpers::*;
@@ -56,6 +57,7 @@ use orc_locals::*;
 use pointer_helpers::*;
 use proc_ir::*;
 use specialization::*;
+use stmt_common::*;
 use user_fn_ir::*;
 
 type OrcProcessFn = unsafe extern "C" fn(

@@ -368,48 +368,50 @@ unsafe fn lower_def_if_stmt(
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
     let cond_value = lower_def_expr(cond, ctx)?;
-    let cond_bool = lower_def_condition(ctx, cond_value, b"def_if_cond\0");
-
-    let then_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_if_then\0".as_ptr().cast());
-    let else_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_if_else\0".as_ptr().cast());
-    let merge_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_if_merge\0".as_ptr().cast());
-
-    LLVMBuildCondBr(ctx.builder, cond_bool, then_bb, else_bb);
-
-    LLVMPositionBuilderAtEnd(ctx.builder, then_bb);
-    let mut then_terminated = false;
-    for nested in then_branch {
-        if lower_def_stmt(nested, ctx)? {
-            then_terminated = true;
-            break;
-        }
-        if current_block_terminated(ctx.builder) {
-            break;
-        }
-    }
-    if !current_block_terminated(ctx.builder) {
-        LLVMBuildBr(ctx.builder, merge_bb);
-    }
-
-    LLVMPositionBuilderAtEnd(ctx.builder, else_bb);
-    let mut else_terminated = false;
-    for nested in else_branch {
-        if lower_def_stmt(nested, ctx)? {
-            else_terminated = true;
-            break;
-        }
-        if current_block_terminated(ctx.builder) {
-            break;
-        }
-    }
-    if !current_block_terminated(ctx.builder) {
-        LLVMBuildBr(ctx.builder, merge_bb);
-    }
-
-    LLVMPositionBuilderAtEnd(ctx.builder, merge_bb);
+    let cond_bool = {
+        let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
+            cast_def_value_to(ctx, value, to, name)
+        };
+        lower_condition_common(cond_value, b"def_if_cond\0", &mut cast_value)
+    };
+    let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
+    let (then_terminated, else_terminated) = lower_if_stmt_common(
+        ctx.builder,
+        ctx.context,
+        ctx.fn_ref,
+        cond_bool,
+        b"def_if_then\0",
+        b"def_if_else\0",
+        b"def_if_merge\0",
+        || unsafe {
+            let ctx = &mut *ctx_ptr;
+            let mut terminated = false;
+            for nested in then_branch {
+                if lower_def_stmt(nested, ctx)? {
+                    terminated = true;
+                    break;
+                }
+                if current_block_terminated(ctx.builder) {
+                    break;
+                }
+            }
+            Ok(terminated)
+        },
+        || unsafe {
+            let ctx = &mut *ctx_ptr;
+            let mut terminated = false;
+            for nested in else_branch {
+                if lower_def_stmt(nested, ctx)? {
+                    terminated = true;
+                    break;
+                }
+                if current_block_terminated(ctx.builder) {
+                    break;
+                }
+            }
+            Ok(terminated)
+        },
+    )?;
     if then_terminated && else_terminated {
         LLVMBuildBr(ctx.builder, ctx.return_block);
         return Ok(true);
@@ -426,22 +428,6 @@ unsafe fn lower_def_for_stmt(
     body: &[Stmt],
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
-    let preheader_bb = LLVMGetInsertBlock(ctx.builder);
-    if preheader_bb.is_null() {
-        return Err(Diagnostic::internal(
-            "failed to get def for-loop preheader block",
-        ));
-    }
-
-    let cond_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_for_cond\0".as_ptr().cast());
-    let body_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_for_body\0".as_ptr().cast());
-    let latch_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_for_latch\0".as_ptr().cast());
-    let end_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_for_end\0".as_ptr().cast());
-
     let start_value = lower_def_expr(start, ctx)?;
     let start_v = cast_def_value_to(ctx, start_value, PrimitiveType::I32, b"def_for_start_i32\0");
     let end_value = lower_def_expr(end, ctx)?;
@@ -453,132 +439,58 @@ unsafe fn lower_def_for_stmt(
         const_i32(ctx.i32_ty, 1)
     };
 
-    LLVMBuildBr(ctx.builder, cond_bb);
-
-    LLVMPositionBuilderAtEnd(ctx.builder, cond_bb);
-    let loop_i = LLVMBuildPhi(ctx.builder, ctx.i32_ty, b"def_for_i\0".as_ptr().cast());
-    let mut incoming_vals = [start_v];
-    let mut incoming_blocks = [preheader_bb];
-    LLVMAddIncoming(
-        loop_i,
-        incoming_vals.as_mut_ptr(),
-        incoming_blocks.as_mut_ptr(),
-        1,
-    );
-
-    let cmp_pos = LLVMBuildICmp(
+    let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
+    lower_for_stmt_common(
         ctx.builder,
-        if end_inclusive {
-            LLVMIntPredicate::LLVMIntSLE
-        } else {
-            LLVMIntPredicate::LLVMIntSLT
-        },
-        loop_i,
+        ctx.context,
+        ctx.fn_ref,
+        ctx.i32_ty,
+        start_v,
         end_v,
-        b"def_for_cmp_pos\0".as_ptr().cast(),
-    );
-    let cmp_neg = LLVMBuildICmp(
-        ctx.builder,
-        if end_inclusive {
-            LLVMIntPredicate::LLVMIntSGE
-        } else {
-            LLVMIntPredicate::LLVMIntSGT
-        },
-        loop_i,
-        end_v,
-        b"def_for_cmp_neg\0".as_ptr().cast(),
-    );
-    let step_pos = LLVMBuildICmp(
-        ctx.builder,
-        LLVMIntPredicate::LLVMIntSGT,
         step_v,
-        const_i32(ctx.i32_ty, 0),
-        b"def_for_step_pos\0".as_ptr().cast(),
-    );
-    let step_neg = LLVMBuildICmp(
-        ctx.builder,
-        LLVMIntPredicate::LLVMIntSLT,
-        step_v,
-        const_i32(ctx.i32_ty, 0),
-        b"def_for_step_neg\0".as_ptr().cast(),
-    );
-    let pos_cond = LLVMBuildAnd(
-        ctx.builder,
-        step_pos,
-        cmp_pos,
-        b"def_for_pos_cond\0".as_ptr().cast(),
-    );
-    let neg_cond = LLVMBuildAnd(
-        ctx.builder,
-        step_neg,
-        cmp_neg,
-        b"def_for_neg_cond\0".as_ptr().cast(),
-    );
-    let cond = LLVMBuildOr(
-        ctx.builder,
-        pos_cond,
-        neg_cond,
-        b"def_for_cond\0".as_ptr().cast(),
-    );
-    LLVMBuildCondBr(ctx.builder, cond, body_bb, end_bb);
+        end_inclusive,
+        b"def_for_cond\0",
+        b"def_for_body\0",
+        b"def_for_latch\0",
+        b"def_for_end\0",
+        "def for-loop",
+        |loop_i, latch_bb, end_bb| unsafe {
+            let ctx = &mut *ctx_ptr;
+            let old_binding = ctx.local_slots.get(var).copied();
+            let loop_slot = build_local_slot(
+                ctx.builder,
+                llvm_ty_for_primitive(ctx.context, PrimitiveType::I32),
+                &format!("loop_{var}"),
+            )?;
+            ctx.local_slots.insert(
+                var.to_owned(),
+                DefLocalSlot {
+                    ptr: loop_slot,
+                    ty: PrimitiveType::I32,
+                },
+            );
+            LLVMBuildStore(ctx.builder, loop_i, loop_slot);
 
-    LLVMPositionBuilderAtEnd(ctx.builder, body_bb);
-    let old_binding = ctx.local_slots.get(var).copied();
-    let loop_slot = build_local_slot(
-        ctx.builder,
-        llvm_ty_for_primitive(ctx.context, PrimitiveType::I32),
-        &format!("loop_{var}"),
+            ctx.loop_stack.push(LoopControl {
+                break_bb: end_bb,
+                continue_bb: latch_bb,
+            });
+            for nested in body {
+                let _ = lower_def_stmt(nested, ctx)?;
+                if current_block_terminated(ctx.builder) {
+                    break;
+                }
+            }
+            let _ = ctx.loop_stack.pop();
+
+            if let Some(binding) = old_binding {
+                ctx.local_slots.insert(var.to_owned(), binding);
+            } else {
+                ctx.local_slots.remove(var);
+            }
+            Ok(())
+        },
     )?;
-    ctx.local_slots.insert(
-        var.to_owned(),
-        DefLocalSlot {
-            ptr: loop_slot,
-            ty: PrimitiveType::I32,
-        },
-    );
-    LLVMBuildStore(ctx.builder, loop_i, loop_slot);
-
-    ctx.loop_stack.push(LoopControl {
-        break_bb: end_bb,
-        continue_bb: latch_bb,
-    });
-    for nested in body {
-        let _ = lower_def_stmt(nested, ctx)?;
-        if current_block_terminated(ctx.builder) {
-            break;
-        }
-    }
-    let _ = ctx.loop_stack.pop();
-
-    if let Some(binding) = old_binding {
-        ctx.local_slots.insert(var.to_owned(), binding);
-    } else {
-        ctx.local_slots.remove(var);
-    }
-
-    if !current_block_terminated(ctx.builder) {
-        LLVMBuildBr(ctx.builder, latch_bb);
-    }
-
-    LLVMPositionBuilderAtEnd(ctx.builder, latch_bb);
-    let latch_end_bb = LLVMGetInsertBlock(ctx.builder);
-    if latch_end_bb.is_null() {
-        return Err(Diagnostic::internal(
-            "failed to get def for-loop latch block",
-        ));
-    }
-    let next_i = LLVMBuildAdd(
-        ctx.builder,
-        loop_i,
-        step_v,
-        b"def_for_i_next\0".as_ptr().cast(),
-    );
-    LLVMBuildBr(ctx.builder, cond_bb);
-    let mut back_vals = [next_i];
-    let mut back_blocks = [latch_end_bb];
-    LLVMAddIncoming(loop_i, back_vals.as_mut_ptr(), back_blocks.as_mut_ptr(), 1);
-
-    LLVMPositionBuilderAtEnd(ctx.builder, end_bb);
     Ok(false)
 }
 
@@ -587,37 +499,41 @@ unsafe fn lower_def_while_stmt(
     body: &[Stmt],
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
-    let cond_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_while_cond\0".as_ptr().cast());
-    let body_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_while_body\0".as_ptr().cast());
-    let end_bb =
-        LLVMAppendBasicBlockInContext(ctx.context, ctx.fn_ref, b"def_while_end\0".as_ptr().cast());
-
-    LLVMBuildBr(ctx.builder, cond_bb);
-
-    LLVMPositionBuilderAtEnd(ctx.builder, cond_bb);
-    let cond_value = lower_def_expr(cond, ctx)?;
-    let cond_bool = lower_def_condition(ctx, cond_value, b"def_while_cond_bool\0");
-    LLVMBuildCondBr(ctx.builder, cond_bool, body_bb, end_bb);
-
-    LLVMPositionBuilderAtEnd(ctx.builder, body_bb);
-    ctx.loop_stack.push(LoopControl {
-        break_bb: end_bb,
-        continue_bb: cond_bb,
-    });
-    for nested in body {
-        let _ = lower_def_stmt(nested, ctx)?;
-        if current_block_terminated(ctx.builder) {
-            break;
-        }
-    }
-    let _ = ctx.loop_stack.pop();
-
-    if !current_block_terminated(ctx.builder) {
-        LLVMBuildBr(ctx.builder, cond_bb);
-    }
-
-    LLVMPositionBuilderAtEnd(ctx.builder, end_bb);
+    let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
+    lower_while_stmt_common(
+        ctx.builder,
+        ctx.context,
+        ctx.fn_ref,
+        b"def_while_cond\0",
+        b"def_while_body\0",
+        b"def_while_end\0",
+        || unsafe {
+            let ctx = &mut *ctx_ptr;
+            let cond_value = lower_def_expr(cond, ctx)?;
+            let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
+                cast_def_value_to(ctx, value, to, name)
+            };
+            Ok(lower_condition_common(
+                cond_value,
+                b"def_while_cond_bool\0",
+                &mut cast_value,
+            ))
+        },
+        |cond_bb, end_bb| unsafe {
+            let ctx = &mut *ctx_ptr;
+            ctx.loop_stack.push(LoopControl {
+                break_bb: end_bb,
+                continue_bb: cond_bb,
+            });
+            for nested in body {
+                let _ = lower_def_stmt(nested, ctx)?;
+                if current_block_terminated(ctx.builder) {
+                    break;
+                }
+            }
+            let _ = ctx.loop_stack.pop();
+            Ok(())
+        },
+    )?;
     Ok(false)
 }

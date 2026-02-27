@@ -124,6 +124,19 @@ Rules:
 - Ranges on arrays are rejected.
 - If `inN`/`outN` are used without declaration, they are implicitly created as `f32`.
 
+`init` also supports section default scalar type shorthand:
+
+```omni
+init[f64]:
+  phase = 0.0
+  last = 0.0
+```
+
+Rules:
+- `init[T]` / `init[f64]` applies to untyped scalar declarations in `init`.
+- Explicit per-symbol declaration types still win (`x: i32 = ...`).
+- Non-scalar section defaults (for example `init[f32[4]]`) are invalid.
+
 ## 4 Variables, assignment, expressions
 
 First assignment infers type by default:

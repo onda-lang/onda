@@ -21,7 +21,7 @@ pub enum Block {
     Proc(ProcessorDef),
     Struct(StructDef),
     Def(FunctionDef),
-    Init(Vec<Stmt>),
+    Init(InitBlock),
     Block(BlockExec),
     Sample(SampleBlock),
 }
@@ -87,6 +87,53 @@ impl DerefMut for SampleBlock {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct InitBlock {
+    pub default_ty: Option<DeclType>,
+    pub body: Vec<Stmt>,
+}
+
+impl Deref for InitBlock {
+    type Target = Vec<Stmt>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.body
+    }
+}
+
+impl DerefMut for InitBlock {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.body
+    }
+}
+
+impl IntoIterator for InitBlock {
+    type Item = Stmt;
+    type IntoIter = std::vec::IntoIter<Stmt>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.body.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a InitBlock {
+    type Item = &'a Stmt;
+    type IntoIter = std::slice::Iter<'a, Stmt>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.body.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut InitBlock {
+    type Item = &'a mut Stmt;
+    type IntoIter = std::slice::IterMut<'a, Stmt>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.body.iter_mut()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PortDecl {
     pub name: String,
     pub ty: Option<DeclType>,
@@ -127,7 +174,7 @@ pub struct ProcessorDef {
     pub has_block_block: bool,
     pub has_sample_block: bool,
     pub sample_oversample_factor: Option<Expr>,
-    pub init: Vec<Stmt>,
+    pub init: InitBlock,
     pub block_pre: Vec<Stmt>,
     pub sample: Vec<Stmt>,
     pub block_post: Vec<Stmt>,

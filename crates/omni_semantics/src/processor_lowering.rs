@@ -786,9 +786,9 @@ pub fn analyze_with_options(
             _ => None,
         })
         .collect::<Vec<_>>();
-    let mut init = match program.block(BlockKind::Init) {
-        Some(Block::Init(v)) => v.clone(),
-        _ => Vec::new(),
+    let (init_default_decl_ty, mut init) = match program.block(BlockKind::Init) {
+        Some(Block::Init(v)) => (v.default_ty.clone(), v.body.clone()),
+        _ => (None, Vec::new()),
     };
     let mut block_pre = Vec::new();
     let mut block_post = Vec::new();
@@ -1567,9 +1567,33 @@ pub fn analyze_with_options(
     seed_top_level_array_aliases(&mut init_local_data_aliases, &out_arrays, false);
     seed_top_level_array_aliases(&mut init_local_data_aliases, &param_arrays, false);
 
+    let init_default_ty = match init_default_decl_ty {
+        Some(DeclType::Scalar(prim)) => Some(prim),
+        Some(DeclType::Generic(param)) => {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "top-level init section default type '[{param}]' is invalid; only primitive scalar types are allowed"
+                ),
+                0,
+                0,
+            ));
+            None
+        }
+        Some(DeclType::Array { .. }) | Some(DeclType::ArrayGeneric { .. }) => {
+            errors.push(Diagnostic::semantic(
+                "top-level init section default type must be a scalar primitive type",
+                0,
+                0,
+            ));
+            None
+        }
+        None => None,
+    };
+
     for stmt in &init {
         analyze_init_stmt(
             stmt,
+            init_default_ty,
             &mut init_known_scalars,
             &mut init_local_aliases,
             &mut init_local_data_aliases,
