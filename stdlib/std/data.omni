@@ -1,50 +1,50 @@
 import std/math
 
-namespace std::data:
-  namespace Data[S = SR, C = 1]:
-    struct Data[T]:
-      storage: T[S * C]
+namespace std::data[S = SR, C = 1]:
+  struct Data[T]:
+    storage: T[S * C]
 
-      def len(self):
-        return self.storage.len()
+    def len(self):
+      return self.storage.len()
 
-      def frames(self):
-        return i32(S)
+    def frames(self):
+      return i32(S)
 
-      def chans(self):
-        return i32(C)
+    def chans(self):
+      return i32(C)
 
-      def _wrap_i(self, i: i32, n: i32):
-        if (n <= 0):
-          return 0
-        wrapped = i % n
-        if (wrapped < 0):
-          wrapped = wrapped + n
-        return wrapped
+    def _wrap_i(self, i: i32, n: i32):
+      if (n <= 0):
+        return 0
+      wrapped = i % n
+      if (wrapped < 0):
+        wrapped = wrapped + n
+      return wrapped
 
-      def _index(self, frame_i: i32, ch_i: i32 = 0):
-        frame = self._wrap_i(frame_i, self.frames())
-        chan = self._wrap_i(ch_i, self.chans())
-        return chan * self.frames() + frame
+    def _index(self, frame_i: i32, ch_i: i32 = 0):
+      frame = self._wrap_i(frame_i, self.frames())
+      chan = self._wrap_i(ch_i, self.chans())
+      return chan * self.frames() + frame
 
-      def read(self, frame_i: i32, ch_i: i32 = 0):
-        return self.storage.unsafe_read(self._index(frame_i, ch_i))
+    def read(self, frame_i: i32, ch_i: i32 = 0):
+      return self.storage.unsafe_read(self._index(frame_i, ch_i))
 
-      def write(self, frame_i: i32, value: T, ch_i: i32 = 0):
-        self.storage.unsafe_write(self._index(frame_i, ch_i), value)
+    def write(self, frame_i: i32, value: T, ch_i: i32 = 0):
+      self.storage.unsafe_write(self._index(frame_i, ch_i), value)
 
-      def readL(self, pos, ch_i: i32 = 0):
-        i0: i32 = i32(floor(pos))
-        t = pos - floor(pos)
-        a = self.read(i0, ch_i)
-        b = self.read(i0 + 1, ch_i)
-        return a + (b - a) * t
+    def readL(self, pos, ch_i: i32 = 0):
+      i0: i32 = i32(floor(pos))
+      t = pos - floor(pos)
+      a = self.read(i0, ch_i)
+      b = self.read(i0 + 1, ch_i)
+      return a + (b - a) * t
 
-      def readC(self, pos, ch_i: i32 = 0):
-        i1: i32 = i32(floor(pos))
-        t = pos - floor(pos)
-        y0 = self.read(i1 - 1, ch_i)
-        y1 = self.read(i1, ch_i)
-        y2 = self.read(i1 + 1, ch_i)
-        y3 = self.read(i1 + 2, ch_i)
-        return std::math::cubic_interp(y0, y1, y2, y3, t)
+    def readC(self, pos, ch_i: i32 = 0):
+      i1: i32 = i32(floor(pos))
+      t = pos - floor(pos)
+      y0 = self.read(i1 - 1, ch_i)
+      y1 = self.read(i1, ch_i)
+      y2 = self.read(i1 + 1, ch_i)
+      y3 = self.read(i1 + 2, ch_i)
+      return std::math::cubic_interp(y0, y1, y2, y3, t)
+

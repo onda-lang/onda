@@ -2188,6 +2188,38 @@ sample:
 }
 
 #[test]
+fn parses_namespace_template_implicit_default_instantiation() {
+    let src = r#"
+namespace Data[S = SR, C = 1]:
+  struct Data[T]:
+    storage: T[S * C]
+
+init:
+  d = Data::Data[f32]()
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("implicit default namespace template args should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(v) => Some(&v.body),
+            _ => None,
+        })
+        .expect("init block");
+    let call_name = match &init[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            _ => panic!("expected constructor call"),
+        },
+        _ => panic!("expected assignment"),
+    };
+    assert!(call_name.contains("__nsinst"));
+    assert!(call_name.ends_with("::Data"));
+}
+
+#[test]
 fn parses_namespace_local_alias_with_relative_template_target() {
     let src = r#"
 namespace A:
@@ -2951,7 +2983,7 @@ fn parse_program_in_memory_supports_std_data_module() {
 import std/data
 outs { out1 }
 init {
-  d = std::data::Data[SR, 1]::Data[f32]()
+  d = std::data::Data[f32]()
 }
 sample {
   out1 = d.readL(0.5)
@@ -2962,7 +2994,7 @@ sample {
         program
             .blocks
             .iter()
-            .any(|b| matches!(b, Block::Struct(s) if s.name.contains("std::data::Data"))),
+            .any(|b| matches!(b, Block::Struct(s) if s.name.contains("std::data") && s.name.ends_with("::Data"))),
         "expected std/data declarations to be imported"
     );
 }

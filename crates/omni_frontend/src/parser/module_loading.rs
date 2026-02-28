@@ -1565,6 +1565,7 @@ fn resolve_namespace_segments_internal(
 
     let mut idx = 0usize;
     let mut path = String::new();
+    let empty_call_args = Vec::<NamespaceCallArg>::new();
 
     if segments[0].args.is_none() {
         if let Some(alias) = resolve_visible_alias(&segments[0].name, current_ns, state) {
@@ -1601,7 +1602,21 @@ fn resolve_namespace_segments_internal(
             };
             path = found;
         } else {
-            path = segments[0].name.clone();
+            let mut resolved = None::<String>;
+            for candidate_ns in namespace_candidates(current_ns) {
+                let candidate = namespace_join(&candidate_ns, &segments[0].name);
+                if state.namespace_templates.contains_key(&candidate) {
+                    resolved = Some(instantiate_namespace_template(
+                        &candidate,
+                        &empty_call_args,
+                        const_env,
+                        state,
+                        generated,
+                    )?);
+                    break;
+                }
+            }
+            path = resolved.unwrap_or_else(|| segments[0].name.clone());
         }
         idx = 1;
     }
@@ -1610,6 +1625,14 @@ fn resolve_namespace_segments_internal(
         let candidate = namespace_join(&path, &seg.name);
         if let Some(args) = &seg.args {
             path = instantiate_namespace_template(&candidate, args, const_env, state, generated)?;
+        } else if state.namespace_templates.contains_key(&candidate) {
+            path = instantiate_namespace_template(
+                &candidate,
+                &empty_call_args,
+                const_env,
+                state,
+                generated,
+            )?;
         } else {
             path = candidate;
         }
