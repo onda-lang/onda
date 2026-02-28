@@ -2746,15 +2746,23 @@ pub fn analyze_with_options(
         def_struct_defs.insert(name.clone(), fields.clone());
     }
 
+    let def_global_inputs = HashSet::<String>::new();
+    let def_global_outputs = HashSet::<String>::new();
+    let def_global_params = HashSet::<String>::new();
     for def in &defs {
         let mut fn_known = def
             .params
             .iter()
             .map(|p| p.name.clone())
             .collect::<HashSet<_>>();
-        let mut def_state_scalars = state_scalars.clone();
+        let mut def_state_scalars = state_scalars
+            .iter()
+            .filter(|(name, _)| !is_runtime_state_symbol_name(name))
+            .map(|(name, ty)| (name.clone(), *ty))
+            .collect::<HashMap<_, _>>();
         let fn_sig = fn_signatures.get(&def.name);
-        // Def parameters are function-local and must shadow global symbols.
+        // Def parameters are function-local and should be visible for local
+        // type inference even though top-level runtime symbols are not.
         for (idx, param) in def.params.iter().enumerate() {
             let explicit_prim = fn_sig
                 .and_then(|sig| sig.param_types.get(idx))
@@ -2840,9 +2848,9 @@ pub fn analyze_with_options(
                 &fn_locals,
                 &param_structs,
                 &def_state_scalars,
-                &input_names,
-                &output_names,
-                &param_names,
+                &def_global_inputs,
+                &def_global_outputs,
+                &def_global_params,
                 &def_struct_defs,
                 &fn_signatures,
                 options,

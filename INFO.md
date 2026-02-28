@@ -92,8 +92,10 @@
 - Scalar assignment typing follows first-assignment inference by default; explicit declaration typing (`x: i64 = ...`) pins the symbol type.
 - Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
   - Default constant types: `PI`/`TWO_PI` are `f64`; `SAMPLE_RATE` is `f32`; `BLOCK_SIZE` is `i32`.
-- `std/math` is auto-imported during semantic analysis; local symbols with the same name take precedence, while qualified calls remain available via `std::math::...`.
-- `std/buffer` is available via `import std/buffer` and exposes duck-typed overloaded helpers `read`, `readL`, and `readC` (mono and channel-explicit forms).
+- `std/prelude` is auto-imported during semantic analysis.
+- `std/prelude` currently imports `std/math` and `std/lookup`.
+- Local symbols with the same name take precedence over auto-imported unqualified std helpers; qualified calls remain available via `std::math::...` and `std::lookup::...`.
+- `std/lookup` exposes duck-typed overloaded helpers `read`, `write`, `readL`, and `readC` (mono and channel-explicit forms) that specialize from both primitive arrays and buffers.
 - Control flow and calls:
   - `if`, `for`, `loop N`, `while`, `break`, `continue`, `return`, call statements.
   - `for` syntax supports:
@@ -112,6 +114,7 @@
   - Proc events are reached through explicit calls/forwarding (for example `voice.note_on(...)`).
 - Functions (`def`):
   - positional + named args, default values, early return.
+  - `def` bodies are lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not in scope unless passed as parameters.
   - top-level overloads are supported (same symbol with different arity and/or parameter types).
   - overload resolution prefers exact typed matches; if no exact match exists, numeric widening candidates can be used.
   - untyped parameters participate with lower priority than typed parameters.

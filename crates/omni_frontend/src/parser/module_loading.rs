@@ -104,7 +104,8 @@ fn builtin_std_module_source(module: &str) -> Option<&'static str> {
         "std/env" => Some(include_str!("../../../../stdlib/std/env.omni")),
         "std/delay" => Some(include_str!("../../../../stdlib/std/delay.omni")),
         "std/data" => Some(include_str!("../../../../stdlib/std/data.omni")),
-        "std/buffer" => Some(include_str!("../../../../stdlib/std/buffer.omni")),
+        "std/lookup" => Some(include_str!("../../../../stdlib/std/lookup.omni")),
+        "std/prelude" => Some(include_str!("../../../../stdlib/std/prelude.omni")),
         _ => None,
     }
 }
@@ -123,17 +124,16 @@ fn block_decl_name(block: &Block) -> Option<&str> {
 }
 
 fn merge_blocks_preferring_existing(existing: &mut Vec<Block>, incoming: Vec<Block>) {
-    let mut declared = existing
+    let shadowed = existing
         .iter()
         .filter_map(block_decl_name)
         .map(ToOwned::to_owned)
         .collect::<HashSet<_>>();
     for block in incoming {
         if let Some(name) = block_decl_name(&block) {
-            if declared.contains(name) {
+            if shadowed.contains(name) {
                 continue;
             }
-            declared.insert(name.to_owned());
         }
         existing.push(block);
     }
@@ -346,15 +346,17 @@ pub fn parse_program_file(path: &Path) -> Result<Program, Vec<Diagnostic>> {
     Ok(Program { blocks })
 }
 
-pub fn inject_auto_std_math(program: &mut Program) -> Result<(), Vec<Diagnostic>> {
-    let imported = load_builtin_module_blocks(
-        STDLIB_AUTO_IMPORT_MODULE,
-        true,
-        &mut LoadState::default(),
-        &[],
-    )?;
-    merge_blocks_preferring_existing(&mut program.blocks, imported);
+pub fn inject_auto_std_prelude(program: &mut Program) -> Result<(), Vec<Diagnostic>> {
+    let mut state = LoadState::default();
+    for module in STDLIB_AUTO_IMPORT_MODULES {
+        let imported = load_builtin_module_blocks(module, true, &mut state, &[])?;
+        merge_blocks_preferring_existing(&mut program.blocks, imported);
+    }
     Ok(())
+}
+
+pub fn inject_auto_std_math(program: &mut Program) -> Result<(), Vec<Diagnostic>> {
+    inject_auto_std_prelude(program)
 }
 
 fn parse_program_preprocessed(

@@ -187,6 +187,20 @@ sample {
 }
 "#;
 
+const DEF_CANNOT_CAPTURE_TOP_LEVEL_SYMBOLS_ERROR_EXAMPLE: &str = r#"
+ins { in1 }
+outs { out1 }
+params { p = 0.5 }
+buffers { b: buffer[f32] }
+init { s = 1.0 }
+def leak() {
+  return in1 + p + s + b[0]
+}
+sample {
+  out1 = leak()
+}
+"#;
+
 const DEF_NO_RETURN_EXAMPLE: &str = r#"
 outs { out1 }
 def no_ret(x) {
@@ -1325,20 +1339,49 @@ sample {
 "#;
 
 const STDLIB_BUFFER_READ_MONO_EXAMPLE: &str = r#"
-import std/buffer
+import std/lookup
 buffers { b: buffer[f32] }
 outs { out1 }
 sample {
-  out1 = std::buffer::read(b, 2)
+  out1 = std::lookup::read(b, 2)
 }
 "#;
 
 const STDLIB_BUFFER_INTERP_STEREO_EXAMPLE: &str = r#"
-import std/buffer
+import std/lookup
 buffers { b: buffer[f32[2]] }
 outs { out1 }
 sample {
-  out1 = std::buffer::read(b, 0, 1) + std::buffer::readL(b, 1, 0.5) + std::buffer::readC(b, 1, 1.0)
+  out1 = std::lookup::read(b, 0, 1) + std::lookup::readL(b, 1, 0.5) + std::lookup::readC(b, 1, 1.0)
+}
+"#;
+
+const STDLIB_BUFFER_AUTO_IMPORT_ARRAY_AND_BUFFER_EXAMPLE: &str = r#"
+buffers { b: buffer[f32] }
+outs { out1 }
+init {
+  a: f32[4]
+  a[0] = 1.0
+  a[1] = 2.0
+  a[2] = 3.0
+  a[3] = 4.0
+}
+sample {
+  out1 = a.read(1) + readL(a, 1.5) + b.readC(2.0)
+}
+"#;
+
+const STDLIB_LOOKUP_WRITE_ARRAY_AND_BUFFER_EXAMPLE: &str = r#"
+import std/lookup
+buffers { b: buffer[f32] }
+outs { out1 }
+init {
+  a: f32[4]
+}
+sample {
+  std::lookup::write(a, 1, 2.5)
+  std::lookup::write(b, 2, 4.0)
+  out1 = std::lookup::read(a, 1) + std::lookup::read(b, 2)
 }
 "#;
 
@@ -4368,6 +4411,18 @@ fn positional_after_named_is_rejected() {
         "semantic analysis should reject positional args after named args"
     );
 }
+
+#[test]
+fn def_cannot_capture_top_level_symbols() {
+    let parsed = parse_program(DEF_CANNOT_CAPTURE_TOP_LEVEL_SYMBOLS_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject top-level ins/params/state/buffers referenced in def scope"
+    );
+}
+
 #[test]
 fn def_without_return_defaults_to_zero() {
     let frames = 8;
@@ -6040,6 +6095,66 @@ fn stdlib_buffer_read_linear_and_cubic_with_channel_compiles_and_runs() {
     let out = decode_planar_f32(&out_bytes);
     for sample in &out {
         assert_near(*sample, 37.0, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_buffer_is_auto_imported_for_arrays_and_buffers() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_BUFFER_AUTO_IMPORT_ARRAY_AND_BUFFER_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![10.0_f32, 20.0, 30.0, 40.0];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+    for sample in &out {
+        assert_near(*sample, 34.5, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_lookup_write_array_and_buffer_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_LOOKUP_WRITE_ARRAY_AND_BUFFER_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![0.0_f32; 4];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+    for sample in &out {
+        assert_near(*sample, 6.5, 1e-6);
     }
 }
 

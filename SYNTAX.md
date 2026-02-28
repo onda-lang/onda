@@ -225,6 +225,7 @@ Supported:
 - Early return
 - Top-level overloads by arity and/or parameter type
 - Method-style sugar for functions: `value.fn(a, b)` is rewritten as `fn(value, a, b)` when a matching function `fn` is in scope.
+- Def scope is lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not directly visible inside a `def`.
 
 ```omni
 def wrap_phase(p, upper = TWO_PI):
@@ -391,13 +392,15 @@ Array indexing and assignment are supported in `init`/`sample`/`def` where valid
 Imports:
 - `import module/path`
 - Built-in std modules include:
+  - `std/prelude`
   - `std/math`
   - `std/osc`
   - `std/filter`
   - `std/env`
   - `std/delay`
   - `std/data`
-  - `std/buffer`
+  - `std/lookup`
+- `std/prelude` is auto-imported (explicit import is optional), and it currently re-exports `std/math` + `std/lookup`.
 
 Include:
 - `include "path.omni"`

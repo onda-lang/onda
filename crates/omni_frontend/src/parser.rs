@@ -25,7 +25,7 @@ const PROC_INDEX_BASE_ARG: &str = "__proc_index_base";
 const PROC_INDEX_EXPR_ARG: &str = "__proc_index_expr";
 const BUFFER_READ2_INTERNAL_FN: &str = "__omni_buffer_read2";
 const BUFFER_WRITE2_INTERNAL_FN: &str = "__omni_buffer_write2";
-const STDLIB_AUTO_IMPORT_MODULE: &str = "std/math";
+const STDLIB_AUTO_IMPORT_MODULES: &[&str] = &["std/prelude"];
 const STDLIB_MODULE_PREFIX: &str = "std/";
 
 #[derive(Parser)]
@@ -37,7 +37,9 @@ mod module_loading;
 use module_loading::stmt_loc_from_pair;
 
 mod type_helpers;
-pub use module_loading::{inject_auto_std_math, parse_program, parse_program_file};
+pub use module_loading::{
+    inject_auto_std_math, inject_auto_std_prelude, parse_program, parse_program_file,
+};
 use type_helpers::*;
 
 mod expr_stmt;

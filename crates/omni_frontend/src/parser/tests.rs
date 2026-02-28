@@ -2932,6 +2932,20 @@ sample { out1 = clamp(2.0, 0.0, 1.0) }
 }
 
 #[test]
+fn parse_program_in_memory_supports_std_prelude_module() {
+    let src = r#"
+import std/prelude
+outs { out1 }
+sample { out1 = clamp(2.0, 0.0, 1.0) + read([1.0, 2.0], 1) }
+"#;
+    let program = parse_program(src).expect("in-memory std/prelude import should parse");
+    assert!(
+        program.blocks.iter().any(|b| matches!(b, Block::Def(_))),
+        "expected std/prelude declarations to be imported"
+    );
+}
+
+#[test]
 fn parse_program_in_memory_supports_std_data_module() {
     let src = r#"
 import std/data
@@ -2954,22 +2968,22 @@ sample {
 }
 
 #[test]
-fn parse_program_in_memory_supports_std_buffer_module() {
+fn parse_program_in_memory_supports_std_lookup_module() {
     let src = r#"
-import std/buffer
+import std/lookup
 buffers { b: buffer[f32[2]] }
 outs { out1 }
 sample {
-  out1 = std::buffer::read(b, 0, 1) + std::buffer::readL(b, 1, 0.5)
+  out1 = std::lookup::read(b, 0, 1) + std::lookup::readL(b, 1, 0.5)
 }
 "#;
-    let program = parse_program(src).expect("in-memory std/buffer import should parse");
+    let program = parse_program(src).expect("in-memory std/lookup import should parse");
     assert!(
         program
             .blocks
             .iter()
-            .any(|b| matches!(b, Block::Def(d) if d.name.contains("std::buffer::read"))),
-        "expected std/buffer declarations to be imported"
+            .any(|b| matches!(b, Block::Def(d) if d.name.contains("std::lookup::read"))),
+        "expected std/lookup declarations to be imported"
     );
 }
 

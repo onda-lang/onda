@@ -1,11 +1,19 @@
 import std/math
 
-namespace std::buffer:
+namespace std::lookup:
   def read(buf, i: i32):
     return buf[i]
 
   def read(buf, ch: i32, i: i32):
     return buf[ch][i]
+
+  def write(buf, i: i32, value):
+    buf[i] = value
+    return value
+
+  def write(buf, ch: i32, i: i32, value):
+    buf[ch][i] = value
+    return value
 
   def readL(buf, pos):
     i0: i32 = i32(floor(pos))
@@ -38,3 +46,27 @@ namespace std::buffer:
     y2 = read(buf, ch, i1 + 1)
     y3 = read(buf, ch, i1 + 2)
     return std::math::cubic_interp(y0, y1, y2, y3, t)
+
+def read(buf, i: i32):
+  return std::lookup::read(buf, i)
+
+def read(buf, ch: i32, i: i32):
+  return std::lookup::read(buf, ch, i)
+
+def write(buf, i: i32, value):
+  return std::lookup::write(buf, i, value)
+
+def write(buf, ch: i32, i: i32, value):
+  return std::lookup::write(buf, ch, i, value)
+
+def readL(buf, pos):
+  return std::lookup::readL(buf, pos)
+
+def readL(buf, ch: i32, pos):
+  return std::lookup::readL(buf, ch, pos)
+
+def readC(buf, pos):
+  return std::lookup::readC(buf, pos)
+
+def readC(buf, ch: i32, pos):
+  return std::lookup::readC(buf, ch, pos)
