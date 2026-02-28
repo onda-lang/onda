@@ -917,9 +917,7 @@ pub(super) unsafe fn lower_buffer_call_args_in_orc(
         )));
     };
     if let Ok((ptr, frames, channels)) = load_orc_buffer_binding_tuple(ctx, base) {
-        out_args.push(ptr);
-        out_args.push(frames);
-        out_args.push(channels);
+        push_buffer_tuple(out_args, ptr, frames, channels);
         return Ok(());
     }
 
@@ -927,30 +925,16 @@ pub(super) unsafe fn lower_buffer_call_args_in_orc(
     // them to a mono buffer tuple: (ptr, frames=len, channels=1).
     let (_elem_ty, len) =
         infer_array_arg_signature_in_orc(ctx, local_array_aliases, arg_expr, callee_name)?;
-    if len > i32::MAX as usize {
-        return Err(Diagnostic::internal(format!(
-            "array argument '{}' length {} exceeds i32 range while adapting to buffer tuple in ORC expression lowering",
-            base, len
-        )));
-    }
-    let mut ptr_only = Vec::with_capacity(1);
-    lower_array_call_args_in_orc(
-        ctx,
-        local_array_aliases,
-        &mut ptr_only,
-        arg_expr,
-        callee_name,
-    )?;
-    let ptr = *ptr_only.first().ok_or_else(|| {
-        Diagnostic::internal(format!(
-            "failed to materialize array pointer for '{}' while adapting to buffer tuple in ORC expression lowering",
-            base
-        ))
-    })?;
-    out_args.push(ptr);
-    out_args.push(LLVMConstInt(ctx.i32_ty, len as u64, 0));
-    out_args.push(LLVMConstInt(ctx.i32_ty, 1, 0));
-    Ok(())
+    lower_array_as_mono_buffer_tuple(
+        out_args,
+        ctx.i32_ty,
+        base,
+        len,
+        "ORC expression lowering",
+        |ptr_out| {
+            lower_array_call_args_in_orc(ctx, local_array_aliases, ptr_out, arg_expr, callee_name)
+        },
+    )
 }
 
 pub(super) fn infer_buffer_arg_signature_in_orc(
@@ -1102,33 +1086,16 @@ pub(super) unsafe fn lower_buffer_call_args_in_def(
         )));
     };
     if let Some(info) = ctx.buffer_params.get(base) {
-        out_args.push(info.ptr);
-        out_args.push(info.frames);
-        out_args.push(info.channels);
+        push_buffer_tuple(out_args, info.ptr, info.frames, info.channels);
         return Ok(());
     }
 
     // Allow untyped indexable params to accept primitive arrays by adapting
     // them to a mono buffer tuple: (ptr, frames=len, channels=1).
     let (_elem_ty, len) = infer_array_arg_signature_in_def(ctx, arg_expr, callee_name)?;
-    if len > i32::MAX as usize {
-        return Err(Diagnostic::internal(format!(
-            "array argument '{}' length {} exceeds i32 range while adapting to buffer tuple in def lowering",
-            base, len
-        )));
-    }
-    let mut ptr_only = Vec::with_capacity(1);
-    lower_array_call_args_in_def(ctx, &mut ptr_only, arg_expr, callee_name)?;
-    let ptr = *ptr_only.first().ok_or_else(|| {
-        Diagnostic::internal(format!(
-            "failed to materialize array pointer for '{}' while adapting to buffer tuple in def lowering",
-            base
-        ))
-    })?;
-    out_args.push(ptr);
-    out_args.push(LLVMConstInt(ctx.i32_ty, len as u64, 0));
-    out_args.push(LLVMConstInt(ctx.i32_ty, 1, 0));
-    Ok(())
+    lower_array_as_mono_buffer_tuple(out_args, ctx.i32_ty, base, len, "def lowering", |ptr_out| {
+        lower_array_call_args_in_def(ctx, ptr_out, arg_expr, callee_name)
+    })
 }
 
 pub(super) fn infer_buffer_arg_signature_in_def(
@@ -1212,5 +1179,48 @@ pub(super) unsafe fn lower_array_call_args_in_def(
         )));
     }
     out_args.push(ptr);
+    Ok(())
+}
+
+fn push_buffer_tuple(
+    out_args: &mut Vec<LLVMValueRef>,
+    ptr: LLVMValueRef,
+    frames: LLVMValueRef,
+    channels: LLVMValueRef,
+) {
+    out_args.push(ptr);
+    out_args.push(frames);
+    out_args.push(channels);
+}
+
+unsafe fn lower_array_as_mono_buffer_tuple(
+    out_args: &mut Vec<LLVMValueRef>,
+    i32_ty: LLVMTypeRef,
+    base: &str,
+    len: usize,
+    context: &str,
+    mut lower_array_ptr: impl FnMut(&mut Vec<LLVMValueRef>) -> Result<(), Diagnostic>,
+) -> Result<(), Diagnostic> {
+    if len > i32::MAX as usize {
+        return Err(Diagnostic::internal(format!(
+            "array argument '{}' length {} exceeds i32 range while adapting to buffer tuple in {}",
+            base, len, context
+        )));
+    }
+
+    let mut ptr_only = Vec::with_capacity(1);
+    lower_array_ptr(&mut ptr_only)?;
+    let ptr = *ptr_only.first().ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "failed to materialize array pointer for '{}' while adapting to buffer tuple in {}",
+            base, context
+        ))
+    })?;
+    push_buffer_tuple(
+        out_args,
+        ptr,
+        LLVMConstInt(i32_ty, len as u64, 0),
+        LLVMConstInt(i32_ty, 1, 0),
+    );
     Ok(())
 }
