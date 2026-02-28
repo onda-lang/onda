@@ -279,6 +279,25 @@ struct Voice:
     self.sig = sin(self.phase)
 ```
 
+Typed struct declarations in `init` can use constructor form or declaration-only form:
+
+```omni
+import std/data
+
+init:
+  # explicit constructor
+  a: std::data::Data[f32] = std::data::Data()
+  # declaration-only: auto-initializes with default ctor state
+  b: std::data::Data[f32]
+  # namespace-instantiated owner type works too
+  c: std::data[SR, 1]::Data
+```
+
+Rules:
+- Typed struct declarations are `init`-only.
+- Declaration-only form (`x: Type`) desugars to default constructor initialization.
+- For generic struct constructors with omitted type arguments, unresolved type parameters default to `f32`.
+
 ## 8 Processors (`proc`)
 
 Processor blocks:
@@ -381,6 +400,7 @@ proc OnePole[T]:
 ```
 
 Type arguments can be explicit (`Name[f64](...)`) or inferred in many constructor cases.
+When omitted and not inferable for struct constructors in typed `init` declarations, generic parameters default to `f32`.
 
 ## 10 Arrays
 

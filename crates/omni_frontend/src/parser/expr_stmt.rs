@@ -303,22 +303,20 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                             args: Vec::new(),
                         }
                     };
-                    if !decl_type_args.is_empty() {
-                        if let Expr::UserCall {
-                            name, type_args, ..
-                        } = &mut expr
-                        {
-                            if *name == decl_name && type_args.is_empty() {
-                                *type_args = decl_type_args;
-                                return Ok(Stmt::Assign {
-                                    loc: loc.clone(),
-                                    target: AssignTarget::Var(name_pair.as_str().to_owned()),
-                                    decl_ty: None,
-                                    generic_decl_ty: None,
-                                    is_typed_decl: false,
-                                    expr,
-                                });
-                            }
+                    if let Expr::UserCall {
+                        name, type_args, ..
+                    } = &mut expr
+                    {
+                        if *name == decl_name && type_args.is_empty() {
+                            *type_args = decl_type_args;
+                            return Ok(Stmt::Assign {
+                                loc: loc.clone(),
+                                target: AssignTarget::Var(name_pair.as_str().to_owned()),
+                                decl_ty: None,
+                                generic_decl_ty: None,
+                                is_typed_decl: false,
+                                expr,
+                            });
                         }
                     }
                     Ok(Stmt::Assign {
@@ -1154,6 +1152,13 @@ fn parse_named_type_ref(pair: Pair<'_, Rule>) -> Result<(String, Vec<CallTypeArg
     let mut type_args = Vec::<CallTypeArg>::new();
     for item in pair.into_inner() {
         match item.as_rule() {
+            Rule::namespace_ref => {
+                let (ns_name, _ns_call_args, ns_type_args) = parse_namespace_call_target(item);
+                if name.is_none() {
+                    name = Some(ns_name);
+                    type_args = ns_type_args;
+                }
+            }
             Rule::qualified_ident | Rule::ident => {
                 if name.is_none() {
                     name = Some(item.as_str().to_owned());

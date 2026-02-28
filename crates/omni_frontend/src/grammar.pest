@@ -97,7 +97,7 @@ struct_method_decl = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ s
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
 stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | assign_stmt | call_stmt }
 assign_stmt = { typed_assign_stmt | plain_assign_stmt }
-named_type = { (qualified_ident | ident) ~ generic_type_arg_list? }
+named_type = { namespace_ref | ((qualified_ident | ident) ~ generic_type_arg_list?) }
 typed_decl_type = { array_type | type_name | named_type }
 typed_assign_stmt = { ident ~ ":" ~ typed_decl_type ~ ("=" ~ expr)? }
 plain_assign_stmt = { assign_target ~ "=" ~ expr }

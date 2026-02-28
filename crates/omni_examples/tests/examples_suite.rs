@@ -8451,3 +8451,37 @@ sample {
     let result = analyze(parsed);
     assert!(result.is_ok(), "semantic analysis should succeed");
 }
+
+#[test]
+fn analyze_supports_typed_init_generic_struct_default_ctor_decl_without_type_args() {
+    let src = r#"
+import std/data
+outs { out1 }
+init {
+  line: std::data::Data
+}
+sample {
+  out1 = line.read(0)
+}
+"#;
+    let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
+    let result = analyze(parsed);
+    assert!(result.is_ok(), "semantic analysis should succeed");
+}
+
+#[test]
+fn analyze_supports_typed_init_namespace_instantiated_struct_default_ctor_decl_without_type_args() {
+    let src = r#"
+import std/data
+outs { out1 }
+init {
+  line: std::data[SR, 1]::Data
+}
+sample {
+  out1 = line.read(0)
+}
+"#;
+    let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
+    let result = analyze(parsed);
+    assert!(result.is_ok(), "semantic analysis should succeed");
+}

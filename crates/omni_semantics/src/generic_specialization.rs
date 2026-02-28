@@ -769,13 +769,11 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
             }
         }
     }
-    finalize_inferred_generic_type_args(
-        &template.name,
-        "struct",
-        &template.type_params,
-        &bindings,
-        errors,
-    )
+    let mut out = Vec::<PrimitiveType>::with_capacity(template.type_params.len());
+    for param in &template.type_params {
+        out.push(bindings.get(param).copied().unwrap_or(PrimitiveType::F32));
+    }
+    Some(out)
 }
 
 pub(crate) fn infer_generic_proc_ctor_type_args(

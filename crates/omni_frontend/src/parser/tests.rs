@@ -3075,6 +3075,82 @@ init {
 }
 
 #[test]
+fn parses_typed_init_struct_decl_without_type_args_and_default_ctor() {
+    let src = r#"
+import std/data
+init {
+  line: std::data::Data
+}
+"#;
+    let program = parse_program(src).expect("typed init struct declaration should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(init) => Some(init),
+            _ => None,
+        })
+        .expect("init block");
+    let Stmt::Assign {
+        is_typed_decl, expr, ..
+    } = &init[0]
+    else {
+        panic!("expected assignment in init");
+    };
+    assert!(
+        !is_typed_decl,
+        "typed struct decl should desugar to constructor assignment"
+    );
+    let Expr::UserCall {
+        name, type_args, args
+    } = expr
+    else {
+        panic!("expected constructor call");
+    };
+    assert!(name.ends_with("::Data"));
+    assert!(args.is_empty(), "default ctor should be argument-less");
+    assert!(type_args.is_empty(), "type args should be inferred later");
+}
+
+#[test]
+fn parses_typed_init_namespace_instantiated_struct_decl_without_type_args() {
+    let src = r#"
+import std/data
+init {
+  line: std::data[SR, 1]::Data
+}
+"#;
+    let program = parse_program(src).expect("typed init namespace-instantiated decl should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(init) => Some(init),
+            _ => None,
+        })
+        .expect("init block");
+    let Stmt::Assign {
+        is_typed_decl, expr, ..
+    } = &init[0]
+    else {
+        panic!("expected assignment in init");
+    };
+    assert!(
+        !is_typed_decl,
+        "typed struct decl should desugar to constructor assignment"
+    );
+    let Expr::UserCall {
+        name, type_args, args
+    } = expr
+    else {
+        panic!("expected constructor call");
+    };
+    assert!(name.ends_with("::Data"));
+    assert!(args.is_empty(), "default ctor should be argument-less");
+    assert!(type_args.is_empty(), "type args should be inferred later");
+}
+
+#[test]
 fn parse_program_in_memory_supports_std_lookup_module() {
     let src = r#"
 import std/lookup

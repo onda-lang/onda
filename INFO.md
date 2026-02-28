@@ -78,6 +78,9 @@
 - Primitive types: `f32`, `f64`, `i32`, `i64`, `bool`.
 - Generic primitive specialization is supported for `struct` and `proc` via type parameters (for example `Name[T]`).
 - Specialization is monomorphized at use sites with explicit type args (`Name[f64](...)`) or inferred type args from constructor arguments/defaults where possible.
+- In typed `init` struct declarations, declaration-only form is supported (`x: Type`) and desugars to default constructor initialization.
+- Typed `init` struct declarations support namespace-instantiated owner paths (for example `x: std::data[SR, 1]::Data`).
+- For generic struct constructors in typed `init` declarations, omitted/unresolved type arguments default to `f32`.
 - Array type syntax: `T[N]` across declarations (with current scope rules enforced in semantics).
 - Typed primitive array declarations with inline array-literal initializers are supported in `init` / `sample` / `def` (for example `a: f32[2] = [0.5, 0.8]`).
 - Untyped array literal declarations are supported for local/state array declarations in executable blocks (`init` top-level + proc init, `sample`/`block`, `def`, and event handlers), with first-element type inference (for example `a = [0.5, 0.8]`, `a = [f64(0.0), 1.0]`, `a = [0, 1]`, `a = [i64(0), 1]`).
