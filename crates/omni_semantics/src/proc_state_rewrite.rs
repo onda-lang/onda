@@ -1338,40 +1338,44 @@ pub(crate) fn rewrite_proc_expr_symbols(
                     let receiver = if field_array_slots.contains_key(base)
                         || in_array_slots.contains_key(base)
                     {
-                        base.to_owned()
+                        Some(base.to_owned())
                     } else if field_names.contains(base) && is_plain_symbol(base) {
-                        format!("self.{base}")
+                        Some(format!("self.{base}"))
                     } else {
-                        base.to_owned()
+                        None
                     };
-                    let mut rewritten_args = Vec::<CallArg>::with_capacity(args.len() + 1);
-                    rewritten_args.push(CallArg {
-                        name: None,
-                        expr: Expr::Var(receiver),
-                    });
-                    rewritten_args.extend(args.clone());
-                    *name = "unsafe_read".to_owned();
-                    *args = rewritten_args;
+                    if let Some(receiver) = receiver {
+                        let mut rewritten_args = Vec::<CallArg>::with_capacity(args.len() + 1);
+                        rewritten_args.push(CallArg {
+                            name: None,
+                            expr: Expr::Var(receiver),
+                        });
+                        rewritten_args.extend(args.clone());
+                        *name = "unsafe_read".to_owned();
+                        *args = rewritten_args;
+                    }
                 }
                 let method_name = name.clone();
                 if let Some(base) = parse_unsafe_write_instance_base(&method_name) {
                     let receiver = if field_array_slots.contains_key(base)
                         || in_array_slots.contains_key(base)
                     {
-                        base.to_owned()
+                        Some(base.to_owned())
                     } else if field_names.contains(base) && is_plain_symbol(base) {
-                        format!("self.{base}")
+                        Some(format!("self.{base}"))
                     } else {
-                        base.to_owned()
+                        None
                     };
-                    let mut rewritten_args = Vec::<CallArg>::with_capacity(args.len() + 1);
-                    rewritten_args.push(CallArg {
-                        name: None,
-                        expr: Expr::Var(receiver),
-                    });
-                    rewritten_args.extend(args.clone());
-                    *name = "unsafe_write".to_owned();
-                    *args = rewritten_args;
+                    if let Some(receiver) = receiver {
+                        let mut rewritten_args = Vec::<CallArg>::with_capacity(args.len() + 1);
+                        rewritten_args.push(CallArg {
+                            name: None,
+                            expr: Expr::Var(receiver),
+                        });
+                        rewritten_args.extend(args.clone());
+                        *name = "unsafe_write".to_owned();
+                        *args = rewritten_args;
+                    }
                 }
                 if name == "unsafe_read" && args.len() == 2 {
                     if let Expr::Var(base) = &args[0].expr {

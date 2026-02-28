@@ -154,6 +154,46 @@ pub(super) fn lookup_def_data_symbol_len(ctx: &DefLoweringCtx<'_>, base: &str) -
     ctx.array_len.get(base).copied()
 }
 
+pub(super) fn is_orc_builtin_data_len_receiver(
+    ctx: &LoweringCtx<'_>,
+    base: &str,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+) -> bool {
+    lookup_orc_data_symbol_len(ctx, base, local_array_aliases).is_some() || ctx.buffer_index.contains_key(base)
+}
+
+pub(super) fn is_orc_builtin_buffer_chans_receiver(ctx: &LoweringCtx<'_>, base: &str) -> bool {
+    ctx.buffer_index.contains_key(base)
+}
+
+pub(super) fn is_orc_builtin_unsafe_data_receiver(
+    ctx: &LoweringCtx<'_>,
+    base: &str,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+) -> bool {
+    local_array_aliases.contains_key(base)
+        || ctx.input_arrays.contains_key(base)
+        || ctx.param_arrays.contains_key(base)
+        || ctx.output_arrays.contains_key(base)
+        || ctx.array_len.contains_key(base)
+        || ctx.array_struct_len.contains_key(base)
+        || ctx.buffer_index.contains_key(base)
+}
+
+pub(super) fn is_def_builtin_data_len_receiver(ctx: &DefLoweringCtx<'_>, base: &str) -> bool {
+    lookup_def_data_symbol_len(ctx, base).is_some() || ctx.buffer_params.contains_key(base)
+}
+
+pub(super) fn is_def_builtin_buffer_chans_receiver(ctx: &DefLoweringCtx<'_>, base: &str) -> bool {
+    ctx.buffer_params.contains_key(base)
+}
+
+pub(super) fn is_def_builtin_unsafe_data_receiver(ctx: &DefLoweringCtx<'_>, base: &str) -> bool {
+    ctx.local_array_aliases.contains_key(base)
+        || ctx.array_len.contains_key(base)
+        || ctx.buffer_params.contains_key(base)
+}
+
 pub(super) unsafe fn lower_orc_data_len_call(
     method_name: &str,
     base: &str,

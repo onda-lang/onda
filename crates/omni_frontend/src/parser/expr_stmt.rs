@@ -292,21 +292,42 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         expr: Expr::ArrayCtor { spec, init },
                     })
                 }
-                Rule::ident | Rule::qualified_ident | Rule::namespace_ref => {
-                    let Some(expr_pair) = expr_pair else {
-                        return Err(vec![Diagnostic::syntax(
-                            "missing typed assignment expression",
-                            0,
-                            0,
-                        )]);
+                Rule::named_type => {
+                    let (decl_name, decl_type_args) = parse_named_type_ref(ty_pair)?;
+                    let mut expr = if let Some(expr_pair) = expr_pair {
+                        parse_expr(expr_pair)?
+                    } else {
+                        Expr::UserCall {
+                            name: decl_name.clone(),
+                            type_args: Vec::new(),
+                            args: Vec::new(),
+                        }
                     };
+                    if !decl_type_args.is_empty() {
+                        if let Expr::UserCall {
+                            name, type_args, ..
+                        } = &mut expr
+                        {
+                            if *name == decl_name && type_args.is_empty() {
+                                *type_args = decl_type_args;
+                                return Ok(Stmt::Assign {
+                                    loc: loc.clone(),
+                                    target: AssignTarget::Var(name_pair.as_str().to_owned()),
+                                    decl_ty: None,
+                                    generic_decl_ty: None,
+                                    is_typed_decl: false,
+                                    expr,
+                                });
+                            }
+                        }
+                    }
                     Ok(Stmt::Assign {
                         loc: loc.clone(),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: None,
-                        generic_decl_ty: Some(ty_pair.as_str().to_owned()),
+                        generic_decl_ty: Some(decl_name),
                         is_typed_decl: true,
-                        expr: parse_expr(expr_pair)?,
+                        expr,
                     })
                 }
                 _ => Err(vec![Diagnostic::syntax(
@@ -1119,4 +1140,61 @@ fn parse_call_index_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
             },
         ],
     )
+}
+
+fn parse_named_type_ref(pair: Pair<'_, Rule>) -> Result<(String, Vec<CallTypeArg>), Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::named_type {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected named type reference",
+            0,
+            0,
+        )]);
+    }
+    let mut name = None::<String>;
+    let mut type_args = Vec::<CallTypeArg>::new();
+    for item in pair.into_inner() {
+        match item.as_rule() {
+            Rule::qualified_ident | Rule::ident => {
+                if name.is_none() {
+                    name = Some(item.as_str().to_owned());
+                }
+            }
+            Rule::generic_type_arg_list => {
+                for ty in item.into_inner() {
+                    let push_arg = |arg_pair: Pair<'_, Rule>,
+                                    out: &mut Vec<CallTypeArg>|
+                     -> Result<(), Vec<Diagnostic>> {
+                        match arg_pair.as_rule() {
+                            Rule::type_name => out.push(CallTypeArg::Primitive(
+                                parse_primitive_type(arg_pair.as_str()).map_err(|d| vec![d])?,
+                            )),
+                            Rule::ident => out.push(CallTypeArg::Generic(arg_pair.as_str().to_owned())),
+                            _ => {}
+                        }
+                        Ok(())
+                    };
+                    match ty.as_rule() {
+                        Rule::generic_type_arg => {
+                            if let Some(inner) = ty.into_inner().next() {
+                                push_arg(inner, &mut type_args)?;
+                            }
+                        }
+                        Rule::type_name | Rule::ident => {
+                            push_arg(ty, &mut type_args)?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(name) = name else {
+        return Err(vec![Diagnostic::syntax(
+            "missing named type reference",
+            0,
+            0,
+        )]);
+    };
+    Ok((name, type_args))
 }

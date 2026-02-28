@@ -1155,23 +1155,6 @@ fn collect_expr_field_usage(
             }
         }
         Expr::UserCall { args, .. } => {
-            if let Expr::UserCall { name, .. } = expr {
-                if let Some(base) = parse_array_len_instance_base(name) {
-                    if let Some((root, field)) = split_simple_field_path(base) {
-                        if let Some(param_idx) = param_index.get(root).copied() {
-                            mark_param_field_usage(
-                                usage,
-                                param_idx,
-                                field,
-                                StructFieldUsage::Array,
-                                fn_name,
-                                root,
-                                errors,
-                            );
-                        }
-                    }
-                }
-            }
             for arg in args {
                 collect_expr_field_usage(&arg.expr, fn_name, param_index, usage, errors);
             }

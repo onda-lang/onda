@@ -71,10 +71,15 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
             }
         }
         Expr::UserCall { name, args, .. } => {
-            if parse_array_len_instance_base(name).is_some()
-                || parse_buffer_chans_instance_base(name).is_some()
-            {
-                return Some(PrimitiveType::I32);
+            if let Some(base) = parse_array_len_instance_base(name) {
+                if is_builtin_receiver_for_return_inference(base, locals) {
+                    return Some(PrimitiveType::I32);
+                }
+            }
+            if let Some(base) = parse_buffer_chans_instance_base(name) {
+                if is_builtin_receiver_for_return_inference(base, locals) {
+                    return Some(PrimitiveType::I32);
+                }
             }
             if is_internal_buffer_2d_fn(name) {
                 if let Some(CallArg {
@@ -111,6 +116,23 @@ pub(crate) fn infer_expr_type_for_def_return_inference(
         fn_return_types,
         None,
     )
+}
+
+fn is_builtin_receiver_for_return_inference(base: &str, locals: &HashMap<String, PrimitiveType>) -> bool {
+    if locals.contains_key(base) {
+        return true;
+    }
+    let mut parts = base.split('.');
+    let Some(root) = parts.next() else {
+        return false;
+    };
+    let Some(_field) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+    locals.contains_key(root)
 }
 
 fn infer_stmt_returns_for_def_return_inference(

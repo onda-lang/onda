@@ -3000,6 +3000,81 @@ sample {
 }
 
 #[test]
+fn parses_typed_init_struct_decl_with_explicit_type_args_and_ctor() {
+    let src = r#"
+import std/data
+init {
+  line: std::data::Data[f32] = std::data::Data()
+}
+"#;
+    let program = parse_program(src).expect("typed init struct declaration should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(init) => Some(init),
+            _ => None,
+        })
+        .expect("init block");
+    let Stmt::Assign {
+        is_typed_decl, expr, ..
+    } = &init[0]
+    else {
+        panic!("expected assignment in init");
+    };
+    assert!(
+        !is_typed_decl,
+        "typed struct decl should desugar to constructor-typed assignment"
+    );
+    let Expr::UserCall {
+        name, type_args, ..
+    } = expr
+    else {
+        panic!("expected constructor call");
+    };
+    assert!(name.ends_with("::Data"));
+    assert_eq!(type_args.as_slice(), &[CallTypeArg::Primitive(PrimitiveType::F32)]);
+}
+
+#[test]
+fn parses_typed_init_struct_decl_with_explicit_type_args_and_default_ctor() {
+    let src = r#"
+import std/data
+init {
+  line: std::data::Data[f32]
+}
+"#;
+    let program = parse_program(src).expect("typed init struct declaration should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(init) => Some(init),
+            _ => None,
+        })
+        .expect("init block");
+    let Stmt::Assign {
+        is_typed_decl, expr, ..
+    } = &init[0]
+    else {
+        panic!("expected assignment in init");
+    };
+    assert!(
+        !is_typed_decl,
+        "typed struct decl should desugar to constructor-typed assignment"
+    );
+    let Expr::UserCall {
+        name, type_args, args
+    } = expr
+    else {
+        panic!("expected constructor call");
+    };
+    assert!(name.ends_with("::Data"));
+    assert!(args.is_empty(), "default ctor should be argument-less");
+    assert_eq!(type_args.as_slice(), &[CallTypeArg::Primitive(PrimitiveType::F32)]);
+}
+
+#[test]
 fn parse_program_in_memory_supports_std_lookup_module() {
     let src = r#"
 import std/lookup

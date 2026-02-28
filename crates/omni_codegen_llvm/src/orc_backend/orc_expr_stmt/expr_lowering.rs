@@ -425,40 +425,48 @@ pub(super) unsafe fn lower_expr(
                 );
             }
             if let Some(base) = parse_array_len_instance_base(name) {
-                return lower_orc_data_len_call(name, base, args, ctx, local_array_aliases);
+                if is_orc_builtin_data_len_receiver(ctx, base, local_array_aliases) {
+                    return lower_orc_data_len_call(name, base, args, ctx, local_array_aliases);
+                }
             }
             if let Some(base) = parse_buffer_chans_instance_base(name) {
-                return lower_orc_buffer_chans_call(name, base, args, ctx);
+                if is_orc_builtin_buffer_chans_receiver(ctx, base) {
+                    return lower_orc_buffer_chans_call(name, base, args, ctx);
+                }
             }
             if let Some(base) = parse_unsafe_read_instance_base(name) {
-                let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                method_args.push(CallArg {
-                    name: None,
-                    expr: Expr::Var(base.to_owned()),
-                });
-                method_args.extend(args.iter().cloned());
-                return lower_orc_unsafe_data_read_call(
-                    &method_args,
-                    ctx,
-                    locals,
-                    local_aliases,
-                    local_array_aliases,
-                );
+                if is_orc_builtin_unsafe_data_receiver(ctx, base, local_array_aliases) {
+                    let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                    method_args.push(CallArg {
+                        name: None,
+                        expr: Expr::Var(base.to_owned()),
+                    });
+                    method_args.extend(args.iter().cloned());
+                    return lower_orc_unsafe_data_read_call(
+                        &method_args,
+                        ctx,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                    );
+                }
             }
             if let Some(base) = parse_unsafe_write_instance_base(name) {
-                let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                method_args.push(CallArg {
-                    name: None,
-                    expr: Expr::Var(base.to_owned()),
-                });
-                method_args.extend(args.iter().cloned());
-                return lower_orc_unsafe_data_write_call(
-                    &method_args,
-                    ctx,
-                    locals,
-                    local_aliases,
-                    local_array_aliases,
-                );
+                if is_orc_builtin_unsafe_data_receiver(ctx, base, local_array_aliases) {
+                    let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                    method_args.push(CallArg {
+                        name: None,
+                        expr: Expr::Var(base.to_owned()),
+                    });
+                    method_args.extend(args.iter().cloned());
+                    return lower_orc_unsafe_data_write_call(
+                        &method_args,
+                        ctx,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                    );
+                }
             }
             if name == "unsafe_read" {
                 return lower_orc_unsafe_data_read_call(

@@ -15,6 +15,44 @@ use crate::decl_symbols::{
 use crate::def_inference::{can_implicitly_assign, merge_numeric_types};
 use crate::{split_field_path, LocalArrayAliasInfo, TypedFieldType, TypedStructField};
 
+fn is_data_receiver_symbol_for_builtin(
+    base: &str,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    struct_instances: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> bool {
+    if local_array_aliases.contains_key(base)
+        || get_declared_symbol_type(state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX).is_some()
+    {
+        return true;
+    }
+    if let Some((root, field)) = split_simple_field_path(base) {
+        if let Some(struct_name) = struct_instances.get(root) {
+            if let Some(fields) = struct_defs.get(struct_name) {
+                if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
+                    return matches!(field_decl.ty, TypedFieldType::Array(_));
+                }
+            }
+        }
+    }
+    false
+}
+
+fn is_buffer_receiver_symbol_for_builtin(base: &str, state_scalars: &HashMap<String, PrimitiveType>) -> bool {
+    get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX).is_some()
+}
+
+fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
+    let mut parts = name.split('.');
+    let first = parts.next()?;
+    let second = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((first, second))
+}
+
 pub(crate) fn infer_scalar_expr_type(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
@@ -236,14 +274,36 @@ pub(crate) fn infer_scalar_expr_type(
             {
                 return Some(ty);
             }
-            if parse_array_len_instance_base(name).is_some()
-                || parse_buffer_chans_instance_base(name).is_some()
-            {
-                return Some(PrimitiveType::I32);
+            if let Some(base) = parse_array_len_instance_base(name) {
+                if is_data_receiver_symbol_for_builtin(
+                    base,
+                    state_scalars,
+                    local_array_aliases,
+                    struct_instances,
+                    struct_defs,
+                ) || is_buffer_receiver_symbol_for_builtin(base, state_scalars)
+                {
+                    return Some(PrimitiveType::I32);
+                }
+            }
+            if let Some(base) = parse_buffer_chans_instance_base(name) {
+                if is_buffer_receiver_symbol_for_builtin(base, state_scalars) {
+                    return Some(PrimitiveType::I32);
+                }
             }
             if let Some(base) = parse_unsafe_read_instance_base(name)
                 .or_else(|| parse_unsafe_write_instance_base(name))
             {
+                if !is_data_receiver_symbol_for_builtin(
+                    base,
+                    state_scalars,
+                    local_array_aliases,
+                    struct_instances,
+                    struct_defs,
+                ) && !is_buffer_receiver_symbol_for_builtin(base, state_scalars)
+                {
+                    return Some(PrimitiveType::F32);
+                }
                 if let Some(alias) = local_array_aliases.get(base) {
                     if alias.elem_struct.is_none() {
                         return Some(alias.elem_ty);

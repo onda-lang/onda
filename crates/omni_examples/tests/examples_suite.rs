@@ -77,6 +77,23 @@ sample {
 }
 "#;
 
+#[cfg(feature = "llvm-orc")]
+const RESERVED_METHOD_NAMES_EXAMPLE: &str = r#"
+struct Ops {
+  def len(self) { return 1.25 }
+  def chans(self) { return 0.25 }
+  def unsafe_read(self, i) { return f32(i) }
+  def unsafe_write(self, i, v) { return v + f32(i) }
+}
+outs { out1 }
+init {
+  o = Ops()
+}
+sample {
+  out1 = o.len() + o.chans() + o.unsafe_read(1) + o.unsafe_write(2, 0.5)
+}
+"#;
+
 const COUNT_SHORTHAND_IO_PARAMS_EXAMPLE: &str = r#"
 ins 2
 outs 2
@@ -8375,4 +8392,62 @@ fn explicit_orc_struct_compiles_and_runs() {
     for sample in &output {
         assert_near(*sample, 1.25, 1e-6);
     }
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+fn explicit_orc_struct_reserved_method_names_compile_and_run() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        RESERVED_METHOD_NAMES_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+            sample_rate: 48_000.0,
+            block_size: frames,
+            fast_math: false,
+        },
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 5.0, 1e-6);
+    }
+}
+
+#[test]
+fn analyze_supports_typed_init_generic_struct_ctor_decl() {
+    let src = r#"
+import std/data
+outs { out1 }
+init {
+  line: std::data::Data[f32] = std::data::Data()
+}
+sample {
+  out1 = line.read(0)
+}
+"#;
+    let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
+    let result = analyze(parsed);
+    assert!(result.is_ok(), "semantic analysis should succeed");
+}
+
+#[test]
+fn analyze_supports_typed_init_generic_struct_default_ctor_decl() {
+    let src = r#"
+import std/data
+outs { out1 }
+init {
+  line: std::data::Data[f32]
+}
+sample {
+  out1 = line.read(0)
+}
+"#;
+    let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
+    let result = analyze(parsed);
+    assert!(result.is_ok(), "semantic analysis should succeed");
 }

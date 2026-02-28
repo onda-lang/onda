@@ -225,32 +225,40 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             }
             if !env.fn_signatures.contains_key(name) {
                 if let Some(base) = parse_array_len_instance_base(name) {
-                    validate_data_len_builtin_call(name, base, args, env, errors);
-                    return;
+                    if is_builtin_len_receiver(base, env) {
+                        validate_data_len_builtin_call(name, base, args, env, errors);
+                        return;
+                    }
                 }
                 if let Some(base) = parse_buffer_chans_instance_base(name) {
-                    validate_buffer_chans_builtin_call(name, base, args, env, errors);
-                    return;
+                    if is_builtin_buffer_receiver(base, env) {
+                        validate_buffer_chans_builtin_call(name, base, args, env, errors);
+                        return;
+                    }
                 }
                 if let Some(base) = parse_unsafe_read_instance_base(name) {
-                    let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                    method_args.push(CallArg {
-                        name: None,
-                        expr: Expr::Var(base.to_owned()),
-                    });
-                    method_args.extend(args.iter().cloned());
-                    validate_unsafe_data_builtin_call("unsafe_read", &method_args, env, errors);
-                    return;
+                    if is_builtin_unsafe_data_receiver(base, env) {
+                        let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                        method_args.push(CallArg {
+                            name: None,
+                            expr: Expr::Var(base.to_owned()),
+                        });
+                        method_args.extend(args.iter().cloned());
+                        validate_unsafe_data_builtin_call("unsafe_read", &method_args, env, errors);
+                        return;
+                    }
                 }
                 if let Some(base) = parse_unsafe_write_instance_base(name) {
-                    let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                    method_args.push(CallArg {
-                        name: None,
-                        expr: Expr::Var(base.to_owned()),
-                    });
-                    method_args.extend(args.iter().cloned());
-                    validate_unsafe_data_builtin_call("unsafe_write", &method_args, env, errors);
-                    return;
+                    if is_builtin_unsafe_data_receiver(base, env) {
+                        let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                        method_args.push(CallArg {
+                            name: None,
+                            expr: Expr::Var(base.to_owned()),
+                        });
+                        method_args.extend(args.iter().cloned());
+                        validate_unsafe_data_builtin_call("unsafe_write", &method_args, env, errors);
+                        return;
+                    }
                 }
             }
             if let Some(sig) = env.fn_signatures.get(name) {
@@ -363,6 +371,61 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             validate_expr(rhs, env, errors);
         }
     }
+}
+
+fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
+    let mut parts = name.split('.');
+    let first = parts.next()?;
+    let second = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((first, second))
+}
+
+fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
+    if env.array_vars.contains_key(base) || has_declared_buffer_symbol(env.known_scalars, base) {
+        return true;
+    }
+    if let Some((root, field)) = split_simple_field_path(base) {
+        let struct_name = env
+            .param_structs
+            .get(root)
+            .or_else(|| env.struct_instances.get(root));
+        if let Some(struct_name) = struct_name {
+            if let Some(fields) = env.struct_defs.get(struct_name) {
+                if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
+                    return matches!(field_decl.ty, TypedFieldType::Array(_));
+                }
+            }
+        }
+    }
+    false
+}
+
+fn is_builtin_buffer_receiver(base: &str, env: ExprEnv<'_>) -> bool {
+    has_declared_buffer_symbol(env.known_scalars, base)
+}
+
+fn is_builtin_unsafe_data_receiver(base: &str, env: ExprEnv<'_>) -> bool {
+    if env.array_vars.contains_key(base) || has_declared_buffer_symbol(env.known_scalars, base) {
+        return true;
+    }
+    if let Some((root, field)) = split_simple_field_path(base) {
+        let struct_name = env
+            .param_structs
+            .get(root)
+            .or_else(|| env.struct_instances.get(root));
+        if let Some(struct_name) = struct_name {
+            if let Some(fields) = env.struct_defs.get(struct_name) {
+                if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
+                    return matches!(field_decl.ty, TypedFieldType::Array(_))
+                        && field_decl.array_elem_struct.is_none();
+                }
+            }
+        }
+    }
+    false
 }
 
 fn validate_data_len_builtin_call(
