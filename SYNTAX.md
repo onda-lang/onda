@@ -223,6 +223,7 @@ Supported:
 - Positional and named arguments
 - Default arguments
 - Early return
+- Method-style sugar for functions: `value.fn(a, b)` is rewritten as `fn(value, a, b)` when a matching function `fn` is in scope.
 
 ```omni
 def wrap_phase(p, upper = TWO_PI):

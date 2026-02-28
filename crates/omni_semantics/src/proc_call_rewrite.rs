@@ -1631,39 +1631,71 @@ pub(super) fn collect_called_proc_instances_in_stmts(
 pub(super) fn desugar_expr_instance_method_calls(
     expr: &mut Expr,
     struct_instances: &HashMap<String, String>,
+    current_ns: &str,
+    callable_symbols: &HashSet<String>,
 ) {
     match expr {
-        Expr::Index { index, .. } => desugar_expr_instance_method_calls(index, struct_instances),
+        Expr::Index { index, .. } => desugar_expr_instance_method_calls(
+            index,
+            struct_instances,
+            current_ns,
+            callable_symbols,
+        ),
         Expr::ArrayCtor { spec, init } => {
-            desugar_expr_instance_method_calls(&mut spec.size, struct_instances);
+            desugar_expr_instance_method_calls(
+                &mut spec.size,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
             if let Some(values) = init {
                 for value in values {
-                    desugar_expr_instance_method_calls(value, struct_instances);
+                    desugar_expr_instance_method_calls(
+                        value,
+                        struct_instances,
+                        current_ns,
+                        callable_symbols,
+                    );
                 }
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            desugar_expr_instance_method_calls(lhs, struct_instances);
-            desugar_expr_instance_method_calls(rhs, struct_instances);
+            desugar_expr_instance_method_calls(lhs, struct_instances, current_ns, callable_symbols);
+            desugar_expr_instance_method_calls(rhs, struct_instances, current_ns, callable_symbols);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                desugar_expr_instance_method_calls(arg, struct_instances);
+                desugar_expr_instance_method_calls(
+                    arg,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
         }
         Expr::Cast { expr: arg, .. } | Expr::UnaryNot { expr: arg } => {
-            desugar_expr_instance_method_calls(arg, struct_instances)
+            desugar_expr_instance_method_calls(arg, struct_instances, current_ns, callable_symbols)
         }
         Expr::ArrayLiteral(values) => {
             for value in values {
-                desugar_expr_instance_method_calls(value, struct_instances);
+                desugar_expr_instance_method_calls(
+                    value,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
         }
         Expr::UserCall { name, args, .. } => {
             for arg in args.iter_mut() {
-                desugar_expr_instance_method_calls(&mut arg.expr, struct_instances);
+                desugar_expr_instance_method_calls(
+                    &mut arg.expr,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
             if let Some((base, method)) = split_simple_field_path(name) {
                 if let Some(struct_name) = struct_instances.get(base) {
@@ -1677,6 +1709,27 @@ pub(super) fn desugar_expr_instance_method_calls(
                             expr: Expr::Var(base_name),
                         },
                     );
+                } else if !base.contains("::")
+                    && !method.is_empty()
+                    && !method.contains('.')
+                    && !is_builtin_instance_method_name(method)
+                {
+                    let resolved_method = if method.contains("::") {
+                        callable_symbols.get(method).cloned()
+                    } else {
+                        resolve_unqualified_symbol_name(method, current_ns, callable_symbols)
+                    };
+                    if let Some(resolved_method) = resolved_method {
+                        let receiver = base.to_owned();
+                        *name = resolved_method;
+                        args.insert(
+                            0,
+                            CallArg {
+                                name: None,
+                                expr: Expr::Var(receiver),
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -1684,10 +1737,16 @@ pub(super) fn desugar_expr_instance_method_calls(
     }
 }
 
+fn is_builtin_instance_method_name(method: &str) -> bool {
+    matches!(method, "len" | "chans" | "unsafe_read" | "unsafe_write")
+}
+
 pub(super) fn desugar_init_instance_method_calls(
     stmt: &mut Stmt,
     struct_instances: &mut HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    current_ns: &str,
+    callable_symbols: &HashSet<String>,
 ) {
     match stmt {
         Stmt::Assign { target, expr, .. } => {
@@ -1704,12 +1763,27 @@ pub(super) fn desugar_init_instance_method_calls(
                 }
             }
             if let AssignTarget::Index { index, .. } = target {
-                desugar_expr_instance_method_calls(index, struct_instances);
+                desugar_expr_instance_method_calls(
+                    index,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
-            desugar_expr_instance_method_calls(expr, struct_instances);
+            desugar_expr_instance_method_calls(
+                expr,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            desugar_expr_instance_method_calls(expr, struct_instances);
+            desugar_expr_instance_method_calls(
+                expr,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
         }
         Stmt::If {
             cond,
@@ -1717,12 +1791,29 @@ pub(super) fn desugar_init_instance_method_calls(
             else_branch,
             ..
         } => {
-            desugar_expr_instance_method_calls(cond, struct_instances);
+            desugar_expr_instance_method_calls(
+                cond,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
             for nested in then_branch.iter_mut() {
-                desugar_init_instance_method_calls(nested, struct_instances, struct_defs);
+                desugar_init_instance_method_calls(
+                    nested,
+                    struct_instances,
+                    struct_defs,
+                    current_ns,
+                    callable_symbols,
+                );
             }
             for nested in else_branch.iter_mut() {
-                desugar_init_instance_method_calls(nested, struct_instances, struct_defs);
+                desugar_init_instance_method_calls(
+                    nested,
+                    struct_instances,
+                    struct_defs,
+                    current_ns,
+                    callable_symbols,
+                );
             }
         }
         Stmt::For {
@@ -1732,19 +1823,46 @@ pub(super) fn desugar_init_instance_method_calls(
             body,
             ..
         } => {
-            desugar_expr_instance_method_calls(start, struct_instances);
-            desugar_expr_instance_method_calls(end, struct_instances);
+            desugar_expr_instance_method_calls(
+                start,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
+            desugar_expr_instance_method_calls(end, struct_instances, current_ns, callable_symbols);
             if let Some(step_expr) = step {
-                desugar_expr_instance_method_calls(step_expr, struct_instances);
+                desugar_expr_instance_method_calls(
+                    step_expr,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
             for nested in body.iter_mut() {
-                desugar_init_instance_method_calls(nested, struct_instances, struct_defs);
+                desugar_init_instance_method_calls(
+                    nested,
+                    struct_instances,
+                    struct_defs,
+                    current_ns,
+                    callable_symbols,
+                );
             }
         }
         Stmt::While { cond, body, .. } => {
-            desugar_expr_instance_method_calls(cond, struct_instances);
+            desugar_expr_instance_method_calls(
+                cond,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
             for nested in body.iter_mut() {
-                desugar_init_instance_method_calls(nested, struct_instances, struct_defs);
+                desugar_init_instance_method_calls(
+                    nested,
+                    struct_instances,
+                    struct_defs,
+                    current_ns,
+                    callable_symbols,
+                );
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -1754,16 +1872,33 @@ pub(super) fn desugar_init_instance_method_calls(
 pub(super) fn desugar_sample_instance_method_calls(
     stmt: &mut Stmt,
     struct_instances: &HashMap<String, String>,
+    current_ns: &str,
+    callable_symbols: &HashSet<String>,
 ) {
     match stmt {
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
-                desugar_expr_instance_method_calls(index, struct_instances);
+                desugar_expr_instance_method_calls(
+                    index,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
-            desugar_expr_instance_method_calls(expr, struct_instances);
+            desugar_expr_instance_method_calls(
+                expr,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            desugar_expr_instance_method_calls(expr, struct_instances);
+            desugar_expr_instance_method_calls(
+                expr,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
         }
         Stmt::If {
             cond,
@@ -1771,12 +1906,27 @@ pub(super) fn desugar_sample_instance_method_calls(
             else_branch,
             ..
         } => {
-            desugar_expr_instance_method_calls(cond, struct_instances);
+            desugar_expr_instance_method_calls(
+                cond,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
             for nested in then_branch.iter_mut() {
-                desugar_sample_instance_method_calls(nested, struct_instances);
+                desugar_sample_instance_method_calls(
+                    nested,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
             for nested in else_branch.iter_mut() {
-                desugar_sample_instance_method_calls(nested, struct_instances);
+                desugar_sample_instance_method_calls(
+                    nested,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
         }
         Stmt::For {
@@ -1786,19 +1936,44 @@ pub(super) fn desugar_sample_instance_method_calls(
             body,
             ..
         } => {
-            desugar_expr_instance_method_calls(start, struct_instances);
-            desugar_expr_instance_method_calls(end, struct_instances);
+            desugar_expr_instance_method_calls(
+                start,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
+            desugar_expr_instance_method_calls(end, struct_instances, current_ns, callable_symbols);
             if let Some(step_expr) = step {
-                desugar_expr_instance_method_calls(step_expr, struct_instances);
+                desugar_expr_instance_method_calls(
+                    step_expr,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
             for nested in body.iter_mut() {
-                desugar_sample_instance_method_calls(nested, struct_instances);
+                desugar_sample_instance_method_calls(
+                    nested,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
         }
         Stmt::While { cond, body, .. } => {
-            desugar_expr_instance_method_calls(cond, struct_instances);
+            desugar_expr_instance_method_calls(
+                cond,
+                struct_instances,
+                current_ns,
+                callable_symbols,
+            );
             for nested in body.iter_mut() {
-                desugar_sample_instance_method_calls(nested, struct_instances);
+                desugar_sample_instance_method_calls(
+                    nested,
+                    struct_instances,
+                    current_ns,
+                    callable_symbols,
+                );
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}

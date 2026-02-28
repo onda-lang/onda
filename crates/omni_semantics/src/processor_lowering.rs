@@ -1284,6 +1284,13 @@ pub fn analyze_with_options(
     let mut struct_defs = HashMap::new();
     let mut typed_structs = Vec::new();
     let mut method_self_struct = HashMap::<String, String>::new();
+    let mut callable_symbols_for_method_sugar =
+        defs.iter().map(|d| d.name.clone()).collect::<HashSet<_>>();
+    for s in &struct_defs_raw {
+        for method in &s.methods {
+            callable_symbols_for_method_sugar.insert(format!("{}.{}", s.name, method.name));
+        }
+    }
     for s in &struct_defs_raw {
         if is_builtin_constant_name(&s.name) {
             errors.push(Diagnostic::semantic(
@@ -1343,6 +1350,7 @@ pub fn analyze_with_options(
             }
             let mut desugared_method_body = method.body.clone();
             let mut method_struct_instances = HashMap::<String, String>::new();
+            let method_ns = namespace_of_symbol(&s.name);
             if method.params.first().map(|p| p.name.as_str()) == Some("self") {
                 method_struct_instances.insert("self".to_owned(), s.name.clone());
             }
@@ -1351,6 +1359,8 @@ pub fn analyze_with_options(
                     stmt,
                     &mut method_struct_instances,
                     &struct_defs,
+                    &method_ns,
+                    &callable_symbols_for_method_sugar,
                 );
             }
             defs.push(FunctionDef {
@@ -1374,20 +1384,68 @@ pub fn analyze_with_options(
 
     let mut desugar_struct_instances = HashMap::<String, String>::new();
     for stmt in &mut init {
-        desugar_init_instance_method_calls(stmt, &mut desugar_struct_instances, &struct_defs);
+        desugar_init_instance_method_calls(
+            stmt,
+            &mut desugar_struct_instances,
+            &struct_defs,
+            "",
+            &callable_symbols_for_method_sugar,
+        );
     }
     for stmt in &mut block_pre {
-        desugar_sample_instance_method_calls(stmt, &desugar_struct_instances);
+        desugar_sample_instance_method_calls(
+            stmt,
+            &desugar_struct_instances,
+            "",
+            &callable_symbols_for_method_sugar,
+        );
     }
     for stmt in &mut block_post {
-        desugar_sample_instance_method_calls(stmt, &desugar_struct_instances);
+        desugar_sample_instance_method_calls(
+            stmt,
+            &desugar_struct_instances,
+            "",
+            &callable_symbols_for_method_sugar,
+        );
     }
     for stmt in &mut sample {
-        desugar_sample_instance_method_calls(stmt, &desugar_struct_instances);
+        desugar_sample_instance_method_calls(
+            stmt,
+            &desugar_struct_instances,
+            "",
+            &callable_symbols_for_method_sugar,
+        );
     }
     for event in &mut events {
         for stmt in &mut event.body {
-            desugar_sample_instance_method_calls(stmt, &desugar_struct_instances);
+            desugar_sample_instance_method_calls(
+                stmt,
+                &desugar_struct_instances,
+                "",
+                &callable_symbols_for_method_sugar,
+            );
+        }
+    }
+    for def in &mut defs {
+        if method_self_struct.contains_key(&def.name) {
+            continue;
+        }
+        let mut def_struct_instances = HashMap::<String, String>::new();
+        for param in &def.params {
+            if let Some(FnParamType::Struct(struct_name)) = &param.ty {
+                if struct_defs.contains_key(struct_name) {
+                    def_struct_instances.insert(param.name.clone(), struct_name.clone());
+                }
+            }
+        }
+        let def_ns = namespace_of_symbol(&def.name);
+        for stmt in &mut def.body {
+            desugar_sample_instance_method_calls(
+                stmt,
+                &def_struct_instances,
+                &def_ns,
+                &callable_symbols_for_method_sugar,
+            );
         }
     }
     let mut fn_signatures: HashMap<String, FnSignature> = HashMap::new();

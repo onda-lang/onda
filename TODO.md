@@ -2,6 +2,9 @@
 
 ## Next Features
 
+- Polymorph defs
+  - def something(x, y) + def something(x, y, z)
+
 - Array procs (partial)
   - Status: core typed proc-array declarations/calls and broadcast ctor sugar are implemented.
   - Remaining:
@@ -142,7 +145,6 @@
     - Add explicit performance budget tracking for higher factors (`N=32`, `N=64`) on representative patches.
 
 - Standard library modules
-  - Add more DSP coverage to the built-in stdlib (beyond current `std/math`, `std/osc`, `std/filter`, `std/env`, `std/delay`, `std/data` MVP set).
 
 - Generics follow-ups
   - Extend/clarify generic typed local declarations beyond `init` if we decide to support them in additional scopes.
