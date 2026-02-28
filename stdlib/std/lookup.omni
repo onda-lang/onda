@@ -9,11 +9,9 @@ namespace std::lookup:
 
   def write(buf, i: i32, value):
     buf[i] = value
-    return value
 
   def write(buf, ch: i32, i: i32, value):
     buf[ch][i] = value
-    return value
 
   def readL(buf, pos):
     i0: i32 = i32(floor(pos))
