@@ -223,33 +223,35 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_internal_buffer_2d_call(name, args, env, errors);
                 return;
             }
-            if let Some(base) = parse_array_len_instance_base(name) {
-                validate_data_len_builtin_call(name, base, args, env, errors);
-                return;
-            }
-            if let Some(base) = parse_buffer_chans_instance_base(name) {
-                validate_buffer_chans_builtin_call(name, base, args, env, errors);
-                return;
-            }
-            if let Some(base) = parse_unsafe_read_instance_base(name) {
-                let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                method_args.push(CallArg {
-                    name: None,
-                    expr: Expr::Var(base.to_owned()),
-                });
-                method_args.extend(args.iter().cloned());
-                validate_unsafe_data_builtin_call("unsafe_read", &method_args, env, errors);
-                return;
-            }
-            if let Some(base) = parse_unsafe_write_instance_base(name) {
-                let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
-                method_args.push(CallArg {
-                    name: None,
-                    expr: Expr::Var(base.to_owned()),
-                });
-                method_args.extend(args.iter().cloned());
-                validate_unsafe_data_builtin_call("unsafe_write", &method_args, env, errors);
-                return;
+            if !env.fn_signatures.contains_key(name) {
+                if let Some(base) = parse_array_len_instance_base(name) {
+                    validate_data_len_builtin_call(name, base, args, env, errors);
+                    return;
+                }
+                if let Some(base) = parse_buffer_chans_instance_base(name) {
+                    validate_buffer_chans_builtin_call(name, base, args, env, errors);
+                    return;
+                }
+                if let Some(base) = parse_unsafe_read_instance_base(name) {
+                    let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                    method_args.push(CallArg {
+                        name: None,
+                        expr: Expr::Var(base.to_owned()),
+                    });
+                    method_args.extend(args.iter().cloned());
+                    validate_unsafe_data_builtin_call("unsafe_read", &method_args, env, errors);
+                    return;
+                }
+                if let Some(base) = parse_unsafe_write_instance_base(name) {
+                    let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                    method_args.push(CallArg {
+                        name: None,
+                        expr: Expr::Var(base.to_owned()),
+                    });
+                    method_args.extend(args.iter().cloned());
+                    validate_unsafe_data_builtin_call("unsafe_write", &method_args, env, errors);
+                    return;
+                }
             }
             if let Some(sig) = env.fn_signatures.get(name) {
                 if sig.type_params.is_empty() {

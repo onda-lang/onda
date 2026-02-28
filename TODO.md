@@ -142,7 +142,7 @@
     - Add explicit performance budget tracking for higher factors (`N=32`, `N=64`) on representative patches.
 
 - Standard library modules
-  - Add more DSP coverage to the built-in stdlib (beyond current `std/math`, `std/osc`, `std/filter`, `std/env`, `std/delay` MVP set).
+  - Add more DSP coverage to the built-in stdlib (beyond current `std/math`, `std/osc`, `std/filter`, `std/env`, `std/delay`, `std/data` MVP set).
 
 - Generics follow-ups
   - Extend/clarify generic typed local declarations beyond `init` if we decide to support them in additional scopes.

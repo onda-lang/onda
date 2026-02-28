@@ -1341,11 +1341,23 @@ pub fn analyze_with_options(
             if method.params.first().map(|p| p.name.as_str()) == Some("self") {
                 method_self_struct.insert(fq_name.clone(), s.name.clone());
             }
+            let mut desugared_method_body = method.body.clone();
+            let mut method_struct_instances = HashMap::<String, String>::new();
+            if method.params.first().map(|p| p.name.as_str()) == Some("self") {
+                method_struct_instances.insert("self".to_owned(), s.name.clone());
+            }
+            for stmt in &mut desugared_method_body {
+                desugar_init_instance_method_calls(
+                    stmt,
+                    &mut method_struct_instances,
+                    &struct_defs,
+                );
+            }
             defs.push(FunctionDef {
                 type_params: Vec::new(),
                 name: fq_name,
                 params: method.params.clone(),
-                body: method.body.clone(),
+                body: desugared_method_body,
             });
         }
     }

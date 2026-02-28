@@ -122,7 +122,9 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
         Rule::type_name => Ok(DeclType::Scalar(
             parse_primitive_type(pair.as_str()).map_err(|d| vec![d])?,
         )),
-        Rule::qualified_ident => Ok(DeclType::Generic(pair.as_str().to_owned())),
+        Rule::qualified_ident | Rule::namespace_ref => {
+            Ok(DeclType::Generic(pair.as_str().to_owned()))
+        }
         Rule::array_type => {
             let mut inner = pair.into_inner();
             let Some(elem_pair) = inner.next() else {
@@ -139,7 +141,7 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
                         size: parse_expr_inner(size_pair),
                     })
                 }
-                Rule::qualified_ident => Ok(DeclType::ArrayGeneric {
+                Rule::qualified_ident | Rule::namespace_ref => Ok(DeclType::ArrayGeneric {
                     elem: elem_pair.as_str().to_owned(),
                     size: parse_expr_inner(size_pair),
                 }),
@@ -202,7 +204,9 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
         Rule::type_name => {
             FnParamType::Primitive(parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?)
         }
-        Rule::qualified_ident => FnParamType::Struct(inner.as_str().to_owned()),
+        Rule::qualified_ident | Rule::namespace_ref => {
+            FnParamType::Struct(inner.as_str().to_owned())
+        }
         _ => {
             return Err(vec![Diagnostic::syntax(
                 "unsupported function parameter type",
@@ -381,7 +385,9 @@ pub(super) fn parse_array_type_spec(
     };
     let elem = match elem_pair.as_rule() {
         Rule::type_name => parse_array_elem_type(elem_pair.as_str()),
-        Rule::qualified_ident => ArrayElemType::Struct(elem_pair.as_str().to_owned()),
+        Rule::qualified_ident | Rule::namespace_ref => {
+            ArrayElemType::Struct(elem_pair.as_str().to_owned())
+        }
         _ => return Err(vec![Diagnostic::syntax("invalid array element type", 0, 0)]),
     };
     Ok(ArrayTypeSpec {
@@ -407,6 +413,9 @@ pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Di
                 return Ok(FieldType::Scalar(ty));
             }
             Rule::qualified_ident => {
+                return Ok(FieldType::Generic(child.as_str().to_owned()));
+            }
+            Rule::namespace_ref => {
                 return Ok(FieldType::Generic(child.as_str().to_owned()));
             }
             Rule::array_type => {

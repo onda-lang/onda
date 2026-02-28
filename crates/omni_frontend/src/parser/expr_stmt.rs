@@ -292,7 +292,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         expr: Expr::ArrayCtor { spec, init },
                     })
                 }
-                Rule::ident => {
+                Rule::ident | Rule::qualified_ident | Rule::namespace_ref => {
                     let Some(expr_pair) = expr_pair else {
                         return Err(vec![Diagnostic::syntax(
                             "missing typed assignment expression",
@@ -618,7 +618,7 @@ pub(super) fn parse_continue_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diag
 pub(super) fn parse_for_bound(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
     match pair.as_rule() {
         Rule::int_lit => Ok(Expr::Int(parse_int(pair.as_str())? as i64)),
-        Rule::path_ident => Ok(Expr::Var(pair.as_str().to_owned())),
+        Rule::path_ident | Rule::namespace_ref => Ok(Expr::Var(pair.as_str().to_owned())),
         Rule::for_bound => {
             let mut inner = pair.into_inner();
             let Some(inner_pair) = inner.next() else {
@@ -786,7 +786,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 .map(parse_expr_inner)
                 .collect(),
         ),
-        Rule::ident | Rule::path_ident => Expr::Var(pair.as_str().to_owned()),
+        Rule::ident | Rule::path_ident | Rule::namespace_ref => Expr::Var(pair.as_str().to_owned()),
         Rule::index_expr => {
             let mut inner = pair.into_inner();
             let base = inner
@@ -890,9 +890,7 @@ pub(super) fn parse_call_expr_parts(
     let target_pair = inner
         .next()
         .expect("call_expr rule must include call target");
-    let (mut name, mut args) = parse_call_target(target_pair);
-
-    let mut type_args = Vec::new();
+    let (mut name, mut args, mut type_args) = parse_call_target(target_pair);
     if name == PROC_INDEX_CALL_SENTINEL {
         let mut base_name = None::<String>;
         let mut index_var = None::<String>;
@@ -980,19 +978,123 @@ pub(super) fn parse_call_expr_parts(
     (name, type_args, args)
 }
 
-fn parse_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
+fn parse_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, Vec<CallTypeArg>) {
     match pair.as_rule() {
-        Rule::path_ident => (pair.as_str().to_owned(), Vec::new()),
-        Rule::call_index_target => parse_call_index_target(pair),
+        Rule::path_ident => (pair.as_str().to_owned(), Vec::new(), Vec::new()),
+        Rule::namespace_ref => parse_namespace_call_target(pair),
+        Rule::call_index_target => {
+            let (name, args) = parse_call_index_target(pair);
+            (name, args, Vec::new())
+        }
         Rule::call_target => {
             let mut inner = pair.into_inner();
             let Some(actual) = inner.next() else {
-                return ("".to_owned(), Vec::new());
+                return ("".to_owned(), Vec::new(), Vec::new());
             };
             parse_call_target(actual)
         }
-        _ => ("".to_owned(), Vec::new()),
+        _ => ("".to_owned(), Vec::new(), Vec::new()),
     }
+}
+
+fn parse_namespace_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, Vec<CallTypeArg>) {
+    let raw = pair.as_str().to_owned();
+    let mut segment_args = Vec::<Vec<(Option<String>, Expr)>>::new();
+
+    for seg in pair.into_inner() {
+        if seg.as_rule() != Rule::namespace_ref_segment {
+            continue;
+        }
+        let mut seg_args = Vec::<(Option<String>, Expr)>::new();
+        for item in seg.into_inner() {
+            if item.as_rule() != Rule::namespace_call_arg_list {
+                continue;
+            }
+            for arg in item.into_inner() {
+                if arg.as_rule() != Rule::namespace_call_arg {
+                    continue;
+                }
+                let mut arg_name = None::<String>;
+                let mut arg_expr = None::<Expr>;
+                for part in arg.into_inner() {
+                    match part.as_rule() {
+                        Rule::ident => arg_name = Some(part.as_str().to_owned()),
+                        Rule::expr => arg_expr = Some(parse_expr_inner(part)),
+                        _ => {}
+                    }
+                }
+                if let Some(expr) = arg_expr {
+                    seg_args.push((arg_name, expr));
+                }
+            }
+        }
+        segment_args.push(seg_args);
+    }
+
+    let Some(last_args) = segment_args.last() else {
+        return (raw, Vec::new(), Vec::new());
+    };
+    if last_args.is_empty() {
+        return (raw, Vec::new(), Vec::new());
+    }
+
+    let mut type_args = Vec::<CallTypeArg>::new();
+    for (name, expr) in last_args {
+        if name.is_some() {
+            return (raw, Vec::new(), Vec::new());
+        }
+        let Expr::Var(sym) = expr else {
+            return (raw, Vec::new(), Vec::new());
+        };
+        if let Ok(prim) = parse_primitive_type(sym) {
+            type_args.push(CallTypeArg::Primitive(prim));
+            continue;
+        }
+        if is_simple_ident(sym) {
+            type_args.push(CallTypeArg::Generic(sym.clone()));
+            continue;
+        }
+        return (raw, Vec::new(), Vec::new());
+    }
+
+    let Some(name_without_last_args) = strip_trailing_bracket_group(&raw) else {
+        return (raw, Vec::new(), Vec::new());
+    };
+    (name_without_last_args, Vec::new(), type_args)
+}
+
+fn is_simple_ident(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn strip_trailing_bracket_group(text: &str) -> Option<String> {
+    if !text.ends_with(']') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (idx, ch) in text.char_indices().rev() {
+        match ch {
+            ']' => depth += 1,
+            '[' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[..idx].to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_call_index_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {

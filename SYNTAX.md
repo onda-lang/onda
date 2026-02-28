@@ -366,6 +366,7 @@ Imports:
   - `std/filter`
   - `std/env`
   - `std/delay`
+  - `std/data`
 
 Include:
 - `include "path.omni"`
@@ -377,6 +378,30 @@ namespace my::dsp:
   def sat(x):
     return clamp(x, -1.0, 1.0)
 ```
+
+Templated namespaces with compile-time int params are supported:
+
+```omni
+namespace Data[S = SR, C = 1]:
+  struct Data[T]:
+    storage: T[S * C]
+```
+
+Use sites support inline instantiation and aliases:
+
+```omni
+namespace D = Data[SR, 1]
+
+init:
+  a = Data[SR, 1]::Data[f64]()
+  b = D::Data[f64]()
+```
+
+Rules:
+- Namespace template params require defaults.
+- Namespace template args support positional and named forms.
+- Args are normalized as `i32(...)` at compile time.
+- Alias declarations are declaration sugar and can appear at top-level or inside namespaces.
 
 ## 12 Example-driven starting points
 

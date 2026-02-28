@@ -2099,6 +2099,130 @@ sample:
 }
 
 #[test]
+fn parses_namespace_template_inline_instantiation_and_dedups() {
+    let src = r#"
+namespace Data[S = SR, C = 1]:
+  struct Data[T]:
+    storage: T[S * C]
+
+init:
+  d1 = Data[SR, 1]::Data[f64]()
+  d2 = Data[S = SR, C = 1]::Data[f64]()
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("templated namespace source should parse");
+
+    let struct_names = program
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Struct(s) => Some(s.name.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(struct_names.len(), 1);
+    assert!(struct_names[0].contains("__nsinst"));
+
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(v) => Some(&v.body),
+            _ => None,
+        })
+        .expect("init block");
+    assert_eq!(init.len(), 2);
+
+    let first_name = match &init[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            _ => panic!("expected first init expr to be constructor call"),
+        },
+        _ => panic!("expected first init statement to be assignment"),
+    };
+    let second_name = match &init[1] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            _ => panic!("expected second init expr to be constructor call"),
+        },
+        _ => panic!("expected second init statement to be assignment"),
+    };
+    assert_eq!(first_name, second_name);
+    assert!(first_name.contains("__nsinst"));
+    assert!(first_name.ends_with("::Data"));
+}
+
+#[test]
+fn parses_namespace_alias_target_single_segment_template_call() {
+    let src = r#"
+namespace Data[S = SR, C = 1]:
+  struct Data[T]:
+    storage: T[S * C]
+
+namespace D = Data[SR, 1]
+
+init:
+  d = D::Data[f32]()
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("namespace alias should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(v) => Some(&v.body),
+            _ => None,
+        })
+        .expect("init block");
+    let call_name = match &init[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            _ => panic!("expected constructor call"),
+        },
+        _ => panic!("expected assignment"),
+    };
+    assert!(call_name.contains("__nsinst"));
+    assert!(call_name.ends_with("::Data"));
+}
+
+#[test]
+fn parses_namespace_local_alias_with_relative_template_target() {
+    let src = r#"
+namespace A:
+  namespace Data[S = SR]:
+    struct X:
+      storage: f32[S]
+  namespace D = Data[SR]
+  def make():
+    x = D::X()
+    return 0.0
+
+sample:
+  out1 = A::make()
+"#;
+    let program = parse_program(src).expect("local namespace alias should parse");
+    let make_def = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Def(d) if d.name == "A::make" => Some(d),
+            _ => None,
+        })
+        .expect("A::make");
+    let call_name = match &make_def.body[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            _ => panic!("expected constructor call"),
+        },
+        _ => panic!("expected assignment"),
+    };
+    assert!(call_name.starts_with("A::Data__nsinst"));
+    assert!(call_name.ends_with("::X"));
+}
+
+#[test]
 fn rejects_inconsistent_indentation() {
     let src = "outs:
   out1
@@ -2804,6 +2928,28 @@ sample { out1 = clamp(2.0, 0.0, 1.0) }
     assert!(
         program.blocks.iter().any(|b| matches!(b, Block::Def(_))),
         "expected std module declarations to be imported"
+    );
+}
+
+#[test]
+fn parse_program_in_memory_supports_std_data_module() {
+    let src = r#"
+import std/data
+outs { out1 }
+init {
+  d = std::data::Data[SR, 1]::Data[f32]()
+}
+sample {
+  out1 = d.readL(0.5)
+}
+"#;
+    let program = parse_program(src).expect("in-memory std/data import should parse");
+    assert!(
+        program
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Struct(s) if s.name.contains("std::data::Data"))),
+        "expected std/data declarations to be imported"
     );
 }
 

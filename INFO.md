@@ -55,6 +55,7 @@
   - `import module/path` (resolved as `module/path.omni`, imported once, declaration-only files).
   - Built-in std modules via `import std/...` are supported from both file and in-memory source compilation paths.
 - Namespaces with `::` are supported.
+- Namespace templates are supported (`namespace Name[S = ...]: ...`) with compile-time int args, inline instantiation (`Name[... ]::...`), and namespace aliases (`namespace Alias = Name[...]`).
 
 ### Declaration shorthand
 - Count shorthand is supported for all IO/param/buffer sections:

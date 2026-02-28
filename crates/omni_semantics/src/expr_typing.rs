@@ -231,6 +231,11 @@ pub(crate) fn infer_scalar_expr_type(
             }
         }
         Expr::UserCall { name, args, .. } => {
+            if let Some(ty) =
+                get_declared_symbol_type(state_scalars, name, DECLARED_FUNCTION_RETURN_TYPE_PREFIX)
+            {
+                return Some(ty);
+            }
             if parse_array_len_instance_base(name).is_some()
                 || parse_buffer_chans_instance_base(name).is_some()
             {
@@ -285,8 +290,7 @@ pub(crate) fn infer_scalar_expr_type(
                     }
                 }
             }
-            get_declared_symbol_type(state_scalars, name, DECLARED_FUNCTION_RETURN_TYPE_PREFIX)
-                .or(Some(PrimitiveType::F32))
+            Some(PrimitiveType::F32)
         }
         Expr::Binary { lhs, rhs, .. } => {
             let l = infer_scalar_expr_type(

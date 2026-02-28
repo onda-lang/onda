@@ -56,6 +56,7 @@ pub(super) fn parse_port_block(
                             Rule::decl_type
                             | Rule::type_name
                             | Rule::array_type
+                            | Rule::namespace_ref
                             | Rule::qualified_ident => {
                                 let actual = if inner_item.as_rule() == Rule::decl_type {
                                     let mut decl_inner = inner_item.into_inner();
@@ -181,6 +182,7 @@ pub(super) fn parse_params_block(
                             Rule::decl_type
                             | Rule::type_name
                             | Rule::array_type
+                            | Rule::namespace_ref
                             | Rule::qualified_ident => {
                                 let actual = if item.as_rule() == Rule::decl_type {
                                     let mut decl_inner = item.into_inner();
