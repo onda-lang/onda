@@ -2954,6 +2954,26 @@ sample {
 }
 
 #[test]
+fn parse_program_in_memory_supports_std_buffer_module() {
+    let src = r#"
+import std/buffer
+buffers { b: buffer[f32[2]] }
+outs { out1 }
+sample {
+  out1 = std::buffer::read(b, 0, 1) + std::buffer::readL(b, 1, 0.5)
+}
+"#;
+    let program = parse_program(src).expect("in-memory std/buffer import should parse");
+    assert!(
+        program
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Def(d) if d.name.contains("std::buffer::read"))),
+        "expected std/buffer declarations to be imported"
+    );
+}
+
+#[test]
 fn parse_program_in_memory_rejects_non_std_imports() {
     let src = r#"
 import my_lib

@@ -659,6 +659,696 @@ fn build_proc_lowering_env(
     })
 }
 
+#[derive(Debug, Clone)]
+struct OverloadCandidate {
+    internal_name: String,
+    signature: FnSignature,
+}
+
+#[derive(Debug, Clone)]
+enum OverloadArgShape {
+    Scalar(PrimitiveType),
+    Struct(String),
+    Array,
+    Buffer {
+        elem_ty: PrimitiveType,
+        channels: TypedBufferChannels,
+    },
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OverloadRewriteEnv {
+    scalar_types: HashMap<String, PrimitiveType>,
+    struct_instances: HashMap<String, String>,
+    array_elem_types: HashMap<String, PrimitiveType>,
+    buffer_types: HashMap<String, (PrimitiveType, TypedBufferChannels)>,
+}
+
+fn overload_internal_name(public_name: &str, ordinal: usize) -> String {
+    format!(
+        "__omni_ovl_{}_{}",
+        sanitize_symbol_component(public_name),
+        ordinal
+    )
+}
+
+fn const_positive_usize_for_overload(expr: &Expr) -> Option<usize> {
+    match expr {
+        Expr::Int(v) if *v > 0 => usize::try_from(*v).ok(),
+        Expr::Number(v) if *v > 0.0 && v.fract() == 0.0 => usize::try_from(*v as i64).ok(),
+        _ => None,
+    }
+}
+
+fn primitive_type_for_number_literal(v: i64) -> PrimitiveType {
+    if v >= i32::MIN as i64 && v <= i32::MAX as i64 {
+        PrimitiveType::I32
+    } else {
+        PrimitiveType::I64
+    }
+}
+
+fn merge_numeric_types_no_diag(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<PrimitiveType> {
+    use PrimitiveType::*;
+    match (lhs, rhs) {
+        (F64, I32)
+        | (I32, F64)
+        | (F64, I64)
+        | (I64, F64)
+        | (F64, F32)
+        | (F32, F64)
+        | (F64, F64) => Some(F64),
+        (F32, I32) | (I32, F32) | (F32, F32) => Some(F32),
+        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
+        (I32, I32) => Some(I32),
+        _ => None,
+    }
+}
+
+fn infer_scalar_expr_type_for_overload(
+    expr: &Expr,
+    env: &OverloadRewriteEnv,
+) -> Option<PrimitiveType> {
+    match expr {
+        Expr::Number(_) => Some(PrimitiveType::F32),
+        Expr::Int(v) => Some(primitive_type_for_number_literal(*v)),
+        Expr::Bool(_) => Some(PrimitiveType::Bool),
+        Expr::Var(name) => {
+            if let Some(ty) = builtin_constant_type(name) {
+                return Some(ty);
+            }
+            if let Some((base, field)) = split_simple_field_path(name) {
+                let flat = format!("{base}.{field}");
+                if let Some(ty) = env.scalar_types.get(&flat).copied() {
+                    return Some(ty);
+                }
+            }
+            env.scalar_types.get(name).copied()
+        }
+        Expr::Index { base, .. } => {
+            if let Some(elem_ty) = env.array_elem_types.get(base).copied() {
+                return Some(elem_ty);
+            }
+            if let Some((elem_ty, _)) = env.buffer_types.get(base) {
+                return Some(*elem_ty);
+            }
+            if let Some((root, field)) = split_simple_field_path(base) {
+                let flat = format!("{root}.{field}");
+                if let Some(elem_ty) = env.array_elem_types.get(&flat).copied() {
+                    return Some(elem_ty);
+                }
+            }
+            None
+        }
+        Expr::Cast { to, .. } => Some(*to),
+        Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
+            Some(PrimitiveType::Bool)
+        }
+        Expr::Call { args, .. } => {
+            if args.is_empty() {
+                return Some(PrimitiveType::F32);
+            }
+            let mut acc = PrimitiveType::F32;
+            for arg in args {
+                let Some(arg_ty) = infer_scalar_expr_type_for_overload(arg, env) else {
+                    return None;
+                };
+                let Some(merged) = merge_numeric_types_no_diag(acc, arg_ty) else {
+                    return None;
+                };
+                acc = merged;
+            }
+            Some(acc)
+        }
+        Expr::UserCall { .. } => None,
+        Expr::Binary { lhs, rhs, .. } => {
+            let lhs_ty = infer_scalar_expr_type_for_overload(lhs, env)?;
+            let rhs_ty = infer_scalar_expr_type_for_overload(rhs, env)?;
+            merge_numeric_types_no_diag(lhs_ty, rhs_ty)
+        }
+        Expr::ArrayCtor { .. } | Expr::ArrayLiteral(_) => None,
+    }
+}
+
+fn infer_array_elem_type_for_overload(
+    expr: &Expr,
+    env: &OverloadRewriteEnv,
+) -> Option<PrimitiveType> {
+    match expr {
+        Expr::ArrayLiteral(values) => {
+            let first = values.first()?;
+            infer_scalar_expr_type_for_overload(first, env)
+        }
+        Expr::ArrayCtor { spec, .. } => match &spec.elem {
+            ArrayElemType::Primitive(elem) => Some(*elem),
+            ArrayElemType::Struct(_) => None,
+        },
+        _ => None,
+    }
+}
+
+fn infer_overload_arg_shape(expr: &Expr, env: &OverloadRewriteEnv) -> OverloadArgShape {
+    match expr {
+        Expr::Var(name) => {
+            if let Some(struct_name) = env.struct_instances.get(name) {
+                return OverloadArgShape::Struct(struct_name.clone());
+            }
+            if env.array_elem_types.contains_key(name) {
+                return OverloadArgShape::Array;
+            }
+            if let Some((elem_ty, channels)) = env.buffer_types.get(name) {
+                return OverloadArgShape::Buffer {
+                    elem_ty: *elem_ty,
+                    channels: channels.clone(),
+                };
+            }
+            if let Some(ty) = infer_scalar_expr_type_for_overload(expr, env) {
+                return OverloadArgShape::Scalar(ty);
+            }
+            OverloadArgShape::Unknown
+        }
+        Expr::Index { base, .. } => {
+            if let Some((elem_ty, _)) = env.buffer_types.get(base) {
+                return OverloadArgShape::Scalar(*elem_ty);
+            }
+            if let Some(elem_ty) = env.array_elem_types.get(base).copied() {
+                return OverloadArgShape::Scalar(elem_ty);
+            }
+            if let Some((root, field)) = split_simple_field_path(base) {
+                let flat = format!("{root}.{field}");
+                if let Some(elem_ty) = env.array_elem_types.get(&flat).copied() {
+                    return OverloadArgShape::Scalar(elem_ty);
+                }
+            }
+            OverloadArgShape::Unknown
+        }
+        _ => {
+            if let Some(ty) = infer_scalar_expr_type_for_overload(expr, env) {
+                OverloadArgShape::Scalar(ty)
+            } else {
+                OverloadArgShape::Unknown
+            }
+        }
+    }
+}
+
+fn score_buffer_match(
+    expected: &BufferType,
+    arg_elem_ty: PrimitiveType,
+    arg_channels: &TypedBufferChannels,
+) -> Option<i32> {
+    let expected_elem = match expected.elem {
+        BufferElemType::Primitive(ty) => ty,
+        BufferElemType::Generic(_) => return Some(3),
+    };
+    if expected_elem != arg_elem_ty {
+        return None;
+    }
+    match &expected.channels {
+        BufferChannels::Mono => match arg_channels {
+            TypedBufferChannels::Mono => Some(0),
+            TypedBufferChannels::Static(ch) if *ch == 1 => Some(0),
+            _ => None,
+        },
+        BufferChannels::Dynamic => match arg_channels {
+            TypedBufferChannels::Mono => None,
+            TypedBufferChannels::Static(ch) if *ch > 1 => Some(1),
+            TypedBufferChannels::Dynamic => Some(0),
+            _ => None,
+        },
+        BufferChannels::Static(expr) => {
+            let expected_ch = const_positive_usize_for_overload(expr);
+            match expected_ch {
+                Some(ch) if ch <= 1 => match arg_channels {
+                    TypedBufferChannels::Mono => Some(0),
+                    TypedBufferChannels::Static(actual) if *actual == 1 => Some(0),
+                    _ => None,
+                },
+                Some(ch) => match arg_channels {
+                    TypedBufferChannels::Static(actual) if *actual == ch => Some(0),
+                    TypedBufferChannels::Dynamic => Some(1),
+                    _ => None,
+                },
+                None => match arg_channels {
+                    TypedBufferChannels::Mono => None,
+                    TypedBufferChannels::Static(ch) if *ch > 1 => Some(1),
+                    TypedBufferChannels::Dynamic => Some(1),
+                    _ => None,
+                },
+            }
+        }
+    }
+}
+
+fn score_overload_param_match(
+    arg_shape: &OverloadArgShape,
+    param_ty: Option<&FnParamType>,
+) -> Option<i32> {
+    match param_ty {
+        Some(FnParamType::Primitive(expected)) => match arg_shape {
+            OverloadArgShape::Scalar(src) => {
+                if *src == *expected {
+                    Some(0)
+                } else if can_implicitly_assign(*src, *expected) {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+            OverloadArgShape::Unknown => Some(2),
+            _ => None,
+        },
+        Some(FnParamType::Struct(expected_struct)) => match arg_shape {
+            OverloadArgShape::Struct(actual_struct) if actual_struct == expected_struct => Some(0),
+            OverloadArgShape::Unknown => Some(2),
+            _ => None,
+        },
+        Some(FnParamType::Buffer(expected_buffer)) => match arg_shape {
+            OverloadArgShape::Buffer { elem_ty, channels } => {
+                score_buffer_match(expected_buffer, *elem_ty, channels)
+            }
+            OverloadArgShape::Unknown => Some(2),
+            _ => None,
+        },
+        None => Some(3),
+    }
+}
+
+fn format_fn_param_for_overload(name: &str, ty: Option<&FnParamType>, has_default: bool) -> String {
+    let typed = match ty {
+        Some(FnParamType::Primitive(prim)) => format!("{name}: {prim:?}").to_lowercase(),
+        Some(FnParamType::Struct(struct_name)) => format!("{name}: {struct_name}"),
+        Some(FnParamType::Buffer(buffer_ty)) => format!("{name}: {:?}", buffer_ty),
+        None => name.to_owned(),
+    };
+    if has_default {
+        format!("{typed} = ...")
+    } else {
+        typed
+    }
+}
+
+fn format_overload_signature(name: &str, signature: &FnSignature) -> String {
+    let params = signature
+        .params
+        .iter()
+        .enumerate()
+        .map(|(idx, param_name)| {
+            format_fn_param_for_overload(
+                param_name,
+                signature.param_types.get(idx).and_then(|p| p.as_ref()),
+                signature
+                    .defaults
+                    .get(idx)
+                    .and_then(|d| d.as_ref())
+                    .is_some(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{name}({params})")
+}
+
+fn resolve_overloaded_call_name(
+    public_name: &str,
+    args: &[CallArg],
+    env: &OverloadRewriteEnv,
+    overloads: &HashMap<String, Vec<OverloadCandidate>>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    let candidates = overloads.get(public_name)?;
+    if candidates.len() == 1 {
+        return Some(candidates[0].internal_name.clone());
+    }
+
+    let mut scored = Vec::<(i32, usize)>::new();
+    for (cand_idx, cand) in candidates.iter().enumerate() {
+        let mut bind_errors = Vec::new();
+        let resolved = resolve_call_args(
+            args,
+            &cand.signature.params,
+            &cand.signature.defaults,
+            false,
+            false,
+            &format!("function '{public_name}' call"),
+            &mut bind_errors,
+        );
+        if !bind_errors.is_empty() {
+            continue;
+        }
+
+        let mut total_score = 0_i32;
+        let mut viable = true;
+        for (param_idx, arg_expr) in resolved.into_iter().enumerate() {
+            if let Some(arg_expr) = arg_expr {
+                let arg_shape = infer_overload_arg_shape(arg_expr, env);
+                let param_ty = cand
+                    .signature
+                    .param_types
+                    .get(param_idx)
+                    .and_then(|t| t.as_ref());
+                let Some(score) = score_overload_param_match(&arg_shape, param_ty) else {
+                    viable = false;
+                    break;
+                };
+                total_score += score;
+            } else {
+                // Slight preference for overloads requiring fewer defaulted params.
+                total_score += 1;
+            }
+        }
+        if viable {
+            scored.push((total_score, cand_idx));
+        }
+    }
+
+    if scored.is_empty() {
+        let overload_list = candidates
+            .iter()
+            .map(|c| format_overload_signature(public_name, &c.signature))
+            .collect::<Vec<_>>()
+            .join(", ");
+        errors.push(Diagnostic::semantic(
+            format!(
+                "no matching overload for function '{}' (candidates: {})",
+                public_name, overload_list
+            ),
+            0,
+            0,
+        ));
+        return Some(candidates[0].internal_name.clone());
+    }
+
+    let best_score = scored
+        .iter()
+        .map(|(score, _)| *score)
+        .min()
+        .unwrap_or(i32::MAX);
+    let best = scored
+        .into_iter()
+        .filter(|(score, _)| *score == best_score)
+        .map(|(_, idx)| idx)
+        .collect::<Vec<_>>();
+    if best.len() > 1 {
+        let overload_list = best
+            .iter()
+            .filter_map(|idx| candidates.get(*idx))
+            .map(|c| format_overload_signature(public_name, &c.signature))
+            .collect::<Vec<_>>()
+            .join(", ");
+        errors.push(Diagnostic::semantic(
+            format!(
+                "ambiguous overload for function '{}'; matching candidates: {}",
+                public_name, overload_list
+            ),
+            0,
+            0,
+        ));
+    }
+
+    best.first()
+        .and_then(|idx| candidates.get(*idx))
+        .map(|cand| cand.internal_name.clone())
+}
+
+fn update_overload_env_after_assign(
+    target: &AssignTarget,
+    decl_ty: Option<PrimitiveType>,
+    expr: &Expr,
+    env: &mut OverloadRewriteEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    let AssignTarget::Var(name) = target else {
+        return;
+    };
+
+    if let Some(declared) = decl_ty {
+        env.scalar_types.insert(name.clone(), declared);
+        env.struct_instances.remove(name);
+        return;
+    }
+
+    if let Some(elem_ty) = infer_array_elem_type_for_overload(expr, env) {
+        env.array_elem_types.insert(name.clone(), elem_ty);
+        env.scalar_types.remove(name);
+        env.struct_instances.remove(name);
+        return;
+    }
+
+    if let Expr::UserCall { name: callee, .. } = expr {
+        if struct_defs.contains_key(callee) {
+            env.struct_instances.insert(name.clone(), callee.clone());
+            env.scalar_types.remove(name);
+            return;
+        }
+    }
+
+    if let Expr::Var(src) = expr {
+        if let Some(struct_name) = env.struct_instances.get(src).cloned() {
+            env.struct_instances.insert(name.clone(), struct_name);
+            env.scalar_types.remove(name);
+            return;
+        }
+    }
+
+    if let Some(ty) = infer_scalar_expr_type_for_overload(expr, env) {
+        env.scalar_types.insert(name.clone(), ty);
+        env.struct_instances.remove(name);
+    }
+}
+
+fn rewrite_overloaded_calls_in_expr(
+    expr: &mut Expr,
+    env: &OverloadRewriteEnv,
+    overloads: &HashMap<String, Vec<OverloadCandidate>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::Index { index, .. } => {
+            rewrite_overloaded_calls_in_expr(index, env, overloads, errors);
+        }
+        Expr::ArrayCtor { spec, init } => {
+            rewrite_overloaded_calls_in_expr(&mut spec.size, env, overloads, errors);
+            if let Some(values) = init {
+                for value in values {
+                    rewrite_overloaded_calls_in_expr(value, env, overloads, errors);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            rewrite_overloaded_calls_in_expr(lhs, env, overloads, errors);
+            rewrite_overloaded_calls_in_expr(rhs, env, overloads, errors);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                rewrite_overloaded_calls_in_expr(arg, env, overloads, errors);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+            rewrite_overloaded_calls_in_expr(expr, env, overloads, errors);
+        }
+        Expr::ArrayLiteral(values) => {
+            for value in values {
+                rewrite_overloaded_calls_in_expr(value, env, overloads, errors);
+            }
+        }
+        Expr::UserCall {
+            name,
+            type_args: _,
+            args,
+        } => {
+            for arg in args.iter_mut() {
+                rewrite_overloaded_calls_in_expr(&mut arg.expr, env, overloads, errors);
+            }
+            if let Some(resolved_name) =
+                resolve_overloaded_call_name(name, args, env, overloads, errors)
+            {
+                *name = resolved_name;
+            }
+        }
+        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+    }
+}
+
+fn rewrite_overloaded_calls_in_stmt_list(
+    stmts: &mut [Stmt],
+    env: &mut OverloadRewriteEnv,
+    overloads: &HashMap<String, Vec<OverloadCandidate>>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for stmt in stmts {
+        with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+            Stmt::Assign {
+                target,
+                decl_ty,
+                expr,
+                ..
+            } => {
+                if let AssignTarget::Index { index, .. } = target {
+                    rewrite_overloaded_calls_in_expr(index, env, overloads, errors);
+                }
+                rewrite_overloaded_calls_in_expr(expr, env, overloads, errors);
+                update_overload_env_after_assign(target, *decl_ty, expr, env, struct_defs);
+            }
+            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                rewrite_overloaded_calls_in_expr(expr, env, overloads, errors);
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                rewrite_overloaded_calls_in_expr(cond, env, overloads, errors);
+                let mut then_env = env.clone();
+                rewrite_overloaded_calls_in_stmt_list(
+                    then_branch,
+                    &mut then_env,
+                    overloads,
+                    struct_defs,
+                    errors,
+                );
+                let mut else_env = env.clone();
+                rewrite_overloaded_calls_in_stmt_list(
+                    else_branch,
+                    &mut else_env,
+                    overloads,
+                    struct_defs,
+                    errors,
+                );
+                env.scalar_types = then_env
+                    .scalar_types
+                    .iter()
+                    .filter_map(|(name, ty)| {
+                        else_env
+                            .scalar_types
+                            .get(name)
+                            .copied()
+                            .filter(|other| other == ty)
+                            .map(|_| (name.clone(), *ty))
+                    })
+                    .collect::<HashMap<_, _>>();
+                env.struct_instances = then_env
+                    .struct_instances
+                    .iter()
+                    .filter_map(|(name, ty)| {
+                        else_env
+                            .struct_instances
+                            .get(name)
+                            .filter(|other| *other == ty)
+                            .map(|_| (name.clone(), ty.clone()))
+                    })
+                    .collect::<HashMap<_, _>>();
+                env.array_elem_types = then_env
+                    .array_elem_types
+                    .iter()
+                    .filter_map(|(name, ty)| {
+                        else_env
+                            .array_elem_types
+                            .get(name)
+                            .copied()
+                            .filter(|other| other == ty)
+                            .map(|_| (name.clone(), *ty))
+                    })
+                    .collect::<HashMap<_, _>>();
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                rewrite_overloaded_calls_in_expr(start, env, overloads, errors);
+                rewrite_overloaded_calls_in_expr(end, env, overloads, errors);
+                if let Some(step_expr) = step {
+                    rewrite_overloaded_calls_in_expr(step_expr, env, overloads, errors);
+                }
+                let mut body_env = env.clone();
+                rewrite_overloaded_calls_in_stmt_list(
+                    body,
+                    &mut body_env,
+                    overloads,
+                    struct_defs,
+                    errors,
+                );
+            }
+            Stmt::While { cond, body, .. } => {
+                rewrite_overloaded_calls_in_expr(cond, env, overloads, errors);
+                let mut body_env = env.clone();
+                rewrite_overloaded_calls_in_stmt_list(
+                    body,
+                    &mut body_env,
+                    overloads,
+                    struct_defs,
+                    errors,
+                );
+            }
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        });
+    }
+}
+
+fn prepare_function_overloads(
+    defs: &mut [FunctionDef],
+    method_self_struct: &HashMap<String, String>,
+) -> (
+    HashMap<String, Vec<OverloadCandidate>>,
+    HashMap<String, String>,
+) {
+    let mut by_public_top_level = HashMap::<String, Vec<usize>>::new();
+    for (idx, def) in defs.iter().enumerate() {
+        if method_self_struct.contains_key(&def.name) {
+            continue;
+        }
+        by_public_top_level
+            .entry(def.name.clone())
+            .or_default()
+            .push(idx);
+    }
+
+    let mut internal_to_public = HashMap::<String, String>::new();
+    for (public_name, indices) in &by_public_top_level {
+        if indices.len() <= 1 {
+            continue;
+        }
+        for (ordinal, idx) in indices.iter().enumerate() {
+            let internal_name = overload_internal_name(public_name, ordinal + 1);
+            defs[*idx].name = internal_name.clone();
+            internal_to_public.insert(internal_name, public_name.clone());
+        }
+    }
+
+    let mut overloads = HashMap::<String, Vec<OverloadCandidate>>::new();
+    for def in defs.iter() {
+        let public_name = internal_to_public
+            .get(&def.name)
+            .cloned()
+            .unwrap_or_else(|| def.name.clone());
+        internal_to_public
+            .entry(def.name.clone())
+            .or_insert_with(|| public_name.clone());
+        overloads
+            .entry(public_name)
+            .or_default()
+            .push(OverloadCandidate {
+                internal_name: def.name.clone(),
+                signature: FnSignature {
+                    params: def.params.iter().map(|p| p.name.clone()).collect(),
+                    defaults: def.params.iter().map(|p| p.default.clone()).collect(),
+                    param_types: def.params.iter().map(|p| p.ty.clone()).collect(),
+                    type_params: def.type_params.clone(),
+                },
+            });
+    }
+
+    (overloads, internal_to_public)
+}
+
 pub(crate) fn desugar_processors(
     mut program: Program,
     options: AnalysisOptions,
@@ -1448,40 +2138,175 @@ pub fn analyze_with_options(
             );
         }
     }
+
+    let (overload_candidates, def_public_name_by_internal) =
+        prepare_function_overloads(&mut defs, &method_self_struct);
+
+    let mut top_level_env = OverloadRewriteEnv::default();
+    top_level_env
+        .scalar_types
+        .extend(in_types.iter().map(|(name, ty)| (name.clone(), *ty)));
+    top_level_env
+        .scalar_types
+        .extend(out_types.iter().map(|(name, ty)| (name.clone(), *ty)));
+    top_level_env
+        .scalar_types
+        .extend(param_types.iter().map(|(name, ty)| (name.clone(), *ty)));
+    top_level_env.array_elem_types.extend(
+        in_arrays
+            .iter()
+            .map(|(name, info)| (name.clone(), info.elem_ty)),
+    );
+    top_level_env.array_elem_types.extend(
+        out_arrays
+            .iter()
+            .map(|(name, info)| (name.clone(), info.elem_ty)),
+    );
+    top_level_env.array_elem_types.extend(
+        param_arrays
+            .iter()
+            .map(|(name, info)| (name.clone(), info.elem_ty)),
+    );
+    top_level_env.buffer_types.extend(
+        typed_buffers
+            .iter()
+            .map(|b| (b.name.clone(), (b.elem_ty, b.channels.clone()))),
+    );
+    top_level_env
+        .struct_instances
+        .extend(desugar_struct_instances.clone());
+
+    let mut init_rewrite_env = top_level_env.clone();
+    rewrite_overloaded_calls_in_stmt_list(
+        &mut init,
+        &mut init_rewrite_env,
+        &overload_candidates,
+        &struct_defs,
+        &mut errors,
+    );
+    let mut block_pre_rewrite_env = top_level_env.clone();
+    rewrite_overloaded_calls_in_stmt_list(
+        &mut block_pre,
+        &mut block_pre_rewrite_env,
+        &overload_candidates,
+        &struct_defs,
+        &mut errors,
+    );
+    let mut sample_rewrite_env = top_level_env.clone();
+    rewrite_overloaded_calls_in_stmt_list(
+        &mut sample,
+        &mut sample_rewrite_env,
+        &overload_candidates,
+        &struct_defs,
+        &mut errors,
+    );
+    let mut block_post_rewrite_env = top_level_env.clone();
+    rewrite_overloaded_calls_in_stmt_list(
+        &mut block_post,
+        &mut block_post_rewrite_env,
+        &overload_candidates,
+        &struct_defs,
+        &mut errors,
+    );
+    for event in &mut events {
+        let mut event_env = top_level_env.clone();
+        rewrite_overloaded_calls_in_stmt_list(
+            &mut event.body,
+            &mut event_env,
+            &overload_candidates,
+            &struct_defs,
+            &mut errors,
+        );
+    }
+    for def in &mut defs {
+        let mut def_env = top_level_env.clone();
+        for param in &mut def.params {
+            match &param.ty {
+                Some(FnParamType::Primitive(prim)) => {
+                    def_env.scalar_types.insert(param.name.clone(), *prim);
+                }
+                Some(FnParamType::Struct(struct_name)) => {
+                    def_env
+                        .struct_instances
+                        .insert(param.name.clone(), struct_name.clone());
+                }
+                Some(FnParamType::Buffer(buffer_ty)) => {
+                    let channels = match &buffer_ty.channels {
+                        BufferChannels::Mono => TypedBufferChannels::Mono,
+                        BufferChannels::Dynamic => TypedBufferChannels::Dynamic,
+                        BufferChannels::Static(expr) => const_positive_usize_for_overload(expr)
+                            .map(TypedBufferChannels::Static)
+                            .unwrap_or(TypedBufferChannels::Dynamic),
+                    };
+                    let elem_ty = match &buffer_ty.elem {
+                        BufferElemType::Primitive(ty) => *ty,
+                        BufferElemType::Generic(_) => PrimitiveType::F32,
+                    };
+                    def_env
+                        .buffer_types
+                        .insert(param.name.clone(), (elem_ty, channels));
+                }
+                None => {}
+            }
+            if let Some(default_expr) = &mut param.default {
+                rewrite_overloaded_calls_in_expr(
+                    default_expr,
+                    &def_env,
+                    &overload_candidates,
+                    &mut errors,
+                );
+            }
+        }
+        rewrite_overloaded_calls_in_stmt_list(
+            &mut def.body,
+            &mut def_env,
+            &overload_candidates,
+            &struct_defs,
+            &mut errors,
+        );
+    }
+
     let mut fn_signatures: HashMap<String, FnSignature> = HashMap::new();
+    let mut seen_public_function_symbols = HashSet::<String>::new();
     for def in &defs {
-        if is_builtin_constant_name(&def.name) {
+        let public_name = def_public_name_by_internal
+            .get(&def.name)
+            .cloned()
+            .unwrap_or_else(|| def.name.clone());
+        if is_builtin_constant_name(&public_name) {
             errors.push(Diagnostic::semantic(
                 format!(
                     "function name '{}' is reserved as a builtin constant",
-                    def.name
+                    public_name
                 ),
                 0,
                 0,
             ));
             continue;
         }
-        if is_builtin_function_name(&def.name) {
+        if is_builtin_function_name(&public_name) {
             errors.push(Diagnostic::semantic(
-                format!("cannot redefine builtin function '{}'", def.name),
+                format!("cannot redefine builtin function '{}'", public_name),
                 0,
                 0,
             ));
             continue;
         }
-        if struct_defs.contains_key(&def.name) {
+        if struct_defs.contains_key(&public_name) {
             errors.push(Diagnostic::semantic(
-                format!("function name '{}' conflicts with struct name", def.name),
+                format!("function name '{}' conflicts with struct name", public_name),
                 0,
                 0,
             ));
             continue;
         }
-        if all_declared.contains(&def.name) {
+        if all_declared.contains(&public_name)
+            && !seen_public_function_symbols.contains(&public_name)
+        {
             errors.push(Diagnostic::semantic(
                 format!(
                     "function name '{}' conflicts with existing symbol",
-                    def.name
+                    public_name
                 ),
                 0,
                 0,
@@ -1505,13 +2330,15 @@ pub fn analyze_with_options(
                 type_params: def.type_params.clone(),
             },
         );
-        all_declared.insert(def.name.clone());
+        if seen_public_function_symbols.insert(public_name.clone()) {
+            all_declared.insert(public_name.clone());
+        }
 
         if !def.type_params.is_empty() {
             errors.push(Diagnostic::semantic(
                 format!(
                     "function '{}' does not support generic type parameters; use typed/untyped parameters and call-site monomorphization",
-                    def.name
+                    public_name
                 ),
                 0,
                 0,
@@ -1533,7 +2360,7 @@ pub fn analyze_with_options(
                 errors.push(Diagnostic::semantic(
                     format!(
                         "duplicate function parameter '{}' in '{}'",
-                        p.name, def.name
+                        p.name, public_name
                     ),
                     0,
                     0,
@@ -1544,7 +2371,7 @@ pub fn analyze_with_options(
                     errors.push(Diagnostic::semantic(
                         format!(
                             "function parameter '{}.{}' is a buffer and cannot have a default value",
-                            def.name, p.name
+                            public_name, p.name
                         ),
                         0,
                         0,
@@ -1553,7 +2380,7 @@ pub fn analyze_with_options(
                 validate_default_expr(
                     default,
                     &mut errors,
-                    &format!("function parameter '{}.{}'", def.name, p.name),
+                    &format!("function parameter '{}.{}'", public_name, p.name),
                 );
             }
         }

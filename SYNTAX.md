@@ -223,6 +223,7 @@ Supported:
 - Positional and named arguments
 - Default arguments
 - Early return
+- Top-level overloads by arity and/or parameter type
 - Method-style sugar for functions: `value.fn(a, b)` is rewritten as `fn(value, a, b)` when a matching function `fn` is in scope.
 
 ```omni
@@ -231,6 +232,34 @@ def wrap_phase(p, upper = TWO_PI):
     return p - upper
   return p
 ```
+
+Overload examples:
+
+```omni
+def mix(x):
+  return x
+
+def mix(x, y):
+  return x + y
+```
+
+```omni
+def sat(x: f32):
+  return x
+
+def sat(x: f64):
+  return f32(x)
+```
+
+Resolution rules:
+- Exact typed match is preferred.
+- If no exact typed match exists, implicit widening candidates may be considered.
+- Untyped parameters are lower priority than typed parameters.
+- Default arguments participate in overload matching.
+- If multiple candidates are equally valid, the call is a semantic error (ambiguous overload).
+- Return type is not part of overload selection.
+- Overloading currently applies to top-level `def` only.
+- Struct methods still cannot be overloaded; duplicate method names in the same struct are rejected.
 
 `def` generics are intentionally unsupported.
 
@@ -368,6 +397,7 @@ Imports:
   - `std/env`
   - `std/delay`
   - `std/data`
+  - `std/buffer`
 
 Include:
 - `include "path.omni"`

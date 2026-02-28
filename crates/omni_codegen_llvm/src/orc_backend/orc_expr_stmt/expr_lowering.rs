@@ -506,7 +506,12 @@ pub(super) unsafe fn lower_expr(
                 )
             };
             let mut infer_buffer_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
-                infer_buffer_arg_signature_in_orc(&*ctx_ptr, arg_expr, callee_name)
+                infer_buffer_arg_signature_in_orc(
+                    &*ctx_ptr,
+                    local_array_aliases,
+                    arg_expr,
+                    callee_name,
+                )
             };
             let mut infer_array_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
                 infer_array_arg_signature_in_orc(
@@ -569,7 +574,13 @@ pub(super) unsafe fn lower_expr(
                 )
             };
             let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
-                lower_buffer_call_args_in_orc(&mut *ctx_ptr, arg_values, arg_expr, name)
+                lower_buffer_call_args_in_orc(
+                    &mut *ctx_ptr,
+                    local_array_aliases,
+                    arg_values,
+                    arg_expr,
+                    name,
+                )
             };
             materialize_user_call_args_common(
                 name,

@@ -1,0 +1,40 @@
+import std/math
+
+namespace std::buffer:
+  def read(buf, i: i32):
+    return buf[i]
+
+  def read(buf, ch: i32, i: i32):
+    return buf[ch][i]
+
+  def readL(buf, pos):
+    i0: i32 = i32(floor(pos))
+    t = pos - floor(pos)
+    a = read(buf, i0)
+    c = read(buf, i0 + 1)
+    return a + (c - a) * t
+
+  def readL(buf, ch: i32, pos):
+    i0: i32 = i32(floor(pos))
+    t = pos - floor(pos)
+    a = read(buf, ch, i0)
+    c = read(buf, ch, i0 + 1)
+    return a + (c - a) * t
+
+  def readC(buf, pos):
+    i1: i32 = i32(floor(pos))
+    t = pos - floor(pos)
+    y0 = read(buf, i1 - 1)
+    y1 = read(buf, i1)
+    y2 = read(buf, i1 + 1)
+    y3 = read(buf, i1 + 2)
+    return std::math::cubic_interp(y0, y1, y2, y3, t)
+
+  def readC(buf, ch: i32, pos):
+    i1: i32 = i32(floor(pos))
+    t = pos - floor(pos)
+    y0 = read(buf, ch, i1 - 1)
+    y1 = read(buf, ch, i1)
+    y2 = read(buf, ch, i1 + 1)
+    y3 = read(buf, ch, i1 + 2)
+    return std::math::cubic_interp(y0, y1, y2, y3, t)

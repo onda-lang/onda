@@ -104,6 +104,7 @@ fn builtin_std_module_source(module: &str) -> Option<&'static str> {
         "std/env" => Some(include_str!("../../../../stdlib/std/env.omni")),
         "std/delay" => Some(include_str!("../../../../stdlib/std/delay.omni")),
         "std/data" => Some(include_str!("../../../../stdlib/std/data.omni")),
+        "std/buffer" => Some(include_str!("../../../../stdlib/std/buffer.omni")),
         _ => None,
     }
 }

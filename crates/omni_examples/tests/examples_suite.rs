@@ -37,7 +37,7 @@ init {
   phase = 0.0
 }
 sample {
-  phase = phase + freq * TWO_PI / SR
+  phase = phase + freq * f32(TWO_PI) / SR
   out1 = sin(phase)
 }
 "#;
@@ -334,6 +334,133 @@ sample {
 }
 "#;
 
+const DEF_OVERLOAD_ARITY_EXAMPLE: &str = r#"
+outs { out1 }
+def mix(x) {
+  return x + 1.0
+}
+def mix(x, y) {
+  return x + y
+}
+sample {
+  out1 = mix(1.0) + mix(2.0, 3.0)
+}
+"#;
+
+const DEF_OVERLOAD_TYPED_BEATS_UNTYPED_EXAMPLE: &str = r#"
+outs { out1 }
+def sel(x) {
+  return 10.0
+}
+def sel(x: f64) {
+  return 20.0
+}
+sample {
+  out1 = sel(f64(1.0))
+}
+"#;
+
+const DEF_OVERLOAD_WIDENING_FALLBACK_EXAMPLE: &str = r#"
+outs { out1 }
+def h(x: i64) {
+  return f32(x) + 1.0
+}
+def h(flag: bool) {
+  if (flag) { return 100.0 } else { return 200.0 }
+}
+sample {
+  out1 = h(i32(3))
+}
+"#;
+
+const DEF_OVERLOAD_I32_AMBIGUOUS_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+def g(x: i64) {
+  return f32(x)
+}
+def g(x: f64) {
+  return f32(x)
+}
+sample {
+  out1 = g(i32(7))
+}
+"#;
+
+const DEF_OVERLOAD_DEFAULTS_EXAMPLE: &str = r#"
+outs { out1 }
+def d(x) {
+  return x
+}
+def d(x, y = 1.0) {
+  return x + y * 10.0
+}
+sample {
+  out1 = d(2.0)
+}
+"#;
+
+const DEF_OVERLOAD_DEFAULTS_AMBIGUOUS_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+def a(x: f64, y = 0.0) {
+  return 1.0
+}
+def a(x: f64, z = 0.0) {
+  return 2.0
+}
+sample {
+  out1 = a(f64(1.0))
+}
+"#;
+
+const DEF_OVERLOAD_STRUCT_AND_SCALAR_EXAMPLE: &str = r#"
+outs { out1 }
+struct A { x: f32 }
+def foo(v: A) {
+  return v.x
+}
+def foo(x: f32) {
+  return x + 10.0
+}
+init {
+  a = A(2.0)
+}
+sample {
+  out1 = foo(a) + foo(1.0)
+}
+"#;
+
+const DEF_OVERLOAD_BUFFER_AND_SCALAR_EXAMPLE: &str = r#"
+buffers { b: buffer[f32] }
+outs { out1 }
+def kind(x: f32) {
+  return x
+}
+def kind(buf: buffer[f32]) {
+  return buf[0]
+}
+sample {
+  out1 = kind(1.0) + kind(b)
+}
+"#;
+
+const STRUCT_METHOD_OVERLOAD_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+struct V {
+  def run(self, x) {
+    return x
+  }
+  def run(self, x, y) {
+    return x + y
+  }
+}
+init {
+  v = V()
+}
+sample {
+  out1 = v.run(1.0)
+}
+"#;
+
 const BUFFER_MONO_CLAMP_READ_EXAMPLE: &str = r#"
 buffers {
   buf1: buffer[f32]
@@ -586,6 +713,43 @@ def read_at(buf, i: i32) {
 }
 sample {
   out1 = read_at(a, 0) + read_at(b, 0)
+}
+"#;
+
+const DEF_INDEXABLE_ARG_ARRAY_AND_BUFFER_EXAMPLE: &str = r#"
+buffers {
+  buf1: buffer[f32]
+}
+outs {
+  out1
+}
+def read_at(xs, i: i32) {
+  return xs[i]
+}
+init {
+  arr: f32[4]
+  arr[0] = 1.0
+  arr[1] = 2.0
+  arr[2] = 3.0
+  arr[3] = 4.0
+}
+sample {
+  out1 = read_at(arr, 1) + read_at(buf1, 1)
+}
+"#;
+
+const DEF_INDEXABLE_ARG_STEREO_BUFFER_EXAMPLE: &str = r#"
+buffers {
+  b: buffer[f32[2]]
+}
+outs {
+  out1
+}
+def read_ch(xs, ch: i32, i: i32) {
+  return xs[ch][i]
+}
+sample {
+  out1 = read_ch(b, 1, 2)
 }
 "#;
 
@@ -1090,7 +1254,7 @@ sample {
 const BUILTIN_CONSTS_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
-  out1 = PI + TWO_PI + SAMPLE_RATE - SR
+  out1 = f32(PI) + f32(TWO_PI) + SAMPLE_RATE - SR
 }
 "#;
 
@@ -1100,7 +1264,7 @@ init {
   phase = 0.0
 }
 sample {
-  phase = phase + TWO_PI / SR
+  phase = phase + f32(TWO_PI) / SR
   out1 = sin(phase)
 }
 "#;
@@ -1111,7 +1275,7 @@ init {
   phase = 0.0
 }
 sample {
-  phase = phase + TWO_PI / SAMPLERATE
+  phase = phase + f32(TWO_PI) / SAMPLERATE
   out1 = sin(phase)
 }
 "#;
@@ -1119,7 +1283,7 @@ sample {
 const BUILTIN_CONSTS_LOWERCASE_ALIASES_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
-  out1 = pi + two_pi + twopi + samplerate - sample_rate + blocksize - block_size
+  out1 = f32(pi) + f32(two_pi) + f32(twopi) + samplerate - sample_rate + f32(blocksize) - f32(block_size)
 }
 "#;
 
@@ -1129,7 +1293,7 @@ init {
   phase = 0.0
 }
 sample {
-  phase = phase + twopi / samplerate
+  phase = phase + f32(twopi) / samplerate
   out1 = sin(phase)
 }
 "#;
@@ -1157,6 +1321,24 @@ def clamp(x, lo, hi) {
 }
 sample {
   out1 = clamp(2.0, 0.0, 1.0) + std::math::clamp(2.0, 0.0, 1.0)
+}
+"#;
+
+const STDLIB_BUFFER_READ_MONO_EXAMPLE: &str = r#"
+import std/buffer
+buffers { b: buffer[f32] }
+outs { out1 }
+sample {
+  out1 = std::buffer::read(b, 2)
+}
+"#;
+
+const STDLIB_BUFFER_INTERP_STEREO_EXAMPLE: &str = r#"
+import std/buffer
+buffers { b: buffer[f32[2]] }
+outs { out1 }
+sample {
+  out1 = std::buffer::read(b, 0, 1) + std::buffer::readL(b, 1, 0.5) + std::buffer::readC(b, 1, 1.0)
 }
 "#;
 
@@ -1233,10 +1415,10 @@ outs { out1 }
 params { freq = 440.0 }
 init { phase = 0.0 }
 block {
-  incr = freq * TWO_PI / SR
+  incr = freq * f32(TWO_PI) / SR
   sample {
     phase = phase + incr
-    if (phase > TWO_PI) { phase = phase - TWO_PI }
+    if (phase > f32(TWO_PI)) { phase = phase - f32(TWO_PI) }
     out1 = sin(phase)
   }
 }
@@ -2833,8 +3015,8 @@ struct Osc {
   phase: f32
   gain: f32
   def tick(self, hz) {
-    self.phase = self.phase + hz * TWO_PI / SR
-    if (self.phase >= TWO_PI) { self.phase = self.phase - TWO_PI }
+    self.phase = self.phase + hz * f32(TWO_PI) / SR
+    if (self.phase >= f32(TWO_PI)) { self.phase = self.phase - f32(TWO_PI) }
     return sin(self.phase) * self.gain
   }
 }
@@ -2968,9 +3150,9 @@ proc SineProc {
   outs { out1 }
   init { phase = 0.0 }
   sample {
-    phase = phase + (freq * TWO_PI / SR)
-    if (phase >= TWO_PI) {
-      phase = phase - TWO_PI
+    phase = phase + (freq * f32(TWO_PI) / SR)
+    if (phase >= f32(TWO_PI)) {
+      phase = phase - f32(TWO_PI)
     }
     out1 = sin(phase)
   }
@@ -2986,9 +3168,9 @@ proc SineProc {
   outs { out1 }
   init { phase = 0.0 }
   sample 8 {
-    phase = phase + (freq * TWO_PI / SR)
-    if (phase >= TWO_PI) {
-      phase = phase - TWO_PI
+    phase = phase + (freq * f32(TWO_PI) / SR)
+    if (phase >= f32(TWO_PI)) {
+      phase = phase - f32(TWO_PI)
     }
     out1 = sin(phase)
   }
@@ -4059,6 +4241,124 @@ fn def_named_default_args_compiles_and_runs() {
 }
 
 #[test]
+fn def_overload_by_arity_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_OVERLOAD_ARITY_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 7.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_overload_exact_typed_beats_untyped() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_OVERLOAD_TYPED_BEATS_UNTYPED_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 20.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_overload_widening_fallback_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_OVERLOAD_WIDENING_FALLBACK_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 4.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_overload_i32_numeric_tie_is_ambiguous() {
+    let parsed =
+        parse_program(DEF_OVERLOAD_I32_AMBIGUOUS_ERROR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject ambiguous i32 overload tie (i64 vs f64 widening)"
+    );
+}
+
+#[test]
+fn def_overload_defaults_participate_in_resolution() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_OVERLOAD_DEFAULTS_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_overload_defaults_can_be_ambiguous() {
+    let parsed =
+        parse_program(DEF_OVERLOAD_DEFAULTS_AMBIGUOUS_ERROR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject ambiguous overloads when defaults produce equivalent matches"
+    );
+}
+
+#[test]
+fn def_overload_supports_struct_and_scalar_variants() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_OVERLOAD_STRUCT_AND_SCALAR_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 13.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_overload_supports_buffer_and_scalar_variants() {
+    let parsed =
+        parse_program(DEF_OVERLOAD_BUFFER_AND_SCALAR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_ok(),
+        "semantic analysis should accept overloads that differ by buffer vs scalar parameter types"
+    );
+}
+
+#[test]
+fn struct_methods_do_not_support_overloading() {
+    let parsed = parse_program(STRUCT_METHOD_OVERLOAD_ERROR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject overloaded struct methods in MVP"
+    );
+}
+
+#[test]
 fn positional_after_named_is_rejected() {
     let parsed =
         parse_program(DEF_POSITIONAL_AFTER_NAMED_ERROR_EXAMPLE).expect("parse should succeed");
@@ -4648,8 +4948,8 @@ fn primitive_data_local_alias_binding_is_rejected() {
     let parsed = parse_program(DATA_LOCAL_ALIAS_WRITEBACK_EXAMPLE).expect("parse should succeed");
     let result = analyze(parsed);
     assert!(
-        result.is_err(),
-        "semantic analysis should reject primitive array alias binding via 'x = buf[i]'"
+        result.is_ok(),
+        "semantic analysis should allow primitive array indexed reads as scalar copies via 'x = buf[i]'"
     );
 }
 
@@ -4659,8 +4959,8 @@ fn primitive_struct_field_data_local_alias_binding_is_rejected() {
         parse_program(STRUCT_DATA_LOCAL_ALIAS_WRITEBACK_EXAMPLE).expect("parse should succeed");
     let result = analyze(parsed);
     assert!(
-        result.is_err(),
-        "semantic analysis should reject primitive struct array alias binding via 'x = v.delay[i]'"
+        result.is_ok(),
+        "semantic analysis should allow primitive struct-array indexed reads as scalar copies via 'x = v.delay[i]'"
     );
 }
 #[test]
@@ -5679,6 +5979,71 @@ fn stdlib_math_auto_import_allows_local_symbol_override() {
 }
 
 #[test]
+fn stdlib_buffer_read_mono_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_BUFFER_READ_MONO_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![1.0_f32, 2.0, 3.0, 4.0];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+    for sample in &out {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_buffer_read_linear_and_cubic_with_channel_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_BUFFER_INTERP_STEREO_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+    for sample in &out {
+        assert_near(*sample, 37.0, 1e-6);
+    }
+}
+
+#[test]
 fn floor_fract_wrap_numeric_behavior_is_stable() {
     let frames = 2;
     let (mut instance, in_channels, out_channels) =
@@ -6650,6 +7015,69 @@ fn def_duck_typed_buffer_param_allows_mixed_element_types() {
     let out = decode_planar_f32(&out_bytes);
     for sample in out {
         assert_near(sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_indexable_param_accepts_array_and_buffer_call_sites() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_INDEXABLE_ARG_ARRAY_AND_BUFFER_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![10.0_f32, 20.0, 30.0, 40.0];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    for sample in out {
+        assert_near(sample, 22.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_indexable_param_supports_two_dimensional_buffer_indexing() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_INDEXABLE_ARG_STEREO_BUFFER_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    for sample in out {
+        assert_near(sample, 30.0, 1e-6);
     }
 }
 

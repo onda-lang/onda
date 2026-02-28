@@ -66,9 +66,9 @@ sample:
   if (d.pluck_t < d.pluck_len):
     d.env = 1.0 - f32(d.pluck_t) / f32(d.pluck_len)
     d.input = sin(d.pluck_phase) * d.env * 0.8
-    d.pluck_phase = d.pluck_phase + TWO_PI * d.pluck_freq / SR
-    if (d.pluck_phase > TWO_PI):
-      d.pluck_phase = d.pluck_phase - TWO_PI
+    d.pluck_phase = d.pluck_phase + f32(TWO_PI) * d.pluck_freq / SR
+    if (d.pluck_phase > f32(TWO_PI)):
+      d.pluck_phase = d.pluck_phase - f32(TWO_PI)
     d.pluck_t = d.pluck_t + 1
 
   d.line[d.write_idx] = d.input + d.fb * feedback

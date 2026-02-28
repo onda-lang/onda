@@ -76,6 +76,23 @@ pub(crate) fn infer_def_param_kinds(
         );
     }
 
+    // Seed per-parameter indexable usage directly from def bodies so untyped params
+    // used as `x[i]` / `x[ch][i]` are treated as data-like even before call-graph
+    // propagation resolves concrete caller shapes.
+    for def in defs {
+        let param_index = def
+            .params
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| (p.name.clone(), idx))
+            .collect::<HashMap<_, _>>();
+        if let Some(kinds_for_def) = kinds.get_mut(&def.name) {
+            for stmt in &def.body {
+                collect_stmt_indexable_param_usage(stmt, &param_index, kinds_for_def);
+            }
+        }
+    }
+
     for def in defs {
         if let Some(explicit) = declared_struct_params.get(&def.name) {
             if let Some(kinds_for_def) = kinds.get_mut(&def.name) {
@@ -131,6 +148,24 @@ pub(crate) fn infer_def_param_kinds(
     for _ in 0..defs.len().saturating_add(1) {
         let snapshot = kinds.clone();
         for def in defs {
+            let param_index = def
+                .params
+                .iter()
+                .enumerate()
+                .map(|(idx, p)| (p.name.clone(), idx))
+                .collect::<HashMap<_, _>>();
+            for stmt in &def.body {
+                propagate_stmt_callee_buffer_requirements_to_params(
+                    stmt,
+                    &def.name,
+                    &param_index,
+                    fn_signatures,
+                    &declared_buffer_params,
+                    &snapshot,
+                    &mut kinds,
+                );
+            }
+
             let mut local_struct_instances = HashMap::<String, String>::new();
             let mut local_array_bindings = HashMap::<String, InferredArrayParam>::new();
             let mut local_buffer_bindings = HashMap::<String, Vec<InferredBufferParam>>::new();
@@ -183,9 +218,10 @@ pub(crate) fn infer_def_param_kinds(
                     if local_buffer_bindings.contains_key(&param.name) {
                         continue;
                     }
-                    if !inferred_kind.saw_buffers.is_empty() {
-                        local_buffer_bindings
-                            .insert(param.name.clone(), inferred_kind.saw_buffers.clone());
+                    if let Some(inferred_buffer) =
+                        infer_buffer_observation_from_param_slot(inferred_kind)
+                    {
+                        local_buffer_bindings.insert(param.name.clone(), vec![inferred_buffer]);
                     }
                 }
             }
@@ -284,27 +320,7 @@ pub(crate) fn infer_def_param_kinds(
                 continue;
             }
 
-            if !inferred_kind.saw_buffers.is_empty() {
-                if !inferred_kind.saw_arrays.is_empty() {
-                    errors.push(Diagnostic::semantic(
-                        format!(
-                            "function '{}' parameter '{}' is used both as array and buffer",
-                            def.name, param_name
-                        ),
-                        0,
-                        0,
-                    ));
-                }
-                if inferred_kind.saw_scalar {
-                    errors.push(Diagnostic::semantic(
-                        format!(
-                            "function '{}' parameter '{}' is used both as scalar and buffer",
-                            def.name, param_name
-                        ),
-                        0,
-                        0,
-                    ));
-                }
+            if !inferred_kind.saw_buffers.is_empty() || !inferred_kind.saw_arrays.is_empty() {
                 if !inferred_kind.saw_structs.is_empty() || !usage_for_param.is_empty() {
                     errors.push(Diagnostic::semantic(
                         format!(
@@ -329,44 +345,6 @@ pub(crate) fn infer_def_param_kinds(
                 typed.push(TypedFnParam::Buffer {
                     elem_ty: inferred_buffer.elem_ty,
                     channels: inferred_buffer.channels,
-                });
-                continue;
-            }
-
-            if !inferred_kind.saw_arrays.is_empty() {
-                if inferred_kind.saw_scalar {
-                    errors.push(Diagnostic::semantic(
-                        format!(
-                            "function '{}' parameter '{}' is used both as scalar and array",
-                            def.name, param_name
-                        ),
-                        0,
-                        0,
-                    ));
-                }
-                if !inferred_kind.saw_structs.is_empty() || !usage_for_param.is_empty() {
-                    errors.push(Diagnostic::semantic(
-                        format!(
-                            "function '{}' parameter '{}' is used both as struct and array",
-                            def.name, param_name
-                        ),
-                        0,
-                        0,
-                    ));
-                }
-                let inferred_array = infer_untyped_array_from_observations(
-                    &def.name,
-                    param_name,
-                    &inferred_kind,
-                    true,
-                    errors,
-                )
-                .unwrap_or(InferredArrayParam {
-                    elem_ty: PrimitiveType::F32,
-                    len: 1,
-                });
-                typed.push(TypedFnParam::Array {
-                    elem_ty: inferred_array.elem_ty,
                 });
                 continue;
             }
@@ -444,6 +422,454 @@ pub(crate) fn infer_def_param_kinds(
     }
 
     (out, synthesized)
+}
+
+fn push_buffer_observation(slot: &mut InferredFnParam, obs: InferredBufferParam) {
+    if slot
+        .saw_buffers
+        .iter()
+        .any(|seen| seen.elem_ty == obs.elem_ty && seen.channels == obs.channels)
+    {
+        return;
+    }
+    slot.saw_buffers.push(obs);
+}
+
+fn mark_param_indexable_usage(
+    base: &str,
+    channels: TypedBufferChannels,
+    param_index: &HashMap<String, usize>,
+    kinds: &mut [InferredFnParam],
+) {
+    let Some(param_idx) = param_index.get(base).copied() else {
+        return;
+    };
+    let Some(slot) = kinds.get_mut(param_idx) else {
+        return;
+    };
+    push_buffer_observation(
+        slot,
+        InferredBufferParam {
+            elem_ty: PrimitiveType::F32,
+            channels,
+        },
+    );
+}
+
+fn collect_stmt_indexable_param_usage(
+    stmt: &Stmt,
+    param_index: &HashMap<String, usize>,
+    kinds: &mut [InferredFnParam],
+) {
+    match stmt {
+        Stmt::Assign { target, expr, .. } => {
+            if let AssignTarget::Index { base, index } = target {
+                mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
+                collect_expr_indexable_param_usage(index, param_index, kinds);
+            }
+            collect_expr_indexable_param_usage(expr, param_index, kinds);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            collect_expr_indexable_param_usage(expr, param_index, kinds);
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_expr_indexable_param_usage(cond, param_index, kinds);
+            for nested in then_branch {
+                collect_stmt_indexable_param_usage(nested, param_index, kinds);
+            }
+            for nested in else_branch {
+                collect_stmt_indexable_param_usage(nested, param_index, kinds);
+            }
+        }
+        Stmt::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            collect_expr_indexable_param_usage(start, param_index, kinds);
+            collect_expr_indexable_param_usage(end, param_index, kinds);
+            if let Some(step_expr) = step {
+                collect_expr_indexable_param_usage(step_expr, param_index, kinds);
+            }
+            for nested in body {
+                collect_stmt_indexable_param_usage(nested, param_index, kinds);
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            collect_expr_indexable_param_usage(cond, param_index, kinds);
+            for nested in body {
+                collect_stmt_indexable_param_usage(nested, param_index, kinds);
+            }
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn collect_expr_indexable_param_usage(
+    expr: &Expr,
+    param_index: &HashMap<String, usize>,
+    kinds: &mut [InferredFnParam],
+) {
+    match expr {
+        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) | Expr::ArrayCtor { .. } => {}
+        Expr::ArrayLiteral(values) => {
+            for value in values {
+                collect_expr_indexable_param_usage(value, param_index, kinds);
+            }
+        }
+        Expr::Index { base, index } => {
+            mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
+            collect_expr_indexable_param_usage(index, param_index, kinds);
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. } => {
+            collect_expr_indexable_param_usage(lhs, param_index, kinds);
+            collect_expr_indexable_param_usage(rhs, param_index, kinds);
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+            collect_expr_indexable_param_usage(expr, param_index, kinds);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_expr_indexable_param_usage(arg, param_index, kinds);
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            if is_internal_buffer_2d_fn(name) {
+                if let Some(CallArg {
+                    expr: Expr::Var(base),
+                    ..
+                }) = args.first()
+                {
+                    mark_param_indexable_usage(
+                        base,
+                        TypedBufferChannels::Dynamic,
+                        param_index,
+                        kinds,
+                    );
+                }
+            }
+            for arg in args {
+                collect_expr_indexable_param_usage(&arg.expr, param_index, kinds);
+            }
+        }
+    }
+}
+
+fn callee_buffer_param_requirement(
+    callee: &str,
+    param_idx: usize,
+    declared_buffer_params: &HashMap<String, Vec<Option<(PrimitiveType, TypedBufferChannels)>>>,
+    snapshot: &HashMap<String, Vec<InferredFnParam>>,
+) -> Option<InferredBufferParam> {
+    if let Some(Some((elem_ty, channels))) = declared_buffer_params
+        .get(callee)
+        .and_then(|params| params.get(param_idx))
+    {
+        return Some(InferredBufferParam {
+            elem_ty: *elem_ty,
+            channels: channels.clone(),
+        });
+    }
+    snapshot
+        .get(callee)
+        .and_then(|params| params.get(param_idx))
+        .and_then(infer_buffer_observation_from_param_slot)
+}
+
+fn propagate_stmt_callee_buffer_requirements_to_params(
+    stmt: &Stmt,
+    caller_name: &str,
+    caller_param_index: &HashMap<String, usize>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    declared_buffer_params: &HashMap<String, Vec<Option<(PrimitiveType, TypedBufferChannels)>>>,
+    snapshot: &HashMap<String, Vec<InferredFnParam>>,
+    kinds: &mut HashMap<String, Vec<InferredFnParam>>,
+) {
+    match stmt {
+        Stmt::Assign { target, expr, .. } => {
+            if let AssignTarget::Index { index, .. } = target {
+                propagate_expr_callee_buffer_requirements_to_params(
+                    index,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+            propagate_expr_callee_buffer_requirements_to_params(
+                expr,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            propagate_expr_callee_buffer_requirements_to_params(
+                expr,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            propagate_expr_callee_buffer_requirements_to_params(
+                cond,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+            for nested in then_branch {
+                propagate_stmt_callee_buffer_requirements_to_params(
+                    nested,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+            for nested in else_branch {
+                propagate_stmt_callee_buffer_requirements_to_params(
+                    nested,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+        }
+        Stmt::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            propagate_expr_callee_buffer_requirements_to_params(
+                start,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+            propagate_expr_callee_buffer_requirements_to_params(
+                end,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+            if let Some(step_expr) = step {
+                propagate_expr_callee_buffer_requirements_to_params(
+                    step_expr,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+            for nested in body {
+                propagate_stmt_callee_buffer_requirements_to_params(
+                    nested,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            propagate_expr_callee_buffer_requirements_to_params(
+                cond,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+            for nested in body {
+                propagate_stmt_callee_buffer_requirements_to_params(
+                    nested,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn propagate_expr_callee_buffer_requirements_to_params(
+    expr: &Expr,
+    caller_name: &str,
+    caller_param_index: &HashMap<String, usize>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    declared_buffer_params: &HashMap<String, Vec<Option<(PrimitiveType, TypedBufferChannels)>>>,
+    snapshot: &HashMap<String, Vec<InferredFnParam>>,
+    kinds: &mut HashMap<String, Vec<InferredFnParam>>,
+) {
+    match expr {
+        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) | Expr::ArrayCtor { .. } => {}
+        Expr::ArrayLiteral(values) => {
+            for value in values {
+                propagate_expr_callee_buffer_requirements_to_params(
+                    value,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+        }
+        Expr::Index { index, .. } => {
+            propagate_expr_callee_buffer_requirements_to_params(
+                index,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. } => {
+            propagate_expr_callee_buffer_requirements_to_params(
+                lhs,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+            propagate_expr_callee_buffer_requirements_to_params(
+                rhs,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+            propagate_expr_callee_buffer_requirements_to_params(
+                expr,
+                caller_name,
+                caller_param_index,
+                fn_signatures,
+                declared_buffer_params,
+                snapshot,
+                kinds,
+            );
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                propagate_expr_callee_buffer_requirements_to_params(
+                    arg,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            if let Some(sig) = fn_signatures.get(name) {
+                let mut bind_errors = Vec::new();
+                let resolved = resolve_call_args(
+                    args,
+                    &sig.params,
+                    &sig.defaults,
+                    false,
+                    false,
+                    &format!("function '{name}' call"),
+                    &mut bind_errors,
+                );
+                if bind_errors.is_empty() {
+                    for (param_idx, arg) in resolved.into_iter().enumerate() {
+                        let Some(Expr::Var(symbol)) = arg else {
+                            continue;
+                        };
+                        let Some(caller_param_idx) = caller_param_index.get(symbol).copied() else {
+                            continue;
+                        };
+                        let Some(requirement) = callee_buffer_param_requirement(
+                            name,
+                            param_idx,
+                            declared_buffer_params,
+                            snapshot,
+                        ) else {
+                            continue;
+                        };
+                        if let Some(caller_slots) = kinds.get_mut(caller_name) {
+                            if let Some(slot) = caller_slots.get_mut(caller_param_idx) {
+                                push_buffer_observation(slot, requirement);
+                            }
+                        }
+                    }
+                }
+            }
+            for arg in args {
+                propagate_expr_callee_buffer_requirements_to_params(
+                    &arg.expr,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+        }
+    }
 }
 
 fn collect_declared_struct_param_types(
@@ -989,20 +1415,23 @@ fn merge_inferred_buffer_channels(
     }
 }
 
-fn infer_untyped_buffer_from_observations(
-    _fn_name: &str,
-    _param_name: &str,
+fn infer_buffer_observation_from_param_slot(
     inferred: &InferredFnParam,
-    _report_errors: bool,
-    _errors: &mut Vec<Diagnostic>,
 ) -> Option<InferredBufferParam> {
-    if inferred.saw_buffers.is_empty() {
+    if inferred.saw_buffers.is_empty() && inferred.saw_arrays.is_empty() {
         return None;
     }
-    let first = inferred.saw_buffers[0].clone();
-    let mut merged_channels = first.channels.clone();
-    let mut merged_elem = first.elem_ty;
-    for seen in inferred.saw_buffers.iter().skip(1) {
+    let mut merged_channels = TypedBufferChannels::Mono;
+    let mut merged_elem = PrimitiveType::F32;
+    let mut initialized = false;
+
+    for seen in &inferred.saw_buffers {
+        if !initialized {
+            merged_channels = seen.channels.clone();
+            merged_elem = seen.elem_ty;
+            initialized = true;
+            continue;
+        }
         merged_elem = match (merged_elem, seen.elem_ty) {
             (PrimitiveType::F32, PrimitiveType::F64) | (PrimitiveType::F64, PrimitiveType::F32) => {
                 PrimitiveType::F64
@@ -1012,10 +1441,39 @@ fn infer_untyped_buffer_from_observations(
         };
         merged_channels = merge_inferred_buffer_channels(&merged_channels, &seen.channels);
     }
+
+    for seen in &inferred.saw_arrays {
+        if !initialized {
+            merged_channels = TypedBufferChannels::Mono;
+            merged_elem = seen.elem_ty;
+            initialized = true;
+            continue;
+        }
+        merged_elem = match (merged_elem, seen.elem_ty) {
+            (PrimitiveType::F32, PrimitiveType::F64) | (PrimitiveType::F64, PrimitiveType::F32) => {
+                PrimitiveType::F64
+            }
+            (lhs, rhs) if lhs == rhs => lhs,
+            (lhs, _) => lhs,
+        };
+        merged_channels =
+            merge_inferred_buffer_channels(&merged_channels, &TypedBufferChannels::Mono);
+    }
+
     Some(InferredBufferParam {
         elem_ty: merged_elem,
         channels: merged_channels,
     })
+}
+
+fn infer_untyped_buffer_from_observations(
+    _fn_name: &str,
+    _param_name: &str,
+    inferred: &InferredFnParam,
+    _report_errors: bool,
+    _errors: &mut Vec<Diagnostic>,
+) -> Option<InferredBufferParam> {
+    infer_buffer_observation_from_param_slot(inferred)
 }
 
 fn infer_untyped_array_from_observations(

@@ -8,6 +8,7 @@
 - A runtime for executing compiled Omni programs.
 - A C API (`include/omni_llvm.h`) for integration in non-Rust hosts.
 - A CLI for compile/render workflows.
+- Language support for overloaded top-level `def` functions (arity/type-based dispatch with ambiguity diagnostics).
 
 Current backend target is ORC JIT only.
 

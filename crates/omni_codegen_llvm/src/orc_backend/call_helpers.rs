@@ -906,6 +906,7 @@ pub(super) unsafe fn load_orc_buffer_binding_tuple(
 
 pub(super) unsafe fn lower_buffer_call_args_in_orc(
     ctx: &mut LoweringCtx<'_>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     out_args: &mut Vec<LLVMValueRef>,
     arg_expr: &Expr,
     callee_name: &str,
@@ -915,15 +916,46 @@ pub(super) unsafe fn lower_buffer_call_args_in_orc(
             "function '{callee_name}' buffer argument must be a buffer symbol variable in ORC expression lowering"
         )));
     };
-    let (ptr, frames, channels) = load_orc_buffer_binding_tuple(ctx, base)?;
+    if let Ok((ptr, frames, channels)) = load_orc_buffer_binding_tuple(ctx, base) {
+        out_args.push(ptr);
+        out_args.push(frames);
+        out_args.push(channels);
+        return Ok(());
+    }
+
+    // Allow untyped indexable params to accept primitive arrays by adapting
+    // them to a mono buffer tuple: (ptr, frames=len, channels=1).
+    let (_elem_ty, len) =
+        infer_array_arg_signature_in_orc(ctx, local_array_aliases, arg_expr, callee_name)?;
+    if len > i32::MAX as usize {
+        return Err(Diagnostic::internal(format!(
+            "array argument '{}' length {} exceeds i32 range while adapting to buffer tuple in ORC expression lowering",
+            base, len
+        )));
+    }
+    let mut ptr_only = Vec::with_capacity(1);
+    lower_array_call_args_in_orc(
+        ctx,
+        local_array_aliases,
+        &mut ptr_only,
+        arg_expr,
+        callee_name,
+    )?;
+    let ptr = *ptr_only.first().ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "failed to materialize array pointer for '{}' while adapting to buffer tuple in ORC expression lowering",
+            base
+        ))
+    })?;
     out_args.push(ptr);
-    out_args.push(frames);
-    out_args.push(channels);
+    out_args.push(LLVMConstInt(ctx.i32_ty, len as u64, 0));
+    out_args.push(LLVMConstInt(ctx.i32_ty, 1, 0));
     Ok(())
 }
 
 pub(super) fn infer_buffer_arg_signature_in_orc(
     ctx: &LoweringCtx<'_>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     arg_expr: &Expr,
     callee_name: &str,
 ) -> Result<(PrimitiveType, TypedBufferChannels), Diagnostic> {
@@ -932,17 +964,15 @@ pub(super) fn infer_buffer_arg_signature_in_orc(
             "function '{callee_name}' buffer argument must be a buffer symbol variable in ORC expression lowering"
         )));
     };
-    let elem_ty = *ctx.buffer_elem_types.get(base).ok_or_else(|| {
-        Diagnostic::internal(format!(
-            "unknown buffer symbol '{base}' in ORC buffer signature inference"
-        ))
-    })?;
-    let channels = ctx.buffer_channels.get(base).cloned().ok_or_else(|| {
-        Diagnostic::internal(format!(
-            "missing channel metadata for buffer symbol '{base}' in ORC buffer signature inference"
-        ))
-    })?;
-    Ok((elem_ty, channels))
+    if let (Some(elem_ty), Some(channels)) = (
+        ctx.buffer_elem_types.get(base).copied(),
+        ctx.buffer_channels.get(base).cloned(),
+    ) {
+        return Ok((elem_ty, channels));
+    }
+    let (elem_ty, _len) =
+        infer_array_arg_signature_in_orc(ctx, local_array_aliases, arg_expr, callee_name)?;
+    Ok((elem_ty, TypedBufferChannels::Mono))
 }
 
 pub(super) fn infer_array_arg_signature_in_orc(
@@ -1071,14 +1101,33 @@ pub(super) unsafe fn lower_buffer_call_args_in_def(
             "function '{callee_name}' buffer argument must be a buffer symbol variable in def lowering"
         )));
     };
-    let info = ctx.buffer_params.get(base).ok_or_else(|| {
+    if let Some(info) = ctx.buffer_params.get(base) {
+        out_args.push(info.ptr);
+        out_args.push(info.frames);
+        out_args.push(info.channels);
+        return Ok(());
+    }
+
+    // Allow untyped indexable params to accept primitive arrays by adapting
+    // them to a mono buffer tuple: (ptr, frames=len, channels=1).
+    let (_elem_ty, len) = infer_array_arg_signature_in_def(ctx, arg_expr, callee_name)?;
+    if len > i32::MAX as usize {
+        return Err(Diagnostic::internal(format!(
+            "array argument '{}' length {} exceeds i32 range while adapting to buffer tuple in def lowering",
+            base, len
+        )));
+    }
+    let mut ptr_only = Vec::with_capacity(1);
+    lower_array_call_args_in_def(ctx, &mut ptr_only, arg_expr, callee_name)?;
+    let ptr = *ptr_only.first().ok_or_else(|| {
         Diagnostic::internal(format!(
-            "unknown buffer symbol '{base}' in def buffer call argument lowering"
+            "failed to materialize array pointer for '{}' while adapting to buffer tuple in def lowering",
+            base
         ))
     })?;
-    out_args.push(info.ptr);
-    out_args.push(info.frames);
-    out_args.push(info.channels);
+    out_args.push(ptr);
+    out_args.push(LLVMConstInt(ctx.i32_ty, len as u64, 0));
+    out_args.push(LLVMConstInt(ctx.i32_ty, 1, 0));
     Ok(())
 }
 
@@ -1092,12 +1141,11 @@ pub(super) fn infer_buffer_arg_signature_in_def(
             "function '{callee_name}' buffer argument must be a buffer symbol variable in def lowering"
         )));
     };
-    let info = ctx.buffer_params.get(base).ok_or_else(|| {
-        Diagnostic::internal(format!(
-            "unknown buffer symbol '{base}' in def buffer signature inference"
-        ))
-    })?;
-    Ok((info.elem_ty, info.declared_channels.clone()))
+    if let Some(info) = ctx.buffer_params.get(base) {
+        return Ok((info.elem_ty, info.declared_channels.clone()));
+    }
+    let (elem_ty, _len) = infer_array_arg_signature_in_def(ctx, arg_expr, callee_name)?;
+    Ok((elem_ty, TypedBufferChannels::Mono))
 }
 
 pub(super) fn infer_array_arg_signature_in_def(

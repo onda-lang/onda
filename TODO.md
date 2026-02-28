@@ -2,8 +2,15 @@
 
 ## Next Features
 
-- Polymorph defs
-  - def something(x, y) + def something(x, y, z)
+- Polymorph defs (implemented MVP)
+  - Status:
+    - Top-level `def` overloads are implemented for arity/type-based dispatch.
+    - Resolution currently prefers exact typed matches, then widening fallbacks, with ambiguity as an error.
+    - Defaults participate in overload matching.
+  - Remaining follow-ups:
+    - Improve overload diagnostics to show per-candidate ranking details.
+    - Evaluate extending overloads to struct methods (currently still rejected as duplicate method names).
+    - Clarify/document overload behavior for complex untyped array/buffer inference-heavy call sites.
 
 - Array procs (partial)
   - Status: core typed proc-array declarations/calls and broadcast ctor sugar are implemented.
