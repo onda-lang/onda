@@ -132,16 +132,16 @@ pub(super) unsafe fn build_process_ir(
         let state_layout_entries = compute_state_layout(typed)?;
         let state_layout = state_layout_map(&state_layout_entries);
         let array_layout_entries = compute_arrays_layout(typed, &state_layout_entries)?;
-        let data_layout = arrays_layout_map(&array_layout_entries);
+        let jit_layout = arrays_layout_map(&array_layout_entries);
 
-        let mut data_base_ptrs = HashMap::new();
-        let mut data_len = HashMap::new();
-        let mut data_elem_ty = HashMap::new();
-        for data_var in &typed.data_vars {
-            let (_, offset) = *data_layout.get(&data_var.name).ok_or_else(|| {
+        let mut array_base_ptrs = HashMap::new();
+        let mut array_len = HashMap::new();
+        let mut array_elem_ty = HashMap::new();
+        for array_var in &typed.array_vars {
+            let (_, offset) = *jit_layout.get(&array_var.name).ok_or_else(|| {
                 Diagnostic::internal(format!(
                     "missing array layout metadata for '{}'",
-                    data_var.name
+                    array_var.name
                 ))
             })?;
             let ptr = build_typed_state_ptr(
@@ -149,19 +149,19 @@ pub(super) unsafe fn build_process_ir(
                 context,
                 state_ptr,
                 offset,
-                data_var.elem_ty,
+                array_var.elem_ty,
                 b"arr_state_ptr\0",
                 b"arr_state_ptr_cast\0",
             );
-            data_base_ptrs.insert(data_var.name.clone(), ptr);
-            data_len.insert(data_var.name.clone(), data_var.len);
-            data_elem_ty.insert(data_var.name.clone(), data_var.elem_ty);
+            array_base_ptrs.insert(array_var.name.clone(), ptr);
+            array_len.insert(array_var.name.clone(), array_var.len);
+            array_elem_ty.insert(array_var.name.clone(), array_var.elem_ty);
         }
-        let mut data_struct_roots = HashMap::new();
-        let mut data_struct_len = HashMap::new();
-        for root in &typed.data_struct_roots {
-            data_struct_roots.insert(root.name.clone(), root.struct_name.clone());
-            data_struct_len.insert(root.name.clone(), root.len);
+        let mut array_struct_roots = HashMap::new();
+        let mut array_struct_len = HashMap::new();
+        for root in &typed.array_struct_roots {
+            array_struct_roots.insert(root.name.clone(), root.struct_name.clone());
+            array_struct_len.insert(root.name.clone(), root.len);
         }
         let struct_fields = typed
             .structs
@@ -378,7 +378,7 @@ pub(super) unsafe fn build_process_ir(
                 buffer_channels_ptr,
                 frame_idx: LLVMConstInt(i32_ty, 0, 0),
                 state_slots: &state_slots,
-                data_base_ptrs: &data_base_ptrs,
+                array_base_ptrs: &array_base_ptrs,
                 out_slots: &out_slots,
                 out_array_base_ptrs: &out_array_base_ptrs,
                 input_index: &input_index,
@@ -392,10 +392,10 @@ pub(super) unsafe fn build_process_ir(
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,
                 output_arrays: &typed.out_arrays,
-                data_len: &data_len,
-                data_elem_ty: &data_elem_ty,
-                data_struct_roots: &data_struct_roots,
-                data_struct_len: &data_struct_len,
+                array_len: &array_len,
+                array_elem_ty: &array_elem_ty,
+                array_struct_roots: &array_struct_roots,
+                array_struct_len: &array_struct_len,
                 struct_fields: &struct_fields,
                 allow_struct_ctor: false,
                 user_fn_param_names: &user_fns.param_names,
@@ -461,7 +461,7 @@ pub(super) unsafe fn build_process_ir(
                 buffer_channels_ptr,
                 frame_idx: frame_in_body,
                 state_slots: &state_slots,
-                data_base_ptrs: &data_base_ptrs,
+                array_base_ptrs: &array_base_ptrs,
                 out_slots: &out_slots,
                 out_array_base_ptrs: &out_array_base_ptrs,
                 input_index: &input_index,
@@ -475,10 +475,10 @@ pub(super) unsafe fn build_process_ir(
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,
                 output_arrays: &typed.out_arrays,
-                data_len: &data_len,
-                data_elem_ty: &data_elem_ty,
-                data_struct_roots: &data_struct_roots,
-                data_struct_len: &data_struct_len,
+                array_len: &array_len,
+                array_elem_ty: &array_elem_ty,
+                array_struct_roots: &array_struct_roots,
+                array_struct_len: &array_struct_len,
                 struct_fields: &struct_fields,
                 allow_struct_ctor: false,
                 user_fn_param_names: &user_fns.param_names,
@@ -495,14 +495,14 @@ pub(super) unsafe fn build_process_ir(
 
             let mut locals = HashMap::new();
             let mut local_aliases = HashMap::new();
-            let mut local_data_aliases = HashMap::new();
+            let mut local_array_aliases = HashMap::new();
             for stmt in &typed.sample {
                 lower_stmt(
                     stmt,
                     &mut lctx,
                     &mut locals,
                     &mut local_aliases,
-                    &mut local_data_aliases,
+                    &mut local_array_aliases,
                 )?;
             }
         } else {
@@ -763,7 +763,7 @@ pub(super) unsafe fn build_process_ir(
                 buffer_channels_ptr,
                 frame_idx: frame_in_body,
                 state_slots: &state_slots,
-                data_base_ptrs: &data_base_ptrs,
+                array_base_ptrs: &array_base_ptrs,
                 out_slots: &out_slots,
                 out_array_base_ptrs: &out_array_base_ptrs,
                 input_index: &input_index,
@@ -777,10 +777,10 @@ pub(super) unsafe fn build_process_ir(
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,
                 output_arrays: &typed.out_arrays,
-                data_len: &data_len,
-                data_elem_ty: &data_elem_ty,
-                data_struct_roots: &data_struct_roots,
-                data_struct_len: &data_struct_len,
+                array_len: &array_len,
+                array_elem_ty: &array_elem_ty,
+                array_struct_roots: &array_struct_roots,
+                array_struct_len: &array_struct_len,
                 struct_fields: &struct_fields,
                 allow_struct_ctor: false,
                 user_fn_param_names: &user_fns.param_names,
@@ -796,14 +796,14 @@ pub(super) unsafe fn build_process_ir(
             };
             let mut locals = HashMap::new();
             let mut local_aliases = HashMap::new();
-            let mut local_data_aliases = HashMap::new();
+            let mut local_array_aliases = HashMap::new();
             for stmt in &typed.sample {
                 lower_stmt(
                     stmt,
                     &mut lctx,
                     &mut locals,
                     &mut local_aliases,
-                    &mut local_data_aliases,
+                    &mut local_array_aliases,
                 )?;
             }
             for (name, slot) in &out_slots {
@@ -977,7 +977,7 @@ pub(super) unsafe fn build_process_ir(
             buffer_channels_ptr,
             frame_idx: frame_in_body,
             state_slots: &state_slots,
-            data_base_ptrs: &data_base_ptrs,
+            array_base_ptrs: &array_base_ptrs,
             out_slots: &out_slots,
             out_array_base_ptrs: &out_array_base_ptrs,
             input_index: &input_index,
@@ -991,10 +991,10 @@ pub(super) unsafe fn build_process_ir(
             param_types: &param_types,
             param_arrays: &typed.param_arrays,
             output_arrays: &typed.out_arrays,
-            data_len: &data_len,
-            data_elem_ty: &data_elem_ty,
-            data_struct_roots: &data_struct_roots,
-            data_struct_len: &data_struct_len,
+            array_len: &array_len,
+            array_elem_ty: &array_elem_ty,
+            array_struct_roots: &array_struct_roots,
+            array_struct_len: &array_struct_len,
             struct_fields: &struct_fields,
             allow_struct_ctor: false,
             user_fn_param_names: &user_fns.param_names,
@@ -1144,7 +1144,7 @@ pub(super) unsafe fn build_process_ir(
                 buffer_channels_ptr,
                 frame_idx: LLVMConstInt(i32_ty, 0, 0),
                 state_slots: &state_slots,
-                data_base_ptrs: &data_base_ptrs,
+                array_base_ptrs: &array_base_ptrs,
                 out_slots: &out_slots,
                 out_array_base_ptrs: &out_array_base_ptrs,
                 input_index: &input_index,
@@ -1158,10 +1158,10 @@ pub(super) unsafe fn build_process_ir(
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,
                 output_arrays: &typed.out_arrays,
-                data_len: &data_len,
-                data_elem_ty: &data_elem_ty,
-                data_struct_roots: &data_struct_roots,
-                data_struct_len: &data_struct_len,
+                array_len: &array_len,
+                array_elem_ty: &array_elem_ty,
+                array_struct_roots: &array_struct_roots,
+                array_struct_len: &array_struct_len,
                 struct_fields: &struct_fields,
                 allow_struct_ctor: false,
                 user_fn_param_names: &user_fns.param_names,
@@ -1280,16 +1280,16 @@ pub(super) unsafe fn build_init_ir(
         let state_layout_entries = compute_state_layout(typed)?;
         let state_layout = state_layout_map(&state_layout_entries);
         let array_layout_entries = compute_arrays_layout(typed, &state_layout_entries)?;
-        let data_layout = arrays_layout_map(&array_layout_entries);
+        let jit_layout = arrays_layout_map(&array_layout_entries);
 
-        let mut data_base_ptrs = HashMap::new();
-        let mut data_len = HashMap::new();
-        let mut data_elem_ty = HashMap::new();
-        for data_var in &typed.data_vars {
-            let (_, offset) = *data_layout.get(&data_var.name).ok_or_else(|| {
+        let mut array_base_ptrs = HashMap::new();
+        let mut array_len = HashMap::new();
+        let mut array_elem_ty = HashMap::new();
+        for array_var in &typed.array_vars {
+            let (_, offset) = *jit_layout.get(&array_var.name).ok_or_else(|| {
                 Diagnostic::internal(format!(
                     "missing array layout metadata for '{}' in ORC init lowering",
-                    data_var.name
+                    array_var.name
                 ))
             })?;
             let ptr = build_typed_state_ptr(
@@ -1297,19 +1297,19 @@ pub(super) unsafe fn build_init_ir(
                 context,
                 state_ptr,
                 offset,
-                data_var.elem_ty,
+                array_var.elem_ty,
                 b"arr_init_state_ptr\0",
                 b"arr_init_state_ptr_cast\0",
             );
-            data_base_ptrs.insert(data_var.name.clone(), ptr);
-            data_len.insert(data_var.name.clone(), data_var.len);
-            data_elem_ty.insert(data_var.name.clone(), data_var.elem_ty);
+            array_base_ptrs.insert(array_var.name.clone(), ptr);
+            array_len.insert(array_var.name.clone(), array_var.len);
+            array_elem_ty.insert(array_var.name.clone(), array_var.elem_ty);
         }
-        let mut data_struct_roots = HashMap::new();
-        let mut data_struct_len = HashMap::new();
-        for root in &typed.data_struct_roots {
-            data_struct_roots.insert(root.name.clone(), root.struct_name.clone());
-            data_struct_len.insert(root.name.clone(), root.len);
+        let mut array_struct_roots = HashMap::new();
+        let mut array_struct_len = HashMap::new();
+        for root in &typed.array_struct_roots {
+            array_struct_roots.insert(root.name.clone(), root.struct_name.clone());
+            array_struct_len.insert(root.name.clone(), root.len);
         }
         let struct_fields = typed
             .structs
@@ -1383,7 +1383,7 @@ pub(super) unsafe fn build_init_ir(
             buffer_channels_ptr: LLVMConstPointerNull(LLVMPointerType(i32_ty, 0)),
             frame_idx: LLVMConstInt(i32_ty, 0, 0),
             state_slots: &state_slots,
-            data_base_ptrs: &data_base_ptrs,
+            array_base_ptrs: &array_base_ptrs,
             out_slots: &out_slots,
             out_array_base_ptrs: &out_array_base_ptrs,
             input_index: &input_index,
@@ -1397,10 +1397,10 @@ pub(super) unsafe fn build_init_ir(
             param_types: &param_types,
             param_arrays: &typed.param_arrays,
             output_arrays: &output_arrays,
-            data_len: &data_len,
-            data_elem_ty: &data_elem_ty,
-            data_struct_roots: &data_struct_roots,
-            data_struct_len: &data_struct_len,
+            array_len: &array_len,
+            array_elem_ty: &array_elem_ty,
+            array_struct_roots: &array_struct_roots,
+            array_struct_len: &array_struct_len,
             struct_fields: &struct_fields,
             allow_struct_ctor: true,
             user_fn_param_names: &user_fns.param_names,
@@ -1417,14 +1417,14 @@ pub(super) unsafe fn build_init_ir(
 
         let mut locals = HashMap::new();
         let mut local_aliases = HashMap::new();
-        let mut local_data_aliases = HashMap::new();
+        let mut local_array_aliases = HashMap::new();
         for stmt in &typed.init {
             lower_stmt(
                 stmt,
                 &mut lctx,
                 &mut locals,
                 &mut local_aliases,
-                &mut local_data_aliases,
+                &mut local_array_aliases,
             )?;
         }
 
@@ -1506,7 +1506,7 @@ pub(super) unsafe fn build_event_ir(
     let state_layout_entries = compute_state_layout(typed)?;
     let state_layout = state_layout_map(&state_layout_entries);
     let array_layout_entries = compute_arrays_layout(typed, &state_layout_entries)?;
-    let data_layout = arrays_layout_map(&array_layout_entries);
+    let jit_layout = arrays_layout_map(&array_layout_entries);
     let struct_fields = typed
         .structs
         .iter()
@@ -1562,14 +1562,14 @@ pub(super) unsafe fn build_event_ir(
             let buffer_frames_ptr = LLVMGetParam(fn_ref, 4);
             let buffer_channels_ptr = LLVMGetParam(fn_ref, 5);
 
-            let mut data_base_ptrs = HashMap::new();
-            let mut data_len = HashMap::new();
-            let mut data_elem_ty = HashMap::new();
-            for data_var in &typed.data_vars {
-                let (_, offset) = *data_layout.get(&data_var.name).ok_or_else(|| {
+            let mut array_base_ptrs = HashMap::new();
+            let mut array_len = HashMap::new();
+            let mut array_elem_ty = HashMap::new();
+            for array_var in &typed.array_vars {
+                let (_, offset) = *jit_layout.get(&array_var.name).ok_or_else(|| {
                     Diagnostic::internal(format!(
                         "missing array layout metadata for '{}' in ORC event lowering",
-                        data_var.name
+                        array_var.name
                     ))
                 })?;
                 let ptr = build_typed_state_ptr(
@@ -1577,19 +1577,19 @@ pub(super) unsafe fn build_event_ir(
                     context,
                     state_ptr,
                     offset,
-                    data_var.elem_ty,
+                    array_var.elem_ty,
                     b"evt_arr_state_ptr\0",
                     b"evt_arr_state_ptr_cast\0",
                 );
-                data_base_ptrs.insert(data_var.name.clone(), ptr);
-                data_len.insert(data_var.name.clone(), data_var.len);
-                data_elem_ty.insert(data_var.name.clone(), data_var.elem_ty);
+                array_base_ptrs.insert(array_var.name.clone(), ptr);
+                array_len.insert(array_var.name.clone(), array_var.len);
+                array_elem_ty.insert(array_var.name.clone(), array_var.elem_ty);
             }
-            let mut data_struct_roots = HashMap::new();
-            let mut data_struct_len = HashMap::new();
-            for root in &typed.data_struct_roots {
-                data_struct_roots.insert(root.name.clone(), root.struct_name.clone());
-                data_struct_len.insert(root.name.clone(), root.len);
+            let mut array_struct_roots = HashMap::new();
+            let mut array_struct_len = HashMap::new();
+            for root in &typed.array_struct_roots {
+                array_struct_roots.insert(root.name.clone(), root.struct_name.clone());
+                array_struct_len.insert(root.name.clone(), root.len);
             }
 
             let mut state_slots = HashMap::new();
@@ -1654,7 +1654,7 @@ pub(super) unsafe fn build_event_ir(
                 buffer_channels_ptr,
                 frame_idx: LLVMConstInt(i32_ty, 0, 0),
                 state_slots: &state_slots,
-                data_base_ptrs: &data_base_ptrs,
+                array_base_ptrs: &array_base_ptrs,
                 out_slots: &out_slots,
                 out_array_base_ptrs: &out_array_base_ptrs,
                 input_index: &input_index,
@@ -1668,10 +1668,10 @@ pub(super) unsafe fn build_event_ir(
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,
                 output_arrays: &output_arrays,
-                data_len: &data_len,
-                data_elem_ty: &data_elem_ty,
-                data_struct_roots: &data_struct_roots,
-                data_struct_len: &data_struct_len,
+                array_len: &array_len,
+                array_elem_ty: &array_elem_ty,
+                array_struct_roots: &array_struct_roots,
+                array_struct_len: &array_struct_len,
                 struct_fields: &struct_fields,
                 allow_struct_ctor: false,
                 user_fn_param_names: &user_fns.param_names,
@@ -1688,7 +1688,7 @@ pub(super) unsafe fn build_event_ir(
 
             let mut locals = HashMap::<String, OrcValue>::new();
             let mut local_aliases = HashMap::new();
-            let mut local_data_aliases = HashMap::new();
+            let mut local_array_aliases = HashMap::new();
             let mut payload_offset = 0usize;
             for param in &event.params {
                 match param.ty {
@@ -1721,9 +1721,9 @@ pub(super) unsafe fn build_event_ir(
                             b"evt_arr_ptr_i8\0",
                             b"evt_arr_ptr_typed\0",
                         );
-                        local_data_aliases.insert(
+                        local_array_aliases.insert(
                             param.name.clone(),
-                            LocalDataAlias::Primitive {
+                            LocalArrayAlias::Primitive {
                                 base_ptr,
                                 len,
                                 elem_ty: elem,
@@ -1741,7 +1741,7 @@ pub(super) unsafe fn build_event_ir(
                     &mut lctx,
                     &mut locals,
                     &mut local_aliases,
-                    &mut local_data_aliases,
+                    &mut local_array_aliases,
                 )?;
             }
 

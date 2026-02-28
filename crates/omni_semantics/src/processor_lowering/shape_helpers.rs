@@ -126,28 +126,28 @@ pub(super) fn struct_defs_for_scalar_expr_inference(
                 .fields
                 .iter()
                 .map(|field| {
-                    let (ty, data_elem_ty, data_elem_struct) = match &field.ty {
+                    let (ty, array_elem_ty, array_elem_struct) = match &field.ty {
                         FieldType::Scalar(prim) => (TypedFieldType::Scalar(*prim), None, None),
                         FieldType::Generic(_) => {
                             // Generic struct fields are unresolved in this prepass; default like other unresolved scalar contexts.
                             (TypedFieldType::Scalar(PrimitiveType::F32), None, None)
                         }
-                        FieldType::Data(spec) => {
+                        FieldType::Array(spec) => {
                             let (elem_ty, elem_struct) = match &spec.elem {
-                                DataElemType::Primitive(prim) => (Some(*prim), None),
-                                DataElemType::Struct(struct_name) => {
+                                ArrayElemType::Primitive(prim) => (Some(*prim), None),
+                                ArrayElemType::Struct(struct_name) => {
                                     (None, Some(struct_name.clone()))
                                 }
                             };
-                            (TypedFieldType::Data(0), elem_ty, elem_struct)
+                            (TypedFieldType::Array(0), elem_ty, elem_struct)
                         }
                     };
                     TypedStructField {
                         name: field.name.clone(),
                         ty,
                         default: field.default.clone(),
-                        data_elem_ty,
-                        data_elem_struct,
+                        array_elem_ty,
+                        array_elem_struct,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -546,12 +546,12 @@ pub(super) fn compute_proc_shape(
             let _ = eval_data_size_expr(
                 &spec.size,
                 options,
-                &format!("processor '{}.{}' Data size", proc.name, name),
+                &format!("processor '{}.{}' array size", proc.name, name),
                 errors,
             );
             fields.push(StructField {
                 name: name.clone(),
-                ty: FieldType::Data(spec.clone()),
+                ty: FieldType::Array(spec.clone()),
                 default: None,
             });
         }
@@ -580,19 +580,19 @@ pub(super) fn compute_proc_shape(
                         default: None,
                     });
                 }
-                FieldType::Data(spec) => {
+                FieldType::Array(spec) => {
                     let _ = eval_data_size_expr(
                         &spec.size,
                         options,
                         &format!(
-                            "processor '{}.{}' struct field '{}' Data size",
+                            "processor '{}.{}' struct field '{}' array size",
                             proc.name, instance, field.name
                         ),
                         errors,
                     );
                     fields.push(StructField {
                         name: flat_name,
-                        ty: FieldType::Data(spec.clone()),
+                        ty: FieldType::Array(spec.clone()),
                         default: None,
                     });
                 }
@@ -615,10 +615,10 @@ pub(super) fn compute_proc_shape(
         .iter()
         .map(|f| f.name.clone())
         .collect::<HashSet<_>>();
-    let data_field_names = fields
+    let array_field_names = fields
         .iter()
         .filter_map(|f| match f.ty {
-            FieldType::Data(_) => Some(f.name.clone()),
+            FieldType::Array(_) => Some(f.name.clone()),
             _ => None,
         })
         .collect::<HashSet<_>>();
@@ -638,7 +638,7 @@ pub(super) fn compute_proc_shape(
         instance_fields,
         fields,
         field_names,
-        data_field_names,
+        array_field_names,
     }
 }
 
@@ -722,7 +722,7 @@ pub(super) fn build_proc_lowering_shape(
 
     let mut fields = base.fields.clone();
     let mut field_names = base.field_names.clone();
-    let mut data_field_names = base.data_field_names.clone();
+    let mut array_field_names = base.array_field_names.clone();
     let mut field_array_slots = base.field_array_slots.clone();
     let mut nested_proc_array_slots = base.nested_proc_array_slots.clone();
     let mut nested_fields = base.instance_fields.clone();
@@ -779,8 +779,8 @@ pub(super) fn build_proc_lowering_shape(
                 continue;
             }
             nested_field.name = flat_name.clone();
-            if matches!(nested_field.ty, FieldType::Data(_)) {
-                data_field_names.insert(flat_name.clone());
+            if matches!(nested_field.ty, FieldType::Array(_)) {
+                array_field_names.insert(flat_name.clone());
             }
             field_names.insert(flat_name);
             fields.push(nested_field);
@@ -803,7 +803,7 @@ pub(super) fn build_proc_lowering_shape(
         state: base.state,
         fields,
         field_names,
-        data_field_names,
+        array_field_names,
         nested_fields,
     };
     cache.insert(proc_name.to_owned(), resolved.clone());

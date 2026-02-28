@@ -1,11 +1,11 @@
 use super::*;
 
 pub(crate) fn merged_data_vars_for_sample(
-    state_data: &HashMap<String, usize>,
-    local_data_aliases: &HashMap<String, LocalDataAliasInfo>,
+    state_arrays: &HashMap<String, usize>,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
 ) -> HashMap<String, usize> {
-    let mut merged = state_data.clone();
-    for (name, alias) in local_data_aliases {
+    let mut merged = state_arrays.clone();
+    for (name, alias) in local_array_aliases {
         if alias.elem_struct.is_none() {
             merged.insert(name.clone(), alias.len);
         }
@@ -14,14 +14,14 @@ pub(crate) fn merged_data_vars_for_sample(
 }
 
 pub(crate) fn seed_top_level_array_aliases(
-    aliases: &mut HashMap<String, LocalDataAliasInfo>,
+    aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     arrays: &HashMap<String, TypedArrayInfo>,
     writable: bool,
 ) {
     for (name, info) in arrays {
         aliases.insert(
             name.clone(),
-            LocalDataAliasInfo {
+            LocalArrayAliasInfo {
                 len: info.len,
                 elem_ty: info.elem_ty,
                 elem_struct: None,
@@ -35,11 +35,11 @@ pub(crate) fn analyze_sample_stmt(
     stmt: &Stmt,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
-    local_data_aliases: &mut HashMap<String, LocalDataAliasInfo>,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     state_scalars: &HashMap<String, PrimitiveType>,
-    state_data: &HashMap<String, usize>,
-    state_data_struct_roots: &HashMap<String, DataStructRootInfo>,
+    state_arrays: &HashMap<String, usize>,
+    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     struct_instances: &HashMap<String, String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
@@ -52,7 +52,7 @@ pub(crate) fn analyze_sample_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context(stmt, || {
-        let data_vars = merged_data_vars_for_sample(state_data, local_data_aliases);
+        let array_vars = merged_data_vars_for_sample(state_arrays, local_array_aliases);
         match stmt {
             Stmt::Assign {
                 target,
@@ -70,11 +70,11 @@ pub(crate) fn analyze_sample_stmt(
                     expr,
                     known_scalars,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     state_scalars,
-                    state_data,
-                    state_data_struct_roots,
+                    state_arrays,
+                    state_array_struct_roots,
                     struct_instances,
                     input_names,
                     output_names,
@@ -93,12 +93,12 @@ pub(crate) fn analyze_sample_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Sample,
                     },
                     errors,
@@ -135,12 +135,12 @@ pub(crate) fn analyze_sample_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Sample,
                     },
                     errors,
@@ -160,7 +160,7 @@ pub(crate) fn analyze_sample_stmt(
                 require_bool_type(cond_ty, "if condition", errors);
                 let mut then_known = known_scalars.clone();
                 let mut then_aliases = local_aliases.clone();
-                let mut then_data_aliases = local_data_aliases.clone();
+                let mut then_data_aliases = local_array_aliases.clone();
                 for nested in then_branch {
                     analyze_sample_stmt(
                         nested,
@@ -169,8 +169,8 @@ pub(crate) fn analyze_sample_stmt(
                         &mut then_data_aliases,
                         locals,
                         state_scalars,
-                        state_data,
-                        state_data_struct_roots,
+                        state_arrays,
+                        state_array_struct_roots,
                         struct_instances,
                         input_names,
                         output_names,
@@ -185,7 +185,7 @@ pub(crate) fn analyze_sample_stmt(
                 }
                 let mut else_known = known_scalars.clone();
                 let mut else_aliases = local_aliases.clone();
-                let mut else_data_aliases = local_data_aliases.clone();
+                let mut else_data_aliases = local_array_aliases.clone();
                 for nested in else_branch {
                     analyze_sample_stmt(
                         nested,
@@ -194,8 +194,8 @@ pub(crate) fn analyze_sample_stmt(
                         &mut else_data_aliases,
                         locals,
                         state_scalars,
-                        state_data,
-                        state_data_struct_roots,
+                        state_arrays,
+                        state_array_struct_roots,
                         struct_instances,
                         input_names,
                         output_names,
@@ -223,12 +223,12 @@ pub(crate) fn analyze_sample_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Sample,
                     },
                     errors,
@@ -239,12 +239,12 @@ pub(crate) fn analyze_sample_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Sample,
                     },
                     errors,
@@ -256,12 +256,12 @@ pub(crate) fn analyze_sample_stmt(
                             known_scalars,
                             locals,
                             outputs: output_names,
-                            data_vars: &data_vars,
+                            array_vars: &array_vars,
                             param_structs: &HashMap::new(),
                             struct_instances,
                             struct_defs,
                             fn_signatures,
-                            allow_data_ctor: false,
+                            allow_array_ctor: false,
                             scope: ScopeKind::Sample,
                         },
                         errors,
@@ -271,7 +271,7 @@ pub(crate) fn analyze_sample_stmt(
                     start,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -285,7 +285,7 @@ pub(crate) fn analyze_sample_stmt(
                     end,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -300,7 +300,7 @@ pub(crate) fn analyze_sample_stmt(
                         step_expr,
                         state_scalars,
                         None,
-                        local_data_aliases,
+                        local_array_aliases,
                         locals,
                         input_names,
                         output_names,
@@ -320,7 +320,7 @@ pub(crate) fn analyze_sample_stmt(
                 loop_locals.insert(var.clone());
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_data_aliases.clone();
+                let mut loop_data_aliases = local_array_aliases.clone();
                 for nested in body {
                     analyze_sample_stmt(
                         nested,
@@ -329,8 +329,8 @@ pub(crate) fn analyze_sample_stmt(
                         &mut loop_data_aliases,
                         &loop_locals,
                         state_scalars,
-                        state_data,
-                        state_data_struct_roots,
+                        state_arrays,
+                        state_array_struct_roots,
                         struct_instances,
                         input_names,
                         output_names,
@@ -351,12 +351,12 @@ pub(crate) fn analyze_sample_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Sample,
                     },
                     errors,
@@ -365,7 +365,7 @@ pub(crate) fn analyze_sample_stmt(
                     cond,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -377,7 +377,7 @@ pub(crate) fn analyze_sample_stmt(
                 require_bool_type(cond_ty, "while condition", errors);
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_data_aliases.clone();
+                let mut loop_data_aliases = local_array_aliases.clone();
                 for nested in body {
                     analyze_sample_stmt(
                         nested,
@@ -386,8 +386,8 @@ pub(crate) fn analyze_sample_stmt(
                         &mut loop_data_aliases,
                         locals,
                         state_scalars,
-                        state_data,
-                        state_data_struct_roots,
+                        state_arrays,
+                        state_array_struct_roots,
                         struct_instances,
                         input_names,
                         output_names,
@@ -430,11 +430,11 @@ fn analyze_assign_sample(
     expr: &Expr,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
-    local_data_aliases: &mut HashMap<String, LocalDataAliasInfo>,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     state_scalars: &HashMap<String, PrimitiveType>,
-    state_data: &HashMap<String, usize>,
-    state_data_struct_roots: &HashMap<String, DataStructRootInfo>,
+    state_arrays: &HashMap<String, usize>,
+    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     struct_instances: &HashMap<String, String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
@@ -445,7 +445,7 @@ fn analyze_assign_sample(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let data_vars = merged_data_vars_for_sample(state_data, local_data_aliases);
+    let array_vars = merged_data_vars_for_sample(state_arrays, local_array_aliases);
     match target {
         AssignTarget::Index { base, index } => {
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
@@ -455,20 +455,20 @@ fn analyze_assign_sample(
                     0,
                 ));
             }
-            if state_data_struct_roots.contains_key(base) {
+            if state_array_struct_roots.contains_key(base) {
                 errors.push(Diagnostic::semantic(
                     format!(
-                        "indexed assignment target '{base}[...]' is Data[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
+                        "indexed assignment target '{base}[...]' is array[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
                     ),
                     0,
                     0,
                 ));
                 return;
             }
-            if let Some(alias) = local_data_aliases.get(base) {
+            if let Some(alias) = local_array_aliases.get(base) {
                 if !alias.writable {
                     errors.push(Diagnostic::semantic(
-                        format!("cannot assign to immutable Data alias '{base}'"),
+                        format!("cannot assign to immutable array alias '{base}'"),
                         0,
                         0,
                     ));
@@ -477,7 +477,7 @@ fn analyze_assign_sample(
                 if alias.elem_struct.is_some() {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "indexed assignment target '{base}[...]' is Data[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
+                            "indexed assignment target '{base}[...]' is array[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
                         ),
                         0,
                         0,
@@ -485,12 +485,12 @@ fn analyze_assign_sample(
                     return;
                 }
             }
-            if !state_data.contains_key(base)
-                && !local_data_aliases.contains_key(base)
+            if !state_arrays.contains_key(base)
+                && !local_array_aliases.contains_key(base)
                 && !has_declared_buffer_symbol(known_scalars, base)
             {
                 errors.push(Diagnostic::semantic(
-                    format!("indexed assignment target '{base}[...]' is not a Data/buffer symbol"),
+                    format!("indexed assignment target '{base}[...]' is not a array/buffer symbol"),
                     0,
                     0,
                 ));
@@ -509,12 +509,12 @@ fn analyze_assign_sample(
                     known_scalars,
                     locals,
                     outputs: output_names,
-                    data_vars: &data_vars,
+                    array_vars: &array_vars,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
                     fn_signatures,
-                    allow_data_ctor: false,
+                    allow_array_ctor: false,
                     scope: ScopeKind::Sample,
                 },
                 errors,
@@ -525,12 +525,12 @@ fn analyze_assign_sample(
                     known_scalars,
                     locals,
                     outputs: output_names,
-                    data_vars: &data_vars,
+                    array_vars: &array_vars,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
                     fn_signatures,
-                    allow_data_ctor: false,
+                    allow_array_ctor: false,
                     scope: ScopeKind::Sample,
                 },
                 errors,
@@ -539,7 +539,7 @@ fn analyze_assign_sample(
                 index,
                 state_scalars,
                 None,
-                local_data_aliases,
+                local_array_aliases,
                 locals,
                 input_names,
                 output_names,
@@ -548,12 +548,12 @@ fn analyze_assign_sample(
                 struct_defs,
                 errors,
             );
-            require_numeric_type(index_ty, "Data index expression", errors);
+            require_numeric_type(index_ty, "array index expression", errors);
             let expr_ty = infer_expr_type_for_semantics_with_local_data(
                 expr,
                 state_scalars,
                 None,
-                local_data_aliases,
+                local_array_aliases,
                 locals,
                 input_names,
                 output_names,
@@ -562,7 +562,7 @@ fn analyze_assign_sample(
                 struct_defs,
                 errors,
             );
-            let expected_ty = local_data_aliases
+            let expected_ty = local_array_aliases
                 .get(base)
                 .map(|a| a.elem_ty)
                 .or_else(|| {
@@ -572,7 +572,7 @@ fn analyze_assign_sample(
                     get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
                 })
                 .unwrap_or(PrimitiveType::F32);
-            require_assignable_type(expr_ty, expected_ty, "Data/buffer write", errors);
+            require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
         }
         AssignTarget::Var(name) => {
             if let Some(param) = generic_decl_ty {
@@ -605,11 +605,11 @@ fn analyze_assign_sample(
                     0,
                 ));
             }
-            if let Expr::DataCtor { spec, init } = expr {
+            if let Expr::ArrayCtor { spec, init } = expr {
                 if is_typed_decl {
                     if decl_ty.is_some() {
                         errors.push(Diagnostic::semantic(
-                            "typed declaration cannot combine scalar type annotation with Data constructor",
+                            "typed declaration cannot combine scalar type annotation with array constructor",
                             0,
                             0,
                         ));
@@ -625,10 +625,10 @@ fn analyze_assign_sample(
                     }
                     if known_scalars.contains(name)
                         || local_aliases.contains_key(name)
-                        || local_data_aliases.contains_key(name)
+                        || local_array_aliases.contains_key(name)
                         || state_scalars.contains_key(name)
-                        || state_data.contains_key(name)
-                        || state_data_struct_roots.contains_key(name)
+                        || state_arrays.contains_key(name)
+                        || state_array_struct_roots.contains_key(name)
                         || struct_instances.contains_key(name)
                         || input_names.contains(name)
                         || output_names.contains(name)
@@ -649,10 +649,10 @@ fn analyze_assign_sample(
                         return;
                     };
                     match &spec.elem {
-                        DataElemType::Primitive(elem_ty) => {
-                            local_data_aliases.insert(
+                        ArrayElemType::Primitive(elem_ty) => {
+                            local_array_aliases.insert(
                                 name.clone(),
-                                LocalDataAliasInfo {
+                                LocalArrayAliasInfo {
                                     len: size_value,
                                     elem_ty: *elem_ty,
                                     elem_struct: None,
@@ -677,12 +677,12 @@ fn analyze_assign_sample(
                                             known_scalars,
                                             locals,
                                             outputs: output_names,
-                                            data_vars: &data_vars,
+                                            array_vars: &array_vars,
                                             param_structs: &HashMap::new(),
                                             struct_instances,
                                             struct_defs,
                                             fn_signatures,
-                                            allow_data_ctor: false,
+                                            allow_array_ctor: false,
                                             scope: ScopeKind::Sample,
                                         },
                                         errors,
@@ -691,7 +691,7 @@ fn analyze_assign_sample(
                                         value,
                                         state_scalars,
                                         None,
-                                        local_data_aliases,
+                                        local_array_aliases,
                                         locals,
                                         input_names,
                                         output_names,
@@ -711,7 +711,7 @@ fn analyze_assign_sample(
                                 }
                             }
                         }
-                        DataElemType::Struct(struct_name) => {
+                        ArrayElemType::Struct(struct_name) => {
                             errors.push(Diagnostic::semantic(
                                 format!(
                                     "typed array declaration '{name}: {struct_name}[N]' is not yet supported in sample/block"
@@ -745,10 +745,10 @@ fn analyze_assign_sample(
                 }
                 if known_scalars.contains(name)
                     || local_aliases.contains_key(name)
-                    || local_data_aliases.contains_key(name)
+                    || local_array_aliases.contains_key(name)
                     || state_scalars.contains_key(name)
-                    || state_data.contains_key(name)
-                    || state_data_struct_roots.contains_key(name)
+                    || state_arrays.contains_key(name)
+                    || state_array_struct_roots.contains_key(name)
                     || struct_instances.contains_key(name)
                     || input_names.contains(name)
                     || output_names.contains(name)
@@ -776,12 +776,12 @@ fn analyze_assign_sample(
                             known_scalars,
                             locals,
                             outputs: output_names,
-                            data_vars: &data_vars,
+                            array_vars: &array_vars,
                             param_structs: &HashMap::new(),
                             struct_instances,
                             struct_defs,
                             fn_signatures,
-                            allow_data_ctor: false,
+                            allow_array_ctor: false,
                             scope: ScopeKind::Sample,
                         },
                         errors,
@@ -791,7 +791,7 @@ fn analyze_assign_sample(
                     &values[0],
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -806,7 +806,7 @@ fn analyze_assign_sample(
                         value,
                         state_scalars,
                         None,
-                        local_data_aliases,
+                        local_array_aliases,
                         locals,
                         input_names,
                         output_names,
@@ -822,9 +822,9 @@ fn analyze_assign_sample(
                         errors,
                     );
                 }
-                local_data_aliases.insert(
+                local_array_aliases.insert(
                     name.clone(),
-                    LocalDataAliasInfo {
+                    LocalArrayAliasInfo {
                         len: values.len(),
                         elem_ty,
                         elem_struct: None,
@@ -835,9 +835,9 @@ fn analyze_assign_sample(
             }
 
             if local_aliases.contains_key(name) {
-                if matches!(expr, Expr::DataCtor { .. }) {
+                if matches!(expr, Expr::ArrayCtor { .. }) {
                     errors.push(Diagnostic::semantic(
-                        "Data[...] construction is only allowed in init",
+                        "array[...] construction is only allowed in init",
                         0,
                         0,
                     ));
@@ -857,12 +857,12 @@ fn analyze_assign_sample(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Sample,
                     },
                     errors,
@@ -871,7 +871,7 @@ fn analyze_assign_sample(
                     expr,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -889,9 +889,9 @@ fn analyze_assign_sample(
                 known_scalars.insert(name.clone());
                 return;
             }
-            if local_data_aliases.contains_key(name) {
+            if local_array_aliases.contains_key(name) {
                 errors.push(Diagnostic::semantic(
-                    format!("Data alias '{name}' must be written using '{name}[index] = value'"),
+                    format!("array alias '{name}' must be written using '{name}[index] = value'"),
                     0,
                     0,
                 ));
@@ -934,12 +934,12 @@ fn analyze_assign_sample(
                                 known_scalars,
                                 locals,
                                 outputs: output_names,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs: &HashMap::new(),
                                 struct_instances,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Sample,
                             },
                             errors,
@@ -948,7 +948,7 @@ fn analyze_assign_sample(
                             expr,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -964,9 +964,9 @@ fn analyze_assign_sample(
                             errors,
                         );
                     }
-                    TypedFieldType::Data(_) => {
+                    TypedFieldType::Array(_) => {
                         errors.push(Diagnostic::semantic(
-                            format!("Data field '{flat}' must be accessed with index syntax"),
+                            format!("array field '{flat}' must be accessed with index syntax"),
                             0,
                             0,
                         ));
@@ -977,36 +977,37 @@ fn analyze_assign_sample(
 
             if !output_names.contains(name)
                 && !state_scalars.contains_key(name)
-                && !state_data.contains_key(name)
-                && !local_data_aliases.contains_key(name)
-                && !state_data_struct_roots.contains_key(name)
+                && !state_arrays.contains_key(name)
+                && !local_array_aliases.contains_key(name)
+                && !state_array_struct_roots.contains_key(name)
                 && !struct_instances.contains_key(name)
                 && !input_names.contains(name)
                 && !param_names.contains(name)
             {
                 if let Expr::Index { base, index } = expr {
-                    let mut is_scalar_data_base = state_data.contains_key(base);
-                    let mut data_struct_elem_struct = state_data_struct_roots
+                    let mut is_scalar_data_base = state_arrays.contains_key(base);
+                    let mut array_struct_elem_struct = state_array_struct_roots
                         .get(base)
                         .map(|r| r.struct_name.clone());
-                    if let Some(alias) = local_data_aliases.get(base) {
+                    if let Some(alias) = local_array_aliases.get(base) {
                         if let Some(elem_struct) = &alias.elem_struct {
-                            data_struct_elem_struct = Some(elem_struct.clone());
+                            array_struct_elem_struct = Some(elem_struct.clone());
                         } else {
                             is_scalar_data_base = true;
                         }
                     }
-                    if !is_scalar_data_base && data_struct_elem_struct.is_none() {
+                    if !is_scalar_data_base && array_struct_elem_struct.is_none() {
                         if let Some((root, field)) = split_field_path(base, errors) {
                             if let Some(struct_name) = struct_instances.get(root) {
                                 if let Some(fields) = struct_defs.get(struct_name) {
                                     if let Some(field_decl) =
                                         fields.iter().find(|f| f.name == field)
                                     {
-                                        if matches!(field_decl.ty, TypedFieldType::Data(_)) {
-                                            if let Some(elem_struct) = &field_decl.data_elem_struct
+                                        if matches!(field_decl.ty, TypedFieldType::Array(_)) {
+                                            if let Some(elem_struct) = &field_decl.array_elem_struct
                                             {
-                                                data_struct_elem_struct = Some(elem_struct.clone());
+                                                array_struct_elem_struct =
+                                                    Some(elem_struct.clone());
                                             } else {
                                                 is_scalar_data_base = true;
                                             }
@@ -1016,19 +1017,19 @@ fn analyze_assign_sample(
                             }
                         }
                     }
-                    if is_scalar_data_base || data_struct_elem_struct.is_some() {
+                    if is_scalar_data_base || array_struct_elem_struct.is_some() {
                         validate_expr(
                             index,
                             ExprEnv {
                                 known_scalars,
                                 locals,
                                 outputs: output_names,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs: &HashMap::new(),
                                 struct_instances,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Sample,
                             },
                             errors,
@@ -1037,7 +1038,7 @@ fn analyze_assign_sample(
                             index,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -1046,16 +1047,16 @@ fn analyze_assign_sample(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(idx_ty, "Data index expression", errors);
-                        if let Some(struct_name) = data_struct_elem_struct {
+                        require_numeric_type(idx_ty, "array index expression", errors);
+                        if let Some(struct_name) = array_struct_elem_struct {
                             if !add_struct_element_alias_bindings(
                                 name,
                                 &struct_name,
                                 struct_defs,
                                 known_scalars,
                                 local_aliases,
-                                local_data_aliases,
-                                &format!("Data alias '{name}' from '{base}[...]'"),
+                                local_array_aliases,
+                                &format!("array alias '{name}' from '{base}[...]'"),
                                 errors,
                             ) {
                                 return;
@@ -1083,9 +1084,9 @@ fn analyze_assign_sample(
                     0,
                 ));
             }
-            if matches!(expr, Expr::DataCtor { .. }) {
+            if matches!(expr, Expr::ArrayCtor { .. }) {
                 errors.push(Diagnostic::semantic(
-                    "Data[...] construction is only allowed in init",
+                    "array[...] construction is only allowed in init",
                     0,
                     0,
                 ));
@@ -1099,16 +1100,16 @@ fn analyze_assign_sample(
                     ));
                 }
             }
-            if state_data.contains_key(name) || state_data_struct_roots.contains_key(name) {
+            if state_arrays.contains_key(name) || state_array_struct_roots.contains_key(name) {
                 errors.push(Diagnostic::semantic(
-                    format!("Data symbol '{name}' must be written using '{name}[index] = value'"),
+                    format!("array symbol '{name}' must be written using '{name}[index] = value'"),
                     0,
                     0,
                 ));
             }
-            if local_data_aliases.contains_key(name) {
+            if local_array_aliases.contains_key(name) {
                 errors.push(Diagnostic::semantic(
-                    format!("Data alias '{name}' must be written using '{name}[index] = value'"),
+                    format!("array alias '{name}' must be written using '{name}[index] = value'"),
                     0,
                     0,
                 ));
@@ -1142,12 +1143,12 @@ fn analyze_assign_sample(
                     known_scalars,
                     locals,
                     outputs: output_names,
-                    data_vars: &data_vars,
+                    array_vars: &array_vars,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
                     fn_signatures,
-                    allow_data_ctor: false,
+                    allow_array_ctor: false,
                     scope: ScopeKind::Sample,
                 },
                 errors,
@@ -1156,7 +1157,7 @@ fn analyze_assign_sample(
                 expr,
                 state_scalars,
                 None,
-                local_data_aliases,
+                local_array_aliases,
                 locals,
                 input_names,
                 output_names,
@@ -1167,12 +1168,12 @@ fn analyze_assign_sample(
             );
             let can_track_local = !output_names.contains(name)
                 && !state_scalars.contains_key(name)
-                && !state_data.contains_key(name)
-                && !state_data_struct_roots.contains_key(name)
+                && !state_arrays.contains_key(name)
+                && !state_array_struct_roots.contains_key(name)
                 && !struct_instances.contains_key(name)
                 && !input_names.contains(name)
                 && !param_names.contains(name)
-                && !local_data_aliases.contains_key(name)
+                && !local_array_aliases.contains_key(name)
                 && !locals.contains(name)
                 && !is_builtin_constant_name(name);
             let target_ty = if output_names.contains(name) {

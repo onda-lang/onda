@@ -14,7 +14,7 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
             PrimitiveType::I64
         }),
         Expr::Bool(_) => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral(_) | Expr::DataCtor { .. } => None,
+        Expr::ArrayLiteral(_) | Expr::ArrayCtor { .. } => None,
         Expr::Var(name) => builtin_constant_type(name).or_else(|| locals.get(name).copied()),
         Expr::Index { base, .. } => locals.get(base).copied().or(Some(PrimitiveType::F32)),
         Expr::Cast { to, .. } => Some(*to),
@@ -71,7 +71,7 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
             }
         }
         Expr::UserCall { name, args, .. } => {
-            if parse_data_len_instance_base(name).is_some()
+            if parse_array_len_instance_base(name).is_some()
                 || parse_buffer_chans_instance_base(name).is_some()
             {
                 return Some(PrimitiveType::I32);
@@ -130,7 +130,7 @@ fn infer_stmt_returns_for_def_return_inference(
                 if split_simple_field_path(name).is_some() {
                     continue;
                 }
-                if matches!(expr, Expr::DataCtor { .. }) {
+                if matches!(expr, Expr::ArrayCtor { .. }) {
                     continue;
                 }
                 let inferred =

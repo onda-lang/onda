@@ -276,18 +276,18 @@ pub struct StructField {
 pub enum FieldType {
     Scalar(PrimitiveType),
     Generic(String),
-    Data(DataTypeSpec),
+    Array(ArrayTypeSpec),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum DataElemType {
+pub enum ArrayElemType {
     Primitive(PrimitiveType),
     Struct(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DataTypeSpec {
-    pub elem: DataElemType,
+pub struct ArrayTypeSpec {
+    pub elem: ArrayElemType,
     pub size: Box<Expr>,
 }
 
@@ -377,8 +377,8 @@ pub enum Expr {
         base: String,
         index: Box<Expr>,
     },
-    DataCtor {
-        spec: DataTypeSpec,
+    ArrayCtor {
+        spec: ArrayTypeSpec,
         init: Option<Vec<Expr>>,
     },
     Compare {

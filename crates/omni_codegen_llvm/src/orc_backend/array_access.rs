@@ -6,15 +6,15 @@ pub(super) unsafe fn lower_data_element_ptr(
     index_expr: &Expr,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
-) -> Result<DataElementPtr, Diagnostic> {
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+) -> Result<ArrayElementPtr, Diagnostic> {
     lower_data_element_ptr_with_bounds_mode(
         ctx,
         base,
         index_expr,
         locals,
         local_aliases,
-        local_data_aliases,
+        local_array_aliases,
         true,
     )
 }
@@ -25,15 +25,15 @@ pub(super) unsafe fn lower_data_element_ptr_unchecked(
     index_expr: &Expr,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
-) -> Result<DataElementPtr, Diagnostic> {
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+) -> Result<ArrayElementPtr, Diagnostic> {
     lower_data_element_ptr_with_bounds_mode(
         ctx,
         base,
         index_expr,
         locals,
         local_aliases,
-        local_data_aliases,
+        local_array_aliases,
         false,
     )
 }
@@ -44,10 +44,10 @@ pub(super) unsafe fn lower_array_index_i32(
     len: usize,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     clamp_index: bool,
 ) -> Result<LLVMValueRef, Diagnostic> {
-    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_data_aliases)?;
+    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
     let raw_index_i = cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"arr_idx_i32\0");
     if clamp_index {
         clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, len)
@@ -62,7 +62,7 @@ pub(super) unsafe fn lower_input_array_index_read(
     index_expr: &Expr,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     clamp_index: bool,
 ) -> Result<OrcValue, Diagnostic> {
     if info.offset > i32::MAX as usize {
@@ -76,7 +76,7 @@ pub(super) unsafe fn lower_input_array_index_read(
         info.len,
         locals,
         local_aliases,
-        local_data_aliases,
+        local_array_aliases,
         clamp_index,
     )?;
     let offset_v = LLVMConstInt(ctx.i32_ty, info.offset as u64, 0);
@@ -218,7 +218,7 @@ pub(super) unsafe fn lower_param_array_index_read(
     index_expr: &Expr,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     clamp_index: bool,
 ) -> Result<OrcValue, Diagnostic> {
     let elem_bytes = primitive_type_bytes(info.elem_ty);
@@ -238,7 +238,7 @@ pub(super) unsafe fn lower_param_array_index_read(
         info.len,
         locals,
         local_aliases,
-        local_data_aliases,
+        local_array_aliases,
         clamp_index,
     )?;
     let offset_v = LLVMConstInt(ctx.i32_ty, base_byte_offset as u64, 0);
@@ -282,9 +282,9 @@ pub(super) unsafe fn lower_output_array_element_ptr(
     index_expr: &Expr,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     clamp_index: bool,
-) -> Result<DataElementPtr, Diagnostic> {
+) -> Result<ArrayElementPtr, Diagnostic> {
     let info = *ctx
         .output_arrays
         .get(base)
@@ -298,10 +298,10 @@ pub(super) unsafe fn lower_output_array_element_ptr(
         info.len,
         locals,
         local_aliases,
-        local_data_aliases,
+        local_array_aliases,
         clamp_index,
     )?;
-    Ok(DataElementPtr {
+    Ok(ArrayElementPtr {
         ptr: build_f32_ptr_offset(
             ctx.builder,
             llvm_ty_for_primitive(ctx.context, info.elem_ty),
@@ -366,9 +366,9 @@ pub(super) unsafe fn lower_buffer_element_ptr(
     index_expr: &Expr,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     clamp_index: bool,
-) -> Result<DataElementPtr, Diagnostic> {
+) -> Result<ArrayElementPtr, Diagnostic> {
     let Some(buf_idx) = ctx.buffer_index.get(base).copied() else {
         return Err(Diagnostic::internal(format!(
             "unknown buffer symbol '{base}' in ORC lowering"
@@ -380,7 +380,7 @@ pub(super) unsafe fn lower_buffer_element_ptr(
         ))
     })?;
 
-    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_data_aliases)?;
+    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
     let raw_index_i = cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"buf_idx_i32\0");
     let total_len = load_orc_buffer_total_len_i32(ctx, base)?;
     let final_index = if clamp_index {
@@ -411,7 +411,7 @@ pub(super) unsafe fn lower_buffer_element_ptr(
         LLVMPointerType(llvm_ty_for_primitive(ctx.context, elem_ty), 0),
         b"buf_ptr_typed\0".as_ptr().cast(),
     );
-    Ok(DataElementPtr {
+    Ok(ArrayElementPtr {
         ptr: build_f32_ptr_offset(
             ctx.builder,
             llvm_ty_for_primitive(ctx.context, elem_ty),
@@ -455,11 +455,17 @@ pub(super) unsafe fn lower_buffer_element_ptr_2d(
     sample_expr: &Expr,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     clamp_index: bool,
-) -> Result<DataElementPtr, Diagnostic> {
-    let channel = lower_expr(channel_expr, ctx, locals, local_aliases, local_data_aliases)?;
-    let sample = lower_expr(sample_expr, ctx, locals, local_aliases, local_data_aliases)?;
+) -> Result<ArrayElementPtr, Diagnostic> {
+    let channel = lower_expr(
+        channel_expr,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+    )?;
+    let sample = lower_expr(sample_expr, ctx, locals, local_aliases, local_array_aliases)?;
     let channel_i = cast_orc_value_to(ctx, channel, PrimitiveType::I32, b"buf_ch_i32\0");
     let sample_i = cast_orc_value_to(ctx, sample, PrimitiveType::I32, b"buf_sample_i32\0");
     let channels = load_orc_buffer_channels_i32(ctx, base)?;
@@ -513,7 +519,7 @@ pub(super) unsafe fn lower_buffer_element_ptr_2d(
         LLVMPointerType(llvm_ty_for_primitive(ctx.context, elem_ty), 0),
         b"buf_ptr_typed2\0".as_ptr().cast(),
     );
-    Ok(DataElementPtr {
+    Ok(ArrayElementPtr {
         ptr: build_f32_ptr_offset(
             ctx.builder,
             llvm_ty_for_primitive(ctx.context, elem_ty),
@@ -531,47 +537,48 @@ pub(super) unsafe fn lower_data_element_ptr_with_bounds_mode(
     index_expr: &Expr,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     clamp_index: bool,
-) -> Result<DataElementPtr, Diagnostic> {
-    if ctx.data_struct_len.contains_key(base) {
+) -> Result<ArrayElementPtr, Diagnostic> {
+    if ctx.array_struct_len.contains_key(base) {
         return Err(Diagnostic::internal(format!(
-            "Data symbol '{base}[...]' has struct elements; index it via an alias assignment first"
+            "array symbol '{base}[...]' has struct elements; index it via an alias assignment first"
         )));
     }
 
-    let (data_base_ptr, data_len, data_elem_ty) = if let Some(alias) = local_data_aliases.get(base)
+    let (array_base_ptr, array_len, array_elem_ty) = if let Some(alias) =
+        local_array_aliases.get(base)
     {
         match alias {
-            LocalDataAlias::Primitive {
+            LocalArrayAlias::Primitive {
                 base_ptr,
                 len,
                 elem_ty,
             } => (*base_ptr, *len, *elem_ty),
-            LocalDataAlias::Struct { .. } => {
+            LocalArrayAlias::Struct { .. } => {
                 return Err(Diagnostic::internal(format!(
-                    "Data alias '{base}[...]' has struct elements; index it via an alias assignment first"
+                    "array alias '{base}[...]' has struct elements; index it via an alias assignment first"
                 )));
             }
         }
     } else {
-        let data_len = *ctx.data_len.get(base).ok_or_else(|| {
+        let array_len = *ctx.array_len.get(base).ok_or_else(|| {
             Diagnostic::internal(format!(
-                "missing Data length for symbol '{base}' in ORC lowering"
+                "missing array length for symbol '{base}' in ORC lowering"
             ))
         })?;
-        let data_elem_ty = *ctx.data_elem_ty.get(base).ok_or_else(|| {
+        let array_elem_ty = *ctx.array_elem_ty.get(base).ok_or_else(|| {
             Diagnostic::internal(format!(
-                "missing Data element type for symbol '{base}' in ORC lowering"
+                "missing array element type for symbol '{base}' in ORC lowering"
             ))
         })?;
-        let data_base_ptr = load_data_base_ptr_for_symbol(ctx, base)?;
-        (data_base_ptr, data_len, data_elem_ty)
+        let array_base_ptr = load_data_base_ptr_for_symbol(ctx, base)?;
+        (array_base_ptr, array_len, array_elem_ty)
     };
 
-    if data_len == 0 {
+    if array_len == 0 {
         return Err(Diagnostic::internal(format!(
-            "Data symbol '{base}' has zero length in ORC lowering"
+            "array symbol '{base}' has zero length in ORC lowering"
         )));
     }
 
@@ -580,31 +587,32 @@ pub(super) unsafe fn lower_data_element_ptr_with_bounds_mode(
             LLVMConstInt(
                 ctx.i32_ty,
                 checked_constant_data_index_u64(
-                    data_len,
+                    array_len,
                     const_idx,
-                    &format!("Data index in ORC lowering for '{base}'"),
+                    &format!("array index in ORC lowering for '{base}'"),
                 )?,
                 0,
             )
         } else {
-            let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_data_aliases)?;
+            let raw_index =
+                lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
             let raw_index_i =
                 cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0");
-            clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, data_len)?
+            clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, array_len)?
         }
     } else {
-        let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_data_aliases)?;
+        let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
         cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0")
     };
-    Ok(DataElementPtr {
+    Ok(ArrayElementPtr {
         ptr: build_f32_ptr_offset(
             ctx.builder,
-            llvm_ty_for_primitive(ctx.context, data_elem_ty),
-            data_base_ptr,
+            llvm_ty_for_primitive(ctx.context, array_elem_ty),
+            array_base_ptr,
             final_index,
-            b"data_elem_ptr\0",
+            b"array_elem_ptr\0",
         ),
-        elem_ty: data_elem_ty,
+        elem_ty: array_elem_ty,
     })
 }
 
@@ -612,9 +620,9 @@ pub(super) unsafe fn load_data_base_ptr_for_symbol(
     ctx: &mut LoweringCtx<'_>,
     base: &str,
 ) -> Result<LLVMValueRef, Diagnostic> {
-    ctx.data_base_ptrs.get(base).copied().ok_or_else(|| {
+    ctx.array_base_ptrs.get(base).copied().ok_or_else(|| {
         Diagnostic::internal(format!(
-            "unknown Data symbol '{base}' in ORC indexed lowering"
+            "unknown array symbol '{base}' in ORC indexed lowering"
         ))
     })
 }
@@ -625,9 +633,9 @@ pub(super) unsafe fn lower_clamped_data_index(
     len: usize,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<LLVMValueRef, Diagnostic> {
-    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_data_aliases)?;
+    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
     let raw_index_i = cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0");
     clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, len)
 }
@@ -640,7 +648,7 @@ pub(super) unsafe fn build_data_segment_start_index(
 ) -> Result<LLVMValueRef, Diagnostic> {
     if field_len > i32::MAX as usize {
         return Err(Diagnostic::internal(format!(
-            "nested Data field length {field_len} exceeds supported i32 index range"
+            "nested array field length {field_len} exceeds supported i32 index range"
         )));
     }
     let stride = LLVMConstInt(i32_ty, field_len as u64, 0);
@@ -648,7 +656,7 @@ pub(super) unsafe fn build_data_segment_start_index(
         builder,
         parent_index,
         stride,
-        b"data_seg_start_idx\0".as_ptr().cast(),
+        b"array_seg_start_idx\0".as_ptr().cast(),
     ))
 }
 
@@ -659,11 +667,11 @@ pub(super) unsafe fn load_data_ptr_at_index(
     index: LLVMValueRef,
     gep_name: &[u8],
 ) -> Result<LLVMValueRef, Diagnostic> {
-    let data_base_ptr = load_data_base_ptr_for_symbol(ctx, symbol)?;
+    let array_base_ptr = load_data_base_ptr_for_symbol(ctx, symbol)?;
     Ok(build_f32_ptr_offset(
         ctx.builder,
         llvm_ty_for_primitive(ctx.context, elem_ty),
-        data_base_ptr,
+        array_base_ptr,
         index,
         gep_name,
     ))
@@ -677,21 +685,21 @@ pub(super) unsafe fn bind_struct_data_element_aliases(
     global_index: LLVMValueRef,
     ctx: &mut LoweringCtx<'_>,
     local_aliases: &mut HashMap<String, AliasSlot>,
-    local_data_aliases: &mut HashMap<String, LocalDataAlias>,
+    local_array_aliases: &mut HashMap<String, LocalArrayAlias>,
 ) -> Result<(), Diagnostic> {
     let fields = ctx.struct_fields.get(struct_name).ok_or_else(|| {
         Diagnostic::internal(format!(
-            "unknown struct '{}' while creating Data alias '{}'",
+            "unknown struct '{}' while creating array alias '{}'",
             struct_name, alias_name
         ))
     })?;
     for field in fields {
-        let data_field_base = format!("{root_base}.{}", field.name);
+        let array_field_base = format!("{root_base}.{}", field.name);
         match field.ty {
             TypedFieldType::Scalar(prim) => {
-                let data_ptr = load_data_ptr_at_index(
+                let array_ptr = load_data_ptr_at_index(
                     ctx,
-                    &data_field_base,
+                    &array_field_base,
                     prim,
                     global_index,
                     b"struct_data_elem_ptr\0",
@@ -699,45 +707,45 @@ pub(super) unsafe fn bind_struct_data_element_aliases(
                 local_aliases.insert(
                     format!("{alias_name}.{}", field.name),
                     AliasSlot {
-                        ptr: data_ptr,
+                        ptr: array_ptr,
                         ty: prim,
                     },
                 );
             }
-            TypedFieldType::Data(field_len) => {
+            TypedFieldType::Array(field_len) => {
                 let start_idx = build_data_segment_start_index(
                     ctx.builder,
                     ctx.i32_ty,
                     global_index,
                     field_len,
                 )?;
-                if let Some(elem_struct) = &field.data_elem_struct {
-                    if !ctx.data_struct_len.contains_key(&data_field_base) {
+                if let Some(elem_struct) = &field.array_elem_struct {
+                    if !ctx.array_struct_len.contains_key(&array_field_base) {
                         return Err(Diagnostic::internal(format!(
-                            "missing nested Data[Struct] metadata for symbol '{data_field_base}'"
+                            "missing nested array[Struct] metadata for symbol '{array_field_base}'"
                         )));
                     }
-                    local_data_aliases.insert(
+                    local_array_aliases.insert(
                         format!("{alias_name}.{}", field.name),
-                        LocalDataAlias::Struct {
-                            root_base: data_field_base,
+                        LocalArrayAlias::Struct {
+                            root_base: array_field_base,
                             elem_struct: elem_struct.clone(),
                             len: field_len,
                             start_index: start_idx,
                         },
                     );
                 } else {
-                    let elem_ty = field.data_elem_ty.unwrap_or(PrimitiveType::F32);
+                    let elem_ty = field.array_elem_ty.unwrap_or(PrimitiveType::F32);
                     let seg_base_ptr = load_data_ptr_at_index(
                         ctx,
-                        &data_field_base,
+                        &array_field_base,
                         elem_ty,
                         start_idx,
                         b"struct_data_seg_ptr\0",
                     )?;
-                    local_data_aliases.insert(
+                    local_array_aliases.insert(
                         format!("{alias_name}.{}", field.name),
-                        LocalDataAlias::Primitive {
+                        LocalArrayAlias::Primitive {
                             base_ptr: seg_base_ptr,
                             len: field_len,
                             elem_ty,
@@ -759,7 +767,7 @@ pub(super) unsafe fn clamp_data_index(
     let max_index = len.saturating_sub(1);
     if max_index > i32::MAX as usize {
         return Err(Diagnostic::internal(format!(
-            "Data length {len} exceeds supported index range (i32)"
+            "array length {len} exceeds supported index range (i32)"
         )));
     }
     let zero = LLVMConstInt(i32_ty, 0, 0);
@@ -871,7 +879,7 @@ pub(super) fn checked_constant_data_index_u64(
     let max_index = len.saturating_sub(1);
     if max_index > i32::MAX as usize {
         return Err(Diagnostic::internal(format!(
-            "Data length {len} exceeds supported index range (i32)"
+            "array length {len} exceeds supported index range (i32)"
         )));
     }
     if idx < 0 || idx > max_index as i64 {

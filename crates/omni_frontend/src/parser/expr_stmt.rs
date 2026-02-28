@@ -263,13 +263,13 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                     })
                 }
                 Rule::array_type => {
-                    let spec = parse_array_type_as_data_spec(ty_pair)?;
+                    let spec = parse_array_type_spec(ty_pair)?;
                     let init = if let Some(expr_pair) = expr_pair {
                         let init_expr = parse_expr(expr_pair)?;
                         match init_expr {
                             Expr::ArrayLiteral(values) => Some(values),
                             other => {
-                                if matches!(spec.elem, DataElemType::Struct(_)) {
+                                if matches!(spec.elem, ArrayElemType::Struct(_)) {
                                     Some(vec![other])
                                 } else {
                                     return Err(vec![Diagnostic::syntax(
@@ -289,7 +289,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: true,
-                        expr: Expr::DataCtor { spec, init },
+                        expr: Expr::ArrayCtor { spec, init },
                     })
                 }
                 Rule::ident => {
@@ -824,11 +824,6 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 }
             }
         }
-        Rule::data_ctor => Expr::DataCtor {
-            spec: parse_data_type_spec(pair)
-                .expect("data_ctor rule must include capacity expression"),
-            init: None,
-        },
         Rule::call_field_expr => {
             let mut inner = pair.into_inner();
             let call_pair = inner

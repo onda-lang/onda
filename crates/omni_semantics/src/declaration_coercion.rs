@@ -21,7 +21,7 @@ pub(crate) fn coerce_struct_fields(
             ));
             continue;
         }
-        let (ty, default, data_elem_ty, data_elem_struct) = match &field.ty {
+        let (ty, default, array_elem_ty, array_elem_struct) = match &field.ty {
             FieldType::Scalar(prim) => {
                 if let Some(expr) = &field.default {
                     validate_default_expr(
@@ -53,14 +53,14 @@ pub(crate) fn coerce_struct_fields(
                     None,
                 )
             }
-            FieldType::Data(spec) => {
-                let size_context = format!("field '{}.{}' Data size", struct_name, field.name);
+            FieldType::Array(spec) => {
+                let size_context = format!("field '{}.{}' array size", struct_name, field.name);
                 let size =
                     eval_data_size_expr(&spec.size, options, &size_context, errors).unwrap_or(1);
                 if field.default.is_some() {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "Data field '{}.{}' cannot have a default expression",
+                            "array field '{}.{}' cannot have a default expression",
                             struct_name, field.name
                         ),
                         0,
@@ -68,18 +68,18 @@ pub(crate) fn coerce_struct_fields(
                     ));
                 }
                 let (elem_ty, elem_struct) = match &spec.elem {
-                    DataElemType::Primitive(prim) => (Some(*prim), None),
-                    DataElemType::Struct(name) => (None, Some(name.clone())),
+                    ArrayElemType::Primitive(prim) => (Some(*prim), None),
+                    ArrayElemType::Struct(name) => (None, Some(name.clone())),
                 };
-                (TypedFieldType::Data(size), None, elem_ty, elem_struct)
+                (TypedFieldType::Array(size), None, elem_ty, elem_struct)
             }
         };
         out.push(TypedStructField {
             name: field.name.clone(),
             ty,
             default,
-            data_elem_ty,
-            data_elem_struct,
+            array_elem_ty,
+            array_elem_struct,
         });
     }
     out

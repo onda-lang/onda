@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use omni_frontend::{
-    inject_auto_std_math, with_diagnostic_location, AssignTarget, BinaryOp, Block, BlockExec,
-    BlockKind, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg,
-    CallTypeArg, CmpOp, DataElemType, DeclRange, DeclType, Diagnostic, EventDef, EventParamType,
-    Expr, FieldType, FnParamType, FunctionDef, ParamDecl, PortDecl, PrimitiveType, ProcessorDef,
-    Program, SampleBlock, Stmt, StructDef, StructField,
+    inject_auto_std_math, with_diagnostic_location, ArrayElemType, AssignTarget, BinaryOp, Block,
+    BlockExec, BlockKind, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn,
+    CallArg, CallTypeArg, CmpOp, DeclRange, DeclType, Diagnostic, EventDef, EventParamType, Expr,
+    FieldType, FnParamType, FunctionDef, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program,
+    SampleBlock, Stmt, StructDef, StructField,
 };
 
+mod array_structs;
 mod builtins;
-mod data_structs;
 mod decl_symbols;
 mod declaration_coercion;
 mod def_inference;
@@ -23,8 +23,8 @@ mod proc_call_rewrite;
 mod proc_state_rewrite;
 mod processor_lowering;
 mod stmt_analysis;
+use array_structs::*;
 use builtins::*;
-use data_structs::*;
 use decl_symbols::*;
 use declaration_coercion::*;
 use def_inference::*;
@@ -65,8 +65,8 @@ pub struct TypedProgram {
     pub block_post: Vec<Stmt>,
     pub state_vars: Vec<String>,
     pub state_types: Vec<PrimitiveType>,
-    pub data_vars: Vec<TypedDataVar>,
-    pub data_struct_roots: Vec<TypedDataStructRoot>,
+    pub array_vars: Vec<TypedArrayVar>,
+    pub array_struct_roots: Vec<TypedArrayStructRoot>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,14 +132,14 @@ pub struct TypedStructField {
     pub name: String,
     pub ty: TypedFieldType,
     pub default: Option<Expr>,
-    pub data_elem_ty: Option<PrimitiveType>,
-    pub data_elem_struct: Option<String>,
+    pub array_elem_ty: Option<PrimitiveType>,
+    pub array_elem_struct: Option<String>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TypedFieldType {
     Scalar(PrimitiveType),
-    Data(usize),
+    Array(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +159,9 @@ pub enum TypedFnParam {
     Scalar,
     Struct {
         struct_name: String,
+    },
+    Array {
+        elem_ty: PrimitiveType,
     },
     Buffer {
         elem_ty: PrimitiveType,
@@ -231,27 +234,27 @@ pub struct TypedArrayInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct TypedDataVar {
+pub struct TypedArrayVar {
     pub name: String,
     pub len: usize,
     pub elem_ty: PrimitiveType,
 }
 
 #[derive(Debug, Clone)]
-pub struct TypedDataStructRoot {
+pub struct TypedArrayStructRoot {
     pub name: String,
     pub struct_name: String,
     pub len: usize,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct DataStructRootInfo {
+pub(crate) struct ArrayStructRootInfo {
     pub(crate) struct_name: String,
     pub(crate) len: usize,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LocalDataAliasInfo {
+pub(crate) struct LocalArrayAliasInfo {
     pub(crate) len: usize,
     pub(crate) elem_ty: PrimitiveType,
     pub(crate) elem_struct: Option<String>,

@@ -26,10 +26,15 @@ pub(super) fn buffer_channel_sig_code(channels: &TypedBufferChannels) -> String 
 pub(super) fn user_fn_mono_key(
     name: &str,
     scalar_types: &[PrimitiveType],
+    array_types: &[(PrimitiveType, usize)],
     buffer_types: &[(PrimitiveType, TypedBufferChannels)],
     generic_type_args: &[PrimitiveType],
 ) -> String {
-    if scalar_types.is_empty() && buffer_types.is_empty() && generic_type_args.is_empty() {
+    if scalar_types.is_empty()
+        && array_types.is_empty()
+        && buffer_types.is_empty()
+        && generic_type_args.is_empty()
+    {
         return format!("{name}__mono");
     }
     let mut sig_parts = generic_type_args
@@ -42,6 +47,11 @@ pub(super) fn user_fn_mono_key(
             .map(|t| primitive_sig_code(*t))
             .map(|s| s.to_owned())
             .collect::<Vec<_>>(),
+    );
+    sig_parts.extend(
+        array_types
+            .iter()
+            .map(|(elem_ty, len)| format!("arr_{}_n{len}", primitive_sig_code(*elem_ty))),
     );
     sig_parts.extend(buffer_types.iter().map(|(elem_ty, channels)| {
         format!(
@@ -57,6 +67,7 @@ pub(super) fn user_fn_mono_key(
 pub(super) fn mangle_user_fn_symbol_mono(
     name: &str,
     scalar_types: &[PrimitiveType],
+    array_types: &[(PrimitiveType, usize)],
     buffer_types: &[(PrimitiveType, TypedBufferChannels)],
     generic_type_args: &[PrimitiveType],
     sample_rate: f32,
@@ -69,7 +80,13 @@ pub(super) fn mangle_user_fn_symbol_mono(
     );
     CString::new(format!(
         "omni_def_{}",
-        user_fn_mono_key(name, scalar_types, buffer_types, generic_type_args) + &context_suffix
+        user_fn_mono_key(
+            name,
+            scalar_types,
+            array_types,
+            buffer_types,
+            generic_type_args
+        ) + &context_suffix
     ))
     .map_err(|_| {
         Diagnostic::internal(format!(
@@ -85,7 +102,18 @@ pub(super) fn default_scalar_signature(def: &TypedFunction) -> Vec<PrimitiveType
         .filter_map(|k| match k {
             TypedFnParam::Scalar => Some(PrimitiveType::F32),
             TypedFnParam::Struct { .. } => None,
+            TypedFnParam::Array { .. } => None,
             TypedFnParam::Buffer { .. } => None,
+        })
+        .collect::<Vec<_>>()
+}
+
+pub(super) fn default_array_signature(def: &TypedFunction) -> Vec<(PrimitiveType, usize)> {
+    def.param_kinds
+        .iter()
+        .filter_map(|k| match k {
+            TypedFnParam::Array { elem_ty } => Some((*elem_ty, 1)),
+            _ => None,
         })
         .collect::<Vec<_>>()
 }
@@ -180,7 +208,7 @@ pub(super) fn apply_explicit_generic_type_args_for_call(
     Ok(())
 }
 
-pub(super) fn collect_data_struct_bindings(
+pub(super) fn collect_array_struct_bindings(
     struct_fields: &HashMap<String, Vec<TypedStructField>>,
     struct_name: &str,
     base: &str,
@@ -191,13 +219,13 @@ pub(super) fn collect_data_struct_bindings(
 ) -> Result<(), Diagnostic> {
     if stack.iter().any(|s| s == struct_name) {
         return Err(Diagnostic::internal(format!(
-            "recursive Data[Struct] layout encountered while lowering '{}'",
+            "recursive array[Struct] layout encountered while lowering '{}'",
             struct_name
         )));
     }
     let fields = struct_fields.get(struct_name).ok_or_else(|| {
         Diagnostic::internal(format!(
-            "unknown struct '{}' while collecting Data[Struct] bindings",
+            "unknown struct '{}' while collecting array[Struct] bindings",
             struct_name
         ))
     })?;
@@ -207,10 +235,10 @@ pub(super) fn collect_data_struct_bindings(
         let flat = format!("{base}.{}", field.name);
         match field.ty {
             TypedFieldType::Scalar(prim) => leaves.push((flat, len, prim)),
-            TypedFieldType::Data(field_len) => {
+            TypedFieldType::Array(field_len) => {
                 let nested_len = len.saturating_mul(field_len);
-                if let Some(elem_struct) = &field.data_elem_struct {
-                    collect_data_struct_bindings(
+                if let Some(elem_struct) = &field.array_elem_struct {
+                    collect_array_struct_bindings(
                         struct_fields,
                         elem_struct,
                         &flat,
@@ -223,7 +251,7 @@ pub(super) fn collect_data_struct_bindings(
                     leaves.push((
                         flat,
                         nested_len,
-                        field.data_elem_ty.unwrap_or(PrimitiveType::F32),
+                        field.array_elem_ty.unwrap_or(PrimitiveType::F32),
                     ));
                 }
             }
@@ -274,7 +302,7 @@ pub(super) fn infer_specialized_expr_return_type(
             PrimitiveType::I64
         }),
         Expr::Bool(_) => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral(_) | Expr::DataCtor { .. } => None,
+        Expr::ArrayLiteral(_) | Expr::ArrayCtor { .. } => None,
         Expr::Var(name) => builtin_constant_symbol_type(name).or_else(|| locals.get(name).copied()),
         Expr::Index { base, .. } => locals.get(base).copied().or(Some(PrimitiveType::F32)),
         Expr::Cast { to, .. } => Some(*to),
@@ -320,7 +348,7 @@ pub(super) fn infer_specialized_expr_return_type(
             type_args,
             args,
         } => {
-            if parse_data_len_instance_base(name).is_some()
+            if parse_array_len_instance_base(name).is_some()
                 || parse_buffer_chans_instance_base(name).is_some()
             {
                 return Ok(Some(PrimitiveType::I32));
@@ -359,6 +387,7 @@ pub(super) fn infer_specialized_expr_return_type(
             )
             .unwrap_or_else(|_| vec![None; param_names.len()]);
             let mut scalar_types = Vec::<PrimitiveType>::new();
+            let mut array_types = Vec::<(PrimitiveType, usize)>::new();
             let mut buffer_types = Vec::<(PrimitiveType, TypedBufferChannels)>::new();
             for (idx, kind) in param_kinds.iter().enumerate() {
                 match kind {
@@ -376,6 +405,15 @@ pub(super) fn infer_specialized_expr_return_type(
                             PrimitiveType::F32
                         };
                         scalar_types.push(ty);
+                    }
+                    TypedFnParam::Array { elem_ty } => {
+                        let resolved_arg = resolved.get(idx).copied().flatten();
+                        let arg_sig = if let Some(Expr::Var(base)) = resolved_arg {
+                            (locals.get(base).copied().unwrap_or(*elem_ty), 1)
+                        } else {
+                            (*elem_ty, 1)
+                        };
+                        array_types.push(arg_sig);
                     }
                     TypedFnParam::Buffer { elem_ty, channels } => {
                         buffer_types.push((*elem_ty, channels.clone()));
@@ -398,6 +436,7 @@ pub(super) fn infer_specialized_expr_return_type(
             Some(infer_specialized_def_return_type(
                 name,
                 &scalar_types,
+                &array_types,
                 &buffer_types,
                 &explicit_type_args,
                 registry,
@@ -420,7 +459,7 @@ pub(super) fn infer_specialized_stmt_returns(
                 expr,
                 ..
             } => {
-                if name.contains('.') || matches!(expr, Expr::DataCtor { .. }) {
+                if name.contains('.') || matches!(expr, Expr::ArrayCtor { .. }) {
                     continue;
                 }
                 let inferred = infer_specialized_expr_return_type(expr, locals, registry)?
@@ -477,11 +516,18 @@ pub(super) fn infer_specialized_stmt_returns(
 pub(super) fn infer_specialized_def_return_type(
     name: &str,
     scalar_types: &[PrimitiveType],
+    array_types: &[(PrimitiveType, usize)],
     buffer_types: &[(PrimitiveType, TypedBufferChannels)],
     generic_type_args: &[PrimitiveType],
     registry: &mut UserFnRegistry,
 ) -> Result<PrimitiveType, Diagnostic> {
-    let key = user_fn_mono_key(name, scalar_types, buffer_types, generic_type_args);
+    let key = user_fn_mono_key(
+        name,
+        scalar_types,
+        array_types,
+        buffer_types,
+        generic_type_args,
+    );
     if let Some(ret_ty) = registry.mono_return_tys.get(&key).copied() {
         return Ok(ret_ty);
     }
@@ -504,14 +550,27 @@ pub(super) fn infer_specialized_def_return_type(
 
         let mut locals = HashMap::<String, PrimitiveType>::new();
         let mut scalar_idx = 0usize;
+        let mut array_idx = 0usize;
         for (param_name, kind) in def.params.iter().zip(def.param_kinds.iter()) {
-            if matches!(kind, TypedFnParam::Scalar) {
-                let param_ty = scalar_types
-                    .get(scalar_idx)
-                    .copied()
-                    .unwrap_or(PrimitiveType::F32);
-                scalar_idx += 1;
-                locals.insert(param_name.clone(), param_ty);
+            match kind {
+                TypedFnParam::Scalar => {
+                    let param_ty = scalar_types
+                        .get(scalar_idx)
+                        .copied()
+                        .unwrap_or(PrimitiveType::F32);
+                    scalar_idx += 1;
+                    locals.insert(param_name.clone(), param_ty);
+                }
+                TypedFnParam::Array { elem_ty } => {
+                    let param_ty = array_types
+                        .get(array_idx)
+                        .copied()
+                        .map(|(ty, _)| ty)
+                        .unwrap_or(*elem_ty);
+                    array_idx += 1;
+                    locals.insert(param_name.clone(), param_ty);
+                }
+                TypedFnParam::Struct { .. } | TypedFnParam::Buffer { .. } => {}
             }
         }
 

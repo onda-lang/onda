@@ -29,9 +29,9 @@ use omni_semantics::{
     TypedFieldType, TypedFnParam, TypedFunction, TypedProgram, TypedStructField,
 };
 
+mod array_access;
 mod builtin_intrinsics;
 mod call_helpers;
-mod data_access;
 mod def_lowering;
 mod expr_common;
 mod jit_utils;
@@ -44,9 +44,9 @@ mod proc_ir;
 mod specialization;
 mod stmt_common;
 mod user_fn_ir;
+use array_access::*;
 use builtin_intrinsics::*;
 use call_helpers::*;
-use data_access::*;
 use def_lowering::*;
 use expr_common::*;
 use jit_utils::*;
@@ -513,13 +513,13 @@ struct OrcValue {
 }
 
 #[derive(Clone, Copy)]
-struct DataElementPtr {
+struct ArrayElementPtr {
     ptr: LLVMValueRef,
     elem_ty: PrimitiveType,
 }
 
 #[derive(Clone)]
-enum LocalDataAlias {
+enum LocalArrayAlias {
     Primitive {
         base_ptr: LLVMValueRef,
         len: usize,
@@ -581,7 +581,7 @@ struct LoweringCtx<'a> {
     buffer_channels_ptr: LLVMValueRef,
     frame_idx: LLVMValueRef,
     state_slots: &'a HashMap<String, StateSlot>,
-    data_base_ptrs: &'a HashMap<String, LLVMValueRef>,
+    array_base_ptrs: &'a HashMap<String, LLVMValueRef>,
     out_slots: &'a HashMap<String, OutSlot>,
     out_array_base_ptrs: &'a HashMap<String, LLVMValueRef>,
     input_index: &'a HashMap<String, u32>,
@@ -595,10 +595,10 @@ struct LoweringCtx<'a> {
     param_types: &'a HashMap<String, PrimitiveType>,
     param_arrays: &'a HashMap<String, TypedArrayInfo>,
     output_arrays: &'a HashMap<String, TypedArrayInfo>,
-    data_len: &'a HashMap<String, usize>,
-    data_elem_ty: &'a HashMap<String, PrimitiveType>,
-    data_struct_roots: &'a HashMap<String, String>,
-    data_struct_len: &'a HashMap<String, usize>,
+    array_len: &'a HashMap<String, usize>,
+    array_elem_ty: &'a HashMap<String, PrimitiveType>,
+    array_struct_roots: &'a HashMap<String, String>,
+    array_struct_len: &'a HashMap<String, usize>,
     struct_fields: &'a HashMap<String, Vec<TypedStructField>>,
     allow_struct_ctor: bool,
     user_fn_param_names: &'a HashMap<String, Vec<String>>,
@@ -644,12 +644,12 @@ struct DefLoweringCtx<'a> {
     return_slot: LLVMValueRef,
     return_block: LLVMBasicBlockRef,
     local_slots: HashMap<String, DefLocalSlot>,
-    local_data_aliases: HashMap<String, LocalDataAlias>,
+    local_array_aliases: HashMap<String, LocalArrayAlias>,
     buffer_params: HashMap<String, DefBufferParamInfo>,
-    data_ptrs: HashMap<String, LLVMValueRef>,
-    data_len: HashMap<String, usize>,
-    data_elem_ty: HashMap<String, PrimitiveType>,
-    data_struct_roots: HashMap<String, String>,
+    array_ptrs: HashMap<String, LLVMValueRef>,
+    array_len: HashMap<String, usize>,
+    array_elem_ty: HashMap<String, PrimitiveType>,
+    array_struct_roots: HashMap<String, String>,
     struct_fields: &'a HashMap<String, Vec<TypedStructField>>,
     user_fn_param_names: &'a HashMap<String, Vec<String>>,
     user_fn_param_defaults: &'a HashMap<String, Vec<Option<Expr>>>,

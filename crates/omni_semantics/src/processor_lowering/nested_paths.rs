@@ -56,7 +56,7 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
             }
             rewrite_nested_field_paths_in_expr(index, nested_fields);
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             rewrite_nested_field_paths_in_expr(&mut spec.size, nested_fields);
             if let Some(values) = init {
                 for value in values {
@@ -181,7 +181,7 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
             }
             remap_nested_symbols_in_expr(index, remap);
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             remap_nested_symbols_in_expr(&mut spec.size, remap);
             if let Some(values) = init {
                 for value in values {
@@ -310,7 +310,7 @@ pub(super) fn prefix_self_fields_in_expr(
             }
             prefix_self_fields_in_expr(index, prefix, nested_field_names);
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             prefix_self_fields_in_expr(&mut spec.size, prefix, nested_field_names);
             if let Some(values) = init {
                 for value in values {

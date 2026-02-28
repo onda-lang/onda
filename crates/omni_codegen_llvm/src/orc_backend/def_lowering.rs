@@ -141,9 +141,9 @@ pub(super) unsafe fn lower_orc_logical_expr(
     ctx: &mut LoweringCtx<'_>,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<OrcValue, Diagnostic> {
-    let lhs_value = lower_expr(lhs, ctx, locals, local_aliases, local_data_aliases)?;
+    let lhs_value = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases)?;
     let lhs_bool = {
         let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
             cast_orc_value_to(ctx, value, to, name)
@@ -164,7 +164,7 @@ pub(super) unsafe fn lower_orc_logical_expr(
         b"logical_phi\0",
         "ORC logical expression",
         || {
-            let rhs_value = lower_expr(rhs, ctx, locals, local_aliases, local_data_aliases)?;
+            let rhs_value = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases)?;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
                 cast_orc_value_to(ctx, value, to, name)
             };
@@ -189,7 +189,7 @@ pub(super) unsafe fn lower_def_data_element_ptr(
     base: &str,
     index_expr: &Expr,
     clamp_index: bool,
-) -> Result<DataElementPtr, Diagnostic> {
+) -> Result<ArrayElementPtr, Diagnostic> {
     if let Some(info) = ctx.buffer_params.get(base).cloned() {
         let total_len = load_def_buffer_total_len_i32(ctx, base, &info)?;
         let final_index = if clamp_index {
@@ -207,7 +207,7 @@ pub(super) unsafe fn lower_def_data_element_ptr(
             LLVMPointerType(llvm_ty_for_primitive(ctx.context, info.elem_ty), 0),
             b"def_buf_ptr_typed\0".as_ptr().cast(),
         );
-        return Ok(DataElementPtr {
+        return Ok(ArrayElementPtr {
             ptr: build_f32_ptr_offset(
                 ctx.builder,
                 llvm_ty_for_primitive(ctx.context, info.elem_ty),
@@ -219,38 +219,38 @@ pub(super) unsafe fn lower_def_data_element_ptr(
         });
     }
 
-    let (base_ptr, len, elem_ty) = if let Some(alias) = ctx.local_data_aliases.get(base) {
+    let (base_ptr, len, elem_ty) = if let Some(alias) = ctx.local_array_aliases.get(base) {
         match alias {
-            LocalDataAlias::Primitive {
+            LocalArrayAlias::Primitive {
                 base_ptr,
                 len,
                 elem_ty,
             } => (*base_ptr, *len, *elem_ty),
-            LocalDataAlias::Struct { .. } => {
+            LocalArrayAlias::Struct { .. } => {
                 return Err(Diagnostic::internal(format!(
-                    "Data symbol '{base}[...]' has struct elements in def lowering; index it via an alias assignment first"
+                    "array symbol '{base}[...]' has struct elements in def lowering; index it via an alias assignment first"
                 )));
             }
         }
     } else {
-        if ctx.data_struct_roots.contains_key(base) {
+        if ctx.array_struct_roots.contains_key(base) {
             return Err(Diagnostic::internal(format!(
-                "Data symbol '{base}[...]' has struct elements in def lowering; index it via an alias assignment first"
+                "array symbol '{base}[...]' has struct elements in def lowering; index it via an alias assignment first"
             )));
         }
-        let base_ptr = *ctx.data_ptrs.get(base).ok_or_else(|| {
+        let base_ptr = *ctx.array_ptrs.get(base).ok_or_else(|| {
             Diagnostic::internal(format!(
-                "unknown Data symbol '{base}' in def indexed expression lowering"
+                "unknown array symbol '{base}' in def indexed expression lowering"
             ))
         })?;
-        let len = *ctx.data_len.get(base).ok_or_else(|| {
+        let len = *ctx.array_len.get(base).ok_or_else(|| {
             Diagnostic::internal(format!(
-                "missing Data length for '{base}' in def indexed expression lowering"
+                "missing array length for '{base}' in def indexed expression lowering"
             ))
         })?;
-        let elem_ty = *ctx.data_elem_ty.get(base).ok_or_else(|| {
+        let elem_ty = *ctx.array_elem_ty.get(base).ok_or_else(|| {
             Diagnostic::internal(format!(
-                "missing Data element type for '{base}' in def indexed expression lowering"
+                "missing array element type for '{base}' in def indexed expression lowering"
             ))
         })?;
         (base_ptr, len, elem_ty)
@@ -258,7 +258,7 @@ pub(super) unsafe fn lower_def_data_element_ptr(
 
     if len == 0 {
         return Err(Diagnostic::internal(format!(
-            "Data symbol '{base}' has zero length in def lowering"
+            "array symbol '{base}' has zero length in def lowering"
         )));
     }
 
@@ -269,7 +269,7 @@ pub(super) unsafe fn lower_def_data_element_ptr(
                 checked_constant_data_index_u64(
                     len,
                     const_idx,
-                    &format!("Data index in def lowering for '{base}'"),
+                    &format!("array index in def lowering for '{base}'"),
                 )?,
                 0,
             )
@@ -283,7 +283,7 @@ pub(super) unsafe fn lower_def_data_element_ptr(
         let raw_index = lower_def_expr(index_expr, ctx)?;
         cast_def_value_to(ctx, raw_index, PrimitiveType::I32, b"def_data_idx_i32\0")
     };
-    Ok(DataElementPtr {
+    Ok(ArrayElementPtr {
         ptr: build_f32_ptr_offset(
             ctx.builder,
             llvm_ty_for_primitive(ctx.context, elem_ty),
@@ -360,7 +360,7 @@ pub(super) unsafe fn lower_def_buffer_element_ptr_2d(
     channel_expr: &Expr,
     sample_expr: &Expr,
     clamp_index: bool,
-) -> Result<DataElementPtr, Diagnostic> {
+) -> Result<ArrayElementPtr, Diagnostic> {
     let info = ctx.buffer_params.get(base).cloned().ok_or_else(|| {
         Diagnostic::internal(format!(
             "unknown buffer symbol '{base}' in def lowering two-dimensional index"
@@ -395,7 +395,7 @@ pub(super) unsafe fn lower_def_buffer_element_ptr_2d(
         LLVMPointerType(llvm_ty_for_primitive(ctx.context, info.elem_ty), 0),
         b"def_buf_ptr_typed2\0".as_ptr().cast(),
     );
-    Ok(DataElementPtr {
+    Ok(ArrayElementPtr {
         ptr: build_f32_ptr_offset(
             ctx.builder,
             llvm_ty_for_primitive(ctx.context, info.elem_ty),

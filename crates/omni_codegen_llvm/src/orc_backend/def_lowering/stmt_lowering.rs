@@ -90,8 +90,8 @@ unsafe fn lower_def_var_assign(
     }
 
     if !ctx.local_slots.contains_key(target_name)
-        && !ctx.local_data_aliases.contains_key(target_name)
-        && !ctx.data_ptrs.contains_key(target_name)
+        && !ctx.local_array_aliases.contains_key(target_name)
+        && !ctx.array_ptrs.contains_key(target_name)
         && try_bind_struct_data_alias_in_def(target_name, expr, ctx)?
     {
         return Ok(false);
@@ -103,14 +103,14 @@ unsafe fn lower_def_var_assign(
         LLVMBuildStore(ctx.builder, casted, local.ptr);
         return Ok(false);
     }
-    if ctx.data_ptrs.contains_key(target_name) {
+    if ctx.array_ptrs.contains_key(target_name) {
         return Err(Diagnostic::internal(format!(
-            "Data symbol '{target_name}' must be assigned via index syntax in def lowering"
+            "array symbol '{target_name}' must be assigned via index syntax in def lowering"
         )));
     }
-    if ctx.local_data_aliases.contains_key(target_name) {
+    if ctx.local_array_aliases.contains_key(target_name) {
         return Err(Diagnostic::internal(format!(
-            "Data alias '{target_name}' must be assigned via index syntax in def lowering"
+            "array alias '{target_name}' must be assigned via index syntax in def lowering"
         )));
     }
     let target_ty = decl_ty.unwrap_or(typed_value.ty);
@@ -138,13 +138,13 @@ unsafe fn try_lower_def_typed_array_decl(
     expr: &Expr,
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
-    let Expr::DataCtor { spec, init } = expr else {
+    let Expr::ArrayCtor { spec, init } = expr else {
         return Ok(false);
     };
 
     if !is_typed_decl {
         return Err(Diagnostic::internal(
-            "Data constructor assignment in def lowering requires typed array declaration syntax",
+            "array constructor assignment in def lowering requires typed array declaration syntax",
         ));
     }
     if decl_ty.is_some() {
@@ -152,15 +152,15 @@ unsafe fn try_lower_def_typed_array_decl(
             "typed array declaration cannot include scalar declaration type in def lowering",
         ));
     }
-    if ctx.local_slots.contains_key(target_name) || ctx.data_ptrs.contains_key(target_name) {
+    if ctx.local_slots.contains_key(target_name) || ctx.array_ptrs.contains_key(target_name) {
         return Err(Diagnostic::internal(format!(
             "typed array declaration for '{target_name}' conflicts with existing local symbol in def lowering"
         )));
     }
 
     let elem_ty = match &spec.elem {
-        omni_frontend::DataElemType::Primitive(elem_ty) => *elem_ty,
-        omni_frontend::DataElemType::Struct(name) => {
+        omni_frontend::ArrayElemType::Primitive(elem_ty) => *elem_ty,
+        omni_frontend::ArrayElemType::Struct(name) => {
             return Err(Diagnostic::internal(format!(
                 "typed array declaration '{target_name}: {name}[N]' is not yet supported in def lowering"
             )))
@@ -194,9 +194,9 @@ unsafe fn try_lower_def_typed_array_decl(
             LLVMBuildStore(ctx.builder, casted, elem_ptr);
         }
     }
-    ctx.data_ptrs.insert(target_name.to_owned(), ptr);
-    ctx.data_len.insert(target_name.to_owned(), len);
-    ctx.data_elem_ty.insert(target_name.to_owned(), elem_ty);
+    ctx.array_ptrs.insert(target_name.to_owned(), ptr);
+    ctx.array_len.insert(target_name.to_owned(), len);
+    ctx.array_elem_ty.insert(target_name.to_owned(), elem_ty);
     Ok(true)
 }
 
@@ -209,10 +209,10 @@ unsafe fn try_lower_def_untyped_array_decl(
         return Ok(false);
     };
 
-    if let Some(expected_len) = ctx.data_len.get(target_name).copied() {
+    if let Some(expected_len) = ctx.array_len.get(target_name).copied() {
         if values.len() != expected_len {
             return Err(Diagnostic::internal(format!(
-                "Data symbol '{target_name}' initializer expects {expected_len} elements, got {}",
+                "array symbol '{target_name}' initializer expects {expected_len} elements, got {}",
                 values.len()
             )));
         }
@@ -225,12 +225,12 @@ unsafe fn try_lower_def_untyped_array_decl(
         return Ok(true);
     }
 
-    if ctx.local_data_aliases.contains_key(target_name) {
+    if ctx.local_array_aliases.contains_key(target_name) {
         return Err(Diagnostic::internal(format!(
-            "Data alias '{target_name}' must be assigned via index syntax in def lowering"
+            "array alias '{target_name}' must be assigned via index syntax in def lowering"
         )));
     }
-    if ctx.local_slots.contains_key(target_name) || ctx.data_ptrs.contains_key(target_name) {
+    if ctx.local_slots.contains_key(target_name) || ctx.array_ptrs.contains_key(target_name) {
         return Err(Diagnostic::internal(format!(
             "array declaration for '{target_name}' conflicts with existing symbol in def lowering"
         )));
@@ -267,9 +267,9 @@ unsafe fn try_lower_def_untyped_array_decl(
         );
         LLVMBuildStore(ctx.builder, casted, elem_ptr);
     }
-    ctx.data_ptrs.insert(target_name.to_owned(), ptr);
-    ctx.data_len.insert(target_name.to_owned(), len);
-    ctx.data_elem_ty.insert(target_name.to_owned(), elem_ty);
+    ctx.array_ptrs.insert(target_name.to_owned(), ptr);
+    ctx.array_len.insert(target_name.to_owned(), len);
+    ctx.array_elem_ty.insert(target_name.to_owned(), elem_ty);
     Ok(true)
 }
 
@@ -282,10 +282,10 @@ unsafe fn try_bind_struct_data_alias_in_def(
         return Ok(false);
     };
 
-    if let Some(struct_name) = ctx.data_struct_roots.get(base).cloned() {
-        let root_len = *ctx.data_len.get(base).ok_or_else(|| {
+    if let Some(struct_name) = ctx.array_struct_roots.get(base).cloned() {
+        let root_len = *ctx.array_len.get(base).ok_or_else(|| {
             Diagnostic::internal(format!(
-                "missing Data[Struct] length metadata for '{base}' in def lowering"
+                "missing array[Struct] length metadata for '{base}' in def lowering"
             ))
         })?;
         let raw_index = lower_def_expr(index, ctx)?;
@@ -300,14 +300,14 @@ unsafe fn try_bind_struct_data_alias_in_def(
         return Ok(true);
     }
 
-    if let Some(alias) = ctx.local_data_aliases.get(base).cloned() {
+    if let Some(alias) = ctx.local_array_aliases.get(base).cloned() {
         match alias {
-            LocalDataAlias::Primitive { .. } => {
+            LocalArrayAlias::Primitive { .. } => {
                 return Err(Diagnostic::internal(format!(
                     "local alias binding '{target_name} = {base}[...]' is not supported for primitive arrays in def lowering; use direct indexed access"
                 )));
             }
-            LocalDataAlias::Struct {
+            LocalArrayAlias::Struct {
                 root_base,
                 elem_struct,
                 len,
@@ -339,7 +339,7 @@ unsafe fn try_bind_struct_data_alias_in_def(
         }
     }
 
-    if ctx.data_ptrs.contains_key(base) {
+    if ctx.array_ptrs.contains_key(base) {
         return Err(Diagnostic::internal(format!(
             "local alias binding '{target_name} = {base}[...]' is not supported for primitive arrays in def lowering; use direct indexed access"
         )));

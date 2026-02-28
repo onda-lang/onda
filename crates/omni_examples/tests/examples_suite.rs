@@ -268,6 +268,57 @@ sample {
 }
 "#;
 
+const DEF_ARRAY_ARG_BY_REF_WRITE_EXAMPLE: &str = r#"
+outs { out1 }
+def bump(xs, idx) {
+  xs[idx] = xs[idx] + 1.0
+  return xs[idx]
+}
+init {
+  arr: f32[4]
+  arr[0] = 0.0
+  arr[1] = 1.0
+  arr[2] = 2.0
+  arr[3] = 3.0
+}
+sample {
+  out1 = bump(arr, 1) + arr[1]
+}
+"#;
+
+const DEF_ARRAY_ARG_FORWARDING_EXAMPLE: &str = r#"
+outs { out1 }
+def bump(xs, idx) {
+  xs[idx] = xs[idx] + 1.0
+  return xs[idx]
+}
+def forward(xs, idx) {
+  return bump(xs, idx)
+}
+init {
+  arr: f32[4]
+  arr[0] = 0.0
+  arr[1] = 1.0
+  arr[2] = 2.0
+  arr[3] = 3.0
+}
+sample {
+  out1 = forward(arr, 2) + arr[2]
+}
+"#;
+
+const DEF_LOCAL_ARRAY_ARG_EXAMPLE: &str = r#"
+outs { out1 }
+def bump(xs) {
+  xs[0] = xs[0] + 1.0
+  return xs[0]
+}
+sample {
+  tmp = [1.0, 2.0]
+  out1 = bump(tmp)
+}
+"#;
+
 const DEF_EXPLICIT_STRUCT_ARG_ERROR_EXAMPLE: &str = r#"
 outs { out1 }
 struct A { x: f32, y: f32 }
@@ -4103,6 +4154,42 @@ fn def_structural_arg_compiles_with_multiple_matching_structs() {
 }
 
 #[test]
+fn def_array_arg_is_passed_by_ref_with_writeback() {
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_ARRAY_ARG_BY_REF_WRITE_EXAMPLE, 1);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; 1];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 4.0, 1e-6);
+}
+
+#[test]
+fn def_array_arg_writeback_propagates_through_nested_def_calls() {
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_ARRAY_ARG_FORWARDING_EXAMPLE, 1);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; 1];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 6.0, 1e-6);
+}
+
+#[test]
+fn def_accepts_local_sample_array_arguments() {
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_LOCAL_ARRAY_ARG_EXAMPLE, 1);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; 1];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 2.0, 1e-6);
+}
+
+#[test]
 fn def_explicit_struct_annotation_is_nominal() {
     let parsed =
         parse_program(DEF_EXPLICIT_STRUCT_ARG_ERROR_EXAMPLE).expect("parse should succeed");
@@ -4562,7 +4649,7 @@ fn primitive_data_local_alias_binding_is_rejected() {
     let result = analyze(parsed);
     assert!(
         result.is_err(),
-        "semantic analysis should reject primitive Data alias binding via 'x = buf[i]'"
+        "semantic analysis should reject primitive array alias binding via 'x = buf[i]'"
     );
 }
 
@@ -4573,7 +4660,7 @@ fn primitive_struct_field_data_local_alias_binding_is_rejected() {
     let result = analyze(parsed);
     assert!(
         result.is_err(),
-        "semantic analysis should reject primitive struct Data alias binding via 'x = v.delay[i]'"
+        "semantic analysis should reject primitive struct array alias binding via 'x = v.delay[i]'"
     );
 }
 #[test]
@@ -5823,7 +5910,7 @@ fn typed_data_primitive_elements_compile_and_run() {
     process_interleaved(&mut instance, &[], &mut out, 1).expect("processing should succeed");
     assert!(
         (out[0] - 6.5).abs() < 1.0e-6,
-        "typed Data elements should preserve runtime values across primitive types"
+        "typed array elements should preserve runtime values across primitive types"
     );
 }
 
@@ -5846,7 +5933,7 @@ fn data_index_must_be_numeric() {
     let result = analyze(parsed);
     assert!(
         result.is_err(),
-        "semantic analysis should reject bool Data index"
+        "semantic analysis should reject bool array index"
     );
 }
 
@@ -5865,7 +5952,7 @@ fn data_constant_out_of_range_index_is_rejected_in_codegen() {
     );
     assert!(
         result.is_err(),
-        "codegen should reject out-of-range constant Data index"
+        "codegen should reject out-of-range constant array index"
     );
 }
 

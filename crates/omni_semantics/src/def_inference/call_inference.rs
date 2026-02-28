@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn infer_stmt_calls(
     stmt: &Stmt,
     struct_instances: &HashMap<String, String>,
+    array_bindings: &mut HashMap<String, InferredArrayParam>,
     buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
     fn_signatures: &HashMap<String, FnSignature>,
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
@@ -14,6 +15,7 @@ pub(super) fn infer_stmt_calls(
                 infer_expr_calls(
                     index,
                     struct_instances,
+                    array_bindings,
                     buffer_bindings,
                     fn_signatures,
                     kinds,
@@ -23,15 +25,22 @@ pub(super) fn infer_stmt_calls(
             infer_expr_calls(
                 expr,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
                 errors,
             );
+            if let AssignTarget::Var(name) = target {
+                if let Some(info) = infer_array_binding_from_assignment(expr) {
+                    array_bindings.insert(name.clone(), info);
+                }
+            }
         }
         Stmt::Expr { expr, .. } => infer_expr_calls(
             expr,
             struct_instances,
+            array_bindings,
             buffer_bindings,
             fn_signatures,
             kinds,
@@ -40,6 +49,7 @@ pub(super) fn infer_stmt_calls(
         Stmt::Return { expr, .. } => infer_expr_calls(
             expr,
             struct_instances,
+            array_bindings,
             buffer_bindings,
             fn_signatures,
             kinds,
@@ -54,31 +64,38 @@ pub(super) fn infer_stmt_calls(
             infer_expr_calls(
                 cond,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
                 errors,
             );
+            let mut then_arrays = array_bindings.clone();
             for nested in then_branch {
                 infer_stmt_calls(
                     nested,
                     struct_instances,
+                    &mut then_arrays,
                     buffer_bindings,
                     fn_signatures,
                     kinds,
                     errors,
                 );
             }
+            let mut else_arrays = array_bindings.clone();
             for nested in else_branch {
                 infer_stmt_calls(
                     nested,
                     struct_instances,
+                    &mut else_arrays,
                     buffer_bindings,
                     fn_signatures,
                     kinds,
                     errors,
                 );
             }
+            merge_array_bindings(array_bindings, &then_arrays);
+            merge_array_bindings(array_bindings, &else_arrays);
         }
         Stmt::For {
             start,
@@ -90,6 +107,7 @@ pub(super) fn infer_stmt_calls(
             infer_expr_calls(
                 start,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
@@ -98,6 +116,7 @@ pub(super) fn infer_stmt_calls(
             infer_expr_calls(
                 end,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
@@ -107,42 +126,50 @@ pub(super) fn infer_stmt_calls(
                 infer_expr_calls(
                     step_expr,
                     struct_instances,
+                    array_bindings,
                     buffer_bindings,
                     fn_signatures,
                     kinds,
                     errors,
                 );
             }
+            let mut loop_arrays = array_bindings.clone();
             for nested in body {
                 infer_stmt_calls(
                     nested,
                     struct_instances,
+                    &mut loop_arrays,
                     buffer_bindings,
                     fn_signatures,
                     kinds,
                     errors,
                 );
             }
+            merge_array_bindings(array_bindings, &loop_arrays);
         }
         Stmt::While { cond, body, .. } => {
             infer_expr_calls(
                 cond,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
                 errors,
             );
+            let mut loop_arrays = array_bindings.clone();
             for nested in body {
                 infer_stmt_calls(
                     nested,
                     struct_instances,
+                    &mut loop_arrays,
                     buffer_bindings,
                     fn_signatures,
                     kinds,
                     errors,
                 );
             }
+            merge_array_bindings(array_bindings, &loop_arrays);
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     });
@@ -151,18 +178,20 @@ pub(super) fn infer_stmt_calls(
 fn infer_expr_calls(
     expr: &Expr,
     struct_instances: &HashMap<String, String>,
+    array_bindings: &HashMap<String, InferredArrayParam>,
     buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
     fn_signatures: &HashMap<String, FnSignature>,
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::DataCtor { .. } | Expr::Var(_) => {}
+        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::ArrayCtor { .. } | Expr::Var(_) => {}
         Expr::ArrayLiteral(values) => {
             for value in values {
                 infer_expr_calls(
                     value,
                     struct_instances,
+                    array_bindings,
                     buffer_bindings,
                     fn_signatures,
                     kinds,
@@ -174,6 +203,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 index,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
@@ -184,6 +214,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 lhs,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
@@ -192,6 +223,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 rhs,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
@@ -202,6 +234,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 expr,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
@@ -212,6 +245,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 lhs,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
@@ -220,6 +254,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 rhs,
                 struct_instances,
+                array_bindings,
                 buffer_bindings,
                 fn_signatures,
                 kinds,
@@ -231,6 +266,7 @@ fn infer_expr_calls(
                 infer_expr_calls(
                     arg,
                     struct_instances,
+                    array_bindings,
                     buffer_bindings,
                     fn_signatures,
                     kinds,
@@ -257,6 +293,13 @@ fn infer_expr_calls(
                                     Expr::Var(v) => {
                                         if let Some(struct_name) = struct_instances.get(v) {
                                             slot.saw_structs.insert(struct_name.clone());
+                                        } else if let Some(array_info) = array_bindings.get(v) {
+                                            if !slot.saw_arrays.iter().any(|seen| {
+                                                seen.elem_ty == array_info.elem_ty
+                                                    && seen.len == array_info.len
+                                            }) {
+                                                slot.saw_arrays.push(array_info.clone());
+                                            }
                                         } else if let Some(buffer_infos) = buffer_bindings.get(v) {
                                             for buffer_info in buffer_infos {
                                                 if !slot.saw_buffers.iter().any(|seen| {
@@ -281,6 +324,7 @@ fn infer_expr_calls(
                 infer_expr_calls(
                     &arg.expr,
                     struct_instances,
+                    array_bindings,
                     buffer_bindings,
                     fn_signatures,
                     kinds,
@@ -288,6 +332,61 @@ fn infer_expr_calls(
                 );
             }
         }
+    }
+}
+
+fn infer_array_binding_from_assignment(expr: &Expr) -> Option<InferredArrayParam> {
+    match expr {
+        Expr::ArrayLiteral(values) => {
+            if values.is_empty() {
+                return None;
+            }
+            let elem_ty = infer_array_literal_elem_ty(&values[0]).unwrap_or(PrimitiveType::F32);
+            Some(InferredArrayParam {
+                elem_ty,
+                len: values.len(),
+            })
+        }
+        Expr::ArrayCtor { spec, .. } => match &spec.elem {
+            omni_frontend::ArrayElemType::Primitive(elem_ty) => Some(InferredArrayParam {
+                elem_ty: *elem_ty,
+                len: 1,
+            }),
+            omni_frontend::ArrayElemType::Struct(_) => None,
+        },
+        _ => None,
+    }
+}
+
+fn infer_array_literal_elem_ty(expr: &Expr) -> Option<PrimitiveType> {
+    match expr {
+        Expr::Number(_) => Some(PrimitiveType::F32),
+        Expr::Int(v) => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+            PrimitiveType::I32
+        } else {
+            PrimitiveType::I64
+        }),
+        Expr::Bool(_) => Some(PrimitiveType::Bool),
+        Expr::Cast { to, .. } => Some(*to),
+        Expr::Var(name) => builtin_constant_type(name),
+        _ => None,
+    }
+}
+
+fn merge_array_bindings(
+    dst: &mut HashMap<String, InferredArrayParam>,
+    src: &HashMap<String, InferredArrayParam>,
+) {
+    for (name, src_info) in src {
+        dst.entry(name.clone())
+            .and_modify(|dst_info| {
+                if dst_info.elem_ty == PrimitiveType::F32 && src_info.elem_ty == PrimitiveType::F64
+                {
+                    dst_info.elem_ty = PrimitiveType::F64;
+                }
+                dst_info.len = dst_info.len.max(src_info.len);
+            })
+            .or_insert_with(|| src_info.clone());
     }
 }
 

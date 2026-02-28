@@ -54,11 +54,11 @@ pub(super) unsafe fn build_user_functions_ir(
                                     arg_tys.push(llvm_ty_for_primitive(context, prim));
                                 }
                             }
-                            TypedFieldType::Data(len) => {
-                                if let Some(elem_struct) = &field.data_elem_struct {
+                            TypedFieldType::Array(len) => {
+                                if let Some(elem_struct) = &field.array_elem_struct {
                                     let mut roots = Vec::new();
                                     let mut leaves = Vec::new();
-                                    collect_data_struct_bindings(
+                                    collect_array_struct_bindings(
                                         &struct_fields,
                                         elem_struct,
                                         &format!("{}.{}", def.params[idx], field.name),
@@ -76,6 +76,9 @@ pub(super) unsafe fn build_user_functions_ir(
                             }
                         }
                     }
+                }
+                TypedFnParam::Array { elem_ty } => {
+                    arg_tys.push(LLVMPointerType(llvm_ty_for_primitive(context, *elem_ty), 0));
                 }
                 TypedFnParam::Buffer { .. } => {
                     arg_tys.push(i8_ptr_ty);
@@ -128,6 +131,7 @@ pub(super) unsafe fn build_user_functions_ir(
             ))
         })?;
         let scalar_sig = default_scalar_signature(def);
+        let array_sig = default_array_signature(def);
         let buffer_sig = default_buffer_signature(def);
         lower_user_function_body(
             def,
@@ -141,6 +145,7 @@ pub(super) unsafe fn build_user_functions_ir(
             fn_ref,
             def.return_ty,
             &scalar_sig,
+            &array_sig,
             &buffer_sig,
         )?;
     }
@@ -181,6 +186,7 @@ pub(super) unsafe fn ensure_user_fn_specialization(
     fast_math: bool,
     name: &str,
     scalar_types: &[PrimitiveType],
+    array_types: &[(PrimitiveType, usize)],
     buffer_types: &[(PrimitiveType, TypedBufferChannels)],
     generic_type_args: &[PrimitiveType],
 ) -> Result<(LLVMValueRef, LLVMTypeRef, PrimitiveType), Diagnostic> {
@@ -204,6 +210,19 @@ pub(super) unsafe fn ensure_user_fn_specialization(
             scalar_types.len()
         )));
     }
+    let array_count = def
+        .param_kinds
+        .iter()
+        .filter(|k| matches!(k, TypedFnParam::Array { .. }))
+        .count();
+    if array_types.len() != array_count {
+        return Err(Diagnostic::internal(format!(
+            "function '{}' array signature length mismatch: expected {}, got {}",
+            name,
+            array_count,
+            array_types.len()
+        )));
+    }
     let buffer_count = def
         .param_kinds
         .iter()
@@ -218,7 +237,13 @@ pub(super) unsafe fn ensure_user_fn_specialization(
         )));
     }
 
-    let base_key = user_fn_mono_key(name, scalar_types, buffer_types, generic_type_args);
+    let base_key = user_fn_mono_key(
+        name,
+        scalar_types,
+        array_types,
+        buffer_types,
+        generic_type_args,
+    );
     let context_suffix = format!(
         "__sr_{:08x}__bs_{:08x}",
         effective_sample_rate.to_bits(),
@@ -236,6 +261,7 @@ pub(super) unsafe fn ensure_user_fn_specialization(
     let ret_ty = infer_specialized_def_return_type(
         name,
         scalar_types,
+        array_types,
         buffer_types,
         generic_type_args,
         registry,
@@ -251,6 +277,7 @@ pub(super) unsafe fn ensure_user_fn_specialization(
 
     let mut arg_tys = Vec::new();
     let mut scalar_idx = 0usize;
+    let mut array_idx = 0usize;
     for (param_idx, kind) in def.param_kinds.iter().enumerate() {
         match kind {
             TypedFnParam::Scalar => {
@@ -274,11 +301,11 @@ pub(super) unsafe fn ensure_user_fn_specialization(
                                 arg_tys.push(llvm_ty_for_primitive(context, prim));
                             }
                         }
-                        TypedFieldType::Data(len) => {
-                            if let Some(elem_struct) = &field.data_elem_struct {
+                        TypedFieldType::Array(len) => {
+                            if let Some(elem_struct) = &field.array_elem_struct {
                                 let mut roots = Vec::new();
                                 let mut leaves = Vec::new();
-                                collect_data_struct_bindings(
+                                collect_array_struct_bindings(
                                     struct_fields,
                                     elem_struct,
                                     &format!("{}.{}", def.params[param_idx], field.name),
@@ -297,6 +324,16 @@ pub(super) unsafe fn ensure_user_fn_specialization(
                     }
                 }
             }
+            TypedFnParam::Array { .. } => {
+                let (elem_ty, _len) = array_types.get(array_idx).copied().ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "missing array signature for '{}' at array index {}",
+                        name, array_idx
+                    ))
+                })?;
+                array_idx += 1;
+                arg_tys.push(LLVMPointerType(llvm_ty_for_primitive(context, elem_ty), 0));
+            }
             TypedFnParam::Buffer { .. } => {
                 arg_tys.push(i8_ptr_ty);
                 arg_tys.push(i32_ty);
@@ -310,6 +347,7 @@ pub(super) unsafe fn ensure_user_fn_specialization(
     let symbol = mangle_user_fn_symbol_mono(
         name,
         scalar_types,
+        array_types,
         buffer_types,
         generic_type_args,
         effective_sample_rate,
@@ -342,6 +380,7 @@ pub(super) unsafe fn ensure_user_fn_specialization(
             fn_ref,
             ret_ty,
             scalar_types,
+            array_types,
             buffer_types,
         )?;
         registry.in_progress.remove(&key);
@@ -362,6 +401,7 @@ pub(super) unsafe fn lower_user_function_body(
     fn_ref: LLVMValueRef,
     return_ty: PrimitiveType,
     scalar_param_types: &[PrimitiveType],
+    array_param_types: &[(PrimitiveType, usize)],
     buffer_param_types: &[(PrimitiveType, TypedBufferChannels)],
 ) -> Result<(), Diagnostic> {
     let float_ty = LLVMFloatTypeInContext(context);
@@ -400,12 +440,12 @@ pub(super) unsafe fn lower_user_function_body(
             return_slot,
             return_block: ret_block,
             local_slots: HashMap::new(),
-            local_data_aliases: HashMap::new(),
+            local_array_aliases: HashMap::new(),
             buffer_params: HashMap::new(),
-            data_ptrs: HashMap::new(),
-            data_len: HashMap::new(),
-            data_elem_ty: HashMap::new(),
-            data_struct_roots: HashMap::new(),
+            array_ptrs: HashMap::new(),
+            array_len: HashMap::new(),
+            array_elem_ty: HashMap::new(),
+            array_struct_roots: HashMap::new(),
             struct_fields,
             user_fn_param_names: &registry.param_names,
             user_fn_param_defaults: &registry.param_defaults,
@@ -434,6 +474,19 @@ pub(super) unsafe fn lower_user_function_body(
                 scalar_param_types.len()
             )));
         }
+        let expected_array_count = def
+            .param_kinds
+            .iter()
+            .filter(|k| matches!(k, TypedFnParam::Array { .. }))
+            .count();
+        if array_param_types.len() != expected_array_count {
+            return Err(Diagnostic::internal(format!(
+                "function '{}' array parameter type mismatch: expected {}, got {}",
+                def.name,
+                expected_array_count,
+                array_param_types.len()
+            )));
+        }
         let expected_buffer_count = def
             .param_kinds
             .iter()
@@ -457,6 +510,7 @@ pub(super) unsafe fn lower_user_function_body(
 
         let mut llvm_param_idx: u32 = 0;
         let mut scalar_param_idx: usize = 0;
+        let mut array_param_idx: usize = 0;
         let mut buffer_param_idx: usize = 0;
         for (param_idx, (param_name, kind)) in
             def.params.iter().zip(def.param_kinds.iter()).enumerate()
@@ -529,11 +583,11 @@ pub(super) unsafe fn lower_user_function_body(
                                     );
                                 }
                             }
-                            TypedFieldType::Data(len) => {
-                                if let Some(elem_struct) = &field.data_elem_struct {
+                            TypedFieldType::Array(len) => {
+                                if let Some(elem_struct) = &field.array_elem_struct {
                                     let mut roots = Vec::new();
                                     let mut leaves = Vec::new();
-                                    collect_data_struct_bindings(
+                                    collect_array_struct_bindings(
                                         ctx.struct_fields,
                                         elem_struct,
                                         &flat,
@@ -543,19 +597,19 @@ pub(super) unsafe fn lower_user_function_body(
                                         &mut Vec::new(),
                                     )?;
                                     for (root_name, root_struct, root_len) in roots {
-                                        ctx.data_struct_roots
+                                        ctx.array_struct_roots
                                             .insert(root_name.clone(), root_struct);
-                                        ctx.data_len.entry(root_name).or_insert(root_len);
+                                        ctx.array_len.entry(root_name).or_insert(root_len);
                                     }
                                     let mut leaf_iter = leaves.into_iter();
                                     let first = leaf_iter.next().ok_or_else(|| {
                                         Diagnostic::internal(format!(
-                                            "Data[Struct] field '{flat}' produced no leaf bindings in def lowering"
+                                            "array[Struct] field '{flat}' produced no leaf bindings in def lowering"
                                         ))
                                     })?;
-                                    ctx.data_ptrs.insert(first.0.clone(), param_val);
-                                    ctx.data_len.insert(first.0.clone(), first.1);
-                                    ctx.data_elem_ty.insert(first.0, first.2);
+                                    ctx.array_ptrs.insert(first.0.clone(), param_val);
+                                    ctx.array_len.insert(first.0.clone(), first.1);
+                                    ctx.array_elem_ty.insert(first.0, first.2);
                                     for (leaf_name, leaf_len, leaf_ty) in leaf_iter {
                                         llvm_param_idx += 1;
                                         let leaf_param_val = LLVMGetParam(fn_ref, llvm_param_idx);
@@ -565,22 +619,45 @@ pub(super) unsafe fn lower_user_function_body(
                                                 llvm_param_idx, def.name
                                             )));
                                         }
-                                        ctx.data_ptrs.insert(leaf_name.clone(), leaf_param_val);
-                                        ctx.data_len.insert(leaf_name.clone(), leaf_len);
-                                        ctx.data_elem_ty.insert(leaf_name, leaf_ty);
+                                        ctx.array_ptrs.insert(leaf_name.clone(), leaf_param_val);
+                                        ctx.array_len.insert(leaf_name.clone(), leaf_len);
+                                        ctx.array_elem_ty.insert(leaf_name, leaf_ty);
                                     }
                                 } else {
-                                    ctx.data_ptrs.insert(flat.clone(), param_val);
-                                    ctx.data_len.insert(flat.clone(), len);
-                                    ctx.data_elem_ty.insert(
+                                    ctx.array_ptrs.insert(flat.clone(), param_val);
+                                    ctx.array_len.insert(flat.clone(), len);
+                                    ctx.array_elem_ty.insert(
                                         flat,
-                                        field.data_elem_ty.unwrap_or(PrimitiveType::F32),
+                                        field.array_elem_ty.unwrap_or(PrimitiveType::F32),
                                     );
                                 }
                             }
                         }
                         llvm_param_idx += 1;
                     }
+                }
+                TypedFnParam::Array { .. } => {
+                    let (elem_ty, len) = array_param_types
+                        .get(array_param_idx)
+                        .copied()
+                        .ok_or_else(|| {
+                            Diagnostic::internal(format!(
+                                "missing array signature for '{}' parameter '{}' at index {}",
+                                def.name, param_name, array_param_idx
+                            ))
+                        })?;
+                    array_param_idx += 1;
+                    let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                    if param_val.is_null() {
+                        return Err(Diagnostic::internal(format!(
+                            "missing LLVM array param {} for function '{}'",
+                            llvm_param_idx, def.name
+                        )));
+                    }
+                    ctx.array_ptrs.insert(param_name.clone(), param_val);
+                    ctx.array_len.insert(param_name.clone(), len);
+                    ctx.array_elem_ty.insert(param_name.clone(), elem_ty);
+                    llvm_param_idx += 1;
                 }
                 TypedFnParam::Buffer { .. } => {
                     let (elem_ty, channels) = buffer_param_types

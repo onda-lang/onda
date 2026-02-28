@@ -950,7 +950,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
             rewrite_proc_calls_in_expr(index, proc_vars, proc_array_slots, proc_api, errors);
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             rewrite_proc_calls_in_expr(
                 &mut spec.size,
                 proc_vars,
@@ -1253,7 +1253,7 @@ pub(super) fn normalize_proc_output_aliases_in_expr(
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
             normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             normalize_proc_output_aliases_in_expr(&mut spec.size, proc_vars, proc_api);
             if let Some(values) = init {
                 for value in values {
@@ -1519,7 +1519,7 @@ pub(super) fn collect_called_proc_instances_in_expr(
         Expr::Index { index, .. } => {
             collect_called_proc_instances_in_expr(index, proc_vars, proc_array_slots, out)
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             collect_called_proc_instances_in_expr(&spec.size, proc_vars, proc_array_slots, out);
             if let Some(values) = init {
                 for value in values {
@@ -1634,7 +1634,7 @@ pub(super) fn desugar_expr_instance_method_calls(
 ) {
     match expr {
         Expr::Index { index, .. } => desugar_expr_instance_method_calls(index, struct_instances),
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             desugar_expr_instance_method_calls(&mut spec.size, struct_instances);
             if let Some(values) = init {
                 for value in values {

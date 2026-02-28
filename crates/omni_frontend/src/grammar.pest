@@ -73,13 +73,8 @@ field_decl = {
   | (ident ~ "=" ~ expr)
   | (ident ~ &field_sep)
 }
-field_type = { data_type | array_type | type_name | qualified_ident }
+field_type = { array_type | type_name | qualified_ident }
 array_type = { (type_name | qualified_ident) ~ "[" ~ expr ~ "]" }
-data_elem_type = { type_name | qualified_ident }
-data_type = {
-  ("Data" ~ "[" ~ data_elem_type ~ "," ~ expr ~ "]")
-  | ("Data" ~ "[" ~ expr ~ "]")
-}
 type_name = { "f32" | "f64" | "i32" | "i64" | "bool" }
 generic_param_list = { "[" ~ ident ~ ("," ~ ident)* ~ "]" }
 generic_type_arg_list = { "[" ~ generic_type_arg ~ ("," ~ generic_type_arg)* ~ "]" }
@@ -118,7 +113,7 @@ field_sep = _{ "," | ";" | NEWLINE+ }
 stmt_sep = _{ ";" | NEWLINE+ }
 
 expr = { prefix* ~ term ~ ((or_op | and_op | cmp_op | add_op | mul_op) ~ prefix* ~ term)* }
-term = _{ call_field_expr | call_expr | data_ctor | index_expr | array_lit | bool_lit | number | path_ident | "(" ~ expr ~ ")" }
+term = _{ call_field_expr | call_expr | index_expr | array_lit | bool_lit | number | path_ident | "(" ~ expr ~ ")" }
 array_lit = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 call_field_expr = { call_expr ~ "." ~ ident }
 call_expr = { call_target ~ generic_type_arg_list? ~ "(" ~ arg_list? ~ ")" }
@@ -127,10 +122,6 @@ call_index_target = { path_ident ~ "[" ~ expr ~ "]" }
 arg_list = { call_arg ~ ("," ~ call_arg)* }
 call_arg = { (ident ~ "=")? ~ expr }
 index_expr = { path_ident ~ "[" ~ expr ~ "]" ~ ("[" ~ expr ~ "]")? }
-data_ctor = {
-  ("Data" ~ "[" ~ data_elem_type ~ "," ~ expr ~ "]")
-  | ("Data" ~ "[" ~ expr ~ "]")
-}
 bool_lit = { "true" | "false" }
 path_ident = @{ ident ~ (("." | "::") ~ ident)* }
 qualified_ident = @{ ident ~ ("::" ~ ident)* }
@@ -147,3 +138,4 @@ keyword = _{ ("while" | "break" | "continue") ~ !ident_char }
 ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 int_lit = @{ ASCII_DIGIT+ }
 number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }
+

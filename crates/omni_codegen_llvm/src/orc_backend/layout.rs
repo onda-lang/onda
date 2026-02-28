@@ -75,27 +75,27 @@ pub(super) fn compute_arrays_layout(
     typed: &TypedProgram,
     state_layout: &[StateLayoutEntry],
 ) -> Result<Vec<ArrayLayoutEntry>, Diagnostic> {
-    let mut layout = Vec::with_capacity(typed.data_vars.len());
+    let mut layout = Vec::with_capacity(typed.array_vars.len());
     let mut offset = state_total_size_bytes(state_layout, &[]);
-    for data_var in &typed.data_vars {
-        if data_var.len == 0 {
+    for array_var in &typed.array_vars {
+        if array_var.len == 0 {
             return Err(Diagnostic::internal(format!(
                 "array symbol '{}' cannot have zero length in ORC layout",
-                data_var.name
+                array_var.name
             )));
         }
-        let (elem_size, elem_align) = primitive_size_align(data_var.elem_ty);
+        let (elem_size, elem_align) = primitive_size_align(array_var.elem_ty);
         offset = align_up(offset, elem_align);
         layout.push(ArrayLayoutEntry {
-            name: data_var.name.clone(),
-            elem_ty: data_var.elem_ty,
-            len: data_var.len,
+            name: array_var.name.clone(),
+            elem_ty: array_var.elem_ty,
+            len: array_var.len,
             offset,
         });
-        let byte_len = elem_size.checked_mul(data_var.len).ok_or_else(|| {
+        let byte_len = elem_size.checked_mul(array_var.len).ok_or_else(|| {
             Diagnostic::internal(format!(
                 "array symbol '{}' byte size overflow in ORC layout",
-                data_var.name
+                array_var.name
             ))
         })?;
         offset = offset.saturating_add(byte_len);

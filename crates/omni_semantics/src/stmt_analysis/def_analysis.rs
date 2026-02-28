@@ -5,7 +5,7 @@ pub(crate) fn analyze_def_stmt(
     stmt: &Stmt,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
-    local_data_aliases: &mut HashMap<String, LocalDataAliasInfo>,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     param_structs: &HashMap<String, String>,
     state_scalars: &HashMap<String, PrimitiveType>,
@@ -21,10 +21,10 @@ pub(crate) fn analyze_def_stmt(
     with_stmt_diag_context(stmt, || {
         let empty_data = HashMap::<String, usize>::new();
         // In def analysis, struct-typed parameters (for example `self`) should be
-        // visible to expression type inference, including indexed Data field reads.
+        // visible to expression type inference, including indexed array field reads.
         let struct_instance_ctx = param_structs;
         let empty_outputs = HashSet::<String>::new();
-        let data_vars = merged_data_vars_for_sample(&empty_data, local_data_aliases);
+        let array_vars = merged_data_vars_for_sample(&empty_data, local_array_aliases);
 
         match stmt {
             Stmt::Assign {
@@ -46,11 +46,11 @@ pub(crate) fn analyze_def_stmt(
                     ));
                     }
                     let declared_ty = *decl_ty;
-                    if let Expr::DataCtor { spec, init } = expr {
+                    if let Expr::ArrayCtor { spec, init } = expr {
                         if *is_typed_decl {
                             if declared_ty.is_some() {
                                 errors.push(Diagnostic::semantic(
-                                    "typed declaration cannot combine scalar type annotation with Data constructor",
+                                    "typed declaration cannot combine scalar type annotation with array constructor",
                                     0,
                                     0,
                                 ));
@@ -65,7 +65,7 @@ pub(crate) fn analyze_def_stmt(
                                 return;
                             }
                             if known_scalars.contains(name)
-                                || local_data_aliases.contains_key(name)
+                                || local_array_aliases.contains_key(name)
                                 || input_names.contains(name)
                                 || output_names.contains(name)
                                 || param_names.contains(name)
@@ -88,10 +88,10 @@ pub(crate) fn analyze_def_stmt(
                                 return;
                             };
                             match &spec.elem {
-                                DataElemType::Primitive(elem_ty) => {
-                                    local_data_aliases.insert(
+                                ArrayElemType::Primitive(elem_ty) => {
+                                    local_array_aliases.insert(
                                         name.clone(),
-                                        LocalDataAliasInfo {
+                                        LocalArrayAliasInfo {
                                             len: size_value,
                                             elem_ty: *elem_ty,
                                             elem_struct: None,
@@ -118,12 +118,12 @@ pub(crate) fn analyze_def_stmt(
                                                     known_scalars,
                                                     locals,
                                                     outputs: &empty_outputs,
-                                                    data_vars: &data_vars,
+                                                    array_vars: &array_vars,
                                                     param_structs,
                                                     struct_instances: struct_instance_ctx,
                                                     struct_defs,
                                                     fn_signatures,
-                                                    allow_data_ctor: false,
+                                                    allow_array_ctor: false,
                                                     scope: ScopeKind::Def,
                                                 },
                                                 errors,
@@ -133,7 +133,7 @@ pub(crate) fn analyze_def_stmt(
                                                     value,
                                                     state_scalars,
                                                     None,
-                                                    local_data_aliases,
+                                                    local_array_aliases,
                                                     locals,
                                                     input_names,
                                                     output_names,
@@ -153,7 +153,7 @@ pub(crate) fn analyze_def_stmt(
                                         }
                                     }
                                 }
-                                DataElemType::Struct(struct_name) => {
+                                ArrayElemType::Struct(struct_name) => {
                                     errors.push(Diagnostic::semantic(
                                         format!(
                                             "typed array declaration '{name}: {struct_name}[N]' is not yet supported in def blocks"
@@ -166,7 +166,7 @@ pub(crate) fn analyze_def_stmt(
                             return;
                         } else {
                             errors.push(Diagnostic::semantic(
-                                "Data[...] construction is only allowed in init or typed array declarations",
+                                "array[...] construction is only allowed in init or typed array declarations",
                                 0,
                                 0,
                             ));
@@ -194,7 +194,7 @@ pub(crate) fn analyze_def_stmt(
                         }
                         if known_scalars.contains(name)
                             || local_aliases.contains_key(name)
-                            || local_data_aliases.contains_key(name)
+                            || local_array_aliases.contains_key(name)
                             || input_names.contains(name)
                             || output_names.contains(name)
                             || param_names.contains(name)
@@ -224,12 +224,12 @@ pub(crate) fn analyze_def_stmt(
                                     known_scalars,
                                     locals,
                                     outputs: &empty_outputs,
-                                    data_vars: &data_vars,
+                                    array_vars: &array_vars,
                                     param_structs,
                                     struct_instances: struct_instance_ctx,
                                     struct_defs,
                                     fn_signatures,
-                                    allow_data_ctor: false,
+                                    allow_array_ctor: false,
                                     scope: ScopeKind::Def,
                                 },
                                 errors,
@@ -239,7 +239,7 @@ pub(crate) fn analyze_def_stmt(
                             &values[0],
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -254,7 +254,7 @@ pub(crate) fn analyze_def_stmt(
                                 value,
                                 state_scalars,
                                 None,
-                                local_data_aliases,
+                                local_array_aliases,
                                 locals,
                                 input_names,
                                 output_names,
@@ -270,9 +270,9 @@ pub(crate) fn analyze_def_stmt(
                                 errors,
                             );
                         }
-                        local_data_aliases.insert(
+                        local_array_aliases.insert(
                             name.clone(),
-                            LocalDataAliasInfo {
+                            LocalArrayAliasInfo {
                                 len: values.len(),
                                 elem_ty,
                                 elem_struct: None,
@@ -288,12 +288,12 @@ pub(crate) fn analyze_def_stmt(
                                 known_scalars,
                                 locals,
                                 outputs: &empty_outputs,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Def,
                             },
                             errors,
@@ -302,7 +302,7 @@ pub(crate) fn analyze_def_stmt(
                             expr,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -320,10 +320,10 @@ pub(crate) fn analyze_def_stmt(
                         known_scalars.insert(name.clone());
                         return;
                     }
-                    if local_data_aliases.contains_key(name) {
+                    if local_array_aliases.contains_key(name) {
                         errors.push(Diagnostic::semantic(
                             format!(
-                                "Data alias '{name}' must be written using '{name}[index] = value'"
+                                "array alias '{name}' must be written using '{name}[index] = value'"
                             ),
                             0,
                             0,
@@ -376,12 +376,12 @@ pub(crate) fn analyze_def_stmt(
                                         known_scalars,
                                         locals,
                                         outputs: &empty_outputs,
-                                        data_vars: &data_vars,
+                                        array_vars: &array_vars,
                                         param_structs,
                                         struct_instances: struct_instance_ctx,
                                         struct_defs,
                                         fn_signatures,
-                                        allow_data_ctor: false,
+                                        allow_array_ctor: false,
                                         scope: ScopeKind::Def,
                                     },
                                     errors,
@@ -390,7 +390,7 @@ pub(crate) fn analyze_def_stmt(
                                     expr,
                                     state_scalars,
                                     None,
-                                    local_data_aliases,
+                                    local_array_aliases,
                                     locals,
                                     input_names,
                                     output_names,
@@ -425,10 +425,10 @@ pub(crate) fn analyze_def_stmt(
                                     );
                                 }
                             }
-                            TypedFieldType::Data(_) => {
+                            TypedFieldType::Array(_) => {
                                 errors.push(Diagnostic::semantic(
                                     format!(
-                                        "Data field '{}.{}' must be assigned via index syntax",
+                                        "array field '{}.{}' must be assigned via index syntax",
                                         base, field
                                     ),
                                     0,
@@ -440,7 +440,7 @@ pub(crate) fn analyze_def_stmt(
                     }
                     if !known_scalars.contains(name)
                         && !local_aliases.contains_key(name)
-                        && !local_data_aliases.contains_key(name)
+                        && !local_array_aliases.contains_key(name)
                         && !input_names.contains(name)
                         && !output_names.contains(name)
                         && !param_names.contains(name)
@@ -448,29 +448,29 @@ pub(crate) fn analyze_def_stmt(
                     {
                         if let Expr::Index { base, index } = expr {
                             let mut is_scalar_data_base = false;
-                            let mut data_struct_elem_struct: Option<String> = None;
+                            let mut array_struct_elem_struct: Option<String> = None;
 
-                            if let Some(alias) = local_data_aliases.get(base) {
+                            if let Some(alias) = local_array_aliases.get(base) {
                                 if let Some(elem_struct) = &alias.elem_struct {
-                                    data_struct_elem_struct = Some(elem_struct.clone());
+                                    array_struct_elem_struct = Some(elem_struct.clone());
                                 } else {
                                     is_scalar_data_base = true;
                                 }
                             }
 
-                            if !is_scalar_data_base && data_struct_elem_struct.is_none() {
+                            if !is_scalar_data_base && array_struct_elem_struct.is_none() {
                                 if let Some((root, field)) = split_field_path(base, errors) {
                                     if let Some(struct_name) = param_structs.get(root) {
                                         if let Some(fields) = struct_defs.get(struct_name) {
                                             if let Some(field_decl) =
                                                 fields.iter().find(|f| f.name == field)
                                             {
-                                                if matches!(field_decl.ty, TypedFieldType::Data(_))
+                                                if matches!(field_decl.ty, TypedFieldType::Array(_))
                                                 {
                                                     if let Some(elem_struct) =
-                                                        &field_decl.data_elem_struct
+                                                        &field_decl.array_elem_struct
                                                     {
-                                                        data_struct_elem_struct =
+                                                        array_struct_elem_struct =
                                                             Some(elem_struct.clone());
                                                     } else {
                                                         is_scalar_data_base = true;
@@ -482,19 +482,19 @@ pub(crate) fn analyze_def_stmt(
                                 }
                             }
 
-                            if is_scalar_data_base || data_struct_elem_struct.is_some() {
+                            if is_scalar_data_base || array_struct_elem_struct.is_some() {
                                 validate_expr(
                                     index,
                                     ExprEnv {
                                         known_scalars,
                                         locals,
                                         outputs: &empty_outputs,
-                                        data_vars: &data_vars,
+                                        array_vars: &array_vars,
                                         param_structs,
                                         struct_instances: struct_instance_ctx,
                                         struct_defs,
                                         fn_signatures,
-                                        allow_data_ctor: false,
+                                        allow_array_ctor: false,
                                         scope: ScopeKind::Def,
                                     },
                                     errors,
@@ -503,7 +503,7 @@ pub(crate) fn analyze_def_stmt(
                                     index,
                                     state_scalars,
                                     None,
-                                    local_data_aliases,
+                                    local_array_aliases,
                                     locals,
                                     input_names,
                                     output_names,
@@ -512,7 +512,7 @@ pub(crate) fn analyze_def_stmt(
                                     struct_defs,
                                     errors,
                                 );
-                                require_numeric_type(idx_ty, "Data index expression", errors);
+                                require_numeric_type(idx_ty, "array index expression", errors);
                                 if is_scalar_data_base {
                                     errors.push(Diagnostic::semantic(
                                         format!(
@@ -521,15 +521,15 @@ pub(crate) fn analyze_def_stmt(
                                         0,
                                         0,
                                     ));
-                                } else if let Some(struct_name) = data_struct_elem_struct {
+                                } else if let Some(struct_name) = array_struct_elem_struct {
                                     if !add_struct_element_alias_bindings(
                                         name,
                                         &struct_name,
                                         struct_defs,
                                         known_scalars,
                                         local_aliases,
-                                        local_data_aliases,
-                                        &format!("Data alias '{name}' from '{base}[...]'"),
+                                        local_array_aliases,
+                                        &format!("array alias '{name}' from '{base}[...]'"),
                                         errors,
                                     ) {
                                         return;
@@ -548,10 +548,10 @@ pub(crate) fn analyze_def_stmt(
                             0,
                         ));
                     }
-                    if local_data_aliases.contains_key(name) {
+                    if local_array_aliases.contains_key(name) {
                         errors.push(Diagnostic::semantic(
                             format!(
-                                "Data alias '{name}' must be written using '{name}[index] = value'"
+                                "array alias '{name}' must be written using '{name}[index] = value'"
                             ),
                             0,
                             0,
@@ -590,12 +590,12 @@ pub(crate) fn analyze_def_stmt(
                             known_scalars,
                             locals,
                             outputs: &empty_outputs,
-                            data_vars: &data_vars,
+                            array_vars: &array_vars,
                             param_structs,
                             struct_instances: struct_instance_ctx,
                             struct_defs,
                             fn_signatures,
-                            allow_data_ctor: false,
+                            allow_array_ctor: false,
                             scope: ScopeKind::Def,
                         },
                         errors,
@@ -605,7 +605,7 @@ pub(crate) fn analyze_def_stmt(
                         expr,
                         state_scalars,
                         None,
-                        local_data_aliases,
+                        local_array_aliases,
                         locals,
                         input_names,
                         output_names,
@@ -655,10 +655,10 @@ pub(crate) fn analyze_def_stmt(
                             0,
                         ));
                     }
-                    if let Some(alias) = local_data_aliases.get(base) {
+                    if let Some(alias) = local_array_aliases.get(base) {
                         if !alias.writable {
                             errors.push(Diagnostic::semantic(
-                                format!("cannot assign to immutable Data alias '{base}'"),
+                                format!("cannot assign to immutable array alias '{base}'"),
                                 0,
                                 0,
                             ));
@@ -680,12 +680,12 @@ pub(crate) fn analyze_def_stmt(
                                 known_scalars,
                                 locals,
                                 outputs: &empty_outputs,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Def,
                             },
                             errors,
@@ -696,12 +696,12 @@ pub(crate) fn analyze_def_stmt(
                                 known_scalars,
                                 locals,
                                 outputs: &empty_outputs,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Def,
                             },
                             errors,
@@ -710,7 +710,7 @@ pub(crate) fn analyze_def_stmt(
                             index,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -719,12 +719,12 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(index_ty, "Data index expression", errors);
+                        require_numeric_type(index_ty, "array index expression", errors);
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -736,7 +736,7 @@ pub(crate) fn analyze_def_stmt(
                         require_assignable_type(
                             expr_ty,
                             alias.elem_ty,
-                            "Data/buffer write",
+                            "array/buffer write",
                             errors,
                         );
                         return;
@@ -757,12 +757,12 @@ pub(crate) fn analyze_def_stmt(
                                 known_scalars,
                                 locals,
                                 outputs: &empty_outputs,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Def,
                             },
                             errors,
@@ -773,12 +773,12 @@ pub(crate) fn analyze_def_stmt(
                                 known_scalars,
                                 locals,
                                 outputs: &empty_outputs,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Def,
                             },
                             errors,
@@ -787,7 +787,7 @@ pub(crate) fn analyze_def_stmt(
                             index,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -796,12 +796,12 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(index_ty, "Data index expression", errors);
+                        require_numeric_type(index_ty, "array index expression", errors);
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -816,7 +816,7 @@ pub(crate) fn analyze_def_stmt(
                             DECLARED_BUFFER_ELEM_TYPE_PREFIX,
                         )
                         .unwrap_or(PrimitiveType::F32);
-                        require_assignable_type(expr_ty, expected_ty, "Data/buffer write", errors);
+                        require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
                         return;
                     }
                     if let Some((root, field)) = split_field_path(base, errors) {
@@ -849,10 +849,10 @@ pub(crate) fn analyze_def_stmt(
                             ));
                             return;
                         };
-                        if !matches!(field_decl.ty, TypedFieldType::Data(_)) {
+                        if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
                             errors.push(Diagnostic::semantic(
                                 format!(
-                                    "field '{}.{}' is not Data and cannot be indexed",
+                                    "field '{}.{}' is not array and cannot be indexed",
                                     root, field
                                 ),
                                 0,
@@ -865,12 +865,12 @@ pub(crate) fn analyze_def_stmt(
                                 known_scalars,
                                 locals,
                                 outputs: &empty_outputs,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Def,
                             },
                             errors,
@@ -881,12 +881,12 @@ pub(crate) fn analyze_def_stmt(
                                 known_scalars,
                                 locals,
                                 outputs: &empty_outputs,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Def,
                             },
                             errors,
@@ -895,7 +895,7 @@ pub(crate) fn analyze_def_stmt(
                             index,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -904,12 +904,12 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(index_ty, "Data index expression", errors);
+                        require_numeric_type(index_ty, "array index expression", errors);
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -919,17 +919,17 @@ pub(crate) fn analyze_def_stmt(
                             errors,
                         );
                         let expected_elem_ty =
-                            field_decl.data_elem_ty.unwrap_or(PrimitiveType::F32);
+                            field_decl.array_elem_ty.unwrap_or(PrimitiveType::F32);
                         require_assignable_type(
                             expr_ty,
                             expected_elem_ty,
-                            "Data/buffer write",
+                            "array/buffer write",
                             errors,
                         );
                         return;
                     }
                     errors.push(Diagnostic::semantic(
-                        "indexed assignments in def are only allowed for local typed arrays or Data fields on struct parameters (for example 'tmp[i] = x' or 'self.buf[i] = x')",
+                        "indexed assignments in def are only allowed for local typed arrays or array fields on struct parameters (for example 'tmp[i] = x' or 'self.buf[i] = x')",
                         0,
                         0,
                     ));
@@ -942,12 +942,12 @@ pub(crate) fn analyze_def_stmt(
                         known_scalars,
                         locals,
                         outputs: &empty_outputs,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs,
                         struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Def,
                     },
                     errors,
@@ -956,7 +956,7 @@ pub(crate) fn analyze_def_stmt(
                     expr,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -973,12 +973,12 @@ pub(crate) fn analyze_def_stmt(
                         known_scalars,
                         locals,
                         outputs: &empty_outputs,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs,
                         struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Def,
                     },
                     errors,
@@ -987,7 +987,7 @@ pub(crate) fn analyze_def_stmt(
                     expr,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -1009,12 +1009,12 @@ pub(crate) fn analyze_def_stmt(
                         known_scalars,
                         locals,
                         outputs: &empty_outputs,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs,
                         struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Def,
                     },
                     errors,
@@ -1023,7 +1023,7 @@ pub(crate) fn analyze_def_stmt(
                     cond,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -1035,7 +1035,7 @@ pub(crate) fn analyze_def_stmt(
                 require_bool_type(cond_ty, "if condition", errors);
                 let mut then_known = known_scalars.clone();
                 let mut then_aliases = local_aliases.clone();
-                let mut then_data_aliases = local_data_aliases.clone();
+                let mut then_data_aliases = local_array_aliases.clone();
                 for nested in then_branch {
                     analyze_def_stmt(
                         nested,
@@ -1057,7 +1057,7 @@ pub(crate) fn analyze_def_stmt(
                 }
                 let mut else_known = known_scalars.clone();
                 let mut else_aliases = local_aliases.clone();
-                let mut else_data_aliases = local_data_aliases.clone();
+                let mut else_data_aliases = local_array_aliases.clone();
                 for nested in else_branch {
                     analyze_def_stmt(
                         nested,
@@ -1087,9 +1087,9 @@ pub(crate) fn analyze_def_stmt(
                 *local_aliases = then_aliases;
                 local_aliases.extend(else_aliases);
                 local_aliases.retain(|name, _| known_scalars.contains(name));
-                *local_data_aliases = then_data_aliases;
+                *local_array_aliases = then_data_aliases;
                 for (k, v) in else_data_aliases {
-                    local_data_aliases.entry(k).or_insert(v);
+                    local_array_aliases.entry(k).or_insert(v);
                 }
             }
             Stmt::For {
@@ -1106,12 +1106,12 @@ pub(crate) fn analyze_def_stmt(
                         known_scalars,
                         locals,
                         outputs: &empty_outputs,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs,
                         struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Def,
                     },
                     errors,
@@ -1122,12 +1122,12 @@ pub(crate) fn analyze_def_stmt(
                         known_scalars,
                         locals,
                         outputs: &empty_outputs,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs,
                         struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Def,
                     },
                     errors,
@@ -1139,12 +1139,12 @@ pub(crate) fn analyze_def_stmt(
                             known_scalars,
                             locals,
                             outputs: &empty_outputs,
-                            data_vars: &data_vars,
+                            array_vars: &array_vars,
                             param_structs,
                             struct_instances: struct_instance_ctx,
                             struct_defs,
                             fn_signatures,
-                            allow_data_ctor: false,
+                            allow_array_ctor: false,
                             scope: ScopeKind::Def,
                         },
                         errors,
@@ -1154,7 +1154,7 @@ pub(crate) fn analyze_def_stmt(
                     start,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -1168,7 +1168,7 @@ pub(crate) fn analyze_def_stmt(
                     end,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -1183,7 +1183,7 @@ pub(crate) fn analyze_def_stmt(
                         step_expr,
                         state_scalars,
                         None,
-                        local_data_aliases,
+                        local_array_aliases,
                         locals,
                         input_names,
                         output_names,
@@ -1203,7 +1203,7 @@ pub(crate) fn analyze_def_stmt(
                 loop_locals.insert(var.clone());
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_data_aliases.clone();
+                let mut loop_data_aliases = local_array_aliases.clone();
                 for nested in body {
                     analyze_def_stmt(
                         nested,
@@ -1225,7 +1225,7 @@ pub(crate) fn analyze_def_stmt(
                 }
                 loop_aliases.retain(|name, _| known_scalars.contains(name));
                 *local_aliases = loop_aliases;
-                *local_data_aliases = loop_data_aliases;
+                *local_array_aliases = loop_data_aliases;
             }
             Stmt::While { cond, body, .. } => {
                 validate_expr(
@@ -1234,12 +1234,12 @@ pub(crate) fn analyze_def_stmt(
                         known_scalars,
                         locals,
                         outputs: &empty_outputs,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs,
                         struct_instances: struct_instance_ctx,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Def,
                     },
                     errors,
@@ -1248,7 +1248,7 @@ pub(crate) fn analyze_def_stmt(
                     cond,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -1261,7 +1261,7 @@ pub(crate) fn analyze_def_stmt(
 
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_data_aliases.clone();
+                let mut loop_data_aliases = local_array_aliases.clone();
                 for nested in body {
                     analyze_def_stmt(
                         nested,
@@ -1283,7 +1283,7 @@ pub(crate) fn analyze_def_stmt(
                 }
                 loop_aliases.retain(|name, _| known_scalars.contains(name));
                 *local_aliases = loop_aliases;
-                *local_data_aliases = loop_data_aliases;
+                *local_array_aliases = loop_data_aliases;
             }
             Stmt::Break { .. } => {
                 if loop_depth == 0 {

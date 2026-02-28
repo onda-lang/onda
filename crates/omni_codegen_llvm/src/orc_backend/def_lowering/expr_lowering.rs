@@ -115,7 +115,7 @@ pub(super) unsafe fn lower_def_expr(
             if name == "__omni_buffer_write2" {
                 return lower_def_buffer_write2_call(args, ctx, true);
             }
-            if let Some(base) = parse_data_len_instance_base(name) {
+            if let Some(base) = parse_array_len_instance_base(name) {
                 return lower_def_data_len_call(name, base, args, ctx);
             }
             if let Some(base) = parse_buffer_chans_instance_base(name) {
@@ -163,6 +163,9 @@ pub(super) unsafe fn lower_def_expr(
             let mut infer_buffer_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
                 infer_buffer_arg_signature_in_def(&*ctx_ptr, arg_expr, callee_name)
             };
+            let mut infer_array_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
+                infer_array_arg_signature_in_def(&*ctx_ptr, arg_expr, callee_name)
+            };
             let prepared = prepare_user_call_common(
                 name,
                 type_args,
@@ -181,6 +184,7 @@ pub(super) unsafe fn lower_def_expr(
                 user_registry,
                 &mut lower_scalar_expr,
                 &mut infer_buffer_arg_signature,
+                &mut infer_array_arg_signature,
                 "def lowering",
             )?;
 
@@ -205,6 +209,9 @@ pub(super) unsafe fn lower_def_expr(
                     )
                 }
             };
+            let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+                lower_array_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, name)
+            };
             let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
                 lower_buffer_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, name)
             };
@@ -216,6 +223,7 @@ pub(super) unsafe fn lower_def_expr(
                 "def lowering",
                 &mut cast_scalar_arg,
                 &mut lower_struct_arg,
+                &mut lower_array_arg,
                 &mut lower_buffer_arg,
             )?;
             let call = LLVMBuildCall2(
@@ -244,8 +252,8 @@ pub(super) unsafe fn lower_def_expr(
                 ty: data.elem_ty,
             })
         }
-        Expr::DataCtor { .. } => Err(Diagnostic::internal(
-            "Data constructor is not supported in def lowering",
+        Expr::ArrayCtor { .. } => Err(Diagnostic::internal(
+            "array constructor is not supported in def lowering",
         )),
         Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => unreachable!(),
     }

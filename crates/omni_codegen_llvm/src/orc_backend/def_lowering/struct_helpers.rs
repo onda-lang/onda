@@ -42,16 +42,16 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                     out_args.push(loaded);
                 }
             }
-            TypedFieldType::Data(_) => {
-                if let Some(elem_struct) = &field.data_elem_struct {
-                    let root_len = *ctx.data_len.get(&flat).ok_or_else(|| {
+            TypedFieldType::Array(_) => {
+                if let Some(elem_struct) = &field.array_elem_struct {
+                    let root_len = *ctx.array_len.get(&flat).ok_or_else(|| {
                         Diagnostic::internal(format!(
-                            "missing def Data[Struct] length metadata for '{flat}' while calling '{callee_name}'"
+                            "missing def array[Struct] length metadata for '{flat}' while calling '{callee_name}'"
                         ))
                     })?;
                     let mut roots = Vec::new();
                     let mut leaves = Vec::new();
-                    collect_data_struct_bindings(
+                    collect_array_struct_bindings(
                         ctx.struct_fields,
                         elem_struct,
                         &flat,
@@ -61,17 +61,17 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                         &mut Vec::new(),
                     )?;
                     for (leaf_name, _, _) in leaves {
-                        let ptr = *ctx.data_ptrs.get(&leaf_name).ok_or_else(|| {
+                        let ptr = *ctx.array_ptrs.get(&leaf_name).ok_or_else(|| {
                             Diagnostic::internal(format!(
-                                "missing def Data pointer for struct field '{leaf_name}' while calling '{callee_name}'"
+                                "missing def array pointer for struct field '{leaf_name}' while calling '{callee_name}'"
                             ))
                         })?;
                         out_args.push(ptr);
                     }
                 } else {
-                    let ptr = *ctx.data_ptrs.get(&flat).ok_or_else(|| {
+                    let ptr = *ctx.array_ptrs.get(&flat).ok_or_else(|| {
                         Diagnostic::internal(format!(
-                            "missing def Data pointer for struct field '{flat}' while calling '{callee_name}'"
+                            "missing def array pointer for struct field '{flat}' while calling '{callee_name}'"
                         ))
                     })?;
                     out_args.push(ptr);
@@ -91,23 +91,23 @@ pub(super) unsafe fn bind_struct_data_element_aliases_in_def(
 ) -> Result<(), Diagnostic> {
     let fields = ctx.struct_fields.get(struct_name).ok_or_else(|| {
         Diagnostic::internal(format!(
-            "unknown struct '{}' while creating def Data alias '{}'",
+            "unknown struct '{}' while creating def array alias '{}'",
             struct_name, alias_name
         ))
     })?;
     for field in fields {
-        let data_field_base = format!("{root_base}.{}", field.name);
+        let array_field_base = format!("{root_base}.{}", field.name);
         match field.ty {
             TypedFieldType::Scalar(prim) => {
-                let data_base_ptr = *ctx.data_ptrs.get(&data_field_base).ok_or_else(|| {
+                let array_base_ptr = *ctx.array_ptrs.get(&array_field_base).ok_or_else(|| {
                     Diagnostic::internal(format!(
-                        "missing def Data pointer for symbol '{data_field_base}' while creating alias '{alias_name}'"
+                        "missing def array pointer for symbol '{array_field_base}' while creating alias '{alias_name}'"
                     ))
                 })?;
                 let elem_ptr = build_f32_ptr_offset(
                     ctx.builder,
                     llvm_ty_for_primitive(ctx.context, prim),
-                    data_base_ptr,
+                    array_base_ptr,
                     global_index,
                     b"def_struct_data_elem_ptr\0",
                 );
@@ -119,40 +119,40 @@ pub(super) unsafe fn bind_struct_data_element_aliases_in_def(
                     },
                 );
             }
-            TypedFieldType::Data(field_len) => {
+            TypedFieldType::Array(field_len) => {
                 let start_idx = build_data_segment_start_index(
                     ctx.builder,
                     ctx.i32_ty,
                     global_index,
                     field_len,
                 )?;
-                if let Some(elem_struct) = &field.data_elem_struct {
-                    ctx.local_data_aliases.insert(
+                if let Some(elem_struct) = &field.array_elem_struct {
+                    ctx.local_array_aliases.insert(
                         format!("{alias_name}.{}", field.name),
-                        LocalDataAlias::Struct {
-                            root_base: data_field_base.clone(),
+                        LocalArrayAlias::Struct {
+                            root_base: array_field_base.clone(),
                             elem_struct: elem_struct.clone(),
                             len: field_len,
                             start_index: start_idx,
                         },
                     );
                 } else {
-                    let elem_ty = field.data_elem_ty.unwrap_or(PrimitiveType::F32);
-                    let data_base_ptr = *ctx.data_ptrs.get(&data_field_base).ok_or_else(|| {
+                    let elem_ty = field.array_elem_ty.unwrap_or(PrimitiveType::F32);
+                    let array_base_ptr = *ctx.array_ptrs.get(&array_field_base).ok_or_else(|| {
                         Diagnostic::internal(format!(
-                            "missing def Data pointer for symbol '{data_field_base}' while creating alias '{alias_name}'"
+                            "missing def array pointer for symbol '{array_field_base}' while creating alias '{alias_name}'"
                         ))
                     })?;
                     let seg_ptr = build_f32_ptr_offset(
                         ctx.builder,
                         ctx.float_ty,
-                        data_base_ptr,
+                        array_base_ptr,
                         start_idx,
                         b"def_struct_data_seg_ptr\0",
                     );
-                    ctx.local_data_aliases.insert(
+                    ctx.local_array_aliases.insert(
                         format!("{alias_name}.{}", field.name),
-                        LocalDataAlias::Primitive {
+                        LocalArrayAlias::Primitive {
                             base_ptr: seg_ptr,
                             len: field_len,
                             elem_ty,

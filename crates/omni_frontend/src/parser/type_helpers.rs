@@ -355,16 +355,16 @@ pub(super) fn parse_buffer_inner(
     };
     Ok(BufferType { elem, channels })
 }
-pub(super) fn parse_data_elem_type(text: &str) -> DataElemType {
+pub(super) fn parse_array_elem_type(text: &str) -> ArrayElemType {
     match parse_primitive_type(text) {
-        Ok(prim) => DataElemType::Primitive(prim),
-        Err(_) => DataElemType::Struct(text.to_owned()),
+        Ok(prim) => ArrayElemType::Primitive(prim),
+        Err(_) => ArrayElemType::Struct(text.to_owned()),
     }
 }
 
-pub(super) fn parse_array_type_as_data_spec(
+pub(super) fn parse_array_type_spec(
     pair: Pair<'_, Rule>,
-) -> Result<DataTypeSpec, Vec<Diagnostic>> {
+) -> Result<ArrayTypeSpec, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::array_type {
         return Err(vec![Diagnostic::syntax(
             "internal parser error: expected array type",
@@ -380,48 +380,16 @@ pub(super) fn parse_array_type_as_data_spec(
         return Err(vec![Diagnostic::syntax("missing array size", 0, 0)]);
     };
     let elem = match elem_pair.as_rule() {
-        Rule::type_name => parse_data_elem_type(elem_pair.as_str()),
-        Rule::qualified_ident => DataElemType::Struct(elem_pair.as_str().to_owned()),
+        Rule::type_name => parse_array_elem_type(elem_pair.as_str()),
+        Rule::qualified_ident => ArrayElemType::Struct(elem_pair.as_str().to_owned()),
         _ => return Err(vec![Diagnostic::syntax("invalid array element type", 0, 0)]),
     };
-    Ok(DataTypeSpec {
+    Ok(ArrayTypeSpec {
         elem,
         size: Box::new(parse_expr_inner(size_pair)),
     })
 }
 
-pub(super) fn parse_data_type_spec(pair: Pair<'_, Rule>) -> Result<DataTypeSpec, Vec<Diagnostic>> {
-    let mut inner = pair.into_inner();
-    let Some(first) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(
-            "missing Data element or capacity",
-            0,
-            0,
-        )]);
-    };
-
-    let (elem, size_pair) = match first.as_rule() {
-        Rule::data_elem_type => {
-            let Some(size_pair) = inner.next() else {
-                return Err(vec![Diagnostic::syntax("missing Data capacity", 0, 0)]);
-            };
-            (parse_data_elem_type(first.as_str()), size_pair)
-        }
-        Rule::expr => (DataElemType::Primitive(PrimitiveType::F32), first),
-        _ => {
-            return Err(vec![Diagnostic::syntax(
-                "invalid Data type/capacity syntax",
-                0,
-                0,
-            )]);
-        }
-    };
-
-    Ok(DataTypeSpec {
-        elem,
-        size: Box::new(parse_expr_inner(size_pair)),
-    })
-}
 pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::field_type {
         return Err(vec![Diagnostic::syntax(
@@ -442,10 +410,7 @@ pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Di
                 return Ok(FieldType::Generic(child.as_str().to_owned()));
             }
             Rule::array_type => {
-                return Ok(FieldType::Data(parse_array_type_as_data_spec(child)?));
-            }
-            Rule::data_type => {
-                return Ok(FieldType::Data(parse_data_type_spec(child)?));
+                return Ok(FieldType::Array(parse_array_type_spec(child)?));
             }
             _ => {}
         }

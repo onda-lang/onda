@@ -198,49 +198,8 @@ fn leading_indent_width(line: &str) -> usize {
     width
 }
 
-fn find_legacy_data_syntax(source: &str) -> Option<(usize, usize)> {
-    let bytes = source.as_bytes();
-    let mut i = 0usize;
-    while i + 4 <= bytes.len() {
-        if bytes[i] == b'D' && bytes[i + 1] == b'a' && bytes[i + 2] == b't' && bytes[i + 3] == b'a'
-        {
-            let prev_is_ident =
-                i > 0 && ((bytes[i - 1] as char).is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-            if prev_is_ident {
-                i += 1;
-                continue;
-            }
-            let mut j = i + 4;
-            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'[' {
-                let line = source[..i].bytes().filter(|b| *b == b'\n').count() + 1;
-                let line_start = source[..i].rfind('\n').map(|p| p + 1).unwrap_or(0);
-                let col = source[line_start..i].chars().count() + 1;
-                return Some((line, col));
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-fn reject_legacy_data_syntax(source: &str) -> Result<(), Vec<Diagnostic>> {
-    if let Some((line, col)) = find_legacy_data_syntax(source) {
-        return Err(vec![Diagnostic::syntax(
-            "legacy Data[...] syntax has been removed; use T[N] array types/declarations",
-            line,
-            col,
-        )]);
-    }
-    Ok(())
-}
-
 pub fn parse_program(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let virtual_path = PathBuf::from("<memory>");
-    reject_legacy_data_syntax(source)
-        .map_err(|diags| annotate_diagnostics_with_file(diags, &virtual_path, 0))?;
     let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(source)
         .map_err(|diags| annotate_diagnostics_with_file(diags, &virtual_path, 0))?;
     let items = split_top_level_items(&preprocessed, &preprocessed_line_map, &virtual_path)?;
@@ -428,8 +387,6 @@ fn load_program_blocks_from_file(
                 0,
             )
         })?;
-        reject_legacy_data_syntax(&source)
-            .map_err(|diags| annotate_diagnostics_with_file(diags, &canonical, 0))?;
         let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(&source)
             .map_err(|diags| annotate_diagnostics_with_file(diags, &canonical, 0))?;
         let items = split_top_level_items(&preprocessed, &preprocessed_line_map, &canonical)?;
@@ -598,8 +555,6 @@ fn load_builtin_module_blocks(
     state.builtin_stack.push(module.to_owned());
 
     let result = (|| {
-        reject_legacy_data_syntax(source)
-            .map_err(|diags| annotate_diagnostics_with_file(diags, &virtual_path, 0))?;
         let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(source)
             .map_err(|diags| annotate_diagnostics_with_file(diags, &virtual_path, 0))?;
         let items = split_top_level_items(&preprocessed, &preprocessed_line_map, &virtual_path)?;

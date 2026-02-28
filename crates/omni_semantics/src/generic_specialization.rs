@@ -62,7 +62,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
         Expr::Index { index, .. } => {
             substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             substitute_call_type_args_with_bindings_expr(&mut spec.size, bindings, context, errors);
             if let Some(values) = init {
                 for value in values {
@@ -228,7 +228,7 @@ pub(crate) fn specialize_generic_struct_template(
     for field in &template.fields {
         let mut default = field.default.clone();
         if let Some(expr) = &mut default {
-            rewrite_generic_data_ctor_expr_types(expr, &type_bindings);
+            rewrite_generic_array_ctor_expr_types(expr, &type_bindings);
             substitute_call_type_args_with_bindings_expr(
                 expr,
                 &type_bindings,
@@ -255,15 +255,15 @@ pub(crate) fn specialize_generic_struct_template(
                 };
                 FieldType::Scalar(bound)
             }
-            FieldType::Data(spec) => {
+            FieldType::Array(spec) => {
                 let elem = match &spec.elem {
-                    DataElemType::Primitive(prim) => DataElemType::Primitive(*prim),
-                    DataElemType::Struct(elem) => match type_bindings.get(elem).copied() {
-                        Some(bound) => DataElemType::Primitive(bound),
-                        None => DataElemType::Struct(elem.clone()),
+                    ArrayElemType::Primitive(prim) => ArrayElemType::Primitive(*prim),
+                    ArrayElemType::Struct(elem) => match type_bindings.get(elem).copied() {
+                        Some(bound) => ArrayElemType::Primitive(bound),
+                        None => ArrayElemType::Struct(elem.clone()),
                     },
                 };
-                FieldType::Data(omni_frontend::DataTypeSpec {
+                FieldType::Array(omni_frontend::ArrayTypeSpec {
                     elem,
                     size: spec.size.clone(),
                 })
@@ -282,7 +282,7 @@ pub(crate) fn specialize_generic_struct_template(
                 param.ty = Some(specialize_fn_param_type(ty));
             }
             if let Some(default) = &mut param.default {
-                rewrite_generic_data_ctor_expr_types(default, &type_bindings);
+                rewrite_generic_array_ctor_expr_types(default, &type_bindings);
                 substitute_call_type_args_with_bindings_expr(
                     default,
                     &type_bindings,
@@ -295,7 +295,7 @@ pub(crate) fn specialize_generic_struct_template(
             }
         }
         for stmt in &mut method.body {
-            rewrite_generic_data_ctor_stmt_types(stmt, &type_bindings);
+            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
             substitute_call_type_args_with_bindings_stmt(
                 stmt,
                 &type_bindings,
@@ -444,7 +444,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
         Expr::Index { index, .. } => {
             rewrite_generic_struct_ctor_expr(index, templates, generated, errors, locals);
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             rewrite_generic_struct_ctor_expr(&mut spec.size, templates, generated, errors, locals);
             if let Some(values) = init {
                 for value in values {
@@ -655,9 +655,9 @@ pub(crate) fn infer_array_elem_type_for_generic_binding(
             acc
         }
         Expr::Var(name) => array_elem_locals.get(name).copied(),
-        Expr::DataCtor { spec, .. } => match &spec.elem {
-            DataElemType::Primitive(ty) => Some(*ty),
-            DataElemType::Struct(_) => None,
+        Expr::ArrayCtor { spec, .. } => match &spec.elem {
+            ArrayElemType::Primitive(ty) => Some(*ty),
+            ArrayElemType::Struct(_) => None,
         },
         _ => None,
     }
@@ -726,7 +726,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
     let scalar_fields = template
         .fields
         .iter()
-        .filter(|f| !matches!(f.ty, FieldType::Data(_)))
+        .filter(|f| !matches!(f.ty, FieldType::Array(_)))
         .collect::<Vec<_>>();
     let param_names = scalar_fields
         .iter()

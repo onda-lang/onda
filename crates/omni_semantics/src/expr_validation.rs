@@ -38,9 +38,9 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         ));
                         return;
                     };
-                    if matches!(field_decl.ty, TypedFieldType::Data(_)) {
+                    if matches!(field_decl.ty, TypedFieldType::Array(_)) {
                         errors.push(Diagnostic::semantic(
-                            format!("Data field '{}.{}' must be indexed", base, field),
+                            format!("array field '{}.{}' must be indexed", base, field),
                             0,
                             0,
                         ));
@@ -49,9 +49,9 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 }
 
                 let flat = format!("{base}.{field}");
-                if env.data_vars.contains_key(&flat) {
+                if env.array_vars.contains_key(&flat) {
                     errors.push(Diagnostic::semantic(
-                        format!("Data symbol '{flat}' must be indexed"),
+                        format!("array symbol '{flat}' must be indexed"),
                         0,
                         0,
                     ));
@@ -86,9 +86,9 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 ));
                 return;
             }
-            if env.data_vars.contains_key(name) {
+            if env.array_vars.contains_key(name) {
                 errors.push(Diagnostic::semantic(
-                    format!("Data symbol '{name}' must be indexed"),
+                    format!("array symbol '{name}' must be indexed"),
                     0,
                     0,
                 ));
@@ -135,10 +135,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         ));
                         return;
                     };
-                    if !matches!(field_decl.ty, TypedFieldType::Data(_)) {
+                    if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
                         errors.push(Diagnostic::semantic(
                             format!(
-                                "field '{}.{}' is not Data and cannot be indexed",
+                                "field '{}.{}' is not array and cannot be indexed",
                                 root, field
                             ),
                             0,
@@ -149,11 +149,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     return;
                 }
             }
-            if !env.data_vars.contains_key(base)
+            if !env.array_vars.contains_key(base)
                 && !has_declared_buffer_symbol(env.known_scalars, base)
             {
                 errors.push(Diagnostic::semantic(
-                    format!("indexed expression '{base}[...]' is not a Data/buffer symbol"),
+                    format!("indexed expression '{base}[...]' is not a array/buffer symbol"),
                     0,
                     0,
                 ));
@@ -168,10 +168,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             }
             validate_expr(index, env, errors);
         }
-        Expr::DataCtor { init, .. } => {
-            if !env.allow_data_ctor {
+        Expr::ArrayCtor { init, .. } => {
+            if !env.allow_array_ctor {
                 errors.push(Diagnostic::semantic(
-                    "Data[...] constructor is only allowed in init assignments",
+                    "array[...] constructor is only allowed in init assignments",
                     0,
                     0,
                 ));
@@ -223,7 +223,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_internal_buffer_2d_call(name, args, env, errors);
                 return;
             }
-            if let Some(base) = parse_data_len_instance_base(name) {
+            if let Some(base) = parse_array_len_instance_base(name) {
                 validate_data_len_builtin_call(name, base, args, env, errors);
                 return;
             }
@@ -304,6 +304,9 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         if param_ty.is_none() {
                             if let Expr::Var(v) = arg {
                                 if has_declared_buffer_symbol(env.known_scalars, v) {
+                                    continue;
+                                }
+                                if env.array_vars.contains_key(v) {
                                     continue;
                                 }
                             }
@@ -389,7 +392,7 @@ fn validate_data_len_builtin_call(
     }
 
     let before = errors.len();
-    let is_data_symbol = if env.data_vars.contains_key(base) {
+    let is_data_symbol = if env.array_vars.contains_key(base) {
         true
     } else if has_declared_buffer_symbol(env.known_scalars, base) {
         true
@@ -402,11 +405,11 @@ fn validate_data_len_builtin_call(
             if let Some(fields) = env.struct_defs.get(struct_name) {
                 if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
                     match field_decl.ty {
-                        TypedFieldType::Data(_) => true,
+                        TypedFieldType::Array(_) => true,
                         TypedFieldType::Scalar(_) => {
                             errors.push(Diagnostic::semantic(
                                 format!(
-                                    "builtin method '{}' requires a Data symbol, but '{}.{}' is scalar",
+                                    "builtin method '{}' requires a array symbol, but '{}.{}' is scalar",
                                     name, root, field
                                 ),
                                 0,
@@ -444,7 +447,7 @@ fn validate_data_len_builtin_call(
     if !is_data_symbol && errors.len() == before {
         errors.push(Diagnostic::semantic(
             format!(
-                "builtin method '{}' requires a Data or buffer symbol receiver, got '{}'",
+                "builtin method '{}' requires a array or buffer symbol receiver, got '{}'",
                 name, base
             ),
             0,
@@ -778,11 +781,11 @@ fn validate_unsafe_data_builtin_call(
                             return;
                         };
                         match field_decl.ty {
-                            TypedFieldType::Data(_) => {
-                                if field_decl.data_elem_struct.is_some() {
+                            TypedFieldType::Array(_) => {
+                                if field_decl.array_elem_struct.is_some() {
                                     errors.push(Diagnostic::semantic(
                                         format!(
-                                            "builtin '{}' does not support Data[Struct, N] symbol '{}'",
+                                            "builtin '{}' does not support array[Struct, N] symbol '{}'",
                                             name, base
                                         ),
                                         0,
@@ -795,7 +798,7 @@ fn validate_unsafe_data_builtin_call(
                             TypedFieldType::Scalar(_) => {
                                 errors.push(Diagnostic::semantic(
                                     format!(
-                                        "builtin '{}' expects a Data symbol as first argument, but '{}.{}' is scalar",
+                                        "builtin '{}' expects a array symbol as first argument, but '{}.{}' is scalar",
                                         name, root, field
                                     ),
                                     0,
@@ -803,10 +806,10 @@ fn validate_unsafe_data_builtin_call(
                                 ));
                             }
                         }
-                    } else if env.data_vars.contains_key(base) {
+                    } else if env.array_vars.contains_key(base) {
                         is_valid_primitive_data = true;
                     }
-                } else if env.data_vars.contains_key(base)
+                } else if env.array_vars.contains_key(base)
                     || has_declared_buffer_symbol(env.known_scalars, base)
                 {
                     is_valid_primitive_data = true;
@@ -815,7 +818,7 @@ fn validate_unsafe_data_builtin_call(
                 if !is_valid_primitive_data {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "builtin '{}' expects a primitive Data or buffer symbol as first argument, got '{}'",
+                            "builtin '{}' expects a primitive array or buffer symbol as first argument, got '{}'",
                             name, base
                         ),
                         0,
@@ -827,7 +830,7 @@ fn validate_unsafe_data_builtin_call(
                 validate_expr(other, env, errors);
                 errors.push(Diagnostic::semantic(
                     format!(
-                        "builtin '{}' first argument must be a Data symbol variable",
+                        "builtin '{}' first argument must be a array symbol variable",
                         name
                     ),
                     0,

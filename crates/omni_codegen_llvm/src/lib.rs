@@ -812,7 +812,7 @@ fn collect_expr_buffer_write_usage(
                 global_writes,
             );
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             collect_expr_buffer_write_usage(
                 &spec.size,
                 top_level_buffers,

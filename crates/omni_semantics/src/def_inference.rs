@@ -13,7 +13,7 @@ pub(crate) use call_inference::resolve_call_args;
 
 use crate::builtins::{
     builtin_constant_type, eval_data_size_expr, is_builtin_constant_name, is_internal_buffer_2d_fn,
-    parse_buffer_chans_instance_base, parse_data_len_instance_base,
+    parse_array_len_instance_base, parse_buffer_chans_instance_base,
 };
 use crate::{
     with_stmt_diag_context, AnalysisOptions, FnSignature, TypedBufferChannels, TypedFieldType,
@@ -23,13 +23,14 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StructFieldUsage {
     Scalar,
-    Data,
+    Array,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct InferredFnParam {
     saw_scalar: bool,
     saw_structs: HashSet<String>,
+    saw_arrays: Vec<InferredArrayParam>,
     saw_buffers: Vec<InferredBufferParam>,
 }
 
@@ -39,12 +40,19 @@ pub(crate) struct InferredBufferParam {
     pub(crate) channels: TypedBufferChannels,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InferredArrayParam {
+    pub(crate) elem_ty: PrimitiveType,
+    pub(crate) len: usize,
+}
+
 pub(crate) fn infer_def_param_kinds(
     defs: &[FunctionDef],
     init: &[Stmt],
     block_stmts: &[Stmt],
     sample: &[Stmt],
     struct_instances: &HashMap<String, String>,
+    array_bindings: &HashMap<String, InferredArrayParam>,
     buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
     fn_signatures: &HashMap<String, FnSignature>,
     method_self_struct: &HashMap<String, String>,
@@ -82,30 +90,36 @@ pub(crate) fn infer_def_param_kinds(
         }
     }
 
+    let mut init_array_bindings = array_bindings.clone();
     for stmt in init {
         infer_stmt_calls(
             stmt,
             struct_instances,
+            &mut init_array_bindings,
             buffer_bindings,
             fn_signatures,
             &mut kinds,
             errors,
         );
     }
+    let mut block_array_bindings = array_bindings.clone();
     for stmt in block_stmts {
         infer_stmt_calls(
             stmt,
             struct_instances,
+            &mut block_array_bindings,
             buffer_bindings,
             fn_signatures,
             &mut kinds,
             errors,
         );
     }
+    let mut sample_array_bindings = array_bindings.clone();
     for stmt in sample {
         infer_stmt_calls(
             stmt,
             struct_instances,
+            &mut sample_array_bindings,
             buffer_bindings,
             fn_signatures,
             &mut kinds,
@@ -118,6 +132,7 @@ pub(crate) fn infer_def_param_kinds(
         let snapshot = kinds.clone();
         for def in defs {
             let mut local_struct_instances = HashMap::<String, String>::new();
+            let mut local_array_bindings = HashMap::<String, InferredArrayParam>::new();
             let mut local_buffer_bindings = HashMap::<String, Vec<InferredBufferParam>>::new();
 
             if let Some(explicit_structs) = declared_struct_params.get(&def.name) {
@@ -151,6 +166,20 @@ pub(crate) fn infer_def_param_kinds(
                     let Some(param) = def.params.get(idx) else {
                         continue;
                     };
+                    if !inferred_kind.saw_arrays.is_empty() {
+                        let inferred_array = infer_untyped_array_from_observations(
+                            &def.name,
+                            &param.name,
+                            inferred_kind,
+                            false,
+                            errors,
+                        )
+                        .unwrap_or(InferredArrayParam {
+                            elem_ty: PrimitiveType::F32,
+                            len: 1,
+                        });
+                        local_array_bindings.insert(param.name.clone(), inferred_array);
+                    }
                     if local_buffer_bindings.contains_key(&param.name) {
                         continue;
                     }
@@ -165,6 +194,7 @@ pub(crate) fn infer_def_param_kinds(
                 infer_stmt_calls(
                     stmt,
                     &local_struct_instances,
+                    &mut local_array_bindings,
                     &local_buffer_bindings,
                     fn_signatures,
                     &mut kinds,
@@ -211,6 +241,18 @@ pub(crate) fn infer_def_param_kinds(
             let usage_for_param = usage.get(idx).cloned().unwrap_or_default();
 
             if let Some((elem_ty, channels)) = explicit_buffer {
+                if !inferred_kind.saw_arrays.is_empty() {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "function '{}' parameter '{}' is explicitly '{}' but is also used as array",
+                            def.name,
+                            param_name,
+                            format_buffer_type_name(*elem_ty, channels)
+                        ),
+                        0,
+                        0,
+                    ));
+                }
                 if inferred_kind.saw_scalar {
                     errors.push(Diagnostic::semantic(
                         format!(
@@ -243,6 +285,16 @@ pub(crate) fn infer_def_param_kinds(
             }
 
             if !inferred_kind.saw_buffers.is_empty() {
+                if !inferred_kind.saw_arrays.is_empty() {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "function '{}' parameter '{}' is used both as array and buffer",
+                            def.name, param_name
+                        ),
+                        0,
+                        0,
+                    ));
+                }
                 if inferred_kind.saw_scalar {
                     errors.push(Diagnostic::semantic(
                         format!(
@@ -281,11 +333,59 @@ pub(crate) fn infer_def_param_kinds(
                 continue;
             }
 
+            if !inferred_kind.saw_arrays.is_empty() {
+                if inferred_kind.saw_scalar {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "function '{}' parameter '{}' is used both as scalar and array",
+                            def.name, param_name
+                        ),
+                        0,
+                        0,
+                    ));
+                }
+                if !inferred_kind.saw_structs.is_empty() || !usage_for_param.is_empty() {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "function '{}' parameter '{}' is used both as struct and array",
+                            def.name, param_name
+                        ),
+                        0,
+                        0,
+                    ));
+                }
+                let inferred_array = infer_untyped_array_from_observations(
+                    &def.name,
+                    param_name,
+                    &inferred_kind,
+                    true,
+                    errors,
+                )
+                .unwrap_or(InferredArrayParam {
+                    elem_ty: PrimitiveType::F32,
+                    len: 1,
+                });
+                typed.push(TypedFnParam::Array {
+                    elem_ty: inferred_array.elem_ty,
+                });
+                continue;
+            }
+
             if let Some(struct_name) = explicit_struct {
                 if inferred_kind.saw_scalar {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as scalar",
+                            def.name, param_name, struct_name
+                        ),
+                        0,
+                        0,
+                    ));
+                }
+                if !inferred_kind.saw_arrays.is_empty() {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "function '{}' parameter '{}' is explicitly '{}' but is also used as array",
                             def.name, param_name, struct_name
                         ),
                         0,
@@ -514,7 +614,7 @@ fn collect_stmt_field_usage(
                                 usage,
                                 param_idx,
                                 field,
-                                StructFieldUsage::Data,
+                                StructFieldUsage::Array,
                                 fn_name,
                                 root,
                                 errors,
@@ -577,7 +677,7 @@ fn collect_expr_field_usage(
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::DataCtor { .. } => {}
+        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::ArrayCtor { .. } => {}
         Expr::ArrayLiteral(values) => {
             for value in values {
                 collect_expr_field_usage(value, fn_name, param_index, usage, errors);
@@ -605,7 +705,7 @@ fn collect_expr_field_usage(
                         usage,
                         param_idx,
                         field,
-                        StructFieldUsage::Data,
+                        StructFieldUsage::Array,
                         fn_name,
                         root,
                         errors,
@@ -630,14 +730,14 @@ fn collect_expr_field_usage(
         }
         Expr::UserCall { args, .. } => {
             if let Expr::UserCall { name, .. } = expr {
-                if let Some(base) = parse_data_len_instance_base(name) {
+                if let Some(base) = parse_array_len_instance_base(name) {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if let Some(param_idx) = param_index.get(root).copied() {
                             mark_param_field_usage(
                                 usage,
                                 param_idx,
                                 field,
-                                StructFieldUsage::Data,
+                                StructFieldUsage::Array,
                                 fn_name,
                                 root,
                                 errors,
@@ -669,7 +769,7 @@ fn mark_param_field_usage(
         if existing != kind {
             errors.push(Diagnostic::semantic(
                 format!(
-                    "function '{}' parameter '{}' uses field '{}' both as scalar and Data",
+                    "function '{}' parameter '{}' uses field '{}' both as scalar and array",
                     fn_name, param_name, field
                 ),
                 0,
@@ -755,10 +855,10 @@ fn build_structural_param_fields(
                 (StructFieldUsage::Scalar, TypedFieldType::Scalar(prim)) => {
                     (TypedFieldType::Scalar(prim), None, None)
                 }
-                (StructFieldUsage::Scalar, TypedFieldType::Data(_)) => {
+                (StructFieldUsage::Scalar, TypedFieldType::Array(_)) => {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "function '{}' parameter '{}' uses '{}.{}' as scalar but struct '{}' defines it as Data",
+                            "function '{}' parameter '{}' uses '{}.{}' as scalar but struct '{}' defines it as array",
                             fn_name, param_name, param_name, field_name, struct_name
                         ),
                         0,
@@ -766,15 +866,15 @@ fn build_structural_param_fields(
                     ));
                     continue;
                 }
-                (StructFieldUsage::Data, TypedFieldType::Data(len)) => (
-                    TypedFieldType::Data(len),
-                    found.data_elem_ty,
-                    found.data_elem_struct.clone(),
+                (StructFieldUsage::Array, TypedFieldType::Array(len)) => (
+                    TypedFieldType::Array(len),
+                    found.array_elem_ty,
+                    found.array_elem_struct.clone(),
                 ),
-                (StructFieldUsage::Data, TypedFieldType::Scalar(_)) => {
+                (StructFieldUsage::Array, TypedFieldType::Scalar(_)) => {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "function '{}' parameter '{}' uses '{}.{}' as Data but struct '{}' defines it as scalar",
+                            "function '{}' parameter '{}' uses '{}.{}' as array but struct '{}' defines it as scalar",
                             fn_name, param_name, param_name, field_name, struct_name
                         ),
                         0,
@@ -812,18 +912,18 @@ fn build_structural_param_fields(
         } else {
             match required_kind {
                 StructFieldUsage::Scalar => TypedFieldType::Scalar(PrimitiveType::F32),
-                StructFieldUsage::Data => TypedFieldType::Data(1),
+                StructFieldUsage::Array => TypedFieldType::Array(1),
             }
         };
-        let data_elem_ty = resolved_data_elem_ty.flatten();
-        let data_elem_struct = resolved_data_elem_struct.unwrap_or(None);
+        let array_elem_ty = resolved_data_elem_ty.flatten();
+        let array_elem_struct = resolved_data_elem_struct.unwrap_or(None);
 
         out.push(TypedStructField {
             name: field_name,
             ty,
             default: None,
-            data_elem_ty,
-            data_elem_struct,
+            array_elem_ty,
+            array_elem_struct,
         });
     }
 
@@ -851,6 +951,19 @@ pub(crate) fn param_buffer_map_from_kinds(
     for (name, kind) in param_names.iter().zip(kinds.iter()) {
         if let TypedFnParam::Buffer { elem_ty, channels } = kind {
             out.insert(name.clone(), (*elem_ty, channels.clone()));
+        }
+    }
+    out
+}
+
+pub(crate) fn param_array_map_from_kinds(
+    param_names: &[String],
+    kinds: &[TypedFnParam],
+) -> HashMap<String, PrimitiveType> {
+    let mut out = HashMap::new();
+    for (name, kind) in param_names.iter().zip(kinds.iter()) {
+        if let TypedFnParam::Array { elem_ty } = kind {
+            out.insert(name.clone(), *elem_ty);
         }
     }
     out
@@ -902,6 +1015,35 @@ fn infer_untyped_buffer_from_observations(
     Some(InferredBufferParam {
         elem_ty: merged_elem,
         channels: merged_channels,
+    })
+}
+
+fn infer_untyped_array_from_observations(
+    _fn_name: &str,
+    _param_name: &str,
+    inferred: &InferredFnParam,
+    _report_errors: bool,
+    _errors: &mut Vec<Diagnostic>,
+) -> Option<InferredArrayParam> {
+    if inferred.saw_arrays.is_empty() {
+        return None;
+    }
+    let first = inferred.saw_arrays[0].clone();
+    let mut merged_elem = first.elem_ty;
+    let mut merged_len = first.len;
+    for seen in inferred.saw_arrays.iter().skip(1) {
+        merged_elem = match (merged_elem, seen.elem_ty) {
+            (PrimitiveType::F32, PrimitiveType::F64) | (PrimitiveType::F64, PrimitiveType::F32) => {
+                PrimitiveType::F64
+            }
+            (lhs, rhs) if lhs == rhs => lhs,
+            (lhs, _) => lhs,
+        };
+        merged_len = merged_len.max(seen.len);
+    }
+    Some(InferredArrayParam {
+        elem_ty: merged_elem,
+        len: merged_len,
     })
 }
 

@@ -5,7 +5,7 @@ pub(super) unsafe fn lower_expr(
     ctx: &mut LoweringCtx<'_>,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<OrcValue, Diagnostic> {
     if let Some(literal) = lower_literal_expr_common(expr, ctx.context, ctx.i32_ty, ctx.float_ty) {
         return Ok(literal);
@@ -212,9 +212,9 @@ pub(super) unsafe fn lower_expr(
                     ty: in_ty,
                 });
             }
-            if ctx.data_base_ptrs.contains_key(name) || ctx.data_struct_len.contains_key(name) {
+            if ctx.array_base_ptrs.contains_key(name) || ctx.array_struct_len.contains_key(name) {
                 return Err(Diagnostic::internal(format!(
-                    "Data symbol '{name}' must be indexed in ORC expression lowering"
+                    "array symbol '{name}' must be indexed in ORC expression lowering"
                 )));
             }
             if ctx.buffer_index.contains_key(name) {
@@ -242,7 +242,7 @@ pub(super) unsafe fn lower_expr(
                     index,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                     true,
                 )?;
                 return Ok(OrcValue {
@@ -262,7 +262,7 @@ pub(super) unsafe fn lower_expr(
                     index,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                     true,
                 );
             }
@@ -274,7 +274,7 @@ pub(super) unsafe fn lower_expr(
                     index,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                     true,
                 );
             }
@@ -285,7 +285,7 @@ pub(super) unsafe fn lower_expr(
                     index,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                     true,
                 )?;
                 return Ok(OrcValue {
@@ -304,24 +304,24 @@ pub(super) unsafe fn lower_expr(
                 index,
                 locals,
                 local_aliases,
-                local_data_aliases,
+                local_array_aliases,
             )?;
             Ok(OrcValue {
                 value: LLVMBuildLoad2(
                     ctx.builder,
                     llvm_ty_for_primitive(ctx.context, data.elem_ty),
                     data.ptr,
-                    b"data_load\0".as_ptr().cast(),
+                    b"array_load\0".as_ptr().cast(),
                 ),
                 ty: data.elem_ty,
             })
         }
-        Expr::DataCtor { .. } => Err(Diagnostic::internal(
-            "Data constructor is only valid as an init assignment value",
+        Expr::ArrayCtor { .. } => Err(Diagnostic::internal(
+            "array constructor is only valid as an init assignment value",
         )),
         Expr::Binary { op, lhs, rhs } => {
-            let left = lower_expr(lhs, ctx, locals, local_aliases, local_data_aliases)?;
-            let right = lower_expr(rhs, ctx, locals, local_aliases, local_data_aliases)?;
+            let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases)?;
+            let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases)?;
             let builder = ctx.builder;
             let fast_math_flags = ctx.fast_math_flags;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
@@ -338,8 +338,8 @@ pub(super) unsafe fn lower_expr(
             )
         }
         Expr::Compare { op, lhs, rhs } => {
-            let left = lower_expr(lhs, ctx, locals, local_aliases, local_data_aliases)?;
-            let right = lower_expr(rhs, ctx, locals, local_aliases, local_data_aliases)?;
+            let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases)?;
+            let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases)?;
             let builder = ctx.builder;
             let fast_math_flags = ctx.fast_math_flags;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
@@ -356,7 +356,7 @@ pub(super) unsafe fn lower_expr(
             )
         }
         Expr::Cast { to, expr } => {
-            let value = lower_expr(expr, ctx, locals, local_aliases, local_data_aliases)?;
+            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
             let casted = cast_orc_value_to(ctx, value, *to, b"cast\0");
             Ok(OrcValue {
                 value: casted,
@@ -364,7 +364,7 @@ pub(super) unsafe fn lower_expr(
             })
         }
         Expr::UnaryNot { expr } => {
-            let value = lower_expr(expr, ctx, locals, local_aliases, local_data_aliases)?;
+            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
             let builder = ctx.builder;
             let context = ctx.context;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
@@ -384,7 +384,7 @@ pub(super) unsafe fn lower_expr(
             ctx,
             locals,
             local_aliases,
-            local_data_aliases,
+            local_array_aliases,
         ),
         Expr::Call { func, args } => {
             let mut lowered = Vec::with_capacity(args.len());
@@ -394,7 +394,7 @@ pub(super) unsafe fn lower_expr(
                     ctx,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                 )?);
             }
             lower_builtin_call_orc(ctx, *func, &lowered)
@@ -410,7 +410,7 @@ pub(super) unsafe fn lower_expr(
                     ctx,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                     true,
                 );
             }
@@ -420,12 +420,12 @@ pub(super) unsafe fn lower_expr(
                     ctx,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                     true,
                 );
             }
-            if let Some(base) = parse_data_len_instance_base(name) {
-                return lower_orc_data_len_call(name, base, args, ctx, local_data_aliases);
+            if let Some(base) = parse_array_len_instance_base(name) {
+                return lower_orc_data_len_call(name, base, args, ctx, local_array_aliases);
             }
             if let Some(base) = parse_buffer_chans_instance_base(name) {
                 return lower_orc_buffer_chans_call(name, base, args, ctx);
@@ -442,7 +442,7 @@ pub(super) unsafe fn lower_expr(
                     ctx,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                 );
             }
             if let Some(base) = parse_unsafe_write_instance_base(name) {
@@ -457,7 +457,7 @@ pub(super) unsafe fn lower_expr(
                     ctx,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                 );
             }
             if name == "unsafe_read" {
@@ -466,7 +466,7 @@ pub(super) unsafe fn lower_expr(
                     ctx,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                 );
             }
             if name == "unsafe_write" {
@@ -475,7 +475,7 @@ pub(super) unsafe fn lower_expr(
                     ctx,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                 );
             }
             if ctx.struct_fields.contains_key(name) {
@@ -502,11 +502,19 @@ pub(super) unsafe fn lower_expr(
                     &mut *ctx_ptr,
                     locals,
                     local_aliases,
-                    local_data_aliases,
+                    local_array_aliases,
                 )
             };
             let mut infer_buffer_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
                 infer_buffer_arg_signature_in_orc(&*ctx_ptr, arg_expr, callee_name)
+            };
+            let mut infer_array_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
+                infer_array_arg_signature_in_orc(
+                    &*ctx_ptr,
+                    local_array_aliases,
+                    arg_expr,
+                    callee_name,
+                )
             };
             let prepared = prepare_user_call_common(
                 name,
@@ -526,6 +534,7 @@ pub(super) unsafe fn lower_expr(
                 user_registry,
                 &mut lower_scalar_expr,
                 &mut infer_buffer_arg_signature,
+                &mut infer_array_arg_signature,
                 "ORC expression lowering",
             )?;
 
@@ -550,6 +559,15 @@ pub(super) unsafe fn lower_expr(
                     )
                 }
             };
+            let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+                lower_array_call_args_in_orc(
+                    &mut *ctx_ptr,
+                    local_array_aliases,
+                    arg_values,
+                    arg_expr,
+                    name,
+                )
+            };
             let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
                 lower_buffer_call_args_in_orc(&mut *ctx_ptr, arg_values, arg_expr, name)
             };
@@ -561,6 +579,7 @@ pub(super) unsafe fn lower_expr(
                 "ORC expression lowering",
                 &mut cast_scalar_arg,
                 &mut lower_struct_arg,
+                &mut lower_array_arg,
                 &mut lower_buffer_arg,
             )?;
             let call = LLVMBuildCall2(

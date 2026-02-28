@@ -166,8 +166,8 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 *name = resolved;
             }
         }
-        Expr::DataCtor { spec, init } => {
-            if let DataElemType::Struct(name) = &mut spec.elem {
+        Expr::ArrayCtor { spec, init } => {
+            if let ArrayElemType::Struct(name) = &mut spec.elem {
                 qualify_struct_type_name(
                     name,
                     current_ns,

@@ -351,9 +351,9 @@ proc OnePole[T]:
 
 Type arguments can be explicit (`Name[f64](...)`) or inferred in many constructor cases.
 
-## 10 Data and arrays
+## 10 Arrays
 
-`Data[...]` state is supported, including typed forms and capacity expressions.
+Fixed-size arrays are supported for state/local storage, including typed forms and capacity expressions.
 Array indexing and assignment are supported in `init`/`sample`/`def` where valid.
 
 ## 11 Imports and namespaces
@@ -385,5 +385,5 @@ Useful examples in `examples/`:
 - Block/sample structure: `block_counter.omni`, `saw_blep.omni`
 - Struct + methods: `cross_fm.omni`
 - Processor usage and output forms: `proc_gain.omni`, `proc_split.omni`, `proc_array_stereo_sine.omni`, `reverb.omni`
-- Arrays/data-heavy DSP: `karplus_strong_data.omni`, `multitap_feedback_struct_data.omni`
+- Array-heavy DSP: `karplus_strong_data.omni`, `multitap_feedback_struct_data.omni`
 - Stdlib and generics: `stdlib_f32.omni`, `stdlib_f64.omni`

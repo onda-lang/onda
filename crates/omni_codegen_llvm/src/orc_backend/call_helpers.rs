@@ -33,7 +33,7 @@ pub(super) fn builtin_data_call_base_symbol<'a>(
     match &first.expr {
         Expr::Var(base) => Ok(base.as_str()),
         _ => Err(Diagnostic::internal(format!(
-            "builtin '{name}' requires a Data/buffer symbol variable as first argument in {context}"
+            "builtin '{name}' requires a array/buffer symbol variable as first argument in {context}"
         ))),
     }
 }
@@ -58,7 +58,7 @@ pub(super) fn ensure_internal_buffer_2d_call_positional_arity(
     Ok(())
 }
 
-pub(super) fn parse_data_len_instance_base(name: &str) -> Option<&str> {
+pub(super) fn parse_array_len_instance_base(name: &str) -> Option<&str> {
     let (base, method) = name.rsplit_once('.')?;
     if base.is_empty() || method != "len" {
         return None;
@@ -112,24 +112,24 @@ pub(super) fn ensure_builtin_instance_call_no_args(
 pub(super) fn checked_len_const_i32(len: usize, context: &str) -> Result<u64, Diagnostic> {
     if len > i32::MAX as usize {
         return Err(Diagnostic::internal(format!(
-            "Data length {len} exceeds i32 range in {context}"
+            "array length {len} exceeds i32 range in {context}"
         )));
     }
     Ok(len as u64)
 }
 
-pub(super) fn local_data_alias_len(alias: &LocalDataAlias) -> usize {
+pub(super) fn local_data_alias_len(alias: &LocalArrayAlias) -> usize {
     match alias {
-        LocalDataAlias::Primitive { len, .. } | LocalDataAlias::Struct { len, .. } => *len,
+        LocalArrayAlias::Primitive { len, .. } | LocalArrayAlias::Struct { len, .. } => *len,
     }
 }
 
 pub(super) fn lookup_orc_data_symbol_len(
     ctx: &LoweringCtx<'_>,
     base: &str,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Option<usize> {
-    if let Some(alias) = local_data_aliases.get(base) {
+    if let Some(alias) = local_array_aliases.get(base) {
         return Some(local_data_alias_len(alias));
     }
     if let Some(info) = ctx.input_arrays.get(base) {
@@ -141,17 +141,17 @@ pub(super) fn lookup_orc_data_symbol_len(
     if let Some(info) = ctx.output_arrays.get(base) {
         return Some(info.len);
     }
-    if let Some(len) = ctx.data_len.get(base) {
+    if let Some(len) = ctx.array_len.get(base) {
         return Some(*len);
     }
-    ctx.data_struct_len.get(base).copied()
+    ctx.array_struct_len.get(base).copied()
 }
 
 pub(super) fn lookup_def_data_symbol_len(ctx: &DefLoweringCtx<'_>, base: &str) -> Option<usize> {
-    if let Some(alias) = ctx.local_data_aliases.get(base) {
+    if let Some(alias) = ctx.local_array_aliases.get(base) {
         return Some(local_data_alias_len(alias));
     }
-    ctx.data_len.get(base).copied()
+    ctx.array_len.get(base).copied()
 }
 
 pub(super) unsafe fn lower_orc_data_len_call(
@@ -159,10 +159,10 @@ pub(super) unsafe fn lower_orc_data_len_call(
     base: &str,
     args: &[CallArg],
     ctx: &mut LoweringCtx<'_>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_builtin_instance_call_no_args(method_name, args, "ORC expression lowering")?;
-    if let Some(len) = lookup_orc_data_symbol_len(ctx, base, local_data_aliases) {
+    if let Some(len) = lookup_orc_data_symbol_len(ctx, base, local_array_aliases) {
         let len_const = checked_len_const_i32(len, "ORC expression lowering")?;
         return Ok(OrcValue {
             value: LLVMConstInt(ctx.i32_ty, len_const, 0),
@@ -176,7 +176,7 @@ pub(super) unsafe fn lower_orc_data_len_call(
         });
     }
     Err(Diagnostic::internal(format!(
-        "builtin method '{method_name}' requires a Data or buffer symbol receiver in ORC expression lowering, got '{base}'"
+        "builtin method '{method_name}' requires a array or buffer symbol receiver in ORC expression lowering, got '{base}'"
     )))
 }
 
@@ -224,7 +224,7 @@ pub(super) unsafe fn lower_def_data_len_call(
         });
     }
     Err(Diagnostic::internal(format!(
-        "builtin method '{method_name}' requires a Data or buffer symbol receiver in def lowering, got '{base}'"
+        "builtin method '{method_name}' requires a array or buffer symbol receiver in def lowering, got '{base}'"
     )))
 }
 
@@ -233,7 +233,7 @@ pub(super) unsafe fn lower_orc_buffer_read2_call(
     ctx: &mut LoweringCtx<'_>,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     clamp_index: bool,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_internal_buffer_2d_call_positional_arity(
@@ -253,7 +253,7 @@ pub(super) unsafe fn lower_orc_buffer_read2_call(
         sample_expr,
         locals,
         local_aliases,
-        local_data_aliases,
+        local_array_aliases,
         clamp_index,
     )?;
     Ok(OrcValue {
@@ -272,7 +272,7 @@ pub(super) unsafe fn lower_orc_buffer_write2_call(
     ctx: &mut LoweringCtx<'_>,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
     clamp_index: bool,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_internal_buffer_2d_call_positional_arity(
@@ -293,10 +293,10 @@ pub(super) unsafe fn lower_orc_buffer_write2_call(
         sample_expr,
         locals,
         local_aliases,
-        local_data_aliases,
+        local_array_aliases,
         clamp_index,
     )?;
-    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_data_aliases)?;
+    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases)?;
     let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"buf2_write_cast\0");
     LLVMBuildStore(ctx.builder, casted, data.ptr);
     Ok(OrcValue {
@@ -310,7 +310,7 @@ pub(super) unsafe fn lower_orc_unsafe_data_read_call(
     ctx: &mut LoweringCtx<'_>,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_builtin_data_call_positional_arity(args, "unsafe_read", 2, "ORC expression lowering")?;
     let base = builtin_data_call_base_symbol(args, "unsafe_read", "ORC expression lowering")?;
@@ -322,7 +322,7 @@ pub(super) unsafe fn lower_orc_unsafe_data_read_call(
             index_expr,
             locals,
             local_aliases,
-            local_data_aliases,
+            local_array_aliases,
             false,
         );
     }
@@ -334,7 +334,7 @@ pub(super) unsafe fn lower_orc_unsafe_data_read_call(
             index_expr,
             locals,
             local_aliases,
-            local_data_aliases,
+            local_array_aliases,
             false,
         );
     }
@@ -345,7 +345,7 @@ pub(super) unsafe fn lower_orc_unsafe_data_read_call(
             index_expr,
             locals,
             local_aliases,
-            local_data_aliases,
+            local_array_aliases,
             false,
         )?;
         return Ok(OrcValue {
@@ -365,7 +365,7 @@ pub(super) unsafe fn lower_orc_unsafe_data_read_call(
             index_expr,
             locals,
             local_aliases,
-            local_data_aliases,
+            local_array_aliases,
             false,
         )?;
         return Ok(OrcValue {
@@ -384,7 +384,7 @@ pub(super) unsafe fn lower_orc_unsafe_data_read_call(
         index_expr,
         locals,
         local_aliases,
-        local_data_aliases,
+        local_array_aliases,
     )?;
     Ok(OrcValue {
         value: LLVMBuildLoad2(
@@ -402,7 +402,7 @@ pub(super) unsafe fn lower_orc_unsafe_data_write_call(
     ctx: &mut LoweringCtx<'_>,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_builtin_data_call_positional_arity(args, "unsafe_write", 3, "ORC expression lowering")?;
     let base = builtin_data_call_base_symbol(args, "unsafe_write", "ORC expression lowering")?;
@@ -420,10 +420,10 @@ pub(super) unsafe fn lower_orc_unsafe_data_write_call(
             index_expr,
             locals,
             local_aliases,
-            local_data_aliases,
+            local_array_aliases,
             false,
         )?;
-        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_data_aliases)?;
+        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases)?;
         let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"unsafe_out_arr_write_cast\0");
         LLVMBuildStore(ctx.builder, casted, data.ptr);
         return Ok(OrcValue {
@@ -438,10 +438,10 @@ pub(super) unsafe fn lower_orc_unsafe_data_write_call(
             index_expr,
             locals,
             local_aliases,
-            local_data_aliases,
+            local_array_aliases,
             false,
         )?;
-        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_data_aliases)?;
+        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases)?;
         let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"unsafe_buf_write_cast\0");
         LLVMBuildStore(ctx.builder, casted, data.ptr);
         return Ok(OrcValue {
@@ -455,9 +455,9 @@ pub(super) unsafe fn lower_orc_unsafe_data_write_call(
         index_expr,
         locals,
         local_aliases,
-        local_data_aliases,
+        local_array_aliases,
     )?;
-    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_data_aliases)?;
+    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases)?;
     let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"unsafe_data_write_cast\0");
     LLVMBuildStore(ctx.builder, casted, data.ptr);
     Ok(OrcValue {
@@ -670,24 +670,24 @@ pub(super) fn eval_const_data_size_expr(
     let value = eval_const_default_expr(expr, sample_rate, block_size)?;
     if !value.is_finite() {
         return Err(Diagnostic::internal(
-            "Data size expression must evaluate to a finite constant",
+            "array size expression must evaluate to a finite constant",
         ));
     }
 
     let truncated = value.trunc();
     if (value - truncated).abs() > 1e-6 {
         return Err(Diagnostic::internal(
-            "Data size expression must evaluate to an integer constant",
+            "array size expression must evaluate to an integer constant",
         ));
     }
     if truncated <= 0.0 {
         return Err(Diagnostic::internal(
-            "Data size expression must be greater than zero",
+            "array size expression must be greater than zero",
         ));
     }
     if truncated > usize::MAX as f64 {
         return Err(Diagnostic::internal(
-            "Data size expression exceeds supported range",
+            "array size expression exceeds supported range",
         ));
     }
 
@@ -809,17 +809,17 @@ pub(super) unsafe fn lower_struct_call_args_in_orc(
                     out_args.push(value);
                 }
             }
-            TypedFieldType::Data(_) => {
+            TypedFieldType::Array(_) => {
                 let mut symbols = Vec::<String>::new();
-                if let Some(elem_struct) = &field.data_elem_struct {
-                    let root_len = *ctx.data_struct_len.get(&flat).ok_or_else(|| {
+                if let Some(elem_struct) = &field.array_elem_struct {
+                    let root_len = *ctx.array_struct_len.get(&flat).ok_or_else(|| {
                         Diagnostic::internal(format!(
-                            "missing Data[Struct] length metadata for '{flat}' while lowering struct argument for '{callee_name}'"
+                            "missing array[Struct] length metadata for '{flat}' while lowering struct argument for '{callee_name}'"
                         ))
                     })?;
                     let mut roots = Vec::new();
                     let mut leaves = Vec::new();
-                    collect_data_struct_bindings(
+                    collect_array_struct_bindings(
                         ctx.struct_fields,
                         elem_struct,
                         &flat,
@@ -833,12 +833,12 @@ pub(super) unsafe fn lower_struct_call_args_in_orc(
                     symbols.push(flat.clone());
                 }
                 for symbol in symbols {
-                    let data_base_ptr = *ctx.data_base_ptrs.get(&symbol).ok_or_else(|| {
+                    let array_base_ptr = *ctx.array_base_ptrs.get(&symbol).ok_or_else(|| {
                         Diagnostic::internal(format!(
-                            "missing Data symbol '{symbol}' while lowering struct argument for '{callee_name}'"
+                            "missing array symbol '{symbol}' while lowering struct argument for '{callee_name}'"
                         ))
                     })?;
-                    out_args.push(data_base_ptr);
+                    out_args.push(array_base_ptr);
                 }
             }
         }
@@ -945,6 +945,121 @@ pub(super) fn infer_buffer_arg_signature_in_orc(
     Ok((elem_ty, channels))
 }
 
+pub(super) fn infer_array_arg_signature_in_orc(
+    ctx: &LoweringCtx<'_>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    arg_expr: &Expr,
+    callee_name: &str,
+) -> Result<(PrimitiveType, usize), Diagnostic> {
+    let Expr::Var(base) = arg_expr else {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' array argument must be a array symbol variable in ORC expression lowering"
+        )));
+    };
+    if let Some(alias) = local_array_aliases.get(base) {
+        return match alias {
+            LocalArrayAlias::Primitive { elem_ty, len, .. } => Ok((*elem_ty, *len)),
+            LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
+                "function '{callee_name}' array argument '{base}' must have primitive elements in ORC expression lowering"
+            ))),
+        };
+    }
+    if ctx.input_arrays.contains_key(base) {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' cannot pass input array '{base}' by reference in ORC expression lowering"
+        )));
+    }
+    if let Some(info) = ctx.param_arrays.get(base).copied() {
+        return Ok((info.elem_ty, info.len));
+    }
+    if let Some(info) = ctx.output_arrays.get(base).copied() {
+        return Ok((info.elem_ty, info.len));
+    }
+    if let Some(len) = ctx.array_len.get(base).copied() {
+        let elem_ty = *ctx.array_elem_ty.get(base).ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "missing array element type metadata for '{base}' in ORC array signature inference"
+            ))
+        })?;
+        return Ok((elem_ty, len));
+    }
+    Err(Diagnostic::internal(format!(
+        "unknown array symbol '{base}' in ORC array signature inference for function '{callee_name}'"
+    )))
+}
+
+pub(super) unsafe fn lower_array_call_args_in_orc(
+    ctx: &mut LoweringCtx<'_>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    out_args: &mut Vec<LLVMValueRef>,
+    arg_expr: &Expr,
+    callee_name: &str,
+) -> Result<(), Diagnostic> {
+    let Expr::Var(base) = arg_expr else {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' array argument must be a array symbol variable in ORC expression lowering"
+        )));
+    };
+    if let Some(alias) = local_array_aliases.get(base) {
+        return match alias {
+            LocalArrayAlias::Primitive { base_ptr, .. } => {
+                out_args.push(*base_ptr);
+                Ok(())
+            }
+            LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
+                "function '{callee_name}' array argument '{base}' must have primitive elements in ORC expression lowering"
+            ))),
+        };
+    }
+    if ctx.input_arrays.contains_key(base) {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' cannot pass input array '{base}' by reference in ORC expression lowering"
+        )));
+    }
+    if let Some(info) = ctx.param_arrays.get(base).copied() {
+        let base_byte_offset = ctx
+            .param_byte_offset
+            .get(base)
+            .copied()
+            .ok_or_else(|| Diagnostic::internal(format!("unknown parameter array '{base}'")))?;
+        if base_byte_offset > i32::MAX as usize {
+            return Err(Diagnostic::internal(
+                "parameter array offset exceeds supported i32 index range in ORC lowering",
+            ));
+        }
+        let ptr = build_typed_ptr_from_byte_offset(
+            ctx.builder,
+            ctx.context,
+            ctx.params_ptr,
+            LLVMConstInt(ctx.i32_ty, base_byte_offset as u64, 0),
+            info.elem_ty,
+            b"param_arr_ref_ptr_i8\0",
+            b"param_arr_ref_ptr_typed\0",
+        );
+        out_args.push(ptr);
+        return Ok(());
+    }
+    if let Some(_info) = ctx.output_arrays.get(base).copied() {
+        let ptr = *ctx.out_array_base_ptrs.get(base).ok_or_else(|| {
+            Diagnostic::internal(format!("missing output array storage for '{base}'"))
+        })?;
+        out_args.push(ptr);
+        return Ok(());
+    }
+    if let Some(ptr) = ctx.array_base_ptrs.get(base).copied() {
+        if !ctx.array_elem_ty.contains_key(base) {
+            return Err(Diagnostic::internal(format!(
+                "array argument '{base}' is not primitive in ORC expression lowering"
+            )));
+        }
+        out_args.push(ptr);
+        return Ok(());
+    }
+    Err(Diagnostic::internal(format!(
+        "unknown array symbol '{base}' in ORC array call argument lowering for function '{callee_name}'"
+    )))
+}
+
 pub(super) unsafe fn lower_buffer_call_args_in_def(
     ctx: &mut DefLoweringCtx<'_>,
     out_args: &mut Vec<LLVMValueRef>,
@@ -983,4 +1098,71 @@ pub(super) fn infer_buffer_arg_signature_in_def(
         ))
     })?;
     Ok((info.elem_ty, info.declared_channels.clone()))
+}
+
+pub(super) fn infer_array_arg_signature_in_def(
+    ctx: &DefLoweringCtx<'_>,
+    arg_expr: &Expr,
+    callee_name: &str,
+) -> Result<(PrimitiveType, usize), Diagnostic> {
+    let Expr::Var(base) = arg_expr else {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' array argument must be a array symbol variable in def lowering"
+        )));
+    };
+    if let Some(alias) = ctx.local_array_aliases.get(base) {
+        return match alias {
+            LocalArrayAlias::Primitive { elem_ty, len, .. } => Ok((*elem_ty, *len)),
+            LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
+                "function '{callee_name}' array argument '{base}' must have primitive elements in def lowering"
+            ))),
+        };
+    }
+    let len = ctx.array_len.get(base).copied().ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "unknown array symbol '{base}' in def array signature inference"
+        ))
+    })?;
+    let elem_ty = *ctx.array_elem_ty.get(base).ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "missing array element type metadata for '{base}' in def array signature inference"
+        ))
+    })?;
+    Ok((elem_ty, len))
+}
+
+pub(super) unsafe fn lower_array_call_args_in_def(
+    ctx: &mut DefLoweringCtx<'_>,
+    out_args: &mut Vec<LLVMValueRef>,
+    arg_expr: &Expr,
+    callee_name: &str,
+) -> Result<(), Diagnostic> {
+    let Expr::Var(base) = arg_expr else {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' array argument must be a array symbol variable in def lowering"
+        )));
+    };
+    if let Some(alias) = ctx.local_array_aliases.get(base) {
+        return match alias {
+            LocalArrayAlias::Primitive { base_ptr, .. } => {
+                out_args.push(*base_ptr);
+                Ok(())
+            }
+            LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
+                "function '{callee_name}' array argument '{base}' must have primitive elements in def lowering"
+            ))),
+        };
+    }
+    let ptr = *ctx.array_ptrs.get(base).ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "unknown array symbol '{base}' in def array call argument lowering"
+        ))
+    })?;
+    if !ctx.array_elem_ty.contains_key(base) {
+        return Err(Diagnostic::internal(format!(
+            "array argument '{base}' is not primitive in def lowering"
+        )));
+    }
+    out_args.push(ptr);
+    Ok(())
 }

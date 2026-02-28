@@ -225,7 +225,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 clamp_params,
             );
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             rewrite_top_level_range_clamps_in_expr(
                 &mut spec.size,
                 input_aliases,
@@ -633,11 +633,11 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) known_scalars: &'a HashSet<String>,
     pub(crate) locals: &'a HashSet<String>,
     pub(crate) outputs: &'a HashSet<String>,
-    pub(crate) data_vars: &'a HashMap<String, usize>,
+    pub(crate) array_vars: &'a HashMap<String, usize>,
     pub(crate) param_structs: &'a HashMap<String, String>,
     pub(crate) struct_instances: &'a HashMap<String, String>,
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
-    pub(crate) allow_data_ctor: bool,
+    pub(crate) allow_array_ctor: bool,
     pub(crate) scope: ScopeKind,
 }

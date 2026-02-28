@@ -227,6 +227,10 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
         (PrimitiveType, TypedBufferChannels),
         Diagnostic,
     >,
+    infer_array_arg_signature: &mut dyn FnMut(
+        &Expr,
+        &str,
+    ) -> Result<(PrimitiveType, usize), Diagnostic>,
     call_context: &str,
 ) -> Result<PreparedUserCall<'a>, Diagnostic> {
     let param_names = user_fn_param_names
@@ -248,7 +252,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
     }
     if param_by_ref.len() != param_kinds.len() {
         return Err(Diagnostic::internal(format!(
-            "function '{name}' by-ref metadata length {} does not match param metadata {} in {call_context}",
+            "function '{name}' by-ref metaarray length {} does not match param metadata {} in {call_context}",
             param_by_ref.len(),
             param_kinds.len()
         )));
@@ -263,6 +267,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
     )?;
 
     let mut scalar_values = Vec::new();
+    let mut array_types = Vec::<(PrimitiveType, usize)>::new();
     let mut buffer_types = Vec::<(PrimitiveType, TypedBufferChannels)>::new();
     for (idx, kind) in param_kinds.iter().enumerate() {
         let resolved_arg = resolved.get(idx).copied().flatten();
@@ -294,6 +299,16 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                     }
                 };
                 scalar_values.push(value);
+            }
+            TypedFnParam::Array { .. } => {
+                let arg_expr = resolved_arg.ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "function '{name}' missing required array argument '{}' in {call_context}",
+                        param_names[idx]
+                    ))
+                })?;
+                let resolved_ty = infer_array_arg_signature(arg_expr, name)?;
+                array_types.push(resolved_ty);
             }
             TypedFnParam::Buffer { elem_ty, channels } => {
                 let resolved_ty = if let Some(arg_expr) = resolved_arg {
@@ -328,6 +343,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
         fast_math,
         name,
         &scalar_types,
+        &array_types,
         &buffer_types,
         &explicit_type_args,
     )?;
@@ -359,11 +375,12 @@ pub(super) unsafe fn materialize_user_call_args_common(
         &str,
         bool,
     ) -> Result<(), Diagnostic>,
+    lower_array_arg: &mut dyn FnMut(&mut Vec<LLVMValueRef>, &Expr) -> Result<(), Diagnostic>,
     lower_buffer_arg: &mut dyn FnMut(&mut Vec<LLVMValueRef>, &Expr) -> Result<(), Diagnostic>,
 ) -> Result<(), Diagnostic> {
     if prepared.scalar_values.len() != prepared.scalar_types.len() {
         return Err(Diagnostic::internal(format!(
-            "function '{callee_name}' scalar metadata length mismatch in {call_context}"
+            "function '{callee_name}' scalar metaarray length mismatch in {call_context}"
         )));
     }
 
@@ -399,6 +416,15 @@ pub(super) unsafe fn materialize_user_call_args_common(
                     struct_name,
                     prepared.param_by_ref[idx],
                 )?;
+            }
+            TypedFnParam::Array { .. } => {
+                let arg_expr = resolved_arg.ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "function '{callee_name}' missing required array argument '{}' in {call_context}",
+                        prepared.param_names[idx]
+                    ))
+                })?;
+                lower_array_arg(arg_values, arg_expr)?;
             }
             TypedFnParam::Buffer { .. } => {
                 let arg_expr = resolved_arg.ok_or_else(|| {

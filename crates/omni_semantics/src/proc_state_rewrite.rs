@@ -80,7 +80,7 @@ pub(crate) struct ProcCallInstance {
 #[derive(Default, Debug, Clone)]
 pub(crate) struct ProcStateFields {
     pub(crate) scalars: HashMap<String, PrimitiveType>,
-    pub(crate) data: HashMap<String, omni_frontend::DataTypeSpec>,
+    pub(crate) data: HashMap<String, omni_frontend::ArrayTypeSpec>,
     pub(crate) nested_procs: HashMap<String, ProcNestedState>,
     pub(crate) nested_proc_arrays: HashMap<String, ProcNestedArrayState>,
     pub(crate) struct_instances: HashMap<String, ProcStructState>,
@@ -139,10 +139,10 @@ pub(crate) fn record_proc_state_scalar_assignment(
     for (state_name, state_ty) in &out.scalars {
         inference_scalars.insert(state_name.clone(), *state_ty);
     }
-    for (data_name, spec) in &out.data {
-        if let DataElemType::Primitive(elem_ty) = spec.elem {
+    for (array_name, spec) in &out.data {
+        if let ArrayElemType::Primitive(elem_ty) = spec.elem {
             inference_scalars.insert(
-                declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, data_name),
+                declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, array_name),
                 elem_ty,
             );
         }
@@ -168,8 +168,8 @@ pub(crate) fn record_proc_state_scalar_assignment(
                         prim,
                     );
                 }
-                FieldType::Data(ref spec) => {
-                    if let DataElemType::Primitive(elem_ty) = spec.elem {
+                FieldType::Array(ref spec) => {
+                    if let ArrayElemType::Primitive(elem_ty) = spec.elem {
                         inference_scalars.insert(
                             declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, &flat),
                             elem_ty,
@@ -316,7 +316,7 @@ pub(crate) fn validate_proc_expr_decl_order(
             }
             ok &= validate_proc_expr_decl_order(index, reserved, locals, out, errors);
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             ok &= validate_proc_expr_decl_order(&spec.size, reserved, locals, out, errors);
             if let Some(values) = init {
                 for value in values {
@@ -412,13 +412,13 @@ pub(crate) fn collect_proc_state_fields(
                         && !is_builtin_constant_name(name)
                     {
                         match expr {
-                            Expr::DataCtor { spec, .. } => {
+                            Expr::ArrayCtor { spec, .. } => {
                                 if out.scalars.contains_key(name)
                                     || out.struct_instances.contains_key(name)
                                 {
                                     errors.push(Diagnostic::semantic(
                                     format!(
-                                        "processor state symbol '{name}' is used as both Data and non-Data value"
+                                        "processor state symbol '{name}' is used as both array and non-array value"
                                     ),
                                     0,
                                     0,
@@ -427,14 +427,14 @@ pub(crate) fn collect_proc_state_fields(
                                 if out.nested_procs.contains_key(name) {
                                     errors.push(Diagnostic::semantic(
                                     format!(
-                                        "processor state symbol '{name}' is used as both Data and processor instance"
+                                        "processor state symbol '{name}' is used as both array and processor instance"
                                     ),
                                     0,
                                     0,
                                 ));
                                 }
                                 let resolved_proc_ctor = match &spec.elem {
-                                    DataElemType::Struct(elem_name) => {
+                                    ArrayElemType::Struct(elem_name) => {
                                         if elem_name.contains("::") {
                                             if proc_symbols.contains(elem_name) {
                                                 Some(elem_name.clone())
@@ -449,7 +449,7 @@ pub(crate) fn collect_proc_state_fields(
                                             )
                                         }
                                     }
-                                    DataElemType::Primitive(_) => None,
+                                    ArrayElemType::Primitive(_) => None,
                                 };
                                 if let Some(proc_ctor) = resolved_proc_ctor {
                                     if !in_init_scope {
@@ -514,7 +514,7 @@ pub(crate) fn collect_proc_state_fields(
                                 {
                                     errors.push(Diagnostic::semantic(
                                         format!(
-                                            "processor state symbol '{name}' is used as both Data and non-Data value"
+                                            "processor state symbol '{name}' is used as both array and non-array value"
                                         ),
                                         0,
                                         0,
@@ -525,7 +525,7 @@ pub(crate) fn collect_proc_state_fields(
                                 {
                                     errors.push(Diagnostic::semantic(
                                         format!(
-                                            "processor state symbol '{name}' is used as both Data and processor instance"
+                                            "processor state symbol '{name}' is used as both array and processor instance"
                                         ),
                                         0,
                                         0,
@@ -544,12 +544,12 @@ pub(crate) fn collect_proc_state_fields(
                                     for (state_name, state_ty) in &out.scalars {
                                         inference_scalars.insert(state_name.clone(), *state_ty);
                                     }
-                                    for (data_name, spec) in &out.data {
-                                        if let DataElemType::Primitive(elem_ty) = spec.elem {
+                                    for (array_name, spec) in &out.data {
+                                        if let ArrayElemType::Primitive(elem_ty) = spec.elem {
                                             inference_scalars.insert(
                                                 declared_type_key(
                                                     DECLARED_DATA_ELEM_TYPE_PREFIX,
-                                                    data_name,
+                                                    array_name,
                                                 ),
                                                 elem_ty,
                                             );
@@ -585,8 +585,8 @@ pub(crate) fn collect_proc_state_fields(
                                                         prim,
                                                     );
                                                 }
-                                                FieldType::Data(ref spec) => {
-                                                    if let DataElemType::Primitive(elem_ty) =
+                                                FieldType::Array(ref spec) => {
+                                                    if let ArrayElemType::Primitive(elem_ty) =
                                                         spec.elem
                                                     {
                                                         inference_scalars.insert(
@@ -657,8 +657,8 @@ pub(crate) fn collect_proc_state_fields(
                                     }
 
                                     out.data.entry(name.clone()).or_insert(
-                                        omni_frontend::DataTypeSpec {
-                                            elem: DataElemType::Primitive(elem_ty),
+                                        omni_frontend::ArrayTypeSpec {
+                                            elem: ArrayElemType::Primitive(elem_ty),
                                             size: Box::new(Expr::Int(values.len() as i64)),
                                         },
                                     );
@@ -918,7 +918,7 @@ pub(crate) fn collect_proc_state_fields(
                         && !out.nested_proc_arrays.contains_key(name)
                     {
                         match expr {
-                            Expr::DataCtor { .. } | Expr::UserCall { .. } => {}
+                            Expr::ArrayCtor { .. } | Expr::UserCall { .. } => {}
                             _ => {
                                 out.scalars.entry(name.clone()).or_insert(
                                     decl_ty.or(init_default_ty).unwrap_or(PrimitiveType::F32),
@@ -1081,11 +1081,11 @@ pub(crate) fn infer_proc_state_scalar_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     let locals = HashSet::<String>::new();
-    let local_data_aliases = HashMap::<String, LocalDataAliasInfo>::new();
+    let local_array_aliases = HashMap::<String, LocalArrayAliasInfo>::new();
     infer_scalar_expr_type(
         expr,
         known_scalars,
-        &local_data_aliases,
+        &local_array_aliases,
         &locals,
         input_names,
         output_names,
@@ -1107,7 +1107,7 @@ pub(crate) fn collect_proc_state_expr_fields(
         Expr::Index { index, .. } => {
             collect_proc_state_expr_fields(index, reserved, ctor_symbols, out, errors);
         }
-        Expr::DataCtor { spec, .. } => {
+        Expr::ArrayCtor { spec, .. } => {
             collect_proc_state_expr_fields(&spec.size, reserved, ctor_symbols, out, errors);
         }
         Expr::Compare { lhs, rhs, .. }
@@ -1258,7 +1258,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 *base = format!("self.{base}");
             }
         }
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             rewrite_proc_expr_symbols(
                 &mut spec.size,
                 owner_proc,
@@ -1324,7 +1324,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 );
             }
             if let Expr::UserCall { name, args, .. } = expr {
-                if let Some(base) = parse_data_len_instance_base(name) {
+                if let Some(base) = parse_array_len_instance_base(name) {
                     if field_names.contains(base) && is_plain_symbol(base) {
                         *name = format!("self.{base}.len");
                     }
@@ -1525,7 +1525,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
     stmt: &Stmt,
     owner_proc: &str,
     field_names: &HashSet<String>,
-    data_fields: &HashSet<String>,
+    array_fields: &HashSet<String>,
     ins_names: &HashSet<String>,
     field_array_slots: &HashMap<String, Vec<String>>,
     in_array_slots: &HashMap<String, Vec<String>>,
@@ -1569,7 +1569,8 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             });
                         }
                         if field_names.contains(name) && is_plain_symbol(name) {
-                            if matches!(expr, Expr::DataCtor { .. }) && data_fields.contains(name) {
+                            if matches!(expr, Expr::ArrayCtor { .. }) && array_fields.contains(name)
+                            {
                                 return None;
                             }
                             return Some(Stmt::Assign {
@@ -1819,7 +1820,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            data_fields,
+                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,
@@ -1834,7 +1835,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            data_fields,
+                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,
@@ -1895,7 +1896,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            data_fields,
+                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,
@@ -1935,7 +1936,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            data_fields,
+                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,

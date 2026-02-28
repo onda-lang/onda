@@ -29,7 +29,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             proc_api,
             errors,
         ),
-        Expr::DataCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init } => {
             rewrite_nested_proc_calls_in_expr(
                 &mut spec.size,
                 owner_proc,
@@ -480,7 +480,7 @@ pub(super) fn rewrite_owner_proc_stmt(
     mut stmt: Stmt,
     owner_proc: &str,
     field_names: &HashSet<String>,
-    data_field_names: &HashSet<String>,
+    array_field_names: &HashSet<String>,
     ins_names: &HashSet<String>,
     field_array_slots: &HashMap<String, Vec<String>>,
     in_array_slots: &HashMap<String, Vec<String>>,
@@ -504,7 +504,7 @@ pub(super) fn rewrite_owner_proc_stmt(
         &stmt,
         owner_proc,
         field_names,
-        data_field_names,
+        array_field_names,
         ins_names,
         field_array_slots,
         in_array_slots,
@@ -576,7 +576,7 @@ pub(super) fn expand_nested_struct_ctor_assign(
                 });
                 scalar_idx += 1;
             }
-            FieldType::Data(_) => {
+            FieldType::Array(_) => {
                 if let Some(default) = &field.default {
                     out.push(Stmt::Assign {
                         loc: None,
@@ -989,7 +989,7 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
             &stmt,
             owner_proc,
             &callee_shape.field_names,
-            &callee_shape.data_field_names,
+            &callee_shape.array_field_names,
             callee_ins_names,
             &mapped_field_array_slots,
             callee_in_array_slots,

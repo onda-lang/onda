@@ -3,8 +3,8 @@ pub mod diagnostics;
 pub mod parser;
 
 pub use ast::{
-    AssignTarget, BinaryOp, Block, BlockExec, BlockKind, BufferChannels, BufferDecl,
-    BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp, DataElemType, DataTypeSpec,
+    ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec, BlockKind,
+    BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp,
     DeclRange, DeclType, EventDef, EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl,
     FnParamType, FunctionDef, InitBlock, LogicalOp, ParamDecl, PortDecl, PrimitiveType,
     ProcessorDef, Program, SampleBlock, SourceLoc, Stmt, StructDef, StructField,

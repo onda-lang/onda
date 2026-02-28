@@ -5,7 +5,7 @@ pub(super) unsafe fn lower_stmt(
     ctx: &mut LoweringCtx<'_>,
     locals: &mut HashMap<String, OrcValue>,
     local_aliases: &mut HashMap<String, AliasSlot>,
-    local_data_aliases: &mut HashMap<String, LocalDataAlias>,
+    local_array_aliases: &mut HashMap<String, LocalArrayAlias>,
 ) -> Result<(), Diagnostic> {
     match stmt {
         Stmt::Assign {
@@ -63,7 +63,7 @@ pub(super) unsafe fn lower_stmt(
                                                 ctx,
                                                 locals,
                                                 local_aliases,
-                                                local_data_aliases,
+                                                local_array_aliases,
                                             )?;
                                             cast_orc_value_to(ctx, typed, slot.ty, b"ctor_arg\0")
                                         } else {
@@ -122,12 +122,12 @@ pub(super) unsafe fn lower_stmt(
                                         scalar_arg_idx += 1;
                                         LLVMBuildStore(ctx.builder, value_typed, slot.ptr);
                                     }
-                                    TypedFieldType::Data(_) => {
-                                        if !ctx.data_base_ptrs.contains_key(&flat_target)
-                                            && !ctx.data_struct_len.contains_key(&flat_target)
+                                    TypedFieldType::Array(_) => {
+                                        if !ctx.array_base_ptrs.contains_key(&flat_target)
+                                            && !ctx.array_struct_len.contains_key(&flat_target)
                                         {
                                             return Err(Diagnostic::internal(format!(
-                                                "missing Data symbol '{flat_target}' in ORC lowering"
+                                                "missing array symbol '{flat_target}' in ORC lowering"
                                             )));
                                         }
                                     }
@@ -148,13 +148,14 @@ pub(super) unsafe fn lower_stmt(
                     }
                 }
 
-                if let Expr::DataCtor { spec, init } = expr {
-                    let expected_len = if let Some(len) = ctx.data_len.get(name) {
+                if let Expr::ArrayCtor { spec, init } = expr {
+                    let expected_len = if let Some(len) = ctx.array_len.get(name) {
                         *len
-                    } else if let Some(len) = ctx.data_struct_len.get(name) {
+                    } else if let Some(len) = ctx.array_struct_len.get(name) {
                         *len
                     } else if *is_typed_decl {
-                        if local_aliases.contains_key(name) || local_data_aliases.contains_key(name)
+                        if local_aliases.contains_key(name)
+                            || local_array_aliases.contains_key(name)
                         {
                             return Err(Diagnostic::internal(format!(
                                 "typed array declaration for '{name}' conflicts with existing local symbol in ORC lowering"
@@ -172,8 +173,8 @@ pub(super) unsafe fn lower_stmt(
                             )));
                         }
                         let elem_ty = match spec.elem {
-                            omni_frontend::DataElemType::Primitive(elem_ty) => elem_ty,
-                            omni_frontend::DataElemType::Struct(ref struct_name) => {
+                            omni_frontend::ArrayElemType::Primitive(elem_ty) => elem_ty,
+                            omni_frontend::ArrayElemType::Struct(ref struct_name) => {
                                 return Err(Diagnostic::internal(format!(
                                     "typed array declaration '{name}: {struct_name}[N]' is not yet supported in ORC lowering"
                                 )))
@@ -200,7 +201,7 @@ pub(super) unsafe fn lower_stmt(
                                     ctx,
                                     locals,
                                     local_aliases,
-                                    local_data_aliases,
+                                    local_array_aliases,
                                 )?;
                                 let casted = cast_orc_value_to(
                                     ctx,
@@ -219,9 +220,9 @@ pub(super) unsafe fn lower_stmt(
                                 LLVMBuildStore(ctx.builder, casted, elem_ptr);
                             }
                         }
-                        local_data_aliases.insert(
+                        local_array_aliases.insert(
                             name.clone(),
-                            LocalDataAlias::Primitive {
+                            LocalArrayAlias::Primitive {
                                 base_ptr: ptr,
                                 len,
                                 elem_ty,
@@ -230,29 +231,29 @@ pub(super) unsafe fn lower_stmt(
                         return Ok(());
                     } else {
                         return Err(Diagnostic::internal(format!(
-                            "Data constructor assigned to non-Data symbol '{name}'"
+                            "array constructor assigned to non-array symbol '{name}'"
                         )));
                     };
                     let actual_len =
                         eval_const_data_size_expr(&spec.size, ctx.sample_rate, ctx.block_size)?;
                     if expected_len != actual_len {
                         return Err(Diagnostic::internal(format!(
-                            "Data symbol '{name}' expected Data[{expected_len}] but got Data[{actual_len}]"
+                            "array symbol '{name}' expected array[{expected_len}] but got array[{actual_len}]"
                         )));
                     }
                     return Ok(());
                 }
 
                 if let Expr::ArrayLiteral(values) = expr {
-                    if ctx.data_struct_len.contains_key(name) {
+                    if ctx.array_struct_len.contains_key(name) {
                         return Err(Diagnostic::internal(format!(
-                            "Data[Struct] symbol '{name}' must be assigned via indexed field writes"
+                            "array[Struct] symbol '{name}' must be assigned via indexed field writes"
                         )));
                     }
-                    if let Some(expected_len) = ctx.data_len.get(name).copied() {
+                    if let Some(expected_len) = ctx.array_len.get(name).copied() {
                         if values.len() != expected_len {
                             return Err(Diagnostic::internal(format!(
-                                "Data symbol '{name}' initializer expects {expected_len} elements, got {}",
+                                "array symbol '{name}' initializer expects {expected_len} elements, got {}",
                                 values.len()
                             )));
                         }
@@ -262,7 +263,7 @@ pub(super) unsafe fn lower_stmt(
                                 ctx,
                                 locals,
                                 local_aliases,
-                                local_data_aliases,
+                                local_array_aliases,
                             )?;
                             let data = lower_data_element_ptr(
                                 ctx,
@@ -270,21 +271,17 @@ pub(super) unsafe fn lower_stmt(
                                 &Expr::Int(idx as i64),
                                 locals,
                                 local_aliases,
-                                local_data_aliases,
+                                local_array_aliases,
                             )?;
-                            let casted = cast_orc_value_to(
-                                ctx,
-                                typed,
-                                data.elem_ty,
-                                b"data_array_store_cast\0",
-                            );
+                            let casted =
+                                cast_orc_value_to(ctx, typed, data.elem_ty, b"array_store_cast\0");
                             LLVMBuildStore(ctx.builder, casted, data.ptr);
                         }
                         return Ok(());
                     }
-                    if local_data_aliases.contains_key(name) {
+                    if local_array_aliases.contains_key(name) {
                         return Err(Diagnostic::internal(format!(
-                            "Data alias '{name}' must be assigned via index syntax in ORC lowering"
+                            "array alias '{name}' must be assigned via index syntax in ORC lowering"
                         )));
                     }
                     if local_aliases.contains_key(name)
@@ -305,7 +302,7 @@ pub(super) unsafe fn lower_stmt(
                         )));
                     }
                     let first_typed =
-                        lower_expr(&values[0], ctx, locals, local_aliases, local_data_aliases)?;
+                        lower_expr(&values[0], ctx, locals, local_aliases, local_array_aliases)?;
                     let elem_ty = first_typed.ty;
                     let len = values.len();
                     let ptr = build_local_array_slot(
@@ -318,7 +315,7 @@ pub(super) unsafe fn lower_stmt(
                         let typed = if idx == 0 {
                             first_typed
                         } else {
-                            lower_expr(value_expr, ctx, locals, local_aliases, local_data_aliases)?
+                            lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases)?
                         };
                         let casted =
                             cast_orc_value_to(ctx, typed, elem_ty, b"local_arr_init_cast\0");
@@ -332,9 +329,9 @@ pub(super) unsafe fn lower_stmt(
                         );
                         LLVMBuildStore(ctx.builder, casted, elem_ptr);
                     }
-                    local_data_aliases.insert(
+                    local_array_aliases.insert(
                         name.clone(),
-                        LocalDataAlias::Primitive {
+                        LocalArrayAlias::Primitive {
                             base_ptr: ptr,
                             len,
                             elem_ty,
@@ -344,14 +341,14 @@ pub(super) unsafe fn lower_stmt(
                 }
 
                 if let Some(alias) = local_aliases.get(name) {
-                    let typed = lower_expr(expr, ctx, locals, local_aliases, local_data_aliases)?;
+                    let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
                     let value = cast_orc_value_to(ctx, typed, alias.ty, b"alias_store_cast\0");
                     LLVMBuildStore(ctx.builder, value, alias.ptr);
                     return Ok(());
                 }
-                if local_data_aliases.contains_key(name) {
+                if local_array_aliases.contains_key(name) {
                     return Err(Diagnostic::internal(format!(
-                        "Data alias '{name}' must be assigned via index syntax"
+                        "array alias '{name}' must be assigned via index syntax"
                     )));
                 }
                 if ctx.input_arrays.contains_key(name)
@@ -370,20 +367,20 @@ pub(super) unsafe fn lower_stmt(
 
                 if !locals.contains_key(name)
                     && !local_aliases.contains_key(name)
-                    && !local_data_aliases.contains_key(name)
+                    && !local_array_aliases.contains_key(name)
                     && !ctx.out_slots.contains_key(name)
                     && !ctx.state_slots.contains_key(name)
                     && !ctx.param_byte_offset.contains_key(name)
                     && !ctx.input_index.contains_key(name)
-                    && !ctx.data_base_ptrs.contains_key(name)
-                    && !ctx.data_struct_len.contains_key(name)
+                    && !ctx.array_base_ptrs.contains_key(name)
+                    && !ctx.array_struct_len.contains_key(name)
                     && !ctx.buffer_index.contains_key(name)
                 {
                     if let Expr::Index { base, index } = expr {
-                        if let Some(struct_name) = ctx.data_struct_roots.get(base).cloned() {
-                            let root_len = *ctx.data_struct_len.get(base).ok_or_else(|| {
+                        if let Some(struct_name) = ctx.array_struct_roots.get(base).cloned() {
+                            let root_len = *ctx.array_struct_len.get(base).ok_or_else(|| {
                                 Diagnostic::internal(format!(
-                                    "missing Data[Struct] length metadata for '{base}'"
+                                    "missing array[Struct] length metadata for '{base}'"
                                 ))
                             })?;
                             let root_index = lower_clamped_data_index(
@@ -392,7 +389,7 @@ pub(super) unsafe fn lower_stmt(
                                 root_len,
                                 locals,
                                 local_aliases,
-                                local_data_aliases,
+                                local_array_aliases,
                             )?;
                             bind_struct_data_element_aliases(
                                 name,
@@ -401,15 +398,15 @@ pub(super) unsafe fn lower_stmt(
                                 root_index,
                                 ctx,
                                 local_aliases,
-                                local_data_aliases,
+                                local_array_aliases,
                             )?;
                             return Ok(());
                         }
 
-                        if let Some(alias) = local_data_aliases.get(base).cloned() {
+                        if let Some(alias) = local_array_aliases.get(base).cloned() {
                             match alias {
-                                LocalDataAlias::Primitive { .. } => {}
-                                LocalDataAlias::Struct {
+                                LocalArrayAlias::Primitive { .. } => {}
+                                LocalArrayAlias::Struct {
                                     root_base,
                                     elem_struct,
                                     len,
@@ -421,13 +418,13 @@ pub(super) unsafe fn lower_stmt(
                                         len,
                                         locals,
                                         local_aliases,
-                                        local_data_aliases,
+                                        local_array_aliases,
                                     )?;
                                     let global_idx = LLVMBuildAdd(
                                         ctx.builder,
                                         start_index,
                                         local_idx,
-                                        b"data_alias_global_idx\0".as_ptr().cast(),
+                                        b"array_alias_global_idx\0".as_ptr().cast(),
                                     );
                                     bind_struct_data_element_aliases(
                                         name,
@@ -436,7 +433,7 @@ pub(super) unsafe fn lower_stmt(
                                         global_idx,
                                         ctx,
                                         local_aliases,
-                                        local_data_aliases,
+                                        local_array_aliases,
                                     )?;
                                     return Ok(());
                                 }
@@ -445,7 +442,7 @@ pub(super) unsafe fn lower_stmt(
                     }
                 }
 
-                let typed = lower_expr(expr, ctx, locals, local_aliases, local_data_aliases)?;
+                let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
                 if let Some(slot) = ctx.out_slots.get(name) {
                     let casted = cast_orc_value_to(ctx, typed, slot.ty, b"out_store_cast\0");
                     LLVMBuildStore(ctx.builder, casted, slot.ptr);
@@ -456,9 +453,10 @@ pub(super) unsafe fn lower_stmt(
                     LLVMBuildStore(ctx.builder, casted, slot.ptr);
                     return Ok(());
                 }
-                if ctx.data_base_ptrs.contains_key(name) || ctx.data_struct_len.contains_key(name) {
+                if ctx.array_base_ptrs.contains_key(name) || ctx.array_struct_len.contains_key(name)
+                {
                     return Err(Diagnostic::internal(format!(
-                        "Data symbol '{name}' must be assigned via index syntax"
+                        "array symbol '{name}' must be assigned via index syntax"
                     )));
                 }
                 if ctx.buffer_index.contains_key(name) {
@@ -467,7 +465,7 @@ pub(super) unsafe fn lower_stmt(
                     )));
                 }
                 if !locals.contains_key(name)
-                    && !local_data_aliases.contains_key(name)
+                    && !local_array_aliases.contains_key(name)
                     && !ctx.input_index.contains_key(name)
                     && !ctx.param_byte_offset.contains_key(name)
                     && !ctx.input_arrays.contains_key(name)
@@ -497,7 +495,7 @@ pub(super) unsafe fn lower_stmt(
                 )))
             }
             AssignTarget::Index { base, index } => {
-                let typed = lower_expr(expr, ctx, locals, local_aliases, local_data_aliases)?;
+                let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
                 if ctx.input_arrays.contains_key(base) || ctx.param_arrays.contains_key(base) {
                     return Err(Diagnostic::internal(format!(
                         "cannot assign to immutable top-level array '{base}' in ORC lowering"
@@ -510,7 +508,7 @@ pub(super) unsafe fn lower_stmt(
                         index,
                         locals,
                         local_aliases,
-                        local_data_aliases,
+                        local_array_aliases,
                         true,
                     )?
                 } else if ctx.buffer_index.contains_key(base) {
@@ -520,7 +518,7 @@ pub(super) unsafe fn lower_stmt(
                         index,
                         locals,
                         local_aliases,
-                        local_data_aliases,
+                        local_array_aliases,
                         true,
                     )?
                 } else {
@@ -530,16 +528,16 @@ pub(super) unsafe fn lower_stmt(
                         index,
                         locals,
                         local_aliases,
-                        local_data_aliases,
+                        local_array_aliases,
                     )?
                 };
-                let casted = cast_orc_value_to(ctx, typed, data.elem_ty, b"data_store_cast\0");
+                let casted = cast_orc_value_to(ctx, typed, data.elem_ty, b"array_store_cast\0");
                 LLVMBuildStore(ctx.builder, casted, data.ptr);
                 Ok(())
             }
         },
         Stmt::Expr { expr, .. } => {
-            let _ = lower_expr(expr, ctx, locals, local_aliases, local_data_aliases)?;
+            let _ = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
             Ok(())
         }
         Stmt::Return { .. } => Err(Diagnostic::internal(
@@ -551,7 +549,7 @@ pub(super) unsafe fn lower_stmt(
             else_branch,
             ..
         } => {
-            let cond_value = lower_expr(cond, ctx, locals, local_aliases, local_data_aliases)?;
+            let cond_value = lower_expr(cond, ctx, locals, local_aliases, local_array_aliases)?;
             let cond_bool = {
                 let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
                     cast_orc_value_to(ctx, value, to, name)
@@ -571,7 +569,7 @@ pub(super) unsafe fn lower_stmt(
                     let ctx = &mut *ctx_ptr;
                     let mut then_locals = locals.clone();
                     let mut then_aliases = local_aliases.clone();
-                    let mut then_data_aliases = local_data_aliases.clone();
+                    let mut then_data_aliases = local_array_aliases.clone();
                     for nested in then_branch {
                         lower_stmt(
                             nested,
@@ -590,7 +588,7 @@ pub(super) unsafe fn lower_stmt(
                     let ctx = &mut *ctx_ptr;
                     let mut else_locals = locals.clone();
                     let mut else_aliases = local_aliases.clone();
-                    let mut else_data_aliases = local_data_aliases.clone();
+                    let mut else_data_aliases = local_array_aliases.clone();
                     for nested in else_branch {
                         lower_stmt(
                             nested,
@@ -617,14 +615,14 @@ pub(super) unsafe fn lower_stmt(
             body,
             ..
         } => {
-            let start_value = lower_expr(start, ctx, locals, local_aliases, local_data_aliases)?;
+            let start_value = lower_expr(start, ctx, locals, local_aliases, local_array_aliases)?;
             let start_v =
                 cast_orc_value_to(ctx, start_value, PrimitiveType::I32, b"for_start_i32\0");
-            let end_value = lower_expr(end, ctx, locals, local_aliases, local_data_aliases)?;
+            let end_value = lower_expr(end, ctx, locals, local_aliases, local_array_aliases)?;
             let end_v = cast_orc_value_to(ctx, end_value, PrimitiveType::I32, b"for_end_i32\0");
             let step_v = if let Some(step_expr) = step {
                 let step_value =
-                    lower_expr(step_expr, ctx, locals, local_aliases, local_data_aliases)?;
+                    lower_expr(step_expr, ctx, locals, local_aliases, local_array_aliases)?;
                 cast_orc_value_to(ctx, step_value, PrimitiveType::I32, b"for_step_i32\0")
             } else {
                 const_i32(ctx.i32_ty, 1)
@@ -649,7 +647,7 @@ pub(super) unsafe fn lower_stmt(
                     let ctx = &mut *ctx_ptr;
                     let mut loop_locals = locals.clone();
                     let mut loop_aliases = local_aliases.clone();
-                    let mut loop_data_aliases = local_data_aliases.clone();
+                    let mut loop_data_aliases = local_array_aliases.clone();
                     loop_locals.insert(
                         var.clone(),
                         OrcValue {
@@ -691,7 +689,7 @@ pub(super) unsafe fn lower_stmt(
                 || unsafe {
                     let ctx = &mut *ctx_ptr;
                     let cond_value =
-                        lower_expr(cond, ctx, locals, local_aliases, local_data_aliases)?;
+                        lower_expr(cond, ctx, locals, local_aliases, local_array_aliases)?;
                     let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
                         cast_orc_value_to(ctx, value, to, name)
                     };
@@ -705,7 +703,7 @@ pub(super) unsafe fn lower_stmt(
                     let ctx = &mut *ctx_ptr;
                     let mut loop_locals = locals.clone();
                     let mut loop_aliases = local_aliases.clone();
-                    let mut loop_data_aliases = local_data_aliases.clone();
+                    let mut loop_data_aliases = local_array_aliases.clone();
                     ctx.loop_stack.push(LoopControl {
                         break_bb: end_bb,
                         continue_bb: cond_bb,

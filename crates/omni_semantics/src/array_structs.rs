@@ -4,13 +4,13 @@ use omni_frontend::{Diagnostic, PrimitiveType};
 
 use crate::decl_symbols::{declared_type_key, DECLARED_DATA_ELEM_TYPE_PREFIX};
 use crate::{
-    DataStructRootInfo, LocalAliasTypes, LocalDataAliasInfo, TypedFieldType, TypedStructField,
+    ArrayStructRootInfo, LocalAliasTypes, LocalArrayAliasInfo, TypedFieldType, TypedStructField,
 };
 
 #[derive(Debug, Clone)]
-enum StructDataLayoutKind {
+enum StructArrayLayoutKind {
     Scalar(PrimitiveType),
-    Data {
+    Array {
         len: usize,
         elem_ty: Option<PrimitiveType>,
         elem_struct: Option<String>,
@@ -18,9 +18,9 @@ enum StructDataLayoutKind {
 }
 
 #[derive(Debug, Clone)]
-struct StructDataLayoutField {
+struct StructArrayLayoutField {
     name: String,
-    kind: StructDataLayoutKind,
+    kind: StructArrayLayoutKind,
 }
 
 pub(crate) fn validate_data_struct_layout(
@@ -37,7 +37,7 @@ fn collect_data_struct_layout(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
-) -> Option<Vec<StructDataLayoutField>> {
+) -> Option<Vec<StructArrayLayoutField>> {
     let mut stack = Vec::<String>::new();
     collect_data_struct_layout_inner(struct_name, struct_defs, context, errors, &mut stack)
 }
@@ -48,7 +48,7 @@ fn collect_data_struct_layout_inner(
     context: &str,
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<String>,
-) -> Option<Vec<StructDataLayoutField>> {
+) -> Option<Vec<StructArrayLayoutField>> {
     if stack.iter().any(|s| s == struct_name) {
         let mut cycle = stack.join(" -> ");
         if !cycle.is_empty() {
@@ -56,7 +56,7 @@ fn collect_data_struct_layout_inner(
         }
         cycle.push_str(struct_name);
         errors.push(Diagnostic::semantic(
-            format!("{context} contains recursive Data[Struct, N] cycle: {cycle}"),
+            format!("{context} contains recursive array[Struct, N] cycle: {cycle}"),
             0,
             0,
         ));
@@ -76,14 +76,14 @@ fn collect_data_struct_layout_inner(
     let mut layout = Vec::new();
     for field in fields {
         match field.ty {
-            TypedFieldType::Scalar(prim) => layout.push(StructDataLayoutField {
+            TypedFieldType::Scalar(prim) => layout.push(StructArrayLayoutField {
                 name: field.name,
-                kind: StructDataLayoutKind::Scalar(prim),
+                kind: StructArrayLayoutKind::Scalar(prim),
             }),
-            TypedFieldType::Data(len) => {
-                if let Some(elem_struct) = &field.data_elem_struct {
+            TypedFieldType::Array(len) => {
+                if let Some(elem_struct) = &field.array_elem_struct {
                     let nested_context = format!(
-                        "{context} nested Data field '{}.{}'",
+                        "{context} nested array field '{}.{}'",
                         struct_name, field.name
                     );
                     if collect_data_struct_layout_inner(
@@ -99,12 +99,12 @@ fn collect_data_struct_layout_inner(
                         return None;
                     }
                 }
-                layout.push(StructDataLayoutField {
+                layout.push(StructArrayLayoutField {
                     name: field.name,
-                    kind: StructDataLayoutKind::Data {
+                    kind: StructArrayLayoutKind::Array {
                         len,
-                        elem_ty: field.data_elem_ty,
-                        elem_struct: field.data_elem_struct.clone(),
+                        elem_ty: field.array_elem_ty,
+                        elem_struct: field.array_elem_struct.clone(),
                     },
                 });
             }
@@ -121,8 +121,8 @@ pub(crate) fn register_data_struct_root(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     context: &str,
     state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_data: &mut HashMap<String, usize>,
-    state_data_struct_roots: &mut HashMap<String, DataStructRootInfo>,
+    state_arrays: &mut HashMap<String, usize>,
+    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
     if !validate_data_struct_layout(struct_name, struct_defs, context, errors) {
@@ -136,8 +136,8 @@ pub(crate) fn register_data_struct_root(
         struct_defs,
         context,
         state_scalars,
-        state_data,
-        state_data_struct_roots,
+        state_arrays,
+        state_array_struct_roots,
         errors,
         &mut stack,
     )
@@ -151,8 +151,8 @@ fn register_data_struct_root_inner(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     context: &str,
     state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_data: &mut HashMap<String, usize>,
-    state_data_struct_roots: &mut HashMap<String, DataStructRootInfo>,
+    state_arrays: &mut HashMap<String, usize>,
+    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<String>,
 ) -> bool {
@@ -163,7 +163,7 @@ fn register_data_struct_root_inner(
         }
         cycle.push_str(struct_name);
         errors.push(Diagnostic::semantic(
-            format!("{context} contains recursive Data[Struct, N] cycle: {cycle}"),
+            format!("{context} contains recursive array[Struct, N] cycle: {cycle}"),
             0,
             0,
         ));
@@ -177,9 +177,9 @@ fn register_data_struct_root_inner(
         ));
         return false;
     };
-    state_data_struct_roots
+    state_array_struct_roots
         .entry(base.to_owned())
-        .or_insert(DataStructRootInfo {
+        .or_insert(ArrayStructRootInfo {
             struct_name: struct_name.to_owned(),
             len,
         });
@@ -193,13 +193,13 @@ fn register_data_struct_root_inner(
                     declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, &flat),
                     prim,
                 );
-                state_data.entry(flat).or_insert(len);
+                state_arrays.entry(flat).or_insert(len);
             }
-            TypedFieldType::Data(field_len) => {
+            TypedFieldType::Array(field_len) => {
                 let nested_len = len.saturating_mul(field_len);
-                if let Some(elem_struct) = &field.data_elem_struct {
+                if let Some(elem_struct) = &field.array_elem_struct {
                     let nested_context = format!(
-                        "{context} nested Data field '{}.{}'",
+                        "{context} nested array field '{}.{}'",
                         struct_name, field.name
                     );
                     if !register_data_struct_root_inner(
@@ -209,8 +209,8 @@ fn register_data_struct_root_inner(
                         struct_defs,
                         &nested_context,
                         state_scalars,
-                        state_data,
-                        state_data_struct_roots,
+                        state_arrays,
+                        state_array_struct_roots,
                         errors,
                         stack,
                     ) {
@@ -218,12 +218,12 @@ fn register_data_struct_root_inner(
                         return false;
                     }
                 } else {
-                    let elem_ty = field.data_elem_ty.unwrap_or(PrimitiveType::F32);
+                    let elem_ty = field.array_elem_ty.unwrap_or(PrimitiveType::F32);
                     state_scalars.insert(
                         declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, &flat),
                         elem_ty,
                     );
-                    state_data.entry(flat).or_insert(nested_len);
+                    state_arrays.entry(flat).or_insert(nested_len);
                 }
             }
         }
@@ -238,7 +238,7 @@ pub(crate) fn add_struct_element_alias_bindings(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
-    local_data_aliases: &mut HashMap<String, LocalDataAliasInfo>,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
@@ -247,19 +247,19 @@ pub(crate) fn add_struct_element_alias_bindings(
     };
     for field in layout {
         match field.kind {
-            StructDataLayoutKind::Scalar(prim) => {
+            StructArrayLayoutKind::Scalar(prim) => {
                 let alias = format!("{alias_name}.{}", field.name);
                 local_aliases.insert(alias.clone(), prim);
                 known_scalars.insert(alias);
             }
-            StructDataLayoutKind::Data {
+            StructArrayLayoutKind::Array {
                 len,
                 elem_ty,
                 elem_struct,
             } => {
-                local_data_aliases.insert(
+                local_array_aliases.insert(
                     format!("{alias_name}.{}", field.name),
-                    LocalDataAliasInfo {
+                    LocalArrayAliasInfo {
                         len,
                         elem_ty: elem_ty.unwrap_or(PrimitiveType::F32),
                         elem_struct,

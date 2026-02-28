@@ -5,11 +5,11 @@ pub(crate) fn analyze_init_stmt(
     init_default_ty: Option<PrimitiveType>,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
-    local_data_aliases: &mut HashMap<String, LocalDataAliasInfo>,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_data: &mut HashMap<String, usize>,
-    state_data_struct_roots: &mut HashMap<String, DataStructRootInfo>,
+    state_arrays: &mut HashMap<String, usize>,
+    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     struct_instances: &mut HashMap<String, String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
@@ -21,7 +21,7 @@ pub(crate) fn analyze_init_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context(stmt, || {
-        let data_vars = merged_data_vars_for_sample(state_data, local_data_aliases);
+        let array_vars = merged_data_vars_for_sample(state_arrays, local_array_aliases);
         match stmt {
             Stmt::Assign {
                 target,
@@ -39,11 +39,11 @@ pub(crate) fn analyze_init_stmt(
                 init_default_ty,
                 known_scalars,
                 local_aliases,
-                local_data_aliases,
+                local_array_aliases,
                 locals,
                 state_scalars,
-                state_data,
-                state_data_struct_roots,
+                state_arrays,
+                state_array_struct_roots,
                 struct_instances,
                 input_names,
                 output_names,
@@ -60,12 +60,12 @@ pub(crate) fn analyze_init_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
                     errors,
@@ -74,7 +74,7 @@ pub(crate) fn analyze_init_stmt(
                     expr,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -101,12 +101,12 @@ pub(crate) fn analyze_init_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
                     errors,
@@ -115,7 +115,7 @@ pub(crate) fn analyze_init_stmt(
                     cond,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -128,10 +128,10 @@ pub(crate) fn analyze_init_stmt(
 
                 let mut then_known = known_scalars.clone();
                 let mut then_aliases = local_aliases.clone();
-                let mut then_data_aliases = local_data_aliases.clone();
+                let mut then_data_aliases = local_array_aliases.clone();
                 let mut then_scalars = state_scalars.clone();
-                let mut then_data = state_data.clone();
-                let mut then_data_struct_roots = state_data_struct_roots.clone();
+                let mut then_data = state_arrays.clone();
+                let mut then_data_struct_roots = state_array_struct_roots.clone();
                 let mut then_structs = struct_instances.clone();
                 for nested in then_branch {
                     analyze_init_stmt(
@@ -158,10 +158,10 @@ pub(crate) fn analyze_init_stmt(
 
                 let mut else_known = known_scalars.clone();
                 let mut else_aliases = local_aliases.clone();
-                let mut else_data_aliases = local_data_aliases.clone();
+                let mut else_data_aliases = local_array_aliases.clone();
                 let mut else_scalars = state_scalars.clone();
-                let mut else_data = state_data.clone();
-                let mut else_data_struct_roots = state_data_struct_roots.clone();
+                let mut else_data = state_arrays.clone();
+                let mut else_data_struct_roots = state_array_struct_roots.clone();
                 let mut else_structs = struct_instances.clone();
                 for nested in else_branch {
                     analyze_init_stmt(
@@ -189,16 +189,16 @@ pub(crate) fn analyze_init_stmt(
                 state_scalars.extend(then_scalars);
                 state_scalars.extend(else_scalars);
                 for (k, v) in then_data {
-                    state_data.entry(k).or_insert(v);
+                    state_arrays.entry(k).or_insert(v);
                 }
                 for (k, v) in then_data_struct_roots {
-                    state_data_struct_roots.entry(k).or_insert(v);
+                    state_array_struct_roots.entry(k).or_insert(v);
                 }
                 for (k, v) in else_data {
-                    state_data.entry(k).or_insert(v);
+                    state_arrays.entry(k).or_insert(v);
                 }
                 for (k, v) in else_data_struct_roots {
-                    state_data_struct_roots.entry(k).or_insert(v);
+                    state_array_struct_roots.entry(k).or_insert(v);
                 }
                 for (k, v) in then_structs {
                     struct_instances.entry(k).or_insert(v);
@@ -210,10 +210,10 @@ pub(crate) fn analyze_init_stmt(
                 local_aliases.extend(then_aliases);
                 local_aliases.extend(else_aliases);
                 for (k, v) in then_data_aliases {
-                    local_data_aliases.entry(k).or_insert(v);
+                    local_array_aliases.entry(k).or_insert(v);
                 }
                 for (k, v) in else_data_aliases {
-                    local_data_aliases.entry(k).or_insert(v);
+                    local_array_aliases.entry(k).or_insert(v);
                 }
             }
             Stmt::For {
@@ -230,12 +230,12 @@ pub(crate) fn analyze_init_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
                     errors,
@@ -246,12 +246,12 @@ pub(crate) fn analyze_init_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
                     errors,
@@ -263,12 +263,12 @@ pub(crate) fn analyze_init_stmt(
                             known_scalars,
                             locals,
                             outputs: output_names,
-                            data_vars: &data_vars,
+                            array_vars: &array_vars,
                             param_structs: &HashMap::new(),
                             struct_instances,
                             struct_defs,
                             fn_signatures,
-                            allow_data_ctor: false,
+                            allow_array_ctor: false,
                             scope: ScopeKind::Init,
                         },
                         errors,
@@ -278,7 +278,7 @@ pub(crate) fn analyze_init_stmt(
                     start,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -292,7 +292,7 @@ pub(crate) fn analyze_init_stmt(
                     end,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -307,7 +307,7 @@ pub(crate) fn analyze_init_stmt(
                         step_expr,
                         state_scalars,
                         None,
-                        local_data_aliases,
+                        local_array_aliases,
                         locals,
                         input_names,
                         output_names,
@@ -327,10 +327,10 @@ pub(crate) fn analyze_init_stmt(
                 loop_locals.insert(var.clone());
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_data_aliases.clone();
+                let mut loop_data_aliases = local_array_aliases.clone();
                 let mut loop_scalars = state_scalars.clone();
-                let mut loop_data = state_data.clone();
-                let mut loop_data_struct_roots = state_data_struct_roots.clone();
+                let mut loop_data = state_arrays.clone();
+                let mut loop_data_struct_roots = state_array_struct_roots.clone();
                 let mut loop_structs = struct_instances.clone();
                 for nested in body {
                     analyze_init_stmt(
@@ -356,17 +356,17 @@ pub(crate) fn analyze_init_stmt(
                 }
                 state_scalars.extend(loop_scalars);
                 for (k, v) in loop_data {
-                    state_data.entry(k).or_insert(v);
+                    state_arrays.entry(k).or_insert(v);
                 }
                 for (k, v) in loop_data_struct_roots {
-                    state_data_struct_roots.entry(k).or_insert(v);
+                    state_array_struct_roots.entry(k).or_insert(v);
                 }
                 for (k, v) in loop_structs {
                     struct_instances.entry(k).or_insert(v);
                 }
                 known_scalars.extend(state_scalars.keys().cloned());
                 *local_aliases = loop_aliases;
-                *local_data_aliases = loop_data_aliases;
+                *local_array_aliases = loop_data_aliases;
             }
             Stmt::While { cond, body, .. } => {
                 validate_expr(
@@ -375,12 +375,12 @@ pub(crate) fn analyze_init_stmt(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
                     errors,
@@ -389,7 +389,7 @@ pub(crate) fn analyze_init_stmt(
                     cond,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -402,10 +402,10 @@ pub(crate) fn analyze_init_stmt(
 
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_data_aliases.clone();
+                let mut loop_data_aliases = local_array_aliases.clone();
                 let mut loop_scalars = state_scalars.clone();
-                let mut loop_data = state_data.clone();
-                let mut loop_data_struct_roots = state_data_struct_roots.clone();
+                let mut loop_data = state_arrays.clone();
+                let mut loop_data_struct_roots = state_array_struct_roots.clone();
                 let mut loop_structs = struct_instances.clone();
                 for nested in body {
                     analyze_init_stmt(
@@ -431,17 +431,17 @@ pub(crate) fn analyze_init_stmt(
                 }
                 state_scalars.extend(loop_scalars);
                 for (k, v) in loop_data {
-                    state_data.entry(k).or_insert(v);
+                    state_arrays.entry(k).or_insert(v);
                 }
                 for (k, v) in loop_data_struct_roots {
-                    state_data_struct_roots.entry(k).or_insert(v);
+                    state_array_struct_roots.entry(k).or_insert(v);
                 }
                 for (k, v) in loop_structs {
                     struct_instances.entry(k).or_insert(v);
                 }
                 known_scalars.extend(state_scalars.keys().cloned());
                 *local_aliases = loop_aliases;
-                *local_data_aliases = loop_data_aliases;
+                *local_array_aliases = loop_data_aliases;
             }
             Stmt::Break { .. } => {
                 if loop_depth == 0 {
@@ -474,11 +474,11 @@ fn analyze_assign_init(
     init_default_ty: Option<PrimitiveType>,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
-    local_data_aliases: &mut HashMap<String, LocalDataAliasInfo>,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_data: &mut HashMap<String, usize>,
-    state_data_struct_roots: &mut HashMap<String, DataStructRootInfo>,
+    state_arrays: &mut HashMap<String, usize>,
+    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     struct_instances: &mut HashMap<String, String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
@@ -488,23 +488,23 @@ fn analyze_assign_init(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let data_vars = merged_data_vars_for_sample(state_data, local_data_aliases);
+    let array_vars = merged_data_vars_for_sample(state_arrays, local_array_aliases);
     match target {
         AssignTarget::Index { base, index } => {
-            if state_data_struct_roots.contains_key(base) {
+            if state_array_struct_roots.contains_key(base) {
                 errors.push(Diagnostic::semantic(
                     format!(
-                        "indexed assignment target '{base}[...]' is Data[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
+                        "indexed assignment target '{base}[...]' is array[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
                     ),
                     0,
                     0,
                 ));
                 return;
             }
-            if let Some(alias) = local_data_aliases.get(base) {
+            if let Some(alias) = local_array_aliases.get(base) {
                 if !alias.writable {
                     errors.push(Diagnostic::semantic(
-                        format!("cannot assign to immutable Data alias '{base}'"),
+                        format!("cannot assign to immutable array alias '{base}'"),
                         0,
                         0,
                     ));
@@ -513,7 +513,7 @@ fn analyze_assign_init(
                 if alias.elem_struct.is_some() {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "indexed assignment target '{base}[...]' is Data[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
+                            "indexed assignment target '{base}[...]' is array[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
                         ),
                         0,
                         0,
@@ -528,12 +528,12 @@ fn analyze_assign_init(
                     0,
                 ));
             }
-            if !state_data.contains_key(base)
-                && !local_data_aliases.contains_key(base)
+            if !state_arrays.contains_key(base)
+                && !local_array_aliases.contains_key(base)
                 && !has_declared_buffer_symbol(known_scalars, base)
             {
                 errors.push(Diagnostic::semantic(
-                    format!("indexed assignment target '{base}[...]' is not a Data/buffer symbol"),
+                    format!("indexed assignment target '{base}[...]' is not a array/buffer symbol"),
                     0,
                     0,
                 ));
@@ -552,12 +552,12 @@ fn analyze_assign_init(
                     known_scalars,
                     locals,
                     outputs: output_names,
-                    data_vars: &data_vars,
+                    array_vars: &array_vars,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
                     fn_signatures,
-                    allow_data_ctor: false,
+                    allow_array_ctor: false,
                     scope: ScopeKind::Init,
                 },
                 errors,
@@ -568,12 +568,12 @@ fn analyze_assign_init(
                     known_scalars,
                     locals,
                     outputs: output_names,
-                    data_vars: &data_vars,
+                    array_vars: &array_vars,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
                     fn_signatures,
-                    allow_data_ctor: false,
+                    allow_array_ctor: false,
                     scope: ScopeKind::Init,
                 },
                 errors,
@@ -582,7 +582,7 @@ fn analyze_assign_init(
                 index,
                 state_scalars,
                 None,
-                local_data_aliases,
+                local_array_aliases,
                 locals,
                 input_names,
                 output_names,
@@ -591,12 +591,12 @@ fn analyze_assign_init(
                 struct_defs,
                 errors,
             );
-            require_numeric_type(idx_ty, "Data index expression", errors);
+            require_numeric_type(idx_ty, "array index expression", errors);
             let expr_ty = infer_expr_type_for_semantics_with_local_data(
                 expr,
                 state_scalars,
                 None,
-                local_data_aliases,
+                local_array_aliases,
                 locals,
                 input_names,
                 output_names,
@@ -605,7 +605,7 @@ fn analyze_assign_init(
                 struct_defs,
                 errors,
             );
-            let expected_ty = local_data_aliases
+            let expected_ty = local_array_aliases
                 .get(base)
                 .map(|a| a.elem_ty)
                 .or_else(|| {
@@ -615,7 +615,7 @@ fn analyze_assign_init(
                     get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
                 })
                 .unwrap_or(PrimitiveType::F32);
-            require_assignable_type(expr_ty, expected_ty, "Data/buffer write", errors);
+            require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
         }
         AssignTarget::Var(name) => {
             let declared_ty = if let Some(declared) = *decl_ty {
@@ -664,12 +664,12 @@ fn analyze_assign_init(
                         known_scalars,
                         locals,
                         outputs: output_names,
-                        data_vars: &data_vars,
+                        array_vars: &array_vars,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
                         fn_signatures,
-                        allow_data_ctor: false,
+                        allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
                     errors,
@@ -678,7 +678,7 @@ fn analyze_assign_init(
                     expr,
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -696,9 +696,9 @@ fn analyze_assign_init(
                 known_scalars.insert(name.clone());
                 return;
             }
-            if local_data_aliases.contains_key(name) {
+            if local_array_aliases.contains_key(name) {
                 errors.push(Diagnostic::semantic(
-                    format!("Data alias '{name}' must be written using '{name}[index] = value'"),
+                    format!("array alias '{name}' must be written using '{name}[index] = value'"),
                     0,
                     0,
                 ));
@@ -713,8 +713,8 @@ fn analyze_assign_init(
                     known_scalars,
                     locals,
                     state_scalars,
-                    state_data,
-                    state_data_struct_roots,
+                    state_arrays,
+                    state_array_struct_roots,
                     struct_instances,
                     output_names,
                     struct_defs,
@@ -736,9 +736,9 @@ fn analyze_assign_init(
                     ));
                     return;
                 }
-                if state_data.contains_key(name) || state_data_struct_roots.contains_key(name) {
+                if state_arrays.contains_key(name) || state_array_struct_roots.contains_key(name) {
                     errors.push(Diagnostic::semantic(
-                        format!("Data symbol '{name}' can only be initialized once"),
+                        format!("array symbol '{name}' can only be initialized once"),
                         0,
                         0,
                     ));
@@ -768,12 +768,12 @@ fn analyze_assign_init(
                             known_scalars,
                             locals,
                             outputs: output_names,
-                            data_vars: &data_vars,
+                            array_vars: &array_vars,
                             param_structs: &HashMap::new(),
                             struct_instances,
                             struct_defs,
                             fn_signatures,
-                            allow_data_ctor: false,
+                            allow_array_ctor: false,
                             scope: ScopeKind::Init,
                         },
                         errors,
@@ -784,7 +784,7 @@ fn analyze_assign_init(
                     &values[0],
                     state_scalars,
                     None,
-                    local_data_aliases,
+                    local_array_aliases,
                     locals,
                     input_names,
                     output_names,
@@ -799,7 +799,7 @@ fn analyze_assign_init(
                         value,
                         state_scalars,
                         None,
-                        local_data_aliases,
+                        local_array_aliases,
                         locals,
                         input_names,
                         output_names,
@@ -820,7 +820,7 @@ fn analyze_assign_init(
                     declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, name),
                     elem_ty,
                 );
-                state_data.insert(name.clone(), values.len());
+                state_arrays.insert(name.clone(), values.len());
                 known_scalars.insert(name.clone());
                 return;
             }
@@ -858,8 +858,8 @@ fn analyze_assign_init(
                         known_scalars,
                         locals,
                         state_scalars,
-                        state_data,
-                        state_data_struct_roots,
+                        state_arrays,
+                        state_array_struct_roots,
                         struct_instances,
                         output_names,
                         struct_defs,
@@ -871,21 +871,21 @@ fn analyze_assign_init(
                 }
             }
 
-            if let Expr::DataCtor { spec, init } = expr {
+            if let Expr::ArrayCtor { spec, init } = expr {
                 if declared_ty.is_some() {
                     errors.push(Diagnostic::semantic(
-                        "typed declaration cannot be used with Data[...] constructor assignment",
+                        "typed declaration cannot be used with array[...] constructor assignment",
                         0,
                         0,
                     ));
                     return;
                 }
-                let context = format!("Data constructor for symbol '{name}'");
-                let size_context = format!("Data constructor size for symbol '{name}'");
+                let context = format!("array constructor for symbol '{name}'");
+                let size_context = format!("array constructor size for symbol '{name}'");
                 if init.is_some() && !is_typed_decl {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "Data constructor for symbol '{name}' does not support inline array initializers"
+                            "array constructor for symbol '{name}' does not support inline array initializers"
                         ),
                         0,
                         0,
@@ -896,9 +896,9 @@ fn analyze_assign_init(
                 else {
                     return;
                 };
-                if state_data.contains_key(name) || state_data_struct_roots.contains_key(name) {
+                if state_arrays.contains_key(name) || state_array_struct_roots.contains_key(name) {
                     errors.push(Diagnostic::semantic(
-                        format!("Data symbol '{name}' can only be initialized once"),
+                        format!("array symbol '{name}' can only be initialized once"),
                         0,
                         0,
                     ));
@@ -913,12 +913,12 @@ fn analyze_assign_init(
                     return;
                 }
                 match &spec.elem {
-                    DataElemType::Primitive(elem_ty) => {
+                    ArrayElemType::Primitive(elem_ty) => {
                         state_scalars.insert(
                             declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, name),
                             *elem_ty,
                         );
-                        state_data.insert(name.clone(), size_value);
+                        state_arrays.insert(name.clone(), size_value);
                         if let Some(values) = init {
                             if values.len() != size_value {
                                 errors.push(Diagnostic::semantic(
@@ -937,12 +937,12 @@ fn analyze_assign_init(
                                         known_scalars,
                                         locals,
                                         outputs: output_names,
-                                        data_vars: &data_vars,
+                                        array_vars: &array_vars,
                                         param_structs: &HashMap::new(),
                                         struct_instances,
                                         struct_defs,
                                         fn_signatures,
-                                        allow_data_ctor: false,
+                                        allow_array_ctor: false,
                                         scope: ScopeKind::Init,
                                     },
                                     errors,
@@ -951,7 +951,7 @@ fn analyze_assign_init(
                                     value,
                                     state_scalars,
                                     None,
-                                    local_data_aliases,
+                                    local_array_aliases,
                                     locals,
                                     input_names,
                                     output_names,
@@ -971,7 +971,7 @@ fn analyze_assign_init(
                             }
                         }
                     }
-                    DataElemType::Struct(struct_name) => {
+                    ArrayElemType::Struct(struct_name) => {
                         if !register_data_struct_root(
                             name,
                             struct_name,
@@ -979,8 +979,8 @@ fn analyze_assign_init(
                             struct_defs,
                             &context,
                             state_scalars,
-                            state_data,
-                            state_data_struct_roots,
+                            state_arrays,
+                            state_array_struct_roots,
                             errors,
                         ) {
                             return;
@@ -990,39 +990,40 @@ fn analyze_assign_init(
                 return;
             }
 
-            if !state_data.contains_key(name)
-                && !state_data_struct_roots.contains_key(name)
+            if !state_arrays.contains_key(name)
+                && !state_array_struct_roots.contains_key(name)
                 && !state_scalars.contains_key(name)
                 && !struct_instances.contains_key(name)
                 && !input_names.contains(name)
                 && !output_names.contains(name)
                 && !param_names.contains(name)
                 && !local_aliases.contains_key(name)
-                && !local_data_aliases.contains_key(name)
+                && !local_array_aliases.contains_key(name)
             {
                 if let Expr::Index { base, index } = expr {
-                    let mut is_scalar_data_base = state_data.contains_key(base);
-                    let mut data_struct_elem_struct = state_data_struct_roots
+                    let mut is_scalar_data_base = state_arrays.contains_key(base);
+                    let mut array_struct_elem_struct = state_array_struct_roots
                         .get(base)
                         .map(|r| r.struct_name.clone());
-                    if let Some(alias) = local_data_aliases.get(base) {
+                    if let Some(alias) = local_array_aliases.get(base) {
                         if let Some(elem_struct) = &alias.elem_struct {
-                            data_struct_elem_struct = Some(elem_struct.clone());
+                            array_struct_elem_struct = Some(elem_struct.clone());
                         } else {
                             is_scalar_data_base = true;
                         }
                     }
-                    if !is_scalar_data_base && data_struct_elem_struct.is_none() {
+                    if !is_scalar_data_base && array_struct_elem_struct.is_none() {
                         if let Some((root, field)) = split_field_path(base, errors) {
                             if let Some(struct_name) = struct_instances.get(root) {
                                 if let Some(fields) = struct_defs.get(struct_name) {
                                     if let Some(field_decl) =
                                         fields.iter().find(|f| f.name == field)
                                     {
-                                        if matches!(field_decl.ty, TypedFieldType::Data(_)) {
-                                            if let Some(elem_struct) = &field_decl.data_elem_struct
+                                        if matches!(field_decl.ty, TypedFieldType::Array(_)) {
+                                            if let Some(elem_struct) = &field_decl.array_elem_struct
                                             {
-                                                data_struct_elem_struct = Some(elem_struct.clone());
+                                                array_struct_elem_struct =
+                                                    Some(elem_struct.clone());
                                             } else {
                                                 is_scalar_data_base = true;
                                             }
@@ -1032,19 +1033,19 @@ fn analyze_assign_init(
                             }
                         }
                     }
-                    if is_scalar_data_base || data_struct_elem_struct.is_some() {
+                    if is_scalar_data_base || array_struct_elem_struct.is_some() {
                         validate_expr(
                             index,
                             ExprEnv {
                                 known_scalars,
                                 locals,
                                 outputs: output_names,
-                                data_vars: &data_vars,
+                                array_vars: &array_vars,
                                 param_structs: &HashMap::new(),
                                 struct_instances,
                                 struct_defs,
                                 fn_signatures,
-                                allow_data_ctor: false,
+                                allow_array_ctor: false,
                                 scope: ScopeKind::Init,
                             },
                             errors,
@@ -1053,7 +1054,7 @@ fn analyze_assign_init(
                             index,
                             state_scalars,
                             None,
-                            local_data_aliases,
+                            local_array_aliases,
                             locals,
                             input_names,
                             output_names,
@@ -1062,7 +1063,7 @@ fn analyze_assign_init(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(idx_ty, "Data index expression", errors);
+                        require_numeric_type(idx_ty, "array index expression", errors);
                         if is_scalar_data_base {
                             errors.push(Diagnostic::semantic(
                                 format!(
@@ -1071,15 +1072,15 @@ fn analyze_assign_init(
                                 0,
                                 0,
                             ));
-                        } else if let Some(struct_name) = data_struct_elem_struct {
+                        } else if let Some(struct_name) = array_struct_elem_struct {
                             if !add_struct_element_alias_bindings(
                                 name,
                                 &struct_name,
                                 struct_defs,
                                 known_scalars,
                                 local_aliases,
-                                local_data_aliases,
-                                &format!("Data alias '{name}' from '{base}[...]'"),
+                                local_array_aliases,
+                                &format!("array alias '{name}' from '{base}[...]'"),
                                 errors,
                             ) {
                                 return;
@@ -1090,9 +1091,9 @@ fn analyze_assign_init(
                 }
             }
 
-            if state_data.contains_key(name) || state_data_struct_roots.contains_key(name) {
+            if state_arrays.contains_key(name) || state_array_struct_roots.contains_key(name) {
                 errors.push(Diagnostic::semantic(
-                    format!("cannot assign scalar expression to Data symbol '{name}'"),
+                    format!("cannot assign scalar expression to array symbol '{name}'"),
                     0,
                     0,
                 ));
@@ -1110,12 +1111,12 @@ fn analyze_assign_init(
                     known_scalars,
                     locals,
                     outputs: output_names,
-                    data_vars: &data_vars,
+                    array_vars: &array_vars,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
                     fn_signatures,
-                    allow_data_ctor: false,
+                    allow_array_ctor: false,
                     scope: ScopeKind::Init,
                 },
                 errors,
@@ -1125,7 +1126,7 @@ fn analyze_assign_init(
                 expr,
                 state_scalars,
                 None,
-                local_data_aliases,
+                local_array_aliases,
                 locals,
                 input_names,
                 output_names,
@@ -1162,8 +1163,8 @@ fn analyze_struct_ctor_init_assign(
     known_scalars: &mut HashSet<String>,
     locals: &HashSet<String>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_data: &mut HashMap<String, usize>,
-    state_data_struct_roots: &mut HashMap<String, DataStructRootInfo>,
+    state_arrays: &mut HashMap<String, usize>,
+    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     struct_instances: &mut HashMap<String, String>,
     outputs: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
@@ -1180,8 +1181,8 @@ fn analyze_struct_ctor_init_assign(
         return;
     }
     if state_scalars.contains_key(target)
-        || state_data.contains_key(target)
-        || state_data_struct_roots.contains_key(target)
+        || state_arrays.contains_key(target)
+        || state_array_struct_roots.contains_key(target)
     {
         errors.push(Diagnostic::semantic(
             format!("symbol '{target}' already used with a different state type"),
@@ -1233,12 +1234,12 @@ fn analyze_struct_ctor_init_assign(
                             known_scalars,
                             locals,
                             outputs,
-                            data_vars: state_data,
+                            array_vars: state_arrays,
                             param_structs: &HashMap::new(),
                             struct_instances,
                             struct_defs,
                             fn_signatures,
-                            allow_data_ctor: false,
+                            allow_array_ctor: false,
                             scope: ScopeKind::Init,
                         },
                         errors,
@@ -1266,10 +1267,10 @@ fn analyze_struct_ctor_init_assign(
                 state_scalars.insert(flat.clone(), prim);
                 known_scalars.insert(flat);
             }
-            TypedFieldType::Data(len) => {
-                if let Some(elem_struct) = &field.data_elem_struct {
+            TypedFieldType::Array(len) => {
+                if let Some(elem_struct) = &field.array_elem_struct {
                     let context =
-                        format!("struct constructor field '{flat}' Data element '{elem_struct}'");
+                        format!("struct constructor field '{flat}' array element '{elem_struct}'");
                     if !register_data_struct_root(
                         &flat,
                         elem_struct,
@@ -1277,8 +1278,8 @@ fn analyze_struct_ctor_init_assign(
                         struct_defs,
                         &context,
                         state_scalars,
-                        state_data,
-                        state_data_struct_roots,
+                        state_arrays,
+                        state_array_struct_roots,
                         errors,
                     ) {
                         continue;
@@ -1286,9 +1287,9 @@ fn analyze_struct_ctor_init_assign(
                 } else {
                     state_scalars.insert(
                         declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, &flat),
-                        field.data_elem_ty.unwrap_or(PrimitiveType::F32),
+                        field.array_elem_ty.unwrap_or(PrimitiveType::F32),
                     );
-                    state_data.entry(flat).or_insert(len);
+                    state_arrays.entry(flat).or_insert(len);
                 }
             }
         }
@@ -1305,8 +1306,8 @@ fn analyze_struct_field_init_assign(
     known_scalars: &mut HashSet<String>,
     locals: &HashSet<String>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_data: &mut HashMap<String, usize>,
-    state_data_struct_roots: &mut HashMap<String, DataStructRootInfo>,
+    state_arrays: &mut HashMap<String, usize>,
+    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     struct_instances: &HashMap<String, String>,
     outputs: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
@@ -1342,9 +1343,9 @@ fn analyze_struct_field_init_assign(
     let flat = format!("{base}.{field}");
     match field_decl.ty {
         TypedFieldType::Scalar(prim) => {
-            if matches!(expr, Expr::DataCtor { .. }) {
+            if matches!(expr, Expr::ArrayCtor { .. }) {
                 errors.push(Diagnostic::semantic(
-                    format!("field '{flat}' is scalar and cannot be assigned Data[...]"),
+                    format!("field '{flat}' is scalar and cannot be assigned array[...]"),
                     0,
                     0,
                 ));
@@ -1356,12 +1357,12 @@ fn analyze_struct_field_init_assign(
                     known_scalars,
                     locals,
                     outputs,
-                    data_vars: state_data,
+                    array_vars: state_arrays,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
                     fn_signatures,
-                    allow_data_ctor: false,
+                    allow_array_ctor: false,
                     scope: ScopeKind::Init,
                 },
                 errors,
@@ -1387,17 +1388,17 @@ fn analyze_struct_field_init_assign(
             state_scalars.insert(flat.clone(), prim);
             known_scalars.insert(flat);
         }
-        TypedFieldType::Data(expected_len) => {
-            let Expr::DataCtor { spec, .. } = expr else {
+        TypedFieldType::Array(expected_len) => {
+            let Expr::ArrayCtor { spec, .. } = expr else {
                 errors.push(Diagnostic::semantic(
-                    format!("field '{flat}' requires Data[{expected_len}] initialization"),
+                    format!("field '{flat}' requires array[{expected_len}] initialization"),
                     0,
                     0,
                 ));
                 return;
             };
-            let context = format!("Data constructor for '{flat}'");
-            let size_context = format!("Data constructor size for '{flat}'");
+            let context = format!("array constructor for '{flat}'");
+            let size_context = format!("array constructor size for '{flat}'");
             let Some(actual_len) = eval_data_size_expr(&spec.size, options, &size_context, errors)
             else {
                 return;
@@ -1405,20 +1406,20 @@ fn analyze_struct_field_init_assign(
             if actual_len != expected_len {
                 errors.push(Diagnostic::semantic(
                     format!(
-                        "field '{flat}' requires Data[{expected_len}] but got Data[{actual_len}]"
+                        "field '{flat}' requires array[{expected_len}] but got array[{actual_len}]"
                     ),
                     0,
                     0,
                 ));
                 return;
             }
-            match (&field_decl.data_elem_struct, &spec.elem) {
-                (None, DataElemType::Primitive(elem_ty)) => {
-                    let expected_elem_ty = field_decl.data_elem_ty.unwrap_or(PrimitiveType::F32);
+            match (&field_decl.array_elem_struct, &spec.elem) {
+                (None, ArrayElemType::Primitive(elem_ty)) => {
+                    let expected_elem_ty = field_decl.array_elem_ty.unwrap_or(PrimitiveType::F32);
                     if expected_elem_ty != *elem_ty {
                         errors.push(Diagnostic::semantic(
                             format!(
-                                "field '{flat}' expects Data[{:?}, N] but constructor uses Data[{:?}, N]",
+                                "field '{flat}' expects array[{:?}, N] but constructor uses array[{:?}, N]",
                                 expected_elem_ty, elem_ty
                             ),
                             0,
@@ -1430,18 +1431,18 @@ fn analyze_struct_field_init_assign(
                         declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, &flat),
                         expected_elem_ty,
                     );
-                    state_data.entry(flat).or_insert(expected_len);
+                    state_arrays.entry(flat).or_insert(expected_len);
                 }
-                (None, DataElemType::Struct(name)) => {
+                (None, ArrayElemType::Struct(name)) => {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "field '{flat}' expects primitive Data but constructor uses struct element type '{name}'"
+                            "field '{flat}' expects primitive array but constructor uses struct element type '{name}'"
                         ),
                         0,
                         0,
                     ));
                 }
-                (Some(expected_struct), DataElemType::Struct(actual_struct))
+                (Some(expected_struct), ArrayElemType::Struct(actual_struct))
                     if expected_struct == actual_struct =>
                 {
                     if !register_data_struct_root(
@@ -1451,26 +1452,26 @@ fn analyze_struct_field_init_assign(
                         struct_defs,
                         &context,
                         state_scalars,
-                        state_data,
-                        state_data_struct_roots,
+                        state_arrays,
+                        state_array_struct_roots,
                         errors,
                     ) {
                         return;
                     }
                 }
-                (Some(expected_struct), DataElemType::Struct(actual_struct)) => {
+                (Some(expected_struct), ArrayElemType::Struct(actual_struct)) => {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "field '{flat}' expects Data[{expected_struct}, N] but constructor uses Data[{actual_struct}, N]"
+                            "field '{flat}' expects array[{expected_struct}, N] but constructor uses array[{actual_struct}, N]"
                         ),
                         0,
                         0,
                     ));
                 }
-                (Some(expected_struct), DataElemType::Primitive(other)) => {
+                (Some(expected_struct), ArrayElemType::Primitive(other)) => {
                     errors.push(Diagnostic::semantic(
                         format!(
-                            "field '{flat}' expects Data[{expected_struct}, N] but constructor uses primitive element type {:?}",
+                            "field '{flat}' expects array[{expected_struct}, N] but constructor uses primitive element type {:?}",
                             other
                         ),
                         0,

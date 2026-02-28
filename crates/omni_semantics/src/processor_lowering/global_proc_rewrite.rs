@@ -21,12 +21,12 @@ pub(super) fn rewrite_top_level_proc_calls(
             let mut pending_stmts = vec![stmt];
             if let Some(Stmt::Assign {
                 target: AssignTarget::Var(array_var),
-                expr: Expr::DataCtor { spec, init },
+                expr: Expr::ArrayCtor { spec, init },
                 ..
             }) = pending_stmts.first()
             {
                 let resolved_proc_ctor = match &spec.elem {
-                    DataElemType::Struct(elem_name) => {
+                    ArrayElemType::Struct(elem_name) => {
                         if elem_name.contains("::") {
                             if proc_symbols.contains(elem_name) {
                                 Some(elem_name.clone())
@@ -37,7 +37,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                             resolve_unqualified_symbol_name(elem_name, "", &proc_symbols)
                         }
                     }
-                    DataElemType::Primitive(_) => None,
+                    ArrayElemType::Primitive(_) => None,
                 };
                 if let Some(proc_ctor) = resolved_proc_ctor {
                     let size_context =
@@ -159,7 +159,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     let mut expanded = Vec::<Stmt>::with_capacity(values.len() + 1);
                     if let Some(mut decl_stmt) = pending_stmts.first().cloned() {
                         if let Stmt::Assign {
-                            expr: Expr::DataCtor { init, .. },
+                            expr: Expr::ArrayCtor { init, .. },
                             ..
                         } = &mut decl_stmt
                         {

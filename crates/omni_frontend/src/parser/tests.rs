@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
-    AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DataElemType, DeclType,
+    ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DeclType,
     EventParamType, Expr, FieldType, PrimitiveType, Stmt,
 };
 
@@ -744,7 +744,7 @@ sample { out1 = 0.0 }
 }
 
 #[test]
-fn parses_data_ctor_and_index_access() {
+fn parses_array_ctor_and_index_access() {
     let src = r#"
 outs { out1 }
 init {
@@ -1668,10 +1668,10 @@ sample { out1 = 0.0 }
         })
         .expect("struct block");
     match &st.fields[0].ty {
-        FieldType::Data(spec) => {
-            assert!(matches!(spec.elem, DataElemType::Struct(ref n) if n == "T"));
+        FieldType::Array(spec) => {
+            assert!(matches!(spec.elem, ArrayElemType::Struct(ref n) if n == "T"));
         }
-        _ => panic!("expected Data field type"),
+        _ => panic!("expected array field type"),
     }
 }
 
@@ -2115,27 +2115,6 @@ sample:
 }
 
 #[test]
-fn rejects_legacy_data_syntax() {
-    let src = r#"
-outs { out1 }
-init { a = Data[4] }
-sample { out1 = 0.0 }
-"#;
-    let result = parse_program(src);
-    assert!(
-        result.is_err(),
-        "legacy Data[...] syntax should be rejected"
-    );
-    let diags = result.err().expect("parse should return diagnostics");
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("legacy Data[...] syntax")),
-        "expected legacy Data syntax diagnostic"
-    );
-}
-
-#[test]
 fn parses_block_wrapped_sample_section() {
     let src = r#"
 outs { out1 }
@@ -2355,7 +2334,7 @@ block {
 }
 
 #[test]
-fn parses_data_capacity_expression() {
+fn parses_array_capacity_expression() {
     let src = r#"
 outs { out1 }
 struct Delay { buf: f32[SR * 2] }
@@ -2367,12 +2346,12 @@ sample {
   out1 = d.buf[0] + b[0]
 }
 "#;
-    let program = parse_program(src).expect("program with Data capacity expressions should parse");
+    let program = parse_program(src).expect("program with array capacity expressions should parse");
     assert!(program.blocks.iter().any(|b| matches!(b, Block::Struct(_))));
 }
 
 #[test]
-fn parses_typed_data_syntax_and_f32_alias() {
+fn parses_typed_array_syntax_and_f32_alias() {
     let src = r#"
 outs { out1 }
 struct Delay {
@@ -2387,7 +2366,7 @@ sample {
   out1 = 0.0
 }
 "#;
-    let program = parse_program(src).expect("typed Data syntax should parse");
+    let program = parse_program(src).expect("typed array syntax should parse");
 
     let st = program
         .blocks
@@ -2399,22 +2378,22 @@ sample {
         .expect("struct block");
 
     match &st.fields[0].ty {
-        FieldType::Data(spec) => {
+        FieldType::Array(spec) => {
             assert!(matches!(
                 spec.elem,
-                DataElemType::Primitive(crate::ast::PrimitiveType::F64)
+                ArrayElemType::Primitive(crate::ast::PrimitiveType::F64)
             ));
         }
-        _ => panic!("expected Data field type"),
+        _ => panic!("expected array field type"),
     }
     match &st.fields[1].ty {
-        FieldType::Data(spec) => {
+        FieldType::Array(spec) => {
             assert!(matches!(
                 spec.elem,
-                DataElemType::Primitive(crate::ast::PrimitiveType::F32)
+                ArrayElemType::Primitive(crate::ast::PrimitiveType::F32)
             ));
         }
-        _ => panic!("expected Data field type"),
+        _ => panic!("expected array field type"),
     }
 
     let init = program
@@ -2428,32 +2407,32 @@ sample {
 
     match &init[0] {
         Stmt::Assign { expr, .. } => match expr {
-            Expr::DataCtor { spec, .. } => {
+            Expr::ArrayCtor { spec, .. } => {
                 assert!(matches!(
                     spec.elem,
-                    DataElemType::Primitive(crate::ast::PrimitiveType::I32)
+                    ArrayElemType::Primitive(crate::ast::PrimitiveType::I32)
                 ));
             }
-            _ => panic!("expected Data constructor"),
+            _ => panic!("expected array constructor"),
         },
         _ => panic!("expected assignment"),
     }
     match &init[1] {
         Stmt::Assign { expr, .. } => match expr {
-            Expr::DataCtor { spec, .. } => {
+            Expr::ArrayCtor { spec, .. } => {
                 assert!(matches!(
                     spec.elem,
-                    DataElemType::Primitive(crate::ast::PrimitiveType::F32)
+                    ArrayElemType::Primitive(crate::ast::PrimitiveType::F32)
                 ));
             }
-            _ => panic!("expected Data constructor"),
+            _ => panic!("expected array constructor"),
         },
         _ => panic!("expected assignment"),
     }
 }
 
 #[test]
-fn parses_struct_data_typed_field_in_indentation_and_brace_forms() {
+fn parses_struct_array_typed_field_in_indentation_and_brace_forms() {
     let src_indent = r#"
 outs:
   out1
@@ -2521,19 +2500,19 @@ sample {
         .expect("Bank struct");
     assert_eq!(bank.fields.len(), 2);
     match &bank.fields[0].ty {
-        FieldType::Data(spec) => {
+        FieldType::Array(spec) => {
             assert!(matches!(
                 spec.elem,
-                DataElemType::Primitive(crate::ast::PrimitiveType::F32)
+                ArrayElemType::Primitive(crate::ast::PrimitiveType::F32)
             ));
         }
-        _ => panic!("expected Data field from f32[4] sugar"),
+        _ => panic!("expected array field from f32[4] sugar"),
     }
     match &bank.fields[1].ty {
-        FieldType::Data(spec) => {
-            assert!(matches!(spec.elem, DataElemType::Struct(ref s) if s == "Voice"));
+        FieldType::Array(spec) => {
+            assert!(matches!(spec.elem, ArrayElemType::Struct(ref s) if s == "Voice"));
         }
-        _ => panic!("expected Data field from Voice[2] sugar"),
+        _ => panic!("expected array field from Voice[2] sugar"),
     }
 
     let init = program
@@ -2548,10 +2527,10 @@ sample {
     for stmt in init {
         match stmt {
             Stmt::Assign { decl_ty, expr, .. } => {
-                assert!(decl_ty.is_none(), "array sugar should lower to Data ctor");
+                assert!(decl_ty.is_none(), "array sugar should lower to array ctor");
                 assert!(
-                    matches!(expr, Expr::DataCtor { .. }),
-                    "array sugar should emit Data constructor"
+                    matches!(expr, Expr::ArrayCtor { .. }),
+                    "array sugar should emit array constructor"
                 );
             }
             _ => panic!("expected assignment in init"),
@@ -2601,10 +2580,10 @@ sample {
         panic!("expected assignment");
     };
     match expr {
-        Expr::DataCtor {
+        Expr::ArrayCtor {
             init: Some(values), ..
         } => assert_eq!(values.len(), 2),
-        _ => panic!("expected DataCtor with array initializer"),
+        _ => panic!("expected ArrayCtor with array initializer"),
     }
 }
 
@@ -2676,13 +2655,13 @@ sample {
         panic!("expected assignment");
     };
     match expr {
-        Expr::DataCtor {
+        Expr::ArrayCtor {
             init: Some(values), ..
         } => {
             assert_eq!(values.len(), 1);
             assert!(matches!(values[0], Expr::UserCall { .. }));
         }
-        _ => panic!("expected DataCtor with single ctor initializer"),
+        _ => panic!("expected ArrayCtor with single ctor initializer"),
     }
 }
 

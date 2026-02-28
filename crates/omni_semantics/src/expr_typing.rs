@@ -4,7 +4,7 @@ use omni_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType};
 
 use crate::builtins::{
     builtin_constant_type, builtin_name, is_builtin_unsafe_data_fn, is_float_type,
-    is_internal_buffer_2d_fn, parse_buffer_chans_instance_base, parse_data_len_instance_base,
+    is_internal_buffer_2d_fn, parse_array_len_instance_base, parse_buffer_chans_instance_base,
     parse_unsafe_read_instance_base, parse_unsafe_write_instance_base,
 };
 use crate::decl_symbols::{
@@ -13,12 +13,12 @@ use crate::decl_symbols::{
     DECLARED_PARAM_TYPE_PREFIX, DECLARED_STRUCT_FIELD_TYPE_PREFIX,
 };
 use crate::def_inference::{can_implicitly_assign, merge_numeric_types};
-use crate::{split_field_path, LocalDataAliasInfo, TypedFieldType, TypedStructField};
+use crate::{split_field_path, LocalArrayAliasInfo, TypedFieldType, TypedStructField};
 
 pub(crate) fn infer_scalar_expr_type(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
-    local_data_aliases: &HashMap<String, LocalDataAliasInfo>,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
@@ -57,7 +57,7 @@ pub(crate) fn infer_scalar_expr_type(
                         if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
                             return Some(match field_decl.ty {
                                 TypedFieldType::Scalar(prim) => prim,
-                                TypedFieldType::Data(_) => PrimitiveType::F32,
+                                TypedFieldType::Array(_) => PrimitiveType::F32,
                             });
                         }
                     }
@@ -94,7 +94,7 @@ pub(crate) fn infer_scalar_expr_type(
             }
         }
         Expr::Index { base, .. } => {
-            if let Some(alias) = local_data_aliases.get(base) {
+            if let Some(alias) = local_array_aliases.get(base) {
                 if alias.elem_struct.is_none() {
                     return Some(alias.elem_ty);
                 }
@@ -103,8 +103,8 @@ pub(crate) fn infer_scalar_expr_type(
                 if let Some(struct_name) = struct_instances.get(root) {
                     if let Some(fields) = struct_defs.get(struct_name) {
                         if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
-                            if let TypedFieldType::Data(_) = field_decl.ty {
-                                if let Some(elem_ty) = field_decl.data_elem_ty {
+                            if let TypedFieldType::Array(_) = field_decl.ty {
+                                if let Some(elem_ty) = field_decl.array_elem_ty {
                                     return Some(elem_ty);
                                 }
                             }
@@ -138,7 +138,7 @@ pub(crate) fn infer_scalar_expr_type(
             }
             Some(PrimitiveType::F32)
         }
-        Expr::DataCtor { .. } => None,
+        Expr::ArrayCtor { .. } => None,
         Expr::Cast { to, .. } => Some(*to),
         Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
             Some(PrimitiveType::Bool)
@@ -150,7 +150,7 @@ pub(crate) fn infer_scalar_expr_type(
                     infer_scalar_expr_type(
                         arg,
                         state_scalars,
-                        local_data_aliases,
+                        local_array_aliases,
                         locals,
                         input_names,
                         output_names,
@@ -231,7 +231,7 @@ pub(crate) fn infer_scalar_expr_type(
             }
         }
         Expr::UserCall { name, args, .. } => {
-            if parse_data_len_instance_base(name).is_some()
+            if parse_array_len_instance_base(name).is_some()
                 || parse_buffer_chans_instance_base(name).is_some()
             {
                 return Some(PrimitiveType::I32);
@@ -239,7 +239,7 @@ pub(crate) fn infer_scalar_expr_type(
             if let Some(base) = parse_unsafe_read_instance_base(name)
                 .or_else(|| parse_unsafe_write_instance_base(name))
             {
-                if let Some(alias) = local_data_aliases.get(base) {
+                if let Some(alias) = local_array_aliases.get(base) {
                     if alias.elem_struct.is_none() {
                         return Some(alias.elem_ty);
                     }
@@ -278,7 +278,7 @@ pub(crate) fn infer_scalar_expr_type(
                     ..
                 }) = args.first()
                 {
-                    if let Some(alias) = local_data_aliases.get(base) {
+                    if let Some(alias) = local_array_aliases.get(base) {
                         if alias.elem_struct.is_none() {
                             return Some(alias.elem_ty);
                         }
@@ -292,7 +292,7 @@ pub(crate) fn infer_scalar_expr_type(
             let l = infer_scalar_expr_type(
                 lhs,
                 state_scalars,
-                local_data_aliases,
+                local_array_aliases,
                 locals,
                 input_names,
                 output_names,
@@ -304,7 +304,7 @@ pub(crate) fn infer_scalar_expr_type(
             let r = infer_scalar_expr_type(
                 rhs,
                 state_scalars,
-                local_data_aliases,
+                local_array_aliases,
                 locals,
                 input_names,
                 output_names,
@@ -335,7 +335,7 @@ pub(crate) fn infer_expr_type_for_semantics(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
-    let empty_local_data_aliases = HashMap::<String, LocalDataAliasInfo>::new();
+    let empty_local_data_aliases = HashMap::<String, LocalArrayAliasInfo>::new();
     infer_expr_type_for_semantics_with_local_data(
         expr,
         state_scalars,
@@ -356,7 +356,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
     param_structs: Option<&HashMap<String, String>>,
-    local_data_aliases: &HashMap<String, LocalDataAliasInfo>,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
@@ -390,7 +390,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data(
     infer_scalar_expr_type(
         expr,
         state_scalars,
-        local_data_aliases,
+        local_array_aliases,
         locals,
         input_names,
         output_names,

@@ -7,9 +7,9 @@ pub(super) unsafe fn lower_expr(
     ctx: &mut LoweringCtx<'_>,
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
-    local_data_aliases: &HashMap<String, LocalDataAlias>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<OrcValue, Diagnostic> {
-    expr_lowering::lower_expr(expr, ctx, locals, local_aliases, local_data_aliases)
+    expr_lowering::lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)
 }
 
 pub(super) unsafe fn lower_stmt(
@@ -17,7 +17,7 @@ pub(super) unsafe fn lower_stmt(
     ctx: &mut LoweringCtx<'_>,
     locals: &mut HashMap<String, OrcValue>,
     local_aliases: &mut HashMap<String, AliasSlot>,
-    local_data_aliases: &mut HashMap<String, LocalDataAlias>,
+    local_array_aliases: &mut HashMap<String, LocalArrayAlias>,
 ) -> Result<(), Diagnostic> {
-    stmt_lowering::lower_stmt(stmt, ctx, locals, local_aliases, local_data_aliases)
+    stmt_lowering::lower_stmt(stmt, ctx, locals, local_aliases, local_array_aliases)
 }

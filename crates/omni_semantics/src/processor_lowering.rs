@@ -31,7 +31,7 @@ struct ProcBaseShape {
     instance_fields: HashMap<String, HashSet<String>>,
     fields: Vec<StructField>,
     field_names: HashSet<String>,
-    data_field_names: HashSet<String>,
+    array_field_names: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ struct ProcLoweringShape {
     state: ProcStateFields,
     fields: Vec<StructField>,
     field_names: HashSet<String>,
-    data_field_names: HashSet<String>,
+    array_field_names: HashSet<String>,
     nested_fields: HashMap<String, HashSet<String>>,
 }
 
@@ -868,14 +868,14 @@ pub fn analyze_with_options(
         for s in &mut struct_defs_raw {
             let struct_ns = namespace_of_symbol(&s.name);
             for field in &mut s.fields {
-                if let FieldType::Data(spec) = &mut field.ty {
-                    if let DataElemType::Struct(name) = &mut spec.elem {
+                if let FieldType::Array(spec) = &mut field.ty {
+                    if let ArrayElemType::Struct(name) = &mut spec.elem {
                         qualify_struct_type_name(
                             name,
                             &struct_ns,
                             &struct_symbols,
                             &struct_namespaces,
-                            &format!("struct '{}.{}' Data element type", s.name, field.name),
+                            &format!("struct '{}.{}' array element type", s.name, field.name),
                             &mut errors,
                         );
                     }
@@ -1352,8 +1352,8 @@ pub fn analyze_with_options(
 
     for (struct_name, fields) in &struct_defs {
         for field in fields {
-            if let Some(elem_struct) = &field.data_elem_struct {
-                let context = format!("field '{}.{}' Data element", struct_name, field.name);
+            if let Some(elem_struct) = &field.array_elem_struct {
+                let context = format!("field '{}.{}' array element", struct_name, field.name);
                 let _ =
                     validate_data_struct_layout(elem_struct, &struct_defs, &context, &mut errors);
             }
@@ -1555,8 +1555,8 @@ pub fn analyze_with_options(
             );
         }
     }
-    let mut state_data = HashMap::new();
-    let mut state_data_struct_roots = HashMap::<String, DataStructRootInfo>::new();
+    let mut state_arrays = HashMap::new();
+    let mut state_array_struct_roots = HashMap::<String, ArrayStructRootInfo>::new();
     let mut struct_instances = HashMap::new();
     let mut init_known_scalars = param_names.clone();
     init_known_scalars.extend(state_scalars.keys().cloned());
@@ -1599,8 +1599,8 @@ pub fn analyze_with_options(
             &mut init_local_data_aliases,
             &init_locals,
             &mut state_scalars,
-            &mut state_data,
-            &mut state_data_struct_roots,
+            &mut state_arrays,
+            &mut state_array_struct_roots,
             &mut struct_instances,
             &input_names,
             &output_names,
@@ -1617,8 +1617,8 @@ pub fn analyze_with_options(
     register_block_assigned_scalars_as_state(
         block_pre.iter().chain(block_post.iter()),
         &mut state_scalars,
-        &state_data,
-        &state_data_struct_roots,
+        &state_arrays,
+        &state_array_struct_roots,
         &struct_instances,
         &input_names,
         &output_names,
@@ -1647,8 +1647,8 @@ pub fn analyze_with_options(
             &mut block_local_data_aliases,
             &block_locals,
             &state_scalars,
-            &state_data,
-            &state_data_struct_roots,
+            &state_arrays,
+            &state_array_struct_roots,
             &struct_instances,
             &empty_inputs,
             &empty_outputs,
@@ -1665,8 +1665,8 @@ pub fn analyze_with_options(
     register_sample_typed_scalar_decls_as_state(
         sample.iter(),
         &mut state_scalars,
-        &state_data,
-        &state_data_struct_roots,
+        &state_arrays,
+        &state_array_struct_roots,
         &struct_instances,
         &input_names,
         &output_names,
@@ -1692,8 +1692,8 @@ pub fn analyze_with_options(
             &mut sample_local_data_aliases,
             &sample_locals,
             &state_scalars,
-            &state_data,
-            &state_data_struct_roots,
+            &state_arrays,
+            &state_array_struct_roots,
             &struct_instances,
             &input_names,
             &output_names,
@@ -1735,7 +1735,7 @@ pub fn analyze_with_options(
                     array_event_params.insert(param.name.clone());
                     event_local_data_aliases.insert(
                         param.name.clone(),
-                        LocalDataAliasInfo {
+                        LocalArrayAliasInfo {
                             len,
                             elem_ty: elem,
                             elem_struct: None,
@@ -1769,8 +1769,8 @@ pub fn analyze_with_options(
                 &mut event_local_data_aliases,
                 &event_loop_vars,
                 &state_scalars,
-                &state_data,
-                &state_data_struct_roots,
+                &state_arrays,
+                &state_array_struct_roots,
                 &struct_instances,
                 &empty_event_inputs,
                 &empty_event_outputs,
@@ -1792,12 +1792,39 @@ pub fn analyze_with_options(
         sample_and_event_exec.extend(event.body.clone());
     }
 
+    let mut inferred_array_bindings = HashMap::<String, InferredArrayParam>::new();
+    for (name, info) in &out_arrays {
+        inferred_array_bindings.insert(
+            name.clone(),
+            InferredArrayParam {
+                elem_ty: info.elem_ty,
+                len: info.len,
+            },
+        );
+    }
+    for (name, info) in &param_arrays {
+        inferred_array_bindings.insert(
+            name.clone(),
+            InferredArrayParam {
+                elem_ty: info.elem_ty,
+                len: info.len,
+            },
+        );
+    }
+    for (name, len) in &state_arrays {
+        let elem_ty =
+            get_declared_symbol_type(&state_scalars, name, DECLARED_DATA_ELEM_TYPE_PREFIX)
+                .unwrap_or(PrimitiveType::F32);
+        inferred_array_bindings.insert(name.clone(), InferredArrayParam { elem_ty, len: *len });
+    }
+
     let (inferred_def_params, synthesized_struct_defs) = infer_def_param_kinds(
         &defs,
         &init,
         &block_exec,
         &sample_and_event_exec,
         &struct_instances,
+        &inferred_array_bindings,
         &typed_buffers
             .iter()
             .map(|b| {
@@ -1861,6 +1888,21 @@ pub fn analyze_with_options(
             .get(&def.name)
             .map(|k| param_buffer_map_from_kinds(&param_names_vec, k))
             .unwrap_or_default();
+        let param_arrays = inferred_def_params
+            .get(&def.name)
+            .map(|k| param_array_map_from_kinds(&param_names_vec, k))
+            .unwrap_or_default();
+        for (param_name, elem_ty) in &param_arrays {
+            fn_local_data_aliases.insert(
+                param_name.clone(),
+                LocalArrayAliasInfo {
+                    len: 1,
+                    elem_ty: *elem_ty,
+                    elem_struct: None,
+                    writable: true,
+                },
+            );
+        }
         for (param_name, (elem_ty, channels)) in &param_buffers {
             let elem_key = declared_type_key(DECLARED_BUFFER_ELEM_TYPE_PREFIX, param_name);
             let typed_key = declared_type_key(buffer_elem_decl_prefix(*elem_ty), param_name);
@@ -1947,19 +1989,19 @@ pub fn analyze_with_options(
             })
             .collect::<Vec<_>>();
 
-        let mut typed_data = state_data
+        let mut typed_data = state_arrays
             .into_iter()
             .map(|(name, len)| {
                 let elem_ty =
                     get_declared_symbol_type(&state_scalars, &name, DECLARED_DATA_ELEM_TYPE_PREFIX)
                         .unwrap_or(PrimitiveType::F32);
-                TypedDataVar { name, len, elem_ty }
+                TypedArrayVar { name, len, elem_ty }
             })
             .collect::<Vec<_>>();
         typed_data.sort_by(|a, b| a.name.cmp(&b.name));
-        let mut typed_data_roots = state_data_struct_roots
+        let mut typed_data_roots = state_array_struct_roots
             .into_iter()
-            .map(|(name, info)| TypedDataStructRoot {
+            .map(|(name, info)| TypedArrayStructRoot {
                 name,
                 struct_name: info.struct_name,
                 len: info.len,
@@ -2026,8 +2068,8 @@ pub fn analyze_with_options(
             block_post,
             state_vars: sorted_state,
             state_types,
-            data_vars: typed_data,
-            data_struct_roots: typed_data_roots,
+            array_vars: typed_data,
+            array_struct_roots: typed_data_roots,
         })
     } else {
         Err(errors)

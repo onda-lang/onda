@@ -77,7 +77,7 @@ fn split_instance_method_path(name: &str) -> Option<(&str, &str)> {
     Some((base, method))
 }
 
-pub(crate) fn parse_data_len_instance_base(name: &str) -> Option<&str> {
+pub(crate) fn parse_array_len_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
     if method == "len" {
         Some(base)
