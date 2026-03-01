@@ -3320,3 +3320,353 @@ sample:
         ref other => panic!("expected default f32 proc event param, got {other:?}"),
     }
 }
+
+// ---- Phase 0: Namespace Const Fixes — Parser-level tests ----
+
+#[test]
+fn parses_2_level_nested_namespace_template() {
+    let src = r#"
+namespace Outer[A = 1]:
+  namespace Inner[B = 2]:
+    struct S:
+      x: f32
+
+init:
+  s = Outer[10]::Inner[20]::S()
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("2-level nested namespace template should parse");
+
+    // There should be exactly one struct emitted (flattened from the nested namespace)
+    let struct_names: Vec<_> = program
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Struct(s) => Some(s.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(struct_names.len(), 1, "expected 1 struct, got {struct_names:?}");
+    assert!(
+        struct_names[0].contains("__nsinst"),
+        "struct name should contain __nsinst: {}",
+        struct_names[0]
+    );
+
+    // The init block should have a constructor call referencing the flattened struct
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(v) => Some(&v.body),
+            _ => None,
+        })
+        .expect("init block");
+    assert_eq!(init.len(), 1);
+    let call_name = match &init[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            other => panic!("expected constructor call, got {other:?}"),
+        },
+        other => panic!("expected assignment, got {other:?}"),
+    };
+    assert!(call_name.contains("__nsinst"), "call name should contain __nsinst: {call_name}");
+    assert!(call_name.ends_with("::S"), "call name should end with ::S: {call_name}");
+}
+
+#[test]
+fn parses_3_level_nested_namespace_template() {
+    let src = r#"
+namespace L1[A = 1]:
+  namespace L2[B = 2]:
+    namespace L3[C = 3]:
+      struct S:
+        x: f32
+
+init:
+  s = L1[10]::L2[20]::L3[30]::S()
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("3-level nested namespace template should parse");
+
+    let struct_names: Vec<_> = program
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Struct(s) => Some(s.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(struct_names.len(), 1, "expected 1 struct, got {struct_names:?}");
+    assert!(struct_names[0].contains("__nsinst"));
+
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(v) => Some(&v.body),
+            _ => None,
+        })
+        .expect("init block");
+    let call_name = match &init[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            other => panic!("expected constructor call, got {other:?}"),
+        },
+        other => panic!("expected assignment, got {other:?}"),
+    };
+    assert!(call_name.contains("__nsinst"));
+    assert!(call_name.ends_with("::S"), "call name should end with ::S: {call_name}");
+}
+
+#[test]
+fn parses_nested_template_inner_uses_outer_const_as_default() {
+    let src = r#"
+namespace Outer[S = SR]:
+  namespace Inner[N = S]:
+    struct Buf:
+      data: f32
+
+init:
+  b = Outer[48000]::Inner::Buf()
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("inner template using outer const as default should parse");
+
+    let struct_names: Vec<_> = program
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Struct(s) => Some(s.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(struct_names.len(), 1, "expected 1 struct, got {struct_names:?}");
+    assert!(struct_names[0].contains("__nsinst"));
+
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(v) => Some(&v.body),
+            _ => None,
+        })
+        .expect("init block");
+    let call_name = match &init[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            other => panic!("expected constructor call, got {other:?}"),
+        },
+        other => panic!("expected assignment, got {other:?}"),
+    };
+    assert!(call_name.contains("__nsinst"));
+    assert!(call_name.ends_with("::Buf"), "call name should end with ::Buf: {call_name}");
+}
+
+#[test]
+fn deduplicates_nested_namespace_template_instantiations() {
+    let src = r#"
+namespace Outer[S = SR]:
+  namespace Inner[N = 1]:
+    struct S:
+      x: f32
+
+init:
+  a = Outer[SR]::Inner[1]::S()
+  b = Outer[SR]::Inner[1]::S()
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("nested namespace dedup should parse");
+
+    // Dedup: only one struct should be emitted for the same template args
+    let struct_names: Vec<_> = program
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Struct(s) => Some(s.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        struct_names.len(),
+        1,
+        "dedup should produce exactly 1 struct, got {struct_names:?}"
+    );
+
+    // Both constructor calls should reference the same struct name
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(v) => Some(&v.body),
+            _ => None,
+        })
+        .expect("init block");
+    assert_eq!(init.len(), 2);
+    let name_a = match &init[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            other => panic!("expected constructor call, got {other:?}"),
+        },
+        other => panic!("expected assignment, got {other:?}"),
+    };
+    let name_b = match &init[1] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall { name, .. } => name.clone(),
+            other => panic!("expected constructor call, got {other:?}"),
+        },
+        other => panic!("expected assignment, got {other:?}"),
+    };
+    assert_eq!(name_a, name_b, "both calls should reference the same deduped struct");
+}
+
+// ---- Phase 0: Generics × Namespace Const Interaction — Parser-level tests ----
+
+#[test]
+fn parses_generic_struct_inside_namespace_template_t_s_pattern() {
+    let src = r#"
+namespace Data[S = SR]:
+  struct Store[T]:
+    buf: T[S]
+
+init:
+  s = Data[1024]::Store[f32]()
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("T[S] pattern should parse");
+
+    let store = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Struct(s) if s.name.ends_with("::Store") => Some(s),
+            _ => None,
+        })
+        .expect("Store struct");
+
+    // Generic type params should be preserved
+    assert_eq!(store.type_params, vec!["T".to_owned()]);
+
+    // The field `buf` should be an array with generic element type
+    assert_eq!(store.fields.len(), 1);
+    assert_eq!(store.fields[0].name, "buf");
+    match &store.fields[0].ty {
+        FieldType::Array(spec) => {
+            assert!(
+                matches!(spec.elem, ArrayElemType::Struct(ref n) if n == "T"),
+                "expected ArrayElemType::Struct(\"T\"), got {:?}",
+                spec.elem
+            );
+        }
+        other => panic!("expected FieldType::Array, got {other:?}"),
+    }
+
+    // Constructor call should reference the instantiated namespace
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(v) => Some(&v.body),
+            _ => None,
+        })
+        .expect("init block");
+    let (call_name, call_type_args) = match &init[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall {
+                name, type_args, ..
+            } => (name.clone(), type_args.clone()),
+            other => panic!("expected constructor call, got {other:?}"),
+        },
+        other => panic!("expected assignment, got {other:?}"),
+    };
+    assert!(call_name.contains("__nsinst"), "call name should contain __nsinst: {call_name}");
+    assert!(call_name.ends_with("::Store"), "call name should end with ::Store: {call_name}");
+    assert_eq!(call_type_args.len(), 1);
+    assert!(matches!(
+        call_type_args[0],
+        CallTypeArg::Primitive(PrimitiveType::F32)
+    ));
+}
+
+#[test]
+fn parses_generic_proc_inside_namespace_template() {
+    let src = r#"
+namespace FX[S = SR]:
+  proc Delay[T]:
+    ins[T] 1
+    outs[T] 1
+    init:
+      buf: T = T(0.0)
+    sample:
+      out1 = in1
+
+init:
+  d = FX[48000]::Delay[f32]()
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("generic proc inside ns template should parse");
+
+    let proc_def = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) if p.name.ends_with("::Delay") => Some(p),
+            _ => None,
+        })
+        .expect("Delay proc");
+
+    assert_eq!(proc_def.type_params, vec!["T".to_owned()]);
+    assert!(
+        proc_def.name.contains("__nsinst"),
+        "proc name should contain __nsinst: {}",
+        proc_def.name
+    );
+}
+
+#[test]
+fn parses_namespace_qualified_generic_type_in_call_type_args() {
+    let src = r#"
+namespace NS:
+  struct Pair[T]:
+    a: T
+    b: T
+
+proc Container[T]:
+  outs 1
+  init:
+    p = NS::Pair[T](T(1.0), T(2.0))
+  sample:
+    out1 = f32(p.a)
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("ns-qualified generic type in call type args should parse");
+
+    let container = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) if p.name == "Container" => Some(p),
+            _ => None,
+        })
+        .expect("Container proc");
+    assert_eq!(container.type_params, vec!["T".to_owned()]);
+
+    // Check that the Pair struct exists with the NS:: prefix
+    let pair = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Struct(s) if s.name == "NS::Pair" => Some(s),
+            _ => None,
+        })
+        .expect("NS::Pair struct");
+    assert_eq!(pair.type_params, vec!["T".to_owned()]);
+}

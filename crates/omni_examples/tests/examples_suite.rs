@@ -8485,3 +8485,179 @@ sample {
     let result = analyze(parsed);
     assert!(result.is_ok(), "semantic analysis should succeed");
 }
+
+// ---- Phase 0: Namespace Const Fixes — Integration tests ----
+
+#[test]
+fn nested_namespace_template_compiles_and_runs() {
+    let src = r#"
+namespace Outer[A = 1]:
+  namespace Inner[B = 2]:
+    struct S:
+      x: f32
+      def val(self):
+        return f32(A + B)
+outs 1
+init:
+  s = Outer[10]::Inner[20]::S()
+sample:
+  out1 = s.val()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 30.0, 1e-6);
+    }
+}
+
+#[test]
+fn three_level_nested_namespace_template_compiles_and_runs() {
+    let src = r#"
+namespace L1[A = 1]:
+  namespace L2[B = 2]:
+    namespace L3[C = 3]:
+      def sum():
+        return f32(A + B + C)
+outs 1
+sample:
+  out1 = L1[10]::L2[20]::L3[30]::sum()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 60.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_struct_inside_namespace_template_t_s_pattern_compiles_and_runs() {
+    let src = r#"
+namespace Data[S = SR]:
+  struct Store[T]:
+    buf: T[S]
+    def write_first(self, v: T):
+      self.buf[0] = v
+    def read_first(self):
+      return self.buf[0]
+outs 1
+init:
+  s = Data[4]::Store[f32]()
+sample:
+  s.write_first(0.75)
+  out1 = s.read_first()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+fn generic_proc_inside_namespace_template_compiles_and_runs() {
+    let src = r#"
+namespace FX:
+  proc Gain[T]:
+    ins[T] 1
+    outs[T] 1
+    params[T]:
+      g = 1.0
+    sample:
+      out1 = in1 * g
+outs 1
+init:
+  g = FX::Gain[f64](g = f64(0.5))
+sample:
+  out1 = f32(g(f64(2.0)))
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn namespace_qualified_generic_type_from_enclosing_generic_owner_compiles_and_runs() {
+    let src = r#"
+namespace NS:
+  struct Pair:
+    a: f64
+    b: f64
+proc Container:
+  outs 1
+  init:
+    p = NS::Pair(f64(1.0), f64(2.0))
+  sample:
+    out1 = f32(p.a + p.b)
+outs 1
+init:
+  c = Container()
+sample:
+  out1 = c()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn multiple_specializations_of_generic_struct_inside_namespace_template_compiles_and_runs() {
+    let src = r#"
+namespace Data[S = 4]:
+  struct Store[T]:
+    buf: T[S]
+    def first(self):
+      return self.buf[0]
+outs 1
+init:
+  sf = Data[4]::Store[f32]()
+  sd = Data[4]::Store[f64]()
+sample:
+  out1 = sf.first() + f32(sd.first())
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
+}
+
+#[test]
+fn nested_template_with_alias_compiles_and_runs() {
+    let src = r#"
+namespace Outer[S = SR]:
+  namespace Inner[C = 1]:
+    struct Buf:
+      data: f32[S * C]
+      def capacity(self):
+        return i32(S * C)
+namespace MyBuf = Outer[100]::Inner[2]
+outs 1
+init:
+  b = MyBuf::Buf()
+sample:
+  out1 = f32(b.capacity())
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 200.0, 1e-6);
+    }
+}
