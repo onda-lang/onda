@@ -86,6 +86,19 @@ pub(crate) struct ProcStateFields {
     pub(crate) struct_instances: HashMap<String, ProcStructState>,
 }
 
+impl ProcStateFields {
+    pub(crate) fn has_non_scalar(&self, name: &str) -> bool {
+        self.data.contains_key(name)
+            || self.struct_instances.contains_key(name)
+            || self.nested_procs.contains_key(name)
+            || self.nested_proc_arrays.contains_key(name)
+    }
+
+    pub(crate) fn has_any(&self, name: &str) -> bool {
+        self.scalars.contains_key(name) || self.has_non_scalar(name)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ProcNestedState {
     pub(crate) proc_name: String,
@@ -107,35 +120,42 @@ pub(crate) fn is_plain_symbol(name: &str) -> bool {
     !name.contains('.')
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ProcStateCtx<'a> {
+    pub context_label: &'a str,
+    pub reserved: &'a HashSet<String>,
+    pub current_ns: &'a str,
+    pub proc_symbols: &'a HashSet<String>,
+    pub state_type_hints: &'a HashMap<String, PrimitiveType>,
+    pub input_names: &'a HashSet<String>,
+    pub output_names: &'a HashSet<String>,
+    pub param_names: &'a HashSet<String>,
+    pub typed_struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+    pub proc_primary_output_types: &'a HashMap<String, PrimitiveType>,
+    pub struct_symbols: &'a HashSet<String>,
+    pub struct_defs: &'a HashMap<String, omni_frontend::StructDef>,
+    pub ctor_symbols: &'a HashSet<String>,
+    pub in_init_scope: bool,
+    pub init_default_ty: Option<PrimitiveType>,
+}
+
 pub(crate) fn record_proc_state_scalar_assignment(
     name: &str,
     decl_ty: Option<PrimitiveType>,
     expr: &Expr,
-    in_init_scope: bool,
-    init_default_ty: Option<PrimitiveType>,
+    ctx: &ProcStateCtx<'_>,
     out: &mut ProcStateFields,
-    state_type_hints: &HashMap<String, PrimitiveType>,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    param_names: &HashSet<String>,
-    typed_struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    struct_defs: &HashMap<String, omni_frontend::StructDef>,
-    proc_primary_output_types: &HashMap<String, PrimitiveType>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if out.data.contains_key(name)
-        || out.struct_instances.contains_key(name)
-        || out.nested_procs.contains_key(name)
-        || out.nested_proc_arrays.contains_key(name)
-    {
+    if out.has_non_scalar(name) {
         errors.push(Diagnostic::semantic(
-            format!("processor state symbol '{name}' is used as both scalar and non-scalar value"),
+            format!("{} state symbol '{name}' is used as both scalar and non-scalar value", ctx.context_label),
             0,
             0,
         ));
     }
     let existing = out.scalars.get(name).copied();
-    let mut inference_scalars = state_type_hints.clone();
+    let mut inference_scalars = ctx.state_type_hints.clone();
     for (state_name, state_ty) in &out.scalars {
         inference_scalars.insert(state_name.clone(), *state_ty);
     }
@@ -148,7 +168,7 @@ pub(crate) fn record_proc_state_scalar_assignment(
         }
     }
     for (instance_name, state) in &out.struct_instances {
-        let Some(struct_template) = struct_defs.get(&state.struct_name) else {
+        let Some(struct_template) = ctx.struct_defs.get(&state.struct_name) else {
             continue;
         };
         let resolved_struct = if state.type_args.is_empty() {
@@ -181,7 +201,7 @@ pub(crate) fn record_proc_state_scalar_assignment(
         }
     }
     for (instance, nested) in &out.nested_procs {
-        if let Some(ty) = proc_primary_output_types.get(&nested.proc_name).copied() {
+        if let Some(ty) = ctx.proc_primary_output_types.get(&nested.proc_name).copied() {
             inference_scalars.insert(
                 declared_type_key(DECLARED_FUNCTION_RETURN_TYPE_PREFIX, instance),
                 ty,
@@ -193,45 +213,38 @@ pub(crate) fn record_proc_state_scalar_assignment(
         .iter()
         .map(|(instance_name, state)| (instance_name.clone(), state.struct_name.clone()))
         .collect::<HashMap<_, _>>();
-    let ty = match (existing, decl_ty) {
-        (Some(existing_ty), Some(declared_ty)) => {
-            if existing_ty != declared_ty {
-                errors.push(Diagnostic::semantic(
-                    format!(
-                        "processor state symbol '{name}' has conflicting types {:?} and {:?}",
-                        existing_ty, declared_ty
-                    ),
-                    0,
-                    0,
-                ));
-            }
-            existing_ty
+    if let (Some(existing_ty), Some(declared_ty)) = (existing, decl_ty) {
+        if existing_ty != declared_ty {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "{} state symbol '{name}' has conflicting types {:?} and {:?}", ctx.context_label,
+                    existing_ty, declared_ty
+                ),
+                0,
+                0,
+            ));
         }
-        (Some(existing_ty), None) => existing_ty,
-        (None, Some(declared_ty)) => declared_ty,
-        (None, None) => {
-            let inferred = infer_proc_state_scalar_type(
-                expr,
-                &inference_scalars,
-                input_names,
-                output_names,
-                param_names,
-                &struct_instances,
-                typed_struct_defs,
-                errors,
-            );
-            if in_init_scope {
-                init_default_ty.or(inferred).unwrap_or(PrimitiveType::F32)
-            } else {
-                inferred.unwrap_or(PrimitiveType::F32)
-            }
-        }
+    }
+    let inferred = if existing.is_none() && decl_ty.is_none() {
+        infer_proc_state_scalar_type(
+            expr,
+            &inference_scalars,
+            ctx.input_names,
+            ctx.output_names,
+            ctx.param_names,
+            &struct_instances,
+            ctx.typed_struct_defs,
+            errors,
+        )
+    } else {
+        None
     };
+    let ty = resolve_scalar_assignment_type(existing, decl_ty, inferred, ctx.init_default_ty);
     if let Some(existing_ty) = existing {
         if existing_ty != ty {
             errors.push(Diagnostic::semantic(
                 format!(
-                    "processor state symbol '{name}' has conflicting types {:?} and {:?}",
+                    "{} state symbol '{name}' has conflicting types {:?} and {:?}", ctx.context_label,
                     existing_ty, ty
                 ),
                 0,
@@ -251,11 +264,7 @@ pub(crate) fn is_declared_proc_symbol(
 ) -> bool {
     reserved.contains(name)
         || locals.contains(name)
-        || out.scalars.contains_key(name)
-        || out.data.contains_key(name)
-        || out.nested_procs.contains_key(name)
-        || out.nested_proc_arrays.contains_key(name)
-        || out.struct_instances.contains_key(name)
+        || out.has_any(name)
 }
 
 pub(crate) fn has_use_before_declaration_error(errors: &[Diagnostic]) -> bool {
@@ -354,21 +363,8 @@ pub(crate) fn validate_proc_expr_decl_order(
 
 pub(crate) fn collect_proc_state_fields(
     stmt: &Stmt,
-    reserved: &HashSet<String>,
+    ctx: &ProcStateCtx<'_>,
     locals: &HashSet<String>,
-    current_ns: &str,
-    proc_symbols: &HashSet<String>,
-    state_type_hints: &HashMap<String, PrimitiveType>,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    param_names: &HashSet<String>,
-    typed_struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    proc_primary_output_types: &HashMap<String, PrimitiveType>,
-    struct_symbols: &HashSet<String>,
-    struct_defs: &HashMap<String, omni_frontend::StructDef>,
-    ctor_symbols: &HashSet<String>,
-    in_init_scope: bool,
-    init_default_ty: Option<PrimitiveType>,
     out: &mut ProcStateFields,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -385,7 +381,7 @@ pub(crate) fn collect_proc_state_fields(
                 AssignTarget::Var(_) => {}
                 AssignTarget::Index { base, index } => {
                     if let Some((root, _field)) = split_field_path(base, errors) {
-                        if !is_declared_proc_symbol(root, reserved, locals, out) {
+                        if !is_declared_proc_symbol(root, ctx.reserved, locals, out) {
                             errors.push(Diagnostic::semantic(
                                 format!("symbol '{root}' used before declaration"),
                                 0,
@@ -393,7 +389,7 @@ pub(crate) fn collect_proc_state_fields(
                             ));
                             stmt_ok = false;
                         }
-                    } else if !is_declared_proc_symbol(base, reserved, locals, out) {
+                    } else if !is_declared_proc_symbol(base, ctx.reserved, locals, out) {
                         errors.push(Diagnostic::semantic(
                             format!("symbol '{base}' used before declaration"),
                             0,
@@ -401,14 +397,14 @@ pub(crate) fn collect_proc_state_fields(
                         ));
                         stmt_ok = false;
                     }
-                    stmt_ok &= validate_proc_expr_decl_order(index, reserved, locals, out, errors);
+                    stmt_ok &= validate_proc_expr_decl_order(index, ctx.reserved, locals, out, errors);
                 }
             }
-            stmt_ok &= validate_proc_expr_decl_order(expr, reserved, locals, out, errors);
+            stmt_ok &= validate_proc_expr_decl_order(expr, ctx.reserved, locals, out, errors);
             if stmt_ok {
                 if let AssignTarget::Var(name) = target {
                     if is_plain_symbol(name)
-                        && !reserved.contains(name)
+                        && !ctx.reserved.contains(name)
                         && !is_builtin_constant_name(name)
                     {
                         match expr {
@@ -418,7 +414,7 @@ pub(crate) fn collect_proc_state_fields(
                                 {
                                     errors.push(Diagnostic::semantic(
                                     format!(
-                                        "processor state symbol '{name}' is used as both array and non-array value"
+                                        "{} state symbol '{name}' is used as both array and non-array value", ctx.context_label
                                     ),
                                     0,
                                     0,
@@ -427,7 +423,7 @@ pub(crate) fn collect_proc_state_fields(
                                 if out.nested_procs.contains_key(name) {
                                     errors.push(Diagnostic::semantic(
                                     format!(
-                                        "processor state symbol '{name}' is used as both array and processor instance"
+                                        "{} state symbol '{name}' is used as both array and processor instance", ctx.context_label
                                     ),
                                     0,
                                     0,
@@ -436,7 +432,7 @@ pub(crate) fn collect_proc_state_fields(
                                 let resolved_proc_ctor = match &spec.elem {
                                     ArrayElemType::Struct(elem_name) => {
                                         if elem_name.contains("::") {
-                                            if proc_symbols.contains(elem_name) {
+                                            if ctx.proc_symbols.contains(elem_name) {
                                                 Some(elem_name.clone())
                                             } else {
                                                 None
@@ -444,18 +440,18 @@ pub(crate) fn collect_proc_state_fields(
                                         } else {
                                             resolve_unqualified_symbol_name(
                                                 elem_name,
-                                                current_ns,
-                                                proc_symbols,
+                                                ctx.current_ns,
+                                                ctx.proc_symbols,
                                             )
                                         }
                                     }
                                     ArrayElemType::Primitive(_) => None,
                                 };
                                 if let Some(proc_ctor) = resolved_proc_ctor {
-                                    if !in_init_scope {
+                                    if !ctx.in_init_scope {
                                         errors.push(Diagnostic::semantic(
                                             format!(
-                                                "processor state constructor '{name}: {proc_ctor}[N]' is only allowed in processor init block"
+                                                "{} state constructor '{name}: {proc_ctor}[N]' is only allowed in {} init block", ctx.context_label, ctx.context_label
                                             ),
                                             0,
                                             0,
@@ -468,7 +464,7 @@ pub(crate) fn collect_proc_state_fields(
                                     {
                                         errors.push(Diagnostic::semantic(
                                             format!(
-                                                "processor state symbol '{name}' is used as both processor array and non-processor value"
+                                                "{} state symbol '{name}' is used as both processor array and non-processor value", ctx.context_label
                                             ),
                                             0,
                                             0,
@@ -480,7 +476,7 @@ pub(crate) fn collect_proc_state_fields(
                                         {
                                             errors.push(Diagnostic::semantic(
                                                 format!(
-                                                    "processor state symbol '{name}' has conflicting processor array declarations"
+                                                    "{} state symbol '{name}' has conflicting processor array declarations", ctx.context_label
                                                 ),
                                                 0,
                                                 0,
@@ -500,10 +496,10 @@ pub(crate) fn collect_proc_state_fields(
                                 }
                             }
                             Expr::ArrayLiteral(values) => {
-                                if !in_init_scope {
+                                if !ctx.in_init_scope {
                                     errors.push(Diagnostic::semantic(
                                         format!(
-                                            "processor state array initializer '{name} = [...]' is only allowed in processor init block"
+                                            "{} state array initializer '{name} = [...]' is only allowed in {} init block", ctx.context_label, ctx.context_label
                                         ),
                                         0,
                                         0,
@@ -514,7 +510,7 @@ pub(crate) fn collect_proc_state_fields(
                                 {
                                     errors.push(Diagnostic::semantic(
                                         format!(
-                                            "processor state symbol '{name}' is used as both array and non-array value"
+                                            "{} state symbol '{name}' is used as both array and non-array value", ctx.context_label
                                         ),
                                         0,
                                         0,
@@ -525,7 +521,7 @@ pub(crate) fn collect_proc_state_fields(
                                 {
                                     errors.push(Diagnostic::semantic(
                                         format!(
-                                            "processor state symbol '{name}' is used as both array and processor instance"
+                                            "{} state symbol '{name}' is used as both array and processor instance", ctx.context_label
                                         ),
                                         0,
                                         0,
@@ -534,13 +530,13 @@ pub(crate) fn collect_proc_state_fields(
                                 if values.is_empty() {
                                     errors.push(Diagnostic::semantic(
                                         format!(
-                                            "processor state array initializer '{name} = [...]' cannot be empty"
+                                            "{} state array initializer '{name} = [...]' cannot be empty", ctx.context_label
                                         ),
                                         0,
                                         0,
                                     ));
                                 } else {
-                                    let mut inference_scalars = state_type_hints.clone();
+                                    let mut inference_scalars = ctx.state_type_hints.clone();
                                     for (state_name, state_ty) in &out.scalars {
                                         inference_scalars.insert(state_name.clone(), *state_ty);
                                     }
@@ -557,7 +553,7 @@ pub(crate) fn collect_proc_state_fields(
                                     }
                                     for (instance_name, state) in &out.struct_instances {
                                         let Some(struct_template) =
-                                            struct_defs.get(&state.struct_name)
+                                            ctx.struct_defs.get(&state.struct_name)
                                         else {
                                             continue;
                                         };
@@ -603,7 +599,7 @@ pub(crate) fn collect_proc_state_fields(
                                         }
                                     }
                                     for (instance, nested) in &out.nested_procs {
-                                        if let Some(ty) = proc_primary_output_types
+                                        if let Some(ty) = ctx.proc_primary_output_types
                                             .get(&nested.proc_name)
                                             .copied()
                                         {
@@ -627,11 +623,11 @@ pub(crate) fn collect_proc_state_fields(
                                     let elem_ty = infer_proc_state_scalar_type(
                                         &values[0],
                                         &inference_scalars,
-                                        input_names,
-                                        output_names,
-                                        param_names,
+                                        ctx.input_names,
+                                        ctx.output_names,
+                                        ctx.param_names,
                                         &struct_instances,
-                                        typed_struct_defs,
+                                        ctx.typed_struct_defs,
                                         errors,
                                     )
                                     .unwrap_or(PrimitiveType::F32);
@@ -639,18 +635,18 @@ pub(crate) fn collect_proc_state_fields(
                                         let value_ty = infer_proc_state_scalar_type(
                                             value,
                                             &inference_scalars,
-                                            input_names,
-                                            output_names,
-                                            param_names,
+                                            ctx.input_names,
+                                            ctx.output_names,
+                                            ctx.param_names,
                                             &struct_instances,
-                                            typed_struct_defs,
+                                            ctx.typed_struct_defs,
                                             errors,
                                         );
                                         require_assignable_type(
                                             value_ty,
                                             elem_ty,
                                             &format!(
-                                                "processor state array initializer assignment to '{name}[{idx}]'"
+                                                "{} state array initializer assignment to '{name}[{idx}]'", ctx.context_label
                                             ),
                                             errors,
                                         );
@@ -671,13 +667,13 @@ pub(crate) fn collect_proc_state_fields(
                             } => {
                                 let mut handled_as_constructor = false;
                                 let resolved_proc_ctor = if ctor.contains("::") {
-                                    if proc_symbols.contains(ctor) {
+                                    if ctx.proc_symbols.contains(ctor) {
                                         Some(ctor.clone())
                                     } else {
                                         None
                                     }
                                 } else {
-                                    resolve_unqualified_symbol_name(ctor, current_ns, proc_symbols)
+                                    resolve_unqualified_symbol_name(ctor, ctx.current_ns, ctx.proc_symbols)
                                 };
                                 if let Some(proc_ctor) = resolved_proc_ctor {
                                     handled_as_constructor = true;
@@ -694,18 +690,18 @@ pub(crate) fn collect_proc_state_fields(
                                         if existing.proc_name != proc_ctor {
                                             errors.push(Diagnostic::semantic(
                                             format!(
-                                                "processor state symbol '{name}' has conflicting processor types '{}' and '{}'",
-                                                existing.proc_name, proc_ctor
+                                                "{} state symbol '{name}' has conflicting processor types '{}' and '{}'",
+                                                ctx.context_label, existing.proc_name, proc_ctor
                                             ),
                                             0,
                                             0,
                                         ));
                                         }
                                     } else {
-                                        if !in_init_scope {
+                                        if !ctx.in_init_scope {
                                             errors.push(Diagnostic::semantic(
                                             format!(
-                                                "processor state constructor '{name} = {proc_ctor}(...)' is only allowed in processor init block"
+                                                "{} state constructor '{name} = {proc_ctor}(...)' is only allowed in {} init block", ctx.context_label, ctx.context_label
                                             ),
                                             0,
                                             0,
@@ -718,7 +714,7 @@ pub(crate) fn collect_proc_state_fields(
                                         {
                                             errors.push(Diagnostic::semantic(
                                             format!(
-                                                "processor state symbol '{name}' is used as both processor instance and non-processor value"
+                                                "{} state symbol '{name}' is used as both processor instance and non-processor value", ctx.context_label
                                             ),
                                             0,
                                             0,
@@ -734,7 +730,7 @@ pub(crate) fn collect_proc_state_fields(
                                     }
                                 } else {
                                     let resolved_struct_ctor = if ctor.contains("::") {
-                                        if struct_symbols.contains(ctor) {
+                                        if ctx.struct_symbols.contains(ctor) {
                                             Some(ctor.clone())
                                         } else {
                                             None
@@ -742,22 +738,22 @@ pub(crate) fn collect_proc_state_fields(
                                     } else {
                                         resolve_unqualified_symbol_name(
                                             ctor,
-                                            current_ns,
-                                            struct_symbols,
+                                            ctx.current_ns,
+                                            ctx.struct_symbols,
                                         )
                                     };
                                     if let Some(struct_ctor) = resolved_struct_ctor {
                                         handled_as_constructor = true;
-                                        if !in_init_scope {
+                                        if !ctx.in_init_scope {
                                             errors.push(Diagnostic::semantic(
                                             format!(
-                                                "processor state constructor '{name} = {struct_ctor}(...)' is only allowed in processor init block"
+                                                "{} state constructor '{name} = {struct_ctor}(...)' is only allowed in {} init block", ctx.context_label, ctx.context_label
                                             ),
                                             0,
                                             0,
                                         ));
                                         }
-                                        let resolved_type_args = match struct_defs.get(&struct_ctor)
+                                        let resolved_type_args = match ctx.struct_defs.get(&struct_ctor)
                                         {
                                             Some(struct_template) => {
                                                 if type_args.is_empty() {
@@ -824,7 +820,7 @@ pub(crate) fn collect_proc_state_fields(
                                             {
                                                 errors.push(Diagnostic::semantic(
                                                 format!(
-                                                    "processor state symbol '{name}' is used as both struct instance and non-struct value"
+                                                    "{} state symbol '{name}' is used as both struct instance and non-struct value", ctx.context_label
                                                 ),
                                                 0,
                                                 0,
@@ -839,7 +835,7 @@ pub(crate) fn collect_proc_state_fields(
                                                 if existing != &current {
                                                     errors.push(Diagnostic::semantic(
                                                     format!(
-                                                        "processor state symbol '{name}' has conflicting struct constructor specializations"
+                                                        "{} state symbol '{name}' has conflicting struct constructor specializations", ctx.context_label
                                                     ),
                                                     0,
                                                     0,
@@ -855,11 +851,11 @@ pub(crate) fn collect_proc_state_fields(
                                                 );
                                             }
                                         }
-                                    } else if ctor_symbols.contains(ctor) {
+                                    } else if ctx.ctor_symbols.contains(ctor) {
                                         handled_as_constructor = true;
                                         errors.push(Diagnostic::semantic(
                                         format!(
-                                            "processor state constructor '{name} = {ctor}(...)' is only supported for known struct or processor constructors"
+                                            "{} state constructor '{name} = {ctor}(...)' is only supported for known struct or processor constructors", ctx.context_label
                                         ),
                                         0,
                                         0,
@@ -871,16 +867,8 @@ pub(crate) fn collect_proc_state_fields(
                                         name,
                                         *decl_ty,
                                         expr,
-                                        in_init_scope,
-                                        init_default_ty,
+                                        ctx,
                                         out,
-                                        state_type_hints,
-                                        input_names,
-                                        output_names,
-                                        param_names,
-                                        typed_struct_defs,
-                                        struct_defs,
-                                        proc_primary_output_types,
                                         errors,
                                     );
                                 }
@@ -890,16 +878,8 @@ pub(crate) fn collect_proc_state_fields(
                                     name,
                                     *decl_ty,
                                     expr,
-                                    in_init_scope,
-                                    init_default_ty,
+                                    ctx,
                                     out,
-                                    state_type_hints,
-                                    input_names,
-                                    output_names,
-                                    param_names,
-                                    typed_struct_defs,
-                                    struct_defs,
-                                    proc_primary_output_types,
                                     errors,
                                 );
                             }
@@ -910,18 +890,15 @@ pub(crate) fn collect_proc_state_fields(
             if !stmt_ok {
                 if let AssignTarget::Var(name) = target {
                     if is_plain_symbol(name)
-                        && !reserved.contains(name)
+                        && !ctx.reserved.contains(name)
                         && !is_builtin_constant_name(name)
-                        && !out.data.contains_key(name)
-                        && !out.struct_instances.contains_key(name)
-                        && !out.nested_procs.contains_key(name)
-                        && !out.nested_proc_arrays.contains_key(name)
+                        && !out.has_non_scalar(name)
                     {
                         match expr {
                             Expr::ArrayCtor { .. } | Expr::UserCall { .. } => {}
                             _ => {
                                 out.scalars.entry(name.clone()).or_insert(
-                                    decl_ty.or(init_default_ty).unwrap_or(PrimitiveType::F32),
+                                    decl_ty.or(ctx.init_default_ty).unwrap_or(PrimitiveType::F32),
                                 );
                                 out.scalars.insert(
                                     declared_type_key(DECLARED_INVALID_PLACEHOLDER_PREFIX, name),
@@ -933,12 +910,12 @@ pub(crate) fn collect_proc_state_fields(
                 }
             }
             if stmt_ok {
-                collect_proc_state_expr_fields(expr, reserved, ctor_symbols, out, errors);
+                collect_proc_state_expr_fields(expr, ctx.reserved, ctx.ctor_symbols, out, errors);
             }
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            if validate_proc_expr_decl_order(expr, reserved, locals, out, errors) {
-                collect_proc_state_expr_fields(expr, reserved, ctor_symbols, out, errors);
+            if validate_proc_expr_decl_order(expr, ctx.reserved, locals, out, errors) {
+                collect_proc_state_expr_fields(expr, ctx.reserved, ctx.ctor_symbols, out, errors);
             }
         }
         Stmt::If {
@@ -947,52 +924,14 @@ pub(crate) fn collect_proc_state_fields(
             else_branch,
             ..
         } => {
-            if validate_proc_expr_decl_order(cond, reserved, locals, out, errors) {
-                collect_proc_state_expr_fields(cond, reserved, ctor_symbols, out, errors);
+            if validate_proc_expr_decl_order(cond, ctx.reserved, locals, out, errors) {
+                collect_proc_state_expr_fields(cond, ctx.reserved, ctx.ctor_symbols, out, errors);
             }
             for s in then_branch {
-                collect_proc_state_fields(
-                    s,
-                    reserved,
-                    locals,
-                    current_ns,
-                    proc_symbols,
-                    state_type_hints,
-                    input_names,
-                    output_names,
-                    param_names,
-                    typed_struct_defs,
-                    proc_primary_output_types,
-                    struct_symbols,
-                    struct_defs,
-                    ctor_symbols,
-                    in_init_scope,
-                    init_default_ty,
-                    out,
-                    errors,
-                );
+                collect_proc_state_fields(s, ctx, locals, out, errors);
             }
             for s in else_branch {
-                collect_proc_state_fields(
-                    s,
-                    reserved,
-                    locals,
-                    current_ns,
-                    proc_symbols,
-                    state_type_hints,
-                    input_names,
-                    output_names,
-                    param_names,
-                    typed_struct_defs,
-                    proc_primary_output_types,
-                    struct_symbols,
-                    struct_defs,
-                    ctor_symbols,
-                    in_init_scope,
-                    init_default_ty,
-                    out,
-                    errors,
-                );
+                collect_proc_state_fields(s, ctx, locals, out, errors);
             }
         }
         Stmt::For {
@@ -1003,67 +942,29 @@ pub(crate) fn collect_proc_state_fields(
             body,
             ..
         } => {
-            if validate_proc_expr_decl_order(start, reserved, locals, out, errors) {
-                collect_proc_state_expr_fields(start, reserved, ctor_symbols, out, errors);
+            if validate_proc_expr_decl_order(start, ctx.reserved, locals, out, errors) {
+                collect_proc_state_expr_fields(start, ctx.reserved, ctx.ctor_symbols, out, errors);
             }
-            if validate_proc_expr_decl_order(end, reserved, locals, out, errors) {
-                collect_proc_state_expr_fields(end, reserved, ctor_symbols, out, errors);
+            if validate_proc_expr_decl_order(end, ctx.reserved, locals, out, errors) {
+                collect_proc_state_expr_fields(end, ctx.reserved, ctx.ctor_symbols, out, errors);
             }
             if let Some(step_expr) = step {
-                if validate_proc_expr_decl_order(step_expr, reserved, locals, out, errors) {
-                    collect_proc_state_expr_fields(step_expr, reserved, ctor_symbols, out, errors);
+                if validate_proc_expr_decl_order(step_expr, ctx.reserved, locals, out, errors) {
+                    collect_proc_state_expr_fields(step_expr, ctx.reserved, ctx.ctor_symbols, out, errors);
                 }
             }
             let mut loop_locals = locals.clone();
             loop_locals.insert(var.clone());
             for s in body {
-                collect_proc_state_fields(
-                    s,
-                    reserved,
-                    &loop_locals,
-                    current_ns,
-                    proc_symbols,
-                    state_type_hints,
-                    input_names,
-                    output_names,
-                    param_names,
-                    typed_struct_defs,
-                    proc_primary_output_types,
-                    struct_symbols,
-                    struct_defs,
-                    ctor_symbols,
-                    in_init_scope,
-                    init_default_ty,
-                    out,
-                    errors,
-                );
+                collect_proc_state_fields(s, ctx, &loop_locals, out, errors);
             }
         }
         Stmt::While { cond, body, .. } => {
-            if validate_proc_expr_decl_order(cond, reserved, locals, out, errors) {
-                collect_proc_state_expr_fields(cond, reserved, ctor_symbols, out, errors);
+            if validate_proc_expr_decl_order(cond, ctx.reserved, locals, out, errors) {
+                collect_proc_state_expr_fields(cond, ctx.reserved, ctx.ctor_symbols, out, errors);
             }
             for s in body {
-                collect_proc_state_fields(
-                    s,
-                    reserved,
-                    locals,
-                    current_ns,
-                    proc_symbols,
-                    state_type_hints,
-                    input_names,
-                    output_names,
-                    param_names,
-                    typed_struct_defs,
-                    proc_primary_output_types,
-                    struct_symbols,
-                    struct_defs,
-                    ctor_symbols,
-                    in_init_scope,
-                    init_default_ty,
-                    out,
-                    errors,
-                );
+                collect_proc_state_fields(s, ctx, locals, out, errors);
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}

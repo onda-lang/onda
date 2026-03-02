@@ -35,7 +35,19 @@ pub(crate) fn resolve_explicit_call_type_args(
     let mut resolved = Vec::<PrimitiveType>::with_capacity(type_args.len());
     for arg in type_args {
         match arg {
-            CallTypeArg::Primitive(ty) => resolved.push(*ty),
+            CallTypeArg::Primitive(ty) => {
+                if *ty == PrimitiveType::Bool {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "{context}: 'bool' is not allowed as a generic type argument; only numeric types (f32, f64, i32, i64) are supported"
+                        ),
+                        0,
+                        0,
+                    ));
+                    return None;
+                }
+                resolved.push(*ty);
+            }
             CallTypeArg::Generic(name) => {
                 errors.push(Diagnostic::semantic(
                     format!(
@@ -221,6 +233,8 @@ pub(crate) fn specialize_generic_struct_template(
                     channels: buffer_ty.channels.clone(),
                 })
             }
+            FnParamType::Array(elem) => FnParamType::Array(*elem),
+            FnParamType::BareBuffer => FnParamType::BareBuffer,
         }
     };
 
@@ -293,6 +307,9 @@ pub(crate) fn specialize_generic_struct_template(
                     errors,
                 );
             }
+        }
+        for stmt in &mut method.body {
+            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
         }
         for stmt in &mut method.body {
             rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
@@ -769,11 +786,13 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
             }
         }
     }
-    let mut out = Vec::<PrimitiveType>::with_capacity(template.type_params.len());
-    for param in &template.type_params {
-        out.push(bindings.get(param).copied().unwrap_or(PrimitiveType::F32));
-    }
-    Some(out)
+    finalize_inferred_generic_type_args(
+        &template.name,
+        "struct",
+        &template.type_params,
+        &bindings,
+        errors,
+    )
 }
 
 pub(crate) fn infer_generic_proc_ctor_type_args(

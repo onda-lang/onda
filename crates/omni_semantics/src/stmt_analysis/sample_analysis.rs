@@ -575,15 +575,6 @@ fn analyze_assign_sample(
             require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
         }
         AssignTarget::Var(name) => {
-            if let Some(param) = generic_decl_ty {
-                errors.push(Diagnostic::semantic(
-                    format!(
-                        "generic typed declaration for '{name}: {param}' is only supported in init blocks"
-                    ),
-                    0,
-                    0,
-                ));
-            }
             if locals.contains(name) {
                 errors.push(Diagnostic::semantic(
                     format!("cannot assign to loop variable '{name}'"),

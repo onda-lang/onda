@@ -276,6 +276,58 @@ pub(crate) fn infer_def_param_kinds(
                 .unwrap_or("<param>");
             let usage_for_param = usage.get(idx).cloned().unwrap_or_default();
 
+            // Handle explicitly typed array params (e.g. `f32[]`)
+            if let Some(FnParamType::Array(Some(prim))) =
+                def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                typed.push(TypedFnParam::Array { elem_ty: *prim });
+                continue;
+            }
+            // Handle bare buffer params — treat like untyped buffer for inference
+            // (monomorphization resolves the concrete type at call sites)
+            if let Some(FnParamType::BareBuffer) =
+                def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                // Fall through to buffer inference below by marking as buffer-like
+                // If inference found buffer observations, use them; otherwise default
+                let inferred_buffer = infer_untyped_buffer_from_observations(
+                    &def.name,
+                    param_name,
+                    &inferred_kind,
+                    true,
+                    errors,
+                )
+                .unwrap_or(InferredBufferParam {
+                    elem_ty: PrimitiveType::F32,
+                    channels: TypedBufferChannels::Mono,
+                });
+                typed.push(TypedFnParam::Buffer {
+                    elem_ty: inferred_buffer.elem_ty,
+                    channels: inferred_buffer.channels,
+                });
+                continue;
+            }
+            // Handle untyped array params (`[]`) — infer element type from usage
+            if let Some(FnParamType::Array(None)) =
+                def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                let inferred_array = infer_untyped_array_from_observations(
+                    &def.name,
+                    param_name,
+                    &inferred_kind,
+                    true,
+                    errors,
+                )
+                .unwrap_or(InferredArrayParam {
+                    elem_ty: PrimitiveType::F32,
+                    len: 1,
+                });
+                typed.push(TypedFnParam::Array {
+                    elem_ty: inferred_array.elem_ty,
+                });
+                continue;
+            }
+
             if let Some((elem_ty, channels)) = explicit_buffer {
                 if !inferred_kind.saw_arrays.is_empty() {
                     errors.push(Diagnostic::semantic(

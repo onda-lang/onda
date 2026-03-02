@@ -1,27 +1,38 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(crate) struct InitAnalysisCtx<'a> {
+    pub context_label: &'a str,
+    pub init_default_ty: Option<PrimitiveType>,
+    pub input_names: &'a HashSet<String>,
+    pub output_names: &'a HashSet<String>,
+    pub param_names: &'a HashSet<String>,
+    pub struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+    pub fn_signatures: &'a HashMap<String, FnSignature>,
+    pub options: AnalysisOptions,
+}
+
+#[derive(Clone)]
+pub(crate) struct InitAnalysisState {
+    pub known_scalars: HashSet<String>,
+    pub local_aliases: LocalAliasTypes,
+    pub local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    pub state_scalars: HashMap<String, PrimitiveType>,
+    pub state_arrays: HashMap<String, usize>,
+    pub state_array_struct_roots: HashMap<String, ArrayStructRootInfo>,
+    pub struct_instances: HashMap<String, String>,
+}
+
 pub(crate) fn analyze_init_stmt(
     stmt: &Stmt,
-    init_default_ty: Option<PrimitiveType>,
-    known_scalars: &mut HashSet<String>,
-    local_aliases: &mut LocalAliasTypes,
-    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    ctx: &InitAnalysisCtx<'_>,
+    st: &mut InitAnalysisState,
     locals: &HashSet<String>,
-    state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_arrays: &mut HashMap<String, usize>,
-    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
-    struct_instances: &mut HashMap<String, String>,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    param_names: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    options: AnalysisOptions,
     loop_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context(stmt, || {
-        let array_vars = merged_data_vars_for_sample(state_arrays, local_array_aliases);
+        let array_vars = merged_data_vars_for_sample(&st.state_arrays, &st.local_array_aliases);
         match stmt {
             Stmt::Assign {
                 target,
@@ -36,35 +47,23 @@ pub(crate) fn analyze_init_stmt(
                 generic_decl_ty,
                 *is_typed_decl,
                 expr,
-                init_default_ty,
-                known_scalars,
-                local_aliases,
-                local_array_aliases,
+                ctx,
+                st,
                 locals,
-                state_scalars,
-                state_arrays,
-                state_array_struct_roots,
-                struct_instances,
-                input_names,
-                output_names,
-                param_names,
-                struct_defs,
-                fn_signatures,
-                options,
                 errors,
             ),
             Stmt::Expr { expr, .. } => {
                 validate_expr(
                     expr,
                     ExprEnv {
-                        known_scalars,
+                        known_scalars: &st.known_scalars,
                         locals,
-                        outputs: output_names,
+                        outputs: ctx.output_names,
                         array_vars: &array_vars,
                         param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
+                        struct_instances: &st.struct_instances,
+                        struct_defs: ctx.struct_defs,
+                        fn_signatures: ctx.fn_signatures,
                         allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
@@ -72,15 +71,15 @@ pub(crate) fn analyze_init_stmt(
                 );
                 let _ = infer_expr_type_for_semantics_with_local_data(
                     expr,
-                    state_scalars,
+                    &st.state_scalars,
                     None,
-                    local_array_aliases,
+                    &st.local_array_aliases,
                     locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
+                    ctx.input_names,
+                    ctx.output_names,
+                    ctx.param_names,
+                    &st.struct_instances,
+                    ctx.struct_defs,
                     errors,
                 );
             }
@@ -98,14 +97,14 @@ pub(crate) fn analyze_init_stmt(
                 validate_expr(
                     cond,
                     ExprEnv {
-                        known_scalars,
+                        known_scalars: &st.known_scalars,
                         locals,
-                        outputs: output_names,
+                        outputs: ctx.output_names,
                         array_vars: &array_vars,
                         param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
+                        struct_instances: &st.struct_instances,
+                        struct_defs: ctx.struct_defs,
+                        fn_signatures: ctx.fn_signatures,
                         allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
@@ -113,107 +112,57 @@ pub(crate) fn analyze_init_stmt(
                 );
                 let cond_ty = infer_expr_type_for_semantics_with_local_data(
                     cond,
-                    state_scalars,
+                    &st.state_scalars,
                     None,
-                    local_array_aliases,
+                    &st.local_array_aliases,
                     locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
+                    ctx.input_names,
+                    ctx.output_names,
+                    ctx.param_names,
+                    &st.struct_instances,
+                    ctx.struct_defs,
                     errors,
                 );
                 require_bool_type(cond_ty, "if condition", errors);
 
-                let mut then_known = known_scalars.clone();
-                let mut then_aliases = local_aliases.clone();
-                let mut then_data_aliases = local_array_aliases.clone();
-                let mut then_scalars = state_scalars.clone();
-                let mut then_data = state_arrays.clone();
-                let mut then_data_struct_roots = state_array_struct_roots.clone();
-                let mut then_structs = struct_instances.clone();
+                let mut then_st = st.clone();
                 for nested in then_branch {
-                    analyze_init_stmt(
-                        nested,
-                        init_default_ty,
-                        &mut then_known,
-                        &mut then_aliases,
-                        &mut then_data_aliases,
-                        locals,
-                        &mut then_scalars,
-                        &mut then_data,
-                        &mut then_data_struct_roots,
-                        &mut then_structs,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_defs,
-                        fn_signatures,
-                        options,
-                        loop_depth,
-                        errors,
-                    );
+                    analyze_init_stmt(nested, ctx, &mut then_st, locals, loop_depth, errors);
                 }
 
-                let mut else_known = known_scalars.clone();
-                let mut else_aliases = local_aliases.clone();
-                let mut else_data_aliases = local_array_aliases.clone();
-                let mut else_scalars = state_scalars.clone();
-                let mut else_data = state_arrays.clone();
-                let mut else_data_struct_roots = state_array_struct_roots.clone();
-                let mut else_structs = struct_instances.clone();
+                let mut else_st = st.clone();
                 for nested in else_branch {
-                    analyze_init_stmt(
-                        nested,
-                        init_default_ty,
-                        &mut else_known,
-                        &mut else_aliases,
-                        &mut else_data_aliases,
-                        locals,
-                        &mut else_scalars,
-                        &mut else_data,
-                        &mut else_data_struct_roots,
-                        &mut else_structs,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_defs,
-                        fn_signatures,
-                        options,
-                        loop_depth,
-                        errors,
-                    );
+                    analyze_init_stmt(nested, ctx, &mut else_st, locals, loop_depth, errors);
                 }
 
-                state_scalars.extend(then_scalars);
-                state_scalars.extend(else_scalars);
-                for (k, v) in then_data {
-                    state_arrays.entry(k).or_insert(v);
+                st.state_scalars.extend(then_st.state_scalars);
+                st.state_scalars.extend(else_st.state_scalars);
+                for (k, v) in then_st.state_arrays {
+                    st.state_arrays.entry(k).or_insert(v);
                 }
-                for (k, v) in then_data_struct_roots {
-                    state_array_struct_roots.entry(k).or_insert(v);
+                for (k, v) in then_st.state_array_struct_roots {
+                    st.state_array_struct_roots.entry(k).or_insert(v);
                 }
-                for (k, v) in else_data {
-                    state_arrays.entry(k).or_insert(v);
+                for (k, v) in else_st.state_arrays {
+                    st.state_arrays.entry(k).or_insert(v);
                 }
-                for (k, v) in else_data_struct_roots {
-                    state_array_struct_roots.entry(k).or_insert(v);
+                for (k, v) in else_st.state_array_struct_roots {
+                    st.state_array_struct_roots.entry(k).or_insert(v);
                 }
-                for (k, v) in then_structs {
-                    struct_instances.entry(k).or_insert(v);
+                for (k, v) in then_st.struct_instances {
+                    st.struct_instances.entry(k).or_insert(v);
                 }
-                for (k, v) in else_structs {
-                    struct_instances.entry(k).or_insert(v);
+                for (k, v) in else_st.struct_instances {
+                    st.struct_instances.entry(k).or_insert(v);
                 }
-                known_scalars.extend(state_scalars.keys().cloned());
-                local_aliases.extend(then_aliases);
-                local_aliases.extend(else_aliases);
-                for (k, v) in then_data_aliases {
-                    local_array_aliases.entry(k).or_insert(v);
+                st.known_scalars.extend(st.state_scalars.keys().cloned());
+                st.local_aliases.extend(then_st.local_aliases);
+                st.local_aliases.extend(else_st.local_aliases);
+                for (k, v) in then_st.local_array_aliases {
+                    st.local_array_aliases.entry(k).or_insert(v);
                 }
-                for (k, v) in else_data_aliases {
-                    local_array_aliases.entry(k).or_insert(v);
+                for (k, v) in else_st.local_array_aliases {
+                    st.local_array_aliases.entry(k).or_insert(v);
                 }
             }
             Stmt::For {
@@ -227,14 +176,14 @@ pub(crate) fn analyze_init_stmt(
                 validate_expr(
                     start,
                     ExprEnv {
-                        known_scalars,
+                        known_scalars: &st.known_scalars,
                         locals,
-                        outputs: output_names,
+                        outputs: ctx.output_names,
                         array_vars: &array_vars,
                         param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
+                        struct_instances: &st.struct_instances,
+                        struct_defs: ctx.struct_defs,
+                        fn_signatures: ctx.fn_signatures,
                         allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
@@ -243,14 +192,14 @@ pub(crate) fn analyze_init_stmt(
                 validate_expr(
                     end,
                     ExprEnv {
-                        known_scalars,
+                        known_scalars: &st.known_scalars,
                         locals,
-                        outputs: output_names,
+                        outputs: ctx.output_names,
                         array_vars: &array_vars,
                         param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
+                        struct_instances: &st.struct_instances,
+                        struct_defs: ctx.struct_defs,
+                        fn_signatures: ctx.fn_signatures,
                         allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
@@ -260,14 +209,14 @@ pub(crate) fn analyze_init_stmt(
                     validate_expr(
                         step_expr,
                         ExprEnv {
-                            known_scalars,
+                            known_scalars: &st.known_scalars,
                             locals,
-                            outputs: output_names,
+                            outputs: ctx.output_names,
                             array_vars: &array_vars,
                             param_structs: &HashMap::new(),
-                            struct_instances,
-                            struct_defs,
-                            fn_signatures,
+                            struct_instances: &st.struct_instances,
+                            struct_defs: ctx.struct_defs,
+                            fn_signatures: ctx.fn_signatures,
                             allow_array_ctor: false,
                             scope: ScopeKind::Init,
                         },
@@ -276,44 +225,44 @@ pub(crate) fn analyze_init_stmt(
                 }
                 let start_ty = infer_expr_type_for_semantics_with_local_data(
                     start,
-                    state_scalars,
+                    &st.state_scalars,
                     None,
-                    local_array_aliases,
+                    &st.local_array_aliases,
                     locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
+                    ctx.input_names,
+                    ctx.output_names,
+                    ctx.param_names,
+                    &st.struct_instances,
+                    ctx.struct_defs,
                     errors,
                 );
                 require_numeric_type(start_ty, "for loop start bound", errors);
                 let end_ty = infer_expr_type_for_semantics_with_local_data(
                     end,
-                    state_scalars,
+                    &st.state_scalars,
                     None,
-                    local_array_aliases,
+                    &st.local_array_aliases,
                     locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
+                    ctx.input_names,
+                    ctx.output_names,
+                    ctx.param_names,
+                    &st.struct_instances,
+                    ctx.struct_defs,
                     errors,
                 );
                 require_numeric_type(end_ty, "for loop end bound", errors);
                 if let Some(step_expr) = step {
                     let step_ty = infer_expr_type_for_semantics_with_local_data(
                         step_expr,
-                        state_scalars,
+                        &st.state_scalars,
                         None,
-                        local_array_aliases,
+                        &st.local_array_aliases,
                         locals,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_instances,
-                        struct_defs,
+                        ctx.input_names,
+                        ctx.output_names,
+                        ctx.param_names,
+                        &st.struct_instances,
+                        ctx.struct_defs,
                         errors,
                     );
                     require_numeric_type(step_ty, "for loop step", errors);
@@ -325,61 +274,36 @@ pub(crate) fn analyze_init_stmt(
                 }
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone());
-                let mut loop_known = known_scalars.clone();
-                let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_array_aliases.clone();
-                let mut loop_scalars = state_scalars.clone();
-                let mut loop_data = state_arrays.clone();
-                let mut loop_data_struct_roots = state_array_struct_roots.clone();
-                let mut loop_structs = struct_instances.clone();
+                let mut loop_st = st.clone();
                 for nested in body {
-                    analyze_init_stmt(
-                        nested,
-                        init_default_ty,
-                        &mut loop_known,
-                        &mut loop_aliases,
-                        &mut loop_data_aliases,
-                        &loop_locals,
-                        &mut loop_scalars,
-                        &mut loop_data,
-                        &mut loop_data_struct_roots,
-                        &mut loop_structs,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_defs,
-                        fn_signatures,
-                        options,
-                        loop_depth + 1,
-                        errors,
-                    );
+                    analyze_init_stmt(nested, ctx, &mut loop_st, &loop_locals, loop_depth + 1, errors);
                 }
-                state_scalars.extend(loop_scalars);
-                for (k, v) in loop_data {
-                    state_arrays.entry(k).or_insert(v);
+                st.state_scalars.extend(loop_st.state_scalars);
+                for (k, v) in loop_st.state_arrays {
+                    st.state_arrays.entry(k).or_insert(v);
                 }
-                for (k, v) in loop_data_struct_roots {
-                    state_array_struct_roots.entry(k).or_insert(v);
+                for (k, v) in loop_st.state_array_struct_roots {
+                    st.state_array_struct_roots.entry(k).or_insert(v);
                 }
-                for (k, v) in loop_structs {
-                    struct_instances.entry(k).or_insert(v);
+                for (k, v) in loop_st.struct_instances {
+                    st.struct_instances.entry(k).or_insert(v);
                 }
-                known_scalars.extend(state_scalars.keys().cloned());
-                *local_aliases = loop_aliases;
-                *local_array_aliases = loop_data_aliases;
+                st.known_scalars.extend(st.state_scalars.keys().cloned());
+                st.local_aliases = loop_st.local_aliases;
+                st.local_array_aliases = loop_st.local_array_aliases;
             }
             Stmt::While { cond, body, .. } => {
                 validate_expr(
                     cond,
                     ExprEnv {
-                        known_scalars,
+                        known_scalars: &st.known_scalars,
                         locals,
-                        outputs: output_names,
+                        outputs: ctx.output_names,
                         array_vars: &array_vars,
                         param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
+                        struct_instances: &st.struct_instances,
+                        struct_defs: ctx.struct_defs,
+                        fn_signatures: ctx.fn_signatures,
                         allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
@@ -387,61 +311,36 @@ pub(crate) fn analyze_init_stmt(
                 );
                 let cond_ty = infer_expr_type_for_semantics_with_local_data(
                     cond,
-                    state_scalars,
+                    &st.state_scalars,
                     None,
-                    local_array_aliases,
+                    &st.local_array_aliases,
                     locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
+                    ctx.input_names,
+                    ctx.output_names,
+                    ctx.param_names,
+                    &st.struct_instances,
+                    ctx.struct_defs,
                     errors,
                 );
                 require_bool_type(cond_ty, "while condition", errors);
 
-                let mut loop_known = known_scalars.clone();
-                let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_array_aliases.clone();
-                let mut loop_scalars = state_scalars.clone();
-                let mut loop_data = state_arrays.clone();
-                let mut loop_data_struct_roots = state_array_struct_roots.clone();
-                let mut loop_structs = struct_instances.clone();
+                let mut loop_st = st.clone();
                 for nested in body {
-                    analyze_init_stmt(
-                        nested,
-                        init_default_ty,
-                        &mut loop_known,
-                        &mut loop_aliases,
-                        &mut loop_data_aliases,
-                        locals,
-                        &mut loop_scalars,
-                        &mut loop_data,
-                        &mut loop_data_struct_roots,
-                        &mut loop_structs,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_defs,
-                        fn_signatures,
-                        options,
-                        loop_depth + 1,
-                        errors,
-                    );
+                    analyze_init_stmt(nested, ctx, &mut loop_st, locals, loop_depth + 1, errors);
                 }
-                state_scalars.extend(loop_scalars);
-                for (k, v) in loop_data {
-                    state_arrays.entry(k).or_insert(v);
+                st.state_scalars.extend(loop_st.state_scalars);
+                for (k, v) in loop_st.state_arrays {
+                    st.state_arrays.entry(k).or_insert(v);
                 }
-                for (k, v) in loop_data_struct_roots {
-                    state_array_struct_roots.entry(k).or_insert(v);
+                for (k, v) in loop_st.state_array_struct_roots {
+                    st.state_array_struct_roots.entry(k).or_insert(v);
                 }
-                for (k, v) in loop_structs {
-                    struct_instances.entry(k).or_insert(v);
+                for (k, v) in loop_st.struct_instances {
+                    st.struct_instances.entry(k).or_insert(v);
                 }
-                known_scalars.extend(state_scalars.keys().cloned());
-                *local_aliases = loop_aliases;
-                *local_array_aliases = loop_data_aliases;
+                st.known_scalars.extend(st.state_scalars.keys().cloned());
+                st.local_aliases = loop_st.local_aliases;
+                st.local_array_aliases = loop_st.local_array_aliases;
             }
             Stmt::Break { .. } => {
                 if loop_depth == 0 {
@@ -464,34 +363,21 @@ pub(crate) fn analyze_init_stmt(
         }
     });
 }
-#[allow(clippy::too_many_arguments)]
 fn analyze_assign_init(
     target: &AssignTarget,
     decl_ty: &Option<PrimitiveType>,
     generic_decl_ty: &Option<String>,
     is_typed_decl: bool,
     expr: &Expr,
-    init_default_ty: Option<PrimitiveType>,
-    known_scalars: &mut HashSet<String>,
-    local_aliases: &mut LocalAliasTypes,
-    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    ctx: &InitAnalysisCtx<'_>,
+    st: &mut InitAnalysisState,
     locals: &HashSet<String>,
-    state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_arrays: &mut HashMap<String, usize>,
-    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
-    struct_instances: &mut HashMap<String, String>,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    param_names: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let array_vars = merged_data_vars_for_sample(state_arrays, local_array_aliases);
+    let array_vars = merged_data_vars_for_sample(&st.state_arrays, &st.local_array_aliases);
     match target {
         AssignTarget::Index { base, index } => {
-            if state_array_struct_roots.contains_key(base) {
+            if st.state_array_struct_roots.contains_key(base) {
                 errors.push(Diagnostic::semantic(
                     format!(
                         "indexed assignment target '{base}[...]' is array[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
@@ -501,7 +387,7 @@ fn analyze_assign_init(
                 ));
                 return;
             }
-            if let Some(alias) = local_array_aliases.get(base) {
+            if let Some(alias) = st.local_array_aliases.get(base) {
                 if !alias.writable {
                     errors.push(Diagnostic::semantic(
                         format!("cannot assign to immutable array alias '{base}'"),
@@ -528,16 +414,16 @@ fn analyze_assign_init(
                     0,
                 ));
             }
-            if !state_arrays.contains_key(base)
-                && !local_array_aliases.contains_key(base)
-                && !has_declared_buffer_symbol(known_scalars, base)
+            if !st.state_arrays.contains_key(base)
+                && !st.local_array_aliases.contains_key(base)
+                && !has_declared_buffer_symbol(&st.known_scalars, base)
             {
                 errors.push(Diagnostic::semantic(
                     format!("indexed assignment target '{base}[...]' is not a array/buffer symbol"),
                     0,
                     0,
                 ));
-            } else if is_declared_multichannel_buffer_symbol(known_scalars, base) {
+            } else if is_declared_multichannel_buffer_symbol(&st.known_scalars, base) {
                 errors.push(Diagnostic::semantic(
                     format!(
                         "indexed assignment target '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
@@ -549,14 +435,14 @@ fn analyze_assign_init(
             validate_expr(
                 index,
                 ExprEnv {
-                    known_scalars,
+                    known_scalars: &st.known_scalars,
                     locals,
-                    outputs: output_names,
+                    outputs: ctx.output_names,
                     array_vars: &array_vars,
                     param_structs: &HashMap::new(),
-                    struct_instances,
-                    struct_defs,
-                    fn_signatures,
+                    struct_instances: &st.struct_instances,
+                    struct_defs: ctx.struct_defs,
+                    fn_signatures: ctx.fn_signatures,
                     allow_array_ctor: false,
                     scope: ScopeKind::Init,
                 },
@@ -565,14 +451,14 @@ fn analyze_assign_init(
             validate_expr(
                 expr,
                 ExprEnv {
-                    known_scalars,
+                    known_scalars: &st.known_scalars,
                     locals,
-                    outputs: output_names,
+                    outputs: ctx.output_names,
                     array_vars: &array_vars,
                     param_structs: &HashMap::new(),
-                    struct_instances,
-                    struct_defs,
-                    fn_signatures,
+                    struct_instances: &st.struct_instances,
+                    struct_defs: ctx.struct_defs,
+                    fn_signatures: ctx.fn_signatures,
                     allow_array_ctor: false,
                     scope: ScopeKind::Init,
                 },
@@ -580,39 +466,39 @@ fn analyze_assign_init(
             );
             let idx_ty = infer_expr_type_for_semantics_with_local_data(
                 index,
-                state_scalars,
+                &st.state_scalars,
                 None,
-                local_array_aliases,
+                &st.local_array_aliases,
                 locals,
-                input_names,
-                output_names,
-                param_names,
-                struct_instances,
-                struct_defs,
+                ctx.input_names,
+                ctx.output_names,
+                ctx.param_names,
+                &st.struct_instances,
+                ctx.struct_defs,
                 errors,
             );
             require_numeric_type(idx_ty, "array index expression", errors);
             let expr_ty = infer_expr_type_for_semantics_with_local_data(
                 expr,
-                state_scalars,
+                &st.state_scalars,
                 None,
-                local_array_aliases,
+                &st.local_array_aliases,
                 locals,
-                input_names,
-                output_names,
-                param_names,
-                struct_instances,
-                struct_defs,
+                ctx.input_names,
+                ctx.output_names,
+                ctx.param_names,
+                &st.struct_instances,
+                ctx.struct_defs,
                 errors,
             );
-            let expected_ty = local_array_aliases
+            let expected_ty = st.local_array_aliases
                 .get(base)
                 .map(|a| a.elem_ty)
                 .or_else(|| {
-                    get_declared_symbol_type(state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX)
+                    get_declared_symbol_type(&st.state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX)
                 })
                 .or_else(|| {
-                    get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
+                    get_declared_symbol_type(&st.state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
                 })
                 .unwrap_or(PrimitiveType::F32);
             require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
@@ -623,7 +509,7 @@ fn analyze_assign_init(
             } else if let Some(param) = generic_decl_ty {
                 errors.push(Diagnostic::semantic(
                     format!(
-                        "generic typed declaration for '{name}: {param}' is only supported in init blocks of specialized generic processors"
+                        "generic typed declaration for '{name}: {param}' is not supported; '{param}' is not a known type parameter"
                     ),
                     0,
                     0,
@@ -646,9 +532,9 @@ fn analyze_assign_init(
                     0,
                 ));
             }
-            if input_names.contains(name)
-                || output_names.contains(name)
-                || param_names.contains(name)
+            if ctx.input_names.contains(name)
+                || ctx.output_names.contains(name)
+                || ctx.param_names.contains(name)
             {
                 errors.push(Diagnostic::semantic(
                     format!("cannot assign to '{name}' in init block"),
@@ -657,18 +543,18 @@ fn analyze_assign_init(
                 ));
             }
 
-            if local_aliases.contains_key(name) {
+            if st.local_aliases.contains_key(name) {
                 validate_expr(
                     expr,
                     ExprEnv {
-                        known_scalars,
+                        known_scalars: &st.known_scalars,
                         locals,
-                        outputs: output_names,
+                        outputs: ctx.output_names,
                         array_vars: &array_vars,
                         param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
+                        struct_instances: &st.struct_instances,
+                        struct_defs: ctx.struct_defs,
+                        fn_signatures: ctx.fn_signatures,
                         allow_array_ctor: false,
                         scope: ScopeKind::Init,
                     },
@@ -676,27 +562,27 @@ fn analyze_assign_init(
                 );
                 let expr_ty = infer_expr_type_for_semantics_with_local_data(
                     expr,
-                    state_scalars,
+                    &st.state_scalars,
                     None,
-                    local_array_aliases,
+                    &st.local_array_aliases,
                     locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
+                    ctx.input_names,
+                    ctx.output_names,
+                    ctx.param_names,
+                    &st.struct_instances,
+                    ctx.struct_defs,
                     errors,
                 );
                 require_assignable_type(
                     expr_ty,
-                    *local_aliases.get(name).unwrap_or(&PrimitiveType::F32),
+                    *st.local_aliases.get(name).unwrap_or(&PrimitiveType::F32),
                     &format!("alias assignment to '{name}'"),
                     errors,
                 );
-                known_scalars.insert(name.clone());
+                st.known_scalars.insert(name.clone());
                 return;
             }
-            if local_array_aliases.contains_key(name) {
+            if st.local_array_aliases.contains_key(name) {
                 errors.push(Diagnostic::semantic(
                     format!("array alias '{name}' must be written using '{name}[index] = value'"),
                     0,
@@ -710,16 +596,16 @@ fn analyze_assign_init(
                     base,
                     field,
                     expr,
-                    known_scalars,
+                    &mut st.known_scalars,
                     locals,
-                    state_scalars,
-                    state_arrays,
-                    state_array_struct_roots,
-                    struct_instances,
-                    output_names,
-                    struct_defs,
-                    fn_signatures,
-                    options,
+                    &mut st.state_scalars,
+                    &mut st.state_arrays,
+                    &mut st.state_array_struct_roots,
+                    &st.struct_instances,
+                    ctx.output_names,
+                    ctx.struct_defs,
+                    ctx.fn_signatures,
+                    ctx.options,
                     errors,
                 );
                 return;
@@ -736,7 +622,7 @@ fn analyze_assign_init(
                     ));
                     return;
                 }
-                if state_arrays.contains_key(name) || state_array_struct_roots.contains_key(name) {
+                if st.state_arrays.contains_key(name) || st.state_array_struct_roots.contains_key(name) {
                     errors.push(Diagnostic::semantic(
                         format!("array symbol '{name}' can only be initialized once"),
                         0,
@@ -744,7 +630,7 @@ fn analyze_assign_init(
                     ));
                     return;
                 }
-                if state_scalars.contains_key(name) || struct_instances.contains_key(name) {
+                if st.state_scalars.contains_key(name) || st.struct_instances.contains_key(name) {
                     errors.push(Diagnostic::semantic(
                         format!("symbol '{name}' already used with a different state type"),
                         0,
@@ -765,14 +651,14 @@ fn analyze_assign_init(
                     validate_expr(
                         value,
                         ExprEnv {
-                            known_scalars,
+                            known_scalars: &st.known_scalars,
                             locals,
-                            outputs: output_names,
+                            outputs: ctx.output_names,
                             array_vars: &array_vars,
                             param_structs: &HashMap::new(),
-                            struct_instances,
-                            struct_defs,
-                            fn_signatures,
+                            struct_instances: &st.struct_instances,
+                            struct_defs: ctx.struct_defs,
+                            fn_signatures: ctx.fn_signatures,
                             allow_array_ctor: false,
                             scope: ScopeKind::Init,
                         },
@@ -782,30 +668,30 @@ fn analyze_assign_init(
 
                 let elem_ty = infer_expr_type_for_semantics_with_local_data(
                     &values[0],
-                    state_scalars,
+                    &st.state_scalars,
                     None,
-                    local_array_aliases,
+                    &st.local_array_aliases,
                     locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
+                    ctx.input_names,
+                    ctx.output_names,
+                    ctx.param_names,
+                    &st.struct_instances,
+                    ctx.struct_defs,
                     errors,
                 )
                 .unwrap_or(PrimitiveType::F32);
                 for (idx, value) in values.iter().enumerate() {
                     let value_ty = infer_expr_type_for_semantics_with_local_data(
                         value,
-                        state_scalars,
+                        &st.state_scalars,
                         None,
-                        local_array_aliases,
+                        &st.local_array_aliases,
                         locals,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_instances,
-                        struct_defs,
+                        ctx.input_names,
+                        ctx.output_names,
+                        ctx.param_names,
+                        &st.struct_instances,
+                        ctx.struct_defs,
                         errors,
                     );
                     require_assignable_type(
@@ -816,12 +702,12 @@ fn analyze_assign_init(
                     );
                 }
 
-                state_scalars.insert(
+                st.state_scalars.insert(
                     declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, name),
                     elem_ty,
                 );
-                state_arrays.insert(name.clone(), values.len());
-                known_scalars.insert(name.clone());
+                st.state_arrays.insert(name.clone(), values.len());
+                st.known_scalars.insert(name.clone());
                 return;
             }
 
@@ -832,7 +718,7 @@ fn analyze_assign_init(
                 ..
             } = expr
             {
-                if struct_defs.contains_key(struct_name) {
+                if ctx.struct_defs.contains_key(struct_name) {
                     if !type_args.is_empty() {
                         errors.push(Diagnostic::semantic(
                             format!(
@@ -855,16 +741,16 @@ fn analyze_assign_init(
                         name,
                         struct_name,
                         args,
-                        known_scalars,
+                        &mut st.known_scalars,
                         locals,
-                        state_scalars,
-                        state_arrays,
-                        state_array_struct_roots,
-                        struct_instances,
-                        output_names,
-                        struct_defs,
-                        fn_signatures,
-                        options,
+                        &mut st.state_scalars,
+                        &mut st.state_arrays,
+                        &mut st.state_array_struct_roots,
+                        &mut st.struct_instances,
+                        ctx.output_names,
+                        ctx.struct_defs,
+                        ctx.fn_signatures,
+                        ctx.options,
                         errors,
                     );
                     return;
@@ -892,11 +778,11 @@ fn analyze_assign_init(
                     ));
                 }
                 let Some(size_value) =
-                    eval_data_size_expr(&spec.size, options, &size_context, errors)
+                    eval_data_size_expr(&spec.size, ctx.options, &size_context, errors)
                 else {
                     return;
                 };
-                if state_arrays.contains_key(name) || state_array_struct_roots.contains_key(name) {
+                if st.state_arrays.contains_key(name) || st.state_array_struct_roots.contains_key(name) {
                     errors.push(Diagnostic::semantic(
                         format!("array symbol '{name}' can only be initialized once"),
                         0,
@@ -904,7 +790,7 @@ fn analyze_assign_init(
                     ));
                     return;
                 }
-                if state_scalars.contains_key(name) || struct_instances.contains_key(name) {
+                if st.state_scalars.contains_key(name) || st.struct_instances.contains_key(name) {
                     errors.push(Diagnostic::semantic(
                         format!("symbol '{name}' already used with a different state type"),
                         0,
@@ -914,11 +800,11 @@ fn analyze_assign_init(
                 }
                 match &spec.elem {
                     ArrayElemType::Primitive(elem_ty) => {
-                        state_scalars.insert(
+                        st.state_scalars.insert(
                             declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, name),
                             *elem_ty,
                         );
-                        state_arrays.insert(name.clone(), size_value);
+                        st.state_arrays.insert(name.clone(), size_value);
                         if let Some(values) = init {
                             if values.len() != size_value {
                                 errors.push(Diagnostic::semantic(
@@ -934,14 +820,14 @@ fn analyze_assign_init(
                                 validate_expr(
                                     value,
                                     ExprEnv {
-                                        known_scalars,
+                                        known_scalars: &st.known_scalars,
                                         locals,
-                                        outputs: output_names,
+                                        outputs: ctx.output_names,
                                         array_vars: &array_vars,
                                         param_structs: &HashMap::new(),
-                                        struct_instances,
-                                        struct_defs,
-                                        fn_signatures,
+                                        struct_instances: &st.struct_instances,
+                                        struct_defs: ctx.struct_defs,
+                                        fn_signatures: ctx.fn_signatures,
                                         allow_array_ctor: false,
                                         scope: ScopeKind::Init,
                                     },
@@ -949,15 +835,15 @@ fn analyze_assign_init(
                                 );
                                 let value_ty = infer_expr_type_for_semantics_with_local_data(
                                     value,
-                                    state_scalars,
+                                    &st.state_scalars,
                                     None,
-                                    local_array_aliases,
+                                    &st.local_array_aliases,
                                     locals,
-                                    input_names,
-                                    output_names,
-                                    param_names,
-                                    struct_instances,
-                                    struct_defs,
+                                    ctx.input_names,
+                                    ctx.output_names,
+                                    ctx.param_names,
+                                    &st.struct_instances,
+                                    ctx.struct_defs,
                                     errors,
                                 );
                                 require_assignable_type(
@@ -976,11 +862,11 @@ fn analyze_assign_init(
                             name,
                             struct_name,
                             size_value,
-                            struct_defs,
+                            ctx.struct_defs,
                             &context,
-                            state_scalars,
-                            state_arrays,
-                            state_array_struct_roots,
+                            &mut st.state_scalars,
+                            &mut st.state_arrays,
+                            &mut st.state_array_struct_roots,
                             errors,
                         ) {
                             return;
@@ -990,22 +876,22 @@ fn analyze_assign_init(
                 return;
             }
 
-            if !state_arrays.contains_key(name)
-                && !state_array_struct_roots.contains_key(name)
-                && !state_scalars.contains_key(name)
-                && !struct_instances.contains_key(name)
-                && !input_names.contains(name)
-                && !output_names.contains(name)
-                && !param_names.contains(name)
-                && !local_aliases.contains_key(name)
-                && !local_array_aliases.contains_key(name)
+            if !st.state_arrays.contains_key(name)
+                && !st.state_array_struct_roots.contains_key(name)
+                && !st.state_scalars.contains_key(name)
+                && !st.struct_instances.contains_key(name)
+                && !ctx.input_names.contains(name)
+                && !ctx.output_names.contains(name)
+                && !ctx.param_names.contains(name)
+                && !st.local_aliases.contains_key(name)
+                && !st.local_array_aliases.contains_key(name)
             {
                 if let Expr::Index { base, index } = expr {
-                    let mut is_scalar_data_base = state_arrays.contains_key(base);
-                    let mut array_struct_elem_struct = state_array_struct_roots
+                    let mut is_scalar_data_base = st.state_arrays.contains_key(base);
+                    let mut array_struct_elem_struct = st.state_array_struct_roots
                         .get(base)
                         .map(|r| r.struct_name.clone());
-                    if let Some(alias) = local_array_aliases.get(base) {
+                    if let Some(alias) = st.local_array_aliases.get(base) {
                         if let Some(elem_struct) = &alias.elem_struct {
                             array_struct_elem_struct = Some(elem_struct.clone());
                         } else {
@@ -1014,8 +900,8 @@ fn analyze_assign_init(
                     }
                     if !is_scalar_data_base && array_struct_elem_struct.is_none() {
                         if let Some((root, field)) = split_field_path(base, errors) {
-                            if let Some(struct_name) = struct_instances.get(root) {
-                                if let Some(fields) = struct_defs.get(struct_name) {
+                            if let Some(struct_name) = st.struct_instances.get(root) {
+                                if let Some(fields) = ctx.struct_defs.get(struct_name) {
                                     if let Some(field_decl) =
                                         fields.iter().find(|f| f.name == field)
                                     {
@@ -1037,14 +923,14 @@ fn analyze_assign_init(
                         validate_expr(
                             index,
                             ExprEnv {
-                                known_scalars,
+                                known_scalars: &st.known_scalars,
                                 locals,
-                                outputs: output_names,
+                                outputs: ctx.output_names,
                                 array_vars: &array_vars,
                                 param_structs: &HashMap::new(),
-                                struct_instances,
-                                struct_defs,
-                                fn_signatures,
+                                struct_instances: &st.struct_instances,
+                                struct_defs: ctx.struct_defs,
+                                fn_signatures: ctx.fn_signatures,
                                 allow_array_ctor: false,
                                 scope: ScopeKind::Init,
                             },
@@ -1052,15 +938,15 @@ fn analyze_assign_init(
                         );
                         let idx_ty = infer_expr_type_for_semantics_with_local_data(
                             index,
-                            state_scalars,
+                            &st.state_scalars,
                             None,
-                            local_array_aliases,
+                            &st.local_array_aliases,
                             locals,
-                            input_names,
-                            output_names,
-                            param_names,
-                            struct_instances,
-                            struct_defs,
+                            ctx.input_names,
+                            ctx.output_names,
+                            ctx.param_names,
+                            &st.struct_instances,
+                            ctx.struct_defs,
                             errors,
                         );
                         require_numeric_type(idx_ty, "array index expression", errors);
@@ -1076,10 +962,10 @@ fn analyze_assign_init(
                             if !add_struct_element_alias_bindings(
                                 name,
                                 &struct_name,
-                                struct_defs,
-                                known_scalars,
-                                local_aliases,
-                                local_array_aliases,
+                                ctx.struct_defs,
+                                &mut st.known_scalars,
+                                &mut st.local_aliases,
+                                &mut st.local_array_aliases,
                                 &format!("array alias '{name}' from '{base}[...]'"),
                                 errors,
                             ) {
@@ -1091,14 +977,14 @@ fn analyze_assign_init(
                 }
             }
 
-            if state_arrays.contains_key(name) || state_array_struct_roots.contains_key(name) {
+            if st.state_arrays.contains_key(name) || st.state_array_struct_roots.contains_key(name) {
                 errors.push(Diagnostic::semantic(
                     format!("cannot assign scalar expression to array symbol '{name}'"),
                     0,
                     0,
                 ));
             }
-            if struct_instances.contains_key(name) {
+            if st.struct_instances.contains_key(name) {
                 errors.push(Diagnostic::semantic(
                     format!("cannot assign scalar expression to struct instance '{name}'"),
                     0,
@@ -1108,14 +994,14 @@ fn analyze_assign_init(
             validate_expr(
                 expr,
                 ExprEnv {
-                    known_scalars,
+                    known_scalars: &st.known_scalars,
                     locals,
-                    outputs: output_names,
+                    outputs: ctx.output_names,
                     array_vars: &array_vars,
                     param_structs: &HashMap::new(),
-                    struct_instances,
-                    struct_defs,
-                    fn_signatures,
+                    struct_instances: &st.struct_instances,
+                    struct_defs: ctx.struct_defs,
+                    fn_signatures: ctx.fn_signatures,
                     allow_array_ctor: false,
                     scope: ScopeKind::Init,
                 },
@@ -1124,34 +1010,32 @@ fn analyze_assign_init(
 
             let expr_ty = infer_expr_type_for_semantics_with_local_data(
                 expr,
-                state_scalars,
+                &st.state_scalars,
                 None,
-                local_array_aliases,
+                &st.local_array_aliases,
                 locals,
-                input_names,
-                output_names,
-                param_names,
-                struct_instances,
-                struct_defs,
+                ctx.input_names,
+                ctx.output_names,
+                ctx.param_names,
+                &st.struct_instances,
+                ctx.struct_defs,
                 errors,
             );
-            let target_ty = match (declared_ty, state_scalars.get(name).copied()) {
-                (Some(declared), Some(existing)) if declared != existing => {
-                    errors.push(Diagnostic::semantic(format!("typed declaration for '{name}' conflicts with existing state type {:?}", existing), 0, 0));
-                    existing
+            let existing = st.state_scalars.get(name).copied();
+            if let (Some(declared), Some(existing)) = (declared_ty, existing) {
+                if declared != existing {
+                    errors.push(Diagnostic::semantic(format!("{} state symbol '{name}' has conflicting types {:?} and {:?}", ctx.context_label, existing, declared), 0, 0));
                 }
-                (Some(declared), _) => declared,
-                (None, Some(existing)) => existing,
-                (None, None) => init_default_ty.or(expr_ty).unwrap_or(PrimitiveType::F32),
-            };
+            }
+            let target_ty = resolve_scalar_assignment_type(existing, declared_ty, expr_ty, ctx.init_default_ty);
             require_assignable_type(
                 expr_ty,
                 target_ty,
                 &format!("init assignment to '{name}'"),
                 errors,
             );
-            state_scalars.insert(name.clone(), target_ty);
-            known_scalars.insert(name.clone());
+            st.state_scalars.insert(name.clone(), target_ty);
+            st.known_scalars.insert(name.clone());
         }
     }
 }

@@ -107,7 +107,7 @@ pub struct ProcOutputOversampleStateFields {
     pub down2: Option<String>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum TypedBufferChannels {
     Mono,
     Static(usize),

@@ -1,5 +1,49 @@
 use super::*;
 
+pub(crate) fn resolve_init_default_ty(
+    decl_ty: Option<&DeclType>,
+    context_label: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    match decl_ty {
+        Some(DeclType::Scalar(prim)) => Some(*prim),
+        Some(DeclType::Generic(param)) => {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "{context_label} init section default type '[{param}]' is invalid; only primitive scalar types are allowed"
+                ),
+                0,
+                0,
+            ));
+            None
+        }
+        Some(DeclType::Array { .. }) | Some(DeclType::ArrayGeneric { .. }) => {
+            errors.push(Diagnostic::semantic(
+                format!("{context_label} init section default type must be a scalar primitive type"),
+                0,
+                0,
+            ));
+            None
+        }
+        None => None,
+    }
+}
+
+/// Resolve the type for a scalar state assignment, given the priority:
+/// existing > declared > init_default_ty > inferred > F32.
+pub(crate) fn resolve_scalar_assignment_type(
+    existing_ty: Option<PrimitiveType>,
+    declared_ty: Option<PrimitiveType>,
+    inferred_ty: Option<PrimitiveType>,
+    init_default_ty: Option<PrimitiveType>,
+) -> PrimitiveType {
+    match (existing_ty, declared_ty) {
+        (Some(existing), _) => existing,
+        (None, Some(declared)) => declared,
+        (None, None) => init_default_ty.or(inferred_ty).unwrap_or(PrimitiveType::F32),
+    }
+}
+
 pub(crate) fn check_unique_set(
     names: &[String],
     kind: &str,

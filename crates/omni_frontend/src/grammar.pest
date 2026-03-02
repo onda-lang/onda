@@ -89,7 +89,10 @@ generic_param_list = { "[" ~ ident ~ ("," ~ ident)* ~ "]" }
 generic_type_arg_list = { "[" ~ generic_type_arg ~ ("," ~ generic_type_arg)* ~ "]" }
 generic_type_arg = { type_name | ident }
 fn_param_list = { fn_param_decl ~ ("," ~ fn_param_decl)* }
-fn_param_type = { buffer_type | type_name | namespace_ref | qualified_ident }
+fn_typed_array_param = { type_name ~ "[" ~ "]" }
+fn_untyped_array_param = { "[" ~ "]" }
+fn_bare_buffer = { "buffer" }
+fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_bare_buffer | type_name | namespace_ref | qualified_ident }
 fn_param_decl = { ident ~ (":" ~ fn_param_type)? ~ ("=" ~ expr)? }
 struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ NEWLINE* }
 struct_method_decl = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block }

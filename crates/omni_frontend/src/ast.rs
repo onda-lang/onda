@@ -180,7 +180,7 @@ pub struct ProcessorDef {
     pub block_post: Vec<Stmt>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum PrimitiveType {
     F32,
     F64,
@@ -202,6 +202,8 @@ pub enum FnParamType {
     Primitive(PrimitiveType),
     Struct(String),
     Buffer(BufferType),
+    Array(Option<PrimitiveType>),
+    BareBuffer,
 }
 
 #[derive(Debug, Clone, PartialEq)]

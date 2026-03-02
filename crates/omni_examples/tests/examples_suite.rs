@@ -8453,7 +8453,7 @@ sample {
 }
 
 #[test]
-fn analyze_supports_typed_init_generic_struct_default_ctor_decl_without_type_args() {
+fn analyze_rejects_typed_init_generic_struct_default_ctor_decl_without_type_args() {
     let src = r#"
 import std/data
 outs { out1 }
@@ -8466,11 +8466,14 @@ sample {
 "#;
     let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
     let result = analyze(parsed);
-    assert!(result.is_ok(), "semantic analysis should succeed");
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject generic struct ctor without type args when inference cannot resolve"
+    );
 }
 
 #[test]
-fn analyze_supports_typed_init_namespace_instantiated_struct_default_ctor_decl_without_type_args() {
+fn analyze_rejects_typed_init_namespace_instantiated_struct_default_ctor_decl_without_type_args() {
     let src = r#"
 import std/data
 outs { out1 }
@@ -8483,7 +8486,10 @@ sample {
 "#;
     let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
     let result = analyze(parsed);
-    assert!(result.is_ok(), "semantic analysis should succeed");
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject generic struct ctor without type args when inference cannot resolve"
+    );
 }
 
 // ---- Phase 0: Namespace Const Fixes — Integration tests ----
@@ -8661,3 +8667,349 @@ sample:
         assert_near(*sample, 200.0, 1e-6);
     }
 }
+
+#[test]
+fn generic_typed_decl_in_proc_sample_block() {
+    let parsed = parse_program(
+        r#"
+proc Gen[T] {
+  outs { out1: T }
+  init {
+    v: T = 1.0
+  }
+  sample {
+    tmp: T = v + 1.0
+    out1 = tmp
+  }
+}
+outs { out1 }
+init {
+  g = Gen[f64]()
+}
+sample {
+  out1 = f32(g.out1)
+}
+"#,
+    )
+    .expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_ok(),
+        "semantic analysis should accept generic typed declarations in proc sample blocks: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn generic_typed_decl_in_struct_method() {
+    let src = r#"
+namespace NS:
+  struct Pair[T]:
+    a: T
+    b: T
+    def sum(self):
+      tmp: T = self.a + self.b
+      return tmp
+outs 1
+init:
+  p = NS::Pair[f64](3.0, 4.0)
+sample:
+  out1 = f32(p.sum())
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 7.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_typed_decl_in_proc_event() {
+    let parsed = parse_program(
+        r#"
+proc Gen[T] {
+  outs { out1: T }
+  events {
+    reset() {
+      tmp: T = 42.0
+      v = tmp
+    }
+  }
+  init {
+    v: T = 0.0
+  }
+  sample {
+    out1 = v
+  }
+}
+outs { out1 }
+init {
+  g = Gen[f64]()
+}
+sample {
+  out1 = f32(g.out1)
+}
+"#,
+    )
+    .expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_ok(),
+        "semantic analysis should accept generic typed declarations in proc event blocks: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn bool_type_arg_rejected_for_struct() {
+    let parsed = parse_program(
+        r#"
+outs { out1 }
+struct Box[T] { v: T }
+init {
+  b = Box[bool](true)
+}
+sample {
+  out1 = 0.0
+}
+"#,
+    )
+    .expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject 'bool' as a generic type argument for structs"
+    );
+}
+
+#[test]
+fn bool_type_arg_rejected_for_proc() {
+    let parsed = parse_program(
+        r#"
+proc Gen[T] {
+  outs { out1: T }
+  sample { out1 = 0.0 }
+}
+outs { out1 }
+init {
+  g = Gen[bool]()
+}
+sample {
+  out1 = 0.0
+}
+"#,
+    )
+    .expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject 'bool' as a generic type argument for processors"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Generic def parameters — typed array, untyped array, bare buffer
+// ---------------------------------------------------------------------------
+
+// Typed array param — analysis-only test (init arrays to defs is a known
+// codegen limitation regardless of typed/untyped annotation).
+// The compile-and-run tests below use buffers which do work.
+
+const DEF_TYPED_BUFFER_PARAM: &str = r#"
+ins { in1 }
+outs { out1 }
+buffers { buf }
+def read_buf(b: buffer[f32], idx: i32) {
+  return b[idx]
+}
+sample {
+  buf[0] = in1
+  out1 = read_buf(buf, 0)
+}
+"#;
+
+#[test]
+fn def_typed_buffer_param_baseline() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(DEF_TYPED_BUFFER_PARAM, frames);
+
+    let input: Vec<f32> = (0..frames).map(|n| (n + 1) as f32 * 0.25).collect();
+    let mut output = vec![0.0_f32; frames];
+
+    let buf_idx = instance.buffer_index("buf").expect("buf");
+    let buf_data = vec![0.0_f32; frames];
+    bind_buffer(
+        &mut instance,
+        buf_idx,
+        buf_data.as_ptr() as *mut u8,
+        frames,
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind");
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for (idx, sample) in output.iter().enumerate() {
+        assert_near(*sample, input[idx], 1e-6);
+    }
+}
+
+// Parse-only tests for new syntax
+#[test]
+fn parse_typed_array_param_syntax() {
+    let src = r#"
+outs { out1 }
+def foo(arr: f32[]) {
+  return arr[0]
+}
+sample { out1 = 0.0 }
+"#;
+    let parsed = parse_program(src);
+    assert!(parsed.is_ok(), "should parse f32[] param type: {:?}", parsed.err());
+}
+
+#[test]
+fn parse_untyped_array_param_syntax() {
+    let src = r#"
+outs { out1 }
+def foo(arr: []) {
+  return arr[0]
+}
+sample { out1 = 0.0 }
+"#;
+    let parsed = parse_program(src);
+    assert!(parsed.is_ok(), "should parse [] param type: {:?}", parsed.err());
+}
+
+#[test]
+fn parse_bare_buffer_param_syntax() {
+    let src = r#"
+outs { out1 }
+def foo(b: buffer) {
+  return b[0]
+}
+sample { out1 = 0.0 }
+"#;
+    let parsed = parse_program(src);
+    assert!(parsed.is_ok(), "should parse bare buffer param type: {:?}", parsed.err());
+}
+
+#[test]
+fn parse_mixed_new_param_types() {
+    let src = r#"
+outs { out1 }
+def process(arr: f32[], b: buffer, x: f32) {
+  return x
+}
+sample { out1 = 0.0 }
+"#;
+    let parsed = parse_program(src);
+    assert!(parsed.is_ok(), "should parse mixed new param types: {:?}", parsed.err());
+}
+
+// Test that typed array param is correctly analyzed
+#[test]
+fn analyze_typed_array_param() {
+    let src = r#"
+outs { out1 }
+def sum_arr(arr: f32[], n: i32) {
+  result = 0.0
+  for i in 0..n {
+    result = result + arr[i]
+  }
+  return result
+}
+init {
+  data: f32[4] = [1.0, 2.0, 3.0, 4.0]
+}
+sample {
+  out1 = sum_arr(data, 4)
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(result.is_ok(), "analysis should succeed: {:?}", result.err());
+}
+
+// Test that bare buffer param is correctly analyzed
+#[test]
+fn analyze_bare_buffer_param() {
+    let src = r#"
+ins { in1 }
+outs { out1 }
+buffers { buf }
+def read_first(b: buffer) {
+  return b[0]
+}
+sample {
+  buf[0] = in1
+  out1 = read_first(buf)
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(result.is_ok(), "analysis should succeed: {:?}", result.err());
+}
+
+// Test generic struct def param (monomorphization)
+#[test]
+fn analyze_generic_struct_def_param() {
+    let src = r#"
+outs { out1 }
+struct Box[T] {
+  value: T = 0.0
+}
+def unbox(b: Box) {
+  return b.value
+}
+init {
+  mybox = Box[f32](value = 42.0)
+}
+sample {
+  out1 = unbox(mybox)
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_ok(),
+        "analysis should succeed for generic struct def param: {:?}",
+        result.err()
+    );
+}
+
+// Test generic struct def param compiles and runs
+const DEF_GENERIC_STRUCT_PARAM: &str = r#"
+outs { out1 }
+struct Box[T] {
+  value: T = 0.0
+}
+def unbox(b: Box) {
+  return b.value
+}
+init {
+  mybox = Box[f32](value = 42.0)
+}
+sample {
+  out1 = unbox(mybox)
+}
+"#;
+
+#[test]
+fn def_generic_struct_param_compiles_and_runs() {
+    let frames = 2;
+    let (mut instance, _, _) = compile_instance(DEF_GENERIC_STRUCT_PARAM, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 42.0, 1e-6);
+    }
+}
+

@@ -36,15 +36,6 @@ pub(crate) fn analyze_def_stmt(
                 ..
             } => match target {
                 AssignTarget::Var(name) => {
-                    if let Some(param) = generic_decl_ty {
-                        errors.push(Diagnostic::semantic(
-                        format!(
-                            "generic typed declaration for '{name}: {param}' is only supported in init blocks"
-                        ),
-                        0,
-                        0,
-                    ));
-                    }
                     let declared_ty = *decl_ty;
                     if let Expr::ArrayCtor { spec, init } = expr {
                         if *is_typed_decl {

@@ -249,10 +249,13 @@ fn infer_def_return_type(
                 // Preserve previous fallback for direct uses of the struct parameter symbol.
                 locals.insert(param.clone(), PrimitiveType::F32);
             }
-            Some(FnParamType::Buffer(_)) => {
+            Some(FnParamType::Buffer(_)) | Some(FnParamType::BareBuffer) => {
                 locals.insert(param.clone(), PrimitiveType::F32);
             }
-            None => {
+            Some(FnParamType::Array(Some(prim))) => {
+                locals.insert(param.clone(), *prim);
+            }
+            Some(FnParamType::Array(None)) | None => {
                 locals.insert(param.clone(), PrimitiveType::F32);
             }
         }

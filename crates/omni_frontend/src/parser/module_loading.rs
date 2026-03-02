@@ -2196,7 +2196,7 @@ fn rewrite_fn_param_type(
         FnParamType::Buffer(buffer_ty) => {
             rewrite_buffer_type(buffer_ty, current_ns, const_env, state, generated)?;
         }
-        FnParamType::Primitive(_) => {}
+        FnParamType::Primitive(_) | FnParamType::Array(_) | FnParamType::BareBuffer => {}
     }
     Ok(())
 }

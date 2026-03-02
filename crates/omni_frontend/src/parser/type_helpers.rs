@@ -200,6 +200,13 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
         )]);
     };
     let out = match inner.as_rule() {
+        Rule::fn_typed_array_param => {
+            let inner_type = inner.into_inner().next().unwrap();
+            let prim = parse_primitive_type(inner_type.as_str()).map_err(|d| vec![d])?;
+            FnParamType::Array(Some(prim))
+        }
+        Rule::fn_untyped_array_param => FnParamType::Array(None),
+        Rule::fn_bare_buffer => FnParamType::BareBuffer,
         Rule::buffer_type => FnParamType::Buffer(parse_buffer_type(inner)?),
         Rule::type_name => {
             FnParamType::Primitive(parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?)

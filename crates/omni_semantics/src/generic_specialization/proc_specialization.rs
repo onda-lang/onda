@@ -184,7 +184,7 @@ pub(crate) fn rewrite_generic_array_ctor_stmt_types(
     });
 }
 
-pub(crate) fn specialize_generic_init_typed_decls(
+pub(crate) fn specialize_generic_typed_decls(
     stmt: &mut Stmt,
     type_bindings: &HashMap<String, PrimitiveType>,
     proc_name: &str,
@@ -246,20 +246,20 @@ pub(crate) fn specialize_generic_init_typed_decls(
             ..
         } => {
             for nested in then_branch {
-                specialize_generic_init_typed_decls(nested, type_bindings, proc_name, errors);
+                specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
             }
             for nested in else_branch {
-                specialize_generic_init_typed_decls(nested, type_bindings, proc_name, errors);
+                specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
             }
         }
         Stmt::For { body, .. } => {
             for nested in body {
-                specialize_generic_init_typed_decls(nested, type_bindings, proc_name, errors);
+                specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
             }
         }
         Stmt::While { body, .. } => {
             for nested in body {
-                specialize_generic_init_typed_decls(nested, type_bindings, proc_name, errors);
+                specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
             }
         }
         Stmt::Expr { .. } | Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -525,7 +525,7 @@ pub(crate) fn specialize_generic_proc_template(
         }
     }
     for stmt in &mut init.body {
-        specialize_generic_init_typed_decls(stmt, &type_bindings, &template.name, errors);
+        specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
     }
     for stmt in &mut init.body {
         rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
@@ -537,6 +537,9 @@ pub(crate) fn specialize_generic_proc_template(
         );
     }
     for stmt in &mut block_pre {
+        specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
+    }
+    for stmt in &mut block_pre {
         rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
@@ -544,6 +547,9 @@ pub(crate) fn specialize_generic_proc_template(
             &format!("processor '{}' block-pre", template.name),
             errors,
         );
+    }
+    for stmt in &mut sample {
+        specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
     }
     for stmt in &mut sample {
         rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
@@ -555,6 +561,9 @@ pub(crate) fn specialize_generic_proc_template(
         );
     }
     for stmt in &mut block_post {
+        specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
+    }
+    for stmt in &mut block_post {
         rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
@@ -562,6 +571,11 @@ pub(crate) fn specialize_generic_proc_template(
             &format!("processor '{}' block-post", template.name),
             errors,
         );
+    }
+    for event in &mut events {
+        for stmt in &mut event.body {
+            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
+        }
     }
     for event in &mut events {
         for stmt in &mut event.body {

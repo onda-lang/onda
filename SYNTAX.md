@@ -252,7 +252,44 @@ def sat(x: f64):
   return f32(x)
 ```
 
-Resolution rules:
+### Parameter types
+
+In addition to primitive types and struct types, `def` parameters support:
+
+- **Typed array**: `arr: f32[]`, `arr: i64[]` — accepts an array of the given element type with any length. No monomorphization needed.
+- **Untyped array**: `arr: []` — accepts an array of any element type. Monomorphized at each call site based on the concrete element type.
+- **Typed buffer**: `buf: buffer[f32]`, `buf: buffer[f64[2]]` — accepts a buffer matching the given type/channels.
+- **Bare buffer**: `buf: buffer` — accepts any buffer. Monomorphized at each call site based on the concrete buffer type.
+- **Generic struct/proc**: `v: Voice` where `Voice[T]` is a generic struct or proc — monomorphized at each call site based on the concrete specialization passed.
+
+```omni
+# typed array param
+def sum(arr: f32[]):
+  total = 0.0
+  for i in 0..arr.len():
+    total = total + arr[i]
+  return total
+
+# untyped array param (monomorphized per call site)
+def first(arr: []):
+  return arr[0]
+
+# bare buffer param (monomorphized per call site)
+def read_first(buf: buffer):
+  return buf[0]
+
+# generic struct param (monomorphized per call site)
+struct Box[T]:
+  val: T = 0.0
+
+def unbox(b: Box):
+  return b.val
+```
+
+Method-style sugar works with generic params: `voice.process()` desugars to `process(voice)` and monomorphizes correctly.
+
+### Resolution rules
+
 - Exact typed match is preferred.
 - If no exact typed match exists, implicit widening candidates may be considered.
 - Untyped parameters are lower priority than typed parameters.
@@ -261,8 +298,9 @@ Resolution rules:
 - Return type is not part of overload selection.
 - Overloading currently applies to top-level `def` only.
 - Struct methods still cannot be overloaded; duplicate method names in the same struct are rejected.
+- For overloads involving generic params: explicit type > generic/duck-typed > untyped.
 
-`def` generics are intentionally unsupported.
+Explicit `def` type parameters (`def fn[T]`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
 
 ## 7 Structs
 
@@ -296,7 +334,7 @@ init:
 Rules:
 - Typed struct declarations are `init`-only.
 - Declaration-only form (`x: Type`) desugars to default constructor initialization.
-- For generic struct constructors with omitted type arguments, unresolved type parameters default to `f32`.
+- Unresolved generic type parameters always produce an error; the compiler never silently defaults to `f32`.
 
 ## 8 Processors (`proc`)
 
@@ -400,7 +438,30 @@ proc OnePole[T]:
 ```
 
 Type arguments can be explicit (`Name[f64](...)`) or inferred in many constructor cases.
-When omitted and not inferable for struct constructors in typed `init` declarations, generic parameters default to `f32`.
+
+Generic type parameters are restricted to numeric primitives: `f32`, `f64`, `i32`, `i64`. Using `bool` as a generic type argument is a semantic error.
+
+Generic typed local declarations (`x: T = expr`) are supported in all executable scopes of a generic owner:
+- `init` (top-level and proc)
+- `sample` / `block`
+- `def` bodies (struct methods)
+- `events`
+
+```omni
+proc Filter[T]:
+  ins[T] 1
+  outs[T] 1
+  init:
+    state: T = 0.0
+  sample:
+    tmp: T = in1 * 0.5
+    state = state + tmp
+    out1 = state
+```
+
+Unresolved generic type parameters always produce an error. The compiler never silently defaults to `f32`.
+
+Generic struct and proc types can be used as `def` parameter types for call-site monomorphization (see section 6).
 
 ## 10 Arrays
 

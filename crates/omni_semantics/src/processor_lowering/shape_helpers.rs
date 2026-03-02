@@ -291,119 +291,45 @@ pub(super) fn compute_proc_shape(
     let mut state = ProcStateFields::default();
     let proc_ns = namespace_of_symbol(&proc.name);
     let proc_locals = HashSet::<String>::new();
-    let init_default_ty = match proc.init.default_ty.as_ref() {
-        Some(DeclType::Scalar(prim)) => Some(*prim),
-        Some(DeclType::Generic(param)) => {
-            errors.push(Diagnostic::semantic(
-                format!(
-                    "processor '{}': init section default type '[{param}]' is unresolved; expected a concrete primitive type",
-                    proc.name
-                ),
-                0,
-                0,
-            ));
-            None
-        }
-        Some(DeclType::Array { .. }) | Some(DeclType::ArrayGeneric { .. }) => {
-            errors.push(Diagnostic::semantic(
-                format!(
-                    "processor '{}': init section default type must be a scalar primitive type",
-                    proc.name
-                ),
-                0,
-                0,
-            ));
-            None
-        }
-        None => None,
+    let init_default_ty = resolve_init_default_ty(
+        proc.init.default_ty.as_ref(),
+        &format!("processor '{}'", proc.name),
+        errors,
+    );
+    let proc_label = format!("processor '{}'", proc.name);
+    let init_ctx = ProcStateCtx {
+        context_label: &proc_label,
+        reserved: &reserved,
+        current_ns: &proc_ns,
+        proc_symbols,
+        state_type_hints: &state_type_hints,
+        input_names: &ins_names,
+        output_names: &out_names,
+        param_names: &typed_param_names,
+        typed_struct_defs: &typed_struct_defs,
+        proc_primary_output_types,
+        struct_symbols: &struct_symbols,
+        struct_defs,
+        ctor_symbols,
+        in_init_scope: true,
+        init_default_ty,
     };
     for stmt in &proc.init {
-        collect_proc_state_fields(
-            stmt,
-            &reserved,
-            &proc_locals,
-            &proc_ns,
-            proc_symbols,
-            &state_type_hints,
-            &ins_names,
-            &out_names,
-            &typed_param_names,
-            &typed_struct_defs,
-            proc_primary_output_types,
-            &struct_symbols,
-            struct_defs,
-            ctor_symbols,
-            true,
-            init_default_ty,
-            &mut state,
-            errors,
-        );
+        collect_proc_state_fields(stmt, &init_ctx, &proc_locals, &mut state, errors);
     }
+    let non_init_ctx = ProcStateCtx {
+        in_init_scope: false,
+        init_default_ty: None,
+        ..init_ctx
+    };
     for stmt in &proc.block_pre {
-        collect_proc_state_fields(
-            stmt,
-            &reserved,
-            &proc_locals,
-            &proc_ns,
-            proc_symbols,
-            &state_type_hints,
-            &ins_names,
-            &out_names,
-            &typed_param_names,
-            &typed_struct_defs,
-            proc_primary_output_types,
-            &struct_symbols,
-            struct_defs,
-            ctor_symbols,
-            false,
-            None,
-            &mut state,
-            errors,
-        );
+        collect_proc_state_fields(stmt, &non_init_ctx, &proc_locals, &mut state, errors);
     }
     for stmt in &proc.sample {
-        collect_proc_state_fields(
-            stmt,
-            &reserved,
-            &proc_locals,
-            &proc_ns,
-            proc_symbols,
-            &state_type_hints,
-            &ins_names,
-            &out_names,
-            &typed_param_names,
-            &typed_struct_defs,
-            proc_primary_output_types,
-            &struct_symbols,
-            struct_defs,
-            ctor_symbols,
-            false,
-            None,
-            &mut state,
-            errors,
-        );
+        collect_proc_state_fields(stmt, &non_init_ctx, &proc_locals, &mut state, errors);
     }
     for stmt in &proc.block_post {
-        collect_proc_state_fields(
-            stmt,
-            &reserved,
-            &proc_locals,
-            &proc_ns,
-            proc_symbols,
-            &state_type_hints,
-            &ins_names,
-            &out_names,
-            &typed_param_names,
-            &typed_struct_defs,
-            proc_primary_output_types,
-            &struct_symbols,
-            struct_defs,
-            ctor_symbols,
-            false,
-            None,
-            &mut state,
-            errors,
-        );
+        collect_proc_state_fields(stmt, &non_init_ctx, &proc_locals, &mut state, errors);
     }
 
     let mut nested_proc_array_slots = HashMap::<String, Vec<String>>::new();

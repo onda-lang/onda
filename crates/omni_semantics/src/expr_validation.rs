@@ -311,6 +311,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             );
                             continue;
                         }
+                        if matches!(param_ty, Some(FnParamType::Array(_)) | Some(FnParamType::BareBuffer)) {
+                            // Array and bare buffer params accept data-like args;
+                            // skip scalar validation.
+                            continue;
+                        }
                         if param_ty.is_none() {
                             if let Expr::Var(v) = arg {
                                 if has_declared_buffer_symbol(env.known_scalars, v) {

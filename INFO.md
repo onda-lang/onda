@@ -44,7 +44,7 @@
 - Runtime API usage: `omni_runtime/src/lib.rs`
 - C ABI surface: `omni_api/src/lib.rs`
 
-## Current implementation snapshot (2026-02)
+## Current implementation snapshot (2026-03)
 
 ### Language and parser
 - Top-level and proc blocks: `ins`, `outs`, `params`, `events`, `buffers`, `init`, `block`, `sample`, `def`, `struct`, `proc`/`processor`, `namespace`.
@@ -80,7 +80,8 @@
 - Specialization is monomorphized at use sites with explicit type args (`Name[f64](...)`) or inferred type args from constructor arguments/defaults where possible.
 - In typed `init` struct declarations, declaration-only form is supported (`x: Type`) and desugars to default constructor initialization.
 - Typed `init` struct declarations support namespace-instantiated owner paths (for example `x: std::data[SR, 1]::Data`).
-- For generic struct constructors in typed `init` declarations, omitted/unresolved type arguments default to `f32`.
+- Unresolved generic type parameters always produce an error; the compiler never silently defaults to `f32`.
+- Generic type arguments are restricted to numeric primitives (`f32`, `f64`, `i32`, `i64`); `bool` is rejected.
 - Array type syntax: `T[N]` across declarations (with current scope rules enforced in semantics).
 - Typed primitive array declarations with inline array-literal initializers are supported in `init` / `sample` / `def` (for example `a: f32[2] = [0.5, 0.8]`).
 - Untyped array literal declarations are supported for local/state array declarations in executable blocks (`init` top-level + proc init, `sample`/`block`, `def`, and event handlers), with first-element type inference (for example `a = [0.5, 0.8]`, `a = [f64(0.0), 1.0]`, `a = [0, 1]`, `a = [i64(0), 1]`).
@@ -124,10 +125,16 @@
   - defaults participate in overload matching.
   - ambiguous matches are semantic errors.
   - overloads currently apply to top-level `def` only; struct methods with the same name are still rejected as duplicates.
-  - generic type parameters are intentionally unsupported on `def`; polymorphism is through typed/untyped parameters and call-site monomorphization.
+  - explicit `def` type parameters (`def fn[T]`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
   - explicit struct-typed params are nominal.
   - typed and duck-typed buffer params are supported; duck-typed buffer calls specialize by caller shape/type.
   - untyped indexable params (`x[i]`, `x[ch][i]`) infer as a shared indexable/buffer ABI and can specialize from both primitive arrays and buffers at call sites.
+  - generic def parameter types are supported with call-site monomorphization:
+    - typed array params (`arr: f32[]`, `arr: i64[]`) — no monomorphization needed.
+    - untyped array params (`arr: []`) — monomorphized per call site by element type.
+    - bare buffer params (`buf: buffer`) — monomorphized per call site by buffer type.
+    - generic struct/proc params (`v: Voice` where `Voice[T]`) — monomorphized per call site by concrete specialization.
+  - overload priority: explicit type > generic/duck-typed > untyped.
 - Structs:
   - field defaults and methods supported.
   - generic structs are supported; methods can use owner generic parameters and are specialized with the struct.
@@ -139,7 +146,7 @@
 - generic processors are supported and specialized/monomorphized on constructor use.
 - `sample` is required; `init` is optional (top-level `init` is also optional).
 - `events` is optional inside `proc`.
-- generic typed local declarations (`x: T = ...`) are currently supported in `init` only.
+- generic typed local declarations (`x: T = ...`) are supported in all executable scopes of a generic owner (`init`, `sample`, `block`, `def` methods, `events`).
 - Processor call forms:
   - `p(...)` (scalar return for single-out procs; sugar for `p.out1` / endpoint name)
   - direct endpoint call read: `p(...).<endpointName>` (also supports `.outN` alias)
