@@ -2199,7 +2199,8 @@ init:
 sample:
   out1 = 0.0
 "#;
-    let program = parse_program(src).expect("implicit default namespace template args should parse");
+    let program =
+        parse_program(src).expect("implicit default namespace template args should parse");
     let init = program
         .blocks
         .iter()
@@ -3017,7 +3018,9 @@ init {
         })
         .expect("init block");
     let Stmt::Assign {
-        is_typed_decl, expr, ..
+        is_typed_decl,
+        expr,
+        ..
     } = &init[0]
     else {
         panic!("expected assignment in init");
@@ -3033,7 +3036,10 @@ init {
         panic!("expected constructor call");
     };
     assert!(name.ends_with("::Data"));
-    assert_eq!(type_args.as_slice(), &[CallTypeArg::Primitive(PrimitiveType::F32)]);
+    assert_eq!(
+        type_args.as_slice(),
+        &[CallTypeArg::Primitive(PrimitiveType::F32)]
+    );
 }
 
 #[test]
@@ -3054,7 +3060,9 @@ init {
         })
         .expect("init block");
     let Stmt::Assign {
-        is_typed_decl, expr, ..
+        is_typed_decl,
+        expr,
+        ..
     } = &init[0]
     else {
         panic!("expected assignment in init");
@@ -3064,14 +3072,19 @@ init {
         "typed struct decl should desugar to constructor-typed assignment"
     );
     let Expr::UserCall {
-        name, type_args, args
+        name,
+        type_args,
+        args,
     } = expr
     else {
         panic!("expected constructor call");
     };
     assert!(name.ends_with("::Data"));
     assert!(args.is_empty(), "default ctor should be argument-less");
-    assert_eq!(type_args.as_slice(), &[CallTypeArg::Primitive(PrimitiveType::F32)]);
+    assert_eq!(
+        type_args.as_slice(),
+        &[CallTypeArg::Primitive(PrimitiveType::F32)]
+    );
 }
 
 #[test]
@@ -3092,7 +3105,9 @@ init {
         })
         .expect("init block");
     let Stmt::Assign {
-        is_typed_decl, expr, ..
+        is_typed_decl,
+        expr,
+        ..
     } = &init[0]
     else {
         panic!("expected assignment in init");
@@ -3102,7 +3117,9 @@ init {
         "typed struct decl should desugar to constructor assignment"
     );
     let Expr::UserCall {
-        name, type_args, args
+        name,
+        type_args,
+        args,
     } = expr
     else {
         panic!("expected constructor call");
@@ -3130,7 +3147,9 @@ init {
         })
         .expect("init block");
     let Stmt::Assign {
-        is_typed_decl, expr, ..
+        is_typed_decl,
+        expr,
+        ..
     } = &init[0]
     else {
         panic!("expected assignment in init");
@@ -3140,7 +3159,9 @@ init {
         "typed struct decl should desugar to constructor assignment"
     );
     let Expr::UserCall {
-        name, type_args, args
+        name,
+        type_args,
+        args,
     } = expr
     else {
         panic!("expected constructor call");
@@ -3347,7 +3368,11 @@ sample:
             _ => None,
         })
         .collect();
-    assert_eq!(struct_names.len(), 1, "expected 1 struct, got {struct_names:?}");
+    assert_eq!(
+        struct_names.len(),
+        1,
+        "expected 1 struct, got {struct_names:?}"
+    );
     assert!(
         struct_names[0].contains("__nsinst"),
         "struct name should contain __nsinst: {}",
@@ -3371,8 +3396,14 @@ sample:
         },
         other => panic!("expected assignment, got {other:?}"),
     };
-    assert!(call_name.contains("__nsinst"), "call name should contain __nsinst: {call_name}");
-    assert!(call_name.ends_with("::S"), "call name should end with ::S: {call_name}");
+    assert!(
+        call_name.contains("__nsinst"),
+        "call name should contain __nsinst: {call_name}"
+    );
+    assert!(
+        call_name.ends_with("::S"),
+        "call name should end with ::S: {call_name}"
+    );
 }
 
 #[test]
@@ -3399,7 +3430,11 @@ sample:
             _ => None,
         })
         .collect();
-    assert_eq!(struct_names.len(), 1, "expected 1 struct, got {struct_names:?}");
+    assert_eq!(
+        struct_names.len(),
+        1,
+        "expected 1 struct, got {struct_names:?}"
+    );
     assert!(struct_names[0].contains("__nsinst"));
 
     let init = program
@@ -3418,7 +3453,10 @@ sample:
         other => panic!("expected assignment, got {other:?}"),
     };
     assert!(call_name.contains("__nsinst"));
-    assert!(call_name.ends_with("::S"), "call name should end with ::S: {call_name}");
+    assert!(
+        call_name.ends_with("::S"),
+        "call name should end with ::S: {call_name}"
+    );
 }
 
 #[test]
@@ -3434,7 +3472,8 @@ init:
 sample:
   out1 = 0.0
 "#;
-    let program = parse_program(src).expect("inner template using outer const as default should parse");
+    let program =
+        parse_program(src).expect("inner template using outer const as default should parse");
 
     let struct_names: Vec<_> = program
         .blocks
@@ -3444,7 +3483,11 @@ sample:
             _ => None,
         })
         .collect();
-    assert_eq!(struct_names.len(), 1, "expected 1 struct, got {struct_names:?}");
+    assert_eq!(
+        struct_names.len(),
+        1,
+        "expected 1 struct, got {struct_names:?}"
+    );
     assert!(struct_names[0].contains("__nsinst"));
 
     let init = program
@@ -3463,7 +3506,10 @@ sample:
         other => panic!("expected assignment, got {other:?}"),
     };
     assert!(call_name.contains("__nsinst"));
-    assert!(call_name.ends_with("::Buf"), "call name should end with ::Buf: {call_name}");
+    assert!(
+        call_name.ends_with("::Buf"),
+        "call name should end with ::Buf: {call_name}"
+    );
 }
 
 #[test]
@@ -3521,7 +3567,10 @@ sample:
         },
         other => panic!("expected assignment, got {other:?}"),
     };
-    assert_eq!(name_a, name_b, "both calls should reference the same deduped struct");
+    assert_eq!(
+        name_a, name_b,
+        "both calls should reference the same deduped struct"
+    );
 }
 
 // ---- Phase 0: Generics × Namespace Const Interaction — Parser-level tests ----
@@ -3584,8 +3633,14 @@ sample:
         },
         other => panic!("expected assignment, got {other:?}"),
     };
-    assert!(call_name.contains("__nsinst"), "call name should contain __nsinst: {call_name}");
-    assert!(call_name.ends_with("::Store"), "call name should end with ::Store: {call_name}");
+    assert!(
+        call_name.contains("__nsinst"),
+        "call name should contain __nsinst: {call_name}"
+    );
+    assert!(
+        call_name.ends_with("::Store"),
+        "call name should end with ::Store: {call_name}"
+    );
     assert_eq!(call_type_args.len(), 1);
     assert!(matches!(
         call_type_args[0],
@@ -3647,7 +3702,8 @@ proc Container[T]:
 sample:
   out1 = 0.0
 "#;
-    let program = parse_program(src).expect("ns-qualified generic type in call type args should parse");
+    let program =
+        parse_program(src).expect("ns-qualified generic type in call type args should parse");
 
     let container = program
         .blocks

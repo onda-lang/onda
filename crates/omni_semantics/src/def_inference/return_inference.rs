@@ -118,7 +118,10 @@ pub(crate) fn infer_expr_type_for_def_return_inference(
     )
 }
 
-fn is_builtin_receiver_for_return_inference(base: &str, locals: &HashMap<String, PrimitiveType>) -> bool {
+fn is_builtin_receiver_for_return_inference(
+    base: &str,
+    locals: &HashMap<String, PrimitiveType>,
+) -> bool {
     if locals.contains_key(base) {
         return true;
     }

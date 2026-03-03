@@ -263,7 +263,12 @@ pub(super) unsafe fn lower_def_data_element_ptr(
     }
 
     let final_index = if clamp_index {
-        if let Some(const_idx) = try_constant_index_i64(index_expr) {
+        if let Some(len_val) = ctx.array_len_values.get(base).copied() {
+            let raw_index = lower_def_expr(index_expr, ctx)?;
+            let index_i32 =
+                cast_def_value_to(ctx, raw_index, PrimitiveType::I32, b"def_data_idx_i32\0");
+            clamp_data_index_dynamic(ctx.builder, ctx.i32_ty, index_i32, len_val)
+        } else if let Some(const_idx) = try_constant_index_i64(index_expr) {
             LLVMConstInt(
                 ctx.i32_ty,
                 checked_constant_data_index_u64(

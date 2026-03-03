@@ -1,6 +1,15 @@
 use super::*;
 
-#[derive(Clone, Copy)]
+pub(crate) struct ProcResolutionCtx<'a> {
+    pub reserved: &'a HashSet<String>,
+    pub current_ns: &'a str,
+    pub proc_symbols: &'a HashSet<String>,
+    pub struct_symbols: &'a HashSet<String>,
+    pub frontend_struct_defs: &'a HashMap<String, omni_frontend::StructDef>,
+    pub ctor_symbols: &'a HashSet<String>,
+    pub in_init_scope: bool,
+}
+
 pub(crate) struct InitAnalysisCtx<'a> {
     pub context_label: &'a str,
     pub init_default_ty: Option<PrimitiveType>,
@@ -10,6 +19,7 @@ pub(crate) struct InitAnalysisCtx<'a> {
     pub struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     pub fn_signatures: &'a HashMap<String, FnSignature>,
     pub options: AnalysisOptions,
+    pub proc_resolution: Option<ProcResolutionCtx<'a>>,
 }
 
 #[derive(Clone)]
@@ -21,6 +31,52 @@ pub(crate) struct InitAnalysisState {
     pub state_arrays: HashMap<String, usize>,
     pub state_array_struct_roots: HashMap<String, ArrayStructRootInfo>,
     pub struct_instances: HashMap<String, String>,
+    // Proc-specific fields (empty/unused for top-level analysis)
+    pub state_array_specs: HashMap<String, omni_frontend::ArrayTypeSpec>,
+    pub struct_instance_type_args: HashMap<String, Vec<PrimitiveType>>,
+    pub nested_procs: HashMap<String, ProcNestedState>,
+    pub nested_proc_arrays: HashMap<String, ProcNestedArrayState>,
+}
+
+fn build_decl_check_state(st: &InitAnalysisState) -> ProcStateFields {
+    let mut psf = ProcStateFields::default();
+    psf.scalars = st.state_scalars.clone();
+    for name in st.state_arrays.keys() {
+        psf.data
+            .entry(name.clone())
+            .or_insert_with(|| omni_frontend::ArrayTypeSpec {
+                elem: ArrayElemType::Primitive(PrimitiveType::F32),
+                size: Box::new(Expr::Int(0)),
+            });
+    }
+    for (name, spec) in &st.state_array_specs {
+        psf.data.entry(name.clone()).or_insert_with(|| spec.clone());
+    }
+    for name in st.state_array_struct_roots.keys() {
+        psf.data
+            .entry(name.clone())
+            .or_insert_with(|| omni_frontend::ArrayTypeSpec {
+                elem: ArrayElemType::Primitive(PrimitiveType::F32),
+                size: Box::new(Expr::Int(0)),
+            });
+    }
+    psf.nested_procs = st.nested_procs.clone();
+    psf.nested_proc_arrays = st.nested_proc_arrays.clone();
+    for (k, v) in &st.struct_instances {
+        let type_args = st
+            .struct_instance_type_args
+            .get(k)
+            .cloned()
+            .unwrap_or_default();
+        psf.struct_instances.insert(
+            k.clone(),
+            ProcStructState {
+                struct_name: v.clone(),
+                type_args,
+            },
+        );
+    }
+    psf
 }
 
 pub(crate) fn analyze_init_stmt(
@@ -155,6 +211,30 @@ pub(crate) fn analyze_init_stmt(
                 for (k, v) in else_st.struct_instances {
                     st.struct_instances.entry(k).or_insert(v);
                 }
+                for (k, v) in then_st.state_array_specs {
+                    st.state_array_specs.entry(k).or_insert(v);
+                }
+                for (k, v) in else_st.state_array_specs {
+                    st.state_array_specs.entry(k).or_insert(v);
+                }
+                for (k, v) in then_st.struct_instance_type_args {
+                    st.struct_instance_type_args.entry(k).or_insert(v);
+                }
+                for (k, v) in else_st.struct_instance_type_args {
+                    st.struct_instance_type_args.entry(k).or_insert(v);
+                }
+                for (k, v) in then_st.nested_procs {
+                    st.nested_procs.entry(k).or_insert(v);
+                }
+                for (k, v) in else_st.nested_procs {
+                    st.nested_procs.entry(k).or_insert(v);
+                }
+                for (k, v) in then_st.nested_proc_arrays {
+                    st.nested_proc_arrays.entry(k).or_insert(v);
+                }
+                for (k, v) in else_st.nested_proc_arrays {
+                    st.nested_proc_arrays.entry(k).or_insert(v);
+                }
                 st.known_scalars.extend(st.state_scalars.keys().cloned());
                 st.local_aliases.extend(then_st.local_aliases);
                 st.local_aliases.extend(else_st.local_aliases);
@@ -276,7 +356,14 @@ pub(crate) fn analyze_init_stmt(
                 loop_locals.insert(var.clone());
                 let mut loop_st = st.clone();
                 for nested in body {
-                    analyze_init_stmt(nested, ctx, &mut loop_st, &loop_locals, loop_depth + 1, errors);
+                    analyze_init_stmt(
+                        nested,
+                        ctx,
+                        &mut loop_st,
+                        &loop_locals,
+                        loop_depth + 1,
+                        errors,
+                    );
                 }
                 st.state_scalars.extend(loop_st.state_scalars);
                 for (k, v) in loop_st.state_arrays {
@@ -287,6 +374,18 @@ pub(crate) fn analyze_init_stmt(
                 }
                 for (k, v) in loop_st.struct_instances {
                     st.struct_instances.entry(k).or_insert(v);
+                }
+                for (k, v) in loop_st.state_array_specs {
+                    st.state_array_specs.entry(k).or_insert(v);
+                }
+                for (k, v) in loop_st.struct_instance_type_args {
+                    st.struct_instance_type_args.entry(k).or_insert(v);
+                }
+                for (k, v) in loop_st.nested_procs {
+                    st.nested_procs.entry(k).or_insert(v);
+                }
+                for (k, v) in loop_st.nested_proc_arrays {
+                    st.nested_proc_arrays.entry(k).or_insert(v);
                 }
                 st.known_scalars.extend(st.state_scalars.keys().cloned());
                 st.local_aliases = loop_st.local_aliases;
@@ -337,6 +436,18 @@ pub(crate) fn analyze_init_stmt(
                 }
                 for (k, v) in loop_st.struct_instances {
                     st.struct_instances.entry(k).or_insert(v);
+                }
+                for (k, v) in loop_st.state_array_specs {
+                    st.state_array_specs.entry(k).or_insert(v);
+                }
+                for (k, v) in loop_st.struct_instance_type_args {
+                    st.struct_instance_type_args.entry(k).or_insert(v);
+                }
+                for (k, v) in loop_st.nested_procs {
+                    st.nested_procs.entry(k).or_insert(v);
+                }
+                for (k, v) in loop_st.nested_proc_arrays {
+                    st.nested_proc_arrays.entry(k).or_insert(v);
                 }
                 st.known_scalars.extend(st.state_scalars.keys().cloned());
                 st.local_aliases = loop_st.local_aliases;
@@ -413,6 +524,40 @@ fn analyze_assign_init(
                     0,
                     0,
                 ));
+            }
+            // Proc mode: declaration-order validation on index target
+            if let Some(pctx) = &ctx.proc_resolution {
+                let decl_state = build_decl_check_state(st);
+                let mut target_ok = true;
+                if let Some((root, _field)) = split_field_path(base, errors) {
+                    if !is_declared_proc_symbol(root, pctx.reserved, locals, &decl_state) {
+                        errors.push(Diagnostic::semantic(
+                            format!("symbol '{root}' used before declaration"),
+                            0,
+                            0,
+                        ));
+                        target_ok = false;
+                    }
+                } else if !is_declared_proc_symbol(base, pctx.reserved, locals, &decl_state) {
+                    errors.push(Diagnostic::semantic(
+                        format!("symbol '{base}' used before declaration"),
+                        0,
+                        0,
+                    ));
+                    target_ok = false;
+                }
+                target_ok &= validate_proc_expr_decl_order(
+                    index,
+                    pctx.reserved,
+                    locals,
+                    &decl_state,
+                    errors,
+                );
+                target_ok &=
+                    validate_proc_expr_decl_order(expr, pctx.reserved, locals, &decl_state, errors);
+                if !target_ok {
+                    return;
+                }
             }
             if !st.state_arrays.contains_key(base)
                 && !st.local_array_aliases.contains_key(base)
@@ -491,14 +636,23 @@ fn analyze_assign_init(
                 ctx.struct_defs,
                 errors,
             );
-            let expected_ty = st.local_array_aliases
+            let expected_ty = st
+                .local_array_aliases
                 .get(base)
                 .map(|a| a.elem_ty)
                 .or_else(|| {
-                    get_declared_symbol_type(&st.state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX)
+                    get_declared_symbol_type(
+                        &st.state_scalars,
+                        base,
+                        DECLARED_DATA_ELEM_TYPE_PREFIX,
+                    )
                 })
                 .or_else(|| {
-                    get_declared_symbol_type(&st.state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
+                    get_declared_symbol_type(
+                        &st.state_scalars,
+                        base,
+                        DECLARED_BUFFER_ELEM_TYPE_PREFIX,
+                    )
                 })
                 .unwrap_or(PrimitiveType::F32);
             require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
@@ -541,6 +695,40 @@ fn analyze_assign_init(
                     0,
                     0,
                 ));
+            }
+
+            // Proc mode: declaration-order validation
+            if let Some(pctx) = &ctx.proc_resolution {
+                let decl_state = build_decl_check_state(st);
+                let decl_ok =
+                    validate_proc_expr_decl_order(expr, pctx.reserved, locals, &decl_state, errors);
+                if !decl_ok {
+                    // Register placeholder so downstream doesn't see undeclared symbol
+                    if is_plain_symbol(name)
+                        && !pctx.reserved.contains(name)
+                        && !is_builtin_constant_name(name)
+                        && !st.nested_procs.contains_key(name)
+                        && !st.nested_proc_arrays.contains_key(name)
+                        && !st.state_array_specs.contains_key(name)
+                    {
+                        match expr {
+                            Expr::ArrayCtor { .. } | Expr::UserCall { .. } => {}
+                            _ => {
+                                st.state_scalars.entry(name.clone()).or_insert(
+                                    decl_ty
+                                        .or(ctx.init_default_ty)
+                                        .unwrap_or(PrimitiveType::F32),
+                                );
+                                st.state_scalars.insert(
+                                    declared_type_key(DECLARED_INVALID_PLACEHOLDER_PREFIX, name),
+                                    PrimitiveType::Bool,
+                                );
+                            }
+                        }
+                    }
+                    st.known_scalars.insert(name.clone());
+                    return;
+                }
             }
 
             if st.local_aliases.contains_key(name) {
@@ -622,7 +810,9 @@ fn analyze_assign_init(
                     ));
                     return;
                 }
-                if st.state_arrays.contains_key(name) || st.state_array_struct_roots.contains_key(name) {
+                if st.state_arrays.contains_key(name)
+                    || st.state_array_struct_roots.contains_key(name)
+                {
                     errors.push(Diagnostic::semantic(
                         format!("array symbol '{name}' can only be initialized once"),
                         0,
@@ -707,57 +897,390 @@ fn analyze_assign_init(
                     elem_ty,
                 );
                 st.state_arrays.insert(name.clone(), values.len());
+                if ctx.proc_resolution.is_some() {
+                    st.state_array_specs.entry(name.clone()).or_insert(
+                        omni_frontend::ArrayTypeSpec {
+                            elem: ArrayElemType::Primitive(elem_ty),
+                            size: Box::new(Expr::Int(values.len() as i64)),
+                        },
+                    );
+                }
                 st.known_scalars.insert(name.clone());
                 return;
             }
 
             if let Expr::UserCall {
-                name: struct_name,
+                name: ctor_name,
                 type_args,
                 args,
                 ..
             } = expr
             {
-                if ctx.struct_defs.contains_key(struct_name) {
-                    if !type_args.is_empty() {
+                // Proc mode: try proc constructor first
+                if let Some(pctx) = &ctx.proc_resolution {
+                    let resolved_proc_ctor = if ctor_name.contains("::") {
+                        if pctx.proc_symbols.contains(ctor_name) {
+                            Some(ctor_name.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        resolve_unqualified_symbol_name(
+                            ctor_name,
+                            pctx.current_ns,
+                            pctx.proc_symbols,
+                        )
+                    };
+                    if let Some(proc_ctor) = resolved_proc_ctor {
+                        if !type_args.is_empty() {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor '{}' is not generic and cannot take type arguments",
+                                    proc_ctor
+                                ),
+                                0,
+                                0,
+                            ));
+                        } else if let Some(existing) = st.nested_procs.get(name) {
+                            if existing.proc_name != proc_ctor {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "{} state symbol '{name}' has conflicting processor types '{}' and '{}'",
+                                        ctx.context_label, existing.proc_name, proc_ctor
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                            }
+                        } else {
+                            if !pctx.in_init_scope {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "{} state constructor '{name} = {proc_ctor}(...)' is only allowed in {} init block",
+                                        ctx.context_label, ctx.context_label
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                            }
+                            if st.state_scalars.contains_key(name)
+                                || st.state_arrays.contains_key(name)
+                                || st.state_array_specs.contains_key(name)
+                                || st.nested_proc_arrays.contains_key(name)
+                                || st.struct_instances.contains_key(name)
+                            {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "{} state symbol '{name}' is used as both processor instance and non-processor value",
+                                        ctx.context_label
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                            } else {
+                                st.nested_procs.insert(
+                                    name.clone(),
+                                    ProcNestedState {
+                                        proc_name: proc_ctor,
+                                    },
+                                );
+                            }
+                        }
+                        st.known_scalars.insert(name.clone());
+                        return;
+                    }
+
+                    // Proc mode: try struct constructor with full type_args resolution
+                    let resolved_struct_ctor = if ctor_name.contains("::") {
+                        if pctx.struct_symbols.contains(ctor_name) {
+                            Some(ctor_name.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        resolve_unqualified_symbol_name(
+                            ctor_name,
+                            pctx.current_ns,
+                            pctx.struct_symbols,
+                        )
+                    };
+                    if let Some(struct_ctor) = resolved_struct_ctor {
+                        if !pctx.in_init_scope {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "{} state constructor '{name} = {struct_ctor}(...)' is only allowed in {} init block",
+                                    ctx.context_label, ctx.context_label
+                                ),
+                                0,
+                                0,
+                            ));
+                        }
+                        let resolved_type_args = match pctx.frontend_struct_defs.get(&struct_ctor) {
+                            Some(struct_template) => {
+                                if type_args.is_empty() {
+                                    if !struct_template.type_params.is_empty() {
+                                        infer_generic_struct_ctor_type_args(
+                                            struct_template,
+                                            args,
+                                            &st.state_scalars,
+                                            &HashMap::new(),
+                                            errors,
+                                        )
+                                    } else {
+                                        Some(Vec::new())
+                                    }
+                                } else if struct_template.type_params.is_empty() {
+                                    errors.push(Diagnostic::semantic(
+                                            format!(
+                                                "struct '{}' is not generic and cannot take type arguments",
+                                                struct_ctor
+                                            ),
+                                            0,
+                                            0,
+                                        ));
+                                    None
+                                } else if type_args.len() != struct_template.type_params.len() {
+                                    errors.push(Diagnostic::semantic(
+                                        format!(
+                                            "struct '{}' expects {} type arguments, got {}",
+                                            struct_ctor,
+                                            struct_template.type_params.len(),
+                                            type_args.len()
+                                        ),
+                                        0,
+                                        0,
+                                    ));
+                                    None
+                                } else {
+                                    resolve_explicit_call_type_args(
+                                        type_args,
+                                        &format!("struct constructor '{}'", struct_ctor),
+                                        errors,
+                                    )
+                                }
+                            }
+                            None => {
+                                errors.push(Diagnostic::semantic(
+                                    format!("unknown struct '{}'", struct_ctor),
+                                    0,
+                                    0,
+                                ));
+                                None
+                            }
+                        };
+                        if let Some(resolved_type_args) = resolved_type_args {
+                            if st.state_scalars.contains_key(name)
+                                || st.state_arrays.contains_key(name)
+                                || st.state_array_specs.contains_key(name)
+                                || st.nested_procs.contains_key(name)
+                                || st.nested_proc_arrays.contains_key(name)
+                            {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "{} state symbol '{name}' is used as both struct instance and non-struct value",
+                                        ctx.context_label
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                            } else if let Some(existing_type_args) =
+                                st.struct_instance_type_args.get(name)
+                            {
+                                let existing_name =
+                                    st.struct_instances.get(name).cloned().unwrap_or_default();
+                                let current = ProcStructState {
+                                    struct_name: struct_ctor.clone(),
+                                    type_args: resolved_type_args.clone(),
+                                };
+                                let existing = ProcStructState {
+                                    struct_name: existing_name,
+                                    type_args: existing_type_args.clone(),
+                                };
+                                if existing != current {
+                                    errors.push(Diagnostic::semantic(
+                                        format!(
+                                            "{} state symbol '{name}' has conflicting struct constructor specializations",
+                                            ctx.context_label
+                                        ),
+                                        0,
+                                        0,
+                                    ));
+                                }
+                            } else {
+                                st.struct_instances.insert(name.clone(), struct_ctor);
+                                st.struct_instance_type_args
+                                    .insert(name.clone(), resolved_type_args);
+                            }
+                        }
+                        st.known_scalars.insert(name.clone());
+                        return;
+                    } else if pctx.ctor_symbols.contains(ctor_name) {
                         errors.push(Diagnostic::semantic(
                             format!(
-                                "struct '{}' is not generic and cannot take type arguments",
-                                struct_name
+                                "{} state constructor '{name} = {ctor_name}(...)' is only supported for known struct or processor constructors",
+                                ctx.context_label
+                            ),
+                            0,
+                            0,
+                        ));
+                        st.known_scalars.insert(name.clone());
+                        return;
+                    }
+                    // Fall through to scalar handling
+                } else {
+                    // Top-level mode: use existing typed struct_defs check
+                    if ctx.struct_defs.contains_key(ctor_name) {
+                        if !type_args.is_empty() {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "struct '{}' is not generic and cannot take type arguments",
+                                    ctor_name
+                                ),
+                                0,
+                                0,
+                            ));
+                        }
+                        if declared_ty.is_some() {
+                            errors.push(Diagnostic::semantic(
+                                "typed declaration cannot be used with struct constructor assignment",
+                                0,
+                                0,
+                            ));
+                            return;
+                        }
+                        analyze_struct_ctor_init_assign(
+                            name,
+                            ctor_name,
+                            args,
+                            &mut st.known_scalars,
+                            locals,
+                            &mut st.state_scalars,
+                            &mut st.state_arrays,
+                            &mut st.state_array_struct_roots,
+                            &mut st.struct_instances,
+                            ctx.output_names,
+                            ctx.struct_defs,
+                            ctx.fn_signatures,
+                            ctx.options,
+                            errors,
+                        );
+                        return;
+                    }
+                }
+            }
+
+            if let Expr::ArrayCtor { spec, init } = expr {
+                // Proc mode: check if this is a proc array constructor
+                if let Some(pctx) = &ctx.proc_resolution {
+                    if st.state_scalars.contains_key(name) || st.struct_instances.contains_key(name)
+                    {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "{} state symbol '{name}' is used as both array and non-array value",
+                                ctx.context_label
                             ),
                             0,
                             0,
                         ));
                     }
-                    if declared_ty.is_some() {
+                    if st.nested_procs.contains_key(name) {
                         errors.push(Diagnostic::semantic(
-                            "typed declaration cannot be used with struct constructor assignment",
+                            format!(
+                                "{} state symbol '{name}' is used as both array and processor instance",
+                                ctx.context_label
+                            ),
                             0,
                             0,
                         ));
+                    }
+                    let resolved_proc_ctor = match &spec.elem {
+                        ArrayElemType::Struct(elem_name) => {
+                            if elem_name.contains("::") {
+                                if pctx.proc_symbols.contains(elem_name) {
+                                    Some(elem_name.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                resolve_unqualified_symbol_name(
+                                    elem_name,
+                                    pctx.current_ns,
+                                    pctx.proc_symbols,
+                                )
+                            }
+                        }
+                        ArrayElemType::Primitive(_) => None,
+                    };
+                    if let Some(proc_ctor) = resolved_proc_ctor {
+                        if !pctx.in_init_scope {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "{} state constructor '{name}: {proc_ctor}[N]' is only allowed in {} init block",
+                                    ctx.context_label, ctx.context_label
+                                ),
+                                0,
+                                0,
+                            ));
+                        }
+                        if st.state_scalars.contains_key(name)
+                            || st.state_arrays.contains_key(name)
+                            || st.state_array_specs.contains_key(name)
+                            || st.nested_procs.contains_key(name)
+                            || st.struct_instances.contains_key(name)
+                        {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "{} state symbol '{name}' is used as both processor array and non-processor value",
+                                    ctx.context_label
+                                ),
+                                0,
+                                0,
+                            ));
+                        } else if let Some(existing) = st.nested_proc_arrays.get(name) {
+                            if existing.proc_name != proc_ctor || existing.size_expr != *spec.size {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "{} state symbol '{name}' has conflicting processor array declarations",
+                                        ctx.context_label
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                            }
+                        } else {
+                            st.nested_proc_arrays.insert(
+                                name.clone(),
+                                ProcNestedArrayState {
+                                    proc_name: proc_ctor,
+                                    size_expr: *spec.size.clone(),
+                                },
+                            );
+                        }
+                        st.known_scalars.insert(name.clone());
                         return;
                     }
-                    analyze_struct_ctor_init_assign(
-                        name,
-                        struct_name,
-                        args,
-                        &mut st.known_scalars,
-                        locals,
-                        &mut st.state_scalars,
-                        &mut st.state_arrays,
-                        &mut st.state_array_struct_roots,
-                        &mut st.struct_instances,
-                        ctx.output_names,
-                        ctx.struct_defs,
-                        ctx.fn_signatures,
-                        ctx.options,
-                        errors,
-                    );
+                    // Not a proc array - store as regular data array
+                    st.state_array_specs
+                        .entry(name.clone())
+                        .or_insert_with(|| spec.clone());
+                    // Also populate state_arrays so Index target validation recognizes this as an array
+                    let size_context = format!("array constructor size for symbol '{name}'");
+                    if let Some(size_val) =
+                        eval_data_size_expr(&spec.size, ctx.options, &size_context, errors)
+                    {
+                        st.state_arrays.entry(name.clone()).or_insert(size_val);
+                        if let ArrayElemType::Primitive(elem_ty) = spec.elem {
+                            st.state_scalars.insert(
+                                declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, name),
+                                elem_ty,
+                            );
+                        }
+                    }
+                    st.known_scalars.insert(name.clone());
                     return;
                 }
-            }
 
-            if let Expr::ArrayCtor { spec, init } = expr {
+                // Top-level mode: existing array constructor logic
                 if declared_ty.is_some() {
                     errors.push(Diagnostic::semantic(
                         "typed declaration cannot be used with array[...] constructor assignment",
@@ -782,7 +1305,9 @@ fn analyze_assign_init(
                 else {
                     return;
                 };
-                if st.state_arrays.contains_key(name) || st.state_array_struct_roots.contains_key(name) {
+                if st.state_arrays.contains_key(name)
+                    || st.state_array_struct_roots.contains_key(name)
+                {
                     errors.push(Diagnostic::semantic(
                         format!("array symbol '{name}' can only be initialized once"),
                         0,
@@ -888,7 +1413,8 @@ fn analyze_assign_init(
             {
                 if let Expr::Index { base, index } = expr {
                     let mut is_scalar_data_base = st.state_arrays.contains_key(base);
-                    let mut array_struct_elem_struct = st.state_array_struct_roots
+                    let mut array_struct_elem_struct = st
+                        .state_array_struct_roots
                         .get(base)
                         .map(|r| r.struct_name.clone());
                     if let Some(alias) = st.local_array_aliases.get(base) {
@@ -977,7 +1503,8 @@ fn analyze_assign_init(
                 }
             }
 
-            if st.state_arrays.contains_key(name) || st.state_array_struct_roots.contains_key(name) {
+            if st.state_arrays.contains_key(name) || st.state_array_struct_roots.contains_key(name)
+            {
                 errors.push(Diagnostic::semantic(
                     format!("cannot assign scalar expression to array symbol '{name}'"),
                     0,
@@ -1024,10 +1551,18 @@ fn analyze_assign_init(
             let existing = st.state_scalars.get(name).copied();
             if let (Some(declared), Some(existing)) = (declared_ty, existing) {
                 if declared != existing {
-                    errors.push(Diagnostic::semantic(format!("{} state symbol '{name}' has conflicting types {:?} and {:?}", ctx.context_label, existing, declared), 0, 0));
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "{} state symbol '{name}' has conflicting types {:?} and {:?}",
+                            ctx.context_label, existing, declared
+                        ),
+                        0,
+                        0,
+                    ));
                 }
             }
-            let target_ty = resolve_scalar_assignment_type(existing, declared_ty, expr_ty, ctx.init_default_ty);
+            let target_ty =
+                resolve_scalar_assignment_type(existing, declared_ty, expr_ty, ctx.init_default_ty);
             require_assignable_type(
                 expr_ty,
                 target_ty,

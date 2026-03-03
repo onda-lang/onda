@@ -19,7 +19,9 @@ pub(crate) fn resolve_init_default_ty(
         }
         Some(DeclType::Array { .. }) | Some(DeclType::ArrayGeneric { .. }) => {
             errors.push(Diagnostic::semantic(
-                format!("{context_label} init section default type must be a scalar primitive type"),
+                format!(
+                    "{context_label} init section default type must be a scalar primitive type"
+                ),
                 0,
                 0,
             ));
@@ -40,7 +42,9 @@ pub(crate) fn resolve_scalar_assignment_type(
     match (existing_ty, declared_ty) {
         (Some(existing), _) => existing,
         (None, Some(declared)) => declared,
-        (None, None) => init_default_ty.or(inferred_ty).unwrap_or(PrimitiveType::F32),
+        (None, None) => init_default_ty
+            .or(inferred_ty)
+            .unwrap_or(PrimitiveType::F32),
     }
 }
 
@@ -199,7 +203,17 @@ pub(crate) fn parse_numbered_port_index(name: &str, prefix: &str) -> Option<usiz
     Some(idx)
 }
 
-pub(crate) fn register_block_assigned_scalars_as_state<'a>(
+/// Controls which assignments are promoted to state scalars.
+pub(crate) enum StateRegistrationScope<'a> {
+    /// Block scope: register all assigned scalars (type inferred from expression).
+    Block {
+        struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+    },
+    /// Sample scope: register only explicitly typed declarations.
+    Sample,
+}
+
+pub(crate) fn register_scope_state<'a>(
     stmts: impl Iterator<Item = &'a Stmt>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
     state_arrays: &HashMap<String, usize>,
@@ -208,11 +222,10 @@ pub(crate) fn register_block_assigned_scalars_as_state<'a>(
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
     param_names: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    fn_signatures: &HashMap<String, FnSignature>,
+    scope: &StateRegistrationScope<'_>,
 ) {
     for stmt in stmts {
-        register_block_stmt_assigned_scalars_as_state(
+        register_scope_stmt_state(
             stmt,
             state_scalars,
             state_arrays,
@@ -221,37 +234,12 @@ pub(crate) fn register_block_assigned_scalars_as_state<'a>(
             input_names,
             output_names,
             param_names,
-            struct_defs,
-            fn_signatures,
+            scope,
         );
     }
 }
 
-pub(crate) fn register_sample_typed_scalar_decls_as_state<'a>(
-    stmts: impl Iterator<Item = &'a Stmt>,
-    state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_arrays: &HashMap<String, usize>,
-    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
-    struct_instances: &HashMap<String, String>,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    param_names: &HashSet<String>,
-) {
-    for stmt in stmts {
-        register_sample_stmt_typed_scalar_decls_as_state(
-            stmt,
-            state_scalars,
-            state_arrays,
-            state_array_struct_roots,
-            struct_instances,
-            input_names,
-            output_names,
-            param_names,
-        );
-    }
-}
-
-pub(crate) fn register_sample_stmt_typed_scalar_decls_as_state(
+fn register_scope_stmt_state(
     stmt: &Stmt,
     state_scalars: &mut HashMap<String, PrimitiveType>,
     state_arrays: &HashMap<String, usize>,
@@ -260,6 +248,7 @@ pub(crate) fn register_sample_stmt_typed_scalar_decls_as_state(
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
     param_names: &HashSet<String>,
+    scope: &StateRegistrationScope<'_>,
 ) {
     match stmt {
         Stmt::Assign {
@@ -270,7 +259,8 @@ pub(crate) fn register_sample_stmt_typed_scalar_decls_as_state(
             expr,
             ..
         } => {
-            if !*is_typed_decl {
+            // Sample scope: only register explicitly typed declarations
+            if matches!(scope, StateRegistrationScope::Sample) && !*is_typed_decl {
                 return;
             }
             if let AssignTarget::Var(name) = target {
@@ -286,124 +276,30 @@ pub(crate) fn register_sample_stmt_typed_scalar_decls_as_state(
                     && !matches!(expr, Expr::ArrayCtor { .. })
                     && generic_decl_ty.is_none()
                 {
-                    state_scalars.insert(name.clone(), decl_ty.unwrap_or(PrimitiveType::F32));
-                }
-            }
-        }
-        Stmt::If {
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            for nested in then_branch {
-                register_sample_stmt_typed_scalar_decls_as_state(
-                    nested,
-                    state_scalars,
-                    state_arrays,
-                    state_array_struct_roots,
-                    struct_instances,
-                    input_names,
-                    output_names,
-                    param_names,
-                );
-            }
-            for nested in else_branch {
-                register_sample_stmt_typed_scalar_decls_as_state(
-                    nested,
-                    state_scalars,
-                    state_arrays,
-                    state_array_struct_roots,
-                    struct_instances,
-                    input_names,
-                    output_names,
-                    param_names,
-                );
-            }
-        }
-        Stmt::For { body, .. } => {
-            for nested in body {
-                register_sample_stmt_typed_scalar_decls_as_state(
-                    nested,
-                    state_scalars,
-                    state_arrays,
-                    state_array_struct_roots,
-                    struct_instances,
-                    input_names,
-                    output_names,
-                    param_names,
-                );
-            }
-        }
-        Stmt::While { body, .. } => {
-            for nested in body {
-                register_sample_stmt_typed_scalar_decls_as_state(
-                    nested,
-                    state_scalars,
-                    state_arrays,
-                    state_array_struct_roots,
-                    struct_instances,
-                    input_names,
-                    output_names,
-                    param_names,
-                );
-            }
-        }
-        Stmt::Expr { .. } | Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
-    }
-}
-
-pub(crate) fn register_block_stmt_assigned_scalars_as_state(
-    stmt: &Stmt,
-    state_scalars: &mut HashMap<String, PrimitiveType>,
-    state_arrays: &HashMap<String, usize>,
-    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
-    struct_instances: &HashMap<String, String>,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    param_names: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    fn_signatures: &HashMap<String, FnSignature>,
-) {
-    match stmt {
-        Stmt::Assign {
-            target,
-            decl_ty,
-            generic_decl_ty,
-            is_typed_decl: _,
-            expr,
-            ..
-        } => {
-            if let AssignTarget::Var(name) = target {
-                if split_simple_field_path(name).is_none()
-                    && !is_builtin_constant_name(name)
-                    && !input_names.contains(name)
-                    && !output_names.contains(name)
-                    && !param_names.contains(name)
-                    && !state_scalars.contains_key(name)
-                    && !state_arrays.contains_key(name)
-                    && !state_array_struct_roots.contains_key(name)
-                    && !struct_instances.contains_key(name)
-                    && !matches!(expr, Expr::ArrayCtor { .. })
-                    && generic_decl_ty.is_none()
-                {
-                    let inferred_ty = {
-                        let mut infer_errors = Vec::<Diagnostic>::new();
-                        let empty_locals = HashSet::<String>::new();
-                        infer_expr_type_for_semantics(
-                            expr,
-                            state_scalars,
-                            None,
-                            &empty_locals,
-                            input_names,
-                            output_names,
-                            param_names,
-                            struct_instances,
-                            struct_defs,
-                            &mut infer_errors,
-                        )
-                        .unwrap_or(PrimitiveType::F32)
+                    let resolved_ty = match scope {
+                        StateRegistrationScope::Block { struct_defs } => {
+                            let inferred_ty = {
+                                let mut infer_errors = Vec::<Diagnostic>::new();
+                                let empty_locals = HashSet::<String>::new();
+                                infer_expr_type_for_semantics(
+                                    expr,
+                                    state_scalars,
+                                    None,
+                                    &empty_locals,
+                                    input_names,
+                                    output_names,
+                                    param_names,
+                                    struct_instances,
+                                    struct_defs,
+                                    &mut infer_errors,
+                                )
+                                .unwrap_or(PrimitiveType::F32)
+                            };
+                            decl_ty.unwrap_or(inferred_ty)
+                        }
+                        StateRegistrationScope::Sample => decl_ty.unwrap_or(PrimitiveType::F32),
                     };
-                    state_scalars.insert(name.clone(), decl_ty.unwrap_or(inferred_ty));
+                    state_scalars.insert(name.clone(), resolved_ty);
                 }
             }
         }
@@ -413,7 +309,7 @@ pub(crate) fn register_block_stmt_assigned_scalars_as_state(
             ..
         } => {
             for nested in then_branch {
-                register_block_stmt_assigned_scalars_as_state(
+                register_scope_stmt_state(
                     nested,
                     state_scalars,
                     state_arrays,
@@ -422,12 +318,11 @@ pub(crate) fn register_block_stmt_assigned_scalars_as_state(
                     input_names,
                     output_names,
                     param_names,
-                    struct_defs,
-                    fn_signatures,
+                    scope,
                 );
             }
             for nested in else_branch {
-                register_block_stmt_assigned_scalars_as_state(
+                register_scope_stmt_state(
                     nested,
                     state_scalars,
                     state_arrays,
@@ -436,14 +331,13 @@ pub(crate) fn register_block_stmt_assigned_scalars_as_state(
                     input_names,
                     output_names,
                     param_names,
-                    struct_defs,
-                    fn_signatures,
+                    scope,
                 );
             }
         }
         Stmt::For { body, .. } => {
             for nested in body {
-                register_block_stmt_assigned_scalars_as_state(
+                register_scope_stmt_state(
                     nested,
                     state_scalars,
                     state_arrays,
@@ -452,14 +346,13 @@ pub(crate) fn register_block_stmt_assigned_scalars_as_state(
                     input_names,
                     output_names,
                     param_names,
-                    struct_defs,
-                    fn_signatures,
+                    scope,
                 );
             }
         }
         Stmt::While { body, .. } => {
             for nested in body {
-                register_block_stmt_assigned_scalars_as_state(
+                register_scope_stmt_state(
                     nested,
                     state_scalars,
                     state_arrays,
@@ -468,8 +361,7 @@ pub(crate) fn register_block_stmt_assigned_scalars_as_state(
                     input_names,
                     output_names,
                     param_names,
-                    struct_defs,
-                    fn_signatures,
+                    scope,
                 );
             }
         }

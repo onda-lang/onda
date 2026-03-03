@@ -159,7 +159,8 @@ pub(super) fn is_orc_builtin_data_len_receiver(
     base: &str,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> bool {
-    lookup_orc_data_symbol_len(ctx, base, local_array_aliases).is_some() || ctx.buffer_index.contains_key(base)
+    lookup_orc_data_symbol_len(ctx, base, local_array_aliases).is_some()
+        || ctx.buffer_index.contains_key(base)
 }
 
 pub(super) fn is_orc_builtin_buffer_chans_receiver(ctx: &LoweringCtx<'_>, base: &str) -> bool {
@@ -250,6 +251,12 @@ pub(super) unsafe fn lower_def_data_len_call(
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_builtin_instance_call_no_args(method_name, args, "def lowering")?;
+    if let Some(len_val) = ctx.array_len_values.get(base) {
+        return Ok(OrcValue {
+            value: *len_val,
+            ty: PrimitiveType::I32,
+        });
+    }
     if let Some(len) = lookup_def_data_symbol_len(ctx, base) {
         let len_const = checked_len_const_i32(len, "def lowering")?;
         return Ok(OrcValue {
@@ -1056,8 +1063,9 @@ pub(super) unsafe fn lower_array_call_args_in_orc(
     };
     if let Some(alias) = local_array_aliases.get(base) {
         return match alias {
-            LocalArrayAlias::Primitive { base_ptr, .. } => {
+            LocalArrayAlias::Primitive { base_ptr, len, .. } => {
                 out_args.push(*base_ptr);
+                out_args.push(LLVMConstInt(ctx.i32_ty, *len as u64, 0));
                 Ok(())
             }
             LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
@@ -1091,13 +1099,15 @@ pub(super) unsafe fn lower_array_call_args_in_orc(
             b"param_arr_ref_ptr_typed\0",
         );
         out_args.push(ptr);
+        out_args.push(LLVMConstInt(ctx.i32_ty, info.len as u64, 0));
         return Ok(());
     }
-    if let Some(_info) = ctx.output_arrays.get(base).copied() {
+    if let Some(info) = ctx.output_arrays.get(base).copied() {
         let ptr = *ctx.out_array_base_ptrs.get(base).ok_or_else(|| {
             Diagnostic::internal(format!("missing output array storage for '{base}'"))
         })?;
         out_args.push(ptr);
+        out_args.push(LLVMConstInt(ctx.i32_ty, info.len as u64, 0));
         return Ok(());
     }
     if let Some(ptr) = ctx.array_base_ptrs.get(base).copied() {
@@ -1106,7 +1116,9 @@ pub(super) unsafe fn lower_array_call_args_in_orc(
                 "array argument '{base}' is not primitive in ORC expression lowering"
             )));
         }
+        let len = ctx.array_len.get(base).copied().unwrap_or(1);
         out_args.push(ptr);
+        out_args.push(LLVMConstInt(ctx.i32_ty, len as u64, 0));
         return Ok(());
     }
     Err(Diagnostic::internal(format!(
@@ -1133,9 +1145,40 @@ pub(super) unsafe fn lower_buffer_call_args_in_def(
     // Allow untyped indexable params to accept primitive arrays by adapting
     // them to a mono buffer tuple: (ptr, frames=len, channels=1).
     let (_elem_ty, len) = infer_array_arg_signature_in_def(ctx, arg_expr, callee_name)?;
-    lower_array_as_mono_buffer_tuple(out_args, ctx.i32_ty, base, len, "def lowering", |ptr_out| {
-        lower_array_call_args_in_def(ctx, ptr_out, arg_expr, callee_name)
-    })
+    // Check for runtime length value from array param
+    let runtime_len = ctx.array_len_values.get(base).copied();
+    lower_array_as_mono_buffer_tuple_ext(
+        out_args,
+        ctx.i32_ty,
+        base,
+        len,
+        runtime_len,
+        "def lowering",
+        |ptr_out| {
+            // Only push the pointer, not the length (buffer tuple has its own format)
+            let Expr::Var(b) = arg_expr else {
+                unreachable!()
+            };
+            if let Some(alias) = ctx.local_array_aliases.get(b) {
+                return match alias {
+                LocalArrayAlias::Primitive { base_ptr, .. } => {
+                    ptr_out.push(*base_ptr);
+                    Ok(())
+                }
+                LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
+                    "function '{callee_name}' array argument '{b}' must have primitive elements in def lowering"
+                ))),
+            };
+            }
+            let ptr = *ctx.array_ptrs.get(b).ok_or_else(|| {
+                Diagnostic::internal(format!(
+                    "unknown array symbol '{b}' in def array call argument lowering"
+                ))
+            })?;
+            ptr_out.push(ptr);
+            Ok(())
+        },
+    )
 }
 
 pub(super) fn infer_buffer_arg_signature_in_def(
@@ -1199,8 +1242,9 @@ pub(super) unsafe fn lower_array_call_args_in_def(
     };
     if let Some(alias) = ctx.local_array_aliases.get(base) {
         return match alias {
-            LocalArrayAlias::Primitive { base_ptr, .. } => {
+            LocalArrayAlias::Primitive { base_ptr, len, .. } => {
                 out_args.push(*base_ptr);
+                out_args.push(LLVMConstInt(ctx.i32_ty, *len as u64, 0));
                 Ok(())
             }
             LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
@@ -1219,6 +1263,12 @@ pub(super) unsafe fn lower_array_call_args_in_def(
         )));
     }
     out_args.push(ptr);
+    if let Some(len_val) = ctx.array_len_values.get(base) {
+        out_args.push(*len_val);
+    } else {
+        let len = ctx.array_len.get(base).copied().unwrap_or(1);
+        out_args.push(LLVMConstInt(ctx.i32_ty, len as u64, 0));
+    }
     Ok(())
 }
 
@@ -1239,6 +1289,26 @@ unsafe fn lower_array_as_mono_buffer_tuple(
     base: &str,
     len: usize,
     context: &str,
+    lower_array_ptr: impl FnMut(&mut Vec<LLVMValueRef>) -> Result<(), Diagnostic>,
+) -> Result<(), Diagnostic> {
+    lower_array_as_mono_buffer_tuple_ext(
+        out_args,
+        i32_ty,
+        base,
+        len,
+        None,
+        context,
+        lower_array_ptr,
+    )
+}
+
+unsafe fn lower_array_as_mono_buffer_tuple_ext(
+    out_args: &mut Vec<LLVMValueRef>,
+    i32_ty: LLVMTypeRef,
+    base: &str,
+    len: usize,
+    runtime_len: Option<LLVMValueRef>,
+    context: &str,
     mut lower_array_ptr: impl FnMut(&mut Vec<LLVMValueRef>) -> Result<(), Diagnostic>,
 ) -> Result<(), Diagnostic> {
     if len > i32::MAX as usize {
@@ -1256,11 +1326,7 @@ unsafe fn lower_array_as_mono_buffer_tuple(
             base, context
         ))
     })?;
-    push_buffer_tuple(
-        out_args,
-        ptr,
-        LLVMConstInt(i32_ty, len as u64, 0),
-        LLVMConstInt(i32_ty, 1, 0),
-    );
+    let frames = runtime_len.unwrap_or_else(|| LLVMConstInt(i32_ty, len as u64, 0));
+    push_buffer_tuple(out_args, ptr, frames, LLVMConstInt(i32_ty, 1, 0));
     Ok(())
 }

@@ -285,9 +285,7 @@ pub(crate) fn infer_def_param_kinds(
             }
             // Handle bare buffer params — treat like untyped buffer for inference
             // (monomorphization resolves the concrete type at call sites)
-            if let Some(FnParamType::BareBuffer) =
-                def.params.get(idx).and_then(|p| p.ty.as_ref())
-            {
+            if let Some(FnParamType::BareBuffer) = def.params.get(idx).and_then(|p| p.ty.as_ref()) {
                 // Fall through to buffer inference below by marking as buffer-like
                 // If inference found buffer observations, use them; otherwise default
                 let inferred_buffer = infer_untyped_buffer_from_observations(
@@ -308,8 +306,7 @@ pub(crate) fn infer_def_param_kinds(
                 continue;
             }
             // Handle untyped array params (`[]`) — infer element type from usage
-            if let Some(FnParamType::Array(None)) =
-                def.params.get(idx).and_then(|p| p.ty.as_ref())
+            if let Some(FnParamType::Array(None)) = def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
                 let inferred_array = infer_untyped_array_from_observations(
                     &def.name,

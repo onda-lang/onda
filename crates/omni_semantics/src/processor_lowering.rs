@@ -593,6 +593,8 @@ fn build_proc_lowering_env(
             &struct_defs_by_name,
             &ctor_symbols,
             &pre_desugar_def_return_types,
+            &pre_desugar_fn_signatures,
+            &proc_defs_by_name,
             errors,
         );
         if shape.outs.is_empty() {
@@ -958,9 +960,7 @@ fn infer_mono_arg_key(
             if let Expr::Var(var_name) = arg_expr {
                 if let Some(concrete) = env.struct_instances.get(var_name) {
                     // Check if this concrete name is a specialization of the template.
-                    if concrete.starts_with(struct_name)
-                        || concrete.contains(".__gen__")
-                    {
+                    if concrete.starts_with(struct_name) || concrete.contains(".__gen__") {
                         return Some(MonoParamKey::ResolvedStruct(concrete.clone()));
                     }
                     // Could be a different struct that happens to match.
@@ -1248,9 +1248,7 @@ fn monomorphize_calls_in_expr(
             let mut all_resolved = true;
             for (idx, _param_name) in sig.params.iter().enumerate() {
                 let param_ty = sig.param_types.get(idx).and_then(|t| t.as_ref());
-                let arg_expr = resolved_args
-                    .get(idx)
-                    .and_then(|a| a.as_ref());
+                let arg_expr = resolved_args.get(idx).and_then(|a| a.as_ref());
                 if let Some(arg_expr) = arg_expr {
                     if let Some(key) =
                         infer_mono_arg_key(arg_expr, param_ty, env, generic_templates)
@@ -1300,7 +1298,9 @@ fn monomorphize_calls_in_expr(
 
             *name = mono_name;
         }
-        Expr::Binary { lhs, rhs, .. } | Expr::Compare { lhs, rhs, .. } | Expr::Logical { lhs, rhs, .. } => {
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. } => {
             monomorphize_calls_in_expr(
                 lhs,
                 env,
@@ -2860,7 +2860,12 @@ pub fn analyze_with_options(
                 ));
             }
             if let Some(default) = &p.default {
-                if matches!(p.ty, Some(FnParamType::Buffer(_)) | Some(FnParamType::Array(_)) | Some(FnParamType::BareBuffer)) {
+                if matches!(
+                    p.ty,
+                    Some(FnParamType::Buffer(_))
+                        | Some(FnParamType::Array(_))
+                        | Some(FnParamType::BareBuffer)
+                ) {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "function parameter '{}.{}' is a buffer and cannot have a default value",
@@ -2887,9 +2892,7 @@ pub fn analyze_with_options(
             .iter()
             .filter_map(|(name, sig)| {
                 let needs_mono = sig.param_types.iter().any(|pt| match pt {
-                    Some(FnParamType::Struct(s))
-                        if generic_struct_template_names.contains(s) =>
-                    {
+                    Some(FnParamType::Struct(s)) if generic_struct_template_names.contains(s) => {
                         true
                     }
                     Some(FnParamType::Array(None)) | Some(FnParamType::BareBuffer) => true,
@@ -3115,11 +3118,8 @@ pub fn analyze_with_options(
     seed_top_level_array_aliases(&mut init_local_data_aliases, &out_arrays, false);
     seed_top_level_array_aliases(&mut init_local_data_aliases, &param_arrays, false);
 
-    let init_default_ty = resolve_init_default_ty(
-        init_default_decl_ty.as_ref(),
-        "top-level",
-        &mut errors,
-    );
+    let init_default_ty =
+        resolve_init_default_ty(init_default_decl_ty.as_ref(), "top-level", &mut errors);
 
     let init_ctx = InitAnalysisCtx {
         context_label: "top-level",
@@ -3130,6 +3130,7 @@ pub fn analyze_with_options(
         struct_defs: &struct_defs,
         fn_signatures: &fn_signatures,
         options,
+        proc_resolution: None,
     };
     let mut init_st = InitAnalysisState {
         known_scalars: init_known_scalars,
@@ -3139,6 +3140,10 @@ pub fn analyze_with_options(
         state_arrays,
         state_array_struct_roots,
         struct_instances,
+        state_array_specs: HashMap::new(),
+        struct_instance_type_args: HashMap::new(),
+        nested_procs: HashMap::new(),
+        nested_proc_arrays: HashMap::new(),
     };
     for stmt in &init {
         analyze_init_stmt(stmt, &init_ctx, &mut init_st, &init_locals, 0, &mut errors);
@@ -3151,10 +3156,11 @@ pub fn analyze_with_options(
         state_arrays,
         state_array_struct_roots,
         struct_instances,
+        ..
     } = init_st;
     let init_writable_roots = collect_runtime_state_roots(&state_scalars);
 
-    register_block_assigned_scalars_as_state(
+    register_scope_state(
         block_pre.iter().chain(block_post.iter()),
         &mut state_scalars,
         &state_arrays,
@@ -3163,8 +3169,9 @@ pub fn analyze_with_options(
         &input_names,
         &output_names,
         &param_names,
-        &struct_defs,
-        &fn_signatures,
+        &StateRegistrationScope::Block {
+            struct_defs: &struct_defs,
+        },
     );
 
     let mut block_known_scalars = param_names.clone();
@@ -3202,7 +3209,7 @@ pub fn analyze_with_options(
         );
     }
 
-    register_sample_typed_scalar_decls_as_state(
+    register_scope_state(
         sample.iter(),
         &mut state_scalars,
         &state_arrays,
@@ -3211,6 +3218,7 @@ pub fn analyze_with_options(
         &input_names,
         &output_names,
         &param_names,
+        &StateRegistrationScope::Sample,
     );
 
     let mut sample_known_scalars = param_names.clone();
@@ -3412,7 +3420,10 @@ pub fn analyze_with_options(
                 .and_then(|ty| ty.as_ref())
                 .and_then(|ty| match ty {
                     FnParamType::Primitive(prim) => Some(*prim),
-                    FnParamType::Struct(_) | FnParamType::Buffer(_) | FnParamType::Array(_) | FnParamType::BareBuffer => None,
+                    FnParamType::Struct(_)
+                    | FnParamType::Buffer(_)
+                    | FnParamType::Array(_)
+                    | FnParamType::BareBuffer => None,
                 });
             if let Some(param_ty) = explicit_prim {
                 def_state_scalars.insert(param.name.clone(), param_ty);

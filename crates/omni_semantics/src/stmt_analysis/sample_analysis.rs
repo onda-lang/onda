@@ -890,80 +890,87 @@ fn analyze_assign_sample(
             }
 
             if let Some((base, field)) = split_field_path(name, errors) {
-                let Some(struct_name) = struct_instances.get(base) else {
+                if let Some(struct_name) = struct_instances.get(base) {
+                    let Some(fields) = struct_defs.get(struct_name) else {
+                        return;
+                    };
+                    let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
+                        errors.push(Diagnostic::semantic(
+                            format!("struct '{}' has no field '{}'", struct_name, field),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    let flat = format!("{base}.{field}");
+                    match field_decl.ty {
+                        TypedFieldType::Scalar(prim) => {
+                            if !state_scalars.contains_key(&flat) {
+                                errors.push(Diagnostic::semantic(
+                                    format!("struct field '{flat}' must be initialized in init"),
+                                    0,
+                                    0,
+                                ));
+                            }
+                            validate_expr(
+                                expr,
+                                ExprEnv {
+                                    known_scalars,
+                                    locals,
+                                    outputs: output_names,
+                                    array_vars: &array_vars,
+                                    param_structs: &HashMap::new(),
+                                    struct_instances,
+                                    struct_defs,
+                                    fn_signatures,
+                                    allow_array_ctor: false,
+                                    scope: ScopeKind::Sample,
+                                },
+                                errors,
+                            );
+                            let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                                expr,
+                                state_scalars,
+                                None,
+                                local_array_aliases,
+                                locals,
+                                input_names,
+                                output_names,
+                                param_names,
+                                struct_instances,
+                                struct_defs,
+                                errors,
+                            );
+                            require_assignable_type(
+                                expr_ty,
+                                prim,
+                                &format!("sample assignment to '{flat}'"),
+                                errors,
+                            );
+                        }
+                        TypedFieldType::Array(_) => {
+                            errors.push(Diagnostic::semantic(
+                                format!("array field '{flat}' must be accessed with index syntax"),
+                                0,
+                                0,
+                            ));
+                        }
+                    }
+                    return;
+                }
+
+                let flat = format!("{base}.{field}");
+                if !state_scalars.contains_key(&flat)
+                    && !state_arrays.contains_key(&flat)
+                    && !state_array_struct_roots.contains_key(&flat)
+                {
                     errors.push(Diagnostic::semantic(
                         format!("unknown struct instance '{base}'"),
                         0,
                         0,
                     ));
                     return;
-                };
-                let Some(fields) = struct_defs.get(struct_name) else {
-                    return;
-                };
-                let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
-                    errors.push(Diagnostic::semantic(
-                        format!("struct '{}' has no field '{}'", struct_name, field),
-                        0,
-                        0,
-                    ));
-                    return;
-                };
-                let flat = format!("{base}.{field}");
-                match field_decl.ty {
-                    TypedFieldType::Scalar(prim) => {
-                        if !state_scalars.contains_key(&flat) {
-                            errors.push(Diagnostic::semantic(
-                                format!("struct field '{flat}' must be initialized in init"),
-                                0,
-                                0,
-                            ));
-                        }
-                        validate_expr(
-                            expr,
-                            ExprEnv {
-                                known_scalars,
-                                locals,
-                                outputs: output_names,
-                                array_vars: &array_vars,
-                                param_structs: &HashMap::new(),
-                                struct_instances,
-                                struct_defs,
-                                fn_signatures,
-                                allow_array_ctor: false,
-                                scope: ScopeKind::Sample,
-                            },
-                            errors,
-                        );
-                        let expr_ty = infer_expr_type_for_semantics_with_local_data(
-                            expr,
-                            state_scalars,
-                            None,
-                            local_array_aliases,
-                            locals,
-                            input_names,
-                            output_names,
-                            param_names,
-                            struct_instances,
-                            struct_defs,
-                            errors,
-                        );
-                        require_assignable_type(
-                            expr_ty,
-                            prim,
-                            &format!("sample assignment to '{flat}'"),
-                            errors,
-                        );
-                    }
-                    TypedFieldType::Array(_) => {
-                        errors.push(Diagnostic::semantic(
-                            format!("array field '{flat}' must be accessed with index syntax"),
-                            0,
-                            0,
-                        ));
-                    }
                 }
-                return;
             }
 
             if !output_names.contains(name)

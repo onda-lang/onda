@@ -39,7 +39,10 @@ fn is_data_receiver_symbol_for_builtin(
     false
 }
 
-fn is_buffer_receiver_symbol_for_builtin(base: &str, state_scalars: &HashMap<String, PrimitiveType>) -> bool {
+fn is_buffer_receiver_symbol_for_builtin(
+    base: &str,
+    state_scalars: &HashMap<String, PrimitiveType>,
+) -> bool {
     get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX).is_some()
 }
 

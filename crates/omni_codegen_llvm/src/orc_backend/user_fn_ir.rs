@@ -79,6 +79,7 @@ pub(super) unsafe fn build_user_functions_ir(
                 }
                 TypedFnParam::Array { elem_ty } => {
                     arg_tys.push(LLVMPointerType(llvm_ty_for_primitive(context, *elem_ty), 0));
+                    arg_tys.push(i32_ty);
                 }
                 TypedFnParam::Buffer { .. } => {
                     arg_tys.push(i8_ptr_ty);
@@ -333,6 +334,7 @@ pub(super) unsafe fn ensure_user_fn_specialization(
                 })?;
                 array_idx += 1;
                 arg_tys.push(LLVMPointerType(llvm_ty_for_primitive(context, elem_ty), 0));
+                arg_tys.push(i32_ty);
             }
             TypedFnParam::Buffer { .. } => {
                 arg_tys.push(i8_ptr_ty);
@@ -444,6 +446,7 @@ pub(super) unsafe fn lower_user_function_body(
             buffer_params: HashMap::new(),
             array_ptrs: HashMap::new(),
             array_len: HashMap::new(),
+            array_len_values: HashMap::new(),
             array_elem_ty: HashMap::new(),
             array_struct_roots: HashMap::new(),
             struct_fields,
@@ -647,17 +650,19 @@ pub(super) unsafe fn lower_user_function_body(
                             ))
                         })?;
                     array_param_idx += 1;
-                    let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
-                    if param_val.is_null() {
+                    let param_ptr = LLVMGetParam(fn_ref, llvm_param_idx);
+                    let param_len = LLVMGetParam(fn_ref, llvm_param_idx + 1);
+                    if param_ptr.is_null() || param_len.is_null() {
                         return Err(Diagnostic::internal(format!(
                             "missing LLVM array param {} for function '{}'",
                             llvm_param_idx, def.name
                         )));
                     }
-                    ctx.array_ptrs.insert(param_name.clone(), param_val);
+                    ctx.array_ptrs.insert(param_name.clone(), param_ptr);
                     ctx.array_len.insert(param_name.clone(), len);
+                    ctx.array_len_values.insert(param_name.clone(), param_len);
                     ctx.array_elem_ty.insert(param_name.clone(), elem_ty);
-                    llvm_param_idx += 1;
+                    llvm_param_idx += 2;
                 }
                 TypedFnParam::Buffer { .. } => {
                     let (elem_ty, channels) = buffer_param_types

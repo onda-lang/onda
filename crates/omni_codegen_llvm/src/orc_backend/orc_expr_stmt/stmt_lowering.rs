@@ -149,11 +149,61 @@ pub(super) unsafe fn lower_stmt(
                 }
 
                 if let Expr::ArrayCtor { spec, init } = expr {
-                    let expected_len = if let Some(len) = ctx.array_len.get(name) {
-                        *len
-                    } else if let Some(len) = ctx.array_struct_len.get(name) {
-                        *len
+                    if let Some(&expected_len) = ctx.array_len.get(name) {
+                        // State array: verify size and write init values if present.
+                        let actual_len =
+                            eval_const_data_size_expr(&spec.size, ctx.sample_rate, ctx.block_size)?;
+                        if expected_len != actual_len {
+                            return Err(Diagnostic::internal(format!(
+                                "array symbol '{name}' expected array[{expected_len}] but got array[{actual_len}]"
+                            )));
+                        }
+                        if let Some(values) = init {
+                            if values.len() != expected_len {
+                                return Err(Diagnostic::internal(format!(
+                                    "array symbol '{name}' initializer expects {expected_len} elements, got {}",
+                                    values.len()
+                                )));
+                            }
+                            for (idx, value_expr) in values.iter().enumerate() {
+                                let typed = lower_expr(
+                                    value_expr,
+                                    ctx,
+                                    locals,
+                                    local_aliases,
+                                    local_array_aliases,
+                                )?;
+                                let data = lower_data_element_ptr(
+                                    ctx,
+                                    name,
+                                    &Expr::Int(idx as i64),
+                                    locals,
+                                    local_aliases,
+                                    local_array_aliases,
+                                )?;
+                                let casted = cast_orc_value_to(
+                                    ctx,
+                                    typed,
+                                    data.elem_ty,
+                                    b"array_ctor_init_cast\0",
+                                );
+                                LLVMBuildStore(ctx.builder, casted, data.ptr);
+                            }
+                        }
+                        return Ok(());
+                    } else if ctx.array_struct_len.contains_key(name) {
+                        // Struct array: size check only, init values not supported here.
+                        let actual_len =
+                            eval_const_data_size_expr(&spec.size, ctx.sample_rate, ctx.block_size)?;
+                        let expected_len = ctx.array_struct_len[name];
+                        if expected_len != actual_len {
+                            return Err(Diagnostic::internal(format!(
+                                "array symbol '{name}' expected array[{expected_len}] but got array[{actual_len}]"
+                            )));
+                        }
+                        return Ok(());
                     } else if *is_typed_decl {
+                        // Local typed array declaration (not a state array).
                         if local_aliases.contains_key(name)
                             || local_array_aliases.contains_key(name)
                         {
@@ -233,15 +283,7 @@ pub(super) unsafe fn lower_stmt(
                         return Err(Diagnostic::internal(format!(
                             "array constructor assigned to non-array symbol '{name}'"
                         )));
-                    };
-                    let actual_len =
-                        eval_const_data_size_expr(&spec.size, ctx.sample_rate, ctx.block_size)?;
-                    if expected_len != actual_len {
-                        return Err(Diagnostic::internal(format!(
-                            "array symbol '{name}' expected array[{expected_len}] but got array[{actual_len}]"
-                        )));
                     }
-                    return Ok(());
                 }
 
                 if let Expr::ArrayLiteral(values) = expr {

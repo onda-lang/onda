@@ -156,6 +156,36 @@ pub(super) fn struct_defs_for_scalar_expr_inference(
         .collect::<HashMap<_, _>>()
 }
 
+fn internal_proc_index_call_signature(include_field_arg: bool) -> FnSignature {
+    const PROC_INDEX_CALL_MAX_POSITIONAL_ARGS: usize = 16;
+
+    let mut params = vec![
+        PROC_INDEX_BASE_ARG.to_owned(),
+        PROC_INDEX_EXPR_ARG.to_owned(),
+    ];
+    let mut defaults = vec![None, None];
+    let mut param_types = vec![None, None];
+
+    for idx in 0..PROC_INDEX_CALL_MAX_POSITIONAL_ARGS {
+        params.push(format!("__proc_index_arg{idx}"));
+        defaults.push(Some(Expr::Number(0.0)));
+        param_types.push(None);
+    }
+
+    if include_field_arg {
+        params.push(PROC_FIELD_SENTINEL_ARG.to_owned());
+        defaults.push(None);
+        param_types.push(None);
+    }
+
+    FnSignature {
+        params,
+        defaults,
+        param_types,
+        type_params: Vec::new(),
+    }
+}
+
 fn is_proc_output_alias_name(name: &str, out_count: usize) -> bool {
     let Some(rest) = name.strip_prefix("out") else {
         return false;
@@ -178,6 +208,8 @@ pub(super) fn compute_proc_shape(
     struct_defs: &HashMap<String, omni_frontend::StructDef>,
     ctor_symbols: &HashSet<String>,
     fn_return_types: &HashMap<String, PrimitiveType>,
+    fn_signatures_full: &HashMap<String, FnSignature>,
+    proc_defs_by_name: &HashMap<String, omni_frontend::ProcessorDef>,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcBaseShape {
     let struct_symbols = struct_defs.keys().cloned().collect::<HashSet<_>>();
@@ -202,7 +234,7 @@ pub(super) fn compute_proc_shape(
         field_array_slots.insert(name, slots);
     }
 
-    let typed_struct_defs = struct_defs_for_scalar_expr_inference(struct_defs);
+    let mut typed_struct_defs = struct_defs_for_scalar_expr_inference(struct_defs);
     let mut typed_param_names = HashSet::<String>::new();
     for spec in &param_specs {
         typed_param_names.insert(spec.name.clone());
@@ -288,48 +320,353 @@ pub(super) fn compute_proc_shape(
         );
     }
 
-    let mut state = ProcStateFields::default();
     let proc_ns = namespace_of_symbol(&proc.name);
     let proc_locals = HashSet::<String>::new();
-    let init_default_ty = resolve_init_default_ty(
-        proc.init.default_ty.as_ref(),
-        &format!("processor '{}'", proc.name),
-        errors,
-    );
     let proc_label = format!("processor '{}'", proc.name);
-    let init_ctx = ProcStateCtx {
+    let init_default_ty =
+        resolve_init_default_ty(proc.init.default_ty.as_ref(), &proc_label, errors);
+
+    let fn_signatures = fn_signatures_full.clone();
+
+    // Unified init scope: use analyze_init_stmt
+    let init_ctx = InitAnalysisCtx {
         context_label: &proc_label,
-        reserved: &reserved,
-        current_ns: &proc_ns,
-        proc_symbols,
-        state_type_hints: &state_type_hints,
+        init_default_ty,
         input_names: &ins_names,
         output_names: &out_names,
         param_names: &typed_param_names,
-        typed_struct_defs: &typed_struct_defs,
-        proc_primary_output_types,
-        struct_symbols: &struct_symbols,
-        struct_defs,
-        ctor_symbols,
-        in_init_scope: true,
-        init_default_ty,
+        struct_defs: &typed_struct_defs,
+        fn_signatures: &fn_signatures,
+        options,
+        proc_resolution: Some(ProcResolutionCtx {
+            reserved: &reserved,
+            current_ns: &proc_ns,
+            proc_symbols,
+            struct_symbols: &struct_symbols,
+            frontend_struct_defs: struct_defs,
+            ctor_symbols,
+            in_init_scope: true,
+        }),
     };
+    let mut init_st = InitAnalysisState {
+        known_scalars: HashSet::new(),
+        local_aliases: HashMap::new(),
+        local_array_aliases: HashMap::new(),
+        state_scalars: state_type_hints.clone(),
+        state_arrays: HashMap::new(),
+        state_array_struct_roots: HashMap::new(),
+        struct_instances: HashMap::new(),
+        state_array_specs: HashMap::new(),
+        struct_instance_type_args: HashMap::new(),
+        nested_procs: HashMap::new(),
+        nested_proc_arrays: HashMap::new(),
+    };
+    // Seed known_scalars with reserved names so they're visible for decl-order checks
+    init_st.known_scalars.extend(reserved.iter().cloned());
     for stmt in &proc.init {
-        collect_proc_state_fields(stmt, &init_ctx, &proc_locals, &mut state, errors);
+        analyze_init_stmt(stmt, &init_ctx, &mut init_st, &proc_locals, 0, errors);
     }
-    let non_init_ctx = ProcStateCtx {
-        in_init_scope: false,
-        init_default_ty: None,
-        ..init_ctx
-    };
-    for stmt in &proc.block_pre {
-        collect_proc_state_fields(stmt, &non_init_ctx, &proc_locals, &mut state, errors);
+    let mut state = convert_init_state_to_proc_fields(&init_st);
+
+    // Non-init scopes: unified analysis via register_scope_state + analyze_sample_stmt
+    let mut proc_state_scalars = init_st.state_scalars;
+    let mut proc_state_arrays = init_st.state_arrays;
+    let proc_state_array_struct_roots = init_st.state_array_struct_roots;
+    let proc_struct_instances = init_st.struct_instances;
+    let init_st_type_args = init_st.struct_instance_type_args;
+    let mut proc_struct_instances_typed = proc_struct_instances.clone();
+
+    // Add buffer prefix entries so has_declared_buffer_symbol / validate_buffer_param_call_arg work
+    for buffer in &buffer_specs {
+        proc_state_scalars
+            .entry(declared_type_key(
+                DECLARED_BUFFER_ELEM_TYPE_PREFIX,
+                &buffer.name,
+            ))
+            .or_insert(buffer.elem_ty);
+        proc_state_scalars
+            .entry(declared_type_key(
+                buffer_elem_decl_prefix(buffer.elem_ty),
+                &buffer.name,
+            ))
+            .or_insert(PrimitiveType::Bool);
+        let is_multi = match buffer.channels {
+            TypedBufferChannels::Mono => false,
+            TypedBufferChannels::Static(ch) => ch > 1,
+            TypedBufferChannels::Dynamic => true,
+        };
+        match buffer.channels {
+            TypedBufferChannels::Dynamic => {
+                proc_state_scalars
+                    .entry(declared_type_key(
+                        DECLARED_BUFFER_DYNAMIC_CHANNELS_PREFIX,
+                        &buffer.name,
+                    ))
+                    .or_insert(PrimitiveType::Bool);
+            }
+            TypedBufferChannels::Static(ch) if ch > 1 => {
+                proc_state_scalars
+                    .entry(declared_buffer_static_channels_key(&buffer.name, ch))
+                    .or_insert(PrimitiveType::Bool);
+            }
+            _ => {}
+        }
+        if is_multi {
+            proc_state_scalars
+                .entry(declared_type_key(
+                    DECLARED_BUFFER_MULTICHANNEL_PREFIX,
+                    &buffer.name,
+                ))
+                .or_insert(PrimitiveType::Bool);
+        }
     }
+
+    // Add flat struct field names to proc_state_scalars so block/sample validation resolves them
+    for (inst_name, struct_type_name) in &proc_struct_instances {
+        let type_args = init_st_type_args
+            .get(inst_name)
+            .cloned()
+            .unwrap_or_default();
+        let resolved = if type_args.is_empty() {
+            struct_defs.get(struct_type_name).cloned()
+        } else {
+            struct_defs
+                .get(struct_type_name)
+                .and_then(|tmpl| specialize_generic_struct_template(tmpl, &type_args, errors))
+        };
+        if let Some(resolved_def) = resolved {
+            if !type_args.is_empty() {
+                let resolved_struct_name = resolved_def.name.clone();
+                proc_struct_instances_typed.insert(inst_name.clone(), resolved_struct_name.clone());
+                if !typed_struct_defs.contains_key(&resolved_struct_name) {
+                    typed_struct_defs.insert(
+                        resolved_struct_name.clone(),
+                        coerce_struct_fields(
+                            &resolved_struct_name,
+                            &resolved_def.fields,
+                            options,
+                            errors,
+                        ),
+                    );
+                }
+            }
+            for field in &resolved_def.fields {
+                let flat = format!("{inst_name}.{}", field.name);
+                match &field.ty {
+                    FieldType::Scalar(prim) => {
+                        proc_state_scalars.entry(flat).or_insert(*prim);
+                    }
+                    FieldType::Array(spec) => {
+                        if let ArrayElemType::Primitive(elem_ty) = spec.elem {
+                            proc_state_scalars
+                                .entry(declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, &flat))
+                                .or_insert(elem_ty);
+                        }
+                        if let Some(size_val) = eval_data_size_expr(
+                            &spec.size,
+                            options,
+                            &format!("struct field '{flat}' array size"),
+                            errors,
+                        ) {
+                            proc_state_arrays.entry(flat).or_insert(size_val);
+                        }
+                    }
+                    FieldType::Generic(_) => {}
+                }
+            }
+        }
+    }
+
+    // Add input/output/param array port sizes so indexed access is recognized
+    for (array_name, slots) in &in_array_slots {
+        proc_state_arrays
+            .entry(array_name.clone())
+            .or_insert(slots.len());
+    }
+    for (array_name, slots) in &field_array_slots {
+        proc_state_arrays
+            .entry(array_name.clone())
+            .or_insert(slots.len());
+    }
+
+    // Build enriched fn_signatures with nested proc instance stubs
+    let mut proc_fn_signatures = fn_signatures;
+    proc_fn_signatures
+        .entry(PROC_INDEX_CALL_SENTINEL.to_owned())
+        .or_insert_with(|| internal_proc_index_call_signature(false));
+    proc_fn_signatures
+        .entry(format!(
+            "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
+        ))
+        .or_insert_with(|| internal_proc_index_call_signature(true));
+    for (instance_name, nested) in &state.nested_procs {
+        if let Some(target_proc) = proc_defs_by_name.get(&nested.proc_name) {
+            let target_io = infer_numbered_io_from_sample(&target_proc.sample);
+            let target_ins =
+                normalize_numbered_port_decls(&target_proc.ins, "in", target_io.max_in);
+            let params: Vec<String> = target_ins.iter().map(|p| p.name.clone()).collect();
+            proc_fn_signatures.insert(
+                instance_name.clone(),
+                FnSignature {
+                    params,
+                    defaults: Vec::new(),
+                    param_types: Vec::new(),
+                    type_params: Vec::new(),
+                },
+            );
+
+            if let Some(primary_ty) = proc_primary_output_types.get(&nested.proc_name).copied() {
+                proc_state_scalars
+                    .entry(declared_type_key(
+                        DECLARED_FUNCTION_RETURN_TYPE_PREFIX,
+                        instance_name,
+                    ))
+                    .or_insert(primary_ty);
+            }
+
+            let (nested_param_specs, _) =
+                expand_proc_param_specs(&target_proc.name, &target_proc.params, options, errors);
+            for spec in nested_param_specs {
+                let flat_base = format!("{instance_name}.{}", spec.name);
+                if spec.slots.len() <= 1 {
+                    if let Some(slot) = spec.slots.first() {
+                        proc_state_scalars.entry(flat_base).or_insert(slot.ty);
+                    }
+                } else {
+                    if let Some(first_slot) = spec.slots.first() {
+                        proc_state_scalars
+                            .entry(declared_type_key(
+                                DECLARED_DATA_ELEM_TYPE_PREFIX,
+                                &flat_base,
+                            ))
+                            .or_insert(first_slot.ty);
+                    }
+                    proc_state_arrays
+                        .entry(flat_base)
+                        .or_insert(spec.slots.len());
+                }
+            }
+        }
+    }
+
+    // Snapshot init-scope scalar keys to detect new additions later
+    let init_scalar_keys: HashSet<String> = proc_state_scalars.keys().cloned().collect();
+
+    // Register block scope state
+    register_scope_state(
+        proc.block_pre.iter().chain(proc.block_post.iter()),
+        &mut proc_state_scalars,
+        &proc_state_arrays,
+        &proc_state_array_struct_roots,
+        &proc_struct_instances_typed,
+        &ins_names,
+        &out_names,
+        &typed_param_names,
+        &StateRegistrationScope::Block {
+            struct_defs: &typed_struct_defs,
+        },
+    );
+
+    // Analyze block statements
+    let mut block_known_scalars = reserved.clone();
+    block_known_scalars.extend(proc_state_scalars.keys().cloned());
+    for inst_name in proc_struct_instances_typed.keys() {
+        block_known_scalars.insert(inst_name.clone());
+    }
+    for name in state.nested_procs.keys() {
+        block_known_scalars.insert(name.clone());
+    }
+    for name in proc_state_arrays.keys() {
+        block_known_scalars.insert(name.clone());
+    }
+    let block_locals = HashSet::new();
+    let mut block_local_aliases = LocalAliasTypes::new();
+    let mut block_local_data_aliases = HashMap::new();
+    let empty_inputs = HashSet::new();
+    let empty_outputs = HashSet::new();
+    let block_forbidden = out_names.clone();
+
+    for stmt in proc.block_pre.iter().chain(proc.block_post.iter()) {
+        analyze_sample_stmt(
+            stmt,
+            &mut block_known_scalars,
+            &mut block_local_aliases,
+            &mut block_local_data_aliases,
+            &block_locals,
+            &proc_state_scalars,
+            &proc_state_arrays,
+            &proc_state_array_struct_roots,
+            &proc_struct_instances_typed,
+            &empty_inputs,
+            &empty_outputs,
+            &block_forbidden,
+            &typed_param_names,
+            &typed_struct_defs,
+            &proc_fn_signatures,
+            options,
+            0,
+            errors,
+        );
+    }
+
+    // Register sample scope state
+    register_scope_state(
+        proc.sample.iter(),
+        &mut proc_state_scalars,
+        &proc_state_arrays,
+        &proc_state_array_struct_roots,
+        &proc_struct_instances_typed,
+        &ins_names,
+        &out_names,
+        &typed_param_names,
+        &StateRegistrationScope::Sample,
+    );
+
+    // Analyze sample statements
+    let mut sample_known_scalars = reserved.clone();
+    sample_known_scalars.extend(proc_state_scalars.keys().cloned());
+    for inst_name in proc_struct_instances_typed.keys() {
+        sample_known_scalars.insert(inst_name.clone());
+    }
+    for name in state.nested_procs.keys() {
+        sample_known_scalars.insert(name.clone());
+    }
+    for name in proc_state_arrays.keys() {
+        sample_known_scalars.insert(name.clone());
+    }
+    let sample_locals = HashSet::new();
+    let mut sample_local_aliases = LocalAliasTypes::new();
+    let mut sample_local_data_aliases = HashMap::new();
+    let sample_forbidden = HashSet::new();
+
     for stmt in &proc.sample {
-        collect_proc_state_fields(stmt, &non_init_ctx, &proc_locals, &mut state, errors);
+        analyze_sample_stmt(
+            stmt,
+            &mut sample_known_scalars,
+            &mut sample_local_aliases,
+            &mut sample_local_data_aliases,
+            &sample_locals,
+            &proc_state_scalars,
+            &proc_state_arrays,
+            &proc_state_array_struct_roots,
+            &proc_struct_instances_typed,
+            &ins_names,
+            &out_names,
+            &sample_forbidden,
+            &typed_param_names,
+            &typed_struct_defs,
+            &proc_fn_signatures,
+            options,
+            0,
+            errors,
+        );
     }
-    for stmt in &proc.block_post {
-        collect_proc_state_fields(stmt, &non_init_ctx, &proc_locals, &mut state, errors);
+
+    // Merge new scalars from block/sample into state
+    for (name, ty) in &proc_state_scalars {
+        if !init_scalar_keys.contains(name) && !state.scalars.contains_key(name) {
+            state.scalars.insert(name.clone(), *ty);
+        }
     }
 
     let mut nested_proc_array_slots = HashMap::<String, Vec<String>>::new();

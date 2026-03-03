@@ -223,6 +223,15 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_internal_buffer_2d_call(name, args, env, errors);
                 return;
             }
+            if name == PROC_INDEX_CALL_SENTINEL
+                || name
+                    .strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
+                    .map(|s| s == PROC_INDEX_CALL_SENTINEL)
+                    .unwrap_or(false)
+            {
+                validate_internal_proc_index_call(name, args, env, errors);
+                return;
+            }
             if !env.fn_signatures.contains_key(name) {
                 if let Some(base) = parse_array_len_instance_base(name) {
                     if is_builtin_len_receiver(base, env) {
@@ -256,7 +265,12 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             expr: Expr::Var(base.to_owned()),
                         });
                         method_args.extend(args.iter().cloned());
-                        validate_unsafe_data_builtin_call("unsafe_write", &method_args, env, errors);
+                        validate_unsafe_data_builtin_call(
+                            "unsafe_write",
+                            &method_args,
+                            env,
+                            errors,
+                        );
                         return;
                     }
                 }
@@ -311,7 +325,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             );
                             continue;
                         }
-                        if matches!(param_ty, Some(FnParamType::Array(_)) | Some(FnParamType::BareBuffer)) {
+                        if matches!(
+                            param_ty,
+                            Some(FnParamType::Array(_)) | Some(FnParamType::BareBuffer)
+                        ) {
                             // Array and bare buffer params accept data-like args;
                             // skip scalar validation.
                             continue;
@@ -790,6 +807,88 @@ fn validate_internal_buffer_2d_call(
     if name == INTERNAL_BUFFER_WRITE2_FN {
         if let Some(value_arg) = args.get(3) {
             validate_expr(&value_arg.expr, env, errors);
+        }
+    }
+}
+
+fn validate_internal_proc_index_call(
+    name: &str,
+    args: &[CallArg],
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut base_expr = None::<&Expr>;
+    let mut index_expr = None::<&Expr>;
+    let mut field_expr = None::<&Expr>;
+    for arg in args {
+        match arg.name.as_deref() {
+            Some(PROC_INDEX_BASE_ARG) => base_expr = Some(&arg.expr),
+            Some(PROC_INDEX_EXPR_ARG) => index_expr = Some(&arg.expr),
+            Some(PROC_FIELD_SENTINEL_ARG) => field_expr = Some(&arg.expr),
+            _ => {}
+        }
+    }
+
+    if base_expr.is_none() {
+        errors.push(Diagnostic::semantic(
+            format!("internal builtin '{name}' is missing processor array base argument"),
+            0,
+            0,
+        ));
+    }
+    if index_expr.is_none() {
+        errors.push(Diagnostic::semantic(
+            format!("internal builtin '{name}' is missing processor array index argument"),
+            0,
+            0,
+        ));
+    }
+
+    if let Some(base_expr) = base_expr {
+        if !matches!(base_expr, Expr::Var(_)) {
+            validate_expr(base_expr, env, errors);
+            errors.push(Diagnostic::semantic(
+                format!("internal builtin '{name}' expects processor array base as an identifier"),
+                0,
+                0,
+            ));
+        }
+    }
+    if let Some(index_expr) = index_expr {
+        validate_expr(index_expr, env, errors);
+    }
+
+    let expects_field = name
+        .strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
+        .map(|s| s == PROC_INDEX_CALL_SENTINEL)
+        .unwrap_or(false);
+    if expects_field {
+        match field_expr {
+            Some(Expr::Var(_)) => {}
+            Some(other) => {
+                validate_expr(other, env, errors);
+                errors.push(Diagnostic::semantic(
+                    format!("internal builtin '{name}' expects field selector as identifier"),
+                    0,
+                    0,
+                ));
+            }
+            None => {
+                errors.push(Diagnostic::semantic(
+                    format!("internal builtin '{name}' is missing field selector argument"),
+                    0,
+                    0,
+                ));
+            }
+        }
+    }
+
+    for arg in args {
+        match arg.name.as_deref() {
+            Some(PROC_INDEX_BASE_ARG)
+            | Some(PROC_INDEX_EXPR_ARG)
+            | Some(PROC_FIELD_SENTINEL_ARG) => {}
+            _ => validate_expr(&arg.expr, env, errors),
         }
     }
 }

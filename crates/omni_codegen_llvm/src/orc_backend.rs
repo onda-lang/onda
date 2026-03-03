@@ -648,6 +648,7 @@ struct DefLoweringCtx<'a> {
     buffer_params: HashMap<String, DefBufferParamInfo>,
     array_ptrs: HashMap<String, LLVMValueRef>,
     array_len: HashMap<String, usize>,
+    array_len_values: HashMap<String, LLVMValueRef>,
     array_elem_ty: HashMap<String, PrimitiveType>,
     array_struct_roots: HashMap<String, String>,
     struct_fields: &'a HashMap<String, Vec<TypedStructField>>,

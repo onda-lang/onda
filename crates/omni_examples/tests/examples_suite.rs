@@ -8869,7 +8869,11 @@ def foo(arr: f32[]) {
 sample { out1 = 0.0 }
 "#;
     let parsed = parse_program(src);
-    assert!(parsed.is_ok(), "should parse f32[] param type: {:?}", parsed.err());
+    assert!(
+        parsed.is_ok(),
+        "should parse f32[] param type: {:?}",
+        parsed.err()
+    );
 }
 
 #[test]
@@ -8882,7 +8886,11 @@ def foo(arr: []) {
 sample { out1 = 0.0 }
 "#;
     let parsed = parse_program(src);
-    assert!(parsed.is_ok(), "should parse [] param type: {:?}", parsed.err());
+    assert!(
+        parsed.is_ok(),
+        "should parse [] param type: {:?}",
+        parsed.err()
+    );
 }
 
 #[test]
@@ -8895,7 +8903,11 @@ def foo(b: buffer) {
 sample { out1 = 0.0 }
 "#;
     let parsed = parse_program(src);
-    assert!(parsed.is_ok(), "should parse bare buffer param type: {:?}", parsed.err());
+    assert!(
+        parsed.is_ok(),
+        "should parse bare buffer param type: {:?}",
+        parsed.err()
+    );
 }
 
 #[test]
@@ -8908,7 +8920,11 @@ def process(arr: f32[], b: buffer, x: f32) {
 sample { out1 = 0.0 }
 "#;
     let parsed = parse_program(src);
-    assert!(parsed.is_ok(), "should parse mixed new param types: {:?}", parsed.err());
+    assert!(
+        parsed.is_ok(),
+        "should parse mixed new param types: {:?}",
+        parsed.err()
+    );
 }
 
 // Test that typed array param is correctly analyzed
@@ -8932,7 +8948,11 @@ sample {
 "#;
     let parsed = parse_program(src).expect("parse should succeed");
     let result = analyze(parsed);
-    assert!(result.is_ok(), "analysis should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "analysis should succeed: {:?}",
+        result.err()
+    );
 }
 
 // Test that bare buffer param is correctly analyzed
@@ -8952,7 +8972,11 @@ sample {
 "#;
     let parsed = parse_program(src).expect("parse should succeed");
     let result = analyze(parsed);
-    assert!(result.is_ok(), "analysis should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "analysis should succeed: {:?}",
+        result.err()
+    );
 }
 
 // Test generic struct def param (monomorphization)
@@ -9005,11 +9029,126 @@ fn def_generic_struct_param_compiles_and_runs() {
     let (mut instance, _, _) = compile_instance(DEF_GENERIC_STRUCT_PARAM, frames);
 
     let mut output = vec![0.0_f32; frames];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     for sample in &output {
         assert_near(*sample, 42.0, 1e-6);
     }
 }
 
+// ── Array param ABI fix tests (ptr+len) ──────────────────────────────
+
+const ARRAY_PARAM_SUM_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+    data: f32[4]
+    data[0] = 1.0
+    data[1] = 2.0
+    data[2] = 3.0
+    data[3] = 4.0
+}
+def sum_array(arr: f32[]) {
+    total = 0.0
+    n = arr.len()
+    for i in 0..n {
+        total = total + arr[i]
+    }
+    return total
+}
+sample {
+    out1 = sum_array(data)
+}
+"#;
+
+#[test]
+fn array_param_sum_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(ARRAY_PARAM_SUM_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+const ARRAY_PARAM_SINGLE_DEF_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+    data: f32[2]
+    data[0] = 10.0
+    data[1] = 20.0
+}
+def first(arr: f32[]) { return arr[0] }
+sample {
+    out1 = first(data)
+}
+"#;
+
+#[test]
+fn array_param_single_def_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(ARRAY_PARAM_SINGLE_DEF_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+const ARRAY_PARAM_DEF_TO_DEF_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+    data: f32[2]
+    data[0] = 10.0
+    data[1] = 20.0
+}
+def first(arr: f32[]) { return arr[0] }
+def wrap_first(arr: f32[]) { return first(arr) }
+sample {
+    out1 = wrap_first(data)
+}
+"#;
+
+#[test]
+fn array_param_def_to_def_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(ARRAY_PARAM_DEF_TO_DEF_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+const ARRAY_PARAM_LEN_FORWARDED_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+    data: f32[3]
+    data[0] = 5.0
+    data[1] = 10.0
+    data[2] = 15.0
+}
+def get_len(arr: f32[]) { return arr.len() }
+sample {
+    out1 = get_len(data)
+}
+"#;
+
+#[test]
+fn array_param_len_forwarded_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(ARRAY_PARAM_LEN_FORWARDED_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}

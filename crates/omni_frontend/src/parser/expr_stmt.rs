@@ -1140,7 +1140,9 @@ fn parse_call_index_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
     )
 }
 
-fn parse_named_type_ref(pair: Pair<'_, Rule>) -> Result<(String, Vec<CallTypeArg>), Vec<Diagnostic>> {
+fn parse_named_type_ref(
+    pair: Pair<'_, Rule>,
+) -> Result<(String, Vec<CallTypeArg>), Vec<Diagnostic>> {
     if pair.as_rule() != Rule::named_type {
         return Err(vec![Diagnostic::syntax(
             "internal parser error: expected named type reference",
@@ -1173,7 +1175,9 @@ fn parse_named_type_ref(pair: Pair<'_, Rule>) -> Result<(String, Vec<CallTypeArg
                             Rule::type_name => out.push(CallTypeArg::Primitive(
                                 parse_primitive_type(arg_pair.as_str()).map_err(|d| vec![d])?,
                             )),
-                            Rule::ident => out.push(CallTypeArg::Generic(arg_pair.as_str().to_owned())),
+                            Rule::ident => {
+                                out.push(CallTypeArg::Generic(arg_pair.as_str().to_owned()))
+                            }
                             _ => {}
                         }
                         Ok(())
