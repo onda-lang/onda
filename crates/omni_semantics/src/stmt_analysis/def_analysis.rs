@@ -24,7 +24,7 @@ pub(crate) fn analyze_def_stmt(
         // visible to expression type inference, including indexed array field reads.
         let struct_instance_ctx = param_structs;
         let empty_outputs = HashSet::<String>::new();
-        let array_vars = merged_data_vars_for_sample(&empty_data, local_array_aliases);
+        let array_vars = merged_data_vars_for_runtime(&empty_data, local_array_aliases);
 
         match stmt {
             Stmt::Assign {

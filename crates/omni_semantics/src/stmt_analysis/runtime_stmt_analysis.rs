@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn merged_data_vars_for_sample(
+pub(crate) fn merged_data_vars_for_runtime(
     state_arrays: &HashMap<String, usize>,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
 ) -> HashMap<String, usize> {
@@ -31,28 +31,73 @@ pub(crate) fn seed_top_level_array_aliases(
     }
 }
 
-pub(crate) fn analyze_sample_stmt(
+pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
+    pub state_scalars: &'a HashMap<String, PrimitiveType>,
+    pub state_arrays: &'a HashMap<String, usize>,
+    pub state_array_struct_roots: &'a HashMap<String, ArrayStructRootInfo>,
+    pub struct_instances: &'a HashMap<String, String>,
+    pub input_names: &'a HashSet<String>,
+    pub output_names: &'a HashSet<String>,
+    pub forbidden_assign_names: &'a HashSet<String>,
+    pub param_names: &'a HashSet<String>,
+    pub struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+    pub fn_signatures: &'a HashMap<String, FnSignature>,
+    pub options: AnalysisOptions,
+}
+
+#[derive(Clone)]
+pub(crate) struct RuntimeStmtAnalysisState {
+    pub known_scalars: HashSet<String>,
+    pub local_aliases: LocalAliasTypes,
+    pub local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+}
+
+pub(crate) fn analyze_runtime_stmts<'a>(
+    stmts: impl IntoIterator<Item = &'a Stmt>,
+    locals: &HashSet<String>,
+    ctx: &RuntimeStmtAnalysisCtx<'_>,
+    state: &mut RuntimeStmtAnalysisState,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for stmt in stmts {
+        analyze_runtime_stmt_inner(
+            stmt,
+            locals,
+            ctx,
+            &mut state.known_scalars,
+            &mut state.local_aliases,
+            &mut state.local_array_aliases,
+            0,
+            errors,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze_runtime_stmt_inner(
     stmt: &Stmt,
+    locals: &HashSet<String>,
+    ctx: &RuntimeStmtAnalysisCtx<'_>,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
-    locals: &HashSet<String>,
-    state_scalars: &HashMap<String, PrimitiveType>,
-    state_arrays: &HashMap<String, usize>,
-    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
-    struct_instances: &HashMap<String, String>,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    forbidden_assign_names: &HashSet<String>,
-    param_names: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    options: AnalysisOptions,
     loop_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let state_scalars = ctx.state_scalars;
+    let state_arrays = ctx.state_arrays;
+    let state_array_struct_roots = ctx.state_array_struct_roots;
+    let struct_instances = ctx.struct_instances;
+    let input_names = ctx.input_names;
+    let output_names = ctx.output_names;
+    let forbidden_assign_names = ctx.forbidden_assign_names;
+    let param_names = ctx.param_names;
+    let struct_defs = ctx.struct_defs;
+    let fn_signatures = ctx.fn_signatures;
+    let options = ctx.options;
+
     with_stmt_diag_context(stmt, || {
-        let array_vars = merged_data_vars_for_sample(state_arrays, local_array_aliases);
+        let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
         match stmt {
             Stmt::Assign {
                 target,
@@ -162,23 +207,13 @@ pub(crate) fn analyze_sample_stmt(
                 let mut then_aliases = local_aliases.clone();
                 let mut then_data_aliases = local_array_aliases.clone();
                 for nested in then_branch {
-                    analyze_sample_stmt(
+                    analyze_runtime_stmt_inner(
                         nested,
+                        locals,
+                        ctx,
                         &mut then_known,
                         &mut then_aliases,
                         &mut then_data_aliases,
-                        locals,
-                        state_scalars,
-                        state_arrays,
-                        state_array_struct_roots,
-                        struct_instances,
-                        input_names,
-                        output_names,
-                        forbidden_assign_names,
-                        param_names,
-                        struct_defs,
-                        fn_signatures,
-                        options,
                         loop_depth,
                         errors,
                     );
@@ -187,23 +222,13 @@ pub(crate) fn analyze_sample_stmt(
                 let mut else_aliases = local_aliases.clone();
                 let mut else_data_aliases = local_array_aliases.clone();
                 for nested in else_branch {
-                    analyze_sample_stmt(
+                    analyze_runtime_stmt_inner(
                         nested,
+                        locals,
+                        ctx,
                         &mut else_known,
                         &mut else_aliases,
                         &mut else_data_aliases,
-                        locals,
-                        state_scalars,
-                        state_arrays,
-                        state_array_struct_roots,
-                        struct_instances,
-                        input_names,
-                        output_names,
-                        forbidden_assign_names,
-                        param_names,
-                        struct_defs,
-                        fn_signatures,
-                        options,
                         loop_depth,
                         errors,
                     );
@@ -322,23 +347,13 @@ pub(crate) fn analyze_sample_stmt(
                 let mut loop_aliases = local_aliases.clone();
                 let mut loop_data_aliases = local_array_aliases.clone();
                 for nested in body {
-                    analyze_sample_stmt(
+                    analyze_runtime_stmt_inner(
                         nested,
+                        &loop_locals,
+                        ctx,
                         &mut loop_known,
                         &mut loop_aliases,
                         &mut loop_data_aliases,
-                        &loop_locals,
-                        state_scalars,
-                        state_arrays,
-                        state_array_struct_roots,
-                        struct_instances,
-                        input_names,
-                        output_names,
-                        forbidden_assign_names,
-                        param_names,
-                        struct_defs,
-                        fn_signatures,
-                        options,
                         loop_depth + 1,
                         errors,
                     );
@@ -379,23 +394,13 @@ pub(crate) fn analyze_sample_stmt(
                 let mut loop_aliases = local_aliases.clone();
                 let mut loop_data_aliases = local_array_aliases.clone();
                 for nested in body {
-                    analyze_sample_stmt(
+                    analyze_runtime_stmt_inner(
                         nested,
+                        locals,
+                        ctx,
                         &mut loop_known,
                         &mut loop_aliases,
                         &mut loop_data_aliases,
-                        locals,
-                        state_scalars,
-                        state_arrays,
-                        state_array_struct_roots,
-                        struct_instances,
-                        input_names,
-                        output_names,
-                        forbidden_assign_names,
-                        param_names,
-                        struct_defs,
-                        fn_signatures,
-                        options,
                         loop_depth + 1,
                         errors,
                     );
@@ -445,7 +450,7 @@ fn analyze_assign_sample(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let array_vars = merged_data_vars_for_sample(state_arrays, local_array_aliases);
+    let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
     match target {
         AssignTarget::Index { base, index } => {
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {

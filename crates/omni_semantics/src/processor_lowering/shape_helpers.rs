@@ -156,36 +156,6 @@ pub(super) fn struct_defs_for_scalar_expr_inference(
         .collect::<HashMap<_, _>>()
 }
 
-fn internal_proc_index_call_signature(include_field_arg: bool) -> FnSignature {
-    const PROC_INDEX_CALL_MAX_POSITIONAL_ARGS: usize = 16;
-
-    let mut params = vec![
-        PROC_INDEX_BASE_ARG.to_owned(),
-        PROC_INDEX_EXPR_ARG.to_owned(),
-    ];
-    let mut defaults = vec![None, None];
-    let mut param_types = vec![None, None];
-
-    for idx in 0..PROC_INDEX_CALL_MAX_POSITIONAL_ARGS {
-        params.push(format!("__proc_index_arg{idx}"));
-        defaults.push(Some(Expr::Number(0.0)));
-        param_types.push(None);
-    }
-
-    if include_field_arg {
-        params.push(PROC_FIELD_SENTINEL_ARG.to_owned());
-        defaults.push(None);
-        param_types.push(None);
-    }
-
-    FnSignature {
-        params,
-        defaults,
-        param_types,
-        type_params: Vec::new(),
-    }
-}
-
 fn is_proc_output_alias_name(name: &str, out_count: usize) -> bool {
     let Some(rest) = name.strip_prefix("out") else {
         return false;
@@ -284,6 +254,7 @@ pub(super) fn compute_proc_shape(
             ));
         }
     }
+    let typed_events = coerce_typed_events(&proc.events, options, errors);
     let mut reserved = HashSet::<String>::new();
     reserved.extend(param_names.iter().cloned());
     reserved.extend(ins_names.iter().cloned());
@@ -551,9 +522,21 @@ pub(super) fn compute_proc_shape(
 
     // Snapshot init-scope scalar keys to detect new additions later
     let init_scalar_keys: HashSet<String> = proc_state_scalars.keys().cloned().collect();
+    let init_writable_roots = collect_runtime_state_roots(&proc_state_scalars);
 
-    // Register block scope state
-    register_scope_state(
+    // Register + analyze block scope state
+    let mut block_known_scalars = reserved.clone();
+    extend_known_scalars(&mut block_known_scalars, proc_struct_instances_typed.keys());
+    extend_known_scalars(&mut block_known_scalars, state.nested_procs.keys());
+    extend_known_scalars(&mut block_known_scalars, proc_state_arrays.keys());
+    let block_locals = HashSet::new();
+    let empty_inputs = HashSet::new();
+    let empty_outputs = HashSet::new();
+    let block_forbidden = out_names.clone();
+    let block_registration_scope = StateRegistrationScope::Block {
+        struct_defs: &typed_struct_defs,
+    };
+    register_and_analyze_runtime_scope(
         proc.block_pre.iter().chain(proc.block_post.iter()),
         &mut proc_state_scalars,
         &proc_state_arrays,
@@ -562,55 +545,33 @@ pub(super) fn compute_proc_shape(
         &ins_names,
         &out_names,
         &typed_param_names,
-        &StateRegistrationScope::Block {
-            struct_defs: &typed_struct_defs,
-        },
+        &block_registration_scope,
+        &block_locals,
+        block_known_scalars,
+        LocalAliasTypes::new(),
+        HashMap::new(),
+        &empty_inputs,
+        &empty_outputs,
+        &block_forbidden,
+        &typed_param_names,
+        &typed_struct_defs,
+        &proc_fn_signatures,
+        options,
+        errors,
     );
 
-    // Analyze block statements
-    let mut block_known_scalars = reserved.clone();
-    block_known_scalars.extend(proc_state_scalars.keys().cloned());
-    for inst_name in proc_struct_instances_typed.keys() {
-        block_known_scalars.insert(inst_name.clone());
-    }
-    for name in state.nested_procs.keys() {
-        block_known_scalars.insert(name.clone());
-    }
-    for name in proc_state_arrays.keys() {
-        block_known_scalars.insert(name.clone());
-    }
-    let block_locals = HashSet::new();
-    let mut block_local_aliases = LocalAliasTypes::new();
-    let mut block_local_data_aliases = HashMap::new();
-    let empty_inputs = HashSet::new();
-    let empty_outputs = HashSet::new();
-    let block_forbidden = out_names.clone();
-
-    for stmt in proc.block_pre.iter().chain(proc.block_post.iter()) {
-        analyze_sample_stmt(
-            stmt,
-            &mut block_known_scalars,
-            &mut block_local_aliases,
-            &mut block_local_data_aliases,
-            &block_locals,
-            &proc_state_scalars,
-            &proc_state_arrays,
-            &proc_state_array_struct_roots,
-            &proc_struct_instances_typed,
-            &empty_inputs,
-            &empty_outputs,
-            &block_forbidden,
-            &typed_param_names,
-            &typed_struct_defs,
-            &proc_fn_signatures,
-            options,
-            0,
-            errors,
-        );
-    }
-
-    // Register sample scope state
-    register_scope_state(
+    // Register + analyze sample scope state
+    let mut sample_known_scalars = reserved.clone();
+    extend_known_scalars(
+        &mut sample_known_scalars,
+        proc_struct_instances_typed.keys(),
+    );
+    extend_known_scalars(&mut sample_known_scalars, state.nested_procs.keys());
+    extend_known_scalars(&mut sample_known_scalars, proc_state_arrays.keys());
+    let sample_locals = HashSet::new();
+    let sample_forbidden = HashSet::new();
+    let sample_registration_scope = StateRegistrationScope::Sample;
+    register_and_analyze_runtime_scope(
         proc.sample.iter(),
         &mut proc_state_scalars,
         &proc_state_arrays,
@@ -619,48 +580,55 @@ pub(super) fn compute_proc_shape(
         &ins_names,
         &out_names,
         &typed_param_names,
-        &StateRegistrationScope::Sample,
+        &sample_registration_scope,
+        &sample_locals,
+        sample_known_scalars,
+        LocalAliasTypes::new(),
+        HashMap::new(),
+        &ins_names,
+        &out_names,
+        &sample_forbidden,
+        &typed_param_names,
+        &typed_struct_defs,
+        &proc_fn_signatures,
+        options,
+        errors,
     );
 
-    // Analyze sample statements
-    let mut sample_known_scalars = reserved.clone();
-    sample_known_scalars.extend(proc_state_scalars.keys().cloned());
-    for inst_name in proc_struct_instances_typed.keys() {
-        sample_known_scalars.insert(inst_name.clone());
-    }
-    for name in state.nested_procs.keys() {
-        sample_known_scalars.insert(name.clone());
-    }
-    for name in proc_state_arrays.keys() {
-        sample_known_scalars.insert(name.clone());
-    }
-    let sample_locals = HashSet::new();
-    let mut sample_local_aliases = LocalAliasTypes::new();
-    let mut sample_local_data_aliases = HashMap::new();
-    let sample_forbidden = HashSet::new();
-
-    for stmt in &proc.sample {
-        analyze_sample_stmt(
-            stmt,
-            &mut sample_known_scalars,
-            &mut sample_local_aliases,
-            &mut sample_local_data_aliases,
-            &sample_locals,
-            &proc_state_scalars,
-            &proc_state_arrays,
-            &proc_state_array_struct_roots,
-            &proc_struct_instances_typed,
-            &ins_names,
-            &out_names,
-            &sample_forbidden,
-            &typed_param_names,
-            &typed_struct_defs,
-            &proc_fn_signatures,
-            options,
-            0,
-            errors,
-        );
-    }
+    // Analyze event statements via the same runtime statement analyzer path.
+    let final_state_roots = collect_runtime_state_roots(&proc_state_scalars);
+    let immutable_event_roots = final_state_roots
+        .difference(&init_writable_roots)
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut event_known_scalars_seed =
+        build_known_scalars_from_state(&reserved, &proc_state_scalars);
+    extend_known_scalars(
+        &mut event_known_scalars_seed,
+        proc_struct_instances_typed.keys(),
+    );
+    extend_known_scalars(&mut event_known_scalars_seed, state.nested_procs.keys());
+    extend_known_scalars(&mut event_known_scalars_seed, proc_state_arrays.keys());
+    let event_array_alias_seed = HashMap::new();
+    let event_immutable_param_seed = HashSet::new();
+    analyze_runtime_events(
+        &typed_events,
+        &event_known_scalars_seed,
+        &event_array_alias_seed,
+        &event_immutable_param_seed,
+        &init_writable_roots,
+        &immutable_event_roots,
+        &ins_names,
+        &out_names,
+        &proc_state_scalars,
+        &proc_state_arrays,
+        &proc_state_array_struct_roots,
+        &proc_struct_instances_typed,
+        &typed_struct_defs,
+        &proc_fn_signatures,
+        options,
+        errors,
+    );
 
     // Merge new scalars from block/sample into state
     for (name, ty) in &proc_state_scalars {

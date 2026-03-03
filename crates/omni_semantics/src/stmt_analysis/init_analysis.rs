@@ -88,7 +88,7 @@ pub(crate) fn analyze_init_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context(stmt, || {
-        let array_vars = merged_data_vars_for_sample(&st.state_arrays, &st.local_array_aliases);
+        let array_vars = merged_data_vars_for_runtime(&st.state_arrays, &st.local_array_aliases);
         match stmt {
             Stmt::Assign {
                 target,
@@ -485,7 +485,7 @@ fn analyze_assign_init(
     locals: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let array_vars = merged_data_vars_for_sample(&st.state_arrays, &st.local_array_aliases);
+    let array_vars = merged_data_vars_for_runtime(&st.state_arrays, &st.local_array_aliases);
     match target {
         AssignTarget::Index { base, index } => {
             if st.state_array_struct_roots.contains_key(base) {

@@ -137,6 +137,36 @@ fn collect_runtime_state_roots(state_scalars: &HashMap<String, PrimitiveType>) -
         .collect::<HashSet<_>>()
 }
 
+fn internal_proc_index_call_signature(include_field_arg: bool) -> FnSignature {
+    const PROC_INDEX_CALL_MAX_POSITIONAL_ARGS: usize = 16;
+
+    let mut params = vec![
+        PROC_INDEX_BASE_ARG.to_owned(),
+        PROC_INDEX_EXPR_ARG.to_owned(),
+    ];
+    let mut defaults = vec![None, None];
+    let mut param_types = vec![None, None];
+
+    for idx in 0..PROC_INDEX_CALL_MAX_POSITIONAL_ARGS {
+        params.push(format!("__proc_index_arg{idx}"));
+        defaults.push(Some(Expr::Number(0.0)));
+        param_types.push(None);
+    }
+
+    if include_field_arg {
+        params.push(PROC_FIELD_SENTINEL_ARG.to_owned());
+        defaults.push(None);
+        param_types.push(None);
+    }
+
+    FnSignature {
+        params,
+        defaults,
+        param_types,
+        type_params: Vec::new(),
+    }
+}
+
 fn coerce_typed_events(
     events: &[EventDef],
     options: AnalysisOptions,
@@ -475,6 +505,213 @@ fn validate_event_stmt_restrictions(
         }
         Stmt::Expr { .. } | Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn analyze_runtime_scope_stmts<'a>(
+    stmts: impl IntoIterator<Item = &'a Stmt>,
+    locals: &HashSet<String>,
+    known_scalars: HashSet<String>,
+    local_aliases: LocalAliasTypes,
+    local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    state_arrays: &HashMap<String, usize>,
+    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    struct_instances: &HashMap<String, String>,
+    input_names: &HashSet<String>,
+    output_names: &HashSet<String>,
+    forbidden_assign_names: &HashSet<String>,
+    param_names: &HashSet<String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let ctx = RuntimeStmtAnalysisCtx {
+        state_scalars,
+        state_arrays,
+        state_array_struct_roots,
+        struct_instances,
+        input_names,
+        output_names,
+        forbidden_assign_names,
+        param_names,
+        struct_defs,
+        fn_signatures,
+        options,
+    };
+    let mut state = RuntimeStmtAnalysisState {
+        known_scalars,
+        local_aliases,
+        local_array_aliases,
+    };
+    analyze_runtime_stmts(stmts, locals, &ctx, &mut state, errors);
+}
+
+pub(super) fn build_known_scalars_from_state(
+    base_names: &HashSet<String>,
+    state_scalars: &HashMap<String, PrimitiveType>,
+) -> HashSet<String> {
+    let mut known = base_names.clone();
+    known.extend(state_scalars.keys().cloned());
+    known
+}
+
+pub(super) fn extend_known_scalars<'a>(
+    known_scalars: &mut HashSet<String>,
+    names: impl IntoIterator<Item = &'a String>,
+) {
+    known_scalars.extend(names.into_iter().cloned());
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn register_and_analyze_runtime_scope<'a>(
+    stmts: impl IntoIterator<Item = &'a Stmt>,
+    state_scalars: &mut HashMap<String, PrimitiveType>,
+    state_arrays: &HashMap<String, usize>,
+    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    struct_instances: &HashMap<String, String>,
+    registration_input_names: &HashSet<String>,
+    registration_output_names: &HashSet<String>,
+    registration_param_names: &HashSet<String>,
+    registration_scope: &StateRegistrationScope<'_>,
+    runtime_locals: &HashSet<String>,
+    runtime_known_scalars: HashSet<String>,
+    runtime_local_aliases: LocalAliasTypes,
+    runtime_local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    runtime_input_names: &HashSet<String>,
+    runtime_output_names: &HashSet<String>,
+    runtime_forbidden_assign_names: &HashSet<String>,
+    runtime_param_names: &HashSet<String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let stmts = stmts.into_iter().collect::<Vec<_>>();
+    register_scope_state(
+        stmts.iter().copied(),
+        state_scalars,
+        state_arrays,
+        state_array_struct_roots,
+        struct_instances,
+        registration_input_names,
+        registration_output_names,
+        registration_param_names,
+        registration_scope,
+    );
+    let mut runtime_known_scalars = runtime_known_scalars;
+    runtime_known_scalars.extend(state_scalars.keys().cloned());
+    analyze_runtime_scope_stmts(
+        stmts.iter().copied(),
+        runtime_locals,
+        runtime_known_scalars,
+        runtime_local_aliases,
+        runtime_local_array_aliases,
+        state_scalars,
+        state_arrays,
+        state_array_struct_roots,
+        struct_instances,
+        runtime_input_names,
+        runtime_output_names,
+        runtime_forbidden_assign_names,
+        runtime_param_names,
+        struct_defs,
+        fn_signatures,
+        options,
+        errors,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn analyze_runtime_events(
+    typed_events: &[TypedEvent],
+    event_known_scalars_seed: &HashSet<String>,
+    event_array_alias_seed: &HashMap<String, LocalArrayAliasInfo>,
+    event_immutable_param_seed: &HashSet<String>,
+    init_writable_roots: &HashSet<String>,
+    immutable_event_roots: &HashSet<String>,
+    validation_input_names: &HashSet<String>,
+    validation_output_names: &HashSet<String>,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    state_arrays: &HashMap<String, usize>,
+    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    struct_instances: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let empty_runtime_inputs = HashSet::<String>::new();
+    let empty_runtime_outputs = HashSet::<String>::new();
+    let runtime_loop_vars = HashSet::<String>::new();
+
+    for event in typed_events {
+        let mut event_locals = HashSet::<String>::new();
+        let mut scalar_event_params = HashSet::<String>::new();
+        let mut array_event_params = HashSet::<String>::new();
+        let mut event_known_scalars = event_known_scalars_seed.clone();
+        let mut event_local_aliases = LocalAliasTypes::new();
+        let mut event_local_data_aliases = event_array_alias_seed.clone();
+        for param in &event.params {
+            match param.ty {
+                TypedEventParamType::Scalar(ty) => {
+                    scalar_event_params.insert(param.name.clone());
+                    event_known_scalars.insert(param.name.clone());
+                    event_local_aliases.insert(param.name.clone(), ty);
+                }
+                TypedEventParamType::Array { elem, len } => {
+                    array_event_params.insert(param.name.clone());
+                    event_local_data_aliases.insert(
+                        param.name.clone(),
+                        LocalArrayAliasInfo {
+                            len,
+                            elem_ty: elem,
+                            elem_struct: None,
+                            writable: false,
+                        },
+                    );
+                }
+            }
+        }
+
+        let mut event_param_immutable = event_immutable_param_seed.clone();
+        event_param_immutable.extend(scalar_event_params.iter().cloned());
+
+        for stmt in &event.body {
+            validate_event_stmt_restrictions(
+                stmt,
+                &mut event_locals,
+                init_writable_roots,
+                immutable_event_roots,
+                validation_input_names,
+                validation_output_names,
+                &scalar_event_params,
+                &array_event_params,
+                errors,
+            );
+        }
+
+        analyze_runtime_scope_stmts(
+            event.body.iter(),
+            &runtime_loop_vars,
+            event_known_scalars,
+            event_local_aliases,
+            event_local_data_aliases,
+            state_scalars,
+            state_arrays,
+            state_array_struct_roots,
+            struct_instances,
+            &empty_runtime_inputs,
+            &empty_runtime_outputs,
+            validation_output_names,
+            &event_param_immutable,
+            struct_defs,
+            fn_signatures,
+            options,
+            errors,
+        );
+    }
 }
 
 fn build_proc_lowering_env(
@@ -3044,6 +3281,14 @@ pub fn analyze_with_options(
     let output_names: HashSet<String> = outs.iter().cloned().collect();
     let param_names: HashSet<String> = typed_params.iter().map(|p| p.name.clone()).collect();
     let def_return_types = infer_def_return_types(&defs, &fn_signatures, &struct_defs);
+    fn_signatures
+        .entry(PROC_INDEX_CALL_SENTINEL.to_owned())
+        .or_insert_with(|| internal_proc_index_call_signature(false));
+    fn_signatures
+        .entry(format!(
+            "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
+        ))
+        .or_insert_with(|| internal_proc_index_call_signature(true));
 
     let mut state_scalars = HashMap::<String, PrimitiveType>::new();
     set_declared_symbol_types(
@@ -3160,7 +3405,19 @@ pub fn analyze_with_options(
     } = init_st;
     let init_writable_roots = collect_runtime_state_roots(&state_scalars);
 
-    register_scope_state(
+    let block_known_scalars = build_known_scalars_from_state(&param_names, &state_scalars);
+    let block_locals = HashSet::new();
+    let mut block_local_data_aliases = HashMap::new();
+    seed_top_level_array_aliases(&mut block_local_data_aliases, &in_arrays, false);
+    seed_top_level_array_aliases(&mut block_local_data_aliases, &out_arrays, true);
+    seed_top_level_array_aliases(&mut block_local_data_aliases, &param_arrays, false);
+    let empty_inputs = HashSet::new();
+    let empty_outputs = HashSet::new();
+    let block_forbidden_assigns = output_names.clone();
+    let block_registration_scope = StateRegistrationScope::Block {
+        struct_defs: &struct_defs,
+    };
+    register_and_analyze_runtime_scope(
         block_pre.iter().chain(block_post.iter()),
         &mut state_scalars,
         &state_arrays,
@@ -3169,47 +3426,32 @@ pub fn analyze_with_options(
         &input_names,
         &output_names,
         &param_names,
-        &StateRegistrationScope::Block {
-            struct_defs: &struct_defs,
-        },
+        &block_registration_scope,
+        &block_locals,
+        block_known_scalars,
+        LocalAliasTypes::new(),
+        block_local_data_aliases,
+        &empty_inputs,
+        &empty_outputs,
+        &block_forbidden_assigns,
+        &param_names,
+        &struct_defs,
+        &fn_signatures,
+        options,
+        &mut errors,
     );
 
-    let mut block_known_scalars = param_names.clone();
-    block_known_scalars.extend(state_scalars.keys().cloned());
-    let block_locals = HashSet::new();
-    let mut block_local_aliases = LocalAliasTypes::new();
-    let mut block_local_data_aliases = HashMap::new();
-    seed_top_level_array_aliases(&mut block_local_data_aliases, &in_arrays, false);
-    seed_top_level_array_aliases(&mut block_local_data_aliases, &out_arrays, true);
-    seed_top_level_array_aliases(&mut block_local_data_aliases, &param_arrays, false);
-    let empty_inputs = HashSet::new();
-    let empty_outputs = HashSet::new();
-    let block_forbidden_assigns = output_names.clone();
-
-    for stmt in block_pre.iter().chain(block_post.iter()) {
-        analyze_sample_stmt(
-            stmt,
-            &mut block_known_scalars,
-            &mut block_local_aliases,
-            &mut block_local_data_aliases,
-            &block_locals,
-            &state_scalars,
-            &state_arrays,
-            &state_array_struct_roots,
-            &struct_instances,
-            &empty_inputs,
-            &empty_outputs,
-            &block_forbidden_assigns,
-            &param_names,
-            &struct_defs,
-            &fn_signatures,
-            options,
-            0,
-            &mut errors,
-        );
-    }
-
-    register_scope_state(
+    let mut sample_base = param_names.clone();
+    sample_base.extend(input_names.iter().cloned());
+    let sample_known_scalars = build_known_scalars_from_state(&sample_base, &state_scalars);
+    let sample_locals = HashSet::new();
+    let mut sample_local_data_aliases = HashMap::new();
+    seed_top_level_array_aliases(&mut sample_local_data_aliases, &in_arrays, false);
+    seed_top_level_array_aliases(&mut sample_local_data_aliases, &out_arrays, true);
+    seed_top_level_array_aliases(&mut sample_local_data_aliases, &param_arrays, false);
+    let sample_forbidden_assigns = HashSet::new();
+    let sample_registration_scope = StateRegistrationScope::Sample;
+    register_and_analyze_runtime_scope(
         sample.iter(),
         &mut state_scalars,
         &state_arrays,
@@ -3218,42 +3460,20 @@ pub fn analyze_with_options(
         &input_names,
         &output_names,
         &param_names,
-        &StateRegistrationScope::Sample,
+        &sample_registration_scope,
+        &sample_locals,
+        sample_known_scalars,
+        LocalAliasTypes::new(),
+        sample_local_data_aliases,
+        &input_names,
+        &output_names,
+        &sample_forbidden_assigns,
+        &param_names,
+        &struct_defs,
+        &fn_signatures,
+        options,
+        &mut errors,
     );
-
-    let mut sample_known_scalars = param_names.clone();
-    sample_known_scalars.extend(input_names.clone());
-    sample_known_scalars.extend(state_scalars.keys().cloned());
-    let sample_locals = HashSet::new();
-    let mut sample_local_aliases = LocalAliasTypes::new();
-    let mut sample_local_data_aliases = HashMap::new();
-    seed_top_level_array_aliases(&mut sample_local_data_aliases, &in_arrays, false);
-    seed_top_level_array_aliases(&mut sample_local_data_aliases, &out_arrays, true);
-    seed_top_level_array_aliases(&mut sample_local_data_aliases, &param_arrays, false);
-    let sample_forbidden_assigns = HashSet::new();
-
-    for stmt in &sample {
-        analyze_sample_stmt(
-            stmt,
-            &mut sample_known_scalars,
-            &mut sample_local_aliases,
-            &mut sample_local_data_aliases,
-            &sample_locals,
-            &state_scalars,
-            &state_arrays,
-            &state_array_struct_roots,
-            &struct_instances,
-            &input_names,
-            &output_names,
-            &sample_forbidden_assigns,
-            &param_names,
-            &struct_defs,
-            &fn_signatures,
-            options,
-            0,
-            &mut errors,
-        );
-    }
 
     let typed_events = coerce_typed_events(&events, options, &mut errors);
     let final_state_roots = collect_runtime_state_roots(&state_scalars);
@@ -3261,77 +3481,27 @@ pub fn analyze_with_options(
         .difference(&init_writable_roots)
         .cloned()
         .collect::<HashSet<_>>();
-    let empty_event_inputs = HashSet::<String>::new();
-    let empty_event_outputs = HashSet::<String>::new();
-    for event in &typed_events {
-        let mut event_locals = HashSet::<String>::new();
-        let mut scalar_event_params = HashSet::<String>::new();
-        let mut array_event_params = HashSet::<String>::new();
-        let mut event_known_scalars = param_names.clone();
-        event_known_scalars.extend(state_scalars.keys().cloned());
-        let mut event_local_aliases = LocalAliasTypes::new();
-        let mut event_local_data_aliases = HashMap::new();
-        seed_top_level_array_aliases(&mut event_local_data_aliases, &param_arrays, false);
-        for param in &event.params {
-            match param.ty {
-                TypedEventParamType::Scalar(ty) => {
-                    scalar_event_params.insert(param.name.clone());
-                    event_known_scalars.insert(param.name.clone());
-                    event_local_aliases.insert(param.name.clone(), ty);
-                }
-                TypedEventParamType::Array { elem, len } => {
-                    array_event_params.insert(param.name.clone());
-                    event_local_data_aliases.insert(
-                        param.name.clone(),
-                        LocalArrayAliasInfo {
-                            len,
-                            elem_ty: elem,
-                            elem_struct: None,
-                            writable: false,
-                        },
-                    );
-                }
-            }
-        }
-
-        let mut event_param_immutable = param_names.clone();
-        event_param_immutable.extend(scalar_event_params.iter().cloned());
-        let event_loop_vars = HashSet::<String>::new();
-
-        for stmt in &event.body {
-            validate_event_stmt_restrictions(
-                stmt,
-                &mut event_locals,
-                &init_writable_roots,
-                &immutable_event_roots,
-                &input_names,
-                &output_names,
-                &scalar_event_params,
-                &array_event_params,
-                &mut errors,
-            );
-            analyze_sample_stmt(
-                stmt,
-                &mut event_known_scalars,
-                &mut event_local_aliases,
-                &mut event_local_data_aliases,
-                &event_loop_vars,
-                &state_scalars,
-                &state_arrays,
-                &state_array_struct_roots,
-                &struct_instances,
-                &empty_event_inputs,
-                &empty_event_outputs,
-                &output_names,
-                &event_param_immutable,
-                &struct_defs,
-                &fn_signatures,
-                options,
-                0,
-                &mut errors,
-            );
-        }
-    }
+    let event_known_scalars_seed = build_known_scalars_from_state(&param_names, &state_scalars);
+    let mut event_array_alias_seed = HashMap::new();
+    seed_top_level_array_aliases(&mut event_array_alias_seed, &param_arrays, false);
+    analyze_runtime_events(
+        &typed_events,
+        &event_known_scalars_seed,
+        &event_array_alias_seed,
+        &param_names,
+        &init_writable_roots,
+        &immutable_event_roots,
+        &input_names,
+        &output_names,
+        &state_scalars,
+        &state_arrays,
+        &state_array_struct_roots,
+        &struct_instances,
+        &struct_defs,
+        &fn_signatures,
+        options,
+        &mut errors,
+    );
 
     let mut block_exec = block_pre.clone();
     block_exec.extend(block_post.clone());
