@@ -9,7 +9,7 @@
 - Key analysis/lowering modules:
   - `processor_lowering.rs` + `processor_lowering/*` (proc desugaring and lowering pipeline)
   - `proc_call_rewrite.rs` (proc call lowering/rewrite)
-  - `stmt_analysis/*` (init/sample/def statement analysis)
+  - `stmt_analysis/*` (init/runtime/def statement analysis)
   - `expr_validation.rs`, `expr_typing.rs`, `port_coercion.rs`, `namespacing.rs`
 - Recently split helpers:
   - `proc_state_rewrite.rs` (proc state discovery + symbol rewrite helpers + proc metadata structs/constants)

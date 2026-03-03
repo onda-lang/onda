@@ -413,8 +413,11 @@ Event parameter types:
 
 Rules:
 - Top-level events are host-entry handlers; proc events are reached through explicit calls (for example `voice.note_on(...)`).
-- Event handlers may write only to state rooted in `init` declarations.
-- Event handlers cannot write `outN`.
+- Top-level event handlers may write only to top-level state rooted in `init` declarations.
+- Proc event handlers may write proc state rooted in `init` declarations and proc params.
+- Event handlers cannot write input symbols.
+- Event handlers cannot write output symbols (including `outN` aliases).
+- Top-level params are immutable in top-level event handlers.
 - Event parameters are immutable.
 - Array event parameters are read-only references in handlers.
 - Proc event names must not collide with callable endpoint names in the same proc.
