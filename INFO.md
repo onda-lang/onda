@@ -80,7 +80,8 @@
 - Specialization is monomorphized at use sites with explicit type args (`Name[f64](...)`) or inferred type args from constructor arguments/defaults where possible.
 - In typed `init` struct declarations, declaration-only form is supported (`x: Type`) and desugars to default constructor initialization.
 - Typed `init` struct declarations support namespace-instantiated owner paths (for example `x: std::data[SR, 1]::Data`).
-- Unresolved generic type parameters always produce an error; the compiler never silently defaults to `f32`.
+- Unresolved generic type parameters in declaration/type positions produce an error (no implicit default there).
+- For untyped constructor assignments (`x = Type()` / `p = Proc()`), unresolved constructor type parameters default to `f32`.
 - Generic type arguments are restricted to numeric primitives (`f32`, `f64`, `i32`, `i64`); `bool` is rejected.
 - Array type syntax: `T[N]` across declarations (with current scope rules enforced in semantics).
 - Typed primitive array declarations with inline array-literal initializers are supported in `init` / `sample` / `def` (for example `a: f32[2] = [0.5, 0.8]`).

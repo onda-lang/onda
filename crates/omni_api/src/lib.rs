@@ -194,9 +194,10 @@ unsafe fn omni_compile_impl(
 
     let parsed = match parse_program(source) {
         Ok(p) => p,
-        Err(mut errs) => {
+        Err(errs) => {
             let diag = errs
-                .pop()
+                .into_iter()
+                .next()
                 .unwrap_or_else(|| Diagnostic::internal("parse failed"));
             write_diag(out_diag, diag_to_c(&diag));
             return ptr::null_mut();
@@ -205,9 +206,10 @@ unsafe fn omni_compile_impl(
 
     let typed = match analyze(parsed) {
         Ok(t) => t,
-        Err(mut errs) => {
+        Err(errs) => {
             let diag = errs
-                .pop()
+                .into_iter()
+                .next()
                 .unwrap_or_else(|| Diagnostic::internal("semantic analysis failed"));
             write_diag(out_diag, diag_to_c(&diag));
             return ptr::null_mut();
@@ -219,9 +221,10 @@ unsafe fn omni_compile_impl(
     jit_options.block_size = options.block_size as usize;
     let jit = match lower_and_jit_with_options(typed, jit_options) {
         Ok(j) => j,
-        Err(mut errs) => {
+        Err(errs) => {
             let diag = errs
-                .pop()
+                .into_iter()
+                .next()
                 .unwrap_or_else(|| Diagnostic::internal("codegen failed"));
             write_diag(out_diag, diag_to_c(&diag));
             return ptr::null_mut();

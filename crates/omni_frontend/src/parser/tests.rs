@@ -3159,8 +3159,8 @@ init {
         panic!("expected assignment in init");
     };
     assert!(
-        !is_typed_decl,
-        "typed struct decl should desugar to constructor assignment"
+        *is_typed_decl,
+        "typed struct decl without explicit type args should remain a typed declaration"
     );
     let Expr::UserCall {
         name,
@@ -3201,8 +3201,8 @@ init {
         panic!("expected assignment in init");
     };
     assert!(
-        !is_typed_decl,
-        "typed struct decl should desugar to constructor assignment"
+        *is_typed_decl,
+        "typed struct decl without explicit type args should remain a typed declaration"
     );
     let Expr::UserCall {
         name,

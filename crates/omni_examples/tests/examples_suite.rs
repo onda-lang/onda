@@ -7004,14 +7004,18 @@ fn generic_struct_ctor_infers_type_args_from_variable_arguments() {
 }
 
 #[test]
-fn generic_struct_ctor_reports_unresolved_inference() {
-    let parsed = parse_program(GENERIC_STRUCT_UNRESOLVED_INFERENCE_ERROR_EXAMPLE)
-        .expect("parse should succeed");
-    let result = analyze(parsed);
-    assert!(
-        result.is_err(),
-        "semantic analysis should reject generic struct ctor calls when type inference cannot resolve all parameters"
-    );
+fn generic_struct_ctor_defaults_unresolved_inference_to_f32() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_STRUCT_UNRESOLVED_INFERENCE_ERROR_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
 }
 
 #[test]
@@ -7142,14 +7146,18 @@ fn generic_proc_ctor_infers_array_generic_type_from_array_variable() {
 }
 
 #[test]
-fn generic_proc_ctor_reports_unresolved_inference() {
-    let parsed = parse_program(GENERIC_PROC_UNRESOLVED_INFERENCE_ERROR_EXAMPLE)
-        .expect("parse should succeed");
-    let result = analyze(parsed);
-    assert!(
-        result.is_err(),
-        "semantic analysis should reject generic proc ctor calls when type inference cannot resolve all parameters"
-    );
+fn generic_proc_ctor_defaults_unresolved_inference_to_f32() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_UNRESOLVED_INFERENCE_ERROR_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
 }
 
 #[test]

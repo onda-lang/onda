@@ -334,7 +334,8 @@ init:
 Rules:
 - Typed struct declarations are `init`-only.
 - Declaration-only form (`x: Type`) desugars to default constructor initialization.
-- Unresolved generic type parameters always produce an error; the compiler never silently defaults to `f32`.
+- Generic typed declarations require explicit type args (for example `x: Box[f32]`; `x: Box` is rejected for generic `Box[T]`).
+- For untyped constructor assignments (`x = Box()` / `p = Proc()`), unresolved generic constructor type parameters default to `f32`.
 
 ## 8 Processors (`proc`)
 
@@ -478,7 +479,7 @@ proc Filter[T]:
     out1 = state
 ```
 
-Unresolved generic type parameters always produce an error. The compiler never silently defaults to `f32`.
+Unresolved generic type parameters in declaration/type positions produce an error (no implicit defaulting there). For untyped constructor assignments only, unresolved constructor type parameters default to `f32`.
 
 Generic struct and proc types can be used as `def` parameter types for call-site monomorphization (see section 6).
 

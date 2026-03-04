@@ -716,6 +716,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                         args,
                         &locals.scalar_types,
                         &locals.array_elem_types,
+                        locals.default_ctor_missing_type_params_to_f32,
                         errors,
                     )
                 } else {
@@ -757,9 +758,17 @@ pub(crate) fn rewrite_generic_proc_ctor_stmt(
         Stmt::Assign {
             target,
             decl_ty,
+            generic_decl_ty,
+            is_typed_decl,
             expr,
             ..
         } => {
+            let prior_default_mode = locals.default_ctor_missing_type_params_to_f32;
+            let typed_named_ctor_decl_without_type_args =
+                *is_typed_decl && decl_ty.is_none() && generic_decl_ty.is_none();
+            if typed_named_ctor_decl_without_type_args {
+                locals.default_ctor_missing_type_params_to_f32 = false;
+            }
             if let AssignTarget::Index { index, .. } = target {
                 rewrite_generic_proc_ctor_expr(
                     index, templates, generated, errors, locals, current_ns,
@@ -767,6 +776,7 @@ pub(crate) fn rewrite_generic_proc_ctor_stmt(
             }
             rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);
             update_generic_inference_locals_from_assign(target, *decl_ty, expr, locals);
+            locals.default_ctor_missing_type_params_to_f32 = prior_default_mode;
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);

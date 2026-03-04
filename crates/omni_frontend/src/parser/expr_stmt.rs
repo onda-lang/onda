@@ -294,6 +294,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 }
                 Rule::named_type => {
                     let (decl_name, decl_type_args) = parse_named_type_ref(ty_pair)?;
+                    let missing_decl_type_args = decl_type_args.is_empty();
                     let mut expr = if let Some(expr_pair) = expr_pair {
                         parse_expr(expr_pair)?
                     } else {
@@ -314,7 +315,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                                 target: AssignTarget::Var(name_pair.as_str().to_owned()),
                                 decl_ty: None,
                                 generic_decl_ty: None,
-                                is_typed_decl: false,
+                                is_typed_decl: missing_decl_type_args,
                                 expr,
                             });
                         }

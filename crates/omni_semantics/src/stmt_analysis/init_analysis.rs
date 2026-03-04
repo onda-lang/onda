@@ -658,16 +658,22 @@ fn analyze_assign_init(
             require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
         }
         AssignTarget::Var(name) => {
+            let typed_named_ctor_decl_without_type_args = is_typed_decl
+                && decl_ty.is_none()
+                && generic_decl_ty.is_none()
+                && matches!(expr, Expr::UserCall { type_args, .. } if type_args.is_empty());
             let declared_ty = if let Some(declared) = *decl_ty {
                 Some(declared)
             } else if let Some(param) = generic_decl_ty {
-                errors.push(Diagnostic::semantic(
-                    format!(
-                        "generic typed declaration for '{name}: {param}' is not supported; '{param}' is not a known type parameter"
-                    ),
-                    0,
-                    0,
-                ));
+                if !typed_named_ctor_decl_without_type_args {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "generic typed declaration for '{name}: {param}' is not supported; '{param}' is not a known type parameter"
+                        ),
+                        0,
+                        0,
+                    ));
+                }
                 None
             } else {
                 None
@@ -1024,6 +1030,7 @@ fn analyze_assign_init(
                                             args,
                                             &st.state_scalars,
                                             &HashMap::new(),
+                                            !typed_named_ctor_decl_without_type_args,
                                             errors,
                                         )
                                     } else {

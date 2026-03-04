@@ -330,10 +330,21 @@ pub(crate) fn specialize_generic_struct_template(
     })
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct GenericInferenceLocals {
     scalar_types: HashMap<String, PrimitiveType>,
     array_elem_types: HashMap<String, PrimitiveType>,
+    default_ctor_missing_type_params_to_f32: bool,
+}
+
+impl Default for GenericInferenceLocals {
+    fn default() -> Self {
+        Self {
+            scalar_types: HashMap::new(),
+            array_elem_types: HashMap::new(),
+            default_ctor_missing_type_params_to_f32: true,
+        }
+    }
 }
 
 pub(crate) fn add_decl_type_to_generic_inference_locals(
@@ -624,6 +635,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                         args,
                         &locals.scalar_types,
                         &locals.array_elem_types,
+                        locals.default_ctor_missing_type_params_to_f32,
                         errors,
                     )
                 } else {
@@ -664,14 +676,23 @@ pub(crate) fn rewrite_generic_struct_ctor_stmt(
         Stmt::Assign {
             target,
             decl_ty,
+            generic_decl_ty,
+            is_typed_decl,
             expr,
             ..
         } => {
+            let prior_default_mode = locals.default_ctor_missing_type_params_to_f32;
+            let typed_named_ctor_decl_without_type_args =
+                *is_typed_decl && decl_ty.is_none() && generic_decl_ty.is_none();
+            if typed_named_ctor_decl_without_type_args {
+                locals.default_ctor_missing_type_params_to_f32 = false;
+            }
             if let AssignTarget::Index { index, .. } = target {
                 rewrite_generic_struct_ctor_expr(index, templates, generated, errors, locals);
             }
             rewrite_generic_struct_ctor_expr(expr, templates, generated, errors, locals);
             update_generic_inference_locals_from_assign(target, *decl_ty, expr, locals);
+            locals.default_ctor_missing_type_params_to_f32 = prior_default_mode;
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_generic_struct_ctor_expr(expr, templates, generated, errors, locals);
@@ -828,11 +849,16 @@ pub(crate) fn finalize_inferred_generic_type_args(
     owner_kind: &str,
     type_params: &[String],
     bindings: &HashMap<String, PrimitiveType>,
+    default_missing_to_f32: bool,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Vec<PrimitiveType>> {
     let mut out = Vec::<PrimitiveType>::with_capacity(type_params.len());
     for param in type_params {
-        let Some(bound) = bindings.get(param).copied() else {
+        let bound = if let Some(bound) = bindings.get(param).copied() {
+            bound
+        } else if default_missing_to_f32 {
+            PrimitiveType::F32
+        } else {
             errors.push(Diagnostic::semantic(
                 format!(
                     "cannot infer generic type parameter '{}' for {} '{}' constructor; provide explicit type arguments",
@@ -853,6 +879,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
     args: &[CallArg],
     scalar_locals: &HashMap<String, PrimitiveType>,
     array_elem_locals: &HashMap<String, PrimitiveType>,
+    default_missing_to_f32: bool,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Vec<PrimitiveType>> {
     let scalar_fields = template
@@ -906,6 +933,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
         "struct",
         &template.type_params,
         &bindings,
+        default_missing_to_f32,
         errors,
     )
 }
@@ -915,6 +943,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
     args: &[CallArg],
     scalar_locals: &HashMap<String, PrimitiveType>,
     array_elem_locals: &HashMap<String, PrimitiveType>,
+    default_missing_to_f32: bool,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Vec<PrimitiveType>> {
     let mut ctor_param_names = template
@@ -990,6 +1019,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
         "processor",
         &template.type_params,
         &bindings,
+        default_missing_to_f32,
         errors,
     )
 }
