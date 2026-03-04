@@ -770,10 +770,6 @@ fn build_proc_lowering_env(
         .iter()
         .map(|p| (p.name.clone(), p.clone()))
         .collect::<HashMap<_, _>>();
-    let proc_primary_output_types = proc_defs
-        .iter()
-        .map(|p| (p.name.clone(), infer_primary_output_type_from_processor(p)))
-        .collect::<HashMap<_, _>>();
     let pre_desugar_defs = program
         .blocks
         .iter()
@@ -826,7 +822,6 @@ fn build_proc_lowering_env(
                 .unwrap_or(1),
             options,
             &proc_symbols,
-            &proc_primary_output_types,
             &struct_defs_by_name,
             &ctor_symbols,
             &pre_desugar_def_return_types,

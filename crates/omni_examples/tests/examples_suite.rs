@@ -8813,9 +8813,8 @@ sample {
 // Phase 3: Generic def parameters — typed array, untyped array, bare buffer
 // ---------------------------------------------------------------------------
 
-// Typed array param — analysis-only test (init arrays to defs is a known
-// codegen limitation regardless of typed/untyped annotation).
-// The compile-and-run tests below use buffers which do work.
+// Typed array param analysis/parsing coverage.
+// Compile-and-run coverage for typed/untyped array params appears below.
 
 const DEF_TYPED_BUFFER_PARAM: &str = r#"
 ins { in1 }
@@ -9144,6 +9143,33 @@ sample {
 fn array_param_len_forwarded_compile_and_run() {
     let frames = 4;
     let (mut instance, _, _) = compile_instance(ARRAY_PARAM_LEN_FORWARDED_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+const UNTYPED_ARRAY_PARAM_FROM_INIT_ARRAY_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+    data = [0.5, 1.0, 2.5]
+}
+def sum_first_last(arr: []) {
+    return arr[0] + arr[2]
+}
+sample {
+    out1 = sum_first_last(data)
+}
+"#;
+
+#[test]
+fn untyped_array_param_from_init_array_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) =
+        compile_instance(UNTYPED_ARRAY_PARAM_FROM_INIT_ARRAY_EXAMPLE, frames);
 
     let mut output = vec![0.0_f32; frames];
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");

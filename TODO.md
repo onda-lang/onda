@@ -158,7 +158,6 @@
   - Generic def parameters (typed array `f32[]`, untyped array `[]`, bare `buffer`, generic struct/proc params) are implemented with call-site monomorphization. ~~Phase 3~~ Done.
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.
   - Document generic ownership/error rules in a dedicated language-spec section (`T` must belong to the current generic owner).
-  - Known limitation: init-declared arrays cannot yet be passed to def functions at runtime (codegen limitation); buffer-based and struct-based generic params work fully.
 
 - Range declarations follow-ups
   - Evaluate whether range syntax should be extended to array `ins`/`params` declarations.

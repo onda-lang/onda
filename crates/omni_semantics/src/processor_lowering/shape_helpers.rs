@@ -174,7 +174,6 @@ pub(super) fn compute_proc_shape(
     sample_oversample_factor: usize,
     options: AnalysisOptions,
     proc_symbols: &HashSet<String>,
-    proc_primary_output_types: &HashMap<String, PrimitiveType>,
     struct_defs: &HashMap<String, omni_frontend::StructDef>,
     ctor_symbols: &HashSet<String>,
     fn_return_types: &HashMap<String, PrimitiveType>,
@@ -486,14 +485,13 @@ pub(super) fn compute_proc_shape(
                 },
             );
 
-            if let Some(primary_ty) = proc_primary_output_types.get(&nested.proc_name).copied() {
-                proc_state_scalars
-                    .entry(declared_type_key(
-                        DECLARED_FUNCTION_RETURN_TYPE_PREFIX,
-                        instance_name,
-                    ))
-                    .or_insert(primary_ty);
-            }
+            let primary_ty = infer_primary_output_type_from_processor(target_proc);
+            proc_state_scalars
+                .entry(declared_type_key(
+                    DECLARED_FUNCTION_RETURN_TYPE_PREFIX,
+                    instance_name,
+                ))
+                .or_insert(primary_ty);
 
             let (nested_param_specs, _) =
                 expand_proc_param_specs(&target_proc.name, &target_proc.params, options, errors);
