@@ -395,12 +395,26 @@ pub(super) fn parse_array_type_spec(
         Rule::qualified_ident | Rule::namespace_ref => {
             ArrayElemType::Struct(elem_pair.as_str().to_owned())
         }
+        Rule::array_named_type => {
+            ArrayElemType::Struct(parse_array_named_type_base_name(elem_pair)?)
+        }
         _ => return Err(vec![Diagnostic::syntax("invalid array element type", 0, 0)]),
     };
     Ok(ArrayTypeSpec {
         elem,
         size: Box::new(parse_expr_inner(size_pair)),
     })
+}
+
+fn parse_array_named_type_base_name(pair: Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::array_named_type {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected named array element type",
+            0,
+            0,
+        )]);
+    }
+    Ok(pair.as_str().to_owned())
 }
 
 pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Diagnostic>> {

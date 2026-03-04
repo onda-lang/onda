@@ -9178,3 +9178,283 @@ fn untyped_array_param_from_init_array_compile_and_run() {
         assert_near(*sample, 3.0, 1e-6);
     }
 }
+
+const GENERIC_STRUCT_ARRAY_EXPLICIT_F32_TYPE_ARG_EXAMPLE: &str = r#"
+outs { out1 }
+struct Stereo[T] {
+  v: T[2]
+}
+init {
+  data: Stereo[f32][1000]
+}
+sample {
+  s = data[10]
+  s.v[0] = 0.5
+  s.v[1] = 1.5
+  out1 = s.v[0] + s.v[1]
+}
+"#;
+
+#[test]
+fn generic_struct_array_explicit_f32_type_arg_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) =
+        compile_instance(GENERIC_STRUCT_ARRAY_EXPLICIT_F32_TYPE_ARG_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+const GENERIC_STRUCT_ARRAY_IMPLICIT_DEFAULT_F32_EXAMPLE: &str = r#"
+outs { out1 }
+struct Stereo[T] {
+  v: T[2]
+}
+init {
+  data: Stereo[1000]
+}
+sample {
+  s = data[10]
+  s.v[0] = 1.0
+  s.v[1] = 2.0
+  out1 = s.v[0] + s.v[1]
+}
+"#;
+
+#[test]
+fn generic_struct_array_implicit_default_f32_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) =
+        compile_instance(GENERIC_STRUCT_ARRAY_IMPLICIT_DEFAULT_F32_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+const GENERIC_STRUCT_ARRAY_EXPLICIT_F64_TYPE_ARG_EXAMPLE: &str = r#"
+outs { out1 }
+struct Stereo[T] {
+  v: T[2]
+}
+init {
+  data: Stereo[f64][1000]
+}
+sample {
+  s = data[10]
+  s.v[0] = f64(0.5)
+  s.v[1] = f64(1.5)
+  out1 = f32(s.v[0] + s.v[1])
+}
+"#;
+
+#[test]
+fn generic_struct_array_explicit_f64_type_arg_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) =
+        compile_instance(GENERIC_STRUCT_ARRAY_EXPLICIT_F64_TYPE_ARG_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+const GENERIC_STRUCT_ARRAY_EXPLICIT_I32_TYPE_ARG_EXAMPLE: &str = r#"
+outs { out1 }
+struct Stereo[T] {
+  v: T[2]
+}
+init {
+  data: Stereo[i32][1000]
+}
+sample {
+  s = data[10]
+  s.v[0] = 1
+  s.v[1] = 2
+  out1 = f32(s.v[0] + s.v[1])
+}
+"#;
+
+#[test]
+fn generic_struct_array_explicit_i32_type_arg_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) =
+        compile_instance(GENERIC_STRUCT_ARRAY_EXPLICIT_I32_TYPE_ARG_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+const GENERIC_STRUCT_ARRAY_EXPLICIT_I64_TYPE_ARG_EXAMPLE: &str = r#"
+outs { out1 }
+struct Stereo[T] {
+  v: T[2]
+}
+init {
+  data: Stereo[i64][1000]
+}
+sample {
+  s = data[10]
+  s.v[0] = i64(1)
+  s.v[1] = i64(3)
+  out1 = f32(s.v[0] + s.v[1])
+}
+"#;
+
+#[test]
+fn generic_struct_array_explicit_i64_type_arg_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) =
+        compile_instance(GENERIC_STRUCT_ARRAY_EXPLICIT_I64_TYPE_ARG_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 4.0, 1e-6);
+    }
+}
+
+const GENERIC_STRUCT_ARRAY_EXPLICIT_BOOL_TYPE_ARG_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+struct Stereo[T] {
+  v: T[2]
+}
+init {
+  data: Stereo[bool][1000]
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
+#[test]
+fn generic_struct_array_explicit_bool_type_arg_is_rejected() {
+    let parsed =
+        parse_program(GENERIC_STRUCT_ARRAY_EXPLICIT_BOOL_TYPE_ARG_ERROR_EXAMPLE).expect("parse");
+    let errs = analyze(parsed).expect_err("bool generic arg should be rejected");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("bool") && d.message.contains("generic type")),
+        "expected bool generic type arg rejection, got {:?}",
+        errs
+    );
+}
+
+const GENERIC_STRUCT_TWO_TYPE_PARAMS_EXPLICIT_TYPE_ARGS_EXAMPLE: &str = r#"
+outs { out1 }
+struct Pair[T, U] {
+  a: T
+  b: U
+}
+init {
+  p = Pair[f32, i64](1.5, i64(2))
+}
+sample {
+  out1 = p.a + f32(p.b)
+}
+"#;
+
+#[test]
+fn generic_struct_two_type_params_explicit_type_args_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(
+        GENERIC_STRUCT_TWO_TYPE_PARAMS_EXPLICIT_TYPE_ARGS_EXAMPLE,
+        frames,
+    );
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.5, 1e-6);
+    }
+}
+
+const GENERIC_STRUCT_ARRAY_TWO_TYPE_PARAMS_EXPLICIT_TYPE_ARGS_EXAMPLE: &str = r#"
+outs { out1 }
+struct Pair[T, U] {
+  a: T
+  b: U
+}
+init {
+  data: Pair[f32, i64][1000]
+}
+sample {
+  s = data[10]
+  s.a = 0.5
+  s.b = i64(3)
+  out1 = s.a + f32(s.b)
+}
+"#;
+
+#[test]
+fn generic_struct_array_two_type_params_explicit_type_args_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(
+        GENERIC_STRUCT_ARRAY_TWO_TYPE_PARAMS_EXPLICIT_TYPE_ARGS_EXAMPLE,
+        frames,
+    );
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.5, 1e-6);
+    }
+}
+
+const GENERIC_PROC_TWO_TYPE_PARAMS_EXPLICIT_TYPE_ARGS_EXAMPLE: &str = r#"
+proc Duo[T, U] {
+  ins {
+    in1: T
+    in2: U
+  }
+  outs {
+    out1: T
+    out2: U
+  }
+  sample {
+    out1 = in1
+    out2 = in2
+  }
+}
+outs { out1 }
+init {
+  p = Duo[f32, i64]()
+}
+sample {
+  p(1.25, i64(2))
+  out1 = p.out1 + f32(p.out2)
+}
+"#;
+
+#[test]
+fn generic_proc_two_type_params_explicit_type_args_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(
+        GENERIC_PROC_TWO_TYPE_PARAMS_EXPLICIT_TYPE_ARGS_EXAMPLE,
+        frames,
+    );
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.25, 1e-6);
+    }
+}

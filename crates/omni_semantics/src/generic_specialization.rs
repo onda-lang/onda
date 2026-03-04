@@ -450,6 +450,75 @@ pub(crate) fn update_generic_inference_locals_from_assign(
     }
 }
 
+fn parse_primitive_type_arg_token(token: &str) -> Option<PrimitiveType> {
+    match token {
+        "f32" => Some(PrimitiveType::F32),
+        "f64" => Some(PrimitiveType::F64),
+        "i32" => Some(PrimitiveType::I32),
+        "i64" => Some(PrimitiveType::I64),
+        "bool" => Some(PrimitiveType::Bool),
+        _ => None,
+    }
+}
+
+fn is_simple_ident_token(token: &str) -> bool {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn split_trailing_bracket_group(text: &str) -> Option<(String, String)> {
+    if !text.ends_with(']') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (idx, ch) in text.char_indices().rev() {
+        match ch {
+            ']' => depth += 1,
+            '[' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let base = text[..idx].trim().to_owned();
+                    let args = text[idx + 1..text.len() - 1].trim().to_owned();
+                    if base.is_empty() || args.is_empty() {
+                        return None;
+                    }
+                    return Some((base, args));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_array_struct_elem_with_type_args(text: &str) -> Option<(String, Vec<CallTypeArg>)> {
+    let (base, args_text) = split_trailing_bracket_group(text)?;
+    let mut args = Vec::<CallTypeArg>::new();
+    for raw in args_text.split(',') {
+        let token = raw.trim();
+        if token.is_empty() {
+            return None;
+        }
+        if let Some(prim) = parse_primitive_type_arg_token(token) {
+            args.push(CallTypeArg::Primitive(prim));
+        } else if is_simple_ident_token(token) {
+            args.push(CallTypeArg::Generic(token.to_owned()));
+        } else {
+            return None;
+        }
+    }
+    Some((base, args))
+}
+
 pub(crate) fn rewrite_generic_struct_ctor_expr(
     expr: &mut Expr,
     templates: &HashMap<String, StructDef>,
@@ -462,6 +531,52 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
             rewrite_generic_struct_ctor_expr(index, templates, generated, errors, locals);
         }
         Expr::ArrayCtor { spec, init } => {
+            if let ArrayElemType::Struct(elem_name) = &mut spec.elem {
+                let elem_text = elem_name.clone();
+                let (template_lookup_name, explicit_type_args) =
+                    match parse_array_struct_elem_with_type_args(&elem_text) {
+                        Some((base, type_args)) => (base, Some(type_args)),
+                        None => (elem_text.clone(), None),
+                    };
+                if let Some(template) = templates.get(template_lookup_name.as_str()) {
+                    if !template.type_params.is_empty() {
+                        let type_args_to_use = if let Some(type_args) = explicit_type_args {
+                            let Some(resolved) = resolve_explicit_call_type_args(
+                                &type_args,
+                                &format!("array element type '{}'", elem_text),
+                                errors,
+                            ) else {
+                                return;
+                            };
+                            if resolved.len() != template.type_params.len() {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "array element type '{}' expects {} type arguments, got {}",
+                                        template_lookup_name.as_str(),
+                                        template.type_params.len(),
+                                        resolved.len()
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                                return;
+                            }
+                            resolved
+                        } else {
+                            vec![PrimitiveType::F32; template.type_params.len()]
+                        };
+                        if let Some(specialized) =
+                            specialize_generic_struct_template(template, &type_args_to_use, errors)
+                        {
+                            let specialized_name = specialized.name.clone();
+                            generated
+                                .entry(specialized_name.clone())
+                                .or_insert(specialized);
+                            *elem_name = specialized_name;
+                        }
+                    }
+                }
+            }
             rewrite_generic_struct_ctor_expr(&mut spec.size, templates, generated, errors, locals);
             if let Some(values) = init {
                 for value in values {
