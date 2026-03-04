@@ -183,6 +183,11 @@ fn register_data_struct_root_inner(
             struct_name: struct_name.to_owned(),
             len,
         });
+    // Mark the root symbol so index validation can recognize `base[idx]` even
+    // when the struct has no scalar/array fields to contribute `base.*` keys.
+    state_scalars
+        .entry(declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, base))
+        .or_insert(PrimitiveType::F32);
 
     stack.push(struct_name.to_owned());
     for field in fields {

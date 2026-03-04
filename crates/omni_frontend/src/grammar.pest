@@ -131,7 +131,8 @@ term = _{ call_field_expr | call_expr | index_expr | array_lit | bool_lit | numb
 array_lit = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 call_field_expr = { call_expr ~ "." ~ ident }
 call_expr = { call_target ~ generic_type_arg_list? ~ "(" ~ arg_list? ~ ")" }
-call_target = { call_index_target | namespace_ref | path_ident }
+call_target = { call_index_member_target | call_index_target | namespace_ref | path_ident }
+call_index_member_target = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
 call_index_target = { path_ident ~ "[" ~ expr ~ "]" ~ !"::" }
 arg_list = { call_arg ~ ("," ~ call_arg)* }
 call_arg = { (ident ~ "=")? ~ expr }

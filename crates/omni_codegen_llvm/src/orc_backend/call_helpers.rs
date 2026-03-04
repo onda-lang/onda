@@ -118,6 +118,110 @@ pub(super) fn checked_len_const_i32(len: usize, context: &str) -> Result<u64, Di
     Ok(len as u64)
 }
 
+fn parse_proc_index_buffer_selector_args<'a>(
+    arg_expr: &'a Expr,
+    callee_name: &str,
+    context: &str,
+) -> Result<(&'a Expr, Vec<&'a Expr>), Diagnostic> {
+    let Expr::UserCall {
+        name,
+        type_args,
+        args,
+    } = arg_expr
+    else {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' buffer argument must be a buffer symbol variable in {context}"
+        )));
+    };
+    if name != PROC_INDEX_BUFFER_SELECT_SENTINEL {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' buffer argument must be a buffer symbol variable in {context}"
+        )));
+    }
+    if !type_args.is_empty() {
+        return Err(Diagnostic::internal(format!(
+            "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' does not support type arguments in {context}"
+        )));
+    }
+
+    let mut index_expr = None::<&Expr>;
+    let mut slot_exprs = Vec::<&Expr>::new();
+    for arg in args {
+        match arg.name.as_deref() {
+            Some(PROC_INDEX_BASE_ARG) => {
+                if !matches!(arg.expr, Expr::Var(_)) {
+                    return Err(Diagnostic::internal(format!(
+                        "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' expects '{PROC_INDEX_BASE_ARG}' as identifier in {context}"
+                    )));
+                }
+            }
+            Some(PROC_INDEX_EXPR_ARG) => {
+                index_expr = Some(&arg.expr);
+            }
+            Some(other) => {
+                return Err(Diagnostic::internal(format!(
+                    "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' has unsupported named argument '{other}' in {context}"
+                )));
+            }
+            None => slot_exprs.push(&arg.expr),
+        }
+    }
+
+    let index_expr = index_expr.ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' is missing '{PROC_INDEX_EXPR_ARG}' in {context}"
+        ))
+    })?;
+    if slot_exprs.is_empty() {
+        return Err(Diagnostic::internal(format!(
+            "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' requires at least one slot buffer argument in {context}"
+        )));
+    }
+    Ok((index_expr, slot_exprs))
+}
+
+pub(super) unsafe fn select_def_value_by_slot_index(
+    ctx: &mut DefLoweringCtx<'_>,
+    slot_index: LLVMValueRef,
+    candidates: &[LLVMValueRef],
+    select_name: &[u8],
+    context: &str,
+) -> Result<LLVMValueRef, Diagnostic> {
+    let Some(first) = candidates.first().copied() else {
+        return Err(Diagnostic::internal(format!(
+            "missing selector candidates in {context}"
+        )));
+    };
+    let elem_ty = LLVMTypeOf(first);
+    if candidates
+        .iter()
+        .any(|candidate| LLVMTypeOf(*candidate) != elem_ty)
+    {
+        return Err(Diagnostic::internal(format!(
+            "selector candidates have mismatched LLVM types in {context}"
+        )));
+    }
+    let mut selected = first;
+    for (slot_idx, candidate) in candidates.iter().enumerate().skip(1) {
+        let is_match = LLVMBuildICmp(
+            ctx.builder,
+            llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+            slot_index,
+            LLVMConstInt(ctx.i32_ty, slot_idx as u64, 0),
+            b"idx_sel_match\0".as_ptr().cast(),
+        );
+        selected = LLVMBuildSelect(
+            ctx.builder,
+            is_match,
+            *candidate,
+            selected,
+            select_name.as_ptr().cast(),
+        );
+    }
+    debug_assert_eq!(LLVMTypeOf(selected), elem_ty);
+    Ok(selected)
+}
+
 pub(super) fn local_data_alias_len(alias: &LocalArrayAlias) -> usize {
     match alias {
         LocalArrayAlias::Primitive { len, .. } | LocalArrayAlias::Struct { len, .. } => *len,
@@ -821,73 +925,286 @@ pub(super) unsafe fn lower_struct_call_args_in_orc(
     struct_name: &str,
     callee_name: &str,
     by_ref: bool,
+    locals: &HashMap<String, OrcValue>,
+    local_aliases: &HashMap<String, AliasSlot>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<(), Diagnostic> {
-    let base = match arg_expr {
-        Expr::Var(name) => name,
-        _ => {
-            return Err(Diagnostic::internal(format!(
-                "function '{callee_name}' expects struct '{struct_name}' argument as a variable reference in ORC lowering"
-            )));
-        }
-    };
     let fields = ctx.struct_fields.get(struct_name).ok_or_else(|| {
         Diagnostic::internal(format!(
             "unknown struct '{struct_name}' in ORC call lowering for function '{callee_name}'"
         ))
     })?;
-    for field in fields {
-        let flat = format!("{base}.{}", field.name);
-        match field.ty {
-            TypedFieldType::Scalar(_) => {
-                let slot = ctx.state_slots.get(&flat).ok_or_else(|| {
+    match arg_expr {
+        Expr::Var(base) => {
+            for field in fields {
+                let flat = format!("{base}.{}", field.name);
+                match field.ty {
+                    TypedFieldType::Scalar(_) => {
+                        let slot = ctx.state_slots.get(&flat).ok_or_else(|| {
+                            Diagnostic::internal(format!(
+                                "missing state slot for struct field '{flat}' while calling '{callee_name}'"
+                            ))
+                        })?;
+                        if by_ref {
+                            out_args.push(slot.ptr);
+                        } else {
+                            let value = LLVMBuildLoad2(
+                                ctx.builder,
+                                llvm_ty_for_primitive(ctx.context, slot.ty),
+                                slot.ptr,
+                                b"struct_arg_load\0".as_ptr().cast(),
+                            );
+                            out_args.push(value);
+                        }
+                    }
+                    TypedFieldType::Array(_) => {
+                        let mut symbols = Vec::<String>::new();
+                        if let Some(elem_struct) = &field.array_elem_struct {
+                            let root_len = *ctx.array_struct_len.get(&flat).ok_or_else(|| {
+                                Diagnostic::internal(format!(
+                                    "missing array[Struct] length metadata for '{flat}' while lowering struct argument for '{callee_name}'"
+                                ))
+                            })?;
+                            let mut roots = Vec::new();
+                            let mut leaves = Vec::new();
+                            collect_array_struct_bindings(
+                                ctx.struct_fields,
+                                elem_struct,
+                                &flat,
+                                root_len,
+                                &mut roots,
+                                &mut leaves,
+                                &mut Vec::new(),
+                            )?;
+                            symbols.extend(leaves.into_iter().map(|(name, _, _)| name));
+                        } else {
+                            symbols.push(flat.clone());
+                        }
+                        for symbol in symbols {
+                            let array_base_ptr = *ctx.array_base_ptrs.get(&symbol).ok_or_else(|| {
+                                Diagnostic::internal(format!(
+                                    "missing array symbol '{symbol}' while lowering struct argument for '{callee_name}'"
+                                ))
+                            })?;
+                            out_args.push(array_base_ptr);
+                        }
+                    }
+                }
+            }
+        }
+        Expr::Index { base, index } => {
+            let local_alias = if let Some(alias) = local_array_aliases.get(base) {
+                Some(alias)
+            } else if let Some(stripped) = base.strip_prefix("self.") {
+                local_array_aliases.get(stripped)
+            } else {
+                let self_base = format!("self.{base}");
+                if let Some(alias) = local_array_aliases.get(&self_base) {
+                    Some(alias)
+                } else {
+                    let suffix = format!(".{base}");
+                    let matches = local_array_aliases
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            if k.ends_with(&suffix) && matches!(v, LocalArrayAlias::Struct { .. }) {
+                                Some(v)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    if matches.len() > 1 {
+                        return Err(Diagnostic::internal(format!(
+                            "ambiguous struct-array alias base '{base}[...]' in ORC lowering"
+                        )));
+                    }
+                    matches.first().copied()
+                }
+            };
+            let (resolved_base, clamped_index) = if let Some(alias) = local_alias {
+                match alias {
+                    LocalArrayAlias::Primitive { .. } => {
+                        return Err(Diagnostic::internal(format!(
+                            "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' resolves to a primitive array alias in ORC lowering"
+                        )));
+                    }
+                    LocalArrayAlias::Struct {
+                        root_base,
+                        elem_struct,
+                        len,
+                        start_index,
+                    } => {
+                        if elem_struct != struct_name {
+                            return Err(Diagnostic::internal(format!(
+                                "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' alias element type is '{elem_struct}' in ORC lowering"
+                            )));
+                        }
+                        if *len == 0 {
+                            return Err(Diagnostic::internal(format!(
+                                "struct-array alias argument '{base}' has zero length in ORC lowering for function '{callee_name}'"
+                            )));
+                        }
+                        let raw_index =
+                            lower_expr(index, ctx, locals, local_aliases, local_array_aliases)?;
+                        let index_i32 = cast_orc_value_to(
+                            ctx,
+                            raw_index,
+                            PrimitiveType::I32,
+                            b"struct_idx_alias_i32\0",
+                        );
+                        let clamped_local_idx =
+                            clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, *len)?;
+                        let global_index = LLVMBuildAdd(
+                            ctx.builder,
+                            *start_index,
+                            clamped_local_idx,
+                            b"struct_idx_alias_global\0".as_ptr().cast(),
+                        );
+                        (root_base.clone(), global_index)
+                    }
+                }
+            } else {
+                let self_base = format!("self.{base}");
+                let suffix = format!(".{base}");
+                let suffix_match = if !ctx.array_struct_roots.contains_key(base)
+                    && !ctx.array_struct_roots.contains_key(&self_base)
+                {
+                    let matches = ctx
+                        .array_struct_roots
+                        .keys()
+                        .filter(|k| k.ends_with(&suffix))
+                        .collect::<Vec<_>>();
+                    if matches.len() > 1 {
+                        return Err(Diagnostic::internal(format!(
+                            "ambiguous struct-array root base '{base}[...]' in ORC lowering"
+                        )));
+                    }
+                    matches.into_iter().next().map(|k| k.as_str())
+                } else {
+                    None
+                };
+                let resolved_base = if ctx.array_struct_roots.contains_key(base) {
+                    base.as_str()
+                } else if ctx.array_struct_roots.contains_key(&self_base) {
+                    self_base.as_str()
+                } else if let Some(stripped) = base.strip_prefix("self.") {
+                    if ctx.array_struct_roots.contains_key(stripped) {
+                        stripped
+                    } else {
+                        suffix_match.unwrap_or(base.as_str())
+                    }
+                } else {
+                    suffix_match.unwrap_or(base.as_str())
+                };
+                let resolved_base = resolved_base.to_owned();
+                let Some(indexed_struct) =
+                    ctx.array_struct_roots.get(resolved_base.as_str()).cloned()
+                else {
+                    return Err(Diagnostic::internal(format!(
+                        "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' is not a struct-array root in ORC lowering"
+                    )));
+                };
+                if indexed_struct != struct_name {
+                    return Err(Diagnostic::internal(format!(
+                        "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' has element type '{indexed_struct}' in ORC lowering"
+                    )));
+                }
+                let len = ctx
+                    .array_struct_len
+                    .get(resolved_base.as_str())
+                    .copied()
+                    .ok_or_else(|| {
                     Diagnostic::internal(format!(
-                        "missing state slot for struct field '{flat}' while calling '{callee_name}'"
+                        "missing struct-array length metadata for '{resolved_base}[...]' in ORC lowering for function '{callee_name}'"
                     ))
                 })?;
-                if by_ref {
-                    out_args.push(slot.ptr);
-                } else {
-                    let value = LLVMBuildLoad2(
-                        ctx.builder,
-                        llvm_ty_for_primitive(ctx.context, slot.ty),
-                        slot.ptr,
-                        b"struct_arg_load\0".as_ptr().cast(),
-                    );
-                    out_args.push(value);
+                if len == 0 {
+                    return Err(Diagnostic::internal(format!(
+                        "struct-array argument '{resolved_base}' has zero length in ORC lowering for function '{callee_name}'"
+                    )));
+                };
+                let clamped_index = lower_clamped_data_index(
+                    ctx,
+                    index,
+                    len,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                )?;
+                (resolved_base, clamped_index)
+            };
+
+            for field in fields {
+                let flat = format!("{resolved_base}.{}", field.name);
+                match field.ty {
+                    TypedFieldType::Scalar(prim) => {
+                        let ptr = load_data_ptr_at_index(
+                            ctx,
+                            &flat,
+                            prim,
+                            clamped_index,
+                            b"struct_idx_arg_ptr\0",
+                        )?;
+                        if by_ref {
+                            out_args.push(ptr);
+                        } else {
+                            let value = LLVMBuildLoad2(
+                                ctx.builder,
+                                llvm_ty_for_primitive(ctx.context, prim),
+                                ptr,
+                                b"struct_idx_arg_load\0".as_ptr().cast(),
+                            );
+                            out_args.push(value);
+                        }
+                    }
+                    TypedFieldType::Array(field_len) => {
+                        let start_idx = build_data_segment_start_index(
+                            ctx.builder,
+                            ctx.i32_ty,
+                            clamped_index,
+                            field_len,
+                        )?;
+                        if let Some(elem_struct) = &field.array_elem_struct {
+                            let mut roots = Vec::new();
+                            let mut leaves = Vec::new();
+                            collect_array_struct_bindings(
+                                ctx.struct_fields,
+                                elem_struct,
+                                &flat,
+                                field_len,
+                                &mut roots,
+                                &mut leaves,
+                                &mut Vec::new(),
+                            )?;
+                            for (leaf_name, _, leaf_ty) in leaves {
+                                let ptr = load_data_ptr_at_index(
+                                    ctx,
+                                    &leaf_name,
+                                    leaf_ty,
+                                    start_idx,
+                                    b"struct_idx_leaf_ptr\0",
+                                )?;
+                                out_args.push(ptr);
+                            }
+                        } else {
+                            let elem_ty = field.array_elem_ty.unwrap_or(PrimitiveType::F32);
+                            let ptr = load_data_ptr_at_index(
+                                ctx,
+                                &flat,
+                                elem_ty,
+                                start_idx,
+                                b"struct_idx_arr_ptr\0",
+                            )?;
+                            out_args.push(ptr);
+                        }
+                    }
                 }
             }
-            TypedFieldType::Array(_) => {
-                let mut symbols = Vec::<String>::new();
-                if let Some(elem_struct) = &field.array_elem_struct {
-                    let root_len = *ctx.array_struct_len.get(&flat).ok_or_else(|| {
-                        Diagnostic::internal(format!(
-                            "missing array[Struct] length metadata for '{flat}' while lowering struct argument for '{callee_name}'"
-                        ))
-                    })?;
-                    let mut roots = Vec::new();
-                    let mut leaves = Vec::new();
-                    collect_array_struct_bindings(
-                        ctx.struct_fields,
-                        elem_struct,
-                        &flat,
-                        root_len,
-                        &mut roots,
-                        &mut leaves,
-                        &mut Vec::new(),
-                    )?;
-                    symbols.extend(leaves.into_iter().map(|(name, _, _)| name));
-                } else {
-                    symbols.push(flat.clone());
-                }
-                for symbol in symbols {
-                    let array_base_ptr = *ctx.array_base_ptrs.get(&symbol).ok_or_else(|| {
-                        Diagnostic::internal(format!(
-                            "missing array symbol '{symbol}' while lowering struct argument for '{callee_name}'"
-                        ))
-                    })?;
-                    out_args.push(array_base_ptr);
-                }
-            }
+        }
+        _ => {
+            return Err(Diagnostic::internal(format!(
+                "function '{callee_name}' expects struct '{struct_name}' argument as a variable or indexed struct-array element in ORC lowering"
+            )));
         }
     }
     Ok(())
@@ -957,31 +1274,117 @@ pub(super) unsafe fn lower_buffer_call_args_in_orc(
     out_args: &mut Vec<LLVMValueRef>,
     arg_expr: &Expr,
     callee_name: &str,
+    locals: &HashMap<String, OrcValue>,
+    local_aliases: &HashMap<String, AliasSlot>,
 ) -> Result<(), Diagnostic> {
-    let Expr::Var(base) = arg_expr else {
-        return Err(Diagnostic::internal(format!(
-            "function '{callee_name}' buffer argument must be a buffer symbol variable in ORC expression lowering"
-        )));
-    };
-    if let Ok((ptr, frames, channels)) = load_orc_buffer_binding_tuple(ctx, base) {
-        push_buffer_tuple(out_args, ptr, frames, channels);
-        return Ok(());
+    if let Expr::Var(base) = arg_expr {
+        if let Ok((ptr, frames, channels)) = load_orc_buffer_binding_tuple(ctx, base) {
+            push_buffer_tuple(out_args, ptr, frames, channels);
+            return Ok(());
+        }
+
+        // Allow untyped indexable params to accept primitive arrays by adapting
+        // them to a mono buffer tuple: (ptr, frames=len, channels=1).
+        let (_elem_ty, len) =
+            infer_array_arg_signature_in_orc(ctx, local_array_aliases, arg_expr, callee_name)?;
+        return lower_array_as_mono_buffer_tuple(
+            out_args,
+            ctx.i32_ty,
+            base,
+            len,
+            "ORC expression lowering",
+            |ptr_out| {
+                lower_array_call_args_in_orc(
+                    ctx,
+                    local_array_aliases,
+                    ptr_out,
+                    arg_expr,
+                    callee_name,
+                )
+            },
+        );
     }
 
-    // Allow untyped indexable params to accept primitive arrays by adapting
-    // them to a mono buffer tuple: (ptr, frames=len, channels=1).
-    let (_elem_ty, len) =
-        infer_array_arg_signature_in_orc(ctx, local_array_aliases, arg_expr, callee_name)?;
-    lower_array_as_mono_buffer_tuple(
-        out_args,
+    let (index_expr, slot_exprs) =
+        parse_proc_index_buffer_selector_args(arg_expr, callee_name, "ORC expression lowering")?;
+    let clamped_idx = lower_clamped_data_index(
+        ctx,
+        index_expr,
+        slot_exprs.len(),
+        locals,
+        local_aliases,
+        local_array_aliases,
+    )?;
+    let slot_buffer_indices = slot_exprs
+        .iter()
+        .map(|slot_expr| match slot_expr {
+            Expr::Var(base) => ctx.buffer_index.get(base).copied(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' slot arguments must resolve to declared runtime buffers in ORC expression lowering"
+            ))
+        })?;
+
+    let proc_slot_refs = ctx
+        .proc_slot_buffer_refs
+        .get(&slot_buffer_indices)
+        .ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "missing proc-slot buffer-ref metadata for selector signature {:?} in ORC expression lowering",
+                slot_buffer_indices
+            ))
+        })?;
+    if proc_slot_refs.len != slot_buffer_indices.len() {
+        return Err(Diagnostic::internal(
+            "proc-slot buffer-ref metadata length mismatch in ORC expression lowering",
+        ));
+    }
+    let i8_ty = LLVMInt8TypeInContext(ctx.context);
+    let i8_ptr_ty = LLVMPointerType(i8_ty, 0);
+    let ptr_ptr = build_ptr_offset(
+        ctx.builder,
+        i8_ptr_ty,
+        proc_slot_refs.ptrs_base,
+        clamped_idx,
+        b"proc_buf_ref_ptr_ptr\0",
+    );
+    let ptr = LLVMBuildLoad2(
+        ctx.builder,
+        i8_ptr_ty,
+        ptr_ptr,
+        b"proc_buf_ref_ptr\0".as_ptr().cast(),
+    );
+    let frames_ptr = build_ptr_offset(
+        ctx.builder,
         ctx.i32_ty,
-        base,
-        len,
-        "ORC expression lowering",
-        |ptr_out| {
-            lower_array_call_args_in_orc(ctx, local_array_aliases, ptr_out, arg_expr, callee_name)
-        },
-    )
+        proc_slot_refs.frames_base,
+        clamped_idx,
+        b"proc_buf_ref_frames_ptr\0",
+    );
+    let frames = LLVMBuildLoad2(
+        ctx.builder,
+        ctx.i32_ty,
+        frames_ptr,
+        b"proc_buf_ref_frames\0".as_ptr().cast(),
+    );
+    let channels_ptr = build_ptr_offset(
+        ctx.builder,
+        ctx.i32_ty,
+        proc_slot_refs.channels_base,
+        clamped_idx,
+        b"proc_buf_ref_chans_ptr\0",
+    );
+    let channels = LLVMBuildLoad2(
+        ctx.builder,
+        ctx.i32_ty,
+        channels_ptr,
+        b"proc_buf_ref_chans\0".as_ptr().cast(),
+    );
+    push_buffer_tuple(out_args, ptr, frames, channels);
+    Ok(())
 }
 
 pub(super) fn infer_buffer_arg_signature_in_orc(
@@ -990,20 +1393,39 @@ pub(super) fn infer_buffer_arg_signature_in_orc(
     arg_expr: &Expr,
     callee_name: &str,
 ) -> Result<(PrimitiveType, TypedBufferChannels), Diagnostic> {
-    let Expr::Var(base) = arg_expr else {
-        return Err(Diagnostic::internal(format!(
-            "function '{callee_name}' buffer argument must be a buffer symbol variable in ORC expression lowering"
-        )));
-    };
-    if let (Some(elem_ty), Some(channels)) = (
-        ctx.buffer_elem_types.get(base).copied(),
-        ctx.buffer_channels.get(base).cloned(),
-    ) {
-        return Ok((elem_ty, channels));
+    if let Expr::Var(base) = arg_expr {
+        if let (Some(elem_ty), Some(channels)) = (
+            ctx.buffer_elem_types.get(base).copied(),
+            ctx.buffer_channels.get(base).cloned(),
+        ) {
+            return Ok((elem_ty, channels));
+        }
+        let (elem_ty, _len) =
+            infer_array_arg_signature_in_orc(ctx, local_array_aliases, arg_expr, callee_name)?;
+        return Ok((elem_ty, TypedBufferChannels::Mono));
     }
-    let (elem_ty, _len) =
-        infer_array_arg_signature_in_orc(ctx, local_array_aliases, arg_expr, callee_name)?;
-    Ok((elem_ty, TypedBufferChannels::Mono))
+
+    let (_index_expr, slot_exprs) =
+        parse_proc_index_buffer_selector_args(arg_expr, callee_name, "ORC expression lowering")?;
+    let mut inferred = None::<(PrimitiveType, TypedBufferChannels)>;
+    for slot_expr in slot_exprs {
+        let sig =
+            infer_buffer_arg_signature_in_orc(ctx, local_array_aliases, slot_expr, callee_name)?;
+        if let Some(prev) = &inferred {
+            if prev != &sig {
+                return Err(Diagnostic::internal(format!(
+                    "function '{callee_name}' buffer selector argument mixes incompatible slot buffer signatures in ORC expression lowering"
+                )));
+            }
+        } else {
+            inferred = Some(sig);
+        }
+    }
+    inferred.ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "function '{callee_name}' buffer selector argument has no slots in ORC expression lowering"
+        ))
+    })
 }
 
 pub(super) fn infer_array_arg_signature_in_orc(
@@ -1132,53 +1554,115 @@ pub(super) unsafe fn lower_buffer_call_args_in_def(
     arg_expr: &Expr,
     callee_name: &str,
 ) -> Result<(), Diagnostic> {
-    let Expr::Var(base) = arg_expr else {
-        return Err(Diagnostic::internal(format!(
-            "function '{callee_name}' buffer argument must be a buffer symbol variable in def lowering"
-        )));
-    };
-    if let Some(info) = ctx.buffer_params.get(base) {
-        push_buffer_tuple(out_args, info.ptr, info.frames, info.channels);
-        return Ok(());
+    if let Expr::Var(base) = arg_expr {
+        if let Some(info) = ctx.buffer_params.get(base) {
+            push_buffer_tuple(out_args, info.ptr, info.frames, info.channels);
+            return Ok(());
+        }
+
+        // Allow untyped indexable params to accept primitive arrays by adapting
+        // them to a mono buffer tuple: (ptr, frames=len, channels=1).
+        let (_elem_ty, len) = infer_array_arg_signature_in_def(ctx, arg_expr, callee_name)?;
+        // Check for runtime length value from array param
+        let runtime_len = ctx.array_len_values.get(base).copied();
+        return lower_array_as_mono_buffer_tuple_ext(
+            out_args,
+            ctx.i32_ty,
+            base,
+            len,
+            runtime_len,
+            "def lowering",
+            |ptr_out| {
+                // Only push the pointer, not the length (buffer tuple has its own format)
+                let Expr::Var(b) = arg_expr else {
+                    unreachable!()
+                };
+                if let Some(alias) = ctx.local_array_aliases.get(b) {
+                    return match alias {
+                        LocalArrayAlias::Primitive { base_ptr, .. } => {
+                            ptr_out.push(*base_ptr);
+                            Ok(())
+                        }
+                        LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
+                            "function '{callee_name}' array argument '{b}' must have primitive elements in def lowering"
+                        ))),
+                    };
+                }
+                let ptr = *ctx.array_ptrs.get(b).ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "unknown array symbol '{b}' in def array call argument lowering"
+                    ))
+                })?;
+                ptr_out.push(ptr);
+                Ok(())
+            },
+        );
     }
 
-    // Allow untyped indexable params to accept primitive arrays by adapting
-    // them to a mono buffer tuple: (ptr, frames=len, channels=1).
-    let (_elem_ty, len) = infer_array_arg_signature_in_def(ctx, arg_expr, callee_name)?;
-    // Check for runtime length value from array param
-    let runtime_len = ctx.array_len_values.get(base).copied();
-    lower_array_as_mono_buffer_tuple_ext(
-        out_args,
-        ctx.i32_ty,
-        base,
-        len,
-        runtime_len,
-        "def lowering",
-        |ptr_out| {
-            // Only push the pointer, not the length (buffer tuple has its own format)
-            let Expr::Var(b) = arg_expr else {
-                unreachable!()
-            };
-            if let Some(alias) = ctx.local_array_aliases.get(b) {
-                return match alias {
-                LocalArrayAlias::Primitive { base_ptr, .. } => {
-                    ptr_out.push(*base_ptr);
-                    Ok(())
-                }
-                LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
-                    "function '{callee_name}' array argument '{b}' must have primitive elements in def lowering"
-                ))),
-            };
-            }
-            let ptr = *ctx.array_ptrs.get(b).ok_or_else(|| {
-                Diagnostic::internal(format!(
-                    "unknown array symbol '{b}' in def array call argument lowering"
-                ))
-            })?;
-            ptr_out.push(ptr);
-            Ok(())
-        },
-    )
+    let (index_expr, slot_exprs) =
+        parse_proc_index_buffer_selector_args(arg_expr, callee_name, "def lowering")?;
+    let raw_index = lower_def_expr(index_expr, ctx)?;
+    let index_i32 = cast_def_value_to(
+        ctx,
+        raw_index,
+        PrimitiveType::I32,
+        b"def_proc_buf_sel_idx\0",
+    );
+    let clamped_idx = clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, slot_exprs.len())?;
+    let mut slot_tuples = Vec::<(LLVMValueRef, LLVMValueRef, LLVMValueRef)>::new();
+    for slot_expr in slot_exprs.iter() {
+        let mut tuple_args = Vec::<LLVMValueRef>::new();
+        lower_buffer_call_args_in_def(ctx, &mut tuple_args, slot_expr, callee_name)?;
+        if tuple_args.len() != 3 {
+            return Err(Diagnostic::internal(format!(
+                "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' produced invalid buffer tuple width in def lowering"
+            )));
+        }
+        slot_tuples.push((tuple_args[0], tuple_args[1], tuple_args[2]));
+    }
+    let Some(first_tuple) = slot_tuples.first().copied() else {
+        return Err(Diagnostic::internal(format!(
+            "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' has no selectable slot buffers in def lowering"
+        )));
+    };
+    let ptr_ty = LLVMTypeOf(first_tuple.0);
+    let frames_ty = LLVMTypeOf(first_tuple.1);
+    let channels_ty = LLVMTypeOf(first_tuple.2);
+    if slot_tuples.iter().any(|tuple| {
+        LLVMTypeOf(tuple.0) != ptr_ty
+            || LLVMTypeOf(tuple.1) != frames_ty
+            || LLVMTypeOf(tuple.2) != channels_ty
+    }) {
+        return Err(Diagnostic::internal(format!(
+            "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' mixes incompatible slot buffer tuple LLVM types in def lowering"
+        )));
+    }
+    let ptr_candidates = slot_tuples.iter().map(|t| t.0).collect::<Vec<_>>();
+    let frames_candidates = slot_tuples.iter().map(|t| t.1).collect::<Vec<_>>();
+    let channels_candidates = slot_tuples.iter().map(|t| t.2).collect::<Vec<_>>();
+    let ptr = select_def_value_by_slot_index(
+        ctx,
+        clamped_idx,
+        &ptr_candidates,
+        b"def_proc_buf_sel_ptr\0",
+        "def buffer tuple selector pointer dispatch",
+    )?;
+    let frames = select_def_value_by_slot_index(
+        ctx,
+        clamped_idx,
+        &frames_candidates,
+        b"def_proc_buf_sel_frames\0",
+        "def buffer tuple selector frames dispatch",
+    )?;
+    let channels = select_def_value_by_slot_index(
+        ctx,
+        clamped_idx,
+        &channels_candidates,
+        b"def_proc_buf_sel_chans\0",
+        "def buffer tuple selector channels dispatch",
+    )?;
+    push_buffer_tuple(out_args, ptr, frames, channels);
+    Ok(())
 }
 
 pub(super) fn infer_buffer_arg_signature_in_def(
@@ -1186,16 +1670,34 @@ pub(super) fn infer_buffer_arg_signature_in_def(
     arg_expr: &Expr,
     callee_name: &str,
 ) -> Result<(PrimitiveType, TypedBufferChannels), Diagnostic> {
-    let Expr::Var(base) = arg_expr else {
-        return Err(Diagnostic::internal(format!(
-            "function '{callee_name}' buffer argument must be a buffer symbol variable in def lowering"
-        )));
-    };
-    if let Some(info) = ctx.buffer_params.get(base) {
-        return Ok((info.elem_ty, info.declared_channels.clone()));
+    if let Expr::Var(base) = arg_expr {
+        if let Some(info) = ctx.buffer_params.get(base) {
+            return Ok((info.elem_ty, info.declared_channels.clone()));
+        }
+        let (elem_ty, _len) = infer_array_arg_signature_in_def(ctx, arg_expr, callee_name)?;
+        return Ok((elem_ty, TypedBufferChannels::Mono));
     }
-    let (elem_ty, _len) = infer_array_arg_signature_in_def(ctx, arg_expr, callee_name)?;
-    Ok((elem_ty, TypedBufferChannels::Mono))
+
+    let (_index_expr, slot_exprs) =
+        parse_proc_index_buffer_selector_args(arg_expr, callee_name, "def lowering")?;
+    let mut inferred = None::<(PrimitiveType, TypedBufferChannels)>;
+    for slot_expr in slot_exprs {
+        let sig = infer_buffer_arg_signature_in_def(ctx, slot_expr, callee_name)?;
+        if let Some(prev) = &inferred {
+            if prev != &sig {
+                return Err(Diagnostic::internal(format!(
+                    "function '{callee_name}' buffer selector argument mixes incompatible slot buffer signatures in def lowering"
+                )));
+            }
+        } else {
+            inferred = Some(sig);
+        }
+    }
+    inferred.ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "function '{callee_name}' buffer selector argument has no slots in def lowering"
+        ))
+    })
 }
 
 pub(super) fn infer_array_arg_signature_in_def(

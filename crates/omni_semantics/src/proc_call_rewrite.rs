@@ -305,42 +305,20 @@ fn named_call_arg_expr<'a>(args: &'a [CallArg], arg_name: &str) -> Option<&'a Ex
         .map(|arg| &arg.expr)
 }
 
-fn resolve_proc_array_slot_by_index(
-    array_base: &str,
-    index_expr: &Expr,
-    proc_array_slots: &HashMap<String, Vec<String>>,
-    context: &str,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<String> {
-    let Some(slots) = proc_array_slots.get(array_base) else {
-        errors.push(Diagnostic::semantic(
-            format!("{context}: unknown processor array '{array_base}'"),
-            0,
-            0,
-        ));
-        return None;
-    };
-    let Some(raw_idx) = try_constant_index_i64(index_expr) else {
-        errors.push(Diagnostic::semantic(
-            format!("{context}: processor array index must be an integer literal"),
-            0,
-            0,
-        ));
-        return None;
-    };
-    let Some(slot_idx) = resolve_proc_constant_slot_index(raw_idx, slots.len(), context, errors)
-    else {
-        return None;
-    };
-    slots.get(slot_idx).cloned()
+pub(super) enum ProcIndexResolution {
+    Slot(String),
+    Dynamic {
+        array_base: String,
+        index_expr: Expr,
+        slots: Vec<String>,
+    },
 }
 
-pub(super) fn extract_proc_index_slot_mut(
+pub(super) fn take_proc_index_base_and_expr_mut(
     args: &mut Vec<CallArg>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
-) -> Option<String> {
+) -> Option<(String, Expr)> {
     let Some(base_expr) = take_named_call_arg_expr(args, PROC_INDEX_BASE_ARG) else {
         errors.push(Diagnostic::semantic(
             format!("{context}: missing processor array base"),
@@ -365,7 +343,135 @@ pub(super) fn extract_proc_index_slot_mut(
         ));
         return None;
     };
-    resolve_proc_array_slot_by_index(&array_base, &index_expr, proc_array_slots, context, errors)
+    Some((array_base, index_expr))
+}
+
+pub(super) fn resolve_proc_index_target_mut(
+    args: &mut Vec<CallArg>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<ProcIndexResolution> {
+    let (array_base, index_expr) = take_proc_index_base_and_expr_mut(args, context, errors)?;
+    let Some(slots) = proc_array_slots.get(&array_base) else {
+        errors.push(Diagnostic::semantic(
+            format!("{context}: unknown processor array '{array_base}'"),
+            0,
+            0,
+        ));
+        return None;
+    };
+    if let Some(raw_idx) = try_constant_index_i64(&index_expr) {
+        let Some(slot_idx) =
+            resolve_proc_constant_slot_index(raw_idx, slots.len(), context, errors)
+        else {
+            return None;
+        };
+        let Some(slot_name) = slots.get(slot_idx) else {
+            errors.push(Diagnostic::semantic(
+                format!("{context}: resolved processor array slot index is out of range"),
+                0,
+                0,
+            ));
+            return None;
+        };
+        return Some(ProcIndexResolution::Slot(slot_name.clone()));
+    }
+    Some(ProcIndexResolution::Dynamic {
+        array_base,
+        index_expr,
+        slots: slots.clone(),
+    })
+}
+
+pub(super) fn resolve_proc_array_dispatch_context(
+    slots: &[String],
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_api: &HashMap<String, ProcApi>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<(String, ProcApi, Vec<(String, ProcCallInstance)>)> {
+    let Some(first_slot) = slots.first() else {
+        errors.push(Diagnostic::semantic(
+            format!("{context}: processor array has no slots"),
+            0,
+            0,
+        ));
+        return None;
+    };
+    let Some(first_instance) = proc_vars.get(first_slot) else {
+        errors.push(Diagnostic::semantic(
+            format!(
+                "{context}: processor array slot '{}' is not an instance",
+                first_slot
+            ),
+            0,
+            0,
+        ));
+        return None;
+    };
+    let proc_name = first_instance.proc_name.clone();
+    let Some(api) = proc_api.get(&proc_name) else {
+        errors.push(Diagnostic::semantic(
+            format!("unknown processor type '{proc_name}'"),
+            0,
+            0,
+        ));
+        return None;
+    };
+    let mut instances = Vec::<(String, ProcCallInstance)>::with_capacity(slots.len());
+    for slot in slots {
+        let Some(instance) = proc_vars.get(slot) else {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "{context}: processor array slot '{}' is not an instance",
+                    slot
+                ),
+                0,
+                0,
+            ));
+            return None;
+        };
+        if instance.proc_name != proc_name {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "{context}: processor array mixes processor types ('{}' vs '{}')",
+                    proc_name, instance.proc_name
+                ),
+                0,
+                0,
+            ));
+            return None;
+        }
+        instances.push((slot.clone(), instance.clone()));
+    }
+    Some((proc_name, api.clone(), instances))
+}
+
+pub(super) fn find_proc_array_slot(
+    instance_name: &str,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+) -> Option<(String, usize)> {
+    for (base, slots) in proc_array_slots {
+        if let Some(idx) = slots.iter().position(|slot| slot == instance_name) {
+            return Some((base.clone(), idx));
+        }
+    }
+    None
+}
+
+pub(super) fn proc_instance_self_expr(
+    instance_name: &str,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+) -> Expr {
+    if let Some((base, idx)) = find_proc_array_slot(instance_name, proc_array_slots) {
+        Expr::Index {
+            base,
+            index: Box::new(Expr::Int(idx as i64)),
+        }
+    } else {
+        Expr::Var(instance_name.to_owned())
+    }
 }
 
 fn extract_proc_index_slot(
@@ -579,6 +685,111 @@ pub(super) fn expand_proc_buffer_call_args(
         .cloned()
         .map(|expr| CallArg { name: None, expr })
         .collect::<Vec<_>>()
+}
+
+fn uniform_proc_array_buffer_call_args(
+    slot_instances: &[(String, ProcCallInstance)],
+    api: &ProcApi,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Vec<CallArg>> {
+    if slot_instances.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let (first_slot_name, first_instance) = slot_instances.first()?;
+    let first = expand_proc_buffer_call_args(first_instance, api, first_slot_name, errors);
+    let first_exprs = first.iter().map(|arg| arg.expr.clone()).collect::<Vec<_>>();
+
+    for (slot_name, instance) in slot_instances.iter().skip(1) {
+        let args = expand_proc_buffer_call_args(instance, api, slot_name, errors);
+        let exprs = args.into_iter().map(|arg| arg.expr).collect::<Vec<_>>();
+        if exprs != first_exprs {
+            return None;
+        }
+    }
+
+    Some(first)
+}
+
+pub(super) fn dynamic_proc_array_buffer_call_args(
+    slot_instances: &[(String, ProcCallInstance)],
+    api: &ProcApi,
+    array_base: &str,
+    index_expr: &Expr,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<CallArg> {
+    if api.buffers.is_empty() {
+        return Vec::new();
+    }
+    if slot_instances.is_empty() {
+        return Vec::new();
+    }
+
+    if let Some(shared) = uniform_proc_array_buffer_call_args(slot_instances, api, errors) {
+        return shared;
+    }
+
+    let expanded_per_slot = slot_instances
+        .iter()
+        .map(|(slot_name, instance)| expand_proc_buffer_call_args(instance, api, slot_name, errors))
+        .collect::<Vec<_>>();
+
+    let mut out = Vec::<CallArg>::with_capacity(api.buffers.len());
+    for buf_idx in 0..api.buffers.len() {
+        let mut selector_args = Vec::<CallArg>::with_capacity(2 + expanded_per_slot.len());
+        selector_args.push(CallArg {
+            name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+            expr: Expr::Var(array_base.to_owned()),
+        });
+        selector_args.push(CallArg {
+            name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+            expr: index_expr.clone(),
+        });
+        for slot_args in &expanded_per_slot {
+            let slot_expr = slot_args
+                .get(buf_idx)
+                .map(|arg| arg.expr.clone())
+                .unwrap_or(Expr::Number(0.0));
+            selector_args.push(CallArg {
+                name: None,
+                expr: slot_expr,
+            });
+        }
+        out.push(CallArg {
+            name: None,
+            expr: Expr::UserCall {
+                name: PROC_INDEX_BUFFER_SELECT_SENTINEL.to_owned(),
+                type_args: Vec::new(),
+                args: selector_args,
+            },
+        });
+    }
+    out
+}
+
+pub(super) fn build_dynamic_proc_array_dispatch_args(
+    args: &mut Vec<CallArg>,
+    api: &ProcApi,
+    slot_instances: &[(String, ProcCallInstance)],
+    array_base: &str,
+    index_expr: &Expr,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<CallArg> {
+    let expanded_inputs = expand_proc_call_args(args, api, &format!("{array_base}[...]"), errors);
+    let dynamic_buffers =
+        dynamic_proc_array_buffer_call_args(slot_instances, api, array_base, index_expr, errors);
+    let mut rewritten =
+        Vec::<CallArg>::with_capacity(1 + expanded_inputs.len() + dynamic_buffers.len());
+    rewritten.push(CallArg {
+        name: None,
+        expr: Expr::Index {
+            base: array_base.to_owned(),
+            index: Box::new(index_expr.clone()),
+        },
+    });
+    rewritten.extend(expanded_inputs);
+    rewritten.extend(dynamic_buffers);
+    rewritten
 }
 
 pub(super) fn expand_proc_event_call_args(
@@ -1001,7 +1212,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
 
             if *name == PROC_INDEX_CALL_SENTINEL {
-                let Some(resolved_slot) = extract_proc_index_slot_mut(
+                let Some(index_target) = resolve_proc_index_target_mut(
                     args,
                     proc_array_slots,
                     "processor indexed call",
@@ -1009,12 +1220,58 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 ) else {
                     return;
                 };
-                *name = resolved_slot;
+                match index_target {
+                    ProcIndexResolution::Slot(resolved_slot) => {
+                        *name = resolved_slot;
+                    }
+                    ProcIndexResolution::Dynamic {
+                        array_base,
+                        index_expr,
+                        slots,
+                    } => {
+                        let Some((proc_name, api, slot_instances)) =
+                            resolve_proc_array_dispatch_context(
+                                &slots,
+                                proc_vars,
+                                proc_api,
+                                "processor indexed call",
+                                errors,
+                            )
+                        else {
+                            return;
+                        };
+                        if api.outs.len() != 1 {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor call '{}[...]' has {} outputs; use '{}[...]().<endpoint>'/outN or call as statement then read fields",
+                                    array_base,
+                                    api.outs.len(),
+                                    array_base
+                                ),
+                                0,
+                                0,
+                            ));
+                            return;
+                        }
+                        let rewritten = build_dynamic_proc_array_dispatch_args(
+                            args,
+                            &api,
+                            &slot_instances,
+                            &array_base,
+                            &index_expr,
+                            errors,
+                        );
+                        *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
+                        *args = rewritten;
+                        return;
+                    }
+                }
             }
 
             if let Some(proc_var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
+                let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
                 let proc_var = if proc_var_raw == PROC_INDEX_CALL_SENTINEL {
-                    let Some(resolved_slot) = extract_proc_index_slot_mut(
+                    let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
                         "processor indexed field call",
@@ -1022,26 +1279,19 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     ) else {
                         return;
                     };
-                    resolved_slot
+                    match index_target {
+                        ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
+                        ProcIndexResolution::Dynamic {
+                            array_base,
+                            index_expr,
+                            slots,
+                        } => {
+                            dynamic_index = Some((array_base, index_expr, slots));
+                            String::new()
+                        }
+                    }
                 } else {
                     proc_var_raw.to_owned()
-                };
-                let Some(instance) = proc_vars.get(proc_var.as_str()) else {
-                    errors.push(Diagnostic::semantic(
-                        format!("processor call target '{}' is not an instance", proc_var),
-                        0,
-                        0,
-                    ));
-                    return;
-                };
-                let proc_name = instance.proc_name.clone();
-                let Some(api) = proc_api.get(&proc_name) else {
-                    errors.push(Diagnostic::semantic(
-                        format!("unknown processor type '{proc_name}'"),
-                        0,
-                        0,
-                    ));
-                    return;
                 };
                 let field_pos = args.iter().position(|a| {
                     a.name
@@ -1066,40 +1316,63 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     ));
                     return;
                 };
-                let out_idx = if let Some(idx) = api.outs.iter().position(|out| out == &field_name)
-                {
-                    idx
-                } else if let Some(idx) = parse_proc_output_alias_index(&field_name) {
-                    if idx >= api.outs.len() {
-                        errors.push(Diagnostic::semantic(
-                            format!(
-                                "processor output alias '{}' is out of range (outs: {})",
-                                field_name,
-                                api.outs.len()
-                            ),
-                            0,
-                            0,
-                        ));
+
+                if let Some((array_base, index_expr, slots)) = dynamic_index {
+                    let Some((proc_name, api, slot_instances)) =
+                        resolve_proc_array_dispatch_context(
+                            &slots,
+                            proc_vars,
+                            proc_api,
+                            "processor indexed field call",
+                            errors,
+                        )
+                    else {
                         return;
-                    }
-                    idx
-                } else {
+                    };
+                    let Some(out_idx) =
+                        resolve_proc_output_field_index(&api, &field_name, &array_base, errors)
+                    else {
+                        return;
+                    };
+                    let rewritten = build_dynamic_proc_array_dispatch_args(
+                        args,
+                        &api,
+                        &slot_instances,
+                        &array_base,
+                        &index_expr,
+                        errors,
+                    );
+                    *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{out_idx}");
+                    *args = rewritten;
+                    return;
+                }
+
+                let Some(instance) = proc_vars.get(proc_var.as_str()) else {
                     errors.push(Diagnostic::semantic(
-                        format!(
-                            "unknown processor output '{}' for '{}'; expected one of [{}] or outN",
-                            field_name,
-                            proc_var,
-                            api.outs.join(", ")
-                        ),
+                        format!("processor call target '{}' is not an instance", proc_var),
                         0,
                         0,
                     ));
                     return;
                 };
+                let proc_name = instance.proc_name.clone();
+                let Some(api) = proc_api.get(&proc_name) else {
+                    errors.push(Diagnostic::semantic(
+                        format!("unknown processor type '{proc_name}'"),
+                        0,
+                        0,
+                    ));
+                    return;
+                };
+                let Some(out_idx) =
+                    resolve_proc_output_field_index(api, &field_name, proc_var.as_str(), errors)
+                else {
+                    return;
+                };
                 let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                 rewritten.push(CallArg {
                     name: None,
-                    expr: Expr::Var(proc_var.to_owned()),
+                    expr: proc_instance_self_expr(&proc_var, proc_array_slots),
                 });
                 let expanded_args = expand_proc_call_args(args, api, proc_var.as_str(), errors);
                 rewritten.extend(expanded_args);
@@ -1137,7 +1410,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                 rewritten.push(CallArg {
                     name: None,
-                    expr: Expr::Var(name.clone()),
+                    expr: proc_instance_self_expr(name, proc_array_slots),
                 });
                 let expanded_args = expand_proc_call_args(args, &api, name, errors);
                 rewritten.extend(expanded_args);
@@ -1148,8 +1421,80 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 return;
             }
 
-            if let Some((base, event_name)) = split_dot_path(name) {
-                if let Some(instance) = proc_vars.get(base) {
+            if let Some((base_raw, event_name)) = split_dot_path(name) {
+                let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
+                    let Some(index_target) = resolve_proc_index_target_mut(
+                        args,
+                        proc_array_slots,
+                        "processor indexed event call",
+                        errors,
+                    ) else {
+                        return;
+                    };
+                    match index_target {
+                        ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
+                        ProcIndexResolution::Dynamic {
+                            array_base,
+                            index_expr,
+                            slots,
+                        } => {
+                            dynamic_index = Some((array_base, index_expr, slots));
+                            String::new()
+                        }
+                    }
+                } else {
+                    base_raw.to_owned()
+                };
+
+                if let Some((array_base, index_expr, slots)) = dynamic_index {
+                    let Some((proc_name, api, _slot_instances)) =
+                        resolve_proc_array_dispatch_context(
+                            &slots,
+                            proc_vars,
+                            proc_api,
+                            "processor indexed event call",
+                            errors,
+                        )
+                    else {
+                        return;
+                    };
+                    let Some(event_spec) = api.events.get(event_name) else {
+                        let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
+                        known_events.sort();
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "unknown processor event '{}.{}'; expected one of [{}]",
+                                array_base,
+                                event_name,
+                                known_events.join(", ")
+                            ),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    let expanded = expand_proc_event_call_args(
+                        args,
+                        event_spec,
+                        &format!("{array_base}[...].{event_name}"),
+                        errors,
+                    );
+                    let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
+                    rewritten.push(CallArg {
+                        name: None,
+                        expr: Expr::Index {
+                            base: array_base.clone(),
+                            index: Box::new(index_expr.clone()),
+                        },
+                    });
+                    rewritten.extend(expanded);
+                    *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
+                    *args = rewritten;
+                    return;
+                }
+
+                if let Some(instance) = proc_vars.get(base.as_str()) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
                         errors.push(Diagnostic::semantic(
@@ -1177,12 +1522,18 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                     rewritten.push(CallArg {
                         name: None,
-                        expr: Expr::Var(base.to_owned()),
+                        expr: proc_instance_self_expr(&base, proc_array_slots),
                     });
-                    let expanded = expand_proc_event_call_args(args, event_spec, name, errors);
+                    let expanded = expand_proc_event_call_args(
+                        args,
+                        event_spec,
+                        &format!("{base}.{event_name}"),
+                        errors,
+                    );
                     rewritten.extend(expanded);
                     *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
                     *args = rewritten;
+                    return;
                 }
             }
         }
@@ -1214,6 +1565,43 @@ fn parse_proc_output_alias_index(field: &str) -> Option<usize> {
         return None;
     }
     Some(ordinal - 1)
+}
+
+pub(super) fn resolve_proc_output_field_index(
+    api: &ProcApi,
+    field_name: &str,
+    call_display_name: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<usize> {
+    if let Some(idx) = api.outs.iter().position(|out| out == field_name) {
+        return Some(idx);
+    }
+    if let Some(idx) = parse_proc_output_alias_index(field_name) {
+        if idx < api.outs.len() {
+            return Some(idx);
+        }
+        errors.push(Diagnostic::semantic(
+            format!(
+                "processor output alias '{}' is out of range (outs: {})",
+                field_name,
+                api.outs.len()
+            ),
+            0,
+            0,
+        ));
+        return None;
+    }
+    errors.push(Diagnostic::semantic(
+        format!(
+            "unknown processor output '{}' for '{}'; expected one of [{}] or outN",
+            field_name,
+            call_display_name,
+            api.outs.join(", ")
+        ),
+        0,
+        0,
+    ));
+    None
 }
 
 pub(super) fn normalize_proc_output_alias_path(
@@ -1409,7 +1797,7 @@ pub(super) fn rewrite_proc_calls_in_stmt(
                     );
                 }
                 if *name == PROC_INDEX_CALL_SENTINEL {
-                    let Some(resolved_slot) = extract_proc_index_slot_mut(
+                    let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
                         "processor indexed statement call",
@@ -1417,7 +1805,39 @@ pub(super) fn rewrite_proc_calls_in_stmt(
                     ) else {
                         return;
                     };
-                    *name = resolved_slot;
+                    match index_target {
+                        ProcIndexResolution::Slot(resolved_slot) => {
+                            *name = resolved_slot;
+                        }
+                        ProcIndexResolution::Dynamic {
+                            array_base,
+                            index_expr,
+                            slots,
+                        } => {
+                            let Some((proc_name, api, slot_instances)) =
+                                resolve_proc_array_dispatch_context(
+                                    &slots,
+                                    proc_vars,
+                                    proc_api,
+                                    "processor indexed statement call",
+                                    errors,
+                                )
+                            else {
+                                return;
+                            };
+                            let rewritten = build_dynamic_proc_array_dispatch_args(
+                                args,
+                                &api,
+                                &slot_instances,
+                                &array_base,
+                                &index_expr,
+                                errors,
+                            );
+                            *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
+                            *args = rewritten;
+                            return;
+                        }
+                    }
                 }
                 if let Some(instance) = proc_vars.get(name) {
                     let proc_name = instance.proc_name.clone();
@@ -1432,7 +1852,7 @@ pub(super) fn rewrite_proc_calls_in_stmt(
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                     rewritten.push(CallArg {
                         name: None,
-                        expr: Expr::Var(name.clone()),
+                        expr: proc_instance_self_expr(name, proc_array_slots),
                     });
                     let expanded_args = expand_proc_call_args(args, api, name, errors);
                     rewritten.extend(expanded_args);

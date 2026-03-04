@@ -159,15 +159,21 @@
   - `voices: Voice[N_EXPR] = [Voice(...), ...]`
   - `voices: Voice[N_EXPR] = Voice(...)` (broadcast constructor sugar)
   - `N_EXPR` can be any compile-time constant expression (not only integer literals).
-  - These declarations currently desugar to per-slot instances (`voices[idx]`) during processor/top-level desugaring.
+  - Top-level lowering preserves proc arrays as real state arrays and uses direct indexed instance access (`voices[idx]`) for dynamic calls.
+  - Nested proc-wrapper lowering still models proc arrays internally as per-slot nested instances.
+  - Nested-wrapper constructor arg remapping now resolves callee-local symbols through the correct nested slot path (so deeper chains like `racks[idx].banks[idx].voices[idx]` keep slot-local ctor semantics).
   - For broadcast constructor sugar, constructor args can be mixed:
     - scalar expression: broadcast to every slot (`gain = 0.5`)
     - array literal: per-slot value (`gain = [0.5, 0.8]`, `buf = [buf1, buf2]`)
     - array symbol for non-buffer args: per-slot indexed read (`g: f32[2] = [...]`, then `gain = g`)
-  - Indexed proc-array calls are supported with literal indices:
-    - `voices[1](...)`
-    - `voices[1](...).outN` / named output endpoint
-  - Non-literal proc-array call indices are currently rejected.
+  - Indexed proc-array dispatch supports both literal and runtime indices:
+    - `voices[idx](...)`
+    - `voices[idx](...).outN` / named output endpoint
+    - statement call form: `voices[idx](...)`
+    - proc-event forwarding: `voices[idx].note_on(...)`
+  - Runtime indices are clamped to the valid slot range (`0..len-1`).
+  - Buffer ctor bindings are resolved to symbols in `init`; dynamic indexed calls read per-slot buffer refs from runtime state.
+  - Proc-slot buffer refs (`ptr`/`frames`/`channels`) are refreshed on the safe `process_bound` path; `process_unchecked` does not perform hidden refresh.
 - Sample oversampling is implemented for both top-level and proc sample blocks:
   - syntax: `sample N:` where `N` is one of `{1,2,4,8,16,32,64}`.
   - oversampling path is compiler-managed (input interpolation, held params, filtered decimation).

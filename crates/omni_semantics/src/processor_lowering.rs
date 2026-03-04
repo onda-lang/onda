@@ -3530,6 +3530,10 @@ pub fn analyze_with_options(
                 .unwrap_or(PrimitiveType::F32);
         inferred_array_bindings.insert(name.clone(), InferredArrayParam { elem_ty, len: *len });
     }
+    let inferred_struct_array_roots = state_array_struct_roots
+        .iter()
+        .map(|(name, info)| (name.clone(), info.struct_name.clone()))
+        .collect::<HashMap<_, _>>();
 
     let (inferred_def_params, synthesized_struct_defs) = infer_def_param_kinds(
         &defs,
@@ -3537,6 +3541,7 @@ pub fn analyze_with_options(
         &block_exec,
         &sample_and_event_exec,
         &struct_instances,
+        &inferred_struct_array_roots,
         &inferred_array_bindings,
         &typed_buffers
             .iter()

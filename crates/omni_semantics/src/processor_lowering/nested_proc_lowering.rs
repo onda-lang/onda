@@ -1,17 +1,5 @@
 use super::*;
 
-fn parse_proc_output_alias_index(field: &str) -> Option<usize> {
-    let raw = field.strip_prefix("out")?;
-    if raw.is_empty() {
-        return None;
-    }
-    let ordinal = raw.parse::<usize>().ok()?;
-    if ordinal == 0 {
-        return None;
-    }
-    Some(ordinal - 1)
-}
-
 pub(super) fn rewrite_nested_proc_calls_in_expr(
     expr: &mut Expr,
     owner_proc: &str,
@@ -107,7 +95,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 );
             }
             if *name == PROC_INDEX_CALL_SENTINEL {
-                let Some(resolved_slot) = extract_proc_index_slot_mut(
+                let Some(index_target) = resolve_proc_index_target_mut(
                     args,
                     proc_array_slots,
                     "nested processor indexed call",
@@ -115,11 +103,107 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 ) else {
                     return;
                 };
-                *name = resolved_slot;
+                match index_target {
+                    ProcIndexResolution::Slot(resolved_slot) => {
+                        let Some(instance) = nested_instances.get(resolved_slot.as_str()) else {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "nested processor indexed call target '{}' is not an instance",
+                                    resolved_slot
+                                ),
+                                0,
+                                0,
+                            ));
+                            return;
+                        };
+                        let proc_name = instance.proc_name.clone();
+                        let Some(api) = proc_api.get(&proc_name) else {
+                            errors.push(Diagnostic::semantic(
+                                format!("unknown processor type '{proc_name}'"),
+                                0,
+                                0,
+                            ));
+                            return;
+                        };
+                        if api.outs.len() != 1 {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor call '{}(...)' has {} outputs; use '{}(...).<endpoint>'/outN",
+                                    resolved_slot,
+                                    api.outs.len(),
+                                    resolved_slot
+                                ),
+                                0,
+                                0,
+                            ));
+                            return;
+                        }
+                        let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: Expr::Var(resolved_slot.clone()),
+                        });
+                        let expanded_inputs =
+                            expand_proc_call_args(args, api, resolved_slot.as_str(), errors);
+                        rewritten.extend(expanded_inputs);
+                        let expanded_buffers = expand_proc_buffer_call_args(
+                            instance,
+                            api,
+                            resolved_slot.as_str(),
+                            errors,
+                        );
+                        rewritten.extend(expanded_buffers);
+                        *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
+                        *args = rewritten;
+                        return;
+                    }
+                    ProcIndexResolution::Dynamic {
+                        array_base,
+                        index_expr,
+                        slots,
+                    } => {
+                        let Some((proc_name, api, slot_instances)) =
+                            resolve_proc_array_dispatch_context(
+                                &slots,
+                                nested_instances,
+                                proc_api,
+                                "nested processor indexed call",
+                                errors,
+                            )
+                        else {
+                            return;
+                        };
+                        if api.outs.len() != 1 {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor call '{}[...]' has {} outputs; use '{}[...]().<endpoint>'/outN",
+                                    array_base,
+                                    api.outs.len(),
+                                    array_base
+                                ),
+                                0,
+                                0,
+                            ));
+                            return;
+                        }
+                        let rewritten = build_dynamic_proc_array_dispatch_args(
+                            args,
+                            &api,
+                            &slot_instances,
+                            &array_base,
+                            &index_expr,
+                            errors,
+                        );
+                        *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
+                        *args = rewritten;
+                        return;
+                    }
+                }
             }
             if let Some(var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
+                let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
                 let var = if var_raw == PROC_INDEX_CALL_SENTINEL {
-                    let Some(resolved_slot) = extract_proc_index_slot_mut(
+                    let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
                         "nested processor indexed field call",
@@ -127,10 +211,74 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     ) else {
                         return;
                     };
-                    resolved_slot
+                    match index_target {
+                        ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
+                        ProcIndexResolution::Dynamic {
+                            array_base,
+                            index_expr,
+                            slots,
+                        } => {
+                            dynamic_index = Some((array_base, index_expr, slots));
+                            String::new()
+                        }
+                    }
                 } else {
                     var_raw.to_owned()
                 };
+                let field_pos = args.iter().position(|a| {
+                    a.name
+                        .as_ref()
+                        .map(|n| n == PROC_FIELD_SENTINEL_ARG)
+                        .unwrap_or(false)
+                });
+                let Some(field_pos) = field_pos else {
+                    errors.push(Diagnostic::semantic(
+                        "processor call field selection is missing endpoint name",
+                        0,
+                        0,
+                    ));
+                    return;
+                };
+                let field_arg = args.remove(field_pos);
+                let Expr::Var(field_name) = field_arg.expr else {
+                    errors.push(Diagnostic::semantic(
+                        "processor call field selection must be a compile-time endpoint identifier",
+                        0,
+                        0,
+                    ));
+                    return;
+                };
+
+                if let Some((array_base, index_expr, slots)) = dynamic_index {
+                    let Some((proc_name, api, slot_instances)) =
+                        resolve_proc_array_dispatch_context(
+                            &slots,
+                            nested_instances,
+                            proc_api,
+                            "nested processor indexed field call",
+                            errors,
+                        )
+                    else {
+                        return;
+                    };
+                    let Some(out_idx) =
+                        resolve_proc_output_field_index(&api, &field_name, &array_base, errors)
+                    else {
+                        return;
+                    };
+                    let rewritten = build_dynamic_proc_array_dispatch_args(
+                        args,
+                        &api,
+                        &slot_instances,
+                        &array_base,
+                        &index_expr,
+                        errors,
+                    );
+                    *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{out_idx}");
+                    *args = rewritten;
+                    return;
+                }
+
                 if let Some(instance) = nested_instances.get(var.as_str()) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
@@ -141,71 +289,35 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         ));
                         return;
                     };
-                    let field_pos = args.iter().position(|a| {
-                        a.name
-                            .as_ref()
-                            .map(|n| n == PROC_FIELD_SENTINEL_ARG)
-                            .unwrap_or(false)
-                    });
-                    let Some(field_pos) = field_pos else {
-                        errors.push(Diagnostic::semantic(
-                            "processor call field selection is missing endpoint name",
-                            0,
-                            0,
-                        ));
-                        return;
-                    };
-                    let field_arg = args.remove(field_pos);
-                    let Expr::Var(field_name) = field_arg.expr else {
-                        errors.push(Diagnostic::semantic(
-                            "processor call field selection must be a compile-time endpoint identifier",
-                            0,
-                            0,
-                        ));
-                        return;
-                    };
-                    let out_idx = if let Some(idx) =
-                        api.outs.iter().position(|out| out == &field_name)
-                    {
-                        idx
-                    } else if let Some(idx) = parse_proc_output_alias_index(&field_name) {
-                        if idx >= api.outs.len() {
-                            errors.push(Diagnostic::semantic(
-                                format!(
-                                    "processor output alias '{}' is out of range (outs: {})",
-                                    field_name,
-                                    api.outs.len()
-                                ),
-                                0,
-                                0,
-                            ));
-                            return;
-                        }
-                        idx
-                    } else {
-                        errors.push(Diagnostic::semantic(
-                            format!(
-                                "unknown processor output '{}' for '{}'; expected one of [{}] or outN",
-                                field_name,
-                                var,
-                                api.outs.join(", ")
-                            ),
-                            0,
-                            0,
-                        ));
+                    let Some(out_idx) =
+                        resolve_proc_output_field_index(api, &field_name, var.as_str(), errors)
+                    else {
                         return;
                     };
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
-                    rewritten.push(CallArg {
-                        name: None,
-                        expr: Expr::Var("self".to_owned()),
-                    });
+                    let is_array_slot =
+                        find_proc_array_slot(var.as_str(), proc_array_slots).is_some();
+                    if is_array_slot {
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: Expr::Var(var.to_owned()),
+                        });
+                    } else {
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: Expr::Var("self".to_owned()),
+                        });
+                    }
                     let expanded_args = expand_proc_call_args(args, api, var.as_str(), errors);
                     rewritten.extend(expanded_args);
                     let expanded_buffers =
                         expand_proc_buffer_call_args(instance, api, var.as_str(), errors);
                     rewritten.extend(expanded_buffers);
-                    *name = nested_call_out_fn_name(owner_proc, var.as_str(), out_idx);
+                    if is_array_slot {
+                        *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{out_idx}");
+                    } else {
+                        *name = nested_call_out_fn_name(owner_proc, var.as_str(), out_idx);
+                    }
                     *args = rewritten;
                 }
                 return;
@@ -235,22 +347,107 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 }
                 let nested_var = name.clone();
                 let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
-                rewritten.push(CallArg {
-                    name: None,
-                    expr: Expr::Var("self".to_owned()),
-                });
+                let is_array_slot =
+                    find_proc_array_slot(nested_var.as_str(), proc_array_slots).is_some();
+                if is_array_slot {
+                    rewritten.push(CallArg {
+                        name: None,
+                        expr: Expr::Var(nested_var.clone()),
+                    });
+                } else {
+                    rewritten.push(CallArg {
+                        name: None,
+                        expr: Expr::Var("self".to_owned()),
+                    });
+                }
                 let expanded_args = expand_proc_call_args(args, api, name, errors);
                 rewritten.extend(expanded_args);
                 let expanded_buffers =
                     expand_proc_buffer_call_args(instance, api, &nested_var, errors);
                 rewritten.extend(expanded_buffers);
-                *name = nested_call_out_fn_name(owner_proc, &nested_var, 0);
+                if is_array_slot {
+                    *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
+                } else {
+                    *name = nested_call_out_fn_name(owner_proc, &nested_var, 0);
+                }
                 *args = rewritten;
                 return;
             }
 
-            if let Some((base, event_name)) = split_dot_path(name) {
-                if let Some(instance) = nested_instances.get(base) {
+            if let Some((base_raw, event_name)) = split_dot_path(name) {
+                let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
+                    let Some(index_target) = resolve_proc_index_target_mut(
+                        args,
+                        proc_array_slots,
+                        "nested processor indexed event call",
+                        errors,
+                    ) else {
+                        return;
+                    };
+                    match index_target {
+                        ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
+                        ProcIndexResolution::Dynamic {
+                            array_base,
+                            index_expr,
+                            slots,
+                        } => {
+                            dynamic_index = Some((array_base, index_expr, slots));
+                            String::new()
+                        }
+                    }
+                } else {
+                    base_raw.to_owned()
+                };
+
+                if let Some((array_base, index_expr, slots)) = dynamic_index {
+                    let Some((proc_name, api, _slot_instances)) =
+                        resolve_proc_array_dispatch_context(
+                            &slots,
+                            nested_instances,
+                            proc_api,
+                            "nested processor indexed event call",
+                            errors,
+                        )
+                    else {
+                        return;
+                    };
+                    let Some(event_spec) = api.events.get(event_name) else {
+                        let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
+                        known_events.sort();
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "unknown processor event '{}.{}'; expected one of [{}]",
+                                array_base,
+                                event_name,
+                                known_events.join(", ")
+                            ),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    let expanded = expand_proc_event_call_args(
+                        args,
+                        event_spec,
+                        &format!("{array_base}[...].{event_name}"),
+                        errors,
+                    );
+                    let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
+                    rewritten.push(CallArg {
+                        name: None,
+                        expr: Expr::Index {
+                            base: array_base.clone(),
+                            index: Box::new(index_expr.clone()),
+                        },
+                    });
+                    rewritten.extend(expanded);
+                    *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
+                    *args = rewritten;
+                    return;
+                }
+
+                if let Some(instance) = nested_instances.get(base.as_str()) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
                         errors.push(Diagnostic::semantic(
@@ -276,13 +473,30 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         return;
                     };
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
-                    rewritten.push(CallArg {
-                        name: None,
-                        expr: Expr::Var("self".to_owned()),
-                    });
-                    let expanded = expand_proc_event_call_args(args, event_spec, name, errors);
+                    let is_array_slot = find_proc_array_slot(&base, proc_array_slots).is_some();
+                    if is_array_slot {
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: Expr::Var(base.clone()),
+                        });
+                    } else {
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: Expr::Var("self".to_owned()),
+                        });
+                    }
+                    let expanded = expand_proc_event_call_args(
+                        args,
+                        event_spec,
+                        &format!("{base}.{event_name}"),
+                        errors,
+                    );
                     rewritten.extend(expanded);
-                    *name = nested_event_fn_name(owner_proc, base, event_name);
+                    if is_array_slot {
+                        *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
+                    } else {
+                        *name = nested_event_fn_name(owner_proc, base.as_str(), event_name);
+                    }
                     *args = rewritten;
                 }
             }
@@ -329,7 +543,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
             );
             if let Expr::UserCall { name, args, .. } = expr {
                 if *name == PROC_INDEX_CALL_SENTINEL {
-                    let Some(resolved_slot) = extract_proc_index_slot_mut(
+                    let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
                         "nested processor indexed statement call",
@@ -337,7 +551,77 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     ) else {
                         return;
                     };
-                    *name = resolved_slot;
+                    match index_target {
+                        ProcIndexResolution::Slot(resolved_slot) => {
+                            let Some(instance) = nested_instances.get(resolved_slot.as_str())
+                            else {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "nested processor indexed statement call target '{}' is not an instance",
+                                        resolved_slot
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                                return;
+                            };
+                            let proc_name = instance.proc_name.clone();
+                            let Some(api) = proc_api.get(&proc_name) else {
+                                errors.push(Diagnostic::semantic(
+                                    format!("unknown processor type '{proc_name}'"),
+                                    0,
+                                    0,
+                                ));
+                                return;
+                            };
+                            let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
+                            rewritten.push(CallArg {
+                                name: None,
+                                expr: Expr::Var(resolved_slot.clone()),
+                            });
+                            let expanded_args =
+                                expand_proc_call_args(args, api, resolved_slot.as_str(), errors);
+                            rewritten.extend(expanded_args);
+                            let expanded_buffers = expand_proc_buffer_call_args(
+                                instance,
+                                api,
+                                resolved_slot.as_str(),
+                                errors,
+                            );
+                            rewritten.extend(expanded_buffers);
+                            *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
+                            *args = rewritten;
+                            return;
+                        }
+                        ProcIndexResolution::Dynamic {
+                            array_base,
+                            index_expr,
+                            slots,
+                        } => {
+                            let Some((proc_name, api, slot_instances)) =
+                                resolve_proc_array_dispatch_context(
+                                    &slots,
+                                    nested_instances,
+                                    proc_api,
+                                    "nested processor indexed statement call",
+                                    errors,
+                                )
+                            else {
+                                return;
+                            };
+                            let rewritten = build_dynamic_proc_array_dispatch_args(
+                                args,
+                                &api,
+                                &slot_instances,
+                                &array_base,
+                                &index_expr,
+                                errors,
+                            );
+                            *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
+                            *args = rewritten;
+                            return;
+                        }
+                    }
                 }
                 if let Some(instance) = nested_instances.get(name) {
                     let proc_name = instance.proc_name.clone();
@@ -351,16 +635,29 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     };
                     let nested_var = name.clone();
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
-                    rewritten.push(CallArg {
-                        name: None,
-                        expr: Expr::Var("self".to_owned()),
-                    });
+                    let is_array_slot =
+                        find_proc_array_slot(nested_var.as_str(), proc_array_slots).is_some();
+                    if is_array_slot {
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: Expr::Var(nested_var.clone()),
+                        });
+                    } else {
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: Expr::Var("self".to_owned()),
+                        });
+                    }
                     let expanded_args = expand_proc_call_args(args, api, &nested_var, errors);
                     rewritten.extend(expanded_args);
                     let expanded_buffers =
                         expand_proc_buffer_call_args(instance, api, &nested_var, errors);
                     rewritten.extend(expanded_buffers);
-                    *name = nested_step_fn_name(owner_proc, &nested_var);
+                    if is_array_slot {
+                        *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
+                    } else {
+                        *name = nested_step_fn_name(owner_proc, &nested_var);
+                    }
                     *args = rewritten;
                 }
             }
@@ -925,12 +1222,18 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
 ) -> Option<Stmt> {
     with_stmt_diag_context(stmt, || {
         let mut stmt = stmt.clone();
-        let remap = callee_shape
+        let mut remap = callee_shape
             .state
             .nested_procs
             .keys()
             .map(|name| (name.clone(), nested_field_name(nested_path, name)))
             .collect::<HashMap<_, _>>();
+        for array_base in callee_shape.state.nested_proc_arrays.keys() {
+            remap.insert(
+                array_base.clone(),
+                nested_field_name(nested_path, array_base),
+            );
+        }
         remap_nested_symbols_in_stmt(&mut stmt, &remap);
 
         let nested_fields = callee_shape
@@ -953,7 +1256,7 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
             .iter()
             .map(|(base, slots)| {
                 (
-                    base.clone(),
+                    nested_field_name(nested_path, base),
                     slots
                         .iter()
                         .map(|slot| nested_field_name(nested_path, slot))
@@ -999,4 +1302,94 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
         prefix_self_fields_in_stmt(&mut lowered, nested_path, &callee_shape.field_names);
         Some(lowered)
     })
+}
+
+pub(super) fn lower_callee_expr_for_nested_wrapper(
+    expr: &Expr,
+    owner_proc: &str,
+    nested_path: &str,
+    callee_shape: &ProcLoweringShape,
+    callee_nested_instances: &HashMap<String, ProcCallInstance>,
+    callee_field_array_slots: &HashMap<String, Vec<String>>,
+    callee_in_array_slots: &HashMap<String, Vec<String>>,
+    callee_proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    errors: &mut Vec<Diagnostic>,
+) -> Expr {
+    let mut expr = expr.clone();
+    let mut remap = callee_shape
+        .state
+        .nested_procs
+        .keys()
+        .map(|name| (name.clone(), nested_field_name(nested_path, name)))
+        .collect::<HashMap<_, _>>();
+    for array_base in callee_shape.state.nested_proc_arrays.keys() {
+        remap.insert(
+            array_base.clone(),
+            nested_field_name(nested_path, array_base),
+        );
+    }
+    remap_nested_symbols_in_expr(&mut expr, &remap);
+
+    let nested_fields = callee_shape
+        .nested_fields
+        .iter()
+        .map(|(name, fields)| (nested_field_name(nested_path, name), fields.clone()))
+        .collect::<HashMap<_, _>>();
+    let nested_instances = callee_nested_instances
+        .iter()
+        .map(|(name, instance)| {
+            let mapped_name = nested_field_name(nested_path, name);
+            let mut mapped_instance = instance.clone();
+            for arg_expr in &mut mapped_instance.buffer_args {
+                remap_nested_symbols_in_expr(arg_expr, &remap);
+            }
+            (mapped_name, mapped_instance)
+        })
+        .collect::<HashMap<_, _>>();
+    let mapped_proc_array_slots = callee_proc_array_slots
+        .iter()
+        .map(|(base, slots)| {
+            (
+                nested_field_name(nested_path, base),
+                slots
+                    .iter()
+                    .map(|slot| nested_field_name(nested_path, slot))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    normalize_proc_output_aliases_in_expr(&mut expr, &nested_instances, proc_api);
+    rewrite_nested_field_paths_in_expr(&mut expr, &nested_fields);
+    rewrite_nested_proc_calls_in_expr(
+        &mut expr,
+        owner_proc,
+        &nested_instances,
+        &mapped_proc_array_slots,
+        proc_api,
+        errors,
+    );
+
+    let mapped_field_array_slots = callee_field_array_slots
+        .iter()
+        .map(|(base, slots)| {
+            (
+                base.clone(),
+                slots
+                    .iter()
+                    .map(|slot| nested_field_name(nested_path, slot))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    rewrite_proc_expr_symbols(
+        &mut expr,
+        owner_proc,
+        &callee_shape.field_names,
+        &mapped_field_array_slots,
+        callee_in_array_slots,
+        errors,
+    );
+    prefix_self_fields_in_expr(&mut expr, nested_path, &callee_shape.field_names);
+    expr
 }

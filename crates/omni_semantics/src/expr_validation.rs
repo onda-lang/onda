@@ -151,6 +151,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             }
             if !env.array_vars.contains_key(base)
                 && !has_declared_buffer_symbol(env.known_scalars, base)
+                && !is_declared_struct_array_root_symbol(env.known_scalars, base)
             {
                 errors.push(Diagnostic::semantic(
                     format!("indexed expression '{base}[...]' is not a array/buffer symbol"),
@@ -228,8 +229,15 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     .strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
                     .map(|s| s == PROC_INDEX_CALL_SENTINEL)
                     .unwrap_or(false)
+                || split_simple_field_path(name)
+                    .map(|(base, _)| base == PROC_INDEX_CALL_SENTINEL)
+                    .unwrap_or(false)
             {
                 validate_internal_proc_index_call(name, args, env, errors);
+                return;
+            }
+            if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+                validate_internal_proc_index_buffer_select_call(name, args, env, errors);
                 return;
             }
             if !env.fn_signatures.contains_key(name) {
@@ -350,6 +358,12 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 continue;
                             }
                         }
+                        if matches!(param_ty, Some(FnParamType::Struct(_)))
+                            && is_internal_proc_helper_call(name)
+                            && matches!(arg, Expr::Index { .. } | Expr::Var(_))
+                        {
+                            continue;
+                        }
                         validate_expr(arg, env, errors);
                     } else if let Some(default) = sig.defaults.get(idx).and_then(|d| d.as_ref()) {
                         validate_default_expr(
@@ -403,6 +417,29 @@ fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((first, second))
+}
+
+fn is_internal_proc_helper_call(name: &str) -> bool {
+    name.ends_with(PROC_INIT_FN_SUFFIX)
+        || name.ends_with(PROC_BLOCK_PRE_FN_SUFFIX)
+        || name.ends_with(PROC_BLOCK_POST_FN_SUFFIX)
+        || name.ends_with(PROC_STEP_FN_SUFFIX)
+        || name.contains(PROC_CALL_OUT_FN_PREFIX)
+        || name.contains(PROC_EVENT_FN_PREFIX)
+}
+
+fn is_declared_struct_array_root_symbol(
+    known_scalars: &std::collections::HashSet<String>,
+    base: &str,
+) -> bool {
+    let root_key = declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, base);
+    if known_scalars.contains(&root_key) {
+        return true;
+    }
+    let prefix = format!("{DECLARED_DATA_ELEM_TYPE_PREFIX}{base}.");
+    known_scalars
+        .iter()
+        .any(|symbol| symbol.starts_with(&prefix))
 }
 
 fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
@@ -596,6 +633,17 @@ fn validate_buffer_param_call_arg(
     } else {
         format!("function '{fn_name}' parameter #{param_idx}")
     };
+    if let Expr::UserCall { name, args, .. } = arg {
+        if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+            validate_internal_proc_index_buffer_select_call(name, args, env, errors);
+            for slot_expr in args.iter().filter(|a| a.name.is_none()).map(|a| &a.expr) {
+                if let Expr::Var(symbol) = slot_expr {
+                    validate_buffer_symbol_for_param(&context, expected, symbol, env, errors);
+                }
+            }
+            return;
+        }
+    }
     let Expr::Var(symbol) = arg else {
         errors.push(Diagnostic::semantic(
             format!("{context} expects a buffer symbol argument"),
@@ -605,6 +653,16 @@ fn validate_buffer_param_call_arg(
         validate_expr(arg, env, errors);
         return;
     };
+    validate_buffer_symbol_for_param(&context, expected, symbol, env, errors);
+}
+
+fn validate_buffer_symbol_for_param(
+    context: &str,
+    expected: &BufferType,
+    symbol: &str,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
     if !has_declared_buffer_symbol(env.known_scalars, symbol) {
         errors.push(Diagnostic::semantic(
             format!("{context} expects a buffer symbol argument, got '{symbol}'"),
@@ -889,6 +947,104 @@ fn validate_internal_proc_index_call(
             | Some(PROC_INDEX_EXPR_ARG)
             | Some(PROC_FIELD_SENTINEL_ARG) => {}
             _ => validate_expr(&arg.expr, env, errors),
+        }
+    }
+}
+
+fn validate_internal_proc_index_buffer_select_call(
+    name: &str,
+    args: &[CallArg],
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut base_expr = None::<&Expr>;
+    let mut index_expr = None::<&Expr>;
+    let mut slot_exprs = Vec::<&Expr>::new();
+
+    for arg in args {
+        match arg.name.as_deref() {
+            Some(PROC_INDEX_BASE_ARG) => base_expr = Some(&arg.expr),
+            Some(PROC_INDEX_EXPR_ARG) => index_expr = Some(&arg.expr),
+            Some(other) => {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "internal builtin '{}' does not support named argument '{}'",
+                        name, other
+                    ),
+                    0,
+                    0,
+                ));
+            }
+            None => slot_exprs.push(&arg.expr),
+        }
+    }
+
+    if base_expr.is_none() {
+        errors.push(Diagnostic::semantic(
+            format!("internal builtin '{name}' is missing processor array base argument"),
+            0,
+            0,
+        ));
+    }
+    if index_expr.is_none() {
+        errors.push(Diagnostic::semantic(
+            format!("internal builtin '{name}' is missing processor array index argument"),
+            0,
+            0,
+        ));
+    }
+    if slot_exprs.is_empty() {
+        errors.push(Diagnostic::semantic(
+            format!("internal builtin '{name}' requires at least one slot buffer argument"),
+            0,
+            0,
+        ));
+    }
+
+    if let Some(base_expr) = base_expr {
+        match base_expr {
+            Expr::Var(_) => {}
+            other => {
+                validate_expr(other, env, errors);
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "internal builtin '{name}' expects processor array base as an identifier"
+                    ),
+                    0,
+                    0,
+                ));
+            }
+        }
+    }
+    if let Some(index_expr) = index_expr {
+        validate_expr(index_expr, env, errors);
+    }
+
+    for slot_expr in slot_exprs {
+        match slot_expr {
+            Expr::Var(symbol) => {
+                if !has_declared_buffer_symbol(env.known_scalars, symbol) {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "internal builtin '{}' slot arguments must be declared buffer symbols, got '{}'",
+                            name, symbol
+                        ),
+                        0,
+                        0,
+                    ));
+                }
+            }
+            other => {
+                validate_expr(other, env, errors);
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "internal builtin '{}' slot arguments must be buffer symbol variables",
+                        name
+                    ),
+                    0,
+                    0,
+                ));
+            }
         }
     }
 }

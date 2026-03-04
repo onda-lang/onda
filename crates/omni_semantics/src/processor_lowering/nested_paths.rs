@@ -171,6 +171,8 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
                 if let Some(mapped) = remap.get(base) {
                     *name = format!("{mapped}.{field}");
                 }
+            } else if let Some(mapped) = remap.get(name) {
+                *name = mapped.clone();
             }
         }
         Expr::Index { base, index } => {
@@ -178,6 +180,8 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
                 if let Some(mapped) = remap.get(root) {
                     *base = format!("{mapped}.{field}");
                 }
+            } else if let Some(mapped) = remap.get(base) {
+                *base = mapped.clone();
             }
             remap_nested_symbols_in_expr(index, remap);
         }
@@ -233,6 +237,8 @@ pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<Stri
                         if let Some(mapped) = remap.get(base) {
                             *name = format!("{mapped}.{field}");
                         }
+                    } else if let Some(mapped) = remap.get(name) {
+                        *name = mapped.clone();
                     }
                 }
                 AssignTarget::Index { base, index } => {
@@ -240,6 +246,8 @@ pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<Stri
                         if let Some(mapped) = remap.get(root) {
                             *base = format!("{mapped}.{field}");
                         }
+                    } else if let Some(mapped) = remap.get(base) {
+                        *base = mapped.clone();
                     }
                     remap_nested_symbols_in_expr(index, remap);
                 }

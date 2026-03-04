@@ -368,6 +368,22 @@ Single-out procs also support endpoint access forms (`p.out1` and named endpoint
 
 Processor constructors use named arguments for params/buffers.
 
+Processor instance arrays are supported in `init` (top-level and proc-level), for example:
+
+```omni
+init:
+  voices: Voice[2] = [Voice(), Voice()]
+```
+
+Indexed proc-array dispatch supports literal and runtime indices:
+- Call/read: `voices[idx](...)`
+- Endpoint read from call: `voices[idx](...).outN` (or named endpoint)
+- Statement call: `voices[idx](...)`
+- Proc-event forwarding: `voices[idx].note_on(...)`
+
+Runtime indices are clamped to the valid slot range during lowered dispatch.
+Ctor buffer bindings are established in `init`; dynamic indexed calls use per-slot buffer refs in runtime state (refreshed on `process_bound`).
+
 ## 8.1 Events (`events`)
 
 Events are host-triggered handlers that run immediately on the audio thread when invoked.

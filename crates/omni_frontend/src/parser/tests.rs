@@ -2403,6 +2403,52 @@ sample {
 }
 
 #[test]
+fn parses_proc_indexed_event_call_expression() {
+    let src = r#"
+sample {
+  voices[idx].note_on(0.25)
+}
+"#;
+
+    let program = parse_program(src).expect("parse_program should succeed");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Expr { expr, .. } = &sample[0] else {
+        panic!("expected expression statement");
+    };
+    match expr {
+        Expr::UserCall { name, args, .. } => {
+            assert_eq!(name, &format!("{PROC_INDEX_CALL_SENTINEL}.note_on"));
+            assert!(
+                args.iter().any(|a| {
+                    a.name
+                        .as_ref()
+                        .map(|n| n == PROC_INDEX_BASE_ARG)
+                        .unwrap_or(false)
+                }),
+                "expected encoded index base argument"
+            );
+            assert!(
+                args.iter().any(|a| {
+                    a.name
+                        .as_ref()
+                        .map(|n| n == PROC_INDEX_EXPR_ARG)
+                        .unwrap_or(false)
+                }),
+                "expected encoded index expression argument"
+            );
+        }
+        _ => panic!("expected encoded proc indexed event call expression"),
+    }
+}
+
+#[test]
 fn parses_sample_oversample_factor_brace_form() {
     let src = r#"
 outs { out1 }

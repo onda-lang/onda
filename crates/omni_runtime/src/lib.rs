@@ -571,6 +571,14 @@ pub fn process_bound(instance: &mut Instance, frames: usize) -> Result<(), Diagn
     if !instance.outputs_validated {
         validate_outputs(instance)?;
     }
+    // Proc-local buffer-ref refresh/sync is intentionally tied to the safe
+    // bound path. `process_unchecked` must not perform hidden refresh work.
+    instance.program.sync_proc_buffer_refs_for_process_bound(
+        &mut instance.state,
+        &instance.buffer_ptrs,
+        &instance.buffer_frames,
+        &instance.buffer_channels,
+    )?;
     instance.program.process_bound(
         &mut instance.state,
         &instance.params,

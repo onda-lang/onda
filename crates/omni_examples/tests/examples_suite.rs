@@ -283,6 +283,22 @@ sample {
 }
 "#;
 
+const DEF_STRUCT_ARRAY_INDEXED_ARG_EXAMPLE: &str = r#"
+outs { out1 }
+struct Voice { a: f32, b: f32 }
+def sum_voice(v: Voice) {
+  return v.a + v.b
+}
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+  voices.a[1] = 1.0
+  voices.b[1] = 2.0
+}
+sample {
+  out1 = sum_voice(voices[1])
+}
+"#;
+
 const DEF_STRUCTURAL_ARG_EXAMPLE: &str = r#"
 outs { out1 }
 struct A { x: f32, y: f32 }
@@ -2730,21 +2746,82 @@ sample {
 }
 "#;
 
-const PROC_INSTANCE_ARRAY_INDEXED_CALL_NON_LITERAL_ERROR_EXAMPLE: &str = r#"
+const PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_EXAMPLE: &str = r#"
 proc Voice {
   ins { in1 }
+  params { gain = 1.0 }
   outs { out1 }
   sample {
-    out1 = in1
+    out1 = in1 * gain
   }
 }
 outs { out1 }
 init {
-  voices: Voice[2] = [Voice(), Voice()]
+  voices: Voice[2] = [Voice(gain = 2.0), Voice(gain = 3.0)]
   idx: i32 = 1
 }
 sample {
   out1 = voices[idx](0.5)
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_OVERSAMPLED_EXAMPLE: &str = r#"
+proc Voice {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample 2 {
+    out1 = in1 * gain
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(gain = 2.0), Voice(gain = 3.0)]
+  idx: i32 = 1
+}
+sample {
+  out1 = voices[idx](0.5)
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_INDEXED_FIELD_DYNAMIC_INDEX_EXAMPLE: &str = r#"
+proc Pair {
+  ins { in1 }
+  outs { a, b }
+  sample {
+    a = in1
+    b = in1 * 2.0
+  }
+}
+outs { out1 }
+init {
+  voices: Pair[2] = [Pair(), Pair()]
+  idx: i32 = 0
+}
+sample {
+  out1 = voices[idx](0.5).out2
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_BUFFER_BINDING_EXAMPLE: &str = r#"
+proc Voice {
+  buffers { buf: f32 }
+  outs { out1 }
+  sample {
+    out1 = buf[0]
+  }
+}
+buffers {
+  buf1: f32
+  buf2: f32
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(buf = buf1), Voice(buf = buf2)]
+  idx: i32 = 1
+}
+sample {
+  out1 = voices[idx]()
 }
 "#;
 
@@ -2773,6 +2850,80 @@ init {
 }
 sample {
   out1 = b(0.25)
+}
+"#;
+
+const DEEP_NESTED_PROC_INSTANCE_ARRAY_DYNAMIC_INDEX_CHAIN_EXAMPLE: &str = r#"
+proc Voice {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = in1 * gain
+  }
+}
+proc Bank {
+  ins { in1 }
+  params { base = 1.0 }
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(gain = base), Voice(gain = base + 1.0)]
+    v_idx: i32 = 99
+  }
+  sample {
+    out1 = voices[v_idx](in1)
+  }
+}
+outs { out1 }
+init {
+  banks: Bank[2] = [Bank(base = 1.0), Bank(base = 100.0)]
+  b_idx: i32 = 99
+}
+sample {
+  out1 = banks[b_idx](0.5)
+}
+"#;
+
+const DEEPER_NESTED_PROC_INSTANCE_ARRAY_DYNAMIC_INDEX_CHAIN_EXAMPLE: &str = r#"
+proc Voice {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = in1 * gain
+  }
+}
+proc Bank {
+  ins { in1 }
+  params { base = 1.0 }
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(gain = base), Voice(gain = base + 1.0)]
+    v_idx: i32 = 99
+  }
+  sample {
+    out1 = voices[v_idx](in1)
+  }
+}
+proc Rack {
+  ins { in1 }
+  params { base = 1.0 }
+  outs { out1 }
+  init {
+    banks: Bank[2] = [Bank(base = base), Bank(base = base + 10.0)]
+    b_idx: i32 = 99
+  }
+  sample {
+    out1 = banks[b_idx](in1)
+  }
+}
+outs { out1 }
+init {
+  racks: Rack[2] = [Rack(base = 1.0), Rack(base = 100.0)]
+  r_idx: i32 = 99
+}
+sample {
+  out1 = racks[r_idx](0.5)
 }
 "#;
 
@@ -3365,6 +3516,179 @@ init {
 }
 sample {
   out1 = voice()
+}
+"#;
+
+const EVENT_PROC_ARRAY_INDEXED_FORWARD_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+outs { out1 }
+events {
+  note_on(value: f32) {
+    idx: i32 = 1
+    voices[idx].note_on(value)
+  }
+}
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+}
+sample {
+  out1 = voices[1]()
+}
+"#;
+
+const EVENT_NESTED_PROC_ARRAY_INDEXED_FORWARD_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+
+proc Bank {
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(), Voice()]
+  }
+  events {
+    note_on(value: f32) {
+      idx: i32 = 1
+      voices[idx].note_on(value)
+    }
+  }
+  sample {
+    out1 = voices[1]()
+  }
+}
+
+outs { out1 }
+events {
+  note_on(value: f32) {
+    bank.note_on(value)
+  }
+}
+init {
+  bank = Bank()
+}
+sample {
+  out1 = bank()
+}
+"#;
+
+const EVENT_DEEP_NESTED_PROC_ARRAY_DYNAMIC_FORWARD_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+proc Bank {
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(), Voice()]
+    v_idx: i32 = 99
+  }
+  events {
+    note_on(value: f32) {
+      voices[v_idx].note_on(value)
+    }
+  }
+  sample {
+    out1 = voices[v_idx]()
+  }
+}
+outs { out1 }
+events {
+  note_on(value: f32) {
+    banks[b_idx].note_on(value)
+  }
+}
+init {
+  banks: Bank[2] = [Bank(), Bank()]
+  b_idx: i32 = 99
+}
+sample {
+  out1 = banks[b_idx]()
+}
+"#;
+
+const EVENT_DEEPER_NESTED_PROC_ARRAY_DYNAMIC_FORWARD_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+proc Bank {
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(), Voice()]
+    v_idx: i32 = 99
+  }
+  events {
+    note_on(value: f32) {
+      voices[v_idx].note_on(value)
+    }
+  }
+  sample {
+    out1 = voices[v_idx]()
+  }
+}
+proc Rack {
+  outs { out1 }
+  init {
+    banks: Bank[2] = [Bank(), Bank()]
+    b_idx: i32 = 99
+  }
+  events {
+    note_on(value: f32) {
+      banks[b_idx].note_on(value)
+    }
+  }
+  sample {
+    out1 = banks[b_idx]()
+  }
+}
+outs { out1 }
+events {
+  note_on(value: f32) {
+    racks[r_idx].note_on(value)
+  }
+}
+init {
+  racks: Rack[2] = [Rack(), Rack()]
+  r_idx: i32 = 99
+}
+sample {
+  out1 = racks[r_idx]()
 }
 "#;
 
@@ -4017,6 +4341,84 @@ fn proc_event_forwarding_from_top_level_event_runs() {
 }
 
 #[test]
+fn proc_array_indexed_event_forwarding_from_top_level_event_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_PROC_ARRAY_INDEXED_FORWARD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let idx = instance
+        .event_index("note_on")
+        .expect("top-level forwarding event must exist");
+    trigger_event_by_index(&mut instance, idx, &0.6_f32.to_ne_bytes())
+        .expect("forwarding event trigger should succeed");
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.6, 1e-6);
+    }
+}
+
+#[test]
+fn nested_proc_array_indexed_event_forwarding_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_NESTED_PROC_ARRAY_INDEXED_FORWARD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let idx = instance
+        .event_index("note_on")
+        .expect("top-level forwarding event must exist");
+    trigger_event_by_index(&mut instance, idx, &0.7_f32.to_ne_bytes())
+        .expect("forwarding event trigger should succeed");
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.7, 1e-6);
+    }
+}
+
+#[test]
+fn deep_nested_proc_array_dynamic_index_event_forwarding_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_DEEP_NESTED_PROC_ARRAY_DYNAMIC_FORWARD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let idx = instance
+        .event_index("note_on")
+        .expect("top-level forwarding event must exist");
+    trigger_event_by_index(&mut instance, idx, &0.65_f32.to_ne_bytes())
+        .expect("forwarding event trigger should succeed");
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.65, 1e-6);
+    }
+}
+
+#[test]
+fn deeper_nested_proc_array_dynamic_index_event_forwarding_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        EVENT_DEEPER_NESTED_PROC_ARRAY_DYNAMIC_FORWARD_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let idx = instance
+        .event_index("note_on")
+        .expect("top-level forwarding event must exist");
+    trigger_event_by_index(&mut instance, idx, &0.6_f32.to_ne_bytes())
+        .expect("forwarding event trigger should succeed");
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.6, 1e-6);
+    }
+}
+
+#[test]
 fn events_reject_forbidden_writes_and_immutability() {
     let parsed = parse_program(EVENT_WRITE_OUTPUT_ERROR_EXAMPLE).expect("parse should succeed");
     let errs = analyze(parsed).expect_err("events should reject output writes");
@@ -4507,6 +4909,21 @@ fn def_struct_data_arg_compiles_and_runs() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_struct_array_indexed_arg_compiles_and_runs() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_STRUCT_ARRAY_INDEXED_ARG_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
     }
 }
 
@@ -7912,14 +8329,234 @@ fn proc_instance_array_indexed_field_call_compiles_and_runs() {
 }
 
 #[test]
-fn proc_instance_array_indexed_call_non_literal_index_is_rejected() {
-    let parsed = parse_program(PROC_INSTANCE_ARRAY_INDEXED_CALL_NON_LITERAL_ERROR_EXAMPLE)
-        .expect("parse should succeed");
-    let result = analyze(parsed);
-    assert!(
-        result.is_err(),
-        "semantic analysis should reject non-literal processor-array call indices"
+fn proc_instance_array_indexed_call_dynamic_index_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_EXAMPLE,
+        frames,
     );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+fn proc_instance_array_indexed_call_dynamic_index_with_oversampled_callee_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_OVERSAMPLED_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert!(
+            sample.is_finite() && *sample > 0.0 && *sample < 2.0,
+            "expected finite oversampled dynamic dispatch output in (0,2), got {}",
+            sample
+        );
+    }
+}
+
+#[test]
+fn proc_instance_array_indexed_field_call_dynamic_index_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_FIELD_DYNAMIC_INDEX_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn proc_instance_array_indexed_call_dynamic_index_selects_slot_buffer_binding() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_BUFFER_BINDING_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 2);
+
+    let mut buf1 = vec![0.25_f32; frames];
+    let mut buf2 = vec![0.75_f32; frames];
+    let buf1_idx = instance.buffer_index("buf1").expect("buf1 index");
+    let buf2_idx = instance.buffer_index("buf2").expect("buf2 index");
+    bind_buffer(
+        &mut instance,
+        buf1_idx,
+        buf1.as_mut_ptr().cast::<u8>(),
+        buf1.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf1");
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2.as_mut_ptr().cast::<u8>(),
+        buf2.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    for sample in out {
+        assert_near(sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process_bound() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_BUFFER_BINDING_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 2);
+
+    let mut buf1 = vec![0.25_f32; frames];
+    let mut buf2_old = vec![0.75_f32; frames];
+    let buf1_idx = instance.buffer_index("buf1").expect("buf1 index");
+    let buf2_idx = instance.buffer_index("buf2").expect("buf2 index");
+    bind_buffer(
+        &mut instance,
+        buf1_idx,
+        buf1.as_mut_ptr().cast::<u8>(),
+        buf1.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf1");
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_old.as_mut_ptr().cast::<u8>(),
+        buf2_old.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 old");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound with old buf2");
+    let out_old = decode_planar_f32(&out_bytes);
+    for sample in out_old {
+        assert_near(sample, 0.75, 1e-6);
+    }
+
+    let mut buf2_new = vec![0.5_f32; frames];
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_new.as_mut_ptr().cast::<u8>(),
+        buf2_new.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 new");
+
+    process_bound(&mut instance, frames).expect("process bound with new buf2");
+    let out_new = decode_planar_f32(&out_bytes);
+    for sample in out_new {
+        assert_near(sample, 0.5, 1e-6);
+    }
+}
+
+#[test]
+fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_process_unchecked()
+{
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_BUFFER_BINDING_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 2);
+
+    let mut buf1 = vec![0.25_f32; frames];
+    let mut buf2_old = vec![0.75_f32; frames];
+    let buf1_idx = instance.buffer_index("buf1").expect("buf1 index");
+    let buf2_idx = instance.buffer_index("buf2").expect("buf2 index");
+    bind_buffer(
+        &mut instance,
+        buf1_idx,
+        buf1.as_mut_ptr().cast::<u8>(),
+        buf1.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf1");
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_old.as_mut_ptr().cast::<u8>(),
+        buf2_old.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 old");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound to seed proc-slot refs");
+    let out_seed = decode_planar_f32(&out_bytes);
+    for sample in out_seed {
+        assert_near(sample, 0.75, 1e-6);
+    }
+
+    let mut buf2_new = vec![0.5_f32; frames];
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_new.as_mut_ptr().cast::<u8>(),
+        buf2_new.len(),
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 new");
+
+    validate_buffers(&mut instance).expect("validate buffers after rebind");
+    validate_outputs(&mut instance).expect("validate outputs");
+    unsafe {
+        process_unchecked(&mut instance).expect("unchecked process after rebind");
+    }
+    let out_unchecked = decode_planar_f32(&out_bytes);
+    for sample in out_unchecked {
+        assert_near(sample, 0.75, 1e-6);
+    }
+
+    process_bound(&mut instance, frames).expect("process bound refreshes refs");
+    let out_refreshed = decode_planar_f32(&out_bytes);
+    for sample in out_refreshed {
+        assert_near(sample, 0.5, 1e-6);
+    }
 }
 
 #[test]
@@ -7934,6 +8571,40 @@ fn nested_proc_instance_array_indexed_call_compiles_and_runs() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn deep_nested_proc_instance_array_dynamic_index_chain_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        DEEP_NESTED_PROC_INSTANCE_ARRAY_DYNAMIC_INDEX_CHAIN_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 50.5, 1e-6);
+    }
+}
+
+#[test]
+fn deeper_nested_proc_instance_array_dynamic_index_chain_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        DEEPER_NESTED_PROC_INSTANCE_ARRAY_DYNAMIC_INDEX_CHAIN_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 55.5, 1e-6);
     }
 }
 

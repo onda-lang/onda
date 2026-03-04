@@ -1248,15 +1248,34 @@ fn analyze_assign_init(
                                 ));
                             }
                         } else {
+                            let size_context = format!(
+                                "processor-array '{}' size for symbol '{}'",
+                                proc_ctor, name
+                            );
+                            let len =
+                                eval_data_size_expr(&spec.size, ctx.options, &size_context, errors)
+                                    .unwrap_or(1);
                             st.nested_proc_arrays.insert(
                                 name.clone(),
                                 ProcNestedArrayState {
-                                    proc_name: proc_ctor,
+                                    proc_name: proc_ctor.clone(),
                                     size_expr: *spec.size.clone(),
                                 },
                             );
+                            st.state_array_struct_roots.entry(name.clone()).or_insert(
+                                ArrayStructRootInfo {
+                                    struct_name: proc_ctor,
+                                    len,
+                                },
+                            );
                         }
+                        st.state_scalars.insert(
+                            declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, name),
+                            PrimitiveType::F32,
+                        );
                         st.known_scalars.insert(name.clone());
+                        st.known_scalars
+                            .insert(declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, name));
                         return;
                     }
                     // Not a proc array - store as regular data array
@@ -1396,6 +1415,17 @@ fn analyze_assign_init(
                         ) {
                             return;
                         }
+                        st.known_scalars.insert(name.clone());
+                        st.known_scalars
+                            .insert(declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, name));
+                        let prefix = format!("{DECLARED_DATA_ELEM_TYPE_PREFIX}{name}.");
+                        let declared_field_keys = st
+                            .state_scalars
+                            .keys()
+                            .filter(|k| k.starts_with(&prefix))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        st.known_scalars.extend(declared_field_keys);
                     }
                 }
                 return;

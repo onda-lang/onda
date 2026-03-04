@@ -1001,6 +1001,10 @@ fn parse_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, Vec<CallTyp
     match pair.as_rule() {
         Rule::path_ident => (pair.as_str().to_owned(), Vec::new(), Vec::new()),
         Rule::namespace_ref => parse_namespace_call_target(pair),
+        Rule::call_index_member_target => {
+            let (name, args) = parse_call_index_member_target(pair);
+            (name, args, Vec::new())
+        }
         Rule::call_index_target => {
             let (name, args) = parse_call_index_target(pair);
             (name, args, Vec::new())
@@ -1127,6 +1131,34 @@ fn parse_call_index_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
     let base = base_pair.as_str().to_owned();
     (
         PROC_INDEX_CALL_SENTINEL.to_owned(),
+        vec![
+            CallArg {
+                name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                expr: Expr::Var(base),
+            },
+            CallArg {
+                name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                expr: parse_expr_inner(index_pair),
+            },
+        ],
+    )
+}
+
+fn parse_call_index_member_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
+    let mut inner = pair.into_inner();
+    let Some(base_pair) = inner.next() else {
+        return (PROC_INDEX_CALL_SENTINEL.to_owned(), Vec::new());
+    };
+    let Some(index_pair) = inner.next() else {
+        return (PROC_INDEX_CALL_SENTINEL.to_owned(), Vec::new());
+    };
+    let Some(member_pair) = inner.next() else {
+        return (PROC_INDEX_CALL_SENTINEL.to_owned(), Vec::new());
+    };
+    let base = base_pair.as_str().to_owned();
+    let member = member_pair.as_str();
+    (
+        format!("{PROC_INDEX_CALL_SENTINEL}.{member}"),
         vec![
             CallArg {
                 name: Some(PROC_INDEX_BASE_ARG.to_owned()),

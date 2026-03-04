@@ -1417,6 +1417,32 @@ impl JitProgram {
         }
     }
 
+    pub fn sync_proc_buffer_refs_for_process_bound(
+        &self,
+        state: &mut RuntimeState,
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+    ) -> Result<(), Diagnostic> {
+        #[cfg(feature = "llvm-orc")]
+        {
+            return sync_proc_buffer_refs_for_process_bound_orc(
+                &self.compiled,
+                state,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+            );
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            let _ = (state, buffer_ptrs, buffer_frames, buffer_channels);
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
     pub unsafe fn process_bound_unchecked(
         &self,
         state: &mut RuntimeState,
@@ -1658,6 +1684,54 @@ fn process_bound_orc(
         buffer_channels.as_ptr(),
     );
 
+    Ok(())
+}
+
+#[cfg(feature = "llvm-orc")]
+fn sync_proc_buffer_refs_for_process_bound_orc(
+    compiled: &orc_backend::OrcProcess,
+    state: &mut RuntimeState,
+    buffer_ptrs: &[*mut u8],
+    buffer_frames: &[i32],
+    buffer_channels: &[i32],
+) -> Result<(), Diagnostic> {
+    if buffer_ptrs.len() != compiled.buffer_count()
+        || buffer_frames.len() != compiled.buffer_count()
+        || buffer_channels.len() != compiled.buffer_count()
+    {
+        return Err(Diagnostic::runtime(
+            format!(
+                "runtime buffer metadata count mismatch: ptrs={}, frames={}, chans={}, expected={}",
+                buffer_ptrs.len(),
+                buffer_frames.len(),
+                buffer_channels.len(),
+                compiled.buffer_count()
+            ),
+            0,
+            0,
+        ));
+    }
+    if state.state_size_bytes != compiled.state_size_bytes() {
+        return Err(Diagnostic::runtime(
+            "runtime state buffer size does not match compiled program state layout",
+            0,
+            0,
+        ));
+    }
+    let required_words = (state.state_size_bytes + 7) / 8;
+    if state.state_words.len() < required_words {
+        return Err(Diagnostic::runtime(
+            "runtime state backing storage is smaller than required by compiled program",
+            0,
+            0,
+        ));
+    }
+    compiled.sync_proc_buffer_refs(
+        state.state_words.as_mut_ptr().cast::<u8>(),
+        buffer_ptrs,
+        buffer_frames,
+        buffer_channels,
+    )?;
     Ok(())
 }
 

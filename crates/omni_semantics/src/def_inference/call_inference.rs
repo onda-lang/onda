@@ -1,8 +1,10 @@
 use super::*;
+use crate::{PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_EXPR_ARG};
 
 pub(super) fn infer_stmt_calls(
     stmt: &Stmt,
     struct_instances: &HashMap<String, String>,
+    struct_array_roots: &HashMap<String, String>,
     array_bindings: &mut HashMap<String, InferredArrayParam>,
     buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -15,6 +17,7 @@ pub(super) fn infer_stmt_calls(
                 infer_expr_calls(
                     index,
                     struct_instances,
+                    struct_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -25,6 +28,7 @@ pub(super) fn infer_stmt_calls(
             infer_expr_calls(
                 expr,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -40,6 +44,7 @@ pub(super) fn infer_stmt_calls(
         Stmt::Expr { expr, .. } => infer_expr_calls(
             expr,
             struct_instances,
+            struct_array_roots,
             array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -49,6 +54,7 @@ pub(super) fn infer_stmt_calls(
         Stmt::Return { expr, .. } => infer_expr_calls(
             expr,
             struct_instances,
+            struct_array_roots,
             array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -64,6 +70,7 @@ pub(super) fn infer_stmt_calls(
             infer_expr_calls(
                 cond,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -75,6 +82,7 @@ pub(super) fn infer_stmt_calls(
                 infer_stmt_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     &mut then_arrays,
                     buffer_bindings,
                     fn_signatures,
@@ -87,6 +95,7 @@ pub(super) fn infer_stmt_calls(
                 infer_stmt_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     &mut else_arrays,
                     buffer_bindings,
                     fn_signatures,
@@ -107,6 +116,7 @@ pub(super) fn infer_stmt_calls(
             infer_expr_calls(
                 start,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -116,6 +126,7 @@ pub(super) fn infer_stmt_calls(
             infer_expr_calls(
                 end,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -126,6 +137,7 @@ pub(super) fn infer_stmt_calls(
                 infer_expr_calls(
                     step_expr,
                     struct_instances,
+                    struct_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -138,6 +150,7 @@ pub(super) fn infer_stmt_calls(
                 infer_stmt_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     &mut loop_arrays,
                     buffer_bindings,
                     fn_signatures,
@@ -151,6 +164,7 @@ pub(super) fn infer_stmt_calls(
             infer_expr_calls(
                 cond,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -162,6 +176,7 @@ pub(super) fn infer_stmt_calls(
                 infer_stmt_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     &mut loop_arrays,
                     buffer_bindings,
                     fn_signatures,
@@ -178,6 +193,7 @@ pub(super) fn infer_stmt_calls(
 fn infer_expr_calls(
     expr: &Expr,
     struct_instances: &HashMap<String, String>,
+    struct_array_roots: &HashMap<String, String>,
     array_bindings: &HashMap<String, InferredArrayParam>,
     buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -191,6 +207,7 @@ fn infer_expr_calls(
                 infer_expr_calls(
                     value,
                     struct_instances,
+                    struct_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -203,6 +220,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 index,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -214,6 +232,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 lhs,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -223,6 +242,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 rhs,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -234,6 +254,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 expr,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -245,6 +266,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 lhs,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -254,6 +276,7 @@ fn infer_expr_calls(
             infer_expr_calls(
                 rhs,
                 struct_instances,
+                struct_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -266,6 +289,7 @@ fn infer_expr_calls(
                 infer_expr_calls(
                     arg,
                     struct_instances,
+                    struct_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -302,14 +326,76 @@ fn infer_expr_calls(
                                             }
                                         } else if let Some(buffer_infos) = buffer_bindings.get(v) {
                                             for buffer_info in buffer_infos {
-                                                if !slot.saw_buffers.iter().any(|seen| {
-                                                    seen.elem_ty == buffer_info.elem_ty
-                                                        && seen.channels == buffer_info.channels
-                                                }) {
-                                                    slot.saw_buffers.push(buffer_info.clone());
-                                                }
+                                                push_buffer_observation(
+                                                    slot,
+                                                    buffer_info.clone(),
+                                                    true,
+                                                );
                                             }
+                                        } else if let Some(struct_name) = sig
+                                            .param_types
+                                            .get(idx)
+                                            .and_then(|ty| ty.as_ref())
+                                            .and_then(|ty| match ty {
+                                                FnParamType::Struct(name) => Some(name),
+                                                _ => None,
+                                            })
+                                        {
+                                            slot.saw_structs.insert(struct_name.clone());
                                         } else {
+                                            slot.saw_scalar = true;
+                                        }
+                                    }
+                                    Expr::Index { base, .. } => {
+                                        if let Some(struct_name) = struct_array_roots.get(base) {
+                                            slot.saw_structs.insert(struct_name.clone());
+                                        } else if let Some(struct_name) = sig
+                                            .param_types
+                                            .get(idx)
+                                            .and_then(|ty| ty.as_ref())
+                                            .and_then(|ty| match ty {
+                                                FnParamType::Struct(name) => Some(name),
+                                                _ => None,
+                                            })
+                                        {
+                                            slot.saw_structs.insert(struct_name.clone());
+                                        } else {
+                                            slot.saw_scalar = true;
+                                        }
+                                    }
+                                    Expr::UserCall {
+                                        name: selector_name,
+                                        args: selector_args,
+                                        ..
+                                    } if selector_name == PROC_INDEX_BUFFER_SELECT_SENTINEL => {
+                                        let mut saw_any_buffer = false;
+                                        let mut saw_invalid_slot = false;
+                                        for selector_arg in selector_args {
+                                            if selector_arg.name.as_deref()
+                                                == Some(PROC_INDEX_BASE_ARG)
+                                                || selector_arg.name.as_deref()
+                                                    == Some(PROC_INDEX_EXPR_ARG)
+                                            {
+                                                continue;
+                                            }
+                                            let Expr::Var(v) = &selector_arg.expr else {
+                                                saw_invalid_slot = true;
+                                                continue;
+                                            };
+                                            if let Some(buffer_infos) = buffer_bindings.get(v) {
+                                                saw_any_buffer = true;
+                                                for buffer_info in buffer_infos {
+                                                    push_buffer_observation(
+                                                        slot,
+                                                        buffer_info.clone(),
+                                                        true,
+                                                    );
+                                                }
+                                            } else {
+                                                saw_invalid_slot = true;
+                                            }
+                                        }
+                                        if !saw_any_buffer || saw_invalid_slot {
                                             slot.saw_scalar = true;
                                         }
                                     }
@@ -324,6 +410,7 @@ fn infer_expr_calls(
                 infer_expr_calls(
                     &arg.expr,
                     struct_instances,
+                    struct_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,

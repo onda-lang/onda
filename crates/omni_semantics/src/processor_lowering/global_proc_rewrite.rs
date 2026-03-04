@@ -1,5 +1,26 @@
 use super::*;
 
+fn remap_proc_ctor_assign_for_array_slot(
+    mut stmt: Stmt,
+    slot_var: &str,
+    array_base: &str,
+    slot_idx: usize,
+) -> Stmt {
+    if let Stmt::Assign { target, .. } = &mut stmt {
+        let AssignTarget::Var(name) = target else {
+            return stmt;
+        };
+        let prefix = format!("{slot_var}.");
+        if let Some(field_path) = name.strip_prefix(&prefix) {
+            *target = AssignTarget::Index {
+                base: format!("{array_base}.{field_path}"),
+                index: Expr::Int(slot_idx as i64),
+            };
+        }
+    }
+    stmt
+}
+
 pub(super) fn rewrite_top_level_proc_calls(
     program: &mut Program,
     options: AnalysisOptions,
@@ -65,7 +86,17 @@ pub(super) fn rewrite_top_level_proc_calls(
                         .map(|idx| format!("{array_var}[{idx}]"))
                         .collect::<Vec<_>>();
                     global_proc_array_slots.insert(array_var.clone(), slot_names.clone());
-                    let mut expanded = Vec::<Stmt>::with_capacity(len);
+                    let mut expanded = Vec::<Stmt>::with_capacity(len + 1);
+                    if let Some(mut decl_stmt) = pending_stmts.first().cloned() {
+                        if let Stmt::Assign {
+                            expr: Expr::ArrayCtor { init, .. },
+                            ..
+                        } = &mut decl_stmt
+                        {
+                            *init = None;
+                        }
+                        expanded.push(decl_stmt);
+                    }
                     for idx in 0..len {
                         let mut args = Vec::<CallArg>::new();
                         let slot_var = format!("{array_var}[{idx}]");
@@ -214,23 +245,26 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 0,
                             ));
                         }
-                        let mut ctor_stmt = stmt.clone();
-                        if let Stmt::Assign {
-                            expr:
-                                Expr::UserCall {
-                                    type_args, args, ..
-                                },
-                            ..
-                        } = &mut ctor_stmt
-                        {
-                            type_args.clear();
-                            args.clear();
+                        let array_slot = find_proc_array_slot(var, &global_proc_array_slots);
+                        if array_slot.is_none() {
+                            let mut ctor_stmt = stmt.clone();
+                            if let Stmt::Assign {
+                                expr:
+                                    Expr::UserCall {
+                                        type_args, args, ..
+                                    },
+                                ..
+                            } = &mut ctor_stmt
+                            {
+                                type_args.clear();
+                                args.clear();
+                            }
+                            rewritten_init.push(ctor_stmt);
                         }
-                        rewritten_init.push(ctor_stmt);
                         if let Some(shape) = lowering_shapes.get(ctor_name) {
                             let proc_array_slot =
                                 global_proc_array_broadcast_slots.get(var).copied();
-                            let (ctor_assigns, buffer_args) = expand_proc_instance_ctor_assign(
+                            let (mut ctor_assigns, buffer_args) = expand_proc_instance_ctor_assign(
                                 var,
                                 ctor_name,
                                 ctor_args,
@@ -246,6 +280,19 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     buffer_args: buffer_args.clone(),
                                 },
                             );
+                            if let Some((array_base, slot_idx)) = array_slot.as_ref() {
+                                ctor_assigns = ctor_assigns
+                                    .into_iter()
+                                    .map(|assign| {
+                                        remap_proc_ctor_assign_for_array_slot(
+                                            assign,
+                                            var,
+                                            array_base.as_str(),
+                                            *slot_idx,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                            }
                             rewritten_init.extend(ctor_assigns);
                             rewritten_init.push(Stmt::Expr {
                                 loc: None,
@@ -254,7 +301,10 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     type_args: Vec::new(),
                                     args: vec![CallArg {
                                         name: None,
-                                        expr: Expr::Var(var.clone()),
+                                        expr: proc_instance_self_expr(
+                                            var,
+                                            &global_proc_array_slots,
+                                        ),
                                     }],
                                 },
                             });
@@ -266,7 +316,10 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     type_args: Vec::new(),
                                     args: vec![CallArg {
                                         name: None,
-                                        expr: Expr::Var(var.clone()),
+                                        expr: proc_instance_self_expr(
+                                            var,
+                                            &global_proc_array_slots,
+                                        ),
                                     }],
                                 },
                             });
@@ -325,7 +378,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             let mut pre_args = Vec::<CallArg>::new();
             pre_args.push(CallArg {
                 name: None,
-                expr: Expr::Var(instance_name.clone()),
+                expr: proc_instance_self_expr(&instance_name, &global_proc_array_slots),
             });
             pre_args.extend(expand_proc_buffer_call_args(
                 instance,
@@ -345,7 +398,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             let mut post_args = Vec::<CallArg>::new();
             post_args.push(CallArg {
                 name: None,
-                expr: Expr::Var(instance_name.clone()),
+                expr: proc_instance_self_expr(&instance_name, &global_proc_array_slots),
             });
             post_args.extend(expand_proc_buffer_call_args(
                 instance,

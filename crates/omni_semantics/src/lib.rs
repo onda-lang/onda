@@ -39,6 +39,13 @@ use proc_state_rewrite::*;
 pub use processor_lowering::{analyze, analyze_with_options};
 use stmt_analysis::*;
 
+pub mod internal_names {
+    pub const PROC_INDEX_BUFFER_SELECT_SENTINEL: &str =
+        crate::proc_state_rewrite::PROC_INDEX_BUFFER_SELECT_SENTINEL;
+    pub const PROC_INDEX_BASE_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_BASE_ARG;
+    pub const PROC_INDEX_EXPR_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_EXPR_ARG;
+}
+
 #[derive(Debug, Clone)]
 pub struct TypedProgram {
     pub ins: Vec<String>,

@@ -85,3 +85,17 @@ pub(super) unsafe fn build_typed_state_ptr(
     let ptr_ty = LLVMPointerType(llvm_ty_for_primitive(context, ty), 0);
     LLVMBuildBitCast(builder, byte_ptr, ptr_ty, cast_name.as_ptr().cast())
 }
+
+pub(super) unsafe fn build_state_ptr_with_elem_ty(
+    builder: LLVMBuilderRef,
+    context: LLVMContextRef,
+    state_base_ptr: LLVMValueRef,
+    offset_bytes: usize,
+    elem_ty: LLVMTypeRef,
+    gep_name: &[u8],
+    cast_name: &[u8],
+) -> LLVMValueRef {
+    let byte_ptr = build_i8_ptr_offset(builder, context, state_base_ptr, offset_bytes, gep_name);
+    let ptr_ty = LLVMPointerType(elem_ty, 0);
+    LLVMBuildBitCast(builder, byte_ptr, ptr_ty, cast_name.as_ptr().cast())
+}

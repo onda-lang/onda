@@ -32,6 +32,8 @@ struct InferredFnParam {
     saw_structs: HashSet<String>,
     saw_arrays: Vec<InferredArrayParam>,
     saw_buffers: Vec<InferredBufferParam>,
+    saw_seeded_buffer: bool,
+    saw_call_buffer: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,6 +54,7 @@ pub(crate) fn infer_def_param_kinds(
     block_stmts: &[Stmt],
     sample: &[Stmt],
     struct_instances: &HashMap<String, String>,
+    struct_array_roots: &HashMap<String, String>,
     array_bindings: &HashMap<String, InferredArrayParam>,
     buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -112,6 +115,7 @@ pub(crate) fn infer_def_param_kinds(
         infer_stmt_calls(
             stmt,
             struct_instances,
+            struct_array_roots,
             &mut init_array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -124,6 +128,7 @@ pub(crate) fn infer_def_param_kinds(
         infer_stmt_calls(
             stmt,
             struct_instances,
+            struct_array_roots,
             &mut block_array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -136,6 +141,7 @@ pub(crate) fn infer_def_param_kinds(
         infer_stmt_calls(
             stmt,
             struct_instances,
+            struct_array_roots,
             &mut sample_array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -218,10 +224,16 @@ pub(crate) fn infer_def_param_kinds(
                     if local_buffer_bindings.contains_key(&param.name) {
                         continue;
                     }
-                    if let Some(inferred_buffer) =
-                        infer_buffer_observation_from_param_slot(inferred_kind)
-                    {
-                        local_buffer_bindings.insert(param.name.clone(), vec![inferred_buffer]);
+                    let has_struct_observations = !inferred_kind.saw_structs.is_empty();
+                    let has_effective_buffer_observations = !inferred_kind.saw_arrays.is_empty()
+                        || inferred_kind.saw_call_buffer
+                        || (inferred_kind.saw_seeded_buffer && !has_struct_observations);
+                    if has_effective_buffer_observations {
+                        if let Some(inferred_buffer) =
+                            infer_buffer_observation_from_param_slot(inferred_kind)
+                        {
+                            local_buffer_bindings.insert(param.name.clone(), vec![inferred_buffer]);
+                        }
                     }
                 }
             }
@@ -230,6 +242,7 @@ pub(crate) fn infer_def_param_kinds(
                 infer_stmt_calls(
                     stmt,
                     &local_struct_instances,
+                    struct_array_roots,
                     &mut local_array_bindings,
                     &local_buffer_bindings,
                     fn_signatures,
@@ -275,6 +288,11 @@ pub(crate) fn infer_def_param_kinds(
                 .map(|p| p.name.as_str())
                 .unwrap_or("<param>");
             let usage_for_param = usage.get(idx).cloned().unwrap_or_default();
+            let has_struct_usage =
+                !inferred_kind.saw_structs.is_empty() || !usage_for_param.is_empty();
+            let has_effective_buffer_usage = !inferred_kind.saw_arrays.is_empty()
+                || inferred_kind.saw_call_buffer
+                || (inferred_kind.saw_seeded_buffer && !has_struct_usage);
 
             // Handle explicitly typed array params (e.g. `f32[]`)
             if let Some(FnParamType::Array(Some(prim))) =
@@ -350,7 +368,7 @@ pub(crate) fn infer_def_param_kinds(
                         0,
                     ));
                 }
-                if !inferred_kind.saw_structs.is_empty() || !usage_for_param.is_empty() {
+                if has_struct_usage {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as struct",
@@ -369,8 +387,8 @@ pub(crate) fn infer_def_param_kinds(
                 continue;
             }
 
-            if !inferred_kind.saw_buffers.is_empty() || !inferred_kind.saw_arrays.is_empty() {
-                if !inferred_kind.saw_structs.is_empty() || !usage_for_param.is_empty() {
+            if has_effective_buffer_usage {
+                if has_struct_usage {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "function '{}' parameter '{}' is used both as struct and buffer",
@@ -437,7 +455,7 @@ pub(crate) fn infer_def_param_kinds(
                 continue;
             }
 
-            if !inferred_kind.saw_structs.is_empty() || !usage_for_param.is_empty() {
+            if has_struct_usage {
                 if inferred_kind.saw_scalar {
                     errors.push(Diagnostic::semantic(
                         format!(
@@ -473,7 +491,12 @@ pub(crate) fn infer_def_param_kinds(
     (out, synthesized)
 }
 
-fn push_buffer_observation(slot: &mut InferredFnParam, obs: InferredBufferParam) {
+fn push_buffer_observation(slot: &mut InferredFnParam, obs: InferredBufferParam, hard: bool) {
+    if hard {
+        slot.saw_call_buffer = true;
+    } else {
+        slot.saw_seeded_buffer = true;
+    }
     if slot
         .saw_buffers
         .iter()
@@ -502,6 +525,7 @@ fn mark_param_indexable_usage(
             elem_ty: PrimitiveType::F32,
             channels,
         },
+        false,
     );
 }
 
@@ -900,7 +924,7 @@ fn propagate_expr_callee_buffer_requirements_to_params(
                         };
                         if let Some(caller_slots) = kinds.get_mut(caller_name) {
                             if let Some(slot) = caller_slots.get_mut(caller_param_idx) {
-                                push_buffer_observation(slot, requirement);
+                                push_buffer_observation(slot, requirement, true);
                             }
                         }
                     }

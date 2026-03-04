@@ -3,6 +3,7 @@ use super::*;
 pub(crate) const PROC_FIELD_SENTINEL_PREFIX: &str = "__omni_proc_field__";
 pub(crate) const PROC_FIELD_SENTINEL_ARG: &str = "__proc_field";
 pub(crate) const PROC_INDEX_CALL_SENTINEL: &str = "__omni_proc_index_call";
+pub(crate) const PROC_INDEX_BUFFER_SELECT_SENTINEL: &str = "__omni_proc_index_buffer_select";
 pub(crate) const PROC_INDEX_BASE_ARG: &str = "__proc_index_base";
 pub(crate) const PROC_INDEX_EXPR_ARG: &str = "__proc_index_expr";
 pub(crate) const PROC_INIT_FN_SUFFIX: &str = ".__proc_init";

@@ -569,6 +569,9 @@ pub(super) unsafe fn lower_expr(
                         struct_name,
                         name,
                         by_ref,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
                     )
                 }
             };
@@ -588,6 +591,8 @@ pub(super) unsafe fn lower_expr(
                     arg_values,
                     arg_expr,
                     name,
+                    locals,
+                    local_aliases,
                 )
             };
             materialize_user_call_args_common(

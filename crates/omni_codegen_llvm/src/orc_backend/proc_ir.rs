@@ -15,6 +15,7 @@ pub(super) unsafe fn build_process_ir(
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
+    proc_slot_buffer_ref_layouts: &[ProcSlotBufferRefLayout],
 ) -> Result<(), Diagnostic> {
     let float_ty = LLVMFloatTypeInContext(context);
     let i8_ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
@@ -109,6 +110,56 @@ pub(super) unsafe fn build_process_ir(
             if mono {
                 buffer_mono.insert(decl.name.clone());
             }
+        }
+        let mut proc_slot_buffer_refs = HashMap::<Vec<u32>, ProcSlotBufferRefArrays>::new();
+        for layout in proc_slot_buffer_ref_layouts {
+            let signature = layout
+                .slot_buffer_indices
+                .iter()
+                .map(|idx| {
+                    u32::try_from(*idx).map_err(|_| {
+                        Diagnostic::internal(
+                            "proc-slot buffer-ref signature index exceeds u32 range in ORC lowering",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let ptrs_base = build_state_ptr_with_elem_ty(
+                builder,
+                context,
+                state_ptr,
+                layout.ptr_offset,
+                i8_ptr_ty,
+                b"proc_buf_ref_ptrs_gep\0",
+                b"proc_buf_ref_ptrs_cast\0",
+            );
+            let frames_base = build_state_ptr_with_elem_ty(
+                builder,
+                context,
+                state_ptr,
+                layout.frames_offset,
+                i32_ty,
+                b"proc_buf_ref_frames_gep\0",
+                b"proc_buf_ref_frames_cast\0",
+            );
+            let channels_base = build_state_ptr_with_elem_ty(
+                builder,
+                context,
+                state_ptr,
+                layout.channels_offset,
+                i32_ty,
+                b"proc_buf_ref_chans_gep\0",
+                b"proc_buf_ref_chans_cast\0",
+            );
+            proc_slot_buffer_refs.insert(
+                signature,
+                ProcSlotBufferRefArrays {
+                    ptrs_base,
+                    frames_base,
+                    channels_base,
+                    len: layout.slot_buffer_indices.len(),
+                },
+            );
         }
         let arrays_by_offset = typed
             .param_arrays
@@ -388,6 +439,7 @@ pub(super) unsafe fn build_process_ir(
                 buffer_elem_types: &buffer_elem_types,
                 buffer_channels: &buffer_channels,
                 buffer_mono: &buffer_mono,
+                proc_slot_buffer_refs: &proc_slot_buffer_refs,
                 param_byte_offset: &param_byte_offset,
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,
@@ -471,6 +523,7 @@ pub(super) unsafe fn build_process_ir(
                 buffer_elem_types: &buffer_elem_types,
                 buffer_channels: &buffer_channels,
                 buffer_mono: &buffer_mono,
+                proc_slot_buffer_refs: &proc_slot_buffer_refs,
                 param_byte_offset: &param_byte_offset,
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,
@@ -773,6 +826,7 @@ pub(super) unsafe fn build_process_ir(
                 buffer_elem_types: &buffer_elem_types,
                 buffer_channels: &buffer_channels,
                 buffer_mono: &buffer_mono,
+                proc_slot_buffer_refs: &proc_slot_buffer_refs,
                 param_byte_offset: &param_byte_offset,
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,
@@ -987,6 +1041,7 @@ pub(super) unsafe fn build_process_ir(
             buffer_elem_types: &buffer_elem_types,
             buffer_channels: &buffer_channels,
             buffer_mono: &buffer_mono,
+            proc_slot_buffer_refs: &proc_slot_buffer_refs,
             param_byte_offset: &param_byte_offset,
             param_types: &param_types,
             param_arrays: &typed.param_arrays,
@@ -1154,6 +1209,7 @@ pub(super) unsafe fn build_process_ir(
                 buffer_elem_types: &buffer_elem_types,
                 buffer_channels: &buffer_channels,
                 buffer_mono: &buffer_mono,
+                proc_slot_buffer_refs: &proc_slot_buffer_refs,
                 param_byte_offset: &param_byte_offset,
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,
@@ -1363,6 +1419,7 @@ pub(super) unsafe fn build_init_ir(
         let buffer_elem_types = HashMap::new();
         let buffer_channels = HashMap::new();
         let buffer_mono = HashSet::<String>::new();
+        let proc_slot_buffer_refs = HashMap::<Vec<u32>, ProcSlotBufferRefArrays>::new();
         let output_arrays = HashMap::<String, TypedArrayInfo>::new();
 
         let mut lctx = LoweringCtx {
@@ -1393,6 +1450,7 @@ pub(super) unsafe fn build_init_ir(
             buffer_elem_types: &buffer_elem_types,
             buffer_channels: &buffer_channels,
             buffer_mono: &buffer_mono,
+            proc_slot_buffer_refs: &proc_slot_buffer_refs,
             param_byte_offset: &param_byte_offset,
             param_types: &param_types,
             param_arrays: &typed.param_arrays,
@@ -1635,6 +1693,7 @@ pub(super) unsafe fn build_event_ir(
             let input_types = HashMap::new();
             let input_arrays = HashMap::<String, TypedArrayInfo>::new();
             let output_arrays = HashMap::<String, TypedArrayInfo>::new();
+            let proc_slot_buffer_refs = HashMap::<Vec<u32>, ProcSlotBufferRefArrays>::new();
 
             let mut lctx = LoweringCtx {
                 builder,
@@ -1664,6 +1723,7 @@ pub(super) unsafe fn build_event_ir(
                 buffer_elem_types: &buffer_elem_types,
                 buffer_channels: &buffer_channels,
                 buffer_mono: &buffer_mono,
+                proc_slot_buffer_refs: &proc_slot_buffer_refs,
                 param_byte_offset: &param_byte_offset,
                 param_types: &param_types,
                 param_arrays: &typed.param_arrays,

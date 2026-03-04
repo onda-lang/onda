@@ -2,21 +2,10 @@
 
 ## Next Features
 
-- Polymorph defs (implemented MVP)
-  - Status:
-    - Top-level `def` overloads are implemented for arity/type-based dispatch.
-    - Resolution currently prefers exact typed matches, then widening fallbacks, with ambiguity as an error.
-    - Defaults participate in overload matching.
-  - Remaining follow-ups:
-    - Improve overload diagnostics to show per-candidate ranking details.
-    - Evaluate extending overloads to struct methods (currently still rejected as duplicate method names).
-    - Clarify/document overload behavior for complex untyped array/buffer inference-heavy call sites.
-
-- Array procs (partial)
-  - Status: core typed proc-array declarations/calls and broadcast ctor sugar are implemented.
-  - Remaining:
-    - Decide/implement policy for non-literal indexed proc-array dispatch (currently rejected).
-    - Add indexed proc-array event-call syntax (currently not expanded; existing event calls still use named proc-instance targets).
+- Polymorph defs follow-ups
+  - Improve overload diagnostics to show per-candidate ranking details.
+  - Evaluate extending overloads to struct methods (currently still rejected as duplicate method names).
+  - Clarify/document overload behavior for complex untyped array/buffer inference-heavy call sites.
 
 - Graph composition syntax
   - Locked MVP syntax:
@@ -139,23 +128,17 @@
       - runtime/codegen tests for multi-out routing, param modulation, and delayed feedback behavior.
 
 - Events follow-ups
-  - Status: MVP behavior is implemented (top-level/proc events, typed payloads, forwarding, runtime dispatch checks).
-  - Remaining:
-    - Clarify/lock policy for triggering proc events from general Omni code paths outside event handlers (currently intentionally not expanded further).
-    - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.
+  - Clarify/lock policy for triggering proc events from general Omni code paths outside event handlers (direct/indexed proc-array targets lower directly in top-level and nested paths).
+  - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.
 
-- Oversampling follow-ups (core implementation is done)
-  - Status: current oversampling behavior is implemented and stable.
-  - Remaining follow-ups:
-    - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
-    - Consider user-exposed quality/performance modes.
-    - Add explicit performance budget tracking for higher factors (`N=32`, `N=64`) on representative patches.
+- Oversampling follow-ups
+  - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
+  - Consider user-exposed quality/performance modes.
+  - Add explicit performance budget tracking for higher factors (`N=32`, `N=64`) on representative patches.
 
 - Standard library modules
 
 - Generics follow-ups
-  - Generic typed declarations (`x: T = ...`) now work in all executable scopes (init, sample, block, def methods, events). ~~Extend beyond init~~ Done.
-  - Generic def parameters (typed array `f32[]`, untyped array `[]`, bare `buffer`, generic struct/proc params) are implemented with call-site monomorphization. ~~Phase 3~~ Done.
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.
   - Document generic ownership/error rules in a dedicated language-spec section (`T` must belong to the current generic owner).
 

@@ -25,6 +25,8 @@ fn generate_nested_wrapper_defs(
             continue;
         };
         let callee_api = proc_api.get(&callee_proc_name);
+        let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
+        let proc_ns = namespace_of_symbol(&callee_proc_name);
         let mut callee_ins_names = callee_shape.ins.iter().cloned().collect::<HashSet<_>>();
         for port in &callee_shape.in_ports {
             callee_ins_names.insert(port.name.clone());
@@ -49,6 +51,198 @@ fn generate_nested_wrapper_defs(
 
         let mut nested_init_body = Vec::<Stmt>::new();
         for stmt in &callee_proc.init {
+            if let Stmt::Assign {
+                target: AssignTarget::Var(array_var),
+                expr: Expr::ArrayCtor { init, .. },
+                ..
+            } = stmt
+            {
+                if let Some(slot_names) = callee_shape.nested_proc_array_slots.get(array_var) {
+                    let Some(array_state) = callee_shape.state.nested_proc_arrays.get(array_var)
+                    else {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "processor '{}' processor-array '{}' is missing state metadata",
+                                callee_proc_name, array_var
+                            ),
+                            0,
+                            0,
+                        ));
+                        continue;
+                    };
+
+                    if let Some(values) = init {
+                        if values.len() != slot_names.len() && values.len() != 1 {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor '{}.{}' initializer expects {} constructor entries (or a single broadcast constructor), got {}",
+                                    callee_proc_name,
+                                    array_var,
+                                    slot_names.len(),
+                                    values.len()
+                                ),
+                                0,
+                                0,
+                            ));
+                        }
+                    }
+
+                    for (slot_idx, slot_name) in slot_names.iter().enumerate() {
+                        let mut slot_ctor_args = Vec::<CallArg>::new();
+                        let mut proc_array_slot = None;
+                        if let Some(values) = init {
+                            let value = if values.len() == 1 {
+                                proc_array_slot = Some((slot_idx, slot_names.len()));
+                                values.first()
+                            } else {
+                                values.get(slot_idx)
+                            };
+                            if let Some(value) = value {
+                                if let Expr::UserCall {
+                                    name: ctor_name,
+                                    type_args,
+                                    args,
+                                } = value
+                                {
+                                    let resolved_ctor = if ctor_name.contains("::") {
+                                        if proc_symbols.contains(ctor_name) {
+                                            Some(ctor_name.clone())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        resolve_unqualified_symbol_name(
+                                            ctor_name,
+                                            &proc_ns,
+                                            &proc_symbols,
+                                        )
+                                    };
+                                    if let Some(resolved_ctor) = resolved_ctor {
+                                        if resolved_ctor != array_state.proc_name {
+                                            errors.push(Diagnostic::semantic(
+                                                format!(
+                                                    "processor '{}.{}' initializer entry {} uses constructor '{}' but '{}' is required",
+                                                    callee_proc_name,
+                                                    array_var,
+                                                    slot_idx,
+                                                    resolved_ctor,
+                                                    array_state.proc_name
+                                                ),
+                                                0,
+                                                0,
+                                            ));
+                                        }
+                                    } else {
+                                        errors.push(Diagnostic::semantic(
+                                            format!(
+                                                "processor '{}.{}' initializer entry {} references unknown processor constructor '{}'",
+                                                callee_proc_name, array_var, slot_idx, ctor_name
+                                            ),
+                                            0,
+                                            0,
+                                        ));
+                                    }
+                                    if !type_args.is_empty() {
+                                        errors.push(Diagnostic::semantic(
+                                            format!(
+                                                "processor '{}' is not generic and cannot take type arguments",
+                                                ctor_name
+                                            ),
+                                            0,
+                                            0,
+                                        ));
+                                    }
+                                    slot_ctor_args = args.clone();
+                                } else {
+                                    errors.push(Diagnostic::semantic(
+                                        format!(
+                                            "processor '{}.{}' initializer entry {} must be a processor constructor call",
+                                            callee_proc_name, array_var, slot_idx
+                                        ),
+                                        0,
+                                        0,
+                                    ));
+                                }
+                            }
+                        }
+
+                        let Some(slot_state) = callee_shape.state.nested_procs.get(slot_name)
+                        else {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor '{}' processor-array slot '{}' is missing nested processor state",
+                                    callee_proc_name, slot_name
+                                ),
+                                0,
+                                0,
+                            ));
+                            continue;
+                        };
+                        let Some(nested_callee_shape) = lowering_shapes.get(&slot_state.proc_name)
+                        else {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "processor '{}' nested state '{}' references unknown processor '{}'",
+                                    callee_proc_name, slot_name, slot_state.proc_name
+                                ),
+                                0,
+                                0,
+                            ));
+                            continue;
+                        };
+                        let lowered_slot_ctor_args = slot_ctor_args
+                            .iter()
+                            .map(|arg| CallArg {
+                                name: arg.name.clone(),
+                                expr: lower_callee_expr_for_nested_wrapper(
+                                    &arg.expr,
+                                    &proc.name,
+                                    &nested_path,
+                                    &callee_shape,
+                                    &callee_nested_instances,
+                                    &callee_shape.field_array_slots,
+                                    &callee_shape.in_array_slots,
+                                    &callee_shape.nested_proc_array_slots,
+                                    &proc_api,
+                                    errors,
+                                ),
+                            })
+                            .collect::<Vec<_>>();
+                        let (expanded, bound_buffers) = expand_nested_proc_ctor_assign(
+                            &proc.name,
+                            &nested_field_name(&nested_path, slot_name),
+                            &slot_state.proc_name,
+                            &lowered_slot_ctor_args,
+                            &nested_callee_shape.param_specs,
+                            &nested_callee_shape.buffer_specs,
+                            proc_array_slot,
+                            errors,
+                        );
+                        if let Some(instance) = callee_nested_instances.get_mut(slot_name) {
+                            instance.buffer_args = bound_buffers;
+                        }
+                        for expanded_stmt in expanded {
+                            if let Some(rewritten) = rewrite_owner_proc_stmt(
+                                expanded_stmt,
+                                &proc.name,
+                                &shape.field_names,
+                                &shape.array_field_names,
+                                &ins_names,
+                                &shape.field_array_slots,
+                                &shape.in_array_slots,
+                                &shape.nested_proc_array_slots,
+                                &shape.nested_fields,
+                                &nested_instances,
+                                &proc_api,
+                                errors,
+                            ) {
+                                nested_init_body.push(rewritten);
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
             if let Stmt::Assign {
                 target: AssignTarget::Var(var),
                 expr:
@@ -95,11 +289,29 @@ fn generate_nested_wrapper_defs(
                         ));
                         continue;
                     };
+                    let lowered_ctor_args = args
+                        .iter()
+                        .map(|arg| CallArg {
+                            name: arg.name.clone(),
+                            expr: lower_callee_expr_for_nested_wrapper(
+                                &arg.expr,
+                                &proc.name,
+                                &nested_path,
+                                &callee_shape,
+                                &callee_nested_instances,
+                                &callee_shape.field_array_slots,
+                                &callee_shape.in_array_slots,
+                                &callee_shape.nested_proc_array_slots,
+                                &proc_api,
+                                errors,
+                            ),
+                        })
+                        .collect::<Vec<_>>();
                     let (expanded, bound_buffers) = expand_nested_proc_ctor_assign(
                         &proc.name,
                         &nested_field_name(&nested_path, var),
                         ctor_name,
-                        args,
+                        &lowered_ctor_args,
                         &nested_callee_shape.param_specs,
                         &nested_callee_shape.buffer_specs,
                         None,
@@ -171,7 +383,24 @@ fn generate_nested_wrapper_defs(
                     let expanded = expand_nested_struct_ctor_assign(
                         &nested_field_name(&nested_path, var),
                         ctor_name,
-                        args,
+                        &args
+                            .iter()
+                            .map(|arg| CallArg {
+                                name: arg.name.clone(),
+                                expr: lower_callee_expr_for_nested_wrapper(
+                                    &arg.expr,
+                                    &proc.name,
+                                    &nested_path,
+                                    &callee_shape,
+                                    &callee_nested_instances,
+                                    &callee_shape.field_array_slots,
+                                    &callee_shape.in_array_slots,
+                                    &callee_shape.nested_proc_array_slots,
+                                    &proc_api,
+                                    errors,
+                                ),
+                            })
+                            .collect::<Vec<_>>(),
                         &struct_def,
                         errors,
                     );
@@ -581,7 +810,6 @@ fn generate_nested_wrapper_defs(
             }));
         }
     }
-
     nested_defs
 }
 
