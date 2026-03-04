@@ -2825,6 +2825,22 @@ sample {
 }
 "#;
 
+const PROC_INSTANCE_ARRAY_LEN_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1 }
+  sample {
+    out1 = 0.0
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[3] = Voice()
+}
+sample {
+  out1 = f32(voices.len())
+}
+"#;
+
 const NESTED_PROC_INSTANCE_ARRAY_INDEXED_CALL_EXAMPLE: &str = r#"
 proc Voice {
   ins { in1 }
@@ -8423,6 +8439,21 @@ fn proc_instance_array_indexed_call_dynamic_index_selects_slot_buffer_binding() 
     let out = decode_planar_f32(&out_bytes);
     for sample in out {
         assert_near(sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+fn proc_instance_array_len_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_LEN_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
     }
 }
 

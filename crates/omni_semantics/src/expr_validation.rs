@@ -443,7 +443,10 @@ fn is_declared_struct_array_root_symbol(
 }
 
 fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    if env.array_vars.contains_key(base) || has_declared_buffer_symbol(env.known_scalars, base) {
+    if env.array_vars.contains_key(base)
+        || has_declared_buffer_symbol(env.known_scalars, base)
+        || is_declared_struct_array_root_symbol(env.known_scalars, base)
+    {
         return true;
     }
     if let Some((root, field)) = split_simple_field_path(base) {
@@ -519,6 +522,8 @@ fn validate_data_len_builtin_call(
     let is_data_symbol = if env.array_vars.contains_key(base) {
         true
     } else if has_declared_buffer_symbol(env.known_scalars, base) {
+        true
+    } else if is_declared_struct_array_root_symbol(env.known_scalars, base) {
         true
     } else if let Some((root, field)) = split_field_path(base, errors) {
         let struct_name = env
