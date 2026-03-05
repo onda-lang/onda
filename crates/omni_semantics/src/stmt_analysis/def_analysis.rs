@@ -984,7 +984,7 @@ pub(crate) fn analyze_def_stmt(
                         return;
                     }
                     errors.push(Diagnostic::semantic(
-                        "indexed assignments in def are only allowed for local typed arrays or array fields on struct parameters (for example 'tmp[i] = x' or 'self.buf[i] = x')",
+                        "indexed assignments in def are only allowed for mutable array or buffer references (for example local arrays, array params, buffer params, or array fields on struct params such as 'tmp[i] = x', 'arr[i] = x', 'buf[i] = x', or 'self.buf[i] = x')",
                         0,
                         0,
                     ));

@@ -10096,6 +10096,53 @@ sample {
     );
 }
 
+#[test]
+fn analyze_mutable_typed_array_param() {
+    let src = r#"
+outs { out1 }
+init {
+  data: f32[4] = [1.0, 2.0, 3.0, 4.0]
+}
+def write_first(arr: f32[]) {
+  arr[0] = 9.0
+  return arr[0]
+}
+sample {
+  out1 = write_first(data)
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_ok(),
+        "analysis should allow mutable array params in def: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn analyze_mutable_buffer_param() {
+    let src = r#"
+ins { in1 }
+outs { out1 }
+buffers { buf }
+def write_first(b: buffer[f32], x: f32) {
+  b[0] = x
+  return b[0]
+}
+sample {
+  out1 = write_first(buf, in1)
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_ok(),
+        "analysis should allow mutable buffer params in def: {:?}",
+        result.err()
+    );
+}
+
 // Test generic struct def param (monomorphization)
 #[test]
 fn analyze_generic_struct_def_param() {
@@ -10267,6 +10314,78 @@ fn array_param_len_forwarded_compile_and_run() {
 
     for sample in &output {
         assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+const ARRAY_PARAM_MUTATION_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+    data: f32[4]
+    data[0] = 1.0
+    data[1] = 2.0
+    data[2] = 3.0
+    data[3] = 4.0
+}
+def write_and_sum(arr: f32[]) {
+    arr[0] = arr[1] + arr[2]
+    return arr[0] + arr[3]
+}
+sample {
+    out1 = write_and_sum(data)
+}
+"#;
+
+#[test]
+fn array_param_mutation_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(ARRAY_PARAM_MUTATION_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 9.0, 1e-6);
+    }
+}
+
+const BUFFER_PARAM_MUTATION_EXAMPLE: &str = r#"
+ins { in1 }
+outs { out1 }
+buffers { buf: buffer[f32] }
+def write_first(b: buffer[f32], x: f32) {
+    b[0] = x
+    return b[0]
+}
+sample {
+    out1 = write_first(buf, in1)
+}
+"#;
+
+#[test]
+fn buffer_param_mutation_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(BUFFER_PARAM_MUTATION_EXAMPLE, frames);
+
+    let input: Vec<f32> = (0..frames).map(|n| (n + 1) as f32 * 0.25).collect();
+    let mut output = vec![0.0_f32; frames];
+
+    let buf_idx = instance.buffer_index("buf").expect("buf");
+    let mut buf_data = vec![0.0_f32; frames];
+    bind_buffer(
+        &mut instance,
+        buf_idx,
+        buf_data.as_mut_ptr() as *mut u8,
+        frames,
+        1,
+        PrimitiveType::F32,
+    )
+    .expect("bind");
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for (idx, sample) in output.iter().enumerate() {
+        assert_near(*sample, input[idx], 1e-6);
     }
 }
 
