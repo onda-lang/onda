@@ -187,6 +187,83 @@ sample {
 }
 
 #[test]
+fn parses_bitwise_precedence() {
+    let src = r#"
+outs {
+  out1
+}
+sample {
+  out1 = a | b & c << d
+}
+"#;
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let expr = match &sample[0] {
+        Stmt::Assign { expr, .. } => expr,
+        _ => panic!("first statement should be assignment"),
+    };
+    let Expr::Binary {
+        op: BinaryOp::BitOr,
+        rhs,
+        ..
+    } = expr
+    else {
+        panic!("top-level should be bitwise or");
+    };
+    let Expr::Binary {
+        op: BinaryOp::BitAnd,
+        rhs: and_rhs,
+        ..
+    } = rhs.as_ref()
+    else {
+        panic!("rhs should be bitwise and");
+    };
+    let Expr::Binary {
+        op: BinaryOp::ShiftLeft,
+        ..
+    } = and_rhs.as_ref()
+    else {
+        panic!("right side of bitwise and should be shift-left");
+    };
+}
+
+#[test]
+fn parses_unary_bit_not_expression() {
+    let src = r#"
+outs {
+  out1
+}
+sample {
+  out1 = ~a
+}
+"#;
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let expr = match &sample[0] {
+        Stmt::Assign { expr, .. } => expr,
+        _ => panic!("first statement should be assignment"),
+    };
+    match expr {
+        Expr::UnaryBitNot { .. } => {}
+        _ => panic!("expression should parse as unary bit-not"),
+    }
+}
+
+#[test]
 fn parses_sin_call_expression() {
     let src = r#"
 outs {

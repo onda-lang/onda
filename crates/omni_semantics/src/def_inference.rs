@@ -607,7 +607,7 @@ fn collect_expr_indexable_param_usage(
             collect_expr_indexable_param_usage(lhs, param_index, kinds);
             collect_expr_indexable_param_usage(rhs, param_index, kinds);
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
             collect_expr_indexable_param_usage(expr, param_index, kinds);
         }
         Expr::Call { args, .. } => {
@@ -870,7 +870,7 @@ fn propagate_expr_callee_buffer_requirements_to_params(
                 kinds,
             );
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
             propagate_expr_callee_buffer_requirements_to_params(
                 expr,
                 caller_name,
@@ -1219,7 +1219,7 @@ fn collect_expr_field_usage(
             collect_expr_field_usage(lhs, fn_name, param_index, usage, errors);
             collect_expr_field_usage(rhs, fn_name, param_index, usage, errors);
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
             collect_expr_field_usage(expr, fn_name, param_index, usage, errors);
         }
         Expr::Call { args, .. } => {
@@ -1659,3 +1659,4 @@ pub(crate) fn merge_inferred_return_types(
         (I32, I32) => Some(I32),
     }
 }
+

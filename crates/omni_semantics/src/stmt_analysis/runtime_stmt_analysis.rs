@@ -106,7 +106,7 @@ pub(crate) fn rewrite_proc_alias_calls_for_validation(
                     }
                 }
             }
-            Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+            Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
                 rewrite(inner, aliases);
             }
             Expr::ArrayLiteral(values) => {
@@ -1381,3 +1381,4 @@ fn analyze_assign_sample(
         }
     }
 }
+

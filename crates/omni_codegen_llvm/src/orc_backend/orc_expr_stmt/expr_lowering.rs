@@ -377,6 +377,19 @@ pub(super) unsafe fn lower_expr(
                 &mut cast_value,
             ))
         }
+        Expr::UnaryBitNot { expr } => {
+            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
+            match value.ty {
+                PrimitiveType::I32 | PrimitiveType::I64 => Ok(OrcValue {
+                    value: LLVMBuildNot(ctx.builder, value.value, b"bitnot\0".as_ptr().cast()),
+                    ty: value.ty,
+                }),
+                _ => Err(Diagnostic::internal(format!(
+                    "bitwise not requires integer operand in ORC expression lowering, got {:?}",
+                    value.ty
+                ))),
+            }
+        }
         Expr::Logical { op, lhs, rhs } => lower_orc_logical_expr(
             *op,
             lhs,

@@ -501,7 +501,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 }
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             rewrite_nested_proc_calls_in_expr(
                 inner,
                 owner_proc,
@@ -1393,3 +1393,4 @@ pub(super) fn lower_callee_expr_for_nested_wrapper(
     prefix_self_fields_in_expr(&mut expr, nested_path, &callee_shape.field_names);
     expr
 }
+

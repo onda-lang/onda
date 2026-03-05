@@ -264,7 +264,7 @@ pub(crate) fn validate_proc_expr_decl_order(
                 ok &= validate_proc_expr_decl_order(&arg.expr, reserved, locals, out, errors);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             ok &= validate_proc_expr_decl_order(inner, reserved, locals, out, errors);
         }
         Expr::ArrayLiteral(values) => {
@@ -634,7 +634,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 }
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             rewrite_proc_expr_symbols(
                 inner,
                 owner_proc,
@@ -1094,3 +1094,4 @@ pub(crate) fn rewrite_proc_stmt_symbols(
         }
     })
 }
+

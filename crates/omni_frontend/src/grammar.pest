@@ -126,7 +126,7 @@ list_sep = _{ "," | ";" | NEWLINE+ }
 field_sep = _{ "," | ";" | NEWLINE+ }
 stmt_sep = _{ ";" | NEWLINE+ }
 
-expr = { prefix* ~ term ~ ((or_op | and_op | cmp_op | add_op | mul_op) ~ prefix* ~ term)* }
+expr = { prefix* ~ term ~ ((or_op | and_op | bit_or_op | bit_xor_op | bit_and_op | shift_op | cmp_op | add_op | mul_op) ~ prefix* ~ term)* }
 term = _{ call_field_expr | call_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | "(" ~ expr ~ ")" }
 array_lit = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 call_field_expr = { call_expr ~ "." ~ ident }
@@ -141,9 +141,13 @@ bool_lit = { "true" | "false" }
 path_ident = @{ ident ~ (("." | "::") ~ ident)* }
 qualified_ident = @{ ident ~ ("::" ~ ident)* }
 
-prefix = { "-" | "!" }
+prefix = { "-" | "!" | "~" }
 or_op = { "||" }
 and_op = { "&&" }
+bit_or_op = { "|" }
+bit_xor_op = { "^" }
+bit_and_op = { "&" }
+shift_op = { "<<" | ">>" }
 add_op = { "+" | "-" }
 mul_op = { "*" | "/" | "%" }
 cmp_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" }

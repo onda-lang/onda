@@ -909,7 +909,7 @@ fn collect_expr_buffer_write_usage(
                 );
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
             collect_expr_buffer_write_usage(
                 expr,
                 top_level_buffers,

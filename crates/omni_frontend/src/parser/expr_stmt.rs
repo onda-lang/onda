@@ -695,7 +695,11 @@ pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
         .op(Op::prefix(Rule::prefix))
         .op(Op::infix(Rule::or_op, Assoc::Left))
         .op(Op::infix(Rule::and_op, Assoc::Left))
+        .op(Op::infix(Rule::bit_or_op, Assoc::Left))
+        .op(Op::infix(Rule::bit_xor_op, Assoc::Left))
+        .op(Op::infix(Rule::bit_and_op, Assoc::Left))
         .op(Op::infix(Rule::cmp_op, Assoc::Left))
+        .op(Op::infix(Rule::shift_op, Assoc::Left))
         .op(Op::infix(Rule::add_op, Assoc::Left))
         .op(Op::infix(Rule::mul_op, Assoc::Left));
 
@@ -710,6 +714,9 @@ pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
             "!" => Expr::UnaryNot {
                 expr: Box::new(rhs),
             },
+            "~" => Expr::UnaryBitNot {
+                expr: Box::new(rhs),
+            },
             _ => unreachable!("unknown prefix operator"),
         })
         .map_infix(|lhs, op, rhs| match (op.as_rule(), op.as_str()) {
@@ -720,6 +727,21 @@ pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
             },
             (Rule::and_op, "&&") => Expr::Logical {
                 op: LogicalOp::And,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            (Rule::bit_or_op, "|") => Expr::Binary {
+                op: BinaryOp::BitOr,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            (Rule::bit_xor_op, "^") => Expr::Binary {
+                op: BinaryOp::BitXor,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            (Rule::bit_and_op, "&") => Expr::Binary {
+                op: BinaryOp::BitAnd,
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             },
@@ -750,6 +772,16 @@ pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
             },
             (Rule::cmp_op, ">=") => Expr::Compare {
                 op: CmpOp::Ge,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            (Rule::shift_op, "<<") => Expr::Binary {
+                op: BinaryOp::ShiftLeft,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            },
+            (Rule::shift_op, ">>") => Expr::Binary {
+                op: BinaryOp::ShiftRight,
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             },

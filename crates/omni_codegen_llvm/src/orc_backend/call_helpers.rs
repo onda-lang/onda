@@ -688,6 +688,15 @@ fn merge_const_numeric_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<P
     }
 }
 
+fn merge_const_integer_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<PrimitiveType> {
+    use PrimitiveType::*;
+    match (lhs, rhs) {
+        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
+        (I32, I32) => Some(I32),
+        _ => None,
+    }
+}
+
 pub(super) fn infer_const_default_expr_type(expr: &Expr) -> Result<PrimitiveType, Diagnostic> {
     match expr {
         Expr::Number(_) => Ok(PrimitiveType::F32),
@@ -708,15 +717,38 @@ pub(super) fn infer_const_default_expr_type(expr: &Expr) -> Result<PrimitiveType
         Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
             Ok(PrimitiveType::Bool)
         }
-        Expr::Binary { lhs, rhs, .. } => {
-            let lhs_ty = infer_const_default_expr_type(lhs)?;
-            let rhs_ty = infer_const_default_expr_type(rhs)?;
-            merge_const_numeric_types(lhs_ty, rhs_ty).ok_or_else(|| {
+        Expr::UnaryBitNot { expr } => {
+            let inner_ty = infer_const_default_expr_type(expr)?;
+            merge_const_integer_types(inner_ty, inner_ty).ok_or_else(|| {
                 Diagnostic::internal(format!(
-                    "default binary expression requires numeric operands, got {:?} and {:?}",
-                    lhs_ty, rhs_ty
+                    "default bitwise-not expression requires integer operand, got {:?}",
+                    inner_ty
                 ))
             })
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            let lhs_ty = infer_const_default_expr_type(lhs)?;
+            let rhs_ty = infer_const_default_expr_type(rhs)?;
+            match op {
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::ShiftLeft
+                | BinaryOp::ShiftRight => {
+                    merge_const_integer_types(lhs_ty, rhs_ty).ok_or_else(|| {
+                        Diagnostic::internal(format!(
+                            "default bitwise expression requires integer operands, got {:?} and {:?}",
+                            lhs_ty, rhs_ty
+                        ))
+                    })
+                }
+                _ => merge_const_numeric_types(lhs_ty, rhs_ty).ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "default binary expression requires numeric operands, got {:?} and {:?}",
+                        lhs_ty, rhs_ty
+                    ))
+                }),
+            }
         }
         _ => Err(Diagnostic::internal(
             "default expression must be compile-time constant in codegen",
@@ -761,6 +793,20 @@ pub(super) fn eval_const_default_expr(
             let v = eval_const_default_expr(expr, sample_rate, block_size)?;
             Ok(if v == 0.0 { 1.0 } else { 0.0 })
         }
+        Expr::UnaryBitNot { expr } => {
+            let ty = infer_const_default_expr_type(expr)?;
+            let v = eval_const_default_expr(expr, sample_rate, block_size)?;
+            Ok(match ty {
+                PrimitiveType::I32 => (!(v as i32)) as f64,
+                PrimitiveType::I64 => (!(v as i64)) as f64,
+                _ => {
+                    return Err(Diagnostic::internal(format!(
+                        "default bitwise-not expression requires integer operand, got {:?}",
+                        ty
+                    )))
+                }
+            })
+        }
         Expr::Logical { op, lhs, rhs } => {
             let l = eval_const_default_expr(lhs, sample_rate, block_size)?;
             match op {
@@ -783,6 +829,7 @@ pub(super) fn eval_const_default_expr(
             }
         }
         Expr::Binary { op, lhs, rhs } => {
+            let result_ty = infer_const_default_expr_type(expr)?;
             let l = eval_const_default_expr(lhs, sample_rate, block_size)?;
             let r = eval_const_default_expr(rhs, sample_rate, block_size)?;
             let out = match op {
@@ -791,6 +838,31 @@ pub(super) fn eval_const_default_expr(
                 BinaryOp::Mul => l * r,
                 BinaryOp::Div => l / r,
                 BinaryOp::Mod => l % r,
+                BinaryOp::BitAnd => match result_ty {
+                    PrimitiveType::I32 => ((l as i32) & (r as i32)) as f64,
+                    PrimitiveType::I64 => ((l as i64) & (r as i64)) as f64,
+                    _ => unreachable!("bitwise expression must be integer"),
+                },
+                BinaryOp::BitOr => match result_ty {
+                    PrimitiveType::I32 => ((l as i32) | (r as i32)) as f64,
+                    PrimitiveType::I64 => ((l as i64) | (r as i64)) as f64,
+                    _ => unreachable!("bitwise expression must be integer"),
+                },
+                BinaryOp::BitXor => match result_ty {
+                    PrimitiveType::I32 => ((l as i32) ^ (r as i32)) as f64,
+                    PrimitiveType::I64 => ((l as i64) ^ (r as i64)) as f64,
+                    _ => unreachable!("bitwise expression must be integer"),
+                },
+                BinaryOp::ShiftLeft => match result_ty {
+                    PrimitiveType::I32 => ((l as i32) << (r as i32)) as f64,
+                    PrimitiveType::I64 => ((l as i64) << (r as i64)) as f64,
+                    _ => unreachable!("bitwise expression must be integer"),
+                },
+                BinaryOp::ShiftRight => match result_ty {
+                    PrimitiveType::I32 => ((l as i32) >> (r as i32)) as f64,
+                    PrimitiveType::I64 => ((l as i64) >> (r as i64)) as f64,
+                    _ => unreachable!("bitwise expression must be integer"),
+                },
             };
             Ok(out)
         }

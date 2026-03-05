@@ -156,7 +156,26 @@ sample:
 
 Operators:
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
-- Comparisons and logical operators are supported in conditions/expressions.
+- Bitwise integer ops: `~`, `&`, `|`, `^`, `<<`, `>>`
+- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- Logical ops: `!`, `&&`, `||`
+
+Bitwise rules:
+- `~`, `&`, `|`, `^`, `<<`, and `>>` are integer-only.
+- Valid operand/result types are `i32` and `i64`.
+- Mixed `i32`/`i64` operands widen to `i64`.
+- `>>` is an arithmetic right shift.
+
+Precedence (low to high):
+- `||`
+- `&&`
+- `|`
+- `^`
+- `&`
+- comparisons
+- `<<`, `>>`
+- `+`, `-`
+- `*`, `/`, `%`
 
 Constants:
 - `PI` / `pi`

@@ -449,11 +449,32 @@ pub(super) unsafe fn lower_binary_numeric_common(
     cast_value: &mut dyn FnMut(OrcValue, PrimitiveType, &[u8]) -> LLVMValueRef,
     context: &str,
 ) -> Result<OrcValue, Diagnostic> {
-    let Some(result_ty) = merge_numeric_primitive(left.ty, right.ty) else {
-        return Err(Diagnostic::internal(format!(
-            "binary op requires numeric operands in {context}, got {:?} and {:?}",
-            left.ty, right.ty
-        )));
+    let result_ty = match op {
+        BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::ShiftLeft
+        | BinaryOp::ShiftRight => match (left.ty, right.ty) {
+            (PrimitiveType::I64, PrimitiveType::I32)
+            | (PrimitiveType::I32, PrimitiveType::I64)
+            | (PrimitiveType::I64, PrimitiveType::I64) => PrimitiveType::I64,
+            (PrimitiveType::I32, PrimitiveType::I32) => PrimitiveType::I32,
+            _ => {
+                return Err(Diagnostic::internal(format!(
+                    "bitwise op requires integer operands in {context}, got {:?} and {:?}",
+                    left.ty, right.ty
+                )));
+            }
+        },
+        _ => {
+            let Some(result_ty) = merge_numeric_primitive(left.ty, right.ty) else {
+                return Err(Diagnostic::internal(format!(
+                    "binary op requires numeric operands in {context}, got {:?} and {:?}",
+                    left.ty, right.ty
+                )));
+            };
+            result_ty
+        }
     };
     let left_v = cast_value(left, result_ty, b"bin_lhs_cast\0");
     let right_v = cast_value(right, result_ty, b"bin_rhs_cast\0");
@@ -474,6 +495,15 @@ pub(super) unsafe fn lower_binary_numeric_common(
             BinaryOp::Mod => {
                 build_frem_fast(builder, left_v, right_v, b"bin_frem\0", fast_math_flags)
             }
+            BinaryOp::BitAnd
+            | BinaryOp::BitOr
+            | BinaryOp::BitXor
+            | BinaryOp::ShiftLeft
+            | BinaryOp::ShiftRight => {
+                return Err(Diagnostic::internal(format!(
+                    "bitwise op does not support float operands in {context}"
+                )));
+            }
         },
         PrimitiveType::I32 | PrimitiveType::I64 => match op {
             BinaryOp::Add => LLVMBuildAdd(builder, left_v, right_v, b"bin_iadd\0".as_ptr().cast()),
@@ -481,6 +511,19 @@ pub(super) unsafe fn lower_binary_numeric_common(
             BinaryOp::Mul => LLVMBuildMul(builder, left_v, right_v, b"bin_imul\0".as_ptr().cast()),
             BinaryOp::Div => LLVMBuildSDiv(builder, left_v, right_v, b"bin_idiv\0".as_ptr().cast()),
             BinaryOp::Mod => LLVMBuildSRem(builder, left_v, right_v, b"bin_irem\0".as_ptr().cast()),
+            BinaryOp::BitAnd => {
+                LLVMBuildAnd(builder, left_v, right_v, b"bin_iand\0".as_ptr().cast())
+            }
+            BinaryOp::BitOr => LLVMBuildOr(builder, left_v, right_v, b"bin_ior\0".as_ptr().cast()),
+            BinaryOp::BitXor => {
+                LLVMBuildXor(builder, left_v, right_v, b"bin_ixor\0".as_ptr().cast())
+            }
+            BinaryOp::ShiftLeft => {
+                LLVMBuildShl(builder, left_v, right_v, b"bin_ishl\0".as_ptr().cast())
+            }
+            BinaryOp::ShiftRight => {
+                LLVMBuildAShr(builder, left_v, right_v, b"bin_ashr\0".as_ptr().cast())
+            }
         },
         PrimitiveType::Bool => {
             return Err(Diagnostic::internal(format!(

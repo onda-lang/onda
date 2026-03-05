@@ -91,7 +91,7 @@ fn rewrite_proc_alias_calls_in_expr(expr: &mut Expr, aliases: &ProcArrayAliases)
                 }
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             rewrite_proc_alias_calls_in_expr(inner, aliases);
         }
         Expr::ArrayLiteral(values) => {
@@ -1348,7 +1348,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 rewrite_proc_calls_in_expr(arg, proc_vars, proc_array_slots, proc_api, errors);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             rewrite_proc_calls_in_expr(inner, proc_vars, proc_array_slots, proc_api, errors);
         }
         Expr::ArrayLiteral(values) => {
@@ -1830,7 +1830,7 @@ pub(super) fn normalize_proc_output_aliases_in_expr(
                 normalize_proc_output_aliases_in_expr(&mut arg.expr, proc_vars, proc_api);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             normalize_proc_output_aliases_in_expr(inner, proc_vars, proc_api);
         }
         Expr::ArrayLiteral(values) => {
@@ -2208,7 +2208,7 @@ pub(super) fn collect_called_proc_instances_in_expr(
                 collect_called_proc_instances_in_expr(arg, proc_vars, proc_array_slots, out);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             collect_called_proc_instances_in_expr(inner, proc_vars, proc_array_slots, out);
         }
         Expr::ArrayLiteral(values) => {
@@ -2448,7 +2448,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                 );
             }
         }
-        Expr::Cast { expr: arg, .. } | Expr::UnaryNot { expr: arg } => {
+        Expr::Cast { expr: arg, .. } | Expr::UnaryNot { expr: arg } | Expr::UnaryBitNot { expr: arg } => {
             desugar_expr_instance_method_calls(arg, struct_instances, current_ns, callable_symbols)
         }
         Expr::ArrayLiteral(values) => {
@@ -2752,3 +2752,4 @@ pub(super) fn desugar_sample_instance_method_calls(
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }
+

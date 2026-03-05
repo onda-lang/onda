@@ -1429,6 +1429,7 @@ fn expr_key(expr: &Expr) -> String {
         }
         Expr::Cast { to, expr } => format!("cast({to:?},{})", expr_key(expr)),
         Expr::UnaryNot { expr } => format!("not({})", expr_key(expr)),
+        Expr::UnaryBitNot { expr } => format!("bitnot({})", expr_key(expr)),
         Expr::Logical { op, lhs, rhs } => {
             format!("log({op:?},{},{})", expr_key(lhs), expr_key(rhs))
         }
@@ -1491,7 +1492,7 @@ fn validate_compile_time_expr(
                 )])
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
             validate_compile_time_expr(expr, known_consts, context)
         }
         Expr::Compare { lhs, rhs, .. }
@@ -1908,6 +1909,9 @@ fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, Expr>) -> E
             expr: Box::new(substitute_expr_with_env(expr, const_env)),
         },
         Expr::UnaryNot { expr } => Expr::UnaryNot {
+            expr: Box::new(substitute_expr_with_env(expr, const_env)),
+        },
+        Expr::UnaryBitNot { expr } => Expr::UnaryBitNot {
             expr: Box::new(substitute_expr_with_env(expr, const_env)),
         },
         Expr::Logical { op, lhs, rhs } => Expr::Logical {
@@ -2371,7 +2375,9 @@ fn rewrite_expr(
                 rewrite_expr(&mut arg.expr, current_ns, const_env, state, generated)?;
             }
         }
-        Expr::Cast { expr: arg, .. } | Expr::UnaryNot { expr: arg } => {
+        Expr::Cast { expr: arg, .. }
+        | Expr::UnaryNot { expr: arg }
+        | Expr::UnaryBitNot { expr: arg } => {
             rewrite_expr(arg, current_ns, const_env, state, generated)?;
         }
         Expr::ArrayLiteral(values) => {

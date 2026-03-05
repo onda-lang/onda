@@ -166,7 +166,7 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                     else_branch: Vec::new(),
                 });
             }
-            Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+            Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
                 collect_guards_from_expr(inner, managed_arrays, proc_api, used_arrays, guards);
             }
             Expr::ArrayLiteral(values) => {
@@ -2273,3 +2273,4 @@ pub(super) fn generate_lowered_proc_blocks(
         proc_step_oversample_meta,
     )
 }
+

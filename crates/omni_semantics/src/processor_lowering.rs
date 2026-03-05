@@ -1011,6 +1011,13 @@ fn infer_scalar_expr_type_for_overload(
         Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
             Some(PrimitiveType::Bool)
         }
+        Expr::UnaryBitNot { expr } => {
+            let inner_ty = infer_scalar_expr_type_for_overload(expr, env)?;
+            match inner_ty {
+                PrimitiveType::I32 | PrimitiveType::I64 => Some(inner_ty),
+                _ => None,
+            }
+        }
         Expr::Call { args, .. } => {
             if args.is_empty() {
                 return Some(PrimitiveType::F32);
@@ -1028,10 +1035,23 @@ fn infer_scalar_expr_type_for_overload(
             Some(acc)
         }
         Expr::UserCall { .. } => None,
-        Expr::Binary { lhs, rhs, .. } => {
+        Expr::Binary { op, lhs, rhs } => {
             let lhs_ty = infer_scalar_expr_type_for_overload(lhs, env)?;
             let rhs_ty = infer_scalar_expr_type_for_overload(rhs, env)?;
-            merge_numeric_types_no_diag(lhs_ty, rhs_ty)
+            match op {
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::ShiftLeft
+                | BinaryOp::ShiftRight => match (lhs_ty, rhs_ty) {
+                    (PrimitiveType::I64, PrimitiveType::I32)
+                    | (PrimitiveType::I32, PrimitiveType::I64)
+                    | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
+                    (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
+                    _ => None,
+                },
+                _ => merge_numeric_types_no_diag(lhs_ty, rhs_ty),
+            }
         }
         Expr::ArrayCtor { .. } | Expr::ArrayLiteral(_) => None,
     }
@@ -1583,7 +1603,9 @@ fn monomorphize_calls_in_expr(
                 );
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             monomorphize_calls_in_expr(
                 inner,
                 env,
@@ -1879,7 +1901,7 @@ fn rewrite_overloaded_calls_in_expr(
                 rewrite_overloaded_calls_in_expr(arg, env, overloads, errors);
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
             rewrite_overloaded_calls_in_expr(expr, env, overloads, errors);
         }
         Expr::ArrayLiteral(values) => {

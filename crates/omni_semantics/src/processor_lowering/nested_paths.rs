@@ -80,7 +80,7 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
                 rewrite_nested_field_paths_in_expr(&mut arg.expr, nested_fields);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             rewrite_nested_field_paths_in_expr(inner, nested_fields)
         }
         Expr::ArrayLiteral(values) => {
@@ -216,7 +216,7 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
                 }
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             remap_nested_symbols_in_expr(inner, remap)
         }
         Expr::ArrayLiteral(values) => {
@@ -342,7 +342,7 @@ pub(super) fn prefix_self_fields_in_expr(
                 prefix_self_fields_in_expr(&mut arg.expr, prefix, nested_field_names);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             prefix_self_fields_in_expr(inner, prefix, nested_field_names)
         }
         Expr::ArrayLiteral(values) => {
@@ -422,3 +422,4 @@ pub(super) fn prefix_self_fields_in_stmt(
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }
+

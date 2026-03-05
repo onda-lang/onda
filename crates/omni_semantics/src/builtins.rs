@@ -174,6 +174,110 @@ fn builtin_constant_value_f64(name: &str, options: AnalysisOptions) -> Option<f6
     }
 }
 
+fn merge_const_integer_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<PrimitiveType> {
+    use PrimitiveType::*;
+    match (lhs, rhs) {
+        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
+        (I32, I32) => Some(I32),
+        _ => None,
+    }
+}
+
+fn infer_const_expr_type(
+    expr: &Expr,
+    options: AnalysisOptions,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    match expr {
+        Expr::Number(_) => Some(PrimitiveType::F32),
+        Expr::Int(v) => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+            PrimitiveType::I32
+        } else {
+            PrimitiveType::I64
+        }),
+        Expr::Bool(_) => Some(PrimitiveType::Bool),
+        Expr::Var(name) => builtin_constant_type(name).or_else(|| {
+            errors.push(Diagnostic::semantic(
+                format!("{context} uses non-constant symbol '{name}'"),
+                0,
+                0,
+            ));
+            None
+        }),
+        Expr::Cast { to, .. } => Some(*to),
+        Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
+            Some(PrimitiveType::Bool)
+        }
+        Expr::UnaryBitNot { expr } => {
+            let inner = infer_const_expr_type(expr, options, context, errors)?;
+            merge_const_integer_types(inner, inner).or_else(|| {
+                errors.push(Diagnostic::semantic(
+                    format!("{context} bitwise not requires integer operand, got {:?}", inner),
+                    0,
+                    0,
+                ));
+                None
+            })
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            let lhs_ty = infer_const_expr_type(lhs, options, context, errors)?;
+            let rhs_ty = infer_const_expr_type(rhs, options, context, errors)?;
+            match op {
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::ShiftLeft
+                | BinaryOp::ShiftRight => merge_const_integer_types(lhs_ty, rhs_ty).or_else(|| {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "{context} bitwise expression requires integer operands, got {:?} and {:?}",
+                            lhs_ty, rhs_ty
+                        ),
+                        0,
+                        0,
+                    ));
+                    None
+                }),
+                _ => {
+                    use PrimitiveType::*;
+                    match (lhs_ty, rhs_ty) {
+                        (F64, I32)
+                        | (I32, F64)
+                        | (F64, I64)
+                        | (I64, F64)
+                        | (F64, F32)
+                        | (F32, F64)
+                        | (F64, F64) => Some(F64),
+                        (F32, I32) | (I32, F32) | (F32, F32) => Some(F32),
+                        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
+                        (I32, I32) => Some(I32),
+                        _ => {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "{context} requires numeric operands, got {:?} and {:?}",
+                                    lhs_ty, rhs_ty
+                                ),
+                                0,
+                                0,
+                            ));
+                            None
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            errors.push(Diagnostic::semantic(
+                format!("{context} must be a compile-time constant expression"),
+                0,
+                0,
+            ));
+            None
+        }
+    }
+}
+
 pub(crate) fn eval_const_expr_f64(
     expr: &Expr,
     options: AnalysisOptions,
@@ -215,6 +319,22 @@ pub(crate) fn eval_const_expr_f64(
             let value = eval_const_expr_f64(expr, options, context, errors)?;
             Some(if value == 0.0 { 1.0 } else { 0.0 })
         }
+        Expr::UnaryBitNot { expr } => {
+            let ty = infer_const_expr_type(expr, options, context, errors)?;
+            let value = eval_const_expr_f64(expr, options, context, errors)?;
+            Some(match ty {
+                PrimitiveType::I32 => (!(value as i32)) as f64,
+                PrimitiveType::I64 => (!(value as i64)) as f64,
+                _ => {
+                    errors.push(Diagnostic::semantic(
+                        format!("{context} bitwise not requires integer operand, got {:?}", ty),
+                        0,
+                        0,
+                    ));
+                    return None;
+                }
+            })
+        }
         Expr::Logical { op, lhs, rhs } => {
             let lhs_value = eval_const_expr_f64(lhs, options, context, errors)?;
             match op {
@@ -237,6 +357,7 @@ pub(crate) fn eval_const_expr_f64(
             }
         }
         Expr::Binary { op, lhs, rhs } => {
+            let result_ty = infer_const_expr_type(expr, options, context, errors)?;
             let lhs_value = eval_const_expr_f64(lhs, options, context, errors)?;
             let rhs_value = eval_const_expr_f64(rhs, options, context, errors)?;
             Some(match op {
@@ -245,6 +366,31 @@ pub(crate) fn eval_const_expr_f64(
                 BinaryOp::Mul => lhs_value * rhs_value,
                 BinaryOp::Div => lhs_value / rhs_value,
                 BinaryOp::Mod => lhs_value % rhs_value,
+                BinaryOp::BitAnd => match result_ty {
+                    PrimitiveType::I32 => ((lhs_value as i32) & (rhs_value as i32)) as f64,
+                    PrimitiveType::I64 => ((lhs_value as i64) & (rhs_value as i64)) as f64,
+                    _ => unreachable!("bitwise expr type must be integer"),
+                },
+                BinaryOp::BitOr => match result_ty {
+                    PrimitiveType::I32 => ((lhs_value as i32) | (rhs_value as i32)) as f64,
+                    PrimitiveType::I64 => ((lhs_value as i64) | (rhs_value as i64)) as f64,
+                    _ => unreachable!("bitwise expr type must be integer"),
+                },
+                BinaryOp::BitXor => match result_ty {
+                    PrimitiveType::I32 => ((lhs_value as i32) ^ (rhs_value as i32)) as f64,
+                    PrimitiveType::I64 => ((lhs_value as i64) ^ (rhs_value as i64)) as f64,
+                    _ => unreachable!("bitwise expr type must be integer"),
+                },
+                BinaryOp::ShiftLeft => match result_ty {
+                    PrimitiveType::I32 => ((lhs_value as i32) << (rhs_value as i32)) as f64,
+                    PrimitiveType::I64 => ((lhs_value as i64) << (rhs_value as i64)) as f64,
+                    _ => unreachable!("bitwise expr type must be integer"),
+                },
+                BinaryOp::ShiftRight => match result_ty {
+                    PrimitiveType::I32 => ((lhs_value as i32) >> (rhs_value as i32)) as f64,
+                    PrimitiveType::I64 => ((lhs_value as i64) >> (rhs_value as i64)) as f64,
+                    _ => unreachable!("bitwise expr type must be integer"),
+                },
             })
         }
         Expr::Compare { op, lhs, rhs } => {

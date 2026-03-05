@@ -168,7 +168,7 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
             infer_io_from_expr(lhs, acc);
             infer_io_from_expr(rhs, acc);
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => infer_io_from_expr(expr, acc),
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => infer_io_from_expr(expr, acc),
         Expr::Logical { lhs, rhs, .. } => {
             infer_io_from_expr(lhs, acc);
             infer_io_from_expr(rhs, acc);
@@ -442,3 +442,4 @@ pub(crate) fn check_local_duplicates(names: &[String], kind: &str, errors: &mut 
         }
     }
 }
+

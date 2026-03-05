@@ -404,6 +404,9 @@ pub enum Expr {
     UnaryNot {
         expr: Box<Expr>,
     },
+    UnaryBitNot {
+        expr: Box<Expr>,
+    },
     Logical {
         op: LogicalOp,
         lhs: Box<Expr>,
@@ -457,6 +460,11 @@ pub enum BinaryOp {
     Mul,
     Div,
     Mod,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

@@ -1450,6 +1450,23 @@ sample {
 }
 "#;
 
+const BITWISE_OPS_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  a: i32 = 6
+  b: i32 = 3
+  x: i32 = (a & b) + (a | b) + (a ^ b) + (1 << 3) + (8 >> 1) + ~1
+  out1 = f32(x)
+}
+"#;
+
+const BITWISE_FLOAT_OPERAND_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  out1 = f32(1.0 & 1)
+}
+"#;
+
 const BLOCK_SIZE_CONST_EXAMPLE: &str = r#"
 outs { out1 }
 init {
@@ -10093,6 +10110,30 @@ sample {
         result.is_ok(),
         "analysis should succeed: {:?}",
         result.err()
+    );
+}
+
+#[test]
+fn bitwise_ops_compile_and_run() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(BITWISE_OPS_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 24.0, 1e-6);
+    }
+}
+
+#[test]
+fn bitwise_ops_reject_float_operands() {
+    let parsed = parse_program(BITWISE_FLOAT_OPERAND_ERROR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject float operands for bitwise ops"
     );
 }
 

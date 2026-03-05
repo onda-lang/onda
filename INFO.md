@@ -95,6 +95,10 @@
   - Ranges on array declarations are rejected.
 - Fixed-size arrays are supported for stateful storage, including typed forms and compile-time capacity expressions.
 - Scalar assignment typing follows first-assignment inference by default; explicit declaration typing (`x: i64 = ...`) pins the symbol type.
+- Integer bitwise operators are supported in expressions: unary `~`, binary `&`, `|`, `^`, `<<`, `>>`.
+  - Bitwise operators accept `i32`/`i64` operands only.
+  - Mixed `i32`/`i64` operands widen to `i64`.
+  - `>>` lowers as arithmetic right shift.
 - Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
   - Default constant types: `PI`/`TWO_PI` are `f64`; `SAMPLE_RATE` is `f32`; `BLOCK_SIZE` is `i32`.
 - `std/prelude` is auto-imported during semantic analysis.

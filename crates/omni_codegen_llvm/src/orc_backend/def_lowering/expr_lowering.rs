@@ -96,6 +96,19 @@ pub(super) unsafe fn lower_def_expr(
                 &mut cast_value,
             ))
         }
+        Expr::UnaryBitNot { expr } => {
+            let value = lower_def_expr(expr, ctx)?;
+            match value.ty {
+                PrimitiveType::I32 | PrimitiveType::I64 => Ok(OrcValue {
+                    value: LLVMBuildNot(ctx.builder, value.value, b"def_bitnot\0".as_ptr().cast()),
+                    ty: value.ty,
+                }),
+                _ => Err(Diagnostic::internal(format!(
+                    "bitwise not requires integer operand in def lowering, got {:?}",
+                    value.ty
+                ))),
+            }
+        }
         Expr::Logical { op, lhs, rhs } => lower_def_logical_expr(*op, lhs, rhs, ctx),
         Expr::Call { func, args } => {
             let mut lowered = Vec::with_capacity(args.len());

@@ -93,7 +93,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
                 substitute_call_type_args_with_bindings_expr(arg, bindings, context, errors);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             substitute_call_type_args_with_bindings_expr(inner, bindings, context, errors);
         }
         Expr::ArrayLiteral(values) => {
@@ -606,7 +606,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                 rewrite_generic_struct_ctor_expr(arg, templates, generated, errors, locals);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
             rewrite_generic_struct_ctor_expr(inner, templates, generated, errors, locals);
         }
         Expr::ArrayLiteral(values) => {
@@ -1069,3 +1069,4 @@ pub(crate) fn finalize_generated_generic_struct_specializations(
         }
     }
 }
+

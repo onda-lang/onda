@@ -21,7 +21,19 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
         Expr::UnaryNot { .. } | Expr::Compare { .. } | Expr::Logical { .. } => {
             Some(PrimitiveType::Bool)
         }
-        Expr::Binary { lhs, rhs, .. } => {
+        Expr::UnaryBitNot { expr } => {
+            let inner = infer_expr_type_for_def_return_inference_with_call_overrides(
+                expr,
+                locals,
+                fn_return_types,
+                call_return_type_overrides,
+            )?;
+            match inner {
+                PrimitiveType::I32 | PrimitiveType::I64 => Some(inner),
+                _ => None,
+            }
+        }
+        Expr::Binary { op, lhs, rhs } => {
             let l = infer_expr_type_for_def_return_inference_with_call_overrides(
                 lhs,
                 locals,
@@ -34,7 +46,20 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
                 fn_return_types,
                 call_return_type_overrides,
             )?;
-            merge_inferred_return_types(l, r)
+            match op {
+                omni_frontend::BinaryOp::BitAnd
+                | omni_frontend::BinaryOp::BitOr
+                | omni_frontend::BinaryOp::BitXor
+                | omni_frontend::BinaryOp::ShiftLeft
+                | omni_frontend::BinaryOp::ShiftRight => match (l, r) {
+                    (PrimitiveType::I64, PrimitiveType::I32)
+                    | (PrimitiveType::I32, PrimitiveType::I64)
+                    | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
+                    (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
+                    _ => None,
+                },
+                _ => merge_inferred_return_types(l, r),
+            }
         }
         Expr::Call { func, args } => {
             let arg_tys = args

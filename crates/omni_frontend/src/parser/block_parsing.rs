@@ -646,10 +646,21 @@ pub(super) fn infer_expr_primitive_type(expr: &Expr) -> Option<PrimitiveType> {
         Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
             Some(PrimitiveType::Bool)
         }
-        Expr::Binary { lhs, rhs, .. } => {
+        Expr::UnaryBitNot { expr } => {
+            let inner = infer_expr_primitive_type(expr)?;
+            merge_inferred_integer_type(inner, inner)
+        }
+        Expr::Binary { op, lhs, rhs } => {
             let left = infer_expr_primitive_type(lhs)?;
             let right = infer_expr_primitive_type(rhs)?;
-            merge_inferred_numeric_type(left, right)
+            match op {
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::ShiftLeft
+                | BinaryOp::ShiftRight => merge_inferred_integer_type(left, right),
+                _ => merge_inferred_numeric_type(left, right),
+            }
         }
         _ => None,
     }
@@ -666,6 +677,18 @@ pub(super) fn merge_inferred_numeric_type(
         (F32, _) | (_, F32) => Some(F32),
         (I64, _) | (_, I64) => Some(I64),
         (I32, I32) => Some(I32),
+    }
+}
+
+pub(super) fn merge_inferred_integer_type(
+    a: PrimitiveType,
+    b: PrimitiveType,
+) -> Option<PrimitiveType> {
+    use PrimitiveType::*;
+    match (a, b) {
+        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
+        (I32, I32) => Some(I32),
+        _ => None,
     }
 }
 

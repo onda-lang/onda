@@ -309,12 +309,33 @@ pub(super) fn infer_specialized_expr_return_type(
         Expr::UnaryNot { .. } | Expr::Compare { .. } | Expr::Logical { .. } => {
             Some(PrimitiveType::Bool)
         }
-        Expr::Binary { lhs, rhs, .. } => {
+        Expr::UnaryBitNot { expr } => {
+            let inner = infer_specialized_expr_return_type(expr, locals, registry)?
+                .unwrap_or(PrimitiveType::F32);
+            match inner {
+                PrimitiveType::I32 | PrimitiveType::I64 => Some(inner),
+                _ => None,
+            }
+        }
+        Expr::Binary { op, lhs, rhs } => {
             let l = infer_specialized_expr_return_type(lhs, locals, registry)?
                 .unwrap_or(PrimitiveType::F32);
             let r = infer_specialized_expr_return_type(rhs, locals, registry)?
                 .unwrap_or(PrimitiveType::F32);
-            merge_inferred_def_return_types(l, r)
+            match op {
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::ShiftLeft
+                | BinaryOp::ShiftRight => match (l, r) {
+                    (PrimitiveType::I64, PrimitiveType::I32)
+                    | (PrimitiveType::I32, PrimitiveType::I64)
+                    | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
+                    (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
+                    _ => None,
+                },
+                _ => merge_inferred_def_return_types(l, r),
+            }
         }
         Expr::Call { func, args } => {
             let mut arg_tys = Vec::<PrimitiveType>::new();

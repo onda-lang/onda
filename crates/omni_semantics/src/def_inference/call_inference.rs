@@ -250,7 +250,7 @@ fn infer_expr_calls(
                 errors,
             );
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
             infer_expr_calls(
                 expr,
                 struct_instances,
@@ -579,3 +579,4 @@ pub(crate) fn resolve_call_args<'a>(
 
     resolved
 }
+

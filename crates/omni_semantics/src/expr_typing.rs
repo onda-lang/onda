@@ -15,6 +15,30 @@ use crate::decl_symbols::{
 use crate::def_inference::{can_implicitly_assign, merge_numeric_types};
 use crate::{split_field_path, LocalArrayAliasInfo, TypedFieldType, TypedStructField};
 
+fn merge_integer_types_for_expr(
+    lhs: PrimitiveType,
+    rhs: PrimitiveType,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    use PrimitiveType::*;
+    match (lhs, rhs) {
+        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
+        (I32, I32) => Some(I32),
+        _ => {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "{context} requires integer operands (i32/i64), got {:?} and {:?}",
+                    lhs, rhs
+                ),
+                0,
+                0,
+            ));
+            None
+        }
+    }
+}
+
 fn is_data_receiver_symbol_for_builtin(
     base: &str,
     state_scalars: &HashMap<String, PrimitiveType>,
@@ -180,9 +204,38 @@ pub(crate) fn infer_scalar_expr_type(
             Some(PrimitiveType::F32)
         }
         Expr::ArrayCtor { .. } => None,
-        Expr::Cast { to, .. } => Some(*to),
+        Expr::Cast { to, expr } => {
+            let _ = infer_scalar_expr_type(
+                expr,
+                state_scalars,
+                local_array_aliases,
+                locals,
+                input_names,
+                output_names,
+                param_names,
+                struct_instances,
+                struct_defs,
+                errors,
+            )?;
+            Some(*to)
+        }
         Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
             Some(PrimitiveType::Bool)
+        }
+        Expr::UnaryBitNot { expr } => {
+            let inner = infer_scalar_expr_type(
+                expr,
+                state_scalars,
+                local_array_aliases,
+                locals,
+                input_names,
+                output_names,
+                param_names,
+                struct_instances,
+                struct_defs,
+                errors,
+            )?;
+            merge_integer_types_for_expr(inner, inner, "bitwise not expression", errors)
         }
         Expr::Call { func, args } => {
             let arg_types = args
@@ -355,7 +408,7 @@ pub(crate) fn infer_scalar_expr_type(
             }
             Some(PrimitiveType::F32)
         }
-        Expr::Binary { lhs, rhs, .. } => {
+        Expr::Binary { op, lhs, rhs } => {
             let l = infer_scalar_expr_type(
                 lhs,
                 state_scalars,
@@ -381,7 +434,16 @@ pub(crate) fn infer_scalar_expr_type(
                 errors,
             );
             if let (Some(l), Some(r)) = (l, r) {
-                merge_numeric_types(l, r, "binary expression", errors)
+                match op {
+                    omni_frontend::BinaryOp::BitAnd
+                    | omni_frontend::BinaryOp::BitOr
+                    | omni_frontend::BinaryOp::BitXor
+                    | omni_frontend::BinaryOp::ShiftLeft
+                    | omni_frontend::BinaryOp::ShiftRight => {
+                        merge_integer_types_for_expr(l, r, "bitwise expression", errors)
+                    }
+                    _ => merge_numeric_types(l, r, "binary expression", errors),
+                }
             } else {
                 None
             }

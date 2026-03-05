@@ -183,7 +183,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 }
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
             validate_expr(expr, env, errors);
         }
         Expr::Logical { lhs, rhs, .. } => {
@@ -1196,3 +1196,4 @@ fn validate_unsafe_data_builtin_call(
         }
     }
 }
+
