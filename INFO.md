@@ -172,8 +172,16 @@
     - `voices[idx](...).outN` / named output endpoint
     - statement call form: `voices[idx](...)`
     - proc-event forwarding: `voices[idx].note_on(...)`
+    - proc aliasing is supported (`a = voices[idx]`), and call/output access on the alias lowers to the same slot dispatch semantics.
   - Runtime indices are clamped to the valid slot range (`0..len-1`).
   - Buffer ctor bindings are resolved to symbols in `init`; dynamic indexed calls read per-slot buffer refs from runtime state.
+  - Dynamic indexed block-hook semantics (`proc` with `block`):
+    - Trigger point is proc `()` call evaluation (not plain slot retrieval).
+    - `block pre` executes lazily once per active slot per block, on first `()` call to that slot.
+    - `block post` executes once at block end for each slot that was called in that block.
+    - Dynamic index handling is active-slot based (no conservative "run hooks for all slots" fallback).
+    - Applies in top-level and nested/proc-lowered paths.
+  - Non-`block` procs do not allocate/use active-slot hook tracking and keep the lower-overhead call path.
   - Proc-slot buffer refs (`ptr`/`frames`/`channels`) are refreshed on the safe `process_bound` path; `process_unchecked` does not perform hidden refresh.
 - Sample oversampling is implemented for both top-level and proc sample blocks:
   - syntax: `sample N:` where `N` is one of `{1,2,4,8,16,32,64}`.

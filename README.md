@@ -10,6 +10,11 @@
 - A CLI for compile/render workflows.
 - Language support for overloaded top-level `def` functions (arity/type-based dispatch with ambiguity diagnostics).
 - Processor-instance array dispatch with literal/runtime indices for calls, endpoint reads, statement calls, and proc-event forwarding (direct indexed instance access, with proc-slot buffer refs synced on `process_bound` for dynamic buffer-backed calls).
+  - For procs with a `block` section, dynamic indexed proc-array `()` calls trigger per-slot block hooks only for actually called slots:
+    - `block pre` runs lazily on first `()` call for that slot in the current block.
+    - `block post` runs once at block end for slots called in that block.
+  - Hook triggering is tied to the proc `()` call (including expression/statement forms), not to alias/index retrieval alone.
+  - Procs without `block` keep the fast path (no dynamic active-slot hook tracking).
 
 Current backend target is ORC JIT only.
 

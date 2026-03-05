@@ -883,12 +883,26 @@ fn validate_internal_proc_index_call(
     let mut base_expr = None::<&Expr>;
     let mut index_expr = None::<&Expr>;
     let mut field_expr = None::<&Expr>;
+    let mut positional_base_index = None::<(&Expr, &Expr)>;
+    if args.len() >= 2 && args[0].name.is_none() && args[1].name.is_none() {
+        positional_base_index = Some((&args[0].expr, &args[1].expr));
+    }
     for arg in args {
         match arg.name.as_deref() {
             Some(PROC_INDEX_BASE_ARG) => base_expr = Some(&arg.expr),
             Some(PROC_INDEX_EXPR_ARG) => index_expr = Some(&arg.expr),
             Some(PROC_FIELD_SENTINEL_ARG) => field_expr = Some(&arg.expr),
             _ => {}
+        }
+    }
+    if base_expr.is_none() {
+        if let Some((base, _)) = positional_base_index {
+            base_expr = Some(base);
+        }
+    }
+    if index_expr.is_none() {
+        if let Some((_, index)) = positional_base_index {
+            index_expr = Some(index);
         }
     }
 
@@ -946,7 +960,10 @@ fn validate_internal_proc_index_call(
         }
     }
 
-    for arg in args {
+    for (arg_idx, arg) in args.iter().enumerate() {
+        if positional_base_index.is_some() && arg_idx < 2 {
+            continue;
+        }
         match arg.name.as_deref() {
             Some(PROC_INDEX_BASE_ARG)
             | Some(PROC_INDEX_EXPR_ARG)

@@ -54,6 +54,26 @@ fn parse_flat_slot_index_for_base(symbol: &str, base: &str) -> Option<usize> {
     Some(idx)
 }
 
+fn parse_flat_slot_field_for_base(symbol: &str, base: &str) -> Option<(usize, String)> {
+    let base_prefix = format!("{base}[");
+    let self_prefix = format!("self.{base}[");
+    let rest = if let Some(rest) = symbol.strip_prefix(base_prefix.as_str()) {
+        rest
+    } else {
+        symbol.strip_prefix(self_prefix.as_str())?
+    };
+    let close_idx = rest.find(']')?;
+    let idx = rest[..close_idx].parse::<usize>().ok()?;
+    let after = &rest[close_idx + 1..];
+    if let Some(field) = after.strip_prefix('.') {
+        return Some((idx, field.to_owned()));
+    }
+    if let Some(field) = after.strip_prefix("__") {
+        return Some((idx, field.replace("__", ".")));
+    }
+    None
+}
+
 fn collect_def_flat_slot_indices(ctx: &DefLoweringCtx<'_>, base: &str) -> Vec<usize> {
     let mut out = HashSet::<usize>::new();
     for symbol in ctx.local_slots.keys() {
@@ -64,6 +84,115 @@ fn collect_def_flat_slot_indices(ctx: &DefLoweringCtx<'_>, base: &str) -> Vec<us
     let mut ordered = out.into_iter().collect::<Vec<_>>();
     ordered.sort_unstable();
     ordered
+}
+
+pub(super) unsafe fn try_bind_struct_data_slot_aliases_in_def(
+    alias_name: &str,
+    base: &str,
+    index: &Expr,
+    ctx: &mut DefLoweringCtx<'_>,
+) -> Result<bool, Diagnostic> {
+    let mut resolved_base = base.to_owned();
+    let mut slot_indices = collect_def_flat_slot_indices(ctx, resolved_base.as_str());
+    if slot_indices.is_empty() {
+        if let Some(stripped) = base.strip_prefix("self.") {
+            let stripped_indices = collect_def_flat_slot_indices(ctx, stripped);
+            if !stripped_indices.is_empty() {
+                resolved_base = stripped.to_owned();
+                slot_indices = stripped_indices;
+            }
+        } else {
+            let self_base = format!("self.{base}");
+            let self_indices = collect_def_flat_slot_indices(ctx, self_base.as_str());
+            if !self_indices.is_empty() {
+                resolved_base = self_base;
+                slot_indices = self_indices;
+            }
+        }
+    }
+    if slot_indices.is_empty() {
+        return Ok(false);
+    }
+
+    for (expected, actual) in slot_indices.iter().enumerate() {
+        if *actual != expected {
+            return Err(Diagnostic::internal(format!(
+                "local alias binding '{alias_name} = {base}[...]' requires contiguous flattened slot indices in def lowering, got {:?}",
+                slot_indices
+            )));
+        }
+    }
+
+    let mut field_names = HashSet::<String>::new();
+    for symbol in ctx.local_slots.keys() {
+        if let Some((slot_idx, field_name)) =
+            parse_flat_slot_field_for_base(symbol, resolved_base.as_str())
+        {
+            if slot_idx == 0 {
+                field_names.insert(field_name);
+            }
+        }
+    }
+    if field_names.is_empty() {
+        return Ok(false);
+    }
+
+    let raw_index = lower_def_expr(index, ctx)?;
+    let index_i32 = cast_def_value_to(
+        ctx,
+        raw_index,
+        PrimitiveType::I32,
+        b"def_data_alias_slot_idx_i32\0",
+    );
+    let clamped_index = clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, slot_indices.len())?;
+
+    let mut ordered_fields = field_names.into_iter().collect::<Vec<_>>();
+    ordered_fields.sort();
+    for field_name in ordered_fields {
+        let mut slot_ptrs = Vec::<LLVMValueRef>::with_capacity(slot_indices.len());
+        let mut field_ty = None::<PrimitiveType>;
+        for slot_idx in &slot_indices {
+            let slot_symbol = format!("{}[{}].{}", resolved_base, slot_idx, field_name);
+            let slot = find_def_local_slot(ctx, &slot_symbol).ok_or_else(|| {
+                Diagnostic::internal(format!(
+                    "missing flattened slot state '{}' while creating alias '{}' in def lowering",
+                    slot_symbol, alias_name
+                ))
+            })?;
+            if let Some(expected_ty) = field_ty {
+                if slot.ty != expected_ty {
+                    return Err(Diagnostic::internal(format!(
+                        "flattened slot field '{}' has inconsistent types while creating alias '{}' in def lowering",
+                        field_name, alias_name
+                    )));
+                }
+            } else {
+                field_ty = Some(slot.ty);
+            }
+            slot_ptrs.push(slot.ptr);
+        }
+        let selected_ptr = select_def_value_by_slot_index(
+            ctx,
+            clamped_index,
+            &slot_ptrs,
+            b"def_alias_slot_ptr_sel\0",
+            "def struct-alias slot dispatch",
+        )?;
+        ctx.local_slots.insert(
+            format!("{alias_name}.{}", field_name),
+            DefLocalSlot {
+                ptr: selected_ptr,
+                ty: field_ty.ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "missing flattened slot type for field '{}' while creating alias '{}' in def lowering",
+                        field_name, alias_name
+                    ))
+                })?,
+            },
+        );
+    }
+
+    Ok(true)
 }
 
 pub(super) unsafe fn lower_struct_call_args_in_def(

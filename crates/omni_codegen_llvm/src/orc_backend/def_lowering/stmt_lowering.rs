@@ -299,6 +299,9 @@ unsafe fn try_bind_struct_data_alias_in_def(
         bind_struct_data_element_aliases_in_def(target_name, &struct_name, base, clamped, ctx)?;
         return Ok(true);
     }
+    if try_bind_struct_data_slot_aliases_in_def(target_name, base, index, ctx)? {
+        return Ok(true);
+    }
 
     if let Some(alias) = ctx.local_array_aliases.get(base).cloned() {
         match alias {

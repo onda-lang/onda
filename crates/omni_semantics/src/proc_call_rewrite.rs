@@ -1,5 +1,108 @@
 use super::*;
 
+#[derive(Clone)]
+struct ProcArrayAliasRef {
+    array_base: String,
+    index_expr: Expr,
+}
+
+type ProcArrayAliases = HashMap<String, ProcArrayAliasRef>;
+
+fn prepend_proc_index_alias_args(args: &mut Vec<CallArg>, alias: &ProcArrayAliasRef) {
+    let mut rest = std::mem::take(args);
+    rest.retain(|arg| {
+        !matches!(
+            arg.name.as_deref(),
+            Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
+        )
+    });
+    let mut rewritten = Vec::<CallArg>::with_capacity(rest.len() + 2);
+    rewritten.push(CallArg {
+        name: None,
+        expr: Expr::Var(alias.array_base.clone()),
+    });
+    rewritten.push(CallArg {
+        name: None,
+        expr: alias.index_expr.clone(),
+    });
+    rewritten.extend(rest);
+    *args = rewritten;
+}
+
+fn rewrite_proc_alias_calls_in_expr(expr: &mut Expr, aliases: &ProcArrayAliases) {
+    match expr {
+        Expr::Var(name) => {
+            if let Some((base, field)) = split_dot_path(name.as_str()) {
+                if let Some(alias) = aliases.get(base) {
+                    *expr = Expr::UserCall {
+                        name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
+                        type_args: Vec::new(),
+                        args: vec![
+                            CallArg {
+                                name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                                expr: Expr::Var(alias.array_base.clone()),
+                            },
+                            CallArg {
+                                name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                                expr: alias.index_expr.clone(),
+                            },
+                            CallArg {
+                                name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
+                                expr: Expr::Var(field.to_owned()),
+                            },
+                        ],
+                    };
+                }
+            }
+        }
+        Expr::Index { index, .. } => rewrite_proc_alias_calls_in_expr(index, aliases),
+        Expr::ArrayCtor { spec, init } => {
+            rewrite_proc_alias_calls_in_expr(&mut spec.size, aliases);
+            if let Some(values) = init {
+                for value in values {
+                    rewrite_proc_alias_calls_in_expr(value, aliases);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            rewrite_proc_alias_calls_in_expr(lhs, aliases);
+            rewrite_proc_alias_calls_in_expr(rhs, aliases);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                rewrite_proc_alias_calls_in_expr(arg, aliases);
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_proc_alias_calls_in_expr(&mut arg.expr, aliases);
+            }
+            if let Some(alias) = aliases.get(name) {
+                *name = PROC_INDEX_CALL_SENTINEL.to_owned();
+                prepend_proc_index_alias_args(args, alias);
+                return;
+            }
+            if let Some((base, field)) = split_dot_path(name.as_str()) {
+                if let Some(alias) = aliases.get(base) {
+                    *name = format!("{PROC_INDEX_CALL_SENTINEL}.{field}");
+                    prepend_proc_index_alias_args(args, alias);
+                }
+            }
+        }
+        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+            rewrite_proc_alias_calls_in_expr(inner, aliases);
+        }
+        Expr::ArrayLiteral(values) => {
+            for value in values {
+                rewrite_proc_alias_calls_in_expr(value, aliases);
+            }
+        }
+        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+    }
+}
+
 pub(super) fn try_constant_index_i64(expr: &Expr) -> Option<i64> {
     match expr {
         Expr::Int(v) => Some(*v),
@@ -319,22 +422,23 @@ pub(super) fn take_proc_index_base_and_expr_mut(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<(String, Expr)> {
-    let Some(base_expr) = take_named_call_arg_expr(args, PROC_INDEX_BASE_ARG) else {
-        errors.push(Diagnostic::semantic(
-            format!("{context}: missing processor array base"),
-            0,
-            0,
-        ));
-        return None;
-    };
-    let Some(index_expr) = take_named_call_arg_expr(args, PROC_INDEX_EXPR_ARG) else {
-        errors.push(Diagnostic::semantic(
-            format!("{context}: missing processor array index"),
-            0,
-            0,
-        ));
-        return None;
-    };
+    let maybe_named_base = take_named_call_arg_expr(args, PROC_INDEX_BASE_ARG);
+    let maybe_named_index = take_named_call_arg_expr(args, PROC_INDEX_EXPR_ARG);
+    let (base_expr, index_expr) =
+        if let (Some(base_expr), Some(index_expr)) = (maybe_named_base, maybe_named_index) {
+            (base_expr, index_expr)
+        } else if args.len() >= 2 && args[0].name.is_none() && args[1].name.is_none() {
+            let base_expr = args.remove(0).expr;
+            let index_expr = args.remove(0).expr;
+            (base_expr, index_expr)
+        } else {
+            errors.push(Diagnostic::semantic(
+                format!("{context}: missing processor array base/index"),
+                0,
+                0,
+            ));
+            return None;
+        };
     let Expr::Var(array_base) = base_expr else {
         errors.push(Diagnostic::semantic(
             format!("{context}: processor array base must be a compile-time identifier"),
@@ -460,6 +564,50 @@ pub(super) fn find_proc_array_slot(
     None
 }
 
+fn resolve_proc_array_base_key(
+    base: &str,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    if proc_array_slots.contains_key(base) {
+        return Some(base.to_owned());
+    }
+    let self_base = format!("self.{base}");
+    if proc_array_slots.contains_key(&self_base) {
+        return Some(self_base);
+    }
+    if let Some(stripped) = base.strip_prefix("self.") {
+        if proc_array_slots.contains_key(stripped) {
+            return Some(stripped.to_owned());
+        }
+    }
+    let suffix_base = base.strip_prefix("self.").unwrap_or(base);
+    let suffix = format!(".{suffix_base}");
+    let mut matches = proc_array_slots
+        .keys()
+        .filter(|k| k.ends_with(&suffix))
+        .cloned()
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        return matches.pop();
+    }
+    None
+}
+
+fn can_resolve_proc_index_base(
+    args: &[CallArg],
+    proc_array_slots: &HashMap<String, Vec<String>>,
+) -> bool {
+    let base_expr = named_call_arg_expr(args, PROC_INDEX_BASE_ARG).or_else(|| {
+        args.first()
+            .filter(|arg| arg.name.is_none())
+            .map(|arg| &arg.expr)
+    });
+    let Some(Expr::Var(base)) = base_expr else {
+        return false;
+    };
+    resolve_proc_array_base_key(base, proc_array_slots).is_some()
+}
+
 pub(super) fn proc_instance_self_expr(
     instance_name: &str,
     proc_array_slots: &HashMap<String, Vec<String>>,
@@ -478,10 +626,25 @@ fn extract_proc_index_slot(
     args: &[CallArg],
     proc_array_slots: &HashMap<String, Vec<String>>,
 ) -> Option<String> {
-    let Expr::Var(array_base) = named_call_arg_expr(args, PROC_INDEX_BASE_ARG)? else {
+    let (base_expr, index_expr) = if let (Some(base), Some(index)) = (
+        named_call_arg_expr(args, PROC_INDEX_BASE_ARG),
+        named_call_arg_expr(args, PROC_INDEX_EXPR_ARG),
+    ) {
+        (base, index)
+    } else {
+        let base = args
+            .first()
+            .filter(|arg| arg.name.is_none())
+            .map(|arg| &arg.expr)?;
+        let index = args
+            .get(1)
+            .filter(|arg| arg.name.is_none())
+            .map(|arg| &arg.expr)?;
+        (base, index)
+    };
+    let Expr::Var(array_base) = base_expr else {
         return None;
     };
-    let index_expr = named_call_arg_expr(args, PROC_INDEX_EXPR_ARG)?;
     let slots = proc_array_slots.get(array_base)?;
     let raw_idx = try_constant_index_i64(index_expr)?;
     let slot_idx = usize::try_from(raw_idx).ok()?;
@@ -495,13 +658,6 @@ fn collect_proc_array_call_targets(
 ) {
     if let Some(slot) = extract_proc_index_slot(args, proc_array_slots) {
         out.insert(slot);
-        return;
-    }
-    let Some(Expr::Var(array_base)) = named_call_arg_expr(args, PROC_INDEX_BASE_ARG) else {
-        return;
-    };
-    if let Some(slots) = proc_array_slots.get(array_base) {
-        out.extend(slots.iter().cloned());
     }
 }
 
@@ -1212,6 +1368,9 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
 
             if *name == PROC_INDEX_CALL_SENTINEL {
+                if !can_resolve_proc_index_base(args, proc_array_slots) {
+                    return;
+                }
                 let Some(index_target) = resolve_proc_index_target_mut(
                     args,
                     proc_array_slots,
@@ -1271,6 +1430,9 @@ pub(super) fn rewrite_proc_calls_in_expr(
             if let Some(proc_var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
                 let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
                 let proc_var = if proc_var_raw == PROC_INDEX_CALL_SENTINEL {
+                    if !can_resolve_proc_index_base(args, proc_array_slots) {
+                        return;
+                    }
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
@@ -1424,6 +1586,9 @@ pub(super) fn rewrite_proc_calls_in_expr(
             if let Some((base_raw, event_name)) = split_dot_path(name) {
                 let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
                 let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
+                    if !can_resolve_proc_index_base(args, proc_array_slots) {
+                        return;
+                    }
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
@@ -1771,20 +1936,38 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
     }
 }
 
-pub(super) fn rewrite_proc_calls_in_stmt(
+fn rewrite_proc_calls_in_stmt_with_aliases(
     stmt: &mut Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
     proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
+    aliases: &mut ProcArrayAliases,
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
         Stmt::Assign { target, expr, .. } => {
+            if let AssignTarget::Var(name) = target {
+                if let Expr::Index { base, index } = expr {
+                    let resolved_base = resolve_proc_array_base_key(base, proc_array_slots)
+                        .unwrap_or_else(|| base.clone());
+                    aliases.insert(
+                        name.clone(),
+                        ProcArrayAliasRef {
+                            array_base: resolved_base,
+                            index_expr: index.as_ref().clone(),
+                        },
+                    );
+                } else {
+                    aliases.remove(name);
+                }
+            }
+            rewrite_proc_alias_calls_in_expr(expr, aliases);
             normalize_proc_output_aliases_in_assign_target(target, proc_vars, proc_api);
             rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors);
             maybe_clamp_proc_param_assignment_expr(target, expr, proc_vars, proc_api);
         }
         Stmt::Expr { expr, .. } => {
+            rewrite_proc_alias_calls_in_expr(expr, aliases);
             let mut handled_proc_stmt_call = false;
             if let Expr::UserCall { name, args, .. } = expr {
                 for arg in args.iter_mut() {
@@ -1797,6 +1980,9 @@ pub(super) fn rewrite_proc_calls_in_stmt(
                     );
                 }
                 if *name == PROC_INDEX_CALL_SENTINEL {
+                    if !can_resolve_proc_index_base(args, proc_array_slots) {
+                        return;
+                    }
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
@@ -1869,6 +2055,7 @@ pub(super) fn rewrite_proc_calls_in_stmt(
             }
         }
         Stmt::Return { expr, .. } => {
+            rewrite_proc_alias_calls_in_expr(expr, aliases);
             rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors)
         }
         Stmt::If {
@@ -1877,12 +2064,29 @@ pub(super) fn rewrite_proc_calls_in_stmt(
             else_branch,
             ..
         } => {
+            rewrite_proc_alias_calls_in_expr(cond, aliases);
             rewrite_proc_calls_in_expr(cond, proc_vars, proc_array_slots, proc_api, errors);
+            let mut then_aliases = aliases.clone();
             for s in then_branch {
-                rewrite_proc_calls_in_stmt(s, proc_vars, proc_array_slots, proc_api, errors);
+                rewrite_proc_calls_in_stmt_with_aliases(
+                    s,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    &mut then_aliases,
+                    errors,
+                );
             }
+            let mut else_aliases = aliases.clone();
             for s in else_branch {
-                rewrite_proc_calls_in_stmt(s, proc_vars, proc_array_slots, proc_api, errors);
+                rewrite_proc_calls_in_stmt_with_aliases(
+                    s,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    &mut else_aliases,
+                    errors,
+                );
             }
         }
         Stmt::For {
@@ -1892,9 +2096,12 @@ pub(super) fn rewrite_proc_calls_in_stmt(
             body,
             ..
         } => {
+            rewrite_proc_alias_calls_in_expr(start, aliases);
+            rewrite_proc_alias_calls_in_expr(end, aliases);
             rewrite_proc_calls_in_expr(start, proc_vars, proc_array_slots, proc_api, errors);
             rewrite_proc_calls_in_expr(end, proc_vars, proc_array_slots, proc_api, errors);
             if let Some(step_expr) = step {
+                rewrite_proc_alias_calls_in_expr(step_expr, aliases);
                 rewrite_proc_calls_in_expr(
                     step_expr,
                     proc_vars,
@@ -1903,18 +2110,53 @@ pub(super) fn rewrite_proc_calls_in_stmt(
                     errors,
                 );
             }
+            let mut body_aliases = aliases.clone();
             for s in body {
-                rewrite_proc_calls_in_stmt(s, proc_vars, proc_array_slots, proc_api, errors);
+                rewrite_proc_calls_in_stmt_with_aliases(
+                    s,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    &mut body_aliases,
+                    errors,
+                );
             }
         }
         Stmt::While { cond, body, .. } => {
+            rewrite_proc_alias_calls_in_expr(cond, aliases);
             rewrite_proc_calls_in_expr(cond, proc_vars, proc_array_slots, proc_api, errors);
+            let mut body_aliases = aliases.clone();
             for s in body {
-                rewrite_proc_calls_in_stmt(s, proc_vars, proc_array_slots, proc_api, errors);
+                rewrite_proc_calls_in_stmt_with_aliases(
+                    s,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    &mut body_aliases,
+                    errors,
+                );
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     });
+}
+
+pub(super) fn rewrite_proc_calls_in_stmt(
+    stmt: &mut Stmt,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut aliases = ProcArrayAliases::new();
+    rewrite_proc_calls_in_stmt_with_aliases(
+        stmt,
+        proc_vars,
+        proc_array_slots,
+        proc_api,
+        &mut aliases,
+        errors,
+    );
 }
 
 pub(super) fn rewrite_proc_calls_in_stmts(
@@ -1924,8 +2166,16 @@ pub(super) fn rewrite_proc_calls_in_stmts(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let mut aliases = ProcArrayAliases::new();
     for stmt in stmts {
-        rewrite_proc_calls_in_stmt(stmt, proc_vars, proc_array_slots, proc_api, errors);
+        rewrite_proc_calls_in_stmt_with_aliases(
+            stmt,
+            proc_vars,
+            proc_array_slots,
+            proc_api,
+            &mut aliases,
+            errors,
+        );
     }
 }
 
@@ -1986,15 +2236,48 @@ pub(super) fn collect_called_proc_instances_in_expr(
     }
 }
 
-pub(super) fn collect_called_proc_instances_in_stmt(
+fn collect_called_proc_instances_in_stmt(
     stmt: &Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
     proc_array_slots: &HashMap<String, Vec<String>>,
+    aliases: &mut ProcArrayAliases,
     out: &mut HashSet<String>,
 ) {
     match stmt {
-        Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } | Stmt::Expr { expr, .. } => {
-            collect_called_proc_instances_in_expr(expr, proc_vars, proc_array_slots, out);
+        Stmt::Assign { target, expr, .. } => {
+            let mut expr_for_collect = expr.clone();
+            rewrite_proc_alias_calls_in_expr(&mut expr_for_collect, aliases);
+            collect_called_proc_instances_in_expr(
+                &expr_for_collect,
+                proc_vars,
+                proc_array_slots,
+                out,
+            );
+            if let AssignTarget::Var(name) = target {
+                if let Expr::Index { base, index } = expr {
+                    let resolved_base = resolve_proc_array_base_key(base, proc_array_slots)
+                        .unwrap_or_else(|| base.clone());
+                    aliases.insert(
+                        name.clone(),
+                        ProcArrayAliasRef {
+                            array_base: resolved_base,
+                            index_expr: index.as_ref().clone(),
+                        },
+                    );
+                } else {
+                    aliases.remove(name);
+                }
+            }
+        }
+        Stmt::Return { expr, .. } | Stmt::Expr { expr, .. } => {
+            let mut expr_for_collect = expr.clone();
+            rewrite_proc_alias_calls_in_expr(&mut expr_for_collect, aliases);
+            collect_called_proc_instances_in_expr(
+                &expr_for_collect,
+                proc_vars,
+                proc_array_slots,
+                out,
+            );
         }
         Stmt::If {
             cond,
@@ -2002,12 +2285,33 @@ pub(super) fn collect_called_proc_instances_in_stmt(
             else_branch,
             ..
         } => {
-            collect_called_proc_instances_in_expr(cond, proc_vars, proc_array_slots, out);
+            let mut cond_for_collect = cond.clone();
+            rewrite_proc_alias_calls_in_expr(&mut cond_for_collect, aliases);
+            collect_called_proc_instances_in_expr(
+                &cond_for_collect,
+                proc_vars,
+                proc_array_slots,
+                out,
+            );
+            let mut then_aliases = aliases.clone();
             for nested in then_branch {
-                collect_called_proc_instances_in_stmt(nested, proc_vars, proc_array_slots, out);
+                collect_called_proc_instances_in_stmt(
+                    nested,
+                    proc_vars,
+                    proc_array_slots,
+                    &mut then_aliases,
+                    out,
+                );
             }
+            let mut else_aliases = aliases.clone();
             for nested in else_branch {
-                collect_called_proc_instances_in_stmt(nested, proc_vars, proc_array_slots, out);
+                collect_called_proc_instances_in_stmt(
+                    nested,
+                    proc_vars,
+                    proc_array_slots,
+                    &mut else_aliases,
+                    out,
+                );
             }
         }
         Stmt::For {
@@ -2017,19 +2321,61 @@ pub(super) fn collect_called_proc_instances_in_stmt(
             body,
             ..
         } => {
-            collect_called_proc_instances_in_expr(start, proc_vars, proc_array_slots, out);
-            collect_called_proc_instances_in_expr(end, proc_vars, proc_array_slots, out);
+            let mut start_for_collect = start.clone();
+            rewrite_proc_alias_calls_in_expr(&mut start_for_collect, aliases);
+            collect_called_proc_instances_in_expr(
+                &start_for_collect,
+                proc_vars,
+                proc_array_slots,
+                out,
+            );
+            let mut end_for_collect = end.clone();
+            rewrite_proc_alias_calls_in_expr(&mut end_for_collect, aliases);
+            collect_called_proc_instances_in_expr(
+                &end_for_collect,
+                proc_vars,
+                proc_array_slots,
+                out,
+            );
             if let Some(step_expr) = step {
-                collect_called_proc_instances_in_expr(step_expr, proc_vars, proc_array_slots, out);
+                let mut step_for_collect = step_expr.clone();
+                rewrite_proc_alias_calls_in_expr(&mut step_for_collect, aliases);
+                collect_called_proc_instances_in_expr(
+                    &step_for_collect,
+                    proc_vars,
+                    proc_array_slots,
+                    out,
+                );
             }
+            let mut body_aliases = aliases.clone();
             for nested in body {
-                collect_called_proc_instances_in_stmt(nested, proc_vars, proc_array_slots, out);
+                collect_called_proc_instances_in_stmt(
+                    nested,
+                    proc_vars,
+                    proc_array_slots,
+                    &mut body_aliases,
+                    out,
+                );
             }
         }
         Stmt::While { cond, body, .. } => {
-            collect_called_proc_instances_in_expr(cond, proc_vars, proc_array_slots, out);
+            let mut cond_for_collect = cond.clone();
+            rewrite_proc_alias_calls_in_expr(&mut cond_for_collect, aliases);
+            collect_called_proc_instances_in_expr(
+                &cond_for_collect,
+                proc_vars,
+                proc_array_slots,
+                out,
+            );
+            let mut body_aliases = aliases.clone();
             for nested in body {
-                collect_called_proc_instances_in_stmt(nested, proc_vars, proc_array_slots, out);
+                collect_called_proc_instances_in_stmt(
+                    nested,
+                    proc_vars,
+                    proc_array_slots,
+                    &mut body_aliases,
+                    out,
+                );
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -2042,8 +2388,15 @@ pub(super) fn collect_called_proc_instances_in_stmts(
     proc_array_slots: &HashMap<String, Vec<String>>,
 ) -> HashSet<String> {
     let mut out = HashSet::<String>::new();
+    let mut aliases = ProcArrayAliases::new();
     for stmt in stmts {
-        collect_called_proc_instances_in_stmt(stmt, proc_vars, proc_array_slots, &mut out);
+        collect_called_proc_instances_in_stmt(
+            stmt,
+            proc_vars,
+            proc_array_slots,
+            &mut aliases,
+            &mut out,
+        );
     }
     out
 }

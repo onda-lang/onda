@@ -381,9 +381,18 @@ Indexed proc-array dispatch supports literal and runtime indices:
 - Endpoint read from call: `voices[idx](...).outN` (or named endpoint)
 - Statement call: `voices[idx](...)`
 - Proc-event forwarding: `voices[idx].note_on(...)`
+- Proc aliasing: `a = voices[idx]`, then `a(...)` / `a.outN` (or named endpoint)
 
 Runtime indices are clamped to the valid slot range during lowered dispatch.
 Ctor buffer bindings are established in `init`; dynamic indexed calls use per-slot buffer refs in runtime state (refreshed on `process_bound`).
+
+For procs that define a `block` section, proc-array `()` calls use active-slot block hook semantics:
+- Hook trigger is the proc `()` call itself (expression or statement form), not plain slot retrieval.
+- `block pre` runs lazily on the first `()` call to a given slot within the current block.
+- `block post` runs once at block end for each slot that was called in that block.
+- Dynamic indexed calls do not conservatively trigger hooks for all slots.
+
+For procs without a `block` section, no active-slot hook tracking is emitted (fast path).
 
 ## 8.1 Events (`events`)
 

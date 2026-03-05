@@ -517,6 +517,7 @@ pub(super) fn analyze_runtime_scope_stmts<'a>(
     state_scalars: &HashMap<String, PrimitiveType>,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     struct_instances: &HashMap<String, String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
@@ -531,6 +532,7 @@ pub(super) fn analyze_runtime_scope_stmts<'a>(
         state_scalars,
         state_arrays,
         state_array_struct_roots,
+        proc_array_roots,
         struct_instances,
         input_names,
         output_names,
@@ -544,6 +546,7 @@ pub(super) fn analyze_runtime_scope_stmts<'a>(
         known_scalars,
         local_aliases,
         local_array_aliases,
+        local_proc_aliases: HashMap::new(),
     };
     analyze_runtime_stmts(stmts, locals, &ctx, &mut state, errors);
 }
@@ -570,6 +573,7 @@ pub(super) fn register_and_analyze_runtime_scope<'a>(
     state_scalars: &mut HashMap<String, PrimitiveType>,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     struct_instances: &HashMap<String, String>,
     registration_input_names: &HashSet<String>,
     registration_output_names: &HashSet<String>,
@@ -611,6 +615,7 @@ pub(super) fn register_and_analyze_runtime_scope<'a>(
         state_scalars,
         state_arrays,
         state_array_struct_roots,
+        proc_array_roots,
         struct_instances,
         runtime_input_names,
         runtime_output_names,
@@ -636,6 +641,7 @@ pub(super) fn analyze_runtime_events(
     state_scalars: &HashMap<String, PrimitiveType>,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     struct_instances: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -645,6 +651,7 @@ pub(super) fn analyze_runtime_events(
     let empty_runtime_inputs = HashSet::<String>::new();
     let empty_runtime_outputs = HashSet::<String>::new();
     let runtime_loop_vars = HashSet::<String>::new();
+    let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
 
     for event in typed_events {
         let mut event_locals = HashSet::<String>::new();
@@ -701,6 +708,11 @@ pub(super) fn analyze_runtime_events(
             state_scalars,
             state_arrays,
             state_array_struct_roots,
+            if proc_array_roots.is_empty() {
+                &empty_proc_array_roots
+            } else {
+                proc_array_roots
+            },
             struct_instances,
             &empty_runtime_inputs,
             &empty_runtime_outputs,
@@ -3396,6 +3408,7 @@ pub fn analyze_with_options(
         state_arrays,
         state_array_struct_roots,
         struct_instances,
+        nested_proc_arrays,
         ..
     } = init_st;
     let init_writable_roots = collect_runtime_state_roots(&state_scalars);
@@ -3417,6 +3430,7 @@ pub fn analyze_with_options(
         &mut state_scalars,
         &state_arrays,
         &state_array_struct_roots,
+        &nested_proc_arrays,
         &struct_instances,
         &input_names,
         &output_names,
@@ -3451,6 +3465,7 @@ pub fn analyze_with_options(
         &mut state_scalars,
         &state_arrays,
         &state_array_struct_roots,
+        &nested_proc_arrays,
         &struct_instances,
         &input_names,
         &output_names,
@@ -3491,6 +3506,7 @@ pub fn analyze_with_options(
         &state_scalars,
         &state_arrays,
         &state_array_struct_roots,
+        &nested_proc_arrays,
         &struct_instances,
         &struct_defs,
         &fn_signatures,
@@ -3604,6 +3620,7 @@ pub fn analyze_with_options(
         let fn_locals = HashSet::new();
         let mut fn_local_aliases = LocalAliasTypes::new();
         let mut fn_local_data_aliases = HashMap::new();
+        let mut fn_local_proc_aliases = HashMap::new();
         let param_names_vec = def
             .params
             .iter()
@@ -3669,6 +3686,7 @@ pub fn analyze_with_options(
                 &mut fn_known,
                 &mut fn_local_aliases,
                 &mut fn_local_data_aliases,
+                &mut fn_local_proc_aliases,
                 &fn_locals,
                 &param_structs,
                 &def_state_scalars,

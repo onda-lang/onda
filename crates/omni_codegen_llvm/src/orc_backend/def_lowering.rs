@@ -3,7 +3,10 @@ use super::*;
 mod expr_lowering;
 mod stmt_lowering;
 mod struct_helpers;
-use struct_helpers::{bind_struct_data_element_aliases_in_def, lower_struct_call_args_in_def};
+use struct_helpers::{
+    bind_struct_data_element_aliases_in_def, lower_struct_call_args_in_def,
+    try_bind_struct_data_slot_aliases_in_def,
+};
 
 pub(super) unsafe fn lower_def_stmt(
     stmt: &Stmt,

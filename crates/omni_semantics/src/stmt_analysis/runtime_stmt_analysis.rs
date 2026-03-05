@@ -1,5 +1,128 @@
 use super::*;
 
+#[derive(Clone)]
+pub(crate) struct ProcArrayAliasInfo {
+    pub(crate) array_base: String,
+    pub(crate) index_expr: Expr,
+}
+
+pub(crate) fn rewrite_proc_alias_calls_for_validation(
+    expr: &Expr,
+    aliases: &HashMap<String, ProcArrayAliasInfo>,
+) -> Expr {
+    fn rewrite(expr: &mut Expr, aliases: &HashMap<String, ProcArrayAliasInfo>) {
+        match expr {
+            Expr::Var(name) => {
+                if let Some((base, field)) = split_dot_path(name.as_str()) {
+                    if let Some(alias) = aliases.get(base) {
+                        *expr = Expr::UserCall {
+                            name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
+                            type_args: Vec::new(),
+                            args: vec![
+                                CallArg {
+                                    name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                                    expr: Expr::Var(alias.array_base.clone()),
+                                },
+                                CallArg {
+                                    name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                                    expr: alias.index_expr.clone(),
+                                },
+                                CallArg {
+                                    name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
+                                    expr: Expr::Var(field.to_owned()),
+                                },
+                            ],
+                        };
+                    }
+                }
+            }
+            Expr::Index { index, .. } => rewrite(index, aliases),
+            Expr::ArrayCtor { spec, init } => {
+                rewrite(&mut spec.size, aliases);
+                if let Some(values) = init {
+                    for value in values {
+                        rewrite(value, aliases);
+                    }
+                }
+            }
+            Expr::Compare { lhs, rhs, .. }
+            | Expr::Logical { lhs, rhs, .. }
+            | Expr::Binary { lhs, rhs, .. } => {
+                rewrite(lhs, aliases);
+                rewrite(rhs, aliases);
+            }
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    rewrite(arg, aliases);
+                }
+            }
+            Expr::UserCall { name, args, .. } => {
+                for arg in args.iter_mut() {
+                    rewrite(&mut arg.expr, aliases);
+                }
+                if let Some(alias) = aliases.get(name) {
+                    let mut rest = std::mem::take(args);
+                    rest.retain(|arg| {
+                        !matches!(
+                            arg.name.as_deref(),
+                            Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
+                        )
+                    });
+                    let mut rewritten = Vec::<CallArg>::with_capacity(rest.len() + 2);
+                    rewritten.push(CallArg {
+                        name: None,
+                        expr: Expr::Var(alias.array_base.clone()),
+                    });
+                    rewritten.push(CallArg {
+                        name: None,
+                        expr: alias.index_expr.clone(),
+                    });
+                    rewritten.extend(rest);
+                    *args = rewritten;
+                    *name = PROC_INDEX_CALL_SENTINEL.to_owned();
+                    return;
+                }
+                if let Some((base, field)) = split_dot_path(name.as_str()) {
+                    if let Some(alias) = aliases.get(base) {
+                        let mut rest = std::mem::take(args);
+                        rest.retain(|arg| {
+                            !matches!(
+                                arg.name.as_deref(),
+                                Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
+                            )
+                        });
+                        let mut rewritten = Vec::<CallArg>::with_capacity(rest.len() + 2);
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: Expr::Var(alias.array_base.clone()),
+                        });
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: alias.index_expr.clone(),
+                        });
+                        rewritten.extend(rest);
+                        *args = rewritten;
+                        *name = format!("{PROC_INDEX_CALL_SENTINEL}.{field}");
+                    }
+                }
+            }
+            Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+                rewrite(inner, aliases);
+            }
+            Expr::ArrayLiteral(values) => {
+                for value in values {
+                    rewrite(value, aliases);
+                }
+            }
+            Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        }
+    }
+
+    let mut rewritten = expr.clone();
+    rewrite(&mut rewritten, aliases);
+    rewritten
+}
+
 pub(crate) fn merged_data_vars_for_runtime(
     state_arrays: &HashMap<String, usize>,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
@@ -42,6 +165,7 @@ pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
     pub param_names: &'a HashSet<String>,
     pub struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     pub fn_signatures: &'a HashMap<String, FnSignature>,
+    pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub options: AnalysisOptions,
 }
 
@@ -50,6 +174,7 @@ pub(crate) struct RuntimeStmtAnalysisState {
     pub known_scalars: HashSet<String>,
     pub local_aliases: LocalAliasTypes,
     pub local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    pub local_proc_aliases: HashMap<String, ProcArrayAliasInfo>,
 }
 
 pub(crate) fn analyze_runtime_stmts<'a>(
@@ -67,6 +192,7 @@ pub(crate) fn analyze_runtime_stmts<'a>(
             &mut state.known_scalars,
             &mut state.local_aliases,
             &mut state.local_array_aliases,
+            &mut state.local_proc_aliases,
             0,
             errors,
         );
@@ -81,6 +207,7 @@ fn analyze_runtime_stmt_inner(
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
     loop_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -94,6 +221,7 @@ fn analyze_runtime_stmt_inner(
     let param_names = ctx.param_names;
     let struct_defs = ctx.struct_defs;
     let fn_signatures = ctx.fn_signatures;
+    let proc_array_roots = ctx.proc_array_roots;
     let options = ctx.options;
 
     with_stmt_diag_context(stmt, || {
@@ -116,10 +244,12 @@ fn analyze_runtime_stmt_inner(
                     known_scalars,
                     local_aliases,
                     local_array_aliases,
+                    local_proc_aliases,
                     locals,
                     state_scalars,
                     state_arrays,
                     state_array_struct_roots,
+                    proc_array_roots,
                     struct_instances,
                     input_names,
                     output_names,
@@ -132,8 +262,9 @@ fn analyze_runtime_stmt_inner(
                 );
             }
             Stmt::Expr { expr, .. } => {
+                let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                 validate_expr(
-                    expr,
+                    &expr,
                     ExprEnv {
                         known_scalars,
                         locals,
@@ -149,7 +280,7 @@ fn analyze_runtime_stmt_inner(
                     errors,
                 );
                 let _ = infer_expr_type_for_semantics(
-                    expr,
+                    &expr,
                     state_scalars,
                     None,
                     locals,
@@ -174,8 +305,9 @@ fn analyze_runtime_stmt_inner(
                 else_branch,
                 ..
             } => {
+                let cond = rewrite_proc_alias_calls_for_validation(cond, local_proc_aliases);
                 validate_expr(
-                    cond,
+                    &cond,
                     ExprEnv {
                         known_scalars,
                         locals,
@@ -191,7 +323,7 @@ fn analyze_runtime_stmt_inner(
                     errors,
                 );
                 let cond_ty = infer_expr_type_for_semantics(
-                    cond,
+                    &cond,
                     state_scalars,
                     None,
                     locals,
@@ -206,6 +338,7 @@ fn analyze_runtime_stmt_inner(
                 let mut then_known = known_scalars.clone();
                 let mut then_aliases = local_aliases.clone();
                 let mut then_data_aliases = local_array_aliases.clone();
+                let mut then_proc_aliases = local_proc_aliases.clone();
                 for nested in then_branch {
                     analyze_runtime_stmt_inner(
                         nested,
@@ -214,6 +347,7 @@ fn analyze_runtime_stmt_inner(
                         &mut then_known,
                         &mut then_aliases,
                         &mut then_data_aliases,
+                        &mut then_proc_aliases,
                         loop_depth,
                         errors,
                     );
@@ -221,6 +355,7 @@ fn analyze_runtime_stmt_inner(
                 let mut else_known = known_scalars.clone();
                 let mut else_aliases = local_aliases.clone();
                 let mut else_data_aliases = local_array_aliases.clone();
+                let mut else_proc_aliases = local_proc_aliases.clone();
                 for nested in else_branch {
                     analyze_runtime_stmt_inner(
                         nested,
@@ -229,6 +364,7 @@ fn analyze_runtime_stmt_inner(
                         &mut else_known,
                         &mut else_aliases,
                         &mut else_data_aliases,
+                        &mut else_proc_aliases,
                         loop_depth,
                         errors,
                     );
@@ -242,8 +378,10 @@ fn analyze_runtime_stmt_inner(
                 body,
                 ..
             } => {
+                let start = rewrite_proc_alias_calls_for_validation(start, local_proc_aliases);
+                let end = rewrite_proc_alias_calls_for_validation(end, local_proc_aliases);
                 validate_expr(
-                    start,
+                    &start,
                     ExprEnv {
                         known_scalars,
                         locals,
@@ -259,7 +397,7 @@ fn analyze_runtime_stmt_inner(
                     errors,
                 );
                 validate_expr(
-                    end,
+                    &end,
                     ExprEnv {
                         known_scalars,
                         locals,
@@ -275,8 +413,10 @@ fn analyze_runtime_stmt_inner(
                     errors,
                 );
                 if let Some(step_expr) = step {
+                    let step_expr =
+                        rewrite_proc_alias_calls_for_validation(step_expr, local_proc_aliases);
                     validate_expr(
-                        step_expr,
+                        &step_expr,
                         ExprEnv {
                             known_scalars,
                             locals,
@@ -293,7 +433,7 @@ fn analyze_runtime_stmt_inner(
                     );
                 }
                 let start_ty = infer_expr_type_for_semantics_with_local_data(
-                    start,
+                    &start,
                     state_scalars,
                     None,
                     local_array_aliases,
@@ -307,7 +447,7 @@ fn analyze_runtime_stmt_inner(
                 );
                 require_numeric_type(start_ty, "for loop start bound", errors);
                 let end_ty = infer_expr_type_for_semantics_with_local_data(
-                    end,
+                    &end,
                     state_scalars,
                     None,
                     local_array_aliases,
@@ -321,8 +461,10 @@ fn analyze_runtime_stmt_inner(
                 );
                 require_numeric_type(end_ty, "for loop end bound", errors);
                 if let Some(step_expr) = step {
+                    let step_expr =
+                        rewrite_proc_alias_calls_for_validation(step_expr, local_proc_aliases);
                     let step_ty = infer_expr_type_for_semantics_with_local_data(
-                        step_expr,
+                        &step_expr,
                         state_scalars,
                         None,
                         local_array_aliases,
@@ -336,7 +478,7 @@ fn analyze_runtime_stmt_inner(
                     );
                     require_numeric_type(step_ty, "for loop step", errors);
                     if matches!(step_expr, Expr::Int(0))
-                        || matches!(step_expr, Expr::Number(v) if *v == 0.0)
+                        || matches!(step_expr, Expr::Number(v) if v == 0.0)
                     {
                         errors.push(Diagnostic::semantic("for loop step cannot be zero", 0, 0));
                     }
@@ -346,6 +488,7 @@ fn analyze_runtime_stmt_inner(
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
                 let mut loop_data_aliases = local_array_aliases.clone();
+                let mut loop_proc_aliases = local_proc_aliases.clone();
                 for nested in body {
                     analyze_runtime_stmt_inner(
                         nested,
@@ -354,14 +497,16 @@ fn analyze_runtime_stmt_inner(
                         &mut loop_known,
                         &mut loop_aliases,
                         &mut loop_data_aliases,
+                        &mut loop_proc_aliases,
                         loop_depth + 1,
                         errors,
                     );
                 }
             }
             Stmt::While { cond, body, .. } => {
+                let cond = rewrite_proc_alias_calls_for_validation(cond, local_proc_aliases);
                 validate_expr(
-                    cond,
+                    &cond,
                     ExprEnv {
                         known_scalars,
                         locals,
@@ -377,7 +522,7 @@ fn analyze_runtime_stmt_inner(
                     errors,
                 );
                 let cond_ty = infer_expr_type_for_semantics_with_local_data(
-                    cond,
+                    &cond,
                     state_scalars,
                     None,
                     local_array_aliases,
@@ -393,6 +538,7 @@ fn analyze_runtime_stmt_inner(
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
                 let mut loop_data_aliases = local_array_aliases.clone();
+                let mut loop_proc_aliases = local_proc_aliases.clone();
                 for nested in body {
                     analyze_runtime_stmt_inner(
                         nested,
@@ -401,6 +547,7 @@ fn analyze_runtime_stmt_inner(
                         &mut loop_known,
                         &mut loop_aliases,
                         &mut loop_data_aliases,
+                        &mut loop_proc_aliases,
                         loop_depth + 1,
                         errors,
                     );
@@ -436,10 +583,12 @@ fn analyze_assign_sample(
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
     locals: &HashSet<String>,
     state_scalars: &HashMap<String, PrimitiveType>,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     struct_instances: &HashMap<String, String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
@@ -453,6 +602,8 @@ fn analyze_assign_sample(
     let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
     match target {
         AssignTarget::Index { base, index } => {
+            let expr_for_validation =
+                rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                 errors.push(Diagnostic::semantic(
                     "typed declaration is only supported for plain scalar variables",
@@ -525,7 +676,7 @@ fn analyze_assign_sample(
                 errors,
             );
             validate_expr(
-                expr,
+                &expr_for_validation,
                 ExprEnv {
                     known_scalars,
                     locals,
@@ -555,7 +706,7 @@ fn analyze_assign_sample(
             );
             require_numeric_type(index_ty, "array index expression", errors);
             let expr_ty = infer_expr_type_for_semantics_with_local_data(
-                expr,
+                &expr_for_validation,
                 state_scalars,
                 None,
                 local_array_aliases,
@@ -580,6 +731,9 @@ fn analyze_assign_sample(
             require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
         }
         AssignTarget::Var(name) => {
+            if !matches!(expr, Expr::Index { .. }) {
+                local_proc_aliases.remove(name);
+            }
             if locals.contains(name) {
                 errors.push(Diagnostic::semantic(
                     format!("cannot assign to loop variable '{name}'"),
@@ -988,6 +1142,7 @@ fn analyze_assign_sample(
                 && !param_names.contains(name)
             {
                 if let Expr::Index { base, index } = expr {
+                    let is_proc_array_base = proc_array_roots.contains_key(base);
                     let mut is_scalar_data_base = state_arrays.contains_key(base);
                     let mut array_struct_elem_struct = state_array_struct_roots
                         .get(base)
@@ -1020,7 +1175,10 @@ fn analyze_assign_sample(
                             }
                         }
                     }
-                    if is_scalar_data_base || array_struct_elem_struct.is_some() {
+                    if is_scalar_data_base
+                        || array_struct_elem_struct.is_some()
+                        || is_proc_array_base
+                    {
                         validate_expr(
                             index,
                             ExprEnv {
@@ -1051,6 +1209,16 @@ fn analyze_assign_sample(
                             errors,
                         );
                         require_numeric_type(idx_ty, "array index expression", errors);
+                        if proc_array_roots.contains_key(base) {
+                            local_proc_aliases.insert(
+                                name.clone(),
+                                ProcArrayAliasInfo {
+                                    array_base: base.clone(),
+                                    index_expr: index.as_ref().clone(),
+                                },
+                            );
+                            return;
+                        }
                         if let Some(struct_name) = array_struct_elem_struct {
                             if !add_struct_element_alias_bindings(
                                 name,
@@ -1140,8 +1308,10 @@ fn analyze_assign_sample(
                 }
             }
 
+            let expr_for_validation =
+                rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             validate_expr(
-                expr,
+                &expr_for_validation,
                 ExprEnv {
                     known_scalars,
                     locals,
@@ -1157,7 +1327,7 @@ fn analyze_assign_sample(
                 errors,
             );
             let expr_ty = infer_expr_type_for_semantics_with_local_data(
-                expr,
+                &expr_for_validation,
                 state_scalars,
                 None,
                 local_array_aliases,

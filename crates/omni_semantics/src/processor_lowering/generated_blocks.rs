@@ -1,5 +1,319 @@
 use super::*;
 
+#[derive(Debug, Clone)]
+struct ManagedDynamicProcArray {
+    proc_name: String,
+    raw_slots: Vec<String>,
+    slots: Vec<String>,
+    active_field: String,
+}
+
+fn sanitize_runtime_symbol_component(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+}
+
+fn runtime_proc_array_active_field_name(array_base: &str) -> String {
+    format!(
+        "__omni_proc_block_active_{}",
+        sanitize_runtime_symbol_component(array_base)
+    )
+}
+
+fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
+    stmt: Stmt,
+    managed_arrays: &HashMap<String, ManagedDynamicProcArray>,
+    proc_api: &HashMap<String, ProcApi>,
+    used_arrays: &mut HashSet<String>,
+) -> Vec<Stmt> {
+    fn collect_guards_from_expr(
+        expr: &Expr,
+        managed_arrays: &HashMap<String, ManagedDynamicProcArray>,
+        proc_api: &HashMap<String, ProcApi>,
+        used_arrays: &mut HashSet<String>,
+        guards: &mut Vec<Stmt>,
+    ) {
+        match expr {
+            Expr::Index { index, .. } => {
+                collect_guards_from_expr(index, managed_arrays, proc_api, used_arrays, guards);
+            }
+            Expr::ArrayCtor { spec, init } => {
+                collect_guards_from_expr(&spec.size, managed_arrays, proc_api, used_arrays, guards);
+                if let Some(values) = init {
+                    for value in values {
+                        collect_guards_from_expr(
+                            value,
+                            managed_arrays,
+                            proc_api,
+                            used_arrays,
+                            guards,
+                        );
+                    }
+                }
+            }
+            Expr::Compare { lhs, rhs, .. }
+            | Expr::Logical { lhs, rhs, .. }
+            | Expr::Binary { lhs, rhs, .. } => {
+                collect_guards_from_expr(lhs, managed_arrays, proc_api, used_arrays, guards);
+                collect_guards_from_expr(rhs, managed_arrays, proc_api, used_arrays, guards);
+            }
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    collect_guards_from_expr(arg, managed_arrays, proc_api, used_arrays, guards);
+                }
+            }
+            Expr::UserCall {
+                name,
+                args,
+                type_args: _,
+            } => {
+                for arg in args {
+                    collect_guards_from_expr(
+                        &arg.expr,
+                        managed_arrays,
+                        proc_api,
+                        used_arrays,
+                        guards,
+                    );
+                }
+                let proc_name = if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
+                    Some(step_proc)
+                } else if let Some((call_proc, out_idx_raw)) =
+                    name.rsplit_once(PROC_CALL_OUT_FN_PREFIX)
+                {
+                    if out_idx_raw.parse::<usize>().is_ok() {
+                        Some(call_proc)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let Some(proc_name) = proc_name else {
+                    return;
+                };
+                let Some(api) = proc_api.get(proc_name) else {
+                    return;
+                };
+                if !api.has_block {
+                    return;
+                }
+                let Some(CallArg {
+                    expr: Expr::Index { base, index },
+                    ..
+                }) = args.first()
+                else {
+                    return;
+                };
+                if matches!(index.as_ref(), Expr::Int(_)) {
+                    return;
+                }
+                let array_base = base.as_str();
+                let Some(managed) = managed_arrays.get(array_base) else {
+                    return;
+                };
+                if managed.proc_name != proc_name {
+                    return;
+                }
+                used_arrays.insert(array_base.to_owned());
+                let input_slots = api.ins.iter().map(|port| port.slots.len()).sum::<usize>();
+                let buffer_start = 1 + input_slots;
+                let mut pre_args = Vec::<CallArg>::new();
+                pre_args.push(CallArg {
+                    name: None,
+                    expr: Expr::Index {
+                        base: array_base.to_owned(),
+                        index: Box::new(index.as_ref().clone()),
+                    },
+                });
+                pre_args.extend(args.iter().skip(buffer_start).cloned());
+                guards.push(Stmt::If {
+                    loc: None,
+                    cond: Expr::UnaryNot {
+                        expr: Box::new(Expr::Index {
+                            base: format!("self.{}", managed.active_field),
+                            index: Box::new(index.as_ref().clone()),
+                        }),
+                    },
+                    then_branch: vec![
+                        Stmt::Expr {
+                            loc: None,
+                            expr: Expr::UserCall {
+                                name: format!("{proc_name}{PROC_BLOCK_PRE_FN_SUFFIX}"),
+                                type_args: Vec::new(),
+                                args: pre_args,
+                            },
+                        },
+                        Stmt::Assign {
+                            loc: None,
+                            target: AssignTarget::Index {
+                                base: format!("self.{}", managed.active_field),
+                                index: index.as_ref().clone(),
+                            },
+                            decl_ty: None,
+                            generic_decl_ty: None,
+                            is_typed_decl: false,
+                            expr: Expr::Bool(true),
+                        },
+                    ],
+                    else_branch: Vec::new(),
+                });
+            }
+            Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } => {
+                collect_guards_from_expr(inner, managed_arrays, proc_api, used_arrays, guards);
+            }
+            Expr::ArrayLiteral(values) => {
+                for value in values {
+                    collect_guards_from_expr(value, managed_arrays, proc_api, used_arrays, guards);
+                }
+            }
+            Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        }
+    }
+
+    let mut guards = Vec::<Stmt>::new();
+    match &stmt {
+        Stmt::Expr { expr, .. } | Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
+            collect_guards_from_expr(expr, managed_arrays, proc_api, used_arrays, &mut guards);
+        }
+        _ => {}
+    }
+    if !guards.is_empty() {
+        let mut rewritten = guards;
+        rewritten.push(stmt);
+        return rewritten;
+    }
+
+    match stmt {
+        Stmt::If {
+            loc,
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let mut cond_guards = Vec::<Stmt>::new();
+            collect_guards_from_expr(
+                &cond,
+                managed_arrays,
+                proc_api,
+                used_arrays,
+                &mut cond_guards,
+            );
+            let mut new_then = Vec::<Stmt>::new();
+            for nested in then_branch {
+                new_then.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
+                    nested,
+                    managed_arrays,
+                    proc_api,
+                    used_arrays,
+                ));
+            }
+            let mut new_else = Vec::<Stmt>::new();
+            for nested in else_branch {
+                new_else.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
+                    nested,
+                    managed_arrays,
+                    proc_api,
+                    used_arrays,
+                ));
+            }
+            cond_guards.push(Stmt::If {
+                loc,
+                cond,
+                then_branch: new_then,
+                else_branch: new_else,
+            });
+            cond_guards
+        }
+        Stmt::For {
+            loc,
+            var,
+            step,
+            start,
+            end,
+            end_inclusive,
+            body,
+        } => {
+            let mut range_guards = Vec::<Stmt>::new();
+            collect_guards_from_expr(
+                &start,
+                managed_arrays,
+                proc_api,
+                used_arrays,
+                &mut range_guards,
+            );
+            collect_guards_from_expr(
+                &end,
+                managed_arrays,
+                proc_api,
+                used_arrays,
+                &mut range_guards,
+            );
+            if let Some(step_expr) = &step {
+                collect_guards_from_expr(
+                    step_expr,
+                    managed_arrays,
+                    proc_api,
+                    used_arrays,
+                    &mut range_guards,
+                );
+            }
+            let mut new_body = Vec::<Stmt>::new();
+            for nested in body {
+                new_body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
+                    nested,
+                    managed_arrays,
+                    proc_api,
+                    used_arrays,
+                ));
+            }
+            range_guards.push(Stmt::For {
+                loc,
+                var,
+                step,
+                start,
+                end,
+                end_inclusive,
+                body: new_body,
+            });
+            range_guards
+        }
+        Stmt::While { loc, cond, body } => {
+            let mut cond_guards = Vec::<Stmt>::new();
+            collect_guards_from_expr(
+                &cond,
+                managed_arrays,
+                proc_api,
+                used_arrays,
+                &mut cond_guards,
+            );
+            let mut new_body = Vec::<Stmt>::new();
+            for nested in body {
+                new_body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
+                    nested,
+                    managed_arrays,
+                    proc_api,
+                    used_arrays,
+                ));
+            }
+            cond_guards.push(Stmt::While {
+                loc,
+                cond,
+                body: new_body,
+            });
+            cond_guards
+        }
+        _ => vec![stmt],
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn generate_nested_wrapper_defs(
     proc: &ProcessorDef,
@@ -10,6 +324,7 @@ fn generate_nested_wrapper_defs(
     proc_api: &HashMap<String, ProcApi>,
     nested_instances: &HashMap<String, ProcCallInstance>,
     ins_names: &HashSet<String>,
+    managed_active_fields: &mut HashMap<String, usize>,
     def_sample_oversample_factors: &mut HashMap<String, usize>,
     proc_step_oversample_meta: &mut HashMap<String, ProcStepOversampleMeta>,
     errors: &mut Vec<Diagnostic>,
@@ -453,25 +768,60 @@ fn generate_nested_wrapper_defs(
             body: nested_init_body,
         }));
 
-        let nested_step_body = callee_proc
-            .sample
+        let nested_managed_dynamic_arrays = callee_shape
+            .nested_proc_array_slots
             .iter()
-            .filter_map(|stmt| {
-                lower_callee_stmt_for_nested_wrapper(
-                    stmt,
-                    &proc.name,
-                    &nested_path,
-                    &callee_shape,
-                    &callee_nested_instances,
-                    &callee_ins_names,
-                    &callee_shape.field_array_slots,
-                    &callee_shape.in_array_slots,
-                    &callee_shape.nested_proc_array_slots,
-                    &proc_api,
-                    errors,
-                )
+            .filter_map(|(array_base, slots)| {
+                let first_slot = slots.first()?;
+                let instance = callee_nested_instances.get(first_slot)?;
+                let api = proc_api.get(&instance.proc_name)?;
+                if !api.has_block {
+                    return None;
+                }
+                let prefixed_base = nested_field_name(&nested_path, array_base);
+                let prefixed_slots = slots
+                    .iter()
+                    .map(|slot| nested_field_name(&nested_path, slot))
+                    .collect::<Vec<_>>();
+                Some((
+                    prefixed_base,
+                    ManagedDynamicProcArray {
+                        proc_name: instance.proc_name.clone(),
+                        raw_slots: slots.clone(),
+                        slots: prefixed_slots,
+                        active_field: nested_field_name(
+                            &nested_path,
+                            &runtime_proc_array_active_field_name(array_base),
+                        ),
+                    },
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<HashMap<_, _>>();
+        let mut used_nested_managed_dynamic_arrays = HashSet::<String>::new();
+        let mut nested_step_body = Vec::<Stmt>::new();
+        for stmt in &callee_proc.sample {
+            let Some(rewritten) = lower_callee_stmt_for_nested_wrapper(
+                stmt,
+                &proc.name,
+                &nested_path,
+                &callee_shape,
+                &callee_nested_instances,
+                &callee_ins_names,
+                &callee_shape.field_array_slots,
+                &callee_shape.in_array_slots,
+                &callee_shape.nested_proc_array_slots,
+                &proc_api,
+                errors,
+            ) else {
+                continue;
+            };
+            nested_step_body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
+                rewritten,
+                &nested_managed_dynamic_arrays,
+                &proc_api,
+                &mut used_nested_managed_dynamic_arrays,
+            ));
+        }
         let mut nested_step_params = Vec::<omni_frontend::FnParamDecl>::new();
         nested_step_params.push(omni_frontend::FnParamDecl {
             name: "self".to_owned(),
@@ -664,14 +1014,42 @@ fn generate_nested_wrapper_defs(
                     nested_block_pre_body.push(rewritten);
                 }
             }
-            let called_callee_nested = collect_called_proc_instances_in_stmts(
+            let mut called_callee_nested = collect_called_proc_instances_in_stmts(
                 &callee_proc.sample,
                 &callee_nested_instances,
                 &callee_shape.nested_proc_array_slots,
             );
+            for array_base in &used_nested_managed_dynamic_arrays {
+                if let Some(managed) = nested_managed_dynamic_arrays.get(array_base) {
+                    for slot in &managed.raw_slots {
+                        called_callee_nested.remove(slot);
+                    }
+                }
+            }
             let mut callee_nested_vars =
                 callee_nested_instances.keys().cloned().collect::<Vec<_>>();
             callee_nested_vars.sort();
+            for array_base in &used_nested_managed_dynamic_arrays {
+                let Some(managed) = nested_managed_dynamic_arrays.get(array_base) else {
+                    continue;
+                };
+                managed_active_fields
+                    .entry(managed.active_field.clone())
+                    .or_insert(managed.slots.len());
+                for slot_idx in 0..managed.slots.len() {
+                    nested_block_pre_body.push(Stmt::Assign {
+                        loc: None,
+                        target: AssignTarget::Index {
+                            base: format!("self.{}", managed.active_field),
+                            index: Expr::Int(slot_idx as i64),
+                        },
+                        decl_ty: None,
+                        generic_decl_ty: None,
+                        is_typed_decl: false,
+                        expr: Expr::Bool(false),
+                    });
+                }
+            }
             for nested_var in &callee_nested_vars {
                 if !called_callee_nested.contains(nested_var) {
                     continue;
@@ -759,6 +1137,52 @@ fn generate_nested_wrapper_defs(
                     errors,
                 ) {
                     nested_block_post_body.push(rewritten);
+                }
+            }
+            for array_base in &used_nested_managed_dynamic_arrays {
+                let Some(managed) = nested_managed_dynamic_arrays.get(array_base) else {
+                    continue;
+                };
+                for (slot_idx, slot_name) in managed.slots.iter().enumerate() {
+                    let raw_slot_name = managed.raw_slots.get(slot_idx);
+                    let Some(raw_slot_name) = raw_slot_name else {
+                        continue;
+                    };
+                    let Some(instance) = callee_nested_instances.get(raw_slot_name) else {
+                        continue;
+                    };
+                    let Some(api) = proc_api.get(&instance.proc_name) else {
+                        continue;
+                    };
+                    let mut call_args = vec![CallArg {
+                        name: None,
+                        expr: Expr::Index {
+                            base: array_base.clone(),
+                            index: Box::new(Expr::Int(slot_idx as i64)),
+                        },
+                    }];
+                    call_args.extend(expand_proc_buffer_call_args(
+                        instance,
+                        api,
+                        raw_slot_name,
+                        errors,
+                    ));
+                    nested_block_post_body.push(Stmt::If {
+                        loc: None,
+                        cond: Expr::Index {
+                            base: format!("self.{}", managed.active_field),
+                            index: Box::new(Expr::Int(slot_idx as i64)),
+                        },
+                        then_branch: vec![Stmt::Expr {
+                            loc: None,
+                            expr: Expr::UserCall {
+                                name: nested_block_post_fn_name(&proc.name, slot_name),
+                                type_args: Vec::new(),
+                                args: call_args,
+                            },
+                        }],
+                        else_branch: Vec::new(),
+                    });
                 }
             }
             nested_defs.push(Block::Def(FunctionDef {
@@ -865,6 +1289,7 @@ pub(super) fn generate_lowered_proc_blocks(
             );
         }
 
+        let struct_idx = generated_structs.len();
         generated_structs.push(Block::Struct(omni_frontend::StructDef {
             name: proc.name.clone(),
             type_params: Vec::new(),
@@ -1365,6 +1790,7 @@ pub(super) fn generate_lowered_proc_blocks(
             body: init_body,
         }));
 
+        let mut nested_managed_active_fields = HashMap::<String, usize>::new();
         generated_defs.extend(generate_nested_wrapper_defs(
             proc,
             &shape,
@@ -1374,6 +1800,7 @@ pub(super) fn generate_lowered_proc_blocks(
             proc_api,
             &nested_instances,
             &ins_names,
+            &mut nested_managed_active_fields,
             &mut def_sample_oversample_factors,
             &mut proc_step_oversample_meta,
             errors,
@@ -1443,6 +1870,56 @@ pub(super) fn generate_lowered_proc_blocks(
                 }));
             }
         }
+
+        let managed_dynamic_arrays = shape
+            .nested_proc_array_slots
+            .iter()
+            .filter_map(|(array_base, slots)| {
+                let first_slot = slots.first()?;
+                let instance = nested_instances.get(first_slot)?;
+                let api = proc_api.get(&instance.proc_name)?;
+                if !api.has_block {
+                    return None;
+                }
+                Some((
+                    array_base.clone(),
+                    ManagedDynamicProcArray {
+                        proc_name: instance.proc_name.clone(),
+                        raw_slots: slots.clone(),
+                        slots: slots.clone(),
+                        active_field: runtime_proc_array_active_field_name(array_base),
+                    },
+                ))
+            })
+            .collect::<HashMap<_, _>>();
+
+        let mut used_managed_dynamic_arrays = HashSet::<String>::new();
+        let mut step_body = Vec::<Stmt>::new();
+        for stmt in &proc.sample {
+            let Some(rewritten) = rewrite_owner_proc_stmt(
+                stmt.clone(),
+                &proc.name,
+                &shape.field_names,
+                &shape.array_field_names,
+                &ins_names,
+                &shape.field_array_slots,
+                &shape.in_array_slots,
+                &shape.nested_proc_array_slots,
+                &shape.nested_fields,
+                &nested_instances,
+                &proc_api,
+                errors,
+            ) else {
+                continue;
+            };
+            step_body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
+                rewritten,
+                &managed_dynamic_arrays,
+                &proc_api,
+                &mut used_managed_dynamic_arrays,
+            ));
+        }
+
         let proc_has_effective_block = proc_api
             .get(&proc.name)
             .map(|api| api.has_block)
@@ -1480,13 +1957,38 @@ pub(super) fn generate_lowered_proc_blocks(
                     block_pre_body.push(rewritten);
                 }
             }
-            let called_nested = collect_called_proc_instances_in_stmts(
+            let mut called_nested = collect_called_proc_instances_in_stmts(
                 &proc.sample,
                 &nested_instances,
                 &shape.nested_proc_array_slots,
             );
+            for array_base in &used_managed_dynamic_arrays {
+                if let Some(managed) = managed_dynamic_arrays.get(array_base) {
+                    for slot in &managed.raw_slots {
+                        called_nested.remove(slot);
+                    }
+                }
+            }
             let mut nested_vars = nested_instances.keys().cloned().collect::<Vec<_>>();
             nested_vars.sort();
+            for array_base in &used_managed_dynamic_arrays {
+                let Some(managed) = managed_dynamic_arrays.get(array_base) else {
+                    continue;
+                };
+                for slot_idx in 0..managed.slots.len() {
+                    block_pre_body.push(Stmt::Assign {
+                        loc: None,
+                        target: AssignTarget::Index {
+                            base: format!("self.{}", managed.active_field),
+                            index: Expr::Int(slot_idx as i64),
+                        },
+                        decl_ty: None,
+                        generic_decl_ty: None,
+                        is_typed_decl: false,
+                        expr: Expr::Bool(false),
+                    });
+                }
+            }
             for nested_var in &nested_vars {
                 if !called_nested.contains(nested_var) {
                     continue;
@@ -1571,6 +2073,48 @@ pub(super) fn generate_lowered_proc_blocks(
                     block_post_body.push(rewritten);
                 }
             }
+            for array_base in &used_managed_dynamic_arrays {
+                let Some(managed) = managed_dynamic_arrays.get(array_base) else {
+                    continue;
+                };
+                for (slot_idx, slot_name) in managed.slots.iter().enumerate() {
+                    let Some(instance) = nested_instances.get(slot_name) else {
+                        continue;
+                    };
+                    let Some(api) = proc_api.get(&instance.proc_name) else {
+                        continue;
+                    };
+                    let mut call_args = vec![CallArg {
+                        name: None,
+                        expr: Expr::Index {
+                            base: array_base.clone(),
+                            index: Box::new(Expr::Int(slot_idx as i64)),
+                        },
+                    }];
+                    call_args.extend(expand_proc_buffer_call_args(
+                        instance, api, slot_name, errors,
+                    ));
+                    block_post_body.push(Stmt::If {
+                        loc: None,
+                        cond: Expr::Index {
+                            base: format!("self.{}", managed.active_field),
+                            index: Box::new(Expr::Int(slot_idx as i64)),
+                        },
+                        then_branch: vec![Stmt::Expr {
+                            loc: None,
+                            expr: Expr::UserCall {
+                                name: format!(
+                                    "{}{}",
+                                    instance.proc_name, PROC_BLOCK_POST_FN_SUFFIX
+                                ),
+                                type_args: Vec::new(),
+                                args: call_args,
+                            },
+                        }],
+                        else_branch: Vec::new(),
+                    });
+                }
+            }
             generated_defs.push(Block::Def(FunctionDef {
                 type_params: Vec::new(),
                 name: format!("{}{}", proc.name, PROC_BLOCK_POST_FN_SUFFIX),
@@ -1578,27 +2122,6 @@ pub(super) fn generate_lowered_proc_blocks(
                 body: block_post_body,
             }));
         }
-
-        let step_body = proc
-            .sample
-            .iter()
-            .filter_map(|stmt| {
-                rewrite_owner_proc_stmt(
-                    stmt.clone(),
-                    &proc.name,
-                    &shape.field_names,
-                    &shape.array_field_names,
-                    &ins_names,
-                    &shape.field_array_slots,
-                    &shape.in_array_slots,
-                    &shape.nested_proc_array_slots,
-                    &shape.nested_fields,
-                    &nested_instances,
-                    &proc_api,
-                    errors,
-                )
-            })
-            .collect::<Vec<_>>();
         let mut step_params = Vec::<omni_frontend::FnParamDecl>::new();
         step_params.push(omni_frontend::FnParamDecl {
             name: "self".to_owned(),
@@ -1669,6 +2192,40 @@ pub(super) fn generate_lowered_proc_blocks(
             params: step_params.clone(),
             body: step_body,
         }));
+
+        if !used_managed_dynamic_arrays.is_empty() || !nested_managed_active_fields.is_empty() {
+            if let Some(Block::Struct(def)) = generated_structs.get_mut(struct_idx) {
+                for array_base in &used_managed_dynamic_arrays {
+                    let Some(managed) = managed_dynamic_arrays.get(array_base) else {
+                        continue;
+                    };
+                    if def.fields.iter().any(|f| f.name == managed.active_field) {
+                        continue;
+                    }
+                    def.fields.push(StructField {
+                        name: managed.active_field.clone(),
+                        ty: FieldType::Array(omni_frontend::ArrayTypeSpec {
+                            elem: ArrayElemType::Primitive(PrimitiveType::Bool),
+                            size: Box::new(Expr::Int(managed.slots.len() as i64)),
+                        }),
+                        default: None,
+                    });
+                }
+                for (field_name, len) in &nested_managed_active_fields {
+                    if def.fields.iter().any(|f| f.name == *field_name) {
+                        continue;
+                    }
+                    def.fields.push(StructField {
+                        name: field_name.clone(),
+                        ty: FieldType::Array(omni_frontend::ArrayTypeSpec {
+                            elem: ArrayElemType::Primitive(PrimitiveType::Bool),
+                            size: Box::new(Expr::Int(*len as i64)),
+                        }),
+                        default: None,
+                    });
+                }
+            }
+        }
 
         for (idx, out_name) in shape.outs.iter().enumerate() {
             let mut call_args = vec![CallArg {

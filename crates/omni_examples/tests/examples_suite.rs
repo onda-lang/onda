@@ -2404,6 +2404,180 @@ sample {
 }
 "#;
 
+const PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1, pre, post }
+  init {
+    pre_count = 0.0
+    post_count = 0.0
+  }
+  block {
+    pre_count = pre_count + 1.0
+    sample {
+      out1 = 0.0
+      pre = pre_count
+      post = post_count
+    }
+    post_count = post_count + 1.0
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 0
+}
+sample {
+  voices[idx]()
+  v0 = voices[0]
+  v1 = voices[1]
+  out1 = v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post
+  idx = 1 - idx
+}
+"#;
+
+const PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_ASSIGN_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1, pre, post }
+  init {
+    pre_count = 0.0
+    post_count = 0.0
+  }
+  block {
+    pre_count = pre_count + 1.0
+    sample {
+      out1 = 0.0
+      pre = pre_count
+      post = post_count
+    }
+    post_count = post_count + 1.0
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 0
+}
+sample {
+  x = voices[idx]().out1 + 0.0
+  v0 = voices[0]
+  v1 = voices[1]
+  out1 = x * 0.0 + v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post
+  idx = 1 - idx
+}
+"#;
+
+const PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_CLAMPED_INDEX_CONSISTENCY_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1, pre, post }
+  init {
+    pre_count = 0.0
+    post_count = 0.0
+  }
+  block {
+    pre_count = pre_count + 1.0
+    sample {
+      out1 = 0.0
+      pre = pre_count
+      post = post_count
+    }
+    post_count = post_count + 1.0
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 99
+}
+sample {
+  voices[idx]()
+  v0 = voices[0]
+  v1 = voices[1]
+  out1 = v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post
+}
+"#;
+
+const PROC_ARRAY_DYNAMIC_INDEX_MULTI_CALL_EXPR_EVAL_ORDER_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1 }
+  init {
+    sample_count = 0.0
+  }
+  sample {
+    sample_count = sample_count + 1.0
+    out1 = sample_count
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 0
+}
+sample {
+  out1 = voices[idx]().out1 * 10.0 + voices[idx]().out1
+}
+"#;
+
+const PROC_ARRAY_DYNAMIC_INDEX_FIVE_CALL_EXPR_EVAL_ORDER_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1 }
+  init {
+    sample_count = 0.0
+  }
+  sample {
+    sample_count = sample_count + 1.0
+    out1 = sample_count
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[5] = [Voice(), Voice(), Voice(), Voice(), Voice()]
+  idx: i32 = 3
+}
+sample {
+  out1 = voices[idx]().out1 * 10000.0 + voices[idx]().out1 * 1000.0 + voices[idx]().out1 * 100.0 + voices[idx]().out1 * 10.0 + voices[idx]().out1
+}
+"#;
+
+const NESTED_PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_ASSIGN_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1, pre, post }
+  init {
+    pre_count = 0.0
+    post_count = 0.0
+  }
+  block {
+    pre_count = pre_count + 1.0
+    sample {
+      out1 = 0.0
+      pre = pre_count
+      post = post_count
+    }
+    post_count = post_count + 1.0
+  }
+}
+proc Bank {
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(), Voice()]
+    idx: i32 = 0
+  }
+  sample {
+    x = voices[idx]().out1 + 0.0
+    v0 = voices[0]
+    v1 = voices[1]
+    out1 = x * 0.0 + v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post
+    idx = 1 - idx
+  }
+}
+outs { out1 }
+init {
+  b = Bank()
+}
+sample {
+  out1 = b()
+}
+"#;
+
 const PROC_BUFFER_MONO_EXAMPLE: &str = r#"
 buffers { buf1: buffer[f32] }
 proc ReadBufProc {
@@ -2822,6 +2996,76 @@ init {
 }
 sample {
   out1 = voices[idx]()
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_INDEXED_ALIAS_CALL_DYNAMIC_INDEX_EXAMPLE: &str = r#"
+proc Voice {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = in1 * gain
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(gain = 2.0), Voice(gain = 3.0)]
+  idx: i32 = 1
+}
+sample {
+  a = voices[idx]
+  out1 = a(0.5)
+}
+"#;
+
+const PROC_INSTANCE_ARRAY_INDEXED_ALIAS_OUT_READ_EXAMPLE: &str = r#"
+proc Voice {
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = gain
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(gain = 2.0), Voice(gain = 3.0)]
+  idx: i32 = 1
+}
+sample {
+  a = voices[idx]
+  a()
+  out1 = a.out1
+}
+"#;
+
+const NESTED_PROC_INSTANCE_ARRAY_INDEXED_ALIAS_CALL_EXAMPLE: &str = r#"
+proc Voice {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample {
+    out1 = in1 * gain
+  }
+}
+proc Bank {
+  ins { in1 }
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(gain = 2.0), Voice(gain = 4.0)]
+    idx: i32 = 1
+  }
+  sample {
+    a = voices[idx]
+    out1 = a(in1)
+  }
+}
+outs { out1 }
+init {
+  b = Bank()
+}
+sample {
+  out1 = b(0.25)
 }
 "#;
 
@@ -7856,6 +8100,121 @@ fn proc_outer_without_user_block_gets_effective_block_entrypoints_when_needed() 
 }
 
 #[test]
+fn proc_array_dynamic_index_runs_block_hooks_only_for_active_slot_per_block() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 1110.0, 1e-6);
+}
+
+#[test]
+fn proc_array_dynamic_index_assignment_call_runs_block_hooks_only_for_active_slot_per_block() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_ASSIGN_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 1110.0, 1e-6);
+}
+
+#[test]
+fn nested_proc_array_dynamic_index_assignment_call_runs_block_hooks_only_for_active_slot_per_block()
+{
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        NESTED_PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_ASSIGN_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 1110.0, 1e-6);
+}
+
+#[test]
+fn proc_array_dynamic_index_block_hooks_use_same_clamped_slot_for_guard_and_call() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_CLAMPED_INDEX_CONSISTENCY_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 100.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 201.0, 1e-6);
+}
+
+#[test]
+fn proc_array_dynamic_multi_call_expression_preserves_left_to_right_call_eval_order() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_INDEX_MULTI_CALL_EXPR_EVAL_ORDER_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 12.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 34.0, 1e-6);
+}
+
+#[test]
+fn proc_array_dynamic_five_call_expression_preserves_left_to_right_eval_order() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_INDEX_FIVE_CALL_EXPR_EVAL_ORDER_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 12345.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 67900.0, 1e-6);
+}
+
+#[test]
 fn proc_can_bind_and_read_top_level_buffer() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -8447,6 +8806,55 @@ fn proc_instance_array_indexed_call_dynamic_index_selects_slot_buffer_binding() 
     let out = decode_planar_f32(&out_bytes);
     for sample in out {
         assert_near(sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+fn proc_instance_array_indexed_alias_call_dynamic_index_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_ALIAS_CALL_DYNAMIC_INDEX_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+fn proc_instance_array_indexed_alias_out_read_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_INDEXED_ALIAS_OUT_READ_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn nested_proc_instance_array_indexed_alias_call_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        NESTED_PROC_INSTANCE_ARRAY_INDEXED_ALIAS_CALL_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
     }
 }
 

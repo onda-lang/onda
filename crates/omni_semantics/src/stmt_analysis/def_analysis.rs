@@ -6,6 +6,7 @@ pub(crate) fn analyze_def_stmt(
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
     locals: &HashSet<String>,
     param_structs: &HashMap<String, String>,
     state_scalars: &HashMap<String, PrimitiveType>,
@@ -36,6 +37,9 @@ pub(crate) fn analyze_def_stmt(
                 ..
             } => match target {
                 AssignTarget::Var(name) => {
+                    if !matches!(expr, Expr::Index { .. }) {
+                        local_proc_aliases.remove(name);
+                    }
                     let declared_ty = *decl_ty;
                     if let Expr::ArrayCtor { spec, init } = expr {
                         if *is_typed_decl {
@@ -358,11 +362,13 @@ pub(crate) fn analyze_def_stmt(
                             ));
                             return;
                         };
+                        let expr_for_validation =
+                            rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                         match field_decl.ty {
                             TypedFieldType::Scalar(prim) => {
                                 let expr_error_count_before = errors.len();
                                 validate_expr(
-                                    expr,
+                                    &expr_for_validation,
                                     ExprEnv {
                                         known_scalars,
                                         locals,
@@ -378,7 +384,7 @@ pub(crate) fn analyze_def_stmt(
                                     errors,
                                 );
                                 let expr_ty = infer_expr_type_for_semantics_with_local_data(
-                                    expr,
+                                    &expr_for_validation,
                                     state_scalars,
                                     None,
                                     local_array_aliases,
@@ -440,6 +446,7 @@ pub(crate) fn analyze_def_stmt(
                         if let Expr::Index { base, index } = expr {
                             let mut is_scalar_data_base = false;
                             let mut array_struct_elem_struct: Option<String> = None;
+                            let mut is_proc_array_base = false;
 
                             if let Some(alias) = local_array_aliases.get(base) {
                                 if let Some(elem_struct) = &alias.elem_struct {
@@ -461,19 +468,66 @@ pub(crate) fn analyze_def_stmt(
                                                     if let Some(elem_struct) =
                                                         &field_decl.array_elem_struct
                                                     {
-                                                        array_struct_elem_struct =
-                                                            Some(elem_struct.clone());
+                                                        if struct_defs.contains_key(elem_struct) {
+                                                            array_struct_elem_struct =
+                                                                Some(elem_struct.clone());
+                                                        } else {
+                                                            is_proc_array_base = true;
+                                                        }
                                                     } else {
                                                         is_scalar_data_base = true;
                                                     }
                                                 }
+                                            } else if fields.iter().any(|f| {
+                                                let prefix = format!("{field}[");
+                                                f.name.starts_with(&prefix)
+                                            }) {
+                                                is_proc_array_base = true;
                                             }
                                         }
                                     }
                                 }
                             }
 
-                            if is_scalar_data_base || array_struct_elem_struct.is_some() {
+                            if !is_scalar_data_base && array_struct_elem_struct.is_none() {
+                                if split_field_path(base, errors).is_none() {
+                                    if let Some(self_struct) = param_structs.get("self") {
+                                        if !struct_defs.contains_key(self_struct) {
+                                            is_proc_array_base = true;
+                                        } else if let Some(fields) = struct_defs.get(self_struct) {
+                                            if let Some(field_decl) =
+                                                fields.iter().find(|f| f.name == *base)
+                                            {
+                                                if matches!(field_decl.ty, TypedFieldType::Array(_))
+                                                {
+                                                    if let Some(elem_struct) =
+                                                        &field_decl.array_elem_struct
+                                                    {
+                                                        if struct_defs.contains_key(elem_struct) {
+                                                            array_struct_elem_struct =
+                                                                Some(elem_struct.clone());
+                                                        } else {
+                                                            is_proc_array_base = true;
+                                                        }
+                                                    } else {
+                                                        is_scalar_data_base = true;
+                                                    }
+                                                }
+                                            } else if fields.iter().any(|f| {
+                                                let prefix = format!("{base}[");
+                                                f.name.starts_with(&prefix)
+                                            }) {
+                                                is_proc_array_base = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if is_scalar_data_base
+                                || array_struct_elem_struct.is_some()
+                                || is_proc_array_base
+                            {
                                 validate_expr(
                                     index,
                                     ExprEnv {
@@ -504,7 +558,15 @@ pub(crate) fn analyze_def_stmt(
                                     errors,
                                 );
                                 require_numeric_type(idx_ty, "array index expression", errors);
-                                if is_scalar_data_base {
+                                if is_proc_array_base {
+                                    local_proc_aliases.insert(
+                                        name.clone(),
+                                        ProcArrayAliasInfo {
+                                            array_base: base.clone(),
+                                            index_expr: index.as_ref().clone(),
+                                        },
+                                    );
+                                } else if is_scalar_data_base {
                                     errors.push(Diagnostic::semantic(
                                         format!(
                                             "local alias binding '{name} = {base}[...]' is not supported for primitive arrays; use direct indexed access"
@@ -575,8 +637,10 @@ pub(crate) fn analyze_def_stmt(
                         ));
                     }
                     let expr_error_count_before = errors.len();
+                    let expr_for_validation =
+                        rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                     validate_expr(
-                        expr,
+                        &expr_for_validation,
                         ExprEnv {
                             known_scalars,
                             locals,
@@ -593,7 +657,7 @@ pub(crate) fn analyze_def_stmt(
                     );
                     let had_expr_validation_error = errors.len() > expr_error_count_before;
                     let expr_ty = infer_expr_type_for_semantics_with_local_data(
-                        expr,
+                        &expr_for_validation,
                         state_scalars,
                         None,
                         local_array_aliases,
@@ -927,8 +991,9 @@ pub(crate) fn analyze_def_stmt(
                 }
             },
             Stmt::Expr { expr, .. } => {
+                let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                 validate_expr(
-                    expr,
+                    &expr,
                     ExprEnv {
                         known_scalars,
                         locals,
@@ -944,7 +1009,7 @@ pub(crate) fn analyze_def_stmt(
                     errors,
                 );
                 let _ = infer_expr_type_for_semantics_with_local_data(
-                    expr,
+                    &expr,
                     state_scalars,
                     None,
                     local_array_aliases,
@@ -958,8 +1023,9 @@ pub(crate) fn analyze_def_stmt(
                 );
             }
             Stmt::Return { expr, .. } => {
+                let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                 validate_expr(
-                    expr,
+                    &expr,
                     ExprEnv {
                         known_scalars,
                         locals,
@@ -975,7 +1041,7 @@ pub(crate) fn analyze_def_stmt(
                     errors,
                 );
                 let _ = infer_expr_type_for_semantics_with_local_data(
-                    expr,
+                    &expr,
                     state_scalars,
                     None,
                     local_array_aliases,
@@ -1027,12 +1093,14 @@ pub(crate) fn analyze_def_stmt(
                 let mut then_known = known_scalars.clone();
                 let mut then_aliases = local_aliases.clone();
                 let mut then_data_aliases = local_array_aliases.clone();
+                let mut then_proc_aliases = local_proc_aliases.clone();
                 for nested in then_branch {
                     analyze_def_stmt(
                         nested,
                         &mut then_known,
                         &mut then_aliases,
                         &mut then_data_aliases,
+                        &mut then_proc_aliases,
                         locals,
                         param_structs,
                         state_scalars,
@@ -1049,12 +1117,14 @@ pub(crate) fn analyze_def_stmt(
                 let mut else_known = known_scalars.clone();
                 let mut else_aliases = local_aliases.clone();
                 let mut else_data_aliases = local_array_aliases.clone();
+                let mut else_proc_aliases = local_proc_aliases.clone();
                 for nested in else_branch {
                     analyze_def_stmt(
                         nested,
                         &mut else_known,
                         &mut else_aliases,
                         &mut else_data_aliases,
+                        &mut else_proc_aliases,
                         locals,
                         param_structs,
                         state_scalars,
@@ -1081,6 +1151,10 @@ pub(crate) fn analyze_def_stmt(
                 *local_array_aliases = then_data_aliases;
                 for (k, v) in else_data_aliases {
                     local_array_aliases.entry(k).or_insert(v);
+                }
+                *local_proc_aliases = then_proc_aliases;
+                for (k, v) in else_proc_aliases {
+                    local_proc_aliases.entry(k).or_insert(v);
                 }
             }
             Stmt::For {
@@ -1195,12 +1269,14 @@ pub(crate) fn analyze_def_stmt(
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
                 let mut loop_data_aliases = local_array_aliases.clone();
+                let mut loop_proc_aliases = local_proc_aliases.clone();
                 for nested in body {
                     analyze_def_stmt(
                         nested,
                         &mut loop_known,
                         &mut loop_aliases,
                         &mut loop_data_aliases,
+                        &mut loop_proc_aliases,
                         &loop_locals,
                         param_structs,
                         state_scalars,
@@ -1217,6 +1293,7 @@ pub(crate) fn analyze_def_stmt(
                 loop_aliases.retain(|name, _| known_scalars.contains(name));
                 *local_aliases = loop_aliases;
                 *local_array_aliases = loop_data_aliases;
+                *local_proc_aliases = loop_proc_aliases;
             }
             Stmt::While { cond, body, .. } => {
                 validate_expr(
@@ -1253,12 +1330,14 @@ pub(crate) fn analyze_def_stmt(
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
                 let mut loop_data_aliases = local_array_aliases.clone();
+                let mut loop_proc_aliases = local_proc_aliases.clone();
                 for nested in body {
                     analyze_def_stmt(
                         nested,
                         &mut loop_known,
                         &mut loop_aliases,
                         &mut loop_data_aliases,
+                        &mut loop_proc_aliases,
                         locals,
                         param_structs,
                         state_scalars,
@@ -1275,6 +1354,7 @@ pub(crate) fn analyze_def_stmt(
                 loop_aliases.retain(|name, _| known_scalars.contains(name));
                 *local_aliases = loop_aliases;
                 *local_array_aliases = loop_data_aliases;
+                *local_proc_aliases = loop_proc_aliases;
             }
             Stmt::Break { .. } => {
                 if loop_depth == 0 {
