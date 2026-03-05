@@ -18,6 +18,7 @@ pub enum Block {
     Params(Vec<ParamDecl>),
     Events(Vec<EventDef>),
     Buffers(Vec<BufferDecl>),
+    Assert(AssertDecl),
     Proc(ProcessorDef),
     Struct(StructDef),
     Def(FunctionDef),
@@ -34,6 +35,7 @@ impl Block {
             Self::Params(_) => BlockKind::Params,
             Self::Events(_) => BlockKind::Events,
             Self::Buffers(_) => BlockKind::Buffers,
+            Self::Assert(_) => BlockKind::Assert,
             Self::Proc(_) => BlockKind::Proc,
             Self::Struct(_) => BlockKind::Struct,
             Self::Def(_) => BlockKind::Def,
@@ -51,6 +53,7 @@ pub enum BlockKind {
     Params,
     Events,
     Buffers,
+    Assert,
     Proc,
     Struct,
     Def,
@@ -159,6 +162,11 @@ pub struct DeclRange {
 pub struct BufferDecl {
     pub name: String,
     pub ty: Option<BufferType>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssertDecl {
+    pub expr: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq)]

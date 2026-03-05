@@ -1467,6 +1467,32 @@ sample {
 }
 "#;
 
+const ASSERT_PASSES_EXAMPLE: &str = r#"
+namespace Config {
+  assert(BLOCK_SIZE > 0)
+}
+outs { out1 }
+sample {
+  out1 = 1.0
+}
+"#;
+
+const ASSERT_NAMESPACE_POWER_OF_TWO_ERROR_EXAMPLE: &str = r#"
+namespace FFT[N = 4] {
+  assert((N & (N - 1)) == 0)
+  struct Tag {
+    value
+  }
+}
+outs { out1 }
+init {
+  tag: FFT[6]::Tag
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
 const BLOCK_SIZE_CONST_EXAMPLE: &str = r#"
 outs { out1 }
 init {
@@ -10134,6 +10160,31 @@ fn bitwise_ops_reject_float_operands() {
     assert!(
         result.is_err(),
         "semantic analysis should reject float operands for bitwise ops"
+    );
+}
+
+#[test]
+fn assert_compile_time_check_passes() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(ASSERT_PASSES_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn assert_rejects_false_namespace_compile_time_condition() {
+    let parsed =
+        parse_program(ASSERT_NAMESPACE_POWER_OF_TWO_ERROR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject false compile-time assert conditions"
     );
 }
 

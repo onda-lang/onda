@@ -264,6 +264,49 @@ sample {
 }
 
 #[test]
+fn rejects_top_level_assert_block() {
+    let src = r#"
+assert(1 < 2)
+outs {
+  out1
+}
+sample {
+  out1 = 0.0
+}
+"#;
+    assert!(parse_program(src).is_err(), "top-level assert should be rejected");
+}
+
+#[test]
+fn parses_namespaced_assert_after_template_instantiation() {
+    let src = r#"
+namespace FFT[N = 4] {
+  assert((N & (N - 1)) == 0)
+  struct Tag {
+    value
+  }
+}
+outs { out1 }
+init {
+  tag: FFT[8]::Tag
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
+    let program = parse_program(src).expect("program should parse");
+    assert!(program.blocks.iter().any(|b| matches!(b, Block::Assert(_))));
+    assert!(
+        program
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Struct(s) if s.name.contains("FFT") && s.name.ends_with("::Tag"))),
+        "expected instantiated namespaced struct"
+    );
+}
+
+#[test]
 fn parses_sin_call_expression() {
     let src = r#"
 outs {

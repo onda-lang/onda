@@ -2173,6 +2173,23 @@ pub fn analyze_with_options(
     inject_auto_std_math(&mut program)?;
 
     let mut errors = Vec::new();
+    for block in &program.blocks {
+        let Block::Assert(assert_decl) = block else {
+            continue;
+        };
+        let context = "assert condition";
+        if let Some(passed) = eval_const_bool_expr(&assert_decl.expr, options, context, &mut errors)
+        {
+            if !passed {
+                errors.push(Diagnostic::semantic("assert failed", 0, 0));
+            }
+        }
+    }
+    program.blocks.retain(|b| !matches!(b, Block::Assert(_)));
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
     let ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,

@@ -10,11 +10,11 @@ use pest::Parser;
 use pest_derive::Parser;
 
 use crate::ast::{
-    ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec, BufferChannels,
-    BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp, DeclRange,
-    DeclType, EventDef, EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl, FnParamType,
-    FunctionDef, InitBlock, LogicalOp, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program,
-    SampleBlock, SourceLoc, Stmt, StructDef, StructField,
+    ArrayElemType, ArrayTypeSpec, AssertDecl, AssignTarget, BinaryOp, Block, BlockExec,
+    BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg,
+    CmpOp, DeclRange, DeclType, EventDef, EventParamDecl, EventParamType, Expr, FieldType,
+    FnParamDecl, FnParamType, FunctionDef, InitBlock, LogicalOp, ParamDecl, PortDecl,
+    PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Stmt, StructDef, StructField,
 };
 use crate::diagnostics::Diagnostic;
 

@@ -417,6 +417,28 @@ pub(crate) fn eval_const_expr_f64(
     }
 }
 
+pub(crate) fn eval_const_bool_expr(
+    expr: &Expr,
+    options: AnalysisOptions,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<bool> {
+    let ty = infer_const_expr_type(expr, options, context, errors)?;
+    if ty != PrimitiveType::Bool {
+        errors.push(Diagnostic::semantic(
+            format!(
+                "{context} must evaluate to a compile-time bool, got {:?}",
+                ty
+            ),
+            0,
+            0,
+        ));
+        return None;
+    }
+    let value = eval_const_expr_f64(expr, options, context, errors)?;
+    Some(value != 0.0)
+}
+
 pub(crate) fn eval_data_size_expr(
     expr: &Expr,
     options: AnalysisOptions,

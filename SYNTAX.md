@@ -187,6 +187,19 @@ Constants:
   - `SAMPLE_RATE`: `f32`
   - `BLOCK_SIZE`: `i32`
 
+Compile-time assertions:
+
+```omni
+namespace Config:
+  assert(BLOCK_SIZE > 0)
+```
+
+Rules:
+- `assert(expr)` is supported inside namespaces only.
+- `expr` must be a compile-time constant expression.
+- `expr` must evaluate to `bool`.
+- If the condition is `false`, compilation fails.
+
 ## 5 Control flow
 
 Supported:
@@ -548,6 +561,13 @@ Templated namespaces with compile-time int params are supported:
 namespace Data[S = SR, C = 1]:
   struct Data[T]:
     storage: T[S * C]
+```
+
+Namespace-local compile-time assertions are supported:
+
+```omni
+namespace FFT[N = 256]:
+  assert((N & (N - 1)) == 0)
 ```
 
 Use sites support inline instantiation and aliases:

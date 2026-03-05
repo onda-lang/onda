@@ -53,6 +53,7 @@ struct NamespaceTemplateParam {
 
 #[derive(Debug, Clone)]
 enum NamespaceDeclItem {
+    Assert(AssertDecl),
     Struct(StructDef),
     Def(FunctionDef),
     Proc(ProcessorDef),
@@ -121,6 +122,27 @@ fn block_decl_name(block: &Block) -> Option<&str> {
         Block::Proc(p) => Some(p.name.as_str()),
         _ => None,
     }
+}
+
+fn parse_assert_decl(pair: Pair<'_, Rule>) -> Result<AssertDecl, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::assert_block {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected assert block",
+            0,
+            0,
+        )]);
+    }
+    let mut inner = pair.into_inner();
+    let Some(expr_pair) = inner.next() else {
+        return Err(vec![Diagnostic::syntax(
+            "missing assert expression",
+            0,
+            0,
+        )]);
+    };
+    Ok(AssertDecl {
+        expr: parse_expr(expr_pair)?,
+    })
 }
 
 fn merge_blocks_preferring_existing(existing: &mut Vec<Block>, incoming: Vec<Block>) {
@@ -382,6 +404,7 @@ fn parse_program_preprocessed(
                 Rule::params_block => blocks.push(Block::Params(parse_params_block(pair)?)),
                 Rule::events_block => blocks.push(Block::Events(parse_events_block(pair)?)),
                 Rule::buffers_block => blocks.push(Block::Buffers(parse_buffers_block(pair)?)),
+                Rule::assert_block => blocks.push(Block::Assert(parse_assert_decl(pair)?)),
                 Rule::proc_block => blocks.push(Block::Proc(parse_proc_block(pair)?)),
                 Rule::struct_block => blocks.push(Block::Struct(parse_struct_block(pair)?)),
                 Rule::def_block => blocks.push(Block::Def(parse_def_block(pair)?)),
@@ -1043,6 +1066,7 @@ fn parse_namespace_decl(
     let mut items = Vec::<NamespaceDeclItem>::new();
     for item in inner {
         match item.as_rule() {
+            Rule::assert_block => items.push(NamespaceDeclItem::Assert(parse_assert_decl(item)?)),
             Rule::struct_block => items.push(NamespaceDeclItem::Struct(parse_struct_block(item)?)),
             Rule::def_block => items.push(NamespaceDeclItem::Def(parse_def_block(item)?)),
             Rule::proc_block => items.push(NamespaceDeclItem::Proc(parse_proc_block(item)?)),
@@ -1273,6 +1297,19 @@ fn emit_namespace_items(
 ) -> Result<(), Vec<Diagnostic>> {
     for item in items {
         match item {
+            NamespaceDeclItem::Assert(assert_decl) => {
+                let mut block = Block::Assert(assert_decl.clone());
+                let mut generated = Vec::<Block>::new();
+                rewrite_block_namespace_refs(
+                    &mut block,
+                    ns,
+                    &HashMap::new(),
+                    state,
+                    &mut generated,
+                )?;
+                out.push(block);
+                out.extend(generated);
+            }
             NamespaceDeclItem::Struct(s) => {
                 let mut s = s.clone();
                 s.name = namespace_join(ns, &s.name);
@@ -1782,6 +1819,11 @@ fn emit_instantiated_namespace_items(
 ) -> Result<(), Vec<Diagnostic>> {
     for item in items {
         match item {
+            NamespaceDeclItem::Assert(assert_decl) => {
+                let mut block = Block::Assert(assert_decl.clone());
+                rewrite_block_namespace_refs(&mut block, namespace, const_env, state, generated)?;
+                generated.push(block);
+            }
             NamespaceDeclItem::Struct(s) => {
                 let mut s = s.clone();
                 s.name = namespace_join(namespace, &s.name);
@@ -1993,6 +2035,9 @@ fn rewrite_block_namespace_refs(
                     rewrite_buffer_type(ty, current_ns, const_env, state, generated)?;
                 }
             }
+        }
+        Block::Assert(assert_decl) => {
+            rewrite_expr(&mut assert_decl.expr, current_ns, const_env, state, generated)?;
         }
         Block::Events(events) => {
             for event in events {

@@ -56,6 +56,10 @@
   - Built-in std modules via `import std/...` are supported from both file and in-memory source compilation paths.
 - Namespaces with `::` are supported.
 - Namespace templates are supported (`namespace Name[S = ...]: ...`) with compile-time int args, inline instantiation (`Name[... ]::...`), and namespace aliases (`namespace Alias = Name[...]`).
+- Compile-time assertions are supported via `assert(expr)` inside namespaces.
+  - `expr` must be compile-time evaluable.
+  - `expr` must evaluate to `bool`.
+  - a `false` condition is a compile-time error.
 
 ### Declaration shorthand
 - Count shorthand is supported for all IO/param/buffer sections:
