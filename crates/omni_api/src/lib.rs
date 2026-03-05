@@ -10,7 +10,7 @@ use omni_runtime::{
     reset_instance_state, set_param_by_index, trigger_event_by_index, validate_bindings,
     validate_buffers, validate_inputs, validate_outputs, Instance, InstanceConfig,
 };
-use omni_semantics::analyze;
+use omni_semantics::{analyze_with_options, AnalysisOptions};
 
 #[repr(C)]
 pub struct omni_diag_t {
@@ -25,6 +25,7 @@ pub struct omni_diag_t {
 #[repr(C)]
 pub struct omni_compile_options_t {
     pub fast_math: i32,
+    pub sample_rate: f32,
     pub block_size: i32,
 }
 
@@ -156,6 +157,22 @@ unsafe fn omni_compile_impl(
     }
 
     let options = &*options;
+    if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
+        write_diag(
+            out_diag,
+            omni_diag_t {
+                code: DiagCode::Runtime as i32,
+                line: 0,
+                column: 0,
+                message: b"compile options require finite sample_rate > 0\0"
+                    .as_ptr()
+                    .cast::<c_char>(),
+                file: ptr::null(),
+                trace: ptr::null(),
+            },
+        );
+        return ptr::null_mut();
+    }
     if options.block_size <= 0 {
         write_diag(
             out_diag,
@@ -204,7 +221,13 @@ unsafe fn omni_compile_impl(
         }
     };
 
-    let typed = match analyze(parsed) {
+    let typed = match analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: options.sample_rate,
+            block_size: options.block_size as usize,
+        },
+    ) {
         Ok(t) => t,
         Err(errs) => {
             let diag = errs
@@ -218,6 +241,7 @@ unsafe fn omni_compile_impl(
 
     let mut jit_options = CompileOptions::default();
     jit_options.fast_math = options.fast_math != 0;
+    jit_options.sample_rate = options.sample_rate;
     jit_options.block_size = options.block_size as usize;
     let jit = match lower_and_jit_with_options(typed, jit_options) {
         Ok(j) => j,
@@ -365,8 +389,6 @@ pub unsafe extern "C" fn omni_program_destroy(program: *mut omni_program) {
 #[no_mangle]
 pub unsafe extern "C" fn omni_instance_create(
     program: *const omni_program,
-    sample_rate: f32,
-    frames_per_block: i32,
     in_channels: i32,
     out_channels: i32,
     out_diag: *mut omni_diag_t,
@@ -386,7 +408,7 @@ pub unsafe extern "C" fn omni_instance_create(
         return ptr::null_mut();
     }
 
-    if frames_per_block <= 0 || in_channels < 0 || out_channels <= 0 {
+    if in_channels < 0 || out_channels <= 0 {
         write_diag(
             out_diag,
             omni_diag_t {
@@ -403,14 +425,15 @@ pub unsafe extern "C" fn omni_instance_create(
         return ptr::null_mut();
     }
 
+    let compiled = &*program;
     let config = InstanceConfig {
-        sample_rate,
-        frames_per_block: frames_per_block as usize,
+        sample_rate: compiled.jit.sample_rate(),
+        frames_per_block: compiled.jit.block_size(),
         in_channels: in_channels as usize,
         out_channels: out_channels as usize,
     };
 
-    let jit = (*program).jit.clone();
+    let jit = compiled.jit.clone();
     let instance = match create_instance(jit, config) {
         Ok(i) => i,
         Err(e) => {

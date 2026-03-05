@@ -38,6 +38,7 @@ impl Default for CompileOptions {
 #[derive(Debug, Clone)]
 pub struct JitProgram {
     pub typed: Arc<TypedProgram>,
+    sample_rate: f32,
     block_size: usize,
     inputs: Arc<Vec<DeclaredIo>>,
     outputs: Arc<Vec<DeclaredIo>>,
@@ -1160,6 +1161,7 @@ fn build_orc_program(
         .map_err(|d| vec![d])?;
     Ok(JitProgram {
         typed: Arc::new(typed),
+        sample_rate,
         block_size,
         input_index: Arc::new(build_name_to_index(&inputs)),
         output_index: Arc::new(build_name_to_index(&outputs)),
@@ -1354,6 +1356,10 @@ impl JitProgram {
 
     pub fn block_size(&self) -> usize {
         self.block_size
+    }
+
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
     }
 
     pub fn event_descriptor(&self, index: usize) -> Option<&DeclaredEvent> {

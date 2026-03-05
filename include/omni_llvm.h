@@ -38,6 +38,8 @@ typedef struct {
 typedef struct {
   /* fast_math != 0 enables LLVM fast-math lowering. */
   int fast_math;
+  /* Compile-time sample rate constant. Must be finite and > 0. */
+  float sample_rate;
   /* Fixed compile-time block size. Must be > 0. */
   int block_size;
 } omni_compile_options_t;
@@ -51,11 +53,10 @@ omni_program_t* omni_compile(
 /* Destroys a program handle created by omni_compile. */
 void omni_program_destroy(omni_program_t* program);
 
-/* Creates a runtime instance for a compiled program, or NULL on failure. */
+/* Creates a runtime instance for a compiled program, or NULL on failure.
+   Uses compile-time sample_rate and block_size captured in the program handle. */
 omni_instance_t* omni_instance_create(
   const omni_program_t* program,
-  float sample_rate,
-  int frames_per_block,
   int in_channels,
   int out_channels,
   omni_diag_t* out_diag

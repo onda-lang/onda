@@ -51,7 +51,7 @@ Notes:
 ## C API quick start
 
 - Header: `include/omni_llvm.h`
-- Compile entrypoint: `omni_compile(src_utf8, options, out_diag)` where `options` is `omni_compile_options_t { fast_math, block_size }`
+- Compile entrypoint: `omni_compile(src_utf8, options, out_diag)` where `options` is `omni_compile_options_t { fast_math, sample_rate, block_size }`
 - Main runtime flow: compile -> create instance -> bind IO/params/buffers -> process -> destroy
 - Event flow (optional): query events (`omni_event_count` / `omni_event_name` / `omni_event_index` / `omni_event_payload_bytes`) then dispatch with `omni_trigger_event_by_index`
   - Unknown event index is ignored.

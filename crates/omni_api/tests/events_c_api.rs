@@ -33,6 +33,7 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
     let src_c = CString::new(src).expect("source contains no NUL bytes");
     let options = omni_compile_options_t {
         fast_math: 0,
+        sample_rate: 48_000.0,
         block_size: 512,
     };
     let mut diag = omni_diag_t {
@@ -115,7 +116,7 @@ sample { out1 = amp }
             file: std::ptr::null(),
             trace: std::ptr::null(),
         };
-        let instance = omni_instance_create(program.0, 48_000.0, frames, 0, 1, &mut diag);
+        let instance = omni_instance_create(program.0, 0, 1, &mut diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -190,7 +191,7 @@ sample { out1 = amp }
             file: std::ptr::null(),
             trace: std::ptr::null(),
         };
-        let instance = omni_instance_create(program.0, 48_000.0, frames, 0, 1, &mut diag);
+        let instance = omni_instance_create(program.0, 0, 1, &mut diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -245,6 +246,7 @@ sample { out1 = 0.25 }
 
         let options = omni_compile_options_t {
             fast_math: 0,
+            sample_rate: 48_000.0,
             block_size: 128,
         };
         let mut diag = omni_diag_t {
@@ -263,7 +265,7 @@ sample { out1 = 0.25 }
         );
         let program = ProgramHandle(program);
 
-        let instance = omni_instance_create(program.0, 48_000.0, 128, 0, 1, &mut diag);
+        let instance = omni_instance_create(program.0, 0, 1, &mut diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -284,6 +286,65 @@ sample { out1 = 0.25 }
         assert_eq!(omni_process_bound(instance.0, 128), 0);
         for sample in out {
             assert!((sample - 0.25).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn c_api_compile_options_sample_rate_controls_builtin_sample_rate() {
+    unsafe {
+        let src = CString::new(
+            r#"
+outs { out1 }
+sample { out1 = SAMPLE_RATE }
+"#,
+        )
+        .expect("source contains no NUL bytes");
+
+        let sample_rate = 12_345.0_f32;
+        let block_size = 64_i32;
+        let options = omni_compile_options_t {
+            fast_math: 0,
+            sample_rate,
+            block_size,
+        };
+        let mut diag = omni_diag_t {
+            code: 0,
+            line: 0,
+            column: 0,
+            message: std::ptr::null(),
+            file: std::ptr::null(),
+            trace: std::ptr::null(),
+        };
+        let program = omni_compile(src.as_ptr(), &options, &mut diag);
+        assert!(
+            !program.is_null(),
+            "compile failed: {}",
+            diag_message(&diag)
+        );
+        let program = ProgramHandle(program);
+
+        let instance = omni_instance_create(program.0, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out = vec![0.0_f32; block_size as usize];
+        assert_eq!(
+            omni_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(omni_process_bound(instance.0, block_size), 0);
+        for sample in out {
+            assert!((sample - sample_rate).abs() < 1e-3);
         }
     }
 }
@@ -501,7 +562,7 @@ sample {
             file: std::ptr::null(),
             trace: std::ptr::null(),
         };
-        let instance = omni_instance_create(program.0, 48_000.0, frames, 0, 2, &mut diag);
+        let instance = omni_instance_create(program.0, 0, 2, &mut diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
@@ -564,7 +625,7 @@ sample {
             file: std::ptr::null(),
             trace: std::ptr::null(),
         };
-        let instance = omni_instance_create(program.0, 48_000.0, frames, 0, 1, &mut diag);
+        let instance = omni_instance_create(program.0, 0, 1, &mut diag);
         assert!(
             !instance.is_null(),
             "instance create failed: {}",
