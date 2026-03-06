@@ -105,25 +105,6 @@ fn validated_sample_oversample_factor(
     }
 }
 
-fn is_runtime_state_symbol_name(name: &str) -> bool {
-    !name.starts_with(DECLARED_INPUT_TYPE_PREFIX)
-        && !name.starts_with(DECLARED_OUTPUT_TYPE_PREFIX)
-        && !name.starts_with(DECLARED_PARAM_TYPE_PREFIX)
-        && !name.starts_with(DECLARED_DATA_ELEM_TYPE_PREFIX)
-        && !name.starts_with(DECLARED_BUFFER_ELEM_TYPE_PREFIX)
-        && !name.starts_with(DECLARED_STRUCT_FIELD_TYPE_PREFIX)
-        && !name.starts_with(DECLARED_INVALID_PLACEHOLDER_PREFIX)
-        && !name.starts_with(DECLARED_BUFFER_MULTICHANNEL_PREFIX)
-        && !name.starts_with(DECLARED_BUFFER_DYNAMIC_CHANNELS_PREFIX)
-        && !name.starts_with(DECLARED_BUFFER_STATIC_CHANNELS_PREFIX)
-        && !name.starts_with(DECLARED_BUFFER_ELEM_F32_PREFIX)
-        && !name.starts_with(DECLARED_BUFFER_ELEM_F64_PREFIX)
-        && !name.starts_with(DECLARED_BUFFER_ELEM_I32_PREFIX)
-        && !name.starts_with(DECLARED_BUFFER_ELEM_I64_PREFIX)
-        && !name.starts_with(DECLARED_BUFFER_ELEM_BOOL_PREFIX)
-        && !name.starts_with(DECLARED_FUNCTION_RETURN_TYPE_PREFIX)
-}
-
 fn runtime_symbol_root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
 }
@@ -131,7 +112,6 @@ fn runtime_symbol_root(name: &str) -> &str {
 fn collect_runtime_state_roots(state_scalars: &HashMap<String, PrimitiveType>) -> HashSet<String> {
     state_scalars
         .keys()
-        .filter(|name| is_runtime_state_symbol_name(name))
         .map(|name| runtime_symbol_root(name).to_owned())
         .collect::<HashSet<_>>()
 }
@@ -514,6 +494,7 @@ pub(super) fn analyze_runtime_scope_stmts<'a>(
     local_aliases: LocalAliasTypes,
     local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
@@ -529,6 +510,7 @@ pub(super) fn analyze_runtime_scope_stmts<'a>(
 ) {
     let ctx = RuntimeStmtAnalysisCtx {
         state_scalars,
+        declared_symbols,
         state_arrays,
         state_array_struct_roots,
         proc_array_roots,
@@ -570,6 +552,7 @@ pub(super) fn extend_known_scalars<'a>(
 pub(super) fn register_and_analyze_runtime_scope<'a>(
     stmts: impl IntoIterator<Item = &'a Stmt>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
@@ -595,6 +578,7 @@ pub(super) fn register_and_analyze_runtime_scope<'a>(
     register_scope_state(
         stmts.iter().copied(),
         state_scalars,
+        declared_symbols,
         state_arrays,
         state_array_struct_roots,
         struct_instances,
@@ -612,6 +596,7 @@ pub(super) fn register_and_analyze_runtime_scope<'a>(
         runtime_local_aliases,
         runtime_local_array_aliases,
         state_scalars,
+        declared_symbols,
         state_arrays,
         state_array_struct_roots,
         proc_array_roots,
@@ -638,6 +623,7 @@ pub(super) fn analyze_runtime_events(
     validation_input_names: &HashSet<String>,
     validation_output_names: &HashSet<String>,
     state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
@@ -705,6 +691,7 @@ pub(super) fn analyze_runtime_events(
             event_local_aliases,
             event_local_data_aliases,
             state_scalars,
+            declared_symbols,
             state_arrays,
             state_array_struct_roots,
             if proc_array_roots.is_empty() {
@@ -3488,65 +3475,51 @@ pub fn analyze_with_options(
         .or_insert_with(|| internal_proc_index_call_signature(true));
 
     let mut state_scalars = HashMap::<String, PrimitiveType>::new();
+    let mut declared_symbols = DeclaredSymbolMap::new();
     set_declared_symbol_types(
         &mut state_scalars,
+        &mut declared_symbols,
         &input_names,
         &in_types,
-        DECLARED_INPUT_TYPE_PREFIX,
+        DeclaredScalarSymbolKind::Input,
     );
     set_declared_symbol_types(
         &mut state_scalars,
+        &mut declared_symbols,
         &output_names,
         &out_types,
-        DECLARED_OUTPUT_TYPE_PREFIX,
+        DeclaredScalarSymbolKind::Output,
     );
     set_declared_symbol_types(
         &mut state_scalars,
+        &mut declared_symbols,
         &param_names,
         &param_types,
-        DECLARED_PARAM_TYPE_PREFIX,
+        DeclaredScalarSymbolKind::Param,
     );
     for (fn_name, ret_ty) in &def_return_types {
-        state_scalars.insert(
-            declared_type_key(DECLARED_FUNCTION_RETURN_TYPE_PREFIX, fn_name),
-            *ret_ty,
+        insert_declared_symbol(
+            &mut state_scalars,
+            &mut declared_symbols,
+            fn_name.clone(),
+            DeclaredSymbolInfo::FunctionReturn { ty: *ret_ty },
         );
     }
     for buffer in &typed_buffers {
-        state_scalars.insert(
-            declared_type_key(DECLARED_BUFFER_ELEM_TYPE_PREFIX, &buffer.name),
-            buffer.elem_ty,
-        );
-        state_scalars.insert(
-            declared_type_key(buffer_elem_decl_prefix(buffer.elem_ty), &buffer.name),
-            PrimitiveType::Bool,
-        );
-        let is_multi = match buffer.channels {
-            TypedBufferChannels::Mono => false,
-            TypedBufferChannels::Static(ch) => ch > 1,
-            TypedBufferChannels::Dynamic => true,
+        let channels = match buffer.channels {
+            TypedBufferChannels::Mono => BufferChannelInfo::Mono,
+            TypedBufferChannels::Static(ch) => BufferChannelInfo::Static(ch),
+            TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
         };
-        match buffer.channels {
-            TypedBufferChannels::Dynamic => {
-                state_scalars.insert(
-                    declared_type_key(DECLARED_BUFFER_DYNAMIC_CHANNELS_PREFIX, &buffer.name),
-                    PrimitiveType::Bool,
-                );
-            }
-            TypedBufferChannels::Static(ch) if ch > 1 => {
-                state_scalars.insert(
-                    declared_buffer_static_channels_key(&buffer.name, ch),
-                    PrimitiveType::Bool,
-                );
-            }
-            _ => {}
-        }
-        if is_multi {
-            state_scalars.insert(
-                declared_type_key(DECLARED_BUFFER_MULTICHANNEL_PREFIX, &buffer.name),
-                PrimitiveType::Bool,
-            );
-        }
+        insert_declared_symbol(
+            &mut state_scalars,
+            &mut declared_symbols,
+            buffer.name.clone(),
+            DeclaredSymbolInfo::Buffer {
+                elem_ty: buffer.elem_ty,
+                channels,
+            },
+        );
     }
     let state_arrays = HashMap::new();
     let state_array_struct_roots = HashMap::<String, ArrayStructRootInfo>::new();
@@ -3565,6 +3538,7 @@ pub fn analyze_with_options(
 
     let init_ctx = InitAnalysisCtx {
         context_label: "top-level",
+        scope: ScopeKind::Init,
         init_default_ty,
         input_names: &input_names,
         output_names: &output_names,
@@ -3578,6 +3552,7 @@ pub fn analyze_with_options(
         known_scalars: init_known_scalars,
         local_aliases: init_local_aliases,
         local_array_aliases: init_local_data_aliases,
+        declared_symbols,
         state_scalars,
         state_arrays,
         state_array_struct_roots,
@@ -3594,6 +3569,7 @@ pub fn analyze_with_options(
         known_scalars: _init_known_scalars,
         local_aliases: _init_local_aliases,
         local_array_aliases: _init_local_data_aliases,
+        declared_symbols,
         mut state_scalars,
         state_arrays,
         state_array_struct_roots,
@@ -3618,6 +3594,7 @@ pub fn analyze_with_options(
     register_and_analyze_runtime_scope(
         block_pre.iter().chain(block_post.iter()),
         &mut state_scalars,
+        &declared_symbols,
         &state_arrays,
         &state_array_struct_roots,
         &nested_proc_arrays,
@@ -3653,6 +3630,7 @@ pub fn analyze_with_options(
     register_and_analyze_runtime_scope(
         sample.iter(),
         &mut state_scalars,
+        &declared_symbols,
         &state_arrays,
         &state_array_struct_roots,
         &nested_proc_arrays,
@@ -3694,6 +3672,7 @@ pub fn analyze_with_options(
         &input_names,
         &output_names,
         &state_scalars,
+        &declared_symbols,
         &state_arrays,
         &state_array_struct_roots,
         &nested_proc_arrays,
@@ -3711,6 +3690,7 @@ pub fn analyze_with_options(
         sample_and_event_exec.extend(event.body.clone());
     }
 
+    let current_declared_symbols = &declared_symbols;
     let mut inferred_array_bindings = HashMap::<String, InferredArrayParam>::new();
     for (name, info) in &out_arrays {
         inferred_array_bindings.insert(
@@ -3731,9 +3711,8 @@ pub fn analyze_with_options(
         );
     }
     for (name, len) in &state_arrays {
-        let elem_ty =
-            get_declared_symbol_type(&state_scalars, name, DECLARED_DATA_ELEM_TYPE_PREFIX)
-                .unwrap_or(PrimitiveType::F32);
+        let elem_ty = declared_symbol_scalar_type(current_declared_symbols, name)
+            .unwrap_or(PrimitiveType::F32);
         inferred_array_bindings.insert(name.clone(), InferredArrayParam { elem_ty, len: *len });
     }
     let inferred_struct_array_roots = state_array_struct_roots
@@ -3782,11 +3761,14 @@ pub fn analyze_with_options(
             .iter()
             .map(|p| p.name.clone())
             .collect::<HashSet<_>>();
-        let mut def_state_scalars = state_scalars
+        let mut def_state_scalars = HashMap::<String, PrimitiveType>::new();
+        let mut def_declared_symbols = declared_symbols
             .iter()
-            .filter(|(name, _)| !is_runtime_state_symbol_name(name))
-            .map(|(name, ty)| (name.clone(), *ty))
-            .collect::<HashMap<_, _>>();
+            .filter_map(|(name, info)| match info {
+                DeclaredSymbolInfo::FunctionReturn { .. } => Some((name.clone(), info.clone())),
+                _ => None,
+            })
+            .collect::<DeclaredSymbolMap>();
         let fn_sig = fn_signatures.get(&def.name);
         // Def parameters are function-local and should be visible for local
         // type inference even though top-level runtime symbols are not.
@@ -3841,35 +3823,20 @@ pub fn analyze_with_options(
             );
         }
         for (param_name, (elem_ty, channels)) in &param_buffers {
-            let elem_key = declared_type_key(DECLARED_BUFFER_ELEM_TYPE_PREFIX, param_name);
-            let typed_key = declared_type_key(buffer_elem_decl_prefix(*elem_ty), param_name);
-            def_state_scalars.insert(elem_key.clone(), *elem_ty);
-            def_state_scalars.insert(typed_key.clone(), PrimitiveType::Bool);
-            fn_known.insert(elem_key);
-            fn_known.insert(typed_key);
-            match channels {
-                TypedBufferChannels::Mono => {}
-                TypedBufferChannels::Static(ch) => {
-                    if *ch > 1 {
-                        let key =
-                            declared_type_key(DECLARED_BUFFER_MULTICHANNEL_PREFIX, param_name);
-                        let st_key = declared_buffer_static_channels_key(param_name, *ch);
-                        def_state_scalars.insert(key.clone(), PrimitiveType::Bool);
-                        def_state_scalars.insert(st_key.clone(), PrimitiveType::Bool);
-                        fn_known.insert(key);
-                        fn_known.insert(st_key);
-                    }
-                }
-                TypedBufferChannels::Dynamic => {
-                    let key = declared_type_key(DECLARED_BUFFER_MULTICHANNEL_PREFIX, param_name);
-                    let dyn_key =
-                        declared_type_key(DECLARED_BUFFER_DYNAMIC_CHANNELS_PREFIX, param_name);
-                    def_state_scalars.insert(key.clone(), PrimitiveType::Bool);
-                    def_state_scalars.insert(dyn_key.clone(), PrimitiveType::Bool);
-                    fn_known.insert(key);
-                    fn_known.insert(dyn_key);
-                }
-            }
+            let channel_info = match channels {
+                TypedBufferChannels::Mono => BufferChannelInfo::Mono,
+                TypedBufferChannels::Static(ch) => BufferChannelInfo::Static(*ch),
+                TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
+            };
+            insert_declared_symbol(
+                &mut def_state_scalars,
+                &mut def_declared_symbols,
+                param_name.clone(),
+                DeclaredSymbolInfo::Buffer {
+                    elem_ty: *elem_ty,
+                    channels: channel_info,
+                },
+            );
         }
         for stmt in &def.body {
             analyze_def_stmt(
@@ -3879,6 +3846,7 @@ pub fn analyze_with_options(
                 &mut fn_local_data_aliases,
                 &mut fn_local_proc_aliases,
                 &fn_locals,
+                &def_declared_symbols,
                 &param_structs,
                 &def_state_scalars,
                 &def_global_inputs,
@@ -3894,28 +3862,7 @@ pub fn analyze_with_options(
     }
 
     if errors.is_empty() {
-        let mut sorted_state = state_scalars
-            .keys()
-            .filter(|name| {
-                !name.starts_with(DECLARED_INPUT_TYPE_PREFIX)
-                    && !name.starts_with(DECLARED_OUTPUT_TYPE_PREFIX)
-                    && !name.starts_with(DECLARED_PARAM_TYPE_PREFIX)
-                    && !name.starts_with(DECLARED_DATA_ELEM_TYPE_PREFIX)
-                    && !name.starts_with(DECLARED_BUFFER_ELEM_TYPE_PREFIX)
-                    && !name.starts_with(DECLARED_STRUCT_FIELD_TYPE_PREFIX)
-                    && !name.starts_with(DECLARED_INVALID_PLACEHOLDER_PREFIX)
-                    && !name.starts_with(DECLARED_BUFFER_MULTICHANNEL_PREFIX)
-                    && !name.starts_with(DECLARED_BUFFER_DYNAMIC_CHANNELS_PREFIX)
-                    && !name.starts_with(DECLARED_BUFFER_STATIC_CHANNELS_PREFIX)
-                    && !name.starts_with(DECLARED_BUFFER_ELEM_F32_PREFIX)
-                    && !name.starts_with(DECLARED_BUFFER_ELEM_F64_PREFIX)
-                    && !name.starts_with(DECLARED_BUFFER_ELEM_I32_PREFIX)
-                    && !name.starts_with(DECLARED_BUFFER_ELEM_I64_PREFIX)
-                    && !name.starts_with(DECLARED_BUFFER_ELEM_BOOL_PREFIX)
-                    && !name.starts_with(DECLARED_FUNCTION_RETURN_TYPE_PREFIX)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut sorted_state = state_scalars.keys().cloned().collect::<Vec<_>>();
         sorted_state.sort();
         let state_types = sorted_state
             .iter()
@@ -3930,9 +3877,8 @@ pub fn analyze_with_options(
         let mut typed_data = state_arrays
             .into_iter()
             .map(|(name, len)| {
-                let elem_ty =
-                    get_declared_symbol_type(&state_scalars, &name, DECLARED_DATA_ELEM_TYPE_PREFIX)
-                        .unwrap_or(PrimitiveType::F32);
+                let elem_ty = declared_symbol_scalar_type(current_declared_symbols, &name)
+                    .unwrap_or(PrimitiveType::F32);
                 TypedArrayVar { name, len, elem_ty }
             })
             .collect::<Vec<_>>();

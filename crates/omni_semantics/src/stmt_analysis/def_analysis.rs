@@ -8,6 +8,7 @@ pub(crate) fn analyze_def_stmt(
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
     locals: &HashSet<String>,
+    declared_symbols: &DeclaredSymbolMap,
     param_structs: &HashMap<String, String>,
     state_scalars: &HashMap<String, PrimitiveType>,
     input_names: &HashSet<String>,
@@ -26,6 +27,27 @@ pub(crate) fn analyze_def_stmt(
         let struct_instance_ctx = param_structs;
         let empty_outputs = HashSet::<String>::new();
         let array_vars = merged_data_vars_for_runtime(&empty_data, local_array_aliases);
+        let stmt_expr_env = |scope| StmtExprAnalysisEnv {
+            expr_env: ExprEnv {
+                known_scalars,
+                locals,
+                outputs: &empty_outputs,
+                array_vars: &array_vars,
+                declared_symbols,
+                param_structs,
+                struct_instances: struct_instance_ctx,
+                struct_defs,
+                fn_signatures,
+                allow_array_ctor: false,
+                scope,
+            },
+            state_scalars,
+            declared_symbols,
+            local_array_aliases,
+            input_names,
+            output_names,
+            param_names,
+        };
 
         match stmt {
             Stmt::Assign {
@@ -114,6 +136,7 @@ pub(crate) fn analyze_def_stmt(
                                                     locals,
                                                     outputs: &empty_outputs,
                                                     array_vars: &array_vars,
+                                                    declared_symbols,
                                                     param_structs,
                                                     struct_instances: struct_instance_ctx,
                                                     struct_defs,
@@ -127,6 +150,7 @@ pub(crate) fn analyze_def_stmt(
                                                 infer_expr_type_for_semantics_with_local_data(
                                                     value,
                                                     state_scalars,
+                                                    declared_symbols,
                                                     None,
                                                     local_array_aliases,
                                                     locals,
@@ -220,6 +244,7 @@ pub(crate) fn analyze_def_stmt(
                                     locals,
                                     outputs: &empty_outputs,
                                     array_vars: &array_vars,
+                                    declared_symbols,
                                     param_structs,
                                     struct_instances: struct_instance_ctx,
                                     struct_defs,
@@ -233,6 +258,7 @@ pub(crate) fn analyze_def_stmt(
                         let elem_ty = infer_expr_type_for_semantics_with_local_data(
                             &values[0],
                             state_scalars,
+                            declared_symbols,
                             None,
                             local_array_aliases,
                             locals,
@@ -248,6 +274,7 @@ pub(crate) fn analyze_def_stmt(
                             let value_ty = infer_expr_type_for_semantics_with_local_data(
                                 value,
                                 state_scalars,
+                                declared_symbols,
                                 None,
                                 local_array_aliases,
                                 locals,
@@ -284,6 +311,7 @@ pub(crate) fn analyze_def_stmt(
                                 locals,
                                 outputs: &empty_outputs,
                                 array_vars: &array_vars,
+                                declared_symbols,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
@@ -296,6 +324,7 @@ pub(crate) fn analyze_def_stmt(
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
+                            declared_symbols,
                             None,
                             local_array_aliases,
                             locals,
@@ -374,6 +403,7 @@ pub(crate) fn analyze_def_stmt(
                                         locals,
                                         outputs: &empty_outputs,
                                         array_vars: &array_vars,
+                                        declared_symbols,
                                         param_structs,
                                         struct_instances: struct_instance_ctx,
                                         struct_defs,
@@ -386,6 +416,7 @@ pub(crate) fn analyze_def_stmt(
                                 let expr_ty = infer_expr_type_for_semantics_with_local_data(
                                     &expr_for_validation,
                                     state_scalars,
+                                    declared_symbols,
                                     None,
                                     local_array_aliases,
                                     locals,
@@ -398,18 +429,12 @@ pub(crate) fn analyze_def_stmt(
                                 );
                                 let had_expr_validation_error =
                                     errors.len() > expr_error_count_before;
-                                let suppress_type_mismatch = get_declared_symbol_type(
-                                    state_scalars,
-                                    field,
-                                    DECLARED_INVALID_PLACEHOLDER_PREFIX,
-                                )
-                                .is_some()
-                                    || get_declared_symbol_type(
-                                        state_scalars,
-                                        &format!("{base}.{field}"),
-                                        DECLARED_INVALID_PLACEHOLDER_PREFIX,
-                                    )
-                                    .is_some();
+                                let suppress_type_mismatch =
+                                    is_invalid_placeholder_symbol(&declared_symbols, field)
+                                        || is_invalid_placeholder_symbol(
+                                            &declared_symbols,
+                                            &format!("{base}.{field}"),
+                                        );
                                 if !suppress_type_mismatch
                                     && !had_expr_validation_error
                                     && !has_use_before_declaration_error(errors)
@@ -469,6 +494,7 @@ pub(crate) fn analyze_def_stmt(
                                         locals,
                                         outputs: &empty_outputs,
                                         array_vars: &array_vars,
+                                        declared_symbols,
                                         param_structs,
                                         struct_instances: struct_instance_ctx,
                                         struct_defs,
@@ -481,6 +507,7 @@ pub(crate) fn analyze_def_stmt(
                                 let idx_ty = infer_expr_type_for_semantics_with_local_data(
                                     index,
                                     state_scalars,
+                                    declared_symbols,
                                     None,
                                     local_array_aliases,
                                     locals,
@@ -581,6 +608,7 @@ pub(crate) fn analyze_def_stmt(
                             locals,
                             outputs: &empty_outputs,
                             array_vars: &array_vars,
+                            declared_symbols,
                             param_structs,
                             struct_instances: struct_instance_ctx,
                             struct_defs,
@@ -594,6 +622,7 @@ pub(crate) fn analyze_def_stmt(
                     let expr_ty = infer_expr_type_for_semantics_with_local_data(
                         &expr_for_validation,
                         state_scalars,
+                        declared_symbols,
                         None,
                         local_array_aliases,
                         locals,
@@ -615,12 +644,8 @@ pub(crate) fn analyze_def_stmt(
                     } else {
                         expr_ty.unwrap_or(PrimitiveType::F32)
                     };
-                    let suppress_type_mismatch = get_declared_symbol_type(
-                        state_scalars,
-                        name,
-                        DECLARED_INVALID_PLACEHOLDER_PREFIX,
-                    )
-                    .is_some();
+                    let suppress_type_mismatch =
+                        is_invalid_placeholder_symbol(&declared_symbols, name);
                     if !suppress_type_mismatch
                         && !had_expr_validation_error
                         && !has_use_before_declaration_error(errors)
@@ -671,6 +696,7 @@ pub(crate) fn analyze_def_stmt(
                                 locals,
                                 outputs: &empty_outputs,
                                 array_vars: &array_vars,
+                                declared_symbols,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
@@ -687,6 +713,7 @@ pub(crate) fn analyze_def_stmt(
                                 locals,
                                 outputs: &empty_outputs,
                                 array_vars: &array_vars,
+                                declared_symbols,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
@@ -699,6 +726,7 @@ pub(crate) fn analyze_def_stmt(
                         let index_ty = infer_expr_type_for_semantics_with_local_data(
                             index,
                             state_scalars,
+                            declared_symbols,
                             None,
                             local_array_aliases,
                             locals,
@@ -713,6 +741,7 @@ pub(crate) fn analyze_def_stmt(
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
+                            declared_symbols,
                             None,
                             local_array_aliases,
                             locals,
@@ -731,8 +760,8 @@ pub(crate) fn analyze_def_stmt(
                         );
                         return;
                     }
-                    if has_declared_buffer_symbol(known_scalars, base) {
-                        if is_declared_multichannel_buffer_symbol(known_scalars, base) {
+                    if has_declared_buffer_symbol_info(&declared_symbols, base) {
+                        if is_declared_multichannel_buffer_info(&declared_symbols, base) {
                             errors.push(Diagnostic::semantic(
                             format!(
                                 "indexed assignment target '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
@@ -748,6 +777,7 @@ pub(crate) fn analyze_def_stmt(
                                 locals,
                                 outputs: &empty_outputs,
                                 array_vars: &array_vars,
+                                declared_symbols,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
@@ -764,6 +794,7 @@ pub(crate) fn analyze_def_stmt(
                                 locals,
                                 outputs: &empty_outputs,
                                 array_vars: &array_vars,
+                                declared_symbols,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
@@ -776,6 +807,7 @@ pub(crate) fn analyze_def_stmt(
                         let index_ty = infer_expr_type_for_semantics_with_local_data(
                             index,
                             state_scalars,
+                            declared_symbols,
                             None,
                             local_array_aliases,
                             locals,
@@ -790,6 +822,7 @@ pub(crate) fn analyze_def_stmt(
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
+                            declared_symbols,
                             None,
                             local_array_aliases,
                             locals,
@@ -800,12 +833,8 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        let expected_ty = get_declared_symbol_type(
-                            state_scalars,
-                            base,
-                            DECLARED_BUFFER_ELEM_TYPE_PREFIX,
-                        )
-                        .unwrap_or(PrimitiveType::F32);
+                        let expected_ty = declared_symbol_scalar_type(&declared_symbols, base)
+                            .unwrap_or(PrimitiveType::F32);
                         require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
                         return;
                     }
@@ -856,6 +885,7 @@ pub(crate) fn analyze_def_stmt(
                                 locals,
                                 outputs: &empty_outputs,
                                 array_vars: &array_vars,
+                                declared_symbols,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
@@ -872,6 +902,7 @@ pub(crate) fn analyze_def_stmt(
                                 locals,
                                 outputs: &empty_outputs,
                                 array_vars: &array_vars,
+                                declared_symbols,
                                 param_structs,
                                 struct_instances: struct_instance_ctx,
                                 struct_defs,
@@ -884,6 +915,7 @@ pub(crate) fn analyze_def_stmt(
                         let index_ty = infer_expr_type_for_semantics_with_local_data(
                             index,
                             state_scalars,
+                            declared_symbols,
                             None,
                             local_array_aliases,
                             locals,
@@ -898,6 +930,7 @@ pub(crate) fn analyze_def_stmt(
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
+                            declared_symbols,
                             None,
                             local_array_aliases,
                             locals,
@@ -927,67 +960,11 @@ pub(crate) fn analyze_def_stmt(
             },
             Stmt::Expr { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-                validate_expr(
-                    &expr,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: &empty_outputs,
-                        array_vars: &array_vars,
-                        param_structs,
-                        struct_instances: struct_instance_ctx,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Def,
-                    },
-                    errors,
-                );
-                let _ = infer_expr_type_for_semantics_with_local_data(
-                    &expr,
-                    state_scalars,
-                    None,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instance_ctx,
-                    struct_defs,
-                    errors,
-                );
+                analyze_stmt_expr(&expr, stmt_expr_env(ScopeKind::Def), errors);
             }
             Stmt::Return { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-                validate_expr(
-                    &expr,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: &empty_outputs,
-                        array_vars: &array_vars,
-                        param_structs,
-                        struct_instances: struct_instance_ctx,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Def,
-                    },
-                    errors,
-                );
-                let _ = infer_expr_type_for_semantics_with_local_data(
-                    &expr,
-                    state_scalars,
-                    None,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instance_ctx,
-                    struct_defs,
-                    errors,
-                );
+                analyze_stmt_expr(&expr, stmt_expr_env(ScopeKind::Def), errors);
             }
             Stmt::If {
                 cond,
@@ -995,36 +972,12 @@ pub(crate) fn analyze_def_stmt(
                 else_branch,
                 ..
             } => {
-                validate_expr(
+                require_validated_bool_stmt_expr(
                     cond,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: &empty_outputs,
-                        array_vars: &array_vars,
-                        param_structs,
-                        struct_instances: struct_instance_ctx,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Def,
-                    },
+                    "if condition",
+                    stmt_expr_env(ScopeKind::Def),
                     errors,
                 );
-                let cond_ty = infer_expr_type_for_semantics_with_local_data(
-                    cond,
-                    state_scalars,
-                    None,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instance_ctx,
-                    struct_defs,
-                    errors,
-                );
-                require_bool_type(cond_ty, "if condition", errors);
                 let mut then_known = known_scalars.clone();
                 let mut then_aliases = local_aliases.clone();
                 let mut then_data_aliases = local_array_aliases.clone();
@@ -1037,6 +990,7 @@ pub(crate) fn analyze_def_stmt(
                         &mut then_data_aliases,
                         &mut then_proc_aliases,
                         locals,
+                        declared_symbols,
                         param_structs,
                         state_scalars,
                         input_names,
@@ -1061,6 +1015,7 @@ pub(crate) fn analyze_def_stmt(
                         &mut else_data_aliases,
                         &mut else_proc_aliases,
                         locals,
+                        declared_symbols,
                         param_structs,
                         state_scalars,
                         input_names,
@@ -1100,99 +1055,27 @@ pub(crate) fn analyze_def_stmt(
                 body,
                 ..
             } => {
-                validate_expr(
+                require_validated_numeric_stmt_expr(
                     start,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: &empty_outputs,
-                        array_vars: &array_vars,
-                        param_structs,
-                        struct_instances: struct_instance_ctx,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Def,
-                    },
+                    "for loop start bound",
+                    stmt_expr_env(ScopeKind::Def),
                     errors,
                 );
-                validate_expr(
+                require_validated_numeric_stmt_expr(
                     end,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: &empty_outputs,
-                        array_vars: &array_vars,
-                        param_structs,
-                        struct_instances: struct_instance_ctx,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Def,
-                    },
+                    "for loop end bound",
+                    stmt_expr_env(ScopeKind::Def),
                     errors,
                 );
                 if let Some(step_expr) = step {
-                    validate_expr(
+                    require_validated_numeric_stmt_expr(
                         step_expr,
-                        ExprEnv {
-                            known_scalars,
-                            locals,
-                            outputs: &empty_outputs,
-                            array_vars: &array_vars,
-                            param_structs,
-                            struct_instances: struct_instance_ctx,
-                            struct_defs,
-                            fn_signatures,
-                            allow_array_ctor: false,
-                            scope: ScopeKind::Def,
-                        },
+                        "for loop step",
+                        stmt_expr_env(ScopeKind::Def),
                         errors,
                     );
                 }
-                let start_ty = infer_expr_type_for_semantics_with_local_data(
-                    start,
-                    state_scalars,
-                    None,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instance_ctx,
-                    struct_defs,
-                    errors,
-                );
-                require_numeric_type(start_ty, "for loop start bound", errors);
-                let end_ty = infer_expr_type_for_semantics_with_local_data(
-                    end,
-                    state_scalars,
-                    None,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instance_ctx,
-                    struct_defs,
-                    errors,
-                );
-                require_numeric_type(end_ty, "for loop end bound", errors);
                 if let Some(step_expr) = step {
-                    let step_ty = infer_expr_type_for_semantics_with_local_data(
-                        step_expr,
-                        state_scalars,
-                        None,
-                        local_array_aliases,
-                        locals,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_instance_ctx,
-                        struct_defs,
-                        errors,
-                    );
-                    require_numeric_type(step_ty, "for loop step", errors);
                     if matches!(step_expr, Expr::Int(0))
                         || matches!(step_expr, Expr::Number(v) if *v == 0.0)
                     {
@@ -1213,6 +1096,7 @@ pub(crate) fn analyze_def_stmt(
                         &mut loop_data_aliases,
                         &mut loop_proc_aliases,
                         &loop_locals,
+                        declared_symbols,
                         param_structs,
                         state_scalars,
                         input_names,
@@ -1231,37 +1115,12 @@ pub(crate) fn analyze_def_stmt(
                 *local_proc_aliases = loop_proc_aliases;
             }
             Stmt::While { cond, body, .. } => {
-                validate_expr(
+                require_validated_bool_stmt_expr(
                     cond,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: &empty_outputs,
-                        array_vars: &array_vars,
-                        param_structs,
-                        struct_instances: struct_instance_ctx,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Def,
-                    },
+                    "while condition",
+                    stmt_expr_env(ScopeKind::Def),
                     errors,
                 );
-                let cond_ty = infer_expr_type_for_semantics_with_local_data(
-                    cond,
-                    state_scalars,
-                    None,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instance_ctx,
-                    struct_defs,
-                    errors,
-                );
-                require_bool_type(cond_ty, "while condition", errors);
-
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
                 let mut loop_data_aliases = local_array_aliases.clone();
@@ -1274,6 +1133,7 @@ pub(crate) fn analyze_def_stmt(
                         &mut loop_data_aliases,
                         &mut loop_proc_aliases,
                         locals,
+                        declared_symbols,
                         param_structs,
                         state_scalars,
                         input_names,
@@ -1291,24 +1151,8 @@ pub(crate) fn analyze_def_stmt(
                 *local_array_aliases = loop_data_aliases;
                 *local_proc_aliases = loop_proc_aliases;
             }
-            Stmt::Break { .. } => {
-                if loop_depth == 0 {
-                    errors.push(Diagnostic::semantic(
-                        "break is only allowed inside for/while/loop bodies",
-                        0,
-                        0,
-                    ));
-                }
-            }
-            Stmt::Continue { .. } => {
-                if loop_depth == 0 {
-                    errors.push(Diagnostic::semantic(
-                        "continue is only allowed inside for/while/loop bodies",
-                        0,
-                        0,
-                    ));
-                }
-            }
+            Stmt::Break { .. } => require_loop_control_context("break", loop_depth, errors),
+            Stmt::Continue { .. } => require_loop_control_context("continue", loop_depth, errors),
         }
     });
 }

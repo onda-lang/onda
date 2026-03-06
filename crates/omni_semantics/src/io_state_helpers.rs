@@ -218,6 +218,7 @@ pub(crate) enum StateRegistrationScope<'a> {
 pub(crate) fn register_scope_state<'a>(
     stmts: impl Iterator<Item = &'a Stmt>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     struct_instances: &HashMap<String, String>,
@@ -230,6 +231,7 @@ pub(crate) fn register_scope_state<'a>(
         register_scope_stmt_state(
             stmt,
             state_scalars,
+            declared_symbols,
             state_arrays,
             state_array_struct_roots,
             struct_instances,
@@ -244,6 +246,7 @@ pub(crate) fn register_scope_state<'a>(
 fn register_scope_stmt_state(
     stmt: &Stmt,
     state_scalars: &mut HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     struct_instances: &HashMap<String, String>,
@@ -286,6 +289,7 @@ fn register_scope_stmt_state(
                                 infer_expr_type_for_semantics(
                                     expr,
                                     state_scalars,
+                                    declared_symbols,
                                     None,
                                     &empty_locals,
                                     input_names,
@@ -314,6 +318,7 @@ fn register_scope_stmt_state(
                 register_scope_stmt_state(
                     nested,
                     state_scalars,
+                    declared_symbols,
                     state_arrays,
                     state_array_struct_roots,
                     struct_instances,
@@ -327,6 +332,7 @@ fn register_scope_stmt_state(
                 register_scope_stmt_state(
                     nested,
                     state_scalars,
+                    declared_symbols,
                     state_arrays,
                     state_array_struct_roots,
                     struct_instances,
@@ -342,6 +348,7 @@ fn register_scope_stmt_state(
                 register_scope_stmt_state(
                     nested,
                     state_scalars,
+                    declared_symbols,
                     state_arrays,
                     state_array_struct_roots,
                     struct_instances,
@@ -357,6 +364,7 @@ fn register_scope_stmt_state(
                 register_scope_stmt_state(
                     nested,
                     state_scalars,
+                    declared_symbols,
                     state_arrays,
                     state_array_struct_roots,
                     struct_instances,

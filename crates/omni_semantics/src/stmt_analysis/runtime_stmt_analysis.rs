@@ -158,6 +158,7 @@ pub(crate) fn seed_top_level_array_aliases(
 
 pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
     pub state_scalars: &'a HashMap<String, PrimitiveType>,
+    pub declared_symbols: &'a DeclaredSymbolMap,
     pub state_arrays: &'a HashMap<String, usize>,
     pub state_array_struct_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub struct_instances: &'a HashMap<String, String>,
@@ -214,6 +215,7 @@ fn analyze_runtime_stmt_inner(
     errors: &mut Vec<Diagnostic>,
 ) {
     let state_scalars = ctx.state_scalars;
+    let declared_symbols = ctx.declared_symbols;
     let state_arrays = ctx.state_arrays;
     let state_array_struct_roots = ctx.state_array_struct_roots;
     let struct_instances = ctx.struct_instances;
@@ -249,6 +251,7 @@ fn analyze_runtime_stmt_inner(
                     local_proc_aliases,
                     locals,
                     state_scalars,
+                    declared_symbols,
                     state_arrays,
                     state_array_struct_roots,
                     proc_array_roots,
@@ -272,6 +275,7 @@ fn analyze_runtime_stmt_inner(
                         locals,
                         outputs: output_names,
                         array_vars: &array_vars,
+                        declared_symbols,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
@@ -284,6 +288,7 @@ fn analyze_runtime_stmt_inner(
                 let _ = infer_expr_type_for_semantics(
                     &expr,
                     state_scalars,
+                    declared_symbols,
                     None,
                     locals,
                     input_names,
@@ -315,6 +320,7 @@ fn analyze_runtime_stmt_inner(
                         locals,
                         outputs: output_names,
                         array_vars: &array_vars,
+                        declared_symbols,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
@@ -327,6 +333,7 @@ fn analyze_runtime_stmt_inner(
                 let cond_ty = infer_expr_type_for_semantics(
                     &cond,
                     state_scalars,
+                    declared_symbols,
                     None,
                     locals,
                     input_names,
@@ -389,6 +396,7 @@ fn analyze_runtime_stmt_inner(
                         locals,
                         outputs: output_names,
                         array_vars: &array_vars,
+                        declared_symbols,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
@@ -405,6 +413,7 @@ fn analyze_runtime_stmt_inner(
                         locals,
                         outputs: output_names,
                         array_vars: &array_vars,
+                        declared_symbols,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
@@ -424,6 +433,7 @@ fn analyze_runtime_stmt_inner(
                             locals,
                             outputs: output_names,
                             array_vars: &array_vars,
+                            declared_symbols,
                             param_structs: &HashMap::new(),
                             struct_instances,
                             struct_defs,
@@ -437,6 +447,7 @@ fn analyze_runtime_stmt_inner(
                 let start_ty = infer_expr_type_for_semantics_with_local_data(
                     &start,
                     state_scalars,
+                    declared_symbols,
                     None,
                     local_array_aliases,
                     locals,
@@ -451,6 +462,7 @@ fn analyze_runtime_stmt_inner(
                 let end_ty = infer_expr_type_for_semantics_with_local_data(
                     &end,
                     state_scalars,
+                    declared_symbols,
                     None,
                     local_array_aliases,
                     locals,
@@ -468,6 +480,7 @@ fn analyze_runtime_stmt_inner(
                     let step_ty = infer_expr_type_for_semantics_with_local_data(
                         &step_expr,
                         state_scalars,
+                        declared_symbols,
                         None,
                         local_array_aliases,
                         locals,
@@ -514,6 +527,7 @@ fn analyze_runtime_stmt_inner(
                         locals,
                         outputs: output_names,
                         array_vars: &array_vars,
+                        declared_symbols,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
@@ -526,6 +540,7 @@ fn analyze_runtime_stmt_inner(
                 let cond_ty = infer_expr_type_for_semantics_with_local_data(
                     &cond,
                     state_scalars,
+                    declared_symbols,
                     None,
                     local_array_aliases,
                     locals,
@@ -588,6 +603,7 @@ fn analyze_assign_sample(
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
     locals: &HashSet<String>,
     state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
@@ -645,14 +661,14 @@ fn analyze_assign_sample(
             }
             if !state_arrays.contains_key(base)
                 && !local_array_aliases.contains_key(base)
-                && !has_declared_buffer_symbol(known_scalars, base)
+                && !has_declared_buffer_symbol_info(declared_symbols, base)
             {
                 errors.push(Diagnostic::semantic(
                     format!("indexed assignment target '{base}[...]' is not a array/buffer symbol"),
                     0,
                     0,
                 ));
-            } else if is_declared_multichannel_buffer_symbol(known_scalars, base) {
+            } else if is_declared_multichannel_buffer_info(declared_symbols, base) {
                 errors.push(Diagnostic::semantic(
                     format!(
                         "indexed assignment target '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
@@ -668,6 +684,7 @@ fn analyze_assign_sample(
                     locals,
                     outputs: output_names,
                     array_vars: &array_vars,
+                    declared_symbols,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
@@ -684,6 +701,7 @@ fn analyze_assign_sample(
                     locals,
                     outputs: output_names,
                     array_vars: &array_vars,
+                    declared_symbols,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
@@ -696,6 +714,7 @@ fn analyze_assign_sample(
             let index_ty = infer_expr_type_for_semantics_with_local_data(
                 index,
                 state_scalars,
+                declared_symbols,
                 None,
                 local_array_aliases,
                 locals,
@@ -710,6 +729,7 @@ fn analyze_assign_sample(
             let expr_ty = infer_expr_type_for_semantics_with_local_data(
                 &expr_for_validation,
                 state_scalars,
+                declared_symbols,
                 None,
                 local_array_aliases,
                 locals,
@@ -723,12 +743,7 @@ fn analyze_assign_sample(
             let expected_ty = local_array_aliases
                 .get(base)
                 .map(|a| a.elem_ty)
-                .or_else(|| {
-                    get_declared_symbol_type(state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX)
-                })
-                .or_else(|| {
-                    get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
-                })
+                .or_else(|| declared_symbol_scalar_type(declared_symbols, base))
                 .unwrap_or(PrimitiveType::F32);
             require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
         }
@@ -830,6 +845,7 @@ fn analyze_assign_sample(
                                             locals,
                                             outputs: output_names,
                                             array_vars: &array_vars,
+                                            declared_symbols,
                                             param_structs: &HashMap::new(),
                                             struct_instances,
                                             struct_defs,
@@ -842,6 +858,7 @@ fn analyze_assign_sample(
                                     let value_ty = infer_expr_type_for_semantics_with_local_data(
                                         value,
                                         state_scalars,
+                                        declared_symbols,
                                         None,
                                         local_array_aliases,
                                         locals,
@@ -929,6 +946,7 @@ fn analyze_assign_sample(
                             locals,
                             outputs: output_names,
                             array_vars: &array_vars,
+                            declared_symbols,
                             param_structs: &HashMap::new(),
                             struct_instances,
                             struct_defs,
@@ -942,6 +960,7 @@ fn analyze_assign_sample(
                 let elem_ty = infer_expr_type_for_semantics_with_local_data(
                     &values[0],
                     state_scalars,
+                    declared_symbols,
                     None,
                     local_array_aliases,
                     locals,
@@ -957,6 +976,7 @@ fn analyze_assign_sample(
                     let value_ty = infer_expr_type_for_semantics_with_local_data(
                         value,
                         state_scalars,
+                        declared_symbols,
                         None,
                         local_array_aliases,
                         locals,
@@ -1010,6 +1030,7 @@ fn analyze_assign_sample(
                         locals,
                         outputs: output_names,
                         array_vars: &array_vars,
+                        declared_symbols,
                         param_structs: &HashMap::new(),
                         struct_instances,
                         struct_defs,
@@ -1022,6 +1043,7 @@ fn analyze_assign_sample(
                 let expr_ty = infer_expr_type_for_semantics_with_local_data(
                     expr,
                     state_scalars,
+                    declared_symbols,
                     None,
                     local_array_aliases,
                     locals,
@@ -1080,6 +1102,7 @@ fn analyze_assign_sample(
                                     locals,
                                     outputs: output_names,
                                     array_vars: &array_vars,
+                                    declared_symbols,
                                     param_structs: &HashMap::new(),
                                     struct_instances,
                                     struct_defs,
@@ -1092,6 +1115,7 @@ fn analyze_assign_sample(
                             let expr_ty = infer_expr_type_for_semantics_with_local_data(
                                 expr,
                                 state_scalars,
+                                declared_symbols,
                                 None,
                                 local_array_aliases,
                                 locals,
@@ -1170,6 +1194,7 @@ fn analyze_assign_sample(
                                 locals,
                                 outputs: output_names,
                                 array_vars: &array_vars,
+                                declared_symbols,
                                 param_structs: &HashMap::new(),
                                 struct_instances,
                                 struct_defs,
@@ -1182,6 +1207,7 @@ fn analyze_assign_sample(
                         let idx_ty = infer_expr_type_for_semantics_with_local_data(
                             index,
                             state_scalars,
+                            declared_symbols,
                             None,
                             local_array_aliases,
                             locals,
@@ -1305,6 +1331,7 @@ fn analyze_assign_sample(
                     locals,
                     outputs: output_names,
                     array_vars: &array_vars,
+                    declared_symbols,
                     param_structs: &HashMap::new(),
                     struct_instances,
                     struct_defs,
@@ -1317,6 +1344,7 @@ fn analyze_assign_sample(
             let expr_ty = infer_expr_type_for_semantics_with_local_data(
                 &expr_for_validation,
                 state_scalars,
+                declared_symbols,
                 None,
                 local_array_aliases,
                 locals,
@@ -1339,7 +1367,7 @@ fn analyze_assign_sample(
                 && !is_builtin_constant_name(name);
             let target_ty = if output_names.contains(name) {
                 Some(
-                    get_declared_symbol_type(state_scalars, name, DECLARED_OUTPUT_TYPE_PREFIX)
+                    declared_symbol_scalar_type(declared_symbols, name)
                         .unwrap_or(PrimitiveType::F32),
                 )
             } else if let Some(existing) = state_scalars.get(name).copied() {

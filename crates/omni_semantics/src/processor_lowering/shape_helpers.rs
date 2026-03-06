@@ -226,17 +226,20 @@ pub(super) fn compute_proc_shape(
     reserved.extend(out_names.iter().cloned());
 
     let mut state_type_hints = HashMap::<String, PrimitiveType>::new();
+    let mut declared_symbols = DeclaredSymbolMap::new();
     set_declared_symbol_types(
         &mut state_type_hints,
+        &mut declared_symbols,
         &ins_names,
         &in_types,
-        DECLARED_INPUT_TYPE_PREFIX,
+        DeclaredScalarSymbolKind::Input,
     );
     set_declared_symbol_types(
         &mut state_type_hints,
+        &mut declared_symbols,
         &out_names,
         &out_types,
-        DECLARED_OUTPUT_TYPE_PREFIX,
+        DeclaredScalarSymbolKind::Output,
     );
     let param_slot_types = param_specs
         .iter()
@@ -245,14 +248,17 @@ pub(super) fn compute_proc_shape(
         .collect::<HashMap<_, _>>();
     set_declared_symbol_types(
         &mut state_type_hints,
+        &mut declared_symbols,
         &typed_param_names,
         &param_slot_types,
-        DECLARED_PARAM_TYPE_PREFIX,
+        DeclaredScalarSymbolKind::Param,
     );
     for (fn_name, fn_ty) in fn_return_types {
-        state_type_hints.insert(
-            declared_type_key(DECLARED_FUNCTION_RETURN_TYPE_PREFIX, fn_name),
-            *fn_ty,
+        insert_declared_symbol(
+            &mut state_type_hints,
+            &mut declared_symbols,
+            fn_name.clone(),
+            DeclaredSymbolInfo::FunctionReturn { ty: *fn_ty },
         );
     }
 
@@ -265,8 +271,22 @@ pub(super) fn compute_proc_shape(
     let fn_signatures = fn_signatures_full.clone();
 
     // Unified init scope: use analyze_init_stmt
+    let proc_resolution = Some(ProcResolutionCtx {
+        reserved: &reserved,
+        current_ns: &proc_ns,
+        proc_symbols,
+        struct_symbols: &struct_symbols,
+        frontend_struct_defs: struct_defs,
+        ctor_symbols,
+        in_init_scope: true,
+    });
+    debug_assert!(
+        proc_resolution.is_some(),
+        "proc init analysis requires ProcResolutionCtx"
+    );
     let init_ctx = InitAnalysisCtx {
         context_label: &proc_label,
+        scope: ScopeKind::Init,
         init_default_ty,
         input_names: &ins_names,
         output_names: &out_names,
@@ -274,20 +294,13 @@ pub(super) fn compute_proc_shape(
         struct_defs: &typed_struct_defs,
         fn_signatures: &fn_signatures,
         options,
-        proc_resolution: Some(ProcResolutionCtx {
-            reserved: &reserved,
-            current_ns: &proc_ns,
-            proc_symbols,
-            struct_symbols: &struct_symbols,
-            frontend_struct_defs: struct_defs,
-            ctor_symbols,
-            in_init_scope: true,
-        }),
+        proc_resolution,
     };
     let mut init_st = InitAnalysisState {
         known_scalars: HashSet::new(),
         local_aliases: HashMap::new(),
         local_array_aliases: HashMap::new(),
+        declared_symbols,
         state_scalars: state_type_hints.clone(),
         state_arrays: HashMap::new(),
         state_array_struct_roots: HashMap::new(),
@@ -306,6 +319,7 @@ pub(super) fn compute_proc_shape(
 
     // Non-init scopes: unified analysis via register_scope_state + analyze_sample_stmt
     let mut proc_state_scalars = init_st.state_scalars;
+    let mut proc_declared_symbols = init_st.declared_symbols;
     let mut proc_state_arrays = init_st.state_arrays;
     let proc_state_array_struct_roots = init_st.state_array_struct_roots;
     let proc_struct_instances = init_st.struct_instances;
@@ -314,47 +328,20 @@ pub(super) fn compute_proc_shape(
 
     // Add buffer prefix entries so has_declared_buffer_symbol / validate_buffer_param_call_arg work
     for buffer in &buffer_specs {
-        proc_state_scalars
-            .entry(declared_type_key(
-                DECLARED_BUFFER_ELEM_TYPE_PREFIX,
-                &buffer.name,
-            ))
-            .or_insert(buffer.elem_ty);
-        proc_state_scalars
-            .entry(declared_type_key(
-                buffer_elem_decl_prefix(buffer.elem_ty),
-                &buffer.name,
-            ))
-            .or_insert(PrimitiveType::Bool);
-        let is_multi = match buffer.channels {
-            TypedBufferChannels::Mono => false,
-            TypedBufferChannels::Static(ch) => ch > 1,
-            TypedBufferChannels::Dynamic => true,
+        let channels = match buffer.channels {
+            TypedBufferChannels::Mono => BufferChannelInfo::Mono,
+            TypedBufferChannels::Static(ch) => BufferChannelInfo::Static(ch),
+            TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
         };
-        match buffer.channels {
-            TypedBufferChannels::Dynamic => {
-                proc_state_scalars
-                    .entry(declared_type_key(
-                        DECLARED_BUFFER_DYNAMIC_CHANNELS_PREFIX,
-                        &buffer.name,
-                    ))
-                    .or_insert(PrimitiveType::Bool);
-            }
-            TypedBufferChannels::Static(ch) if ch > 1 => {
-                proc_state_scalars
-                    .entry(declared_buffer_static_channels_key(&buffer.name, ch))
-                    .or_insert(PrimitiveType::Bool);
-            }
-            _ => {}
-        }
-        if is_multi {
-            proc_state_scalars
-                .entry(declared_type_key(
-                    DECLARED_BUFFER_MULTICHANNEL_PREFIX,
-                    &buffer.name,
-                ))
-                .or_insert(PrimitiveType::Bool);
-        }
+        insert_declared_symbol(
+            &mut proc_state_scalars,
+            &mut proc_declared_symbols,
+            buffer.name.clone(),
+            DeclaredSymbolInfo::Buffer {
+                elem_ty: buffer.elem_ty,
+                channels,
+            },
+        );
     }
 
     // Add flat struct field names to proc_state_scalars so block/sample validation resolves them
@@ -396,9 +383,12 @@ pub(super) fn compute_proc_shape(
                     }
                     FieldType::Array(spec) => {
                         if let ArrayElemType::Primitive(elem_ty) = spec.elem {
-                            proc_state_scalars
-                                .entry(declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, &flat))
-                                .or_insert(elem_ty);
+                            insert_declared_symbol(
+                                &mut proc_state_scalars,
+                                &mut proc_declared_symbols,
+                                flat.clone(),
+                                DeclaredSymbolInfo::DataArray { elem_ty },
+                            );
                         }
                         if let Some(size_val) = eval_data_size_expr(
                             &spec.size,
@@ -454,12 +444,12 @@ pub(super) fn compute_proc_shape(
             );
 
             let primary_ty = infer_primary_output_type_from_processor(target_proc);
-            proc_state_scalars
-                .entry(declared_type_key(
-                    DECLARED_FUNCTION_RETURN_TYPE_PREFIX,
-                    instance_name,
-                ))
-                .or_insert(primary_ty);
+            insert_declared_symbol(
+                &mut proc_state_scalars,
+                &mut proc_declared_symbols,
+                instance_name.clone(),
+                DeclaredSymbolInfo::FunctionReturn { ty: primary_ty },
+            );
 
             let (nested_param_specs, _) =
                 expand_proc_param_specs(&target_proc.name, &target_proc.params, options, errors);
@@ -471,12 +461,14 @@ pub(super) fn compute_proc_shape(
                     }
                 } else {
                     if let Some(first_slot) = spec.slots.first() {
-                        proc_state_scalars
-                            .entry(declared_type_key(
-                                DECLARED_DATA_ELEM_TYPE_PREFIX,
-                                &flat_base,
-                            ))
-                            .or_insert(first_slot.ty);
+                        insert_declared_symbol(
+                            &mut proc_state_scalars,
+                            &mut proc_declared_symbols,
+                            flat_base.clone(),
+                            DeclaredSymbolInfo::DataArray {
+                                elem_ty: first_slot.ty,
+                            },
+                        );
                     }
                     proc_state_arrays
                         .entry(flat_base)
@@ -505,6 +497,7 @@ pub(super) fn compute_proc_shape(
     register_and_analyze_runtime_scope(
         proc.block_pre.iter().chain(proc.block_post.iter()),
         &mut proc_state_scalars,
+        &proc_declared_symbols,
         &proc_state_arrays,
         &proc_state_array_struct_roots,
         &state.nested_proc_arrays,
@@ -541,6 +534,7 @@ pub(super) fn compute_proc_shape(
     register_and_analyze_runtime_scope(
         proc.sample.iter(),
         &mut proc_state_scalars,
+        &proc_declared_symbols,
         &proc_state_arrays,
         &proc_state_array_struct_roots,
         &state.nested_proc_arrays,
@@ -589,6 +583,7 @@ pub(super) fn compute_proc_shape(
         &ins_names,
         &out_names,
         &proc_state_scalars,
+        &proc_declared_symbols,
         &proc_state_arrays,
         &proc_state_array_struct_roots,
         &state.nested_proc_arrays,

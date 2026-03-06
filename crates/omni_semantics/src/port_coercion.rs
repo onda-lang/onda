@@ -636,6 +636,7 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) locals: &'a HashSet<String>,
     pub(crate) outputs: &'a HashSet<String>,
     pub(crate) array_vars: &'a HashMap<String, usize>,
+    pub(crate) declared_symbols: &'a DeclaredSymbolMap,
     pub(crate) param_structs: &'a HashMap<String, String>,
     pub(crate) struct_instances: &'a HashMap<String, String>,
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,

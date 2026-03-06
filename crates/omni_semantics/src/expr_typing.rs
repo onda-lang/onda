@@ -8,9 +8,8 @@ use crate::builtins::{
     parse_unsafe_read_instance_base, parse_unsafe_write_instance_base,
 };
 use crate::decl_symbols::{
-    get_declared_symbol_type, DECLARED_BUFFER_ELEM_TYPE_PREFIX, DECLARED_DATA_ELEM_TYPE_PREFIX,
-    DECLARED_FUNCTION_RETURN_TYPE_PREFIX, DECLARED_INPUT_TYPE_PREFIX, DECLARED_OUTPUT_TYPE_PREFIX,
-    DECLARED_PARAM_TYPE_PREFIX, DECLARED_STRUCT_FIELD_TYPE_PREFIX,
+    declared_buffer_info, declared_symbol_scalar_type, has_declared_buffer_symbol_info,
+    is_declared_data_array_symbol, DeclaredSymbolMap,
 };
 use crate::def_inference::{can_implicitly_assign, merge_numeric_types};
 use crate::{
@@ -44,13 +43,13 @@ fn merge_integer_types_for_expr(
 
 fn is_data_receiver_symbol_for_builtin(
     base: &str,
-    state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     struct_instances: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> bool {
     if local_array_aliases.contains_key(base)
-        || get_declared_symbol_type(state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX).is_some()
+        || is_declared_data_array_symbol(declared_symbols, base)
     {
         return true;
     }
@@ -64,11 +63,8 @@ fn is_data_receiver_symbol_for_builtin(
     false
 }
 
-fn is_buffer_receiver_symbol_for_builtin(
-    base: &str,
-    state_scalars: &HashMap<String, PrimitiveType>,
-) -> bool {
-    get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX).is_some()
+fn is_buffer_receiver_symbol_for_builtin(base: &str, declared_symbols: &DeclaredSymbolMap) -> bool {
+    has_declared_buffer_symbol_info(declared_symbols, base)
 }
 
 fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
@@ -78,6 +74,7 @@ fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
 pub(crate) fn infer_scalar_expr_type(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     input_names: &HashSet<String>,
@@ -105,11 +102,7 @@ pub(crate) fn infer_scalar_expr_type(
                 if let Some(ty) = state_scalars.get(&flat).copied() {
                     return Some(ty);
                 }
-                if let Some(ty) = get_declared_symbol_type(
-                    state_scalars,
-                    &flat,
-                    DECLARED_STRUCT_FIELD_TYPE_PREFIX,
-                ) {
+                if let Some(ty) = declared_symbol_scalar_type(declared_symbols, &flat) {
                     return Some(ty);
                 }
                 if let Some(struct_name) = struct_instances.get(base) {
@@ -123,11 +116,7 @@ pub(crate) fn infer_scalar_expr_type(
                         });
                     }
                 }
-                if let Some(ty) = get_declared_symbol_type(
-                    state_scalars,
-                    &field,
-                    DECLARED_STRUCT_FIELD_TYPE_PREFIX,
-                ) {
+                if let Some(ty) = declared_symbol_scalar_type(declared_symbols, &field) {
                     return Some(ty);
                 }
                 None
@@ -137,17 +126,17 @@ pub(crate) fn infer_scalar_expr_type(
                 Some(PrimitiveType::I32)
             } else if input_names.contains(name) {
                 Some(
-                    get_declared_symbol_type(state_scalars, name, DECLARED_INPUT_TYPE_PREFIX)
+                    declared_symbol_scalar_type(declared_symbols, name)
                         .unwrap_or(PrimitiveType::F32),
                 )
             } else if output_names.contains(name) {
                 Some(
-                    get_declared_symbol_type(state_scalars, name, DECLARED_OUTPUT_TYPE_PREFIX)
+                    declared_symbol_scalar_type(declared_symbols, name)
                         .unwrap_or(PrimitiveType::F32),
                 )
             } else if param_names.contains(name) {
                 Some(
-                    get_declared_symbol_type(state_scalars, name, DECLARED_PARAM_TYPE_PREFIX)
+                    declared_symbol_scalar_type(declared_symbols, name)
                         .unwrap_or(PrimitiveType::F32),
                 )
             } else {
@@ -174,27 +163,17 @@ pub(crate) fn infer_scalar_expr_type(
                 }
                 // Proc-lowered state fields are often addressed as `self.field[...]` while
                 // declared element metadata is keyed by bare field name.
-                if let Some(ty) =
-                    get_declared_symbol_type(state_scalars, &field, DECLARED_DATA_ELEM_TYPE_PREFIX)
-                {
+                if let Some(ty) = declared_symbol_scalar_type(declared_symbols, &field) {
                     return Some(ty);
                 }
-                if let Some(ty) = get_declared_symbol_type(
-                    state_scalars,
-                    &field,
-                    DECLARED_BUFFER_ELEM_TYPE_PREFIX,
-                ) {
+                if let Some((ty, _)) = declared_buffer_info(declared_symbols, &field) {
                     return Some(ty);
                 }
             }
-            if let Some(ty) =
-                get_declared_symbol_type(state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX)
-            {
+            if let Some(ty) = declared_symbol_scalar_type(declared_symbols, base) {
                 return Some(ty);
             }
-            if let Some(ty) =
-                get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
-            {
+            if let Some((ty, _)) = declared_buffer_info(declared_symbols, base) {
                 return Some(ty);
             }
             Some(PrimitiveType::F32)
@@ -204,6 +183,7 @@ pub(crate) fn infer_scalar_expr_type(
             let _ = infer_scalar_expr_type(
                 expr,
                 state_scalars,
+                declared_symbols,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -222,6 +202,7 @@ pub(crate) fn infer_scalar_expr_type(
             let inner = infer_scalar_expr_type(
                 expr,
                 state_scalars,
+                declared_symbols,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -240,6 +221,7 @@ pub(crate) fn infer_scalar_expr_type(
                     infer_scalar_expr_type(
                         arg,
                         state_scalars,
+                        declared_symbols,
                         local_array_aliases,
                         locals,
                         input_names,
@@ -321,25 +303,23 @@ pub(crate) fn infer_scalar_expr_type(
             }
         }
         Expr::UserCall { name, args, .. } => {
-            if let Some(ty) =
-                get_declared_symbol_type(state_scalars, name, DECLARED_FUNCTION_RETURN_TYPE_PREFIX)
-            {
+            if let Some(ty) = declared_symbol_scalar_type(declared_symbols, name) {
                 return Some(ty);
             }
             if let Some(base) = parse_array_len_instance_base(name) {
                 if is_data_receiver_symbol_for_builtin(
                     base,
-                    state_scalars,
+                    declared_symbols,
                     local_array_aliases,
                     struct_instances,
                     struct_defs,
-                ) || is_buffer_receiver_symbol_for_builtin(base, state_scalars)
+                ) || is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
                 {
                     return Some(PrimitiveType::I32);
                 }
             }
             if let Some(base) = parse_buffer_chans_instance_base(name) {
-                if is_buffer_receiver_symbol_for_builtin(base, state_scalars) {
+                if is_buffer_receiver_symbol_for_builtin(base, declared_symbols) {
                     return Some(PrimitiveType::I32);
                 }
             }
@@ -348,11 +328,11 @@ pub(crate) fn infer_scalar_expr_type(
             {
                 if !is_data_receiver_symbol_for_builtin(
                     base,
-                    state_scalars,
+                    declared_symbols,
                     local_array_aliases,
                     struct_instances,
                     struct_defs,
-                ) && !is_buffer_receiver_symbol_for_builtin(base, state_scalars)
+                ) && !is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
                 {
                     return Some(PrimitiveType::F32);
                 }
@@ -361,14 +341,10 @@ pub(crate) fn infer_scalar_expr_type(
                         return Some(alias.elem_ty);
                     }
                 }
-                if let Some(ty) =
-                    get_declared_symbol_type(state_scalars, base, DECLARED_DATA_ELEM_TYPE_PREFIX)
-                {
+                if let Some(ty) = declared_symbol_scalar_type(declared_symbols, base) {
                     return Some(ty);
                 }
-                if let Some(ty) =
-                    get_declared_symbol_type(state_scalars, base, DECLARED_BUFFER_ELEM_TYPE_PREFIX)
-                {
+                if let Some((ty, _)) = declared_buffer_info(declared_symbols, base) {
                     return Some(ty);
                 }
                 return Some(PrimitiveType::F32);
@@ -379,11 +355,7 @@ pub(crate) fn infer_scalar_expr_type(
                     ..
                 }) = args.first()
                 {
-                    if let Some(ty) = get_declared_symbol_type(
-                        state_scalars,
-                        base,
-                        DECLARED_BUFFER_ELEM_TYPE_PREFIX,
-                    ) {
+                    if let Some((ty, _)) = declared_buffer_info(declared_symbols, base) {
                         return Some(ty);
                     }
                 }
@@ -408,6 +380,7 @@ pub(crate) fn infer_scalar_expr_type(
             let l = infer_scalar_expr_type(
                 lhs,
                 state_scalars,
+                declared_symbols,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -420,6 +393,7 @@ pub(crate) fn infer_scalar_expr_type(
             let r = infer_scalar_expr_type(
                 rhs,
                 state_scalars,
+                declared_symbols,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -451,6 +425,7 @@ pub(crate) fn infer_scalar_expr_type(
 pub(crate) fn infer_expr_type_for_semantics(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     param_structs: Option<&HashMap<String, String>>,
     locals: &HashSet<String>,
     input_names: &HashSet<String>,
@@ -464,6 +439,7 @@ pub(crate) fn infer_expr_type_for_semantics(
     infer_expr_type_for_semantics_with_local_data(
         expr,
         state_scalars,
+        declared_symbols,
         param_structs,
         &empty_local_data_aliases,
         locals,
@@ -480,6 +456,7 @@ pub(crate) fn infer_expr_type_for_semantics(
 pub(crate) fn infer_expr_type_for_semantics_with_local_data(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
     param_structs: Option<&HashMap<String, String>>,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
@@ -515,6 +492,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data(
     infer_scalar_expr_type(
         expr,
         state_scalars,
+        &declared_symbols,
         local_array_aliases,
         locals,
         input_names,

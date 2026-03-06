@@ -2,106 +2,281 @@ use std::collections::{HashMap, HashSet};
 
 use omni_frontend::PrimitiveType;
 
-pub(crate) const DECLARED_INPUT_TYPE_PREFIX: &str = "__omni_decl_input_ty__";
-pub(crate) const DECLARED_OUTPUT_TYPE_PREFIX: &str = "__omni_decl_output_ty__";
-pub(crate) const DECLARED_PARAM_TYPE_PREFIX: &str = "__omni_decl_param_ty__";
-pub(crate) const DECLARED_DATA_ELEM_TYPE_PREFIX: &str = "__omni_decl_data_elem_ty__";
-pub(crate) const DECLARED_BUFFER_ELEM_TYPE_PREFIX: &str = "__omni_decl_buffer_elem_ty__";
-pub(crate) const DECLARED_STRUCT_FIELD_TYPE_PREFIX: &str = "__omni_decl_struct_field_ty__";
-pub(crate) const DECLARED_INVALID_PLACEHOLDER_PREFIX: &str = "__omni_decl_invalid_placeholder__";
-pub(crate) const DECLARED_FUNCTION_RETURN_TYPE_PREFIX: &str = "__omni_decl_fn_ret_ty__";
-pub(crate) const DECLARED_BUFFER_MULTICHANNEL_PREFIX: &str = "__omni_decl_buffer_multich__";
-pub(crate) const DECLARED_BUFFER_DYNAMIC_CHANNELS_PREFIX: &str = "__omni_decl_buffer_dynch__";
-pub(crate) const DECLARED_BUFFER_STATIC_CHANNELS_PREFIX: &str = "__omni_decl_buffer_stch__";
-pub(crate) const DECLARED_BUFFER_ELEM_F32_PREFIX: &str = "__omni_decl_buffer_elem_f32__";
-pub(crate) const DECLARED_BUFFER_ELEM_F64_PREFIX: &str = "__omni_decl_buffer_elem_f64__";
-pub(crate) const DECLARED_BUFFER_ELEM_I32_PREFIX: &str = "__omni_decl_buffer_elem_i32__";
-pub(crate) const DECLARED_BUFFER_ELEM_I64_PREFIX: &str = "__omni_decl_buffer_elem_i64__";
-pub(crate) const DECLARED_BUFFER_ELEM_BOOL_PREFIX: &str = "__omni_decl_buffer_elem_bool__";
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BufferChannelInfo {
+    Mono,
+    Static(usize),
+    Dynamic,
+}
 
-pub(crate) fn declared_type_key(prefix: &str, name: &str) -> String {
-    format!("{prefix}{name}")
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeclaredSymbolInfo {
+    Input {
+        ty: PrimitiveType,
+    },
+    Output {
+        ty: PrimitiveType,
+    },
+    Param {
+        ty: PrimitiveType,
+    },
+    DataArray {
+        elem_ty: PrimitiveType,
+    },
+    Buffer {
+        elem_ty: PrimitiveType,
+        channels: BufferChannelInfo,
+    },
+    #[allow(dead_code)]
+    StructField {
+        ty: PrimitiveType,
+    },
+    FunctionReturn {
+        ty: PrimitiveType,
+    },
+    InvalidPlaceholder,
+}
+
+pub(crate) type DeclaredSymbolMap = HashMap<String, DeclaredSymbolInfo>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeclaredScalarSymbolKind {
+    Input,
+    Output,
+    Param,
+}
+
+fn declared_scalar_symbol_info(
+    kind: DeclaredScalarSymbolKind,
+    ty: PrimitiveType,
+) -> DeclaredSymbolInfo {
+    match kind {
+        DeclaredScalarSymbolKind::Input => DeclaredSymbolInfo::Input { ty },
+        DeclaredScalarSymbolKind::Output => DeclaredSymbolInfo::Output { ty },
+        DeclaredScalarSymbolKind::Param => DeclaredSymbolInfo::Param { ty },
+    }
+}
+
+pub(crate) fn insert_declared_symbol(
+    _state_scalars: &mut HashMap<String, PrimitiveType>,
+    declared_symbols: &mut DeclaredSymbolMap,
+    name: impl Into<String>,
+    info: DeclaredSymbolInfo,
+) {
+    declared_symbols.insert(name.into(), info);
 }
 
 pub(crate) fn set_declared_symbol_types(
-    state_scalars: &mut HashMap<String, PrimitiveType>,
+    _state_scalars: &mut HashMap<String, PrimitiveType>,
+    declared_symbols: &mut DeclaredSymbolMap,
     names: &HashSet<String>,
     types: &HashMap<String, PrimitiveType>,
-    key_prefix: &str,
+    kind: DeclaredScalarSymbolKind,
 ) {
     for name in names {
         let ty = *types.get(name).unwrap_or(&PrimitiveType::F32);
-        state_scalars.insert(declared_type_key(key_prefix, name), ty);
+        declared_symbols.insert(name.clone(), declared_scalar_symbol_info(kind, ty));
     }
 }
 
-pub(crate) fn get_declared_symbol_type(
-    state_scalars: &HashMap<String, PrimitiveType>,
+pub(crate) fn declared_symbol_scalar_type(
+    declared_symbols: &DeclaredSymbolMap,
     name: &str,
-    key_prefix: &str,
 ) -> Option<PrimitiveType> {
-    state_scalars
-        .get(&declared_type_key(key_prefix, name))
-        .copied()
+    match declared_symbols.get(name) {
+        Some(DeclaredSymbolInfo::Input { ty })
+        | Some(DeclaredSymbolInfo::Output { ty })
+        | Some(DeclaredSymbolInfo::Param { ty })
+        | Some(DeclaredSymbolInfo::StructField { ty })
+        | Some(DeclaredSymbolInfo::FunctionReturn { ty }) => Some(*ty),
+        Some(DeclaredSymbolInfo::DataArray { elem_ty }) => Some(*elem_ty),
+        Some(DeclaredSymbolInfo::Buffer { elem_ty, .. }) => Some(*elem_ty),
+        Some(DeclaredSymbolInfo::InvalidPlaceholder) | None => None,
+    }
 }
 
-pub(crate) fn has_declared_buffer_symbol(known_scalars: &HashSet<String>, name: &str) -> bool {
-    known_scalars.contains(&declared_type_key(DECLARED_BUFFER_ELEM_TYPE_PREFIX, name))
+pub(crate) fn declared_buffer_info(
+    declared_symbols: &DeclaredSymbolMap,
+    name: &str,
+) -> Option<(PrimitiveType, BufferChannelInfo)> {
+    match declared_symbols.get(name) {
+        Some(DeclaredSymbolInfo::Buffer { elem_ty, channels }) => Some((*elem_ty, *channels)),
+        _ => None,
+    }
 }
 
-pub(crate) fn is_declared_multichannel_buffer_symbol(
-    known_scalars: &HashSet<String>,
+pub(crate) fn has_declared_buffer_symbol_info(
+    declared_symbols: &DeclaredSymbolMap,
     name: &str,
 ) -> bool {
-    known_scalars.contains(&declared_type_key(
-        DECLARED_BUFFER_MULTICHANNEL_PREFIX,
-        name,
-    ))
+    declared_buffer_info(declared_symbols, name).is_some()
 }
 
-pub(crate) fn buffer_elem_decl_prefix(elem_ty: PrimitiveType) -> &'static str {
-    match elem_ty {
-        PrimitiveType::F32 => DECLARED_BUFFER_ELEM_F32_PREFIX,
-        PrimitiveType::F64 => DECLARED_BUFFER_ELEM_F64_PREFIX,
-        PrimitiveType::I32 => DECLARED_BUFFER_ELEM_I32_PREFIX,
-        PrimitiveType::I64 => DECLARED_BUFFER_ELEM_I64_PREFIX,
-        PrimitiveType::Bool => DECLARED_BUFFER_ELEM_BOOL_PREFIX,
-    }
+pub(crate) fn is_declared_multichannel_buffer_info(
+    declared_symbols: &DeclaredSymbolMap,
+    name: &str,
+) -> bool {
+    matches!(
+        declared_buffer_info(declared_symbols, name),
+        Some((_, BufferChannelInfo::Static(ch))) if ch > 1
+    ) || matches!(
+        declared_buffer_info(declared_symbols, name),
+        Some((_, BufferChannelInfo::Dynamic))
+    )
 }
 
-pub(crate) fn declared_buffer_static_channels_key(name: &str, channels: usize) -> String {
-    format!("{DECLARED_BUFFER_STATIC_CHANNELS_PREFIX}{name}__{channels}")
-}
-
-pub(crate) fn has_declared_buffer_elem_type(
-    known_scalars: &HashSet<String>,
+pub(crate) fn has_declared_buffer_elem_type_info(
+    declared_symbols: &DeclaredSymbolMap,
     name: &str,
     elem_ty: PrimitiveType,
 ) -> bool {
-    known_scalars.contains(&declared_type_key(buffer_elem_decl_prefix(elem_ty), name))
+    matches!(
+        declared_buffer_info(declared_symbols, name),
+        Some((actual_ty, _)) if actual_ty == elem_ty
+    )
 }
 
-pub(crate) fn has_declared_dynamic_buffer_channels(
-    known_scalars: &HashSet<String>,
+pub(crate) fn has_declared_dynamic_buffer_channels_info(
+    declared_symbols: &DeclaredSymbolMap,
     name: &str,
 ) -> bool {
-    known_scalars.contains(&declared_type_key(
-        DECLARED_BUFFER_DYNAMIC_CHANNELS_PREFIX,
-        name,
-    ))
+    matches!(
+        declared_buffer_info(declared_symbols, name),
+        Some((_, BufferChannelInfo::Dynamic))
+    )
 }
 
-pub(crate) fn declared_static_buffer_channels(
-    known_scalars: &HashSet<String>,
+pub(crate) fn declared_static_buffer_channels_info(
+    declared_symbols: &DeclaredSymbolMap,
     name: &str,
 ) -> Option<usize> {
-    let prefix = format!("{DECLARED_BUFFER_STATIC_CHANNELS_PREFIX}{name}__");
-    for symbol in known_scalars {
-        if let Some(ch) = symbol.strip_prefix(&prefix) {
-            if let Ok(parsed) = ch.parse::<usize>() {
-                return Some(parsed);
-            }
-        }
+    match declared_buffer_info(declared_symbols, name) {
+        Some((_, BufferChannelInfo::Static(ch))) if ch > 1 => Some(ch),
+        _ => None,
     }
-    None
+}
+
+pub(crate) fn is_declared_data_array_symbol(
+    declared_symbols: &DeclaredSymbolMap,
+    name: &str,
+) -> bool {
+    matches!(
+        declared_symbols.get(name),
+        Some(DeclaredSymbolInfo::DataArray { .. })
+    )
+}
+
+pub(crate) fn is_invalid_placeholder_symbol(
+    declared_symbols: &DeclaredSymbolMap,
+    name: &str,
+) -> bool {
+    matches!(
+        declared_symbols.get(name),
+        Some(DeclaredSymbolInfo::InvalidPlaceholder)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_declared_buffer_symbol_populates_typed_map() {
+        let mut state_scalars = HashMap::new();
+        let mut declared_symbols = DeclaredSymbolMap::new();
+
+        insert_declared_symbol(
+            &mut state_scalars,
+            &mut declared_symbols,
+            "buf",
+            DeclaredSymbolInfo::Buffer {
+                elem_ty: PrimitiveType::F64,
+                channels: BufferChannelInfo::Static(2),
+            },
+        );
+
+        assert!(state_scalars.is_empty());
+        assert_eq!(
+            declared_symbols.get("buf"),
+            Some(&DeclaredSymbolInfo::Buffer {
+                elem_ty: PrimitiveType::F64,
+                channels: BufferChannelInfo::Static(2),
+            })
+        );
+        assert!(has_declared_buffer_symbol_info(&declared_symbols, "buf"));
+        assert!(has_declared_buffer_elem_type_info(
+            &declared_symbols,
+            "buf",
+            PrimitiveType::F64
+        ));
+        assert!(is_declared_multichannel_buffer_info(
+            &declared_symbols,
+            "buf"
+        ));
+        assert_eq!(
+            declared_static_buffer_channels_info(&declared_symbols, "buf"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn set_declared_symbol_types_populates_typed_map() {
+        let mut state_scalars = HashMap::new();
+        let mut declared_symbols = DeclaredSymbolMap::new();
+        let names = HashSet::from([String::from("in1")]);
+        let types = HashMap::from([(String::from("in1"), PrimitiveType::F32)]);
+
+        set_declared_symbol_types(
+            &mut state_scalars,
+            &mut declared_symbols,
+            &names,
+            &types,
+            DeclaredScalarSymbolKind::Input,
+        );
+
+        assert!(state_scalars.is_empty());
+        assert_eq!(
+            declared_symbols.get("in1"),
+            Some(&DeclaredSymbolInfo::Input {
+                ty: PrimitiveType::F32,
+            })
+        );
+    }
+
+    #[test]
+    fn declared_buffer_helpers_distinguish_dynamic_and_mono() {
+        let declared_symbols = HashMap::from([
+            (
+                String::from("mono"),
+                DeclaredSymbolInfo::Buffer {
+                    elem_ty: PrimitiveType::F32,
+                    channels: BufferChannelInfo::Mono,
+                },
+            ),
+            (
+                String::from("dyn"),
+                DeclaredSymbolInfo::Buffer {
+                    elem_ty: PrimitiveType::I32,
+                    channels: BufferChannelInfo::Dynamic,
+                },
+            ),
+        ]);
+
+        assert!(!is_declared_multichannel_buffer_info(
+            &declared_symbols,
+            "mono"
+        ));
+        assert_eq!(
+            declared_static_buffer_channels_info(&declared_symbols, "mono"),
+            None
+        );
+        assert!(is_declared_multichannel_buffer_info(
+            &declared_symbols,
+            "dyn"
+        ));
+        assert!(has_declared_dynamic_buffer_channels_info(
+            &declared_symbols,
+            "dyn"
+        ));
+    }
 }

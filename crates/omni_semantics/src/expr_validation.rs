@@ -105,7 +105,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 ));
                 return;
             }
-            if has_declared_buffer_symbol(env.known_scalars, name) {
+            if has_declared_buffer_symbol_info(env.declared_symbols, name) {
                 errors.push(Diagnostic::semantic(
                     format!("buffer symbol '{name}' must be indexed"),
                     0,
@@ -172,15 +172,15 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 }
             }
             if !env.array_vars.contains_key(base)
-                && !has_declared_buffer_symbol(env.known_scalars, base)
-                && !is_declared_struct_array_root_symbol(env.known_scalars, base)
+                && !has_declared_buffer_symbol_info(env.declared_symbols, base)
+                && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
             {
                 errors.push(Diagnostic::semantic(
                     format!("indexed expression '{base}[...]' is not a array/buffer symbol"),
                     0,
                     0,
                 ));
-            } else if is_declared_multichannel_buffer_symbol(env.known_scalars, base) {
+            } else if is_declared_multichannel_buffer_info(env.declared_symbols, base) {
                 errors.push(Diagnostic::semantic(
                     format!(
                         "indexed expression '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
@@ -367,7 +367,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         }
                         if param_ty.is_none() {
                             if let Expr::Var(v) = arg {
-                                if has_declared_buffer_symbol(env.known_scalars, v) {
+                                if has_declared_buffer_symbol_info(env.declared_symbols, v) {
                                     continue;
                                 }
                                 if env.array_vars.contains_key(v) {
@@ -446,24 +446,20 @@ fn is_internal_proc_helper_call(name: &str) -> bool {
         || name.contains(PROC_EVENT_FN_PREFIX)
 }
 
-fn is_declared_struct_array_root_symbol(
-    known_scalars: &std::collections::HashSet<String>,
-    base: &str,
-) -> bool {
-    let root_key = declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, base);
-    if known_scalars.contains(&root_key) {
+fn is_declared_struct_array_root_symbol(declared_symbols: &DeclaredSymbolMap, base: &str) -> bool {
+    if is_declared_data_array_symbol(declared_symbols, base) {
         return true;
     }
-    let prefix = format!("{DECLARED_DATA_ELEM_TYPE_PREFIX}{base}.");
-    known_scalars
-        .iter()
-        .any(|symbol| symbol.starts_with(&prefix))
+    let prefix = format!("{base}.");
+    declared_symbols.iter().any(|(name, info)| {
+        name.starts_with(&prefix) && matches!(info, DeclaredSymbolInfo::DataArray { .. })
+    })
 }
 
 fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
     if env.array_vars.contains_key(base)
-        || has_declared_buffer_symbol(env.known_scalars, base)
-        || is_declared_struct_array_root_symbol(env.known_scalars, base)
+        || has_declared_buffer_symbol_info(env.declared_symbols, base)
+        || is_declared_struct_array_root_symbol(env.declared_symbols, base)
     {
         return true;
     }
@@ -483,11 +479,13 @@ fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
 }
 
 fn is_builtin_buffer_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    has_declared_buffer_symbol(env.known_scalars, base)
+    has_declared_buffer_symbol_info(env.declared_symbols, base)
 }
 
 fn is_builtin_unsafe_data_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    if env.array_vars.contains_key(base) || has_declared_buffer_symbol(env.known_scalars, base) {
+    if env.array_vars.contains_key(base)
+        || has_declared_buffer_symbol_info(env.declared_symbols, base)
+    {
         return true;
     }
     if let Some((root, field)) = split_simple_field_path(base) {
@@ -537,9 +535,9 @@ fn validate_data_len_builtin_call(
     let before = errors.len();
     let is_data_symbol = if env.array_vars.contains_key(base) {
         true
-    } else if has_declared_buffer_symbol(env.known_scalars, base) {
+    } else if has_declared_buffer_symbol_info(env.declared_symbols, base) {
         true
-    } else if is_declared_struct_array_root_symbol(env.known_scalars, base) {
+    } else if is_declared_struct_array_root_symbol(env.declared_symbols, base) {
         true
     } else if let Some((root, field)) = split_field_path(base, errors) {
         let struct_name = env
@@ -639,7 +637,7 @@ fn validate_buffer_chans_builtin_call(
             ));
         }
     }
-    if !has_declared_buffer_symbol(env.known_scalars, base) {
+    if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
         errors.push(Diagnostic::semantic(
             format!(
                 "builtin method '{}' requires a buffer symbol receiver, got '{}'",
@@ -695,7 +693,7 @@ fn validate_buffer_symbol_for_param(
     env: ExprEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if !has_declared_buffer_symbol(env.known_scalars, symbol) {
+    if !has_declared_buffer_symbol_info(env.declared_symbols, symbol) {
         errors.push(Diagnostic::semantic(
             format!("{context} expects a buffer symbol argument, got '{symbol}'"),
             0,
@@ -717,7 +715,7 @@ fn validate_buffer_symbol_for_param(
             PrimitiveType::F32
         }
     };
-    if !has_declared_buffer_elem_type(env.known_scalars, symbol, expected_elem) {
+    if !has_declared_buffer_elem_type_info(env.declared_symbols, symbol, expected_elem) {
         errors.push(Diagnostic::semantic(
             format!(
                 "{context} expects element type {:?}, but buffer '{}' has a different element type",
@@ -729,7 +727,7 @@ fn validate_buffer_symbol_for_param(
     }
     match &expected.channels {
         BufferChannels::Mono => {
-            if is_declared_multichannel_buffer_symbol(env.known_scalars, symbol) {
+            if is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
                 errors.push(Diagnostic::semantic(
                     format!(
                         "{context} expects mono buffer, but '{}' is multichannel",
@@ -744,7 +742,7 @@ fn validate_buffer_symbol_for_param(
             let requested_channels = const_positive_usize(expr);
             if let Some(channels) = requested_channels {
                 if channels <= 1 {
-                    if is_declared_multichannel_buffer_symbol(env.known_scalars, symbol) {
+                    if is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
                         errors.push(Diagnostic::semantic(
                             format!(
                                 "{context} expects mono/static-1 buffer, but '{}' is multichannel",
@@ -757,7 +755,7 @@ fn validate_buffer_symbol_for_param(
                     return;
                 }
             }
-            if !is_declared_multichannel_buffer_symbol(env.known_scalars, symbol) {
+            if !is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
                 errors.push(Diagnostic::semantic(
                     format!(
                         "{context} expects multichannel buffer, but '{}' is mono",
@@ -769,7 +767,7 @@ fn validate_buffer_symbol_for_param(
                 return;
             }
             if let Some(channels) = requested_channels {
-                if has_declared_dynamic_buffer_channels(env.known_scalars, symbol) {
+                if has_declared_dynamic_buffer_channels_info(env.declared_symbols, symbol) {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "{context} expects static {channels} channels, but '{}' is dynamic",
@@ -780,7 +778,9 @@ fn validate_buffer_symbol_for_param(
                     ));
                     return;
                 }
-                if let Some(actual) = declared_static_buffer_channels(env.known_scalars, symbol) {
+                if let Some(actual) =
+                    declared_static_buffer_channels_info(env.declared_symbols, symbol)
+                {
                     if actual != channels {
                         errors.push(Diagnostic::semantic(
                             format!(
@@ -795,7 +795,7 @@ fn validate_buffer_symbol_for_param(
             }
         }
         BufferChannels::Dynamic => {
-            if !is_declared_multichannel_buffer_symbol(env.known_scalars, symbol) {
+            if !is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
                 errors.push(Diagnostic::semantic(
                     format!(
                         "{context} expects multichannel dynamic buffer, but '{}' is mono",
@@ -855,7 +855,7 @@ fn validate_internal_buffer_2d_call(
     if let Some(first) = args.first() {
         match &first.expr {
             Expr::Var(base) => {
-                if !has_declared_buffer_symbol(env.known_scalars, base) {
+                if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "internal builtin '{}' first argument must be a declared buffer symbol, got '{}'",
@@ -864,7 +864,7 @@ fn validate_internal_buffer_2d_call(
                         0,
                         0,
                     ));
-                } else if !is_declared_multichannel_buffer_symbol(env.known_scalars, base) {
+                } else if !is_declared_multichannel_buffer_info(env.declared_symbols, base) {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "internal builtin '{}' requires multichannel buffer indexing form, but '{}' is mono",
@@ -1072,7 +1072,7 @@ fn validate_internal_proc_index_buffer_select_call(
     for slot_expr in slot_exprs {
         match slot_expr {
             Expr::Var(symbol) => {
-                if !has_declared_buffer_symbol(env.known_scalars, symbol) {
+                if !has_declared_buffer_symbol_info(env.declared_symbols, symbol) {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "internal builtin '{}' slot arguments must be declared buffer symbols, got '{}'",
@@ -1196,7 +1196,7 @@ fn validate_unsafe_data_builtin_call(
                         is_valid_primitive_data = true;
                     }
                 } else if env.array_vars.contains_key(base)
-                    || has_declared_buffer_symbol(env.known_scalars, base)
+                    || has_declared_buffer_symbol_info(env.declared_symbols, base)
                 {
                     is_valid_primitive_data = true;
                 }

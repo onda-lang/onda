@@ -1991,6 +1991,20 @@ sample {
 }
 "#;
 
+const IF_BRANCH_TYPE_CONFLICT_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  if true {
+    x = 1
+  } else {
+    x = 1.0
+  }
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
 const TYPED_DATA_ELEM_PRIMITIVES_OK_EXAMPLE: &str = r#"
 outs { out1 }
 init {
@@ -7526,6 +7540,22 @@ fn if_condition_must_be_bool() {
     assert!(
         result.is_err(),
         "semantic analysis should reject non-bool if condition"
+    );
+}
+
+#[test]
+fn init_if_branches_cannot_introduce_conflicting_state_types() {
+    let parsed =
+        parse_program(IF_BRANCH_TYPE_CONFLICT_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("branch type conflict should be rejected");
+    assert!(
+        errs.iter().any(|d| {
+            d.message.contains("state symbol 'x'")
+                && d.message.contains("conflicting types")
+                && d.message.contains("across branches")
+        }),
+        "expected branch type conflict diagnostic, got {:?}",
+        errs
     );
 }
 

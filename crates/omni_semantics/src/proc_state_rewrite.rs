@@ -124,11 +124,9 @@ pub(crate) fn is_plain_symbol(name: &str) -> bool {
 pub(crate) fn convert_init_state_to_proc_fields(st: &InitAnalysisState) -> ProcStateFields {
     let mut psf = ProcStateFields::default();
 
-    // Copy scalars (filter out internal __omni_decl_* keys that aren't real state)
+    // Copy scalar state declared during init analysis.
     for (name, ty) in &st.state_scalars {
-        if !name.starts_with("__omni_decl_") {
-            psf.scalars.insert(name.clone(), *ty);
-        }
+        psf.scalars.insert(name.clone(), *ty);
     }
 
     // Merge array specs: prefer state_array_specs (full spec), fall back to state_arrays + elem type keys
@@ -137,9 +135,8 @@ pub(crate) fn convert_init_state_to_proc_fields(st: &InitAnalysisState) -> ProcS
     }
     for (name, size) in &st.state_arrays {
         if !psf.data.contains_key(name) {
-            let elem_ty =
-                get_declared_symbol_type(&st.state_scalars, name, DECLARED_DATA_ELEM_TYPE_PREFIX)
-                    .unwrap_or(PrimitiveType::F32);
+            let elem_ty = declared_symbol_scalar_type(&st.declared_symbols, name)
+                .unwrap_or(PrimitiveType::F32);
             psf.data.insert(
                 name.clone(),
                 omni_frontend::ArrayTypeSpec {

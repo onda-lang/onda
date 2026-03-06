@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use omni_frontend::{Diagnostic, PrimitiveType};
 
-use crate::decl_symbols::{declared_type_key, DECLARED_DATA_ELEM_TYPE_PREFIX};
+use crate::decl_symbols::{insert_declared_symbol, DeclaredSymbolInfo, DeclaredSymbolMap};
 use crate::{
     ArrayStructRootInfo, LocalAliasTypes, LocalArrayAliasInfo, TypedFieldType, TypedStructField,
 };
@@ -122,6 +122,7 @@ pub(crate) fn register_data_struct_root(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     context: &str,
     state_scalars: &mut HashMap<String, PrimitiveType>,
+    declared_symbols: &mut DeclaredSymbolMap,
     state_arrays: &mut HashMap<String, usize>,
     state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     errors: &mut Vec<Diagnostic>,
@@ -137,6 +138,7 @@ pub(crate) fn register_data_struct_root(
         struct_defs,
         context,
         state_scalars,
+        declared_symbols,
         state_arrays,
         state_array_struct_roots,
         errors,
@@ -152,6 +154,7 @@ fn register_data_struct_root_inner(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     context: &str,
     state_scalars: &mut HashMap<String, PrimitiveType>,
+    declared_symbols: &mut DeclaredSymbolMap,
     state_arrays: &mut HashMap<String, usize>,
     state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     errors: &mut Vec<Diagnostic>,
@@ -186,18 +189,25 @@ fn register_data_struct_root_inner(
         });
     // Mark the root symbol so index validation can recognize `base[idx]` even
     // when the struct has no scalar/array fields to contribute `base.*` keys.
-    state_scalars
-        .entry(declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, base))
-        .or_insert(PrimitiveType::F32);
+    insert_declared_symbol(
+        state_scalars,
+        declared_symbols,
+        base,
+        DeclaredSymbolInfo::DataArray {
+            elem_ty: PrimitiveType::F32,
+        },
+    );
 
     stack.push(struct_name.to_owned());
     for field in fields {
         let flat = format!("{base}.{}", field.name);
         match field.ty {
             TypedFieldType::Scalar(prim) => {
-                state_scalars.insert(
-                    declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, &flat),
-                    prim,
+                insert_declared_symbol(
+                    state_scalars,
+                    declared_symbols,
+                    flat.clone(),
+                    DeclaredSymbolInfo::DataArray { elem_ty: prim },
                 );
                 state_arrays.entry(flat).or_insert(len);
             }
@@ -216,6 +226,7 @@ fn register_data_struct_root_inner(
                         struct_defs,
                         &nested_context,
                         state_scalars,
+                        declared_symbols,
                         state_arrays,
                         state_array_struct_roots,
                         errors,
@@ -226,9 +237,11 @@ fn register_data_struct_root_inner(
                     }
                 } else {
                     let elem_ty = field.array_elem_ty.unwrap_or(PrimitiveType::F32);
-                    state_scalars.insert(
-                        declared_type_key(DECLARED_DATA_ELEM_TYPE_PREFIX, &flat),
-                        elem_ty,
+                    insert_declared_symbol(
+                        state_scalars,
+                        declared_symbols,
+                        flat.clone(),
+                        DeclaredSymbolInfo::DataArray { elem_ty },
                     );
                     state_arrays.entry(flat).or_insert(nested_len);
                 }
