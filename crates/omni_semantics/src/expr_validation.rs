@@ -403,6 +403,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             if env.struct_defs.contains_key(name) {
                 let scope_name = match env.scope {
                     ScopeKind::Init => "init",
+                    ScopeKind::Block => "block",
                     ScopeKind::Sample => "sample",
                     ScopeKind::Def => "def",
                 };

@@ -205,12 +205,13 @@ pub(crate) fn parse_numbered_port_index(name: &str, prefix: &str) -> Option<usiz
     Some(idx)
 }
 
-/// Controls which assignments are promoted to state scalars.
-pub(crate) enum StateRegistrationScope<'a> {
+/// Controls which runtime-scope assignments are promoted to state scalars.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RuntimeRegistrationMode {
+    /// Event-like scope: do not promote assignments to state.
+    None,
     /// Block scope: register all assigned scalars (type inferred from expression).
-    Block {
-        struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
-    },
+    Block,
     /// Sample scope: register only explicitly typed declarations.
     Sample,
 }
@@ -225,7 +226,8 @@ pub(crate) fn register_scope_state<'a>(
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
     param_names: &HashSet<String>,
-    scope: &StateRegistrationScope<'_>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    registration_mode: RuntimeRegistrationMode,
 ) {
     for stmt in stmts {
         register_scope_stmt_state(
@@ -238,7 +240,8 @@ pub(crate) fn register_scope_state<'a>(
             input_names,
             output_names,
             param_names,
-            scope,
+            struct_defs,
+            registration_mode,
         );
     }
 }
@@ -253,7 +256,8 @@ fn register_scope_stmt_state(
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
     param_names: &HashSet<String>,
-    scope: &StateRegistrationScope<'_>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    registration_mode: RuntimeRegistrationMode,
 ) {
     match stmt {
         Stmt::Assign {
@@ -264,8 +268,11 @@ fn register_scope_stmt_state(
             expr,
             ..
         } => {
+            if matches!(registration_mode, RuntimeRegistrationMode::None) {
+                return;
+            }
             // Sample scope: only register explicitly typed declarations
-            if matches!(scope, StateRegistrationScope::Sample) && !*is_typed_decl {
+            if matches!(registration_mode, RuntimeRegistrationMode::Sample) && !*is_typed_decl {
                 return;
             }
             if let AssignTarget::Var(name) = target {
@@ -281,8 +288,9 @@ fn register_scope_stmt_state(
                     && !matches!(expr, Expr::ArrayCtor { .. })
                     && generic_decl_ty.is_none()
                 {
-                    let resolved_ty = match scope {
-                        StateRegistrationScope::Block { struct_defs } => {
+                    let resolved_ty = match registration_mode {
+                        RuntimeRegistrationMode::None => return,
+                        RuntimeRegistrationMode::Block => {
                             let inferred_ty = {
                                 let mut infer_errors = Vec::<Diagnostic>::new();
                                 let empty_locals = HashSet::<String>::new();
@@ -303,7 +311,7 @@ fn register_scope_stmt_state(
                             };
                             decl_ty.unwrap_or(inferred_ty)
                         }
-                        StateRegistrationScope::Sample => decl_ty.unwrap_or(PrimitiveType::F32),
+                        RuntimeRegistrationMode::Sample => decl_ty.unwrap_or(PrimitiveType::F32),
                     };
                     state_scalars.insert(name.clone(), resolved_ty);
                 }
@@ -325,7 +333,8 @@ fn register_scope_stmt_state(
                     input_names,
                     output_names,
                     param_names,
-                    scope,
+                    struct_defs,
+                    registration_mode,
                 );
             }
             for nested in else_branch {
@@ -339,7 +348,8 @@ fn register_scope_stmt_state(
                     input_names,
                     output_names,
                     param_names,
-                    scope,
+                    struct_defs,
+                    registration_mode,
                 );
             }
         }
@@ -355,7 +365,8 @@ fn register_scope_stmt_state(
                     input_names,
                     output_names,
                     param_names,
-                    scope,
+                    struct_defs,
+                    registration_mode,
                 );
             }
         }
@@ -371,7 +382,8 @@ fn register_scope_stmt_state(
                     input_names,
                     output_names,
                     param_names,
-                    scope,
+                    struct_defs,
+                    registration_mode,
                 );
             }
         }

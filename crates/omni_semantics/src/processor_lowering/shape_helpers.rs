@@ -317,7 +317,7 @@ pub(super) fn compute_proc_shape(
     }
     let mut state = convert_init_state_to_proc_fields(&init_st);
 
-    // Non-init scopes: unified analysis via register_scope_state + analyze_sample_stmt
+    // Non-init scopes: unified runtime analysis via register_scope_state + runtime stmt analysis.
     let mut proc_state_scalars = init_st.state_scalars;
     let mut proc_declared_symbols = init_st.declared_symbols;
     let mut proc_state_arrays = init_st.state_arrays;
@@ -491,11 +491,10 @@ pub(super) fn compute_proc_shape(
     let empty_inputs = HashSet::new();
     let empty_outputs = HashSet::new();
     let block_forbidden = out_names.clone();
-    let block_registration_scope = StateRegistrationScope::Block {
-        struct_defs: &typed_struct_defs,
-    };
     register_and_analyze_runtime_scope(
         proc.block_pre.iter().chain(proc.block_post.iter()),
+        ScopeKind::Block,
+        RuntimeRegistrationMode::Block,
         &mut proc_state_scalars,
         &proc_declared_symbols,
         &proc_state_arrays,
@@ -505,7 +504,6 @@ pub(super) fn compute_proc_shape(
         &ins_names,
         &out_names,
         &typed_param_names,
-        &block_registration_scope,
         &block_locals,
         block_known_scalars,
         LocalAliasTypes::new(),
@@ -530,9 +528,10 @@ pub(super) fn compute_proc_shape(
     extend_known_scalars(&mut sample_known_scalars, proc_state_arrays.keys());
     let sample_locals = HashSet::new();
     let sample_forbidden = HashSet::new();
-    let sample_registration_scope = StateRegistrationScope::Sample;
     register_and_analyze_runtime_scope(
         proc.sample.iter(),
+        ScopeKind::Sample,
+        RuntimeRegistrationMode::Sample,
         &mut proc_state_scalars,
         &proc_declared_symbols,
         &proc_state_arrays,
@@ -542,7 +541,6 @@ pub(super) fn compute_proc_shape(
         &ins_names,
         &out_names,
         &typed_param_names,
-        &sample_registration_scope,
         &sample_locals,
         sample_known_scalars,
         LocalAliasTypes::new(),

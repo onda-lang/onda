@@ -175,6 +175,84 @@ sample {
 }
 "#;
 
+const BLOCK_BRANCH_STATE_REGISTRATION_EXAMPLE: &str = r#"
+outs { out1 }
+block {
+  if (1 < 2) {
+    tmp = 2.0
+  } else {
+    tmp = -1.0
+  }
+  acc = tmp + 1.0
+  sample {
+    out1 = acc
+  }
+}
+"#;
+
+const SAMPLE_BRANCH_TYPED_REGISTRATION_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  if (1 < 2) {
+    tmp: f32 = 2.0
+  } else {
+    tmp: f32 = -1.0
+  }
+  out1 = tmp + 1.0
+}
+"#;
+
+const BLOCK_LOOP_CONTROL_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  block_value = 0.0
+}
+block {
+  block_value = 0.0
+  for i in 0..5 {
+    if (i == 1) { continue }
+    if (i == 4) { break }
+    block_value = block_value + 1.0
+  }
+  sample {
+    out1 = block_value
+  }
+}
+"#;
+
+const SAMPLE_LOOP_CONTROL_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  sum: i32 = 0
+  i: i32 = 0
+  while (i < 6) {
+    i = i + 1
+    if (i == 2) { continue }
+    if (i == 5) { break }
+    sum = sum + i
+  }
+  out1 = f32(sum)
+}
+"#;
+
+const BLOCK_BREAK_OUTSIDE_LOOP_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+block {
+  break
+  sample {
+    out1 = 0.0
+  }
+}
+"#;
+
+const SAMPLE_CONTINUE_OUTSIDE_LOOP_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  continue
+  out1 = 0.0
+}
+"#;
+
 const DEF_CALL_EXAMPLE: &str = r#"
 outs { out1 }
 params { g = 0.5 }
@@ -5355,6 +5433,95 @@ fn init_control_flow_compiles_and_runs() {
     for sample in &output {
         assert_near(*sample, 1.6, 1e-6);
     }
+}
+
+#[test]
+fn block_nested_branch_state_registration_compiles_and_runs() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BLOCK_BRANCH_STATE_REGISTRATION_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn sample_nested_branch_typed_registration_compiles_and_runs() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_BRANCH_TYPED_REGISTRATION_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn block_loop_control_compiles_and_runs() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BLOCK_LOOP_CONTROL_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn sample_loop_control_compiles_and_runs() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_LOOP_CONTROL_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 8.0, 1e-6);
+    }
+}
+
+#[test]
+fn block_break_outside_loop_is_rejected() {
+    let parsed =
+        parse_program(BLOCK_BREAK_OUTSIDE_LOOP_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("block break outside loop should fail");
+    assert!(
+        errs.iter().any(|d| d
+            .message
+            .contains("break is only allowed inside for/while/loop bodies")),
+        "expected block break diagnostic, got {:?}",
+        errs
+    );
+}
+
+#[test]
+fn sample_continue_outside_loop_is_rejected() {
+    let parsed =
+        parse_program(SAMPLE_CONTINUE_OUTSIDE_LOOP_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("sample continue outside loop should fail");
+    assert!(
+        errs.iter().any(|d| {
+            d.message
+                .contains("continue is only allowed inside for/while/loop bodies")
+        }),
+        "expected sample continue diagnostic, got {:?}",
+        errs
+    );
 }
 
 #[test]

@@ -27,7 +27,7 @@ impl<'a> InitAnalysisCtx<'a> {
     fn proc_init_resolution(&self) -> Option<&ProcResolutionCtx<'a>> {
         match self.scope {
             ScopeKind::Init => self.proc_resolution.as_ref(),
-            ScopeKind::Sample | ScopeKind::Def => None,
+            ScopeKind::Block | ScopeKind::Sample | ScopeKind::Def => None,
         }
     }
 }
@@ -242,21 +242,7 @@ pub(crate) fn analyze_init_stmt(
                     stmt_expr_env(ctx.scope),
                     errors,
                 );
-                if let Some(step_expr) = step {
-                    require_validated_numeric_stmt_expr(
-                        step_expr,
-                        "for loop step",
-                        stmt_expr_env(ScopeKind::Init),
-                        errors,
-                    );
-                }
-                if let Some(step_expr) = step {
-                    if matches!(step_expr, Expr::Int(0))
-                        || matches!(step_expr, Expr::Number(v) if *v == 0.0)
-                    {
-                        errors.push(Diagnostic::semantic("for loop step cannot be zero", 0, 0));
-                    }
-                }
+                validate_for_loop_step_expr(step.as_ref(), stmt_expr_env(ScopeKind::Init), errors);
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone());
                 let mut loop_st = st.clone();

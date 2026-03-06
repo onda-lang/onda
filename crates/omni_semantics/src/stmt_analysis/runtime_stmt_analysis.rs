@@ -157,11 +157,15 @@ pub(crate) fn seed_top_level_array_aliases(
 }
 
 pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
-    pub state_scalars: &'a HashMap<String, PrimitiveType>,
+    pub scope: ScopeKind,
+    pub registration_mode: RuntimeRegistrationMode,
     pub declared_symbols: &'a DeclaredSymbolMap,
     pub state_arrays: &'a HashMap<String, usize>,
     pub state_array_struct_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub struct_instances: &'a HashMap<String, String>,
+    pub registration_input_names: &'a HashSet<String>,
+    pub registration_output_names: &'a HashSet<String>,
+    pub registration_param_names: &'a HashSet<String>,
     pub input_names: &'a HashSet<String>,
     pub output_names: &'a HashSet<String>,
     pub forbidden_assign_names: &'a HashSet<String>,
@@ -183,20 +187,73 @@ pub(crate) struct RuntimeStmtAnalysisState {
 pub(crate) fn analyze_runtime_stmts<'a>(
     stmts: impl IntoIterator<Item = &'a Stmt>,
     locals: &HashSet<String>,
+    state_scalars: &mut HashMap<String, PrimitiveType>,
     ctx: &RuntimeStmtAnalysisCtx<'_>,
     state: &mut RuntimeStmtAnalysisState,
     errors: &mut Vec<Diagnostic>,
 ) {
+    debug_assert!(
+        matches!(
+            (ctx.scope, ctx.registration_mode),
+            (ScopeKind::Sample, RuntimeRegistrationMode::None)
+                | (ScopeKind::Block, RuntimeRegistrationMode::Block)
+                | (ScopeKind::Sample, RuntimeRegistrationMode::Sample)
+        ),
+        "runtime analysis scope and registration mode must stay aligned"
+    );
+    analyze_runtime_scope(
+        stmts,
+        locals,
+        state_scalars,
+        ctx,
+        &mut state.known_scalars,
+        &mut state.local_aliases,
+        &mut state.local_array_aliases,
+        &mut state.local_proc_aliases,
+        0,
+        errors,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze_runtime_scope<'a>(
+    stmts: impl IntoIterator<Item = &'a Stmt>,
+    locals: &HashSet<String>,
+    state_scalars: &mut HashMap<String, PrimitiveType>,
+    ctx: &RuntimeStmtAnalysisCtx<'_>,
+    known_scalars: &mut HashSet<String>,
+    local_aliases: &mut LocalAliasTypes,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    loop_depth: usize,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let stmts = stmts.into_iter().collect::<Vec<_>>();
+    register_scope_state(
+        stmts.iter().copied(),
+        state_scalars,
+        ctx.declared_symbols,
+        ctx.state_arrays,
+        ctx.state_array_struct_roots,
+        ctx.struct_instances,
+        ctx.registration_input_names,
+        ctx.registration_output_names,
+        ctx.registration_param_names,
+        ctx.struct_defs,
+        ctx.registration_mode,
+    );
+    known_scalars.extend(state_scalars.keys().cloned());
     for stmt in stmts {
         analyze_runtime_stmt_inner(
             stmt,
             locals,
+            state_scalars,
             ctx,
-            &mut state.known_scalars,
-            &mut state.local_aliases,
-            &mut state.local_array_aliases,
-            &mut state.local_proc_aliases,
-            0,
+            known_scalars,
+            local_aliases,
+            local_array_aliases,
+            local_proc_aliases,
+            loop_depth,
             errors,
         );
     }
@@ -206,6 +263,7 @@ pub(crate) fn analyze_runtime_stmts<'a>(
 fn analyze_runtime_stmt_inner(
     stmt: &Stmt,
     locals: &HashSet<String>,
+    state_scalars: &mut HashMap<String, PrimitiveType>,
     ctx: &RuntimeStmtAnalysisCtx<'_>,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
@@ -214,7 +272,6 @@ fn analyze_runtime_stmt_inner(
     loop_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let state_scalars = ctx.state_scalars;
     let declared_symbols = ctx.declared_symbols;
     let state_arrays = ctx.state_arrays;
     let state_array_struct_roots = ctx.state_array_struct_roots;
@@ -230,6 +287,28 @@ fn analyze_runtime_stmt_inner(
 
     with_stmt_diag_context(stmt, || {
         let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
+        let empty_param_structs = HashMap::<String, String>::new();
+        let stmt_expr_env = |scope| StmtExprAnalysisEnv {
+            expr_env: ExprEnv {
+                known_scalars,
+                locals,
+                outputs: output_names,
+                array_vars: &array_vars,
+                declared_symbols,
+                param_structs: &empty_param_structs,
+                struct_instances,
+                struct_defs,
+                fn_signatures,
+                allow_array_ctor: false,
+                scope,
+            },
+            state_scalars,
+            declared_symbols,
+            local_array_aliases,
+            input_names,
+            output_names,
+            param_names,
+        };
         match stmt {
             Stmt::Assign {
                 target,
@@ -244,6 +323,7 @@ fn analyze_runtime_stmt_inner(
                     decl_ty,
                     generic_decl_ty,
                     *is_typed_decl,
+                    ctx.scope,
                     expr,
                     known_scalars,
                     local_aliases,
@@ -268,36 +348,7 @@ fn analyze_runtime_stmt_inner(
             }
             Stmt::Expr { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-                validate_expr(
-                    &expr,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: output_names,
-                        array_vars: &array_vars,
-                        declared_symbols,
-                        param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Sample,
-                    },
-                    errors,
-                );
-                let _ = infer_expr_type_for_semantics(
-                    &expr,
-                    state_scalars,
-                    declared_symbols,
-                    None,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
-                    errors,
-                );
+                analyze_stmt_expr(&expr, stmt_expr_env(ctx.scope), errors);
             }
             Stmt::Return { .. } => {
                 errors.push(Diagnostic::semantic(
@@ -313,71 +364,44 @@ fn analyze_runtime_stmt_inner(
                 ..
             } => {
                 let cond = rewrite_proc_alias_calls_for_validation(cond, local_proc_aliases);
-                validate_expr(
+                require_validated_bool_stmt_expr(
                     &cond,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: output_names,
-                        array_vars: &array_vars,
-                        declared_symbols,
-                        param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Sample,
-                    },
+                    "if condition",
+                    stmt_expr_env(ctx.scope),
                     errors,
                 );
-                let cond_ty = infer_expr_type_for_semantics(
-                    &cond,
-                    state_scalars,
-                    declared_symbols,
-                    None,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
-                    errors,
-                );
-                require_bool_type(cond_ty, "if condition", errors);
                 let mut then_known = known_scalars.clone();
                 let mut then_aliases = local_aliases.clone();
                 let mut then_data_aliases = local_array_aliases.clone();
                 let mut then_proc_aliases = local_proc_aliases.clone();
-                for nested in then_branch {
-                    analyze_runtime_stmt_inner(
-                        nested,
-                        locals,
-                        ctx,
-                        &mut then_known,
-                        &mut then_aliases,
-                        &mut then_data_aliases,
-                        &mut then_proc_aliases,
-                        loop_depth,
-                        errors,
-                    );
-                }
+                analyze_runtime_scope(
+                    then_branch.iter(),
+                    locals,
+                    state_scalars,
+                    ctx,
+                    &mut then_known,
+                    &mut then_aliases,
+                    &mut then_data_aliases,
+                    &mut then_proc_aliases,
+                    loop_depth,
+                    errors,
+                );
                 let mut else_known = known_scalars.clone();
                 let mut else_aliases = local_aliases.clone();
                 let mut else_data_aliases = local_array_aliases.clone();
                 let mut else_proc_aliases = local_proc_aliases.clone();
-                for nested in else_branch {
-                    analyze_runtime_stmt_inner(
-                        nested,
-                        locals,
-                        ctx,
-                        &mut else_known,
-                        &mut else_aliases,
-                        &mut else_data_aliases,
-                        &mut else_proc_aliases,
-                        loop_depth,
-                        errors,
-                    );
-                }
+                analyze_runtime_scope(
+                    else_branch.iter(),
+                    locals,
+                    state_scalars,
+                    ctx,
+                    &mut else_known,
+                    &mut else_aliases,
+                    &mut else_data_aliases,
+                    &mut else_proc_aliases,
+                    loop_depth,
+                    errors,
+                );
             }
             Stmt::For {
                 var,
@@ -389,205 +413,72 @@ fn analyze_runtime_stmt_inner(
             } => {
                 let start = rewrite_proc_alias_calls_for_validation(start, local_proc_aliases);
                 let end = rewrite_proc_alias_calls_for_validation(end, local_proc_aliases);
-                validate_expr(
+                require_validated_numeric_stmt_expr(
                     &start,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: output_names,
-                        array_vars: &array_vars,
-                        declared_symbols,
-                        param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Sample,
-                    },
+                    "for loop start bound",
+                    stmt_expr_env(ctx.scope),
                     errors,
                 );
-                validate_expr(
+                require_validated_numeric_stmt_expr(
                     &end,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: output_names,
-                        array_vars: &array_vars,
-                        declared_symbols,
-                        param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Sample,
-                    },
+                    "for loop end bound",
+                    stmt_expr_env(ctx.scope),
                     errors,
                 );
-                if let Some(step_expr) = step {
-                    let step_expr =
-                        rewrite_proc_alias_calls_for_validation(step_expr, local_proc_aliases);
-                    validate_expr(
-                        &step_expr,
-                        ExprEnv {
-                            known_scalars,
-                            locals,
-                            outputs: output_names,
-                            array_vars: &array_vars,
-                            declared_symbols,
-                            param_structs: &HashMap::new(),
-                            struct_instances,
-                            struct_defs,
-                            fn_signatures,
-                            allow_array_ctor: false,
-                            scope: ScopeKind::Sample,
-                        },
-                        errors,
-                    );
-                }
-                let start_ty = infer_expr_type_for_semantics_with_local_data(
-                    &start,
-                    state_scalars,
-                    declared_symbols,
-                    None,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
+                let rewritten_step = step.as_ref().map(|step_expr| {
+                    rewrite_proc_alias_calls_for_validation(step_expr, local_proc_aliases)
+                });
+                validate_for_loop_step_expr(
+                    rewritten_step.as_ref(),
+                    stmt_expr_env(ctx.scope),
                     errors,
                 );
-                require_numeric_type(start_ty, "for loop start bound", errors);
-                let end_ty = infer_expr_type_for_semantics_with_local_data(
-                    &end,
-                    state_scalars,
-                    declared_symbols,
-                    None,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
-                    errors,
-                );
-                require_numeric_type(end_ty, "for loop end bound", errors);
-                if let Some(step_expr) = step {
-                    let step_expr =
-                        rewrite_proc_alias_calls_for_validation(step_expr, local_proc_aliases);
-                    let step_ty = infer_expr_type_for_semantics_with_local_data(
-                        &step_expr,
-                        state_scalars,
-                        declared_symbols,
-                        None,
-                        local_array_aliases,
-                        locals,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_instances,
-                        struct_defs,
-                        errors,
-                    );
-                    require_numeric_type(step_ty, "for loop step", errors);
-                    if matches!(step_expr, Expr::Int(0))
-                        || matches!(step_expr, Expr::Number(v) if v == 0.0)
-                    {
-                        errors.push(Diagnostic::semantic("for loop step cannot be zero", 0, 0));
-                    }
-                }
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone());
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
                 let mut loop_data_aliases = local_array_aliases.clone();
                 let mut loop_proc_aliases = local_proc_aliases.clone();
-                for nested in body {
-                    analyze_runtime_stmt_inner(
-                        nested,
-                        &loop_locals,
-                        ctx,
-                        &mut loop_known,
-                        &mut loop_aliases,
-                        &mut loop_data_aliases,
-                        &mut loop_proc_aliases,
-                        loop_depth + 1,
-                        errors,
-                    );
-                }
+                analyze_runtime_scope(
+                    body.iter(),
+                    &loop_locals,
+                    state_scalars,
+                    ctx,
+                    &mut loop_known,
+                    &mut loop_aliases,
+                    &mut loop_data_aliases,
+                    &mut loop_proc_aliases,
+                    loop_depth + 1,
+                    errors,
+                );
             }
             Stmt::While { cond, body, .. } => {
                 let cond = rewrite_proc_alias_calls_for_validation(cond, local_proc_aliases);
-                validate_expr(
+                require_validated_bool_stmt_expr(
                     &cond,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: output_names,
-                        array_vars: &array_vars,
-                        declared_symbols,
-                        param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope: ScopeKind::Sample,
-                    },
+                    "while condition",
+                    stmt_expr_env(ctx.scope),
                     errors,
                 );
-                let cond_ty = infer_expr_type_for_semantics_with_local_data(
-                    &cond,
-                    state_scalars,
-                    declared_symbols,
-                    None,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
-                    errors,
-                );
-                require_bool_type(cond_ty, "while condition", errors);
                 let mut loop_known = known_scalars.clone();
                 let mut loop_aliases = local_aliases.clone();
                 let mut loop_data_aliases = local_array_aliases.clone();
                 let mut loop_proc_aliases = local_proc_aliases.clone();
-                for nested in body {
-                    analyze_runtime_stmt_inner(
-                        nested,
-                        locals,
-                        ctx,
-                        &mut loop_known,
-                        &mut loop_aliases,
-                        &mut loop_data_aliases,
-                        &mut loop_proc_aliases,
-                        loop_depth + 1,
-                        errors,
-                    );
-                }
+                analyze_runtime_scope(
+                    body.iter(),
+                    locals,
+                    state_scalars,
+                    ctx,
+                    &mut loop_known,
+                    &mut loop_aliases,
+                    &mut loop_data_aliases,
+                    &mut loop_proc_aliases,
+                    loop_depth + 1,
+                    errors,
+                );
             }
-            Stmt::Break { .. } => {
-                if loop_depth == 0 {
-                    errors.push(Diagnostic::semantic(
-                        "break is only allowed inside for/while/loop bodies",
-                        0,
-                        0,
-                    ));
-                }
-            }
-            Stmt::Continue { .. } => {
-                if loop_depth == 0 {
-                    errors.push(Diagnostic::semantic(
-                        "continue is only allowed inside for/while/loop bodies",
-                        0,
-                        0,
-                    ));
-                }
-            }
+            Stmt::Break { .. } => require_loop_control_context("break", loop_depth, errors),
+            Stmt::Continue { .. } => require_loop_control_context("continue", loop_depth, errors),
         }
     });
 }
@@ -596,6 +487,7 @@ fn analyze_assign_sample(
     decl_ty: &Option<PrimitiveType>,
     generic_decl_ty: &Option<String>,
     is_typed_decl: bool,
+    scope: ScopeKind,
     expr: &Expr,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
@@ -690,7 +582,7 @@ fn analyze_assign_sample(
                     struct_defs,
                     fn_signatures,
                     allow_array_ctor: false,
-                    scope: ScopeKind::Sample,
+                    scope,
                 },
                 errors,
             );
@@ -707,7 +599,7 @@ fn analyze_assign_sample(
                     struct_defs,
                     fn_signatures,
                     allow_array_ctor: false,
-                    scope: ScopeKind::Sample,
+                    scope,
                 },
                 errors,
             );
@@ -851,7 +743,7 @@ fn analyze_assign_sample(
                                             struct_defs,
                                             fn_signatures,
                                             allow_array_ctor: false,
-                                            scope: ScopeKind::Sample,
+                                            scope,
                                         },
                                         errors,
                                     );
@@ -952,7 +844,7 @@ fn analyze_assign_sample(
                             struct_defs,
                             fn_signatures,
                             allow_array_ctor: false,
-                            scope: ScopeKind::Sample,
+                            scope,
                         },
                         errors,
                     );
@@ -1036,7 +928,7 @@ fn analyze_assign_sample(
                         struct_defs,
                         fn_signatures,
                         allow_array_ctor: false,
-                        scope: ScopeKind::Sample,
+                        scope,
                     },
                     errors,
                 );
@@ -1108,7 +1000,7 @@ fn analyze_assign_sample(
                                     struct_defs,
                                     fn_signatures,
                                     allow_array_ctor: false,
-                                    scope: ScopeKind::Sample,
+                                    scope,
                                 },
                                 errors,
                             );
@@ -1200,7 +1092,7 @@ fn analyze_assign_sample(
                                 struct_defs,
                                 fn_signatures,
                                 allow_array_ctor: false,
-                                scope: ScopeKind::Sample,
+                                scope,
                             },
                             errors,
                         );
@@ -1337,7 +1229,7 @@ fn analyze_assign_sample(
                     struct_defs,
                     fn_signatures,
                     allow_array_ctor: false,
-                    scope: ScopeKind::Sample,
+                    scope,
                 },
                 errors,
             );

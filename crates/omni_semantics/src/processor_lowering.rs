@@ -489,6 +489,8 @@ fn validate_event_stmt_restrictions(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn analyze_runtime_scope_stmts<'a>(
     stmts: impl IntoIterator<Item = &'a Stmt>,
+    scope: ScopeKind,
+    registration_mode: RuntimeRegistrationMode,
     locals: &HashSet<String>,
     known_scalars: HashSet<String>,
     local_aliases: LocalAliasTypes,
@@ -508,13 +510,18 @@ pub(super) fn analyze_runtime_scope_stmts<'a>(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let mut state_scalars = state_scalars.clone();
     let ctx = RuntimeStmtAnalysisCtx {
-        state_scalars,
+        scope,
+        registration_mode,
         declared_symbols,
         state_arrays,
         state_array_struct_roots,
         proc_array_roots,
         struct_instances,
+        registration_input_names: input_names,
+        registration_output_names: output_names,
+        registration_param_names: param_names,
         input_names,
         output_names,
         forbidden_assign_names,
@@ -529,7 +536,7 @@ pub(super) fn analyze_runtime_scope_stmts<'a>(
         local_array_aliases,
         local_proc_aliases: HashMap::new(),
     };
-    analyze_runtime_stmts(stmts, locals, &ctx, &mut state, errors);
+    analyze_runtime_stmts(stmts, locals, &mut state_scalars, &ctx, &mut state, errors);
 }
 
 pub(super) fn build_known_scalars_from_state(
@@ -551,6 +558,8 @@ pub(super) fn extend_known_scalars<'a>(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn register_and_analyze_runtime_scope<'a>(
     stmts: impl IntoIterator<Item = &'a Stmt>,
+    runtime_scope: ScopeKind,
+    registration_mode: RuntimeRegistrationMode,
     state_scalars: &mut HashMap<String, PrimitiveType>,
     declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
@@ -560,7 +569,6 @@ pub(super) fn register_and_analyze_runtime_scope<'a>(
     registration_input_names: &HashSet<String>,
     registration_output_names: &HashSet<String>,
     registration_param_names: &HashSet<String>,
-    registration_scope: &StateRegistrationScope<'_>,
     runtime_locals: &HashSet<String>,
     runtime_known_scalars: HashSet<String>,
     runtime_local_aliases: LocalAliasTypes,
@@ -574,40 +582,37 @@ pub(super) fn register_and_analyze_runtime_scope<'a>(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let stmts = stmts.into_iter().collect::<Vec<_>>();
-    register_scope_state(
-        stmts.iter().copied(),
-        state_scalars,
-        declared_symbols,
-        state_arrays,
-        state_array_struct_roots,
-        struct_instances,
-        registration_input_names,
-        registration_output_names,
-        registration_param_names,
-        registration_scope,
-    );
-    let mut runtime_known_scalars = runtime_known_scalars;
-    runtime_known_scalars.extend(state_scalars.keys().cloned());
-    analyze_runtime_scope_stmts(
-        stmts.iter().copied(),
-        runtime_locals,
-        runtime_known_scalars,
-        runtime_local_aliases,
-        runtime_local_array_aliases,
-        state_scalars,
+    let ctx = RuntimeStmtAnalysisCtx {
+        scope: runtime_scope,
+        registration_mode,
         declared_symbols,
         state_arrays,
         state_array_struct_roots,
         proc_array_roots,
         struct_instances,
-        runtime_input_names,
-        runtime_output_names,
-        runtime_forbidden_assign_names,
-        runtime_param_names,
+        registration_input_names,
+        registration_output_names,
+        registration_param_names,
+        input_names: runtime_input_names,
+        output_names: runtime_output_names,
+        forbidden_assign_names: runtime_forbidden_assign_names,
+        param_names: runtime_param_names,
         struct_defs,
         fn_signatures,
         options,
+    };
+    let mut state = RuntimeStmtAnalysisState {
+        known_scalars: runtime_known_scalars,
+        local_aliases: runtime_local_aliases,
+        local_array_aliases: runtime_local_array_aliases,
+        local_proc_aliases: HashMap::new(),
+    };
+    analyze_runtime_stmts(
+        stmts,
+        runtime_locals,
+        state_scalars,
+        &ctx,
+        &mut state,
         errors,
     );
 }
@@ -686,6 +691,8 @@ pub(super) fn analyze_runtime_events(
 
         analyze_runtime_scope_stmts(
             event.body.iter(),
+            ScopeKind::Sample,
+            RuntimeRegistrationMode::None,
             &runtime_loop_vars,
             event_known_scalars,
             event_local_aliases,
@@ -3588,11 +3595,10 @@ pub fn analyze_with_options(
     let empty_inputs = HashSet::new();
     let empty_outputs = HashSet::new();
     let block_forbidden_assigns = output_names.clone();
-    let block_registration_scope = StateRegistrationScope::Block {
-        struct_defs: &struct_defs,
-    };
     register_and_analyze_runtime_scope(
         block_pre.iter().chain(block_post.iter()),
+        ScopeKind::Block,
+        RuntimeRegistrationMode::Block,
         &mut state_scalars,
         &declared_symbols,
         &state_arrays,
@@ -3602,7 +3608,6 @@ pub fn analyze_with_options(
         &input_names,
         &output_names,
         &param_names,
-        &block_registration_scope,
         &block_locals,
         block_known_scalars,
         LocalAliasTypes::new(),
@@ -3626,9 +3631,10 @@ pub fn analyze_with_options(
     seed_top_level_array_aliases(&mut sample_local_data_aliases, &out_arrays, true);
     seed_top_level_array_aliases(&mut sample_local_data_aliases, &param_arrays, false);
     let sample_forbidden_assigns = HashSet::new();
-    let sample_registration_scope = StateRegistrationScope::Sample;
     register_and_analyze_runtime_scope(
         sample.iter(),
+        ScopeKind::Sample,
+        RuntimeRegistrationMode::Sample,
         &mut state_scalars,
         &declared_symbols,
         &state_arrays,
@@ -3638,7 +3644,6 @@ pub fn analyze_with_options(
         &input_names,
         &output_names,
         &param_names,
-        &sample_registration_scope,
         &sample_locals,
         sample_known_scalars,
         LocalAliasTypes::new(),

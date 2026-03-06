@@ -301,6 +301,7 @@ impl TypedProgram {
 #[derive(Debug, Clone, Copy)]
 enum ScopeKind {
     Init,
+    Block,
     Sample,
     Def,
 }

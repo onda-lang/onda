@@ -72,6 +72,19 @@ pub(crate) fn require_validated_numeric_stmt_expr(
     require_numeric_type(expr_ty, context, errors);
 }
 
+pub(crate) fn validate_for_loop_step_expr(
+    step_expr: Option<&Expr>,
+    env: StmtExprAnalysisEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(step_expr) = step_expr {
+        require_validated_numeric_stmt_expr(step_expr, "for loop step", env, errors);
+        if matches!(step_expr, Expr::Int(0)) || matches!(step_expr, Expr::Number(v) if *v == 0.0) {
+            errors.push(Diagnostic::semantic("for loop step cannot be zero", 0, 0));
+        }
+    }
+}
+
 pub(crate) fn require_loop_control_context(
     keyword: &str,
     loop_depth: usize,
