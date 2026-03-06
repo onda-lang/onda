@@ -93,7 +93,9 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
                 substitute_call_type_args_with_bindings_expr(arg, bindings, context, errors);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             substitute_call_type_args_with_bindings_expr(inner, bindings, context, errors);
         }
         Expr::ArrayLiteral(values) => {
@@ -102,9 +104,11 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
             }
         }
         Expr::UserCall {
-            type_args, args, ..
+            name,
+            type_args,
+            args,
         } => {
-            for arg in args {
+            for arg in args.iter_mut() {
                 substitute_call_type_args_with_bindings_expr(
                     &mut arg.expr,
                     bindings,
@@ -126,6 +130,15 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
                         continue;
                     };
                     *type_arg = CallTypeArg::Primitive(bound);
+                }
+            }
+            if type_args.is_empty() && args.len() == 1 && args[0].name.is_none() {
+                if let Some(bound) = bindings.get(name).copied() {
+                    let arg_expr = args.remove(0).expr;
+                    *expr = Expr::Cast {
+                        to: bound,
+                        expr: Box::new(arg_expr),
+                    };
                 }
             }
         }
@@ -234,6 +247,10 @@ pub(crate) fn specialize_generic_struct_template(
                 })
             }
             FnParamType::Array(elem) => FnParamType::Array(*elem),
+            FnParamType::ArrayGeneric(name) => match type_bindings.get(name).copied() {
+                Some(bound) => FnParamType::Array(Some(bound)),
+                None => FnParamType::ArrayGeneric(name.clone()),
+            },
             FnParamType::BareBuffer => FnParamType::BareBuffer,
         }
     };
@@ -252,35 +269,38 @@ pub(crate) fn specialize_generic_struct_template(
         }
         let specialized_ty = match &field.ty {
             FieldType::Scalar(prim) => FieldType::Scalar(*prim),
-            FieldType::Generic(param) => {
-                let bound = match type_bindings.get(param).copied() {
-                    Some(bound) => bound,
-                    None => {
-                        errors.push(Diagnostic::semantic(
-                            format!(
-                                "struct '{}.{}' references unknown generic type parameter '{}'",
-                                template.name, field.name, param
-                            ),
-                            0,
-                            0,
-                        ));
-                        PrimitiveType::F32
-                    }
-                };
-                FieldType::Scalar(bound)
-            }
+            FieldType::Generic(param) => specialize_named_type_ref(
+                param,
+                &type_bindings,
+                &format!("struct '{}.{}'", template.name, field.name),
+                errors,
+            )?,
             FieldType::Array(spec) => {
-                let elem = match &spec.elem {
-                    ArrayElemType::Primitive(prim) => ArrayElemType::Primitive(*prim),
-                    ArrayElemType::Struct(elem) => match type_bindings.get(elem).copied() {
-                        Some(bound) => ArrayElemType::Primitive(bound),
-                        None => ArrayElemType::Struct(elem.clone()),
-                    },
-                };
-                FieldType::Array(omni_frontend::ArrayTypeSpec {
-                    elem,
-                    size: spec.size.clone(),
-                })
+                if let Some(specialized) =
+                    reinterpret_specialized_scalar_field_type(spec, &type_bindings, errors)?
+                {
+                    specialized
+                } else {
+                    let elem = match &spec.elem {
+                        ArrayElemType::Primitive(prim) => ArrayElemType::Primitive(*prim),
+                        ArrayElemType::Struct(elem) => {
+                            match specialize_named_type_ref(
+                                elem,
+                                &type_bindings,
+                                &format!("struct '{}.{}' array element", template.name, field.name),
+                                errors,
+                            )? {
+                                FieldType::Scalar(bound) => ArrayElemType::Primitive(bound),
+                                FieldType::Generic(name) => ArrayElemType::Struct(name),
+                                FieldType::Array(_) => unreachable!(),
+                            }
+                        }
+                    };
+                    FieldType::Array(omni_frontend::ArrayTypeSpec {
+                        elem,
+                        size: spec.size.clone(),
+                    })
+                }
             }
         };
         fields.push(StructField {
@@ -483,15 +503,15 @@ fn is_simple_ident_token(token: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn split_trailing_bracket_group(text: &str) -> Option<(String, String)> {
-    if !text.ends_with(']') {
+fn split_trailing_angle_group(text: &str) -> Option<(String, String)> {
+    if !text.ends_with('>') {
         return None;
     }
     let mut depth = 0usize;
     for (idx, ch) in text.char_indices().rev() {
         match ch {
-            ']' => depth += 1,
-            '[' => {
+            '>' => depth += 1,
+            '<' => {
                 if depth == 0 {
                     return None;
                 }
@@ -512,7 +532,7 @@ fn split_trailing_bracket_group(text: &str) -> Option<(String, String)> {
 }
 
 fn parse_array_struct_elem_with_type_args(text: &str) -> Option<(String, Vec<CallTypeArg>)> {
-    let (base, args_text) = split_trailing_bracket_group(text)?;
+    let (base, args_text) = split_trailing_angle_group(text)?;
     let mut args = Vec::<CallTypeArg>::new();
     for raw in args_text.split(',') {
         let token = raw.trim();
@@ -528,6 +548,43 @@ fn parse_array_struct_elem_with_type_args(text: &str) -> Option<(String, Vec<Cal
         }
     }
     Some((base, args))
+}
+
+fn specialize_named_type_ref(
+    name: &str,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<FieldType> {
+    if let Some(bound) = type_bindings.get(name).copied() {
+        return Some(FieldType::Scalar(bound));
+    }
+    if let Some((base, explicit_type_args)) = parse_array_struct_elem_with_type_args(name) {
+        let mut resolved = Vec::<PrimitiveType>::with_capacity(explicit_type_args.len());
+        for arg in explicit_type_args {
+            match arg {
+                CallTypeArg::Primitive(ty) => resolved.push(ty),
+                CallTypeArg::Generic(param) => {
+                    let Some(bound) = type_bindings.get(&param).copied() else {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "{context} references unknown generic type parameter '{}'",
+                                param
+                            ),
+                            0,
+                            0,
+                        ));
+                        return None;
+                    };
+                    resolved.push(bound);
+                }
+            }
+        }
+        return Some(FieldType::Generic(specialized_struct_name(
+            &base, &resolved,
+        )));
+    }
+    Some(FieldType::Generic(name.to_owned()))
 }
 
 pub(crate) fn rewrite_generic_struct_ctor_expr(
@@ -606,7 +663,9 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                 rewrite_generic_struct_ctor_expr(arg, templates, generated, errors, locals);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             rewrite_generic_struct_ctor_expr(inner, templates, generated, errors, locals);
         }
         Expr::ArrayLiteral(values) => {
@@ -1040,6 +1099,27 @@ pub(crate) fn finalize_generated_generic_struct_specializations(
             let Some(mut spec) = generated.remove(&name) else {
                 continue;
             };
+            rewrite_generic_struct_field_types(&mut spec, templates, generated, errors);
+            let mut nested_specializations = Vec::<String>::new();
+            for field in &spec.fields {
+                match &field.ty {
+                    FieldType::Generic(name) => nested_specializations.push(name.clone()),
+                    FieldType::Array(spec) => {
+                        if let ArrayElemType::Struct(name) = &spec.elem {
+                            nested_specializations.push(name.clone());
+                        }
+                    }
+                    FieldType::Scalar(_) => {}
+                }
+            }
+            for nested_name in nested_specializations {
+                ensure_generated_nested_struct_specialization(
+                    &nested_name,
+                    templates,
+                    generated,
+                    errors,
+                );
+            }
             for field in &mut spec.fields {
                 if let Some(default) = &mut field.default {
                     let mut locals = GenericInferenceLocals::default();
@@ -1070,3 +1150,147 @@ pub(crate) fn finalize_generated_generic_struct_specializations(
     }
 }
 
+pub(crate) fn rewrite_generic_struct_field_types(
+    def: &mut StructDef,
+    templates: &HashMap<String, StructDef>,
+    generated: &mut HashMap<String, StructDef>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for field in &mut def.fields {
+        rewrite_generic_struct_field_type(&mut field.ty, templates, generated, errors);
+    }
+}
+
+fn rewrite_generic_struct_field_type(
+    ty: &mut FieldType,
+    templates: &HashMap<String, StructDef>,
+    generated: &mut HashMap<String, StructDef>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match ty {
+        FieldType::Scalar(_) => {}
+        FieldType::Generic(name) => {
+            if let Some(specialized) =
+                specialize_explicit_struct_type_name(name, templates, generated, errors)
+            {
+                *name = specialized;
+            }
+        }
+        FieldType::Array(spec) => {
+            if let Some(specialized) =
+                reinterpret_explicit_scalar_field_type(spec, templates, generated, errors)
+            {
+                *ty = FieldType::Generic(specialized);
+                return;
+            }
+            if let ArrayElemType::Struct(name) = &mut spec.elem {
+                if let Some(specialized) =
+                    specialize_explicit_struct_type_name(name, templates, generated, errors)
+                {
+                    *name = specialized;
+                }
+            }
+        }
+    }
+}
+
+fn ensure_generated_nested_struct_specialization(
+    name: &str,
+    templates: &HashMap<String, StructDef>,
+    generated: &mut HashMap<String, StructDef>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if generated.contains_key(name) {
+        return;
+    }
+    let Some((base, type_args)) = parse_specialized_struct_name_ref(name) else {
+        return;
+    };
+    let Some(template) = templates.get(base.as_str()) else {
+        return;
+    };
+    if template.type_params.is_empty() {
+        return;
+    }
+    if let Some(spec) = specialize_generic_struct_template(template, &type_args, errors) {
+        generated.entry(name.to_owned()).or_insert(spec);
+    }
+}
+
+fn parse_specialized_struct_name_ref(name: &str) -> Option<(String, Vec<PrimitiveType>)> {
+    let (base, sig) = name.split_once(".__gen__")?;
+    let mut type_args = Vec::<PrimitiveType>::new();
+    for raw in sig.split('_') {
+        let ty = match raw {
+            "f32" => PrimitiveType::F32,
+            "f64" => PrimitiveType::F64,
+            "i32" => PrimitiveType::I32,
+            "i64" => PrimitiveType::I64,
+            "bool" => PrimitiveType::Bool,
+            _ => return None,
+        };
+        type_args.push(ty);
+    }
+    Some((base.to_owned(), type_args))
+}
+
+fn specialize_explicit_struct_type_name(
+    name: &str,
+    templates: &HashMap<String, StructDef>,
+    generated: &mut HashMap<String, StructDef>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    let (base, explicit_type_args) = parse_array_struct_elem_with_type_args(name)?;
+    let template = templates.get(base.as_str())?;
+    let resolved = resolve_explicit_call_type_args(
+        &explicit_type_args,
+        &format!("struct field type '{name}'"),
+        errors,
+    )?;
+    let specialized = specialized_struct_name(&base, &resolved);
+    if !generated.contains_key(&specialized) {
+        if let Some(spec) = specialize_generic_struct_template(template, &resolved, errors) {
+            generated.insert(specialized.clone(), spec);
+        }
+    }
+    Some(specialized)
+}
+
+fn reinterpret_explicit_scalar_field_type(
+    spec: &omni_frontend::ArrayTypeSpec,
+    templates: &HashMap<String, StructDef>,
+    generated: &mut HashMap<String, StructDef>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    let ArrayElemType::Struct(base) = &spec.elem else {
+        return None;
+    };
+    let Expr::Var(type_arg) = spec.size.as_ref() else {
+        return None;
+    };
+    let type_name = format!("{base}<{type_arg}>");
+    specialize_explicit_struct_type_name(&type_name, templates, generated, errors)
+}
+
+fn reinterpret_specialized_scalar_field_type(
+    spec: &omni_frontend::ArrayTypeSpec,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Option<FieldType>> {
+    let ArrayElemType::Struct(base) = &spec.elem else {
+        return Some(None);
+    };
+    let Expr::Var(type_arg) = spec.size.as_ref() else {
+        return Some(None);
+    };
+    if !type_bindings.contains_key(type_arg) && parse_primitive_type_arg_token(type_arg).is_none() {
+        return Some(None);
+    }
+    specialize_named_type_ref(
+        &format!("{base}<{type_arg}>"),
+        type_bindings,
+        &format!("struct field type '{}<{}>'", base, type_arg),
+        errors,
+    )
+    .map(Some)
+}

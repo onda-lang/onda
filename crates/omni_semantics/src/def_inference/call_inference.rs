@@ -579,4 +579,3 @@ pub(crate) fn resolve_call_args<'a>(
 
     resolved
 }
-

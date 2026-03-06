@@ -1,5 +1,5 @@
 namespace std::osc:
-  proc Phasor[T]:
+  proc Phasor<T>:
     outs[T] 1
 
     params[T]:
@@ -16,7 +16,7 @@ namespace std::osc:
           phase = phase - 1.0
         out1 = phase
         
-  proc Sine[T]:
+  proc Sine<T>:
     outs[T] 1
 
     params[T]:
@@ -41,7 +41,7 @@ namespace std::osc:
       return x * x + x + x + 1.0
     return 0.0
 
-  proc Saw[T]:
+  proc Saw<T>:
     outs[T] 1
 
     params[T]:
@@ -56,4 +56,4 @@ namespace std::osc:
       sample:
         phase = phasor()
         base = phase + phase - 1.0
-        out1 = base - poly_blep(phase, dt)
+        out1 = base - std::osc::poly_blep(phase, dt)

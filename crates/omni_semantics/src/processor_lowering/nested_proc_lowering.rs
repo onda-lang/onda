@@ -501,16 +501,16 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 }
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
-            rewrite_nested_proc_calls_in_expr(
-                inner,
-                owner_proc,
-                nested_instances,
-                proc_array_slots,
-                proc_api,
-                errors,
-            )
-        }
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => rewrite_nested_proc_calls_in_expr(
+            inner,
+            owner_proc,
+            nested_instances,
+            proc_array_slots,
+            proc_api,
+            errors,
+        ),
         Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
     }
 }
@@ -814,6 +814,7 @@ pub(super) fn expand_nested_struct_ctor_assign(
     ctor_name: &str,
     ctor_args: &[CallArg],
     struct_def: &omni_frontend::StructDef,
+    struct_defs: &HashMap<String, omni_frontend::StructDef>,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     if !struct_def.type_params.is_empty() {
@@ -838,7 +839,14 @@ pub(super) fn expand_nested_struct_ctor_assign(
         .collect::<Vec<_>>();
     let scalar_defaults = scalar_fields
         .iter()
-        .map(|f| f.default.clone().or(Some(Expr::Number(0.0))))
+        .map(|f| {
+            f.default.clone().or(Some(match f.ty {
+                FieldType::Scalar(PrimitiveType::F32 | PrimitiveType::F64) => Expr::Number(0.0),
+                FieldType::Scalar(PrimitiveType::I32 | PrimitiveType::I64) => Expr::Int(0),
+                FieldType::Scalar(PrimitiveType::Bool) => Expr::Bool(false),
+                _ => Expr::Number(0.0),
+            }))
+        })
         .collect::<Vec<_>>();
     let resolved = resolve_call_args(
         ctor_args,
@@ -853,7 +861,7 @@ pub(super) fn expand_nested_struct_ctor_assign(
     let mut out = Vec::<Stmt>::new();
     let mut scalar_idx = 0usize;
     for field in &struct_def.fields {
-        let flat = nested_field_name(instance_var, &field.name);
+        let field_path = format!("{instance_var}.{}", field.name);
         match &field.ty {
             FieldType::Scalar(_) => {
                 let value = resolved
@@ -865,7 +873,7 @@ pub(super) fn expand_nested_struct_ctor_assign(
                     .unwrap_or(Expr::Number(0.0));
                 out.push(Stmt::Assign {
                     loc: None,
-                    target: AssignTarget::Var(flat),
+                    target: AssignTarget::Var(field_path),
                     decl_ty: None,
                     generic_decl_ty: None,
                     is_typed_decl: false,
@@ -877,7 +885,7 @@ pub(super) fn expand_nested_struct_ctor_assign(
                 if let Some(default) = &field.default {
                     out.push(Stmt::Assign {
                         loc: None,
-                        target: AssignTarget::Var(flat),
+                        target: AssignTarget::Var(field_path),
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: false,
@@ -886,14 +894,25 @@ pub(super) fn expand_nested_struct_ctor_assign(
                 }
             }
             FieldType::Generic(param) => {
-                errors.push(Diagnostic::semantic(
-                    format!(
-                        "processor state struct field '{}.{}' uses unresolved generic parameter '{}'",
-                        instance_var, field.name, param
-                    ),
-                    0,
-                    0,
-                ));
+                if let Some(nested_struct_def) = struct_defs.get(param) {
+                    out.extend(expand_nested_struct_ctor_assign(
+                        &field_path,
+                        param,
+                        &[],
+                        nested_struct_def,
+                        struct_defs,
+                        errors,
+                    ));
+                } else {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "processor state struct field '{}.{}' uses unresolved generic parameter '{}'",
+                            instance_var, field.name, param
+                        ),
+                        0,
+                        0,
+                    ));
+                }
             }
         }
     }
@@ -1393,4 +1412,3 @@ pub(super) fn lower_callee_expr_for_nested_wrapper(
     prefix_self_fields_in_expr(&mut expr, nested_path, &callee_shape.field_names);
     expr
 }
-

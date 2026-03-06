@@ -139,6 +139,7 @@ pub struct TypedStructField {
     pub name: String,
     pub ty: TypedFieldType,
     pub default: Option<Expr>,
+    pub struct_name: Option<String>,
     pub array_elem_ty: Option<PrimitiveType>,
     pub array_elem_struct: Option<String>,
 }
@@ -146,6 +147,7 @@ pub struct TypedStructField {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TypedFieldType {
     Scalar(PrimitiveType),
+    Struct,
     Array(usize),
 }
 
@@ -163,7 +165,9 @@ pub struct TypedFunction {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TypedFnParam {
-    Scalar,
+    Scalar {
+        ty: Option<PrimitiveType>,
+    },
     Struct {
         struct_name: String,
     },

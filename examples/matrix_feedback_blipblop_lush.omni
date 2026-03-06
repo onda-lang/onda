@@ -16,27 +16,27 @@ def sat(x):
   return clamp(x - 0.10 * x * x * x, -1.0, 1.0)
 
 init:
-  o1 = std::osc::Sine[f32](freq = 67.0)
-  o2 = std::osc::Saw[f32](freq = 91.0)
-  o3 = std::osc::Sine[f32](freq = 113.0)
-  o4 = std::osc::Saw[f32](freq = 149.0)
+  o1 = std::osc::Sine<f32>(freq = 67.0)
+  o2 = std::osc::Saw<f32>(freq = 91.0)
+  o3 = std::osc::Sine<f32>(freq = 113.0)
+  o4 = std::osc::Saw<f32>(freq = 149.0)
 
-  m1 = std::osc::Phasor[f32](freq = 0.006)
-  m2 = std::osc::Phasor[f32](freq = 0.009)
-  m3 = std::osc::Phasor[f32](freq = 0.014)
+  m1 = std::osc::Phasor<f32>(freq = 0.006)
+  m2 = std::osc::Phasor<f32>(freq = 0.009)
+  m3 = std::osc::Phasor<f32>(freq = 0.014)
 
-  d1 = std::delay::Delay[f32](delay_s = 0.061, feedback = 0.56, mix = 1.0)
-  d2 = std::delay::Delay[f32](delay_s = 0.074, feedback = 0.54, mix = 1.0)
-  d3 = std::delay::Delay[f32](delay_s = 0.089, feedback = 0.52, mix = 1.0)
-  d4 = std::delay::Delay[f32](delay_s = 0.103, feedback = 0.50, mix = 1.0)
+  d1 = std::delay::Delay<f32>(delay_s = 0.061, feedback = 0.56, mix = 1.0)
+  d2 = std::delay::Delay<f32>(delay_s = 0.074, feedback = 0.54, mix = 1.0)
+  d3 = std::delay::Delay<f32>(delay_s = 0.089, feedback = 0.52, mix = 1.0)
+  d4 = std::delay::Delay<f32>(delay_s = 0.103, feedback = 0.50, mix = 1.0)
 
-  src1 = std::filter::OnePole[f32](cutoff = 2200.0)
-  src2 = std::filter::OnePole[f32](cutoff = 2600.0)
-  src3 = std::filter::OnePole[f32](cutoff = 2400.0)
-  src4 = std::filter::OnePole[f32](cutoff = 2800.0)
+  src1 = std::filter::OnePole<f32>(cutoff = 2200.0)
+  src2 = std::filter::OnePole<f32>(cutoff = 2600.0)
+  src3 = std::filter::OnePole<f32>(cutoff = 2400.0)
+  src4 = std::filter::OnePole<f32>(cutoff = 2800.0)
 
-  lp_l = std::filter::OnePole[f32](cutoff = 5200.0)
-  lp_r = std::filter::OnePole[f32](cutoff = 4700.0)
+  lp_l = std::filter::OnePole<f32>(cutoff = 5200.0)
+  lp_r = std::filter::OnePole<f32>(cutoff = 4700.0)
 
   fb1: f32 = 0.0
   fb2: f32 = 0.0
@@ -132,3 +132,4 @@ sample:
   right = sat((y2 + y4 * 0.66 + (y1 - y3) * 0.21) * 0.64)
   out1 = lp_l(left)
   out2 = lp_r(right)
+

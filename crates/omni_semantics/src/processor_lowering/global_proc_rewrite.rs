@@ -209,7 +209,9 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     else_branch: Vec::new(),
                 });
             }
-            Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+            Expr::Cast { expr: inner, .. }
+            | Expr::UnaryNot { expr: inner }
+            | Expr::UnaryBitNot { expr: inner } => {
                 collect_guards_from_expr(
                     inner,
                     proc_api,
@@ -1091,4 +1093,3 @@ pub(super) fn rewrite_top_level_proc_calls(
         }
     }
 }
-

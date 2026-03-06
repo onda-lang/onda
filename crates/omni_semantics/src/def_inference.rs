@@ -16,8 +16,8 @@ use crate::builtins::{
     parse_array_len_instance_base, parse_buffer_chans_instance_base,
 };
 use crate::{
-    with_stmt_diag_context, AnalysisOptions, FnSignature, TypedBufferChannels, TypedFieldType,
-    TypedFnParam, TypedStructField,
+    resolve_struct_field_decl, with_stmt_diag_context, AnalysisOptions, FnSignature,
+    TypedBufferChannels, TypedFieldType, TypedFnParam, TypedStructField,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,7 +69,8 @@ pub(crate) fn infer_def_param_kinds(
     let declared_struct_params =
         collect_declared_struct_param_types(defs, method_self_struct, struct_defs, errors);
     let declared_buffer_params = collect_declared_buffer_param_types(defs, options, errors);
-    let field_usage = collect_def_param_field_usage(defs, errors);
+    let field_usage =
+        collect_def_param_field_usage(defs, &declared_struct_params, struct_defs, errors);
 
     let mut kinds = HashMap::new();
     for def in defs {
@@ -181,7 +182,12 @@ pub(crate) fn infer_def_param_kinds(
                     if let (Some(struct_name), Some(param)) =
                         (explicit.as_ref(), def.params.get(idx))
                     {
-                        local_struct_instances.insert(param.name.clone(), struct_name.clone());
+                        crate::register_struct_instance_roots(
+                            &param.name,
+                            struct_name,
+                            struct_defs,
+                            &mut local_struct_instances,
+                        );
                     }
                 }
             }
@@ -299,6 +305,22 @@ pub(crate) fn infer_def_param_kinds(
                 def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
                 typed.push(TypedFnParam::Array { elem_ty: *prim });
+                continue;
+            }
+            if let Some(FnParamType::ArrayGeneric(param_ty)) =
+                def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "function '{}' parameter '{}' uses unresolved generic array element type '{}'",
+                        def.name, param_name, param_ty
+                    ),
+                    0,
+                    0,
+                ));
+                typed.push(TypedFnParam::Array {
+                    elem_ty: PrimitiveType::F32,
+                });
                 continue;
             }
             // Handle bare buffer params — treat like untyped buffer for inference
@@ -481,7 +503,11 @@ pub(crate) fn infer_def_param_kinds(
                     struct_name: synthetic_name,
                 });
             } else {
-                typed.push(TypedFnParam::Scalar);
+                let scalar_ty = match def.params.get(idx).and_then(|p| p.ty.as_ref()) {
+                    Some(FnParamType::Primitive(prim)) => Some(*prim),
+                    _ => None,
+                };
+                typed.push(TypedFnParam::Scalar { ty: scalar_ty });
             }
         }
 
@@ -1062,6 +1088,8 @@ fn format_buffer_type_name(elem_ty: PrimitiveType, channels: &TypedBufferChannel
 
 fn collect_def_param_field_usage(
     defs: &[FunctionDef],
+    declared_struct_params: &HashMap<String, Vec<Option<String>>>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, Vec<HashMap<String, StructFieldUsage>>> {
     let mut out = HashMap::new();
@@ -1073,8 +1101,20 @@ fn collect_def_param_field_usage(
             .enumerate()
             .map(|(idx, p)| (p.name.clone(), idx))
             .collect::<HashMap<_, _>>();
+        let param_structs = declared_struct_params
+            .get(&def.name)
+            .cloned()
+            .unwrap_or_else(|| vec![None; def.params.len()]);
         for stmt in &def.body {
-            collect_stmt_field_usage(stmt, &def.name, &param_index, &mut by_param, errors);
+            collect_stmt_field_usage(
+                stmt,
+                &def.name,
+                &param_index,
+                &param_structs,
+                struct_defs,
+                &mut by_param,
+                errors,
+            );
         }
         out.insert(def.name.clone(), by_param);
     }
@@ -1085,6 +1125,8 @@ fn collect_stmt_field_usage(
     stmt: &Stmt,
     fn_name: &str,
     param_index: &HashMap<String, usize>,
+    param_structs: &[Option<String>],
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     usage: &mut [HashMap<String, StructFieldUsage>],
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -1120,13 +1162,37 @@ fn collect_stmt_field_usage(
                             );
                         }
                     }
-                    collect_expr_field_usage(index, fn_name, param_index, usage, errors);
+                    collect_expr_field_usage(
+                        index,
+                        fn_name,
+                        param_index,
+                        param_structs,
+                        struct_defs,
+                        usage,
+                        errors,
+                    );
                 }
             }
-            collect_expr_field_usage(expr, fn_name, param_index, usage, errors);
+            collect_expr_field_usage(
+                expr,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            collect_expr_field_usage(expr, fn_name, param_index, usage, errors);
+            collect_expr_field_usage(
+                expr,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
         }
         Stmt::If {
             cond,
@@ -1134,12 +1200,36 @@ fn collect_stmt_field_usage(
             else_branch,
             ..
         } => {
-            collect_expr_field_usage(cond, fn_name, param_index, usage, errors);
+            collect_expr_field_usage(
+                cond,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
             for nested in then_branch {
-                collect_stmt_field_usage(nested, fn_name, param_index, usage, errors);
+                collect_stmt_field_usage(
+                    nested,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
             }
             for nested in else_branch {
-                collect_stmt_field_usage(nested, fn_name, param_index, usage, errors);
+                collect_stmt_field_usage(
+                    nested,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
             }
         }
         Stmt::For {
@@ -1149,19 +1239,67 @@ fn collect_stmt_field_usage(
             body,
             ..
         } => {
-            collect_expr_field_usage(start, fn_name, param_index, usage, errors);
-            collect_expr_field_usage(end, fn_name, param_index, usage, errors);
+            collect_expr_field_usage(
+                start,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
+            collect_expr_field_usage(
+                end,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
             if let Some(step_expr) = step {
-                collect_expr_field_usage(step_expr, fn_name, param_index, usage, errors);
+                collect_expr_field_usage(
+                    step_expr,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
             }
             for nested in body {
-                collect_stmt_field_usage(nested, fn_name, param_index, usage, errors);
+                collect_stmt_field_usage(
+                    nested,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
             }
         }
         Stmt::While { cond, body, .. } => {
-            collect_expr_field_usage(cond, fn_name, param_index, usage, errors);
+            collect_expr_field_usage(
+                cond,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
             for nested in body {
-                collect_stmt_field_usage(nested, fn_name, param_index, usage, errors);
+                collect_stmt_field_usage(
+                    nested,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -1172,6 +1310,8 @@ fn collect_expr_field_usage(
     expr: &Expr,
     fn_name: &str,
     param_index: &HashMap<String, usize>,
+    param_structs: &[Option<String>],
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     usage: &mut [HashMap<String, StructFieldUsage>],
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -1179,21 +1319,35 @@ fn collect_expr_field_usage(
         Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::ArrayCtor { .. } => {}
         Expr::ArrayLiteral(values) => {
             for value in values {
-                collect_expr_field_usage(value, fn_name, param_index, usage, errors);
+                collect_expr_field_usage(
+                    value,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
             }
         }
         Expr::Var(name) => {
             if let Some((base, field)) = split_simple_field_path(name) {
                 if let Some(param_idx) = param_index.get(base).copied() {
-                    mark_param_field_usage(
-                        usage,
-                        param_idx,
-                        field,
-                        StructFieldUsage::Scalar,
-                        fn_name,
-                        base,
-                        errors,
-                    );
+                    let kind = param_structs
+                        .get(param_idx)
+                        .and_then(|s| s.as_deref())
+                        .and_then(|struct_name| {
+                            resolve_struct_field_decl(struct_name, field, struct_defs)
+                        })
+                        .map(|decl| {
+                            if matches!(decl.ty, TypedFieldType::Array(_)) {
+                                StructFieldUsage::Array
+                            } else {
+                                StructFieldUsage::Scalar
+                            }
+                        })
+                        .unwrap_or(StructFieldUsage::Scalar);
+                    mark_param_field_usage(usage, param_idx, field, kind, fn_name, base, errors);
                 }
             }
         }
@@ -1211,25 +1365,73 @@ fn collect_expr_field_usage(
                     );
                 }
             }
-            collect_expr_field_usage(index, fn_name, param_index, usage, errors);
+            collect_expr_field_usage(
+                index,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. } => {
-            collect_expr_field_usage(lhs, fn_name, param_index, usage, errors);
-            collect_expr_field_usage(rhs, fn_name, param_index, usage, errors);
+            collect_expr_field_usage(
+                lhs,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
+            collect_expr_field_usage(
+                rhs,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
-            collect_expr_field_usage(expr, fn_name, param_index, usage, errors);
+            collect_expr_field_usage(
+                expr,
+                fn_name,
+                param_index,
+                param_structs,
+                struct_defs,
+                usage,
+                errors,
+            );
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                collect_expr_field_usage(arg, fn_name, param_index, usage, errors);
+                collect_expr_field_usage(
+                    arg,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
             }
         }
         Expr::UserCall { args, .. } => {
             for arg in args {
-                collect_expr_field_usage(&arg.expr, fn_name, param_index, usage, errors);
+                collect_expr_field_usage(
+                    &arg.expr,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
             }
         }
     }
@@ -1264,13 +1466,7 @@ fn mark_param_field_usage(
 }
 
 pub(crate) fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
-    let mut parts = name.split('.');
-    let first = parts.next()?;
-    let second = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((first, second))
+    crate::split_root_field_path(name)
 }
 
 fn synthetic_struct_param_name(def_name: &str, idx: usize, param_name: &str) -> String {
@@ -1364,6 +1560,17 @@ fn build_structural_param_fields(
                     ));
                     continue;
                 }
+                (_, TypedFieldType::Struct) => {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "function '{}' parameter '{}' uses '{}.{}' as value but struct '{}' defines it as nested struct",
+                            fn_name, param_name, param_name, field_name, struct_name
+                        ),
+                        0,
+                        0,
+                    ));
+                    continue;
+                }
             };
 
             if let Some(existing) = resolved_ty {
@@ -1404,6 +1611,7 @@ fn build_structural_param_fields(
             name: field_name,
             ty,
             default: None,
+            struct_name: None,
             array_elem_ty,
             array_elem_struct,
         });
@@ -1659,4 +1867,3 @@ pub(crate) fn merge_inferred_return_types(
         (I32, I32) => Some(I32),
     }
 }
-

@@ -250,7 +250,9 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 );
             }
         }
-        Expr::Cast { expr: arg, .. } | Expr::UnaryNot { expr: arg } | Expr::UnaryBitNot { expr: arg } => {
+        Expr::Cast { expr: arg, .. }
+        | Expr::UnaryNot { expr: arg }
+        | Expr::UnaryBitNot { expr: arg } => {
             qualify_expr_namespaced_symbols(
                 arg,
                 current_ns,
@@ -445,4 +447,3 @@ pub(super) fn qualify_stmt_namespaced_symbols(
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     });
 }
-

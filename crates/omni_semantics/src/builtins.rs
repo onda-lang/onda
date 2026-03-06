@@ -213,7 +213,10 @@ fn infer_const_expr_type(
             let inner = infer_const_expr_type(expr, options, context, errors)?;
             merge_const_integer_types(inner, inner).or_else(|| {
                 errors.push(Diagnostic::semantic(
-                    format!("{context} bitwise not requires integer operand, got {:?}", inner),
+                    format!(
+                        "{context} bitwise not requires integer operand, got {:?}",
+                        inner
+                    ),
                     0,
                     0,
                 ));
@@ -327,7 +330,10 @@ pub(crate) fn eval_const_expr_f64(
                 PrimitiveType::I64 => (!(value as i64)) as f64,
                 _ => {
                     errors.push(Diagnostic::semantic(
-                        format!("{context} bitwise not requires integer operand, got {:?}", ty),
+                        format!(
+                            "{context} bitwise not requires integer operand, got {:?}",
+                            ty
+                        ),
                         0,
                         0,
                     ));

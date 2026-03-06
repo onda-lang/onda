@@ -648,10 +648,14 @@ pub(super) fn parse_for_bound(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnost
                     0,
                 )]);
             };
-            parse_for_bound(inner_pair)
+            match inner_pair.as_rule() {
+                Rule::expr => parse_expr(inner_pair),
+                _ => parse_for_bound(inner_pair),
+            }
         }
+        Rule::expr => parse_expr(pair),
         _ => Err(vec![Diagnostic::syntax(
-            "for/loop bound must be an integer literal or variable path",
+            "for/loop bound must be an integer literal, variable path, or parenthesized expression",
             0,
             0,
         )]),
@@ -942,38 +946,7 @@ pub(super) fn parse_call_expr_parts(
     let target_pair = inner
         .next()
         .expect("call_expr rule must include call target");
-    let (mut name, mut args, mut type_args) = parse_call_target(target_pair);
-    if name == PROC_INDEX_CALL_SENTINEL {
-        let mut base_name = None::<String>;
-        let mut index_var = None::<String>;
-        for arg in &args {
-            match (arg.name.as_deref(), &arg.expr) {
-                (Some(PROC_INDEX_BASE_ARG), Expr::Var(base)) => base_name = Some(base.clone()),
-                (Some(PROC_INDEX_EXPR_ARG), Expr::Var(idx)) => index_var = Some(idx.clone()),
-                _ => {}
-            }
-        }
-        if let (Some(base), Some(idx)) = (base_name, index_var) {
-            let is_primitive_type_arg = parse_primitive_type(&idx).is_ok();
-            let is_generic_type_arg = idx
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_uppercase())
-                .unwrap_or(false);
-            if is_primitive_type_arg || is_generic_type_arg {
-                name = base;
-                args.clear();
-                if is_primitive_type_arg {
-                    type_args
-                        .push(CallTypeArg::Primitive(parse_primitive_type(&idx).expect(
-                            "primitive type arg should parse from call index target",
-                        )));
-                } else {
-                    type_args.push(CallTypeArg::Generic(idx));
-                }
-            }
-        }
-    }
+    let (name, mut args, mut type_args) = parse_call_target(target_pair);
     for item in inner {
         match item.as_rule() {
             Rule::generic_type_arg_list => {
@@ -1113,7 +1086,7 @@ fn parse_namespace_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, V
         return (raw, Vec::new(), Vec::new());
     }
 
-    let Some(name_without_last_args) = strip_trailing_bracket_group(&raw) else {
+    let Some(name_without_last_args) = strip_trailing_angle_group(&raw) else {
         return (raw, Vec::new(), Vec::new());
     };
     (name_without_last_args, Vec::new(), type_args)
@@ -1130,15 +1103,15 @@ fn is_simple_ident(text: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn strip_trailing_bracket_group(text: &str) -> Option<String> {
-    if !text.ends_with(']') {
+fn strip_trailing_angle_group(text: &str) -> Option<String> {
+    if !text.ends_with('>') {
         return None;
     }
     let mut depth = 0usize;
     for (idx, ch) in text.char_indices().rev() {
         match ch {
-            ']' => depth += 1,
-            '[' => {
+            '>' => depth += 1,
+            '<' => {
                 if depth == 0 {
                     return None;
                 }

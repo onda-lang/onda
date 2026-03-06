@@ -122,6 +122,7 @@ pub(super) unsafe fn lower_stmt(
                                         scalar_arg_idx += 1;
                                         LLVMBuildStore(ctx.builder, value_typed, slot.ptr);
                                     }
+                                    TypedFieldType::Struct => {}
                                     TypedFieldType::Array(_) => {
                                         if !ctx.array_base_ptrs.contains_key(&flat_target)
                                             && !ctx.array_struct_len.contains_key(&flat_target)

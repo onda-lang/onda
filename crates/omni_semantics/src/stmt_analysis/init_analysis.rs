@@ -1449,40 +1449,17 @@ fn analyze_assign_init(
                 && !st.local_array_aliases.contains_key(name)
             {
                 if let Expr::Index { base, index } = expr {
-                    let mut is_scalar_data_base = st.state_arrays.contains_key(base);
-                    let mut array_struct_elem_struct = st
-                        .state_array_struct_roots
-                        .get(base)
-                        .map(|r| r.struct_name.clone());
-                    if let Some(alias) = st.local_array_aliases.get(base) {
-                        if let Some(elem_struct) = &alias.elem_struct {
-                            array_struct_elem_struct = Some(elem_struct.clone());
-                        } else {
-                            is_scalar_data_base = true;
-                        }
-                    }
-                    if !is_scalar_data_base && array_struct_elem_struct.is_none() {
-                        if let Some((root, field)) = split_field_path(base, errors) {
-                            if let Some(struct_name) = st.struct_instances.get(root) {
-                                if let Some(fields) = ctx.struct_defs.get(struct_name) {
-                                    if let Some(field_decl) =
-                                        fields.iter().find(|f| f.name == field)
-                                    {
-                                        if matches!(field_decl.ty, TypedFieldType::Array(_)) {
-                                            if let Some(elem_struct) = &field_decl.array_elem_struct
-                                            {
-                                                array_struct_elem_struct =
-                                                    Some(elem_struct.clone());
-                                            } else {
-                                                is_scalar_data_base = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if is_scalar_data_base || array_struct_elem_struct.is_some() {
+                    let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
+                    if let Some(binding_kind) = classify_runtime_like_indexed_binding(
+                        base,
+                        &st.local_array_aliases,
+                        &st.state_arrays,
+                        &st.state_array_struct_roots,
+                        &st.struct_instances,
+                        ctx.struct_defs,
+                        &empty_proc_array_roots,
+                        errors,
+                    ) {
                         validate_expr(
                             index,
                             ExprEnv {
@@ -1513,29 +1490,37 @@ fn analyze_assign_init(
                             errors,
                         );
                         require_numeric_type(idx_ty, "array index expression", errors);
-                        if is_scalar_data_base {
-                            errors.push(Diagnostic::semantic(
-                                format!(
-                                    "local alias binding '{name} = {base}[...]' is not supported for primitive arrays; use direct indexed access"
-                                ),
-                                0,
-                                0,
-                            ));
-                        } else if let Some(struct_name) = array_struct_elem_struct {
-                            if !add_struct_element_alias_bindings(
-                                name,
-                                &struct_name,
-                                ctx.struct_defs,
-                                &mut st.known_scalars,
-                                &mut st.local_aliases,
-                                &mut st.local_array_aliases,
-                                &format!("array alias '{name}' from '{base}[...]'"),
-                                errors,
-                            ) {
+                        match binding_kind {
+                            IndexedBindingKind::StructElementAlias(struct_name) => {
+                                if !add_struct_element_alias_bindings(
+                                    name,
+                                    &struct_name,
+                                    ctx.struct_defs,
+                                    &mut st.known_scalars,
+                                    &mut st.local_aliases,
+                                    &mut st.local_array_aliases,
+                                    &format!("array alias '{name}' from '{base}[...]'"),
+                                    errors,
+                                ) {
+                                    return;
+                                }
                                 return;
                             }
+                            IndexedBindingKind::PrimitiveScalar => {
+                                // Primitive array indexed reads are scalar expressions.
+                                // Allow normal first-assignment local inference to handle:
+                                //   x = arr[idx]
+                            }
+                            IndexedBindingKind::ProcArrayAlias => {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "indexed expression '{base}[...]' is not a array/buffer symbol"
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                            }
                         }
-                        return;
                     }
                 }
             }
@@ -1723,6 +1708,7 @@ fn analyze_struct_ctor_init_assign(
                 state_scalars.insert(flat.clone(), prim);
                 known_scalars.insert(flat);
             }
+            TypedFieldType::Struct => {}
             TypedFieldType::Array(len) => {
                 if let Some(elem_struct) = &field.array_elem_struct {
                     let context =
@@ -1751,7 +1737,7 @@ fn analyze_struct_ctor_init_assign(
         }
     }
 
-    struct_instances.insert(target.to_owned(), struct_name.to_owned());
+    register_struct_instance_roots(target, struct_name, struct_defs, struct_instances);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1843,6 +1829,16 @@ fn analyze_struct_field_init_assign(
             );
             state_scalars.insert(flat.clone(), prim);
             known_scalars.insert(flat);
+        }
+        TypedFieldType::Struct => {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "struct field init '{}' must target nested fields or use the containing constructor",
+                    flat
+                ),
+                0,
+                0,
+            ));
         }
         TypedFieldType::Array(expected_len) => {
             let Expr::ArrayCtor { spec, .. } = expr else {

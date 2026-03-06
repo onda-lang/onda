@@ -55,7 +55,10 @@
   - `import module/path` (resolved as `module/path.omni`, imported once, declaration-only files).
   - Built-in std modules via `import std/...` are supported from both file and in-memory source compilation paths.
 - Namespaces with `::` are supported.
-- Namespace templates are supported (`namespace Name[S = ...]: ...`) with compile-time int args, inline instantiation (`Name[... ]::...`), and namespace aliases (`namespace Alias = Name[...]`).
+- Namespace templates are supported (`namespace Name<S = ...>: ...`) with compile-time int args, inline instantiation (`Name<...>::...`), and namespace aliases (`namespace Alias = Name<...>`).
+- Surface syntax split:
+  - `<>` is used for namespace instantiation and generic type specialization.
+  - `[]` is reserved for arrays and indexing.
 - Compile-time assertions are supported via `assert(expr)` inside namespaces.
   - `expr` must be compile-time evaluable.
   - `expr` must evaluate to `bool`.
@@ -80,10 +83,11 @@
 
 ### Types and semantics
 - Primitive types: `f32`, `f64`, `i32`, `i64`, `bool`.
-- Generic primitive specialization is supported for `struct` and `proc` via type parameters (for example `Name[T]`).
-- Specialization is monomorphized at use sites with explicit type args (`Name[f64](...)`) or inferred type args from constructor arguments/defaults where possible.
+- Generic primitive specialization is supported for `struct` and `proc` via type parameters (for example `Name<T>`).
+- Specialization is monomorphized at use sites with explicit type args (`Name<f64>(...)`) or inferred type args from constructor arguments/defaults where possible.
+- Inside specialized generic owners, `T(expr)` is rewritten to the bound primitive cast, and method/`def` params can use `T[]` in addition to the existing scalar generic forms.
 - In typed `init` struct declarations, declaration-only form is supported (`x: Type`) and desugars to default constructor initialization.
-- Typed `init` struct declarations support namespace-instantiated owner paths (for example `x: std::data[SR, 1]::Data`).
+- Typed `init` struct declarations support namespace-instantiated owner paths (for example `x: std::data<SR, 1>::Data`).
 - Unresolved generic type parameters in declaration/type positions produce an error (no implicit default there).
 - For untyped constructor assignments (`x = Type()` / `p = Proc()`), unresolved constructor type parameters default to `f32`.
 - Generic type arguments are restricted to numeric primitives (`f32`, `f64`, `i32`, `i64`); `bool` is rejected.
@@ -109,6 +113,23 @@
 - `std/prelude` currently imports `std/math` and `std/lookup`.
 - Local symbols with the same name take precedence over auto-imported unqualified std helpers; qualified calls remain available via `std::math::...` and `std::lookup::...`.
 - `std/lookup` exposes duck-typed overloaded helpers `read`, `write`, `readL`, and `readC` (mono and channel-explicit forms) that specialize from both primitive arrays and buffers.
+- `std/fft` is available as `import std/fft` and currently provides `std::fft<N>::FFT<T>`, an internal-buffer complex FFT specialized by namespace integer `N` and numeric type `T`.
+  - Namespace contract: `N > 0` and `N` must be a power of two.
+  - Intended `T` specializations are `f32` and `f64`.
+  - Storage and results use parallel `re` / `im` `T[N]` arrays.
+  - Introspection helpers:
+    - `size()`
+    - `real_bin_count()` (`N / 2 + 1` unique bins for real-input spectra)
+  - Real-spectrum helpers are included via packed `N`-scalar wrappers:
+    - `forward_real_packed(input, packed)`
+    - `inverse_real_packed(packed, output)`
+    - `store_real_packed(output)`
+    - `load_real_packed(input)`
+  - Packed layout is `real[0..N/2]` followed by `imag[1..N/2-1]`.
+  - Current surface also includes `forward_real`, `forward_real_magnitude`, `forward_real_power`, `forward_real_phase`, `forward_complex`, `forward`, `inverse`, `store_real`, `store_imag`, `store_power`, `store_magnitude`, `store_phase`, `store_real_spectrum_magnitude`, `store_real_spectrum_power`, `store_real_spectrum_phase`, plus per-bin accessors `real`, `imag`, `power`, `magnitude`, and `phase`.
+  - Streaming struct wrappers:
+    - `std::fft<N>::RealFFT<T>` is a Hann-windowed streaming forward wrapper with `N / 2` hop. It accumulates one real sample at a time via `push(x) -> bool`, updates `fft`/`packed` every hop after the first full frame, exposes `ready: bool`, and reports the current hop with `hop_size()`.
+    - `std::fft<N>::RealIFFT<T>` is the matching Hann-windowed overlap-add inverse wrapper. It accepts either packed or complex spectra via `load_packed(...)` / `load_complex(...)`, streams reconstructed samples via `tick()`, reports pending output via `is_active()`, and reports the current hop with `hop_size()`.
 - Control flow and calls:
   - `if`, `for`, `loop N`, `while`, `break`, `continue`, `return`, call statements.
   - `for` syntax supports:
@@ -134,7 +155,7 @@
   - defaults participate in overload matching.
   - ambiguous matches are semantic errors.
   - overloads currently apply to top-level `def` only; struct methods with the same name are still rejected as duplicates.
-  - explicit `def` type parameters (`def fn[T]`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
+  - explicit `def` type parameters (`def fn<T>`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
   - explicit struct-typed params are nominal.
   - typed and duck-typed buffer params are supported; duck-typed buffer calls specialize by caller shape/type.
   - untyped indexable params (`x[i]`, `x[ch][i]`) infer as a shared indexable/buffer ABI and can specialize from both primitive arrays and buffers at call sites.
@@ -142,7 +163,7 @@
     - typed array params (`arr: f32[]`, `arr: i64[]`) — no monomorphization needed.
     - untyped array params (`arr: []`) — monomorphized per call site by element type.
     - bare buffer params (`buf: buffer`) — monomorphized per call site by buffer type.
-    - generic struct/proc params (`v: Voice` where `Voice[T]`) — monomorphized per call site by concrete specialization.
+    - generic struct/proc params (`v: Voice` where `Voice<T>`) — monomorphized per call site by concrete specialization.
   - overload priority: explicit type > generic/duck-typed > untyped.
 - Structs:
   - field defaults and methods supported.
@@ -165,8 +186,8 @@
 - Nested processor state/composition is supported, including deep nesting.
 - Processor constructor arguments for params/buffers are enforced as named-only.
 - Processor instance arrays are supported in `init` (top-level and proc-level) via typed declarations such as:
-  - `voices: Voice[N_EXPR] = [Voice(...), ...]`
-  - `voices: Voice[N_EXPR] = Voice(...)` (broadcast constructor sugar)
+  - `voices: Voice<N_EXPR> = [Voice(...), ...]`
+  - `voices: Voice<N_EXPR> = Voice(...)` (broadcast constructor sugar)
   - `N_EXPR` can be any compile-time constant expression (not only integer literals).
   - Top-level lowering preserves proc arrays as real state arrays and uses direct indexed instance access (`voices[idx]`) for dynamic calls.
   - Nested proc-wrapper lowering still models proc arrays internally as per-slot nested instances.
@@ -252,3 +273,4 @@
 - C++ single-header backend.
 - Standard library expansion/versioning beyond MVP module set.
 - RT-safety instrumentation/audit suite and stricter host-facing diagnostics lifecycle.
+

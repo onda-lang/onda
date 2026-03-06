@@ -13,7 +13,10 @@ use crate::decl_symbols::{
     DECLARED_PARAM_TYPE_PREFIX, DECLARED_STRUCT_FIELD_TYPE_PREFIX,
 };
 use crate::def_inference::{can_implicitly_assign, merge_numeric_types};
-use crate::{split_field_path, LocalArrayAliasInfo, TypedFieldType, TypedStructField};
+use crate::{
+    resolve_struct_field_decl, split_field_path, LocalArrayAliasInfo, TypedFieldType,
+    TypedStructField,
+};
 
 fn merge_integer_types_for_expr(
     lhs: PrimitiveType,
@@ -53,10 +56,8 @@ fn is_data_receiver_symbol_for_builtin(
     }
     if let Some((root, field)) = split_simple_field_path(base) {
         if let Some(struct_name) = struct_instances.get(root) {
-            if let Some(fields) = struct_defs.get(struct_name) {
-                if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
-                    return matches!(field_decl.ty, TypedFieldType::Array(_));
-                }
+            if let Some(field_decl) = resolve_struct_field_decl(struct_name, field, struct_defs) {
+                return matches!(field_decl.ty, TypedFieldType::Array(_));
             }
         }
     }
@@ -71,13 +72,7 @@ fn is_buffer_receiver_symbol_for_builtin(
 }
 
 fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
-    let mut parts = name.split('.');
-    let first = parts.next()?;
-    let second = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((first, second))
+    crate::split_root_field_path(name)
 }
 
 pub(crate) fn infer_scalar_expr_type(
@@ -118,13 +113,14 @@ pub(crate) fn infer_scalar_expr_type(
                     return Some(ty);
                 }
                 if let Some(struct_name) = struct_instances.get(base) {
-                    if let Some(fields) = struct_defs.get(struct_name) {
-                        if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
-                            return Some(match field_decl.ty {
-                                TypedFieldType::Scalar(prim) => prim,
-                                TypedFieldType::Array(_) => PrimitiveType::F32,
-                            });
-                        }
+                    if let Some(field_decl) =
+                        resolve_struct_field_decl(struct_name, field, struct_defs)
+                    {
+                        return Some(match field_decl.ty {
+                            TypedFieldType::Scalar(prim) => prim,
+                            TypedFieldType::Struct => return None,
+                            TypedFieldType::Array(_) => PrimitiveType::F32,
+                        });
                     }
                 }
                 if let Some(ty) = get_declared_symbol_type(
@@ -166,12 +162,12 @@ pub(crate) fn infer_scalar_expr_type(
             }
             if let Some((root, field)) = split_field_path(base, errors) {
                 if let Some(struct_name) = struct_instances.get(root) {
-                    if let Some(fields) = struct_defs.get(struct_name) {
-                        if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
-                            if let TypedFieldType::Array(_) = field_decl.ty {
-                                if let Some(elem_ty) = field_decl.array_elem_ty {
-                                    return Some(elem_ty);
-                                }
+                    if let Some(field_decl) =
+                        resolve_struct_field_decl(struct_name, field, struct_defs)
+                    {
+                        if let TypedFieldType::Array(_) = field_decl.ty {
+                            if let Some(elem_ty) = field_decl.array_elem_ty {
+                                return Some(elem_ty);
                             }
                         }
                     }

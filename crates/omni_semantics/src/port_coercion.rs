@@ -274,7 +274,9 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 );
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             rewrite_top_level_range_clamps_in_expr(
                 inner,
                 input_aliases,
@@ -641,4 +643,3 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) allow_array_ctor: bool,
     pub(crate) scope: ScopeKind,
 }
-

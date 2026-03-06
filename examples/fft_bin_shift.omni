@@ -1,0 +1,41 @@
+import std/fft
+import std/osc
+
+namespace BinShift<N = 512>:
+  proc Main:
+    init:
+      fwd = std::fft<N>::RealFFT()
+      inv = std::fft<N>::RealIFFT()
+      scratch_re: f32[N]
+      scratch_im: f32[N]
+
+    sample:
+      if fwd.push(in1):
+        for i in 0..N:
+          scratch_re[i] = 0.0
+          scratch_im[i] = 0.0
+
+        scratch_re[0] = fwd.fft.re[0]
+
+        half = N >> 1
+        for k in 1..half:
+          shifted = k + 1
+          if (shifted < half):
+            scratch_re[shifted] = fwd.fft.re[k]
+            scratch_im[shifted] = fwd.fft.im[k]
+            scratch_re[N - shifted] = fwd.fft.re[N - k]
+            scratch_im[N - shifted] = fwd.fft.im[N - k]
+
+        inv.load_complex(scratch_re, scratch_im)
+
+      out1 = inv.tick()
+
+params:
+  freq = 440.0
+
+init:
+  saw = std::osc::Saw(freq = freq)
+  bin_shift = BinShift::Main()
+
+sample:
+  out1 = bin_shift(saw())

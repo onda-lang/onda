@@ -35,7 +35,10 @@ pub(super) unsafe fn build_user_functions_ir(
         }
         for (idx, kind) in def.param_kinds.iter().enumerate() {
             match kind {
-                TypedFnParam::Scalar => arg_tys.push(LLVMFloatTypeInContext(context)),
+                TypedFnParam::Scalar { ty } => arg_tys.push(llvm_ty_for_primitive(
+                    context,
+                    resolve_scalar_param_type(*ty, PrimitiveType::F32),
+                )),
                 TypedFnParam::Struct { struct_name } => {
                     // Phase 2: all struct parameters are passed by reference.
                     by_ref_flags[idx] = true;
@@ -54,6 +57,7 @@ pub(super) unsafe fn build_user_functions_ir(
                                     arg_tys.push(llvm_ty_for_primitive(context, prim));
                                 }
                             }
+                            TypedFieldType::Struct => {}
                             TypedFieldType::Array(len) => {
                                 if let Some(elem_struct) = &field.array_elem_struct {
                                     let mut roots = Vec::new();
@@ -198,45 +202,14 @@ pub(super) unsafe fn ensure_user_fn_specialization(
         .ok_or_else(|| Diagnostic::internal(format!("unknown function '{}'", name)))?
         .clone();
 
-    let scalar_count = def
-        .param_kinds
-        .iter()
-        .filter(|k| matches!(k, TypedFnParam::Scalar))
-        .count();
-    if scalar_types.len() != scalar_count {
-        return Err(Diagnostic::internal(format!(
-            "function '{}' scalar signature length mismatch: expected {}, got {}",
-            name,
-            scalar_count,
-            scalar_types.len()
-        )));
-    }
-    let array_count = def
-        .param_kinds
-        .iter()
-        .filter(|k| matches!(k, TypedFnParam::Array { .. }))
-        .count();
-    if array_types.len() != array_count {
-        return Err(Diagnostic::internal(format!(
-            "function '{}' array signature length mismatch: expected {}, got {}",
-            name,
-            array_count,
-            array_types.len()
-        )));
-    }
-    let buffer_count = def
-        .param_kinds
-        .iter()
-        .filter(|k| matches!(k, TypedFnParam::Buffer { .. }))
-        .count();
-    if buffer_types.len() != buffer_count {
-        return Err(Diagnostic::internal(format!(
-            "function '{}' buffer signature length mismatch: expected {}, got {}",
-            name,
-            buffer_count,
-            buffer_types.len()
-        )));
-    }
+    validate_param_signatures(
+        name,
+        &def.param_kinds,
+        scalar_types,
+        array_types,
+        buffer_types,
+        "specialization",
+    )?;
 
     let base_key = user_fn_mono_key(
         name,
@@ -281,8 +254,9 @@ pub(super) unsafe fn ensure_user_fn_specialization(
     let mut array_idx = 0usize;
     for (param_idx, kind) in def.param_kinds.iter().enumerate() {
         match kind {
-            TypedFnParam::Scalar => {
+            TypedFnParam::Scalar { ty } => {
                 let param_ty = scalar_types[scalar_idx];
+                let param_ty = resolve_scalar_param_type(*ty, param_ty);
                 scalar_idx += 1;
                 arg_tys.push(llvm_ty_for_primitive(context, param_ty));
             }
@@ -302,6 +276,7 @@ pub(super) unsafe fn ensure_user_fn_specialization(
                                 arg_tys.push(llvm_ty_for_primitive(context, prim));
                             }
                         }
+                        TypedFieldType::Struct => {}
                         TypedFieldType::Array(len) => {
                             if let Some(elem_struct) = &field.array_elem_struct {
                                 let mut roots = Vec::new();
@@ -464,45 +439,14 @@ pub(super) unsafe fn lower_user_function_body(
                 def.name
             ))
         })?;
-        let expected_scalar_count = def
-            .param_kinds
-            .iter()
-            .filter(|k| matches!(k, TypedFnParam::Scalar))
-            .count();
-        if scalar_param_types.len() != expected_scalar_count {
-            return Err(Diagnostic::internal(format!(
-                "function '{}' scalar parameter type mismatch: expected {}, got {}",
-                def.name,
-                expected_scalar_count,
-                scalar_param_types.len()
-            )));
-        }
-        let expected_array_count = def
-            .param_kinds
-            .iter()
-            .filter(|k| matches!(k, TypedFnParam::Array { .. }))
-            .count();
-        if array_param_types.len() != expected_array_count {
-            return Err(Diagnostic::internal(format!(
-                "function '{}' array parameter type mismatch: expected {}, got {}",
-                def.name,
-                expected_array_count,
-                array_param_types.len()
-            )));
-        }
-        let expected_buffer_count = def
-            .param_kinds
-            .iter()
-            .filter(|k| matches!(k, TypedFnParam::Buffer { .. }))
-            .count();
-        if buffer_param_types.len() != expected_buffer_count {
-            return Err(Diagnostic::internal(format!(
-                "function '{}' buffer parameter type mismatch: expected {}, got {}",
-                def.name,
-                expected_buffer_count,
-                buffer_param_types.len()
-            )));
-        }
+        validate_param_signatures(
+            &def.name,
+            &def.param_kinds,
+            scalar_param_types,
+            array_param_types,
+            buffer_param_types,
+            "function body lowering",
+        )?;
         let oversample_factor = registry
             .sample_oversample_factors
             .get(&def.name)
@@ -519,7 +463,7 @@ pub(super) unsafe fn lower_user_function_body(
             def.params.iter().zip(def.param_kinds.iter()).enumerate()
         {
             match kind {
-                TypedFnParam::Scalar => {
+                TypedFnParam::Scalar { ty } => {
                     let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
                     if param_val.is_null() {
                         return Err(Diagnostic::internal(format!(
@@ -527,7 +471,8 @@ pub(super) unsafe fn lower_user_function_body(
                             llvm_param_idx, def.name
                         )));
                     }
-                    let param_ty = scalar_param_types[scalar_param_idx];
+                    let param_ty =
+                        resolve_scalar_param_type(*ty, scalar_param_types[scalar_param_idx]);
                     scalar_param_idx += 1;
                     let slot = build_local_slot(
                         ctx.builder,
@@ -552,16 +497,16 @@ pub(super) unsafe fn lower_user_function_body(
                         ))
                     })?;
                     for field in fields {
-                        let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
-                        if param_val.is_null() {
-                            return Err(Diagnostic::internal(format!(
-                                "missing LLVM param {} for function '{}'",
-                                llvm_param_idx, def.name
-                            )));
-                        }
                         let flat = format!("{param_name}.{}", field.name);
                         match field.ty {
                             TypedFieldType::Scalar(prim) => {
+                                let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                                if param_val.is_null() {
+                                    return Err(Diagnostic::internal(format!(
+                                        "missing LLVM param {} for function '{}'",
+                                        llvm_param_idx, def.name
+                                    )));
+                                }
                                 if by_ref_flags[param_idx] {
                                     ctx.local_slots.insert(
                                         flat,
@@ -585,8 +530,17 @@ pub(super) unsafe fn lower_user_function_body(
                                         },
                                     );
                                 }
+                                llvm_param_idx += 1;
                             }
+                            TypedFieldType::Struct => {}
                             TypedFieldType::Array(len) => {
+                                let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                                if param_val.is_null() {
+                                    return Err(Diagnostic::internal(format!(
+                                        "missing LLVM param {} for function '{}'",
+                                        llvm_param_idx, def.name
+                                    )));
+                                }
                                 if let Some(elem_struct) = &field.array_elem_struct {
                                     let mut roots = Vec::new();
                                     let mut leaves = Vec::new();
@@ -634,9 +588,9 @@ pub(super) unsafe fn lower_user_function_body(
                                         field.array_elem_ty.unwrap_or(PrimitiveType::F32),
                                     );
                                 }
+                                llvm_param_idx += 1;
                             }
                         }
-                        llvm_param_idx += 1;
                     }
                 }
                 TypedFnParam::Array { .. } => {

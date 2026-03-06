@@ -264,7 +264,9 @@ pub(crate) fn validate_proc_expr_decl_order(
                 ok &= validate_proc_expr_decl_order(&arg.expr, reserved, locals, out, errors);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             ok &= validate_proc_expr_decl_order(inner, reserved, locals, out, errors);
         }
         Expr::ArrayLiteral(values) => {
@@ -288,6 +290,10 @@ pub(crate) fn rewrite_proc_expr_symbols(
         Expr::Var(name) => {
             if field_names.contains(name) && is_plain_symbol(name) {
                 *name = format!("self.{name}");
+            } else if let Some((base, field)) = split_field_path(name, errors) {
+                if field_names.contains(base) && is_plain_symbol(base) {
+                    *name = format!("self.{base}.{field}");
+                }
             }
         }
         Expr::Index { base, index } => {
@@ -391,6 +397,10 @@ pub(crate) fn rewrite_proc_expr_symbols(
             }
             if field_names.contains(base) && is_plain_symbol(base) {
                 *base = format!("self.{base}");
+            } else if let Some((root, field)) = split_field_path(base, errors) {
+                if field_names.contains(root) && is_plain_symbol(root) {
+                    *base = format!("self.{root}.{field}");
+                }
             }
         }
         Expr::ArrayCtor { spec, init } => {
@@ -462,10 +472,18 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 if let Some(base) = parse_array_len_instance_base(name) {
                     if field_names.contains(base) && is_plain_symbol(base) {
                         *name = format!("self.{base}.len");
+                    } else if let Some((root, field)) = split_field_path(base, errors) {
+                        if field_names.contains(root) && is_plain_symbol(root) {
+                            *name = format!("self.{root}.{field}.len");
+                        }
                     }
                 } else if let Some(base) = parse_buffer_chans_instance_base(name) {
                     if field_names.contains(base) && is_plain_symbol(base) {
                         *name = format!("self.{base}.chans");
+                    } else if let Some((root, field)) = split_field_path(base, errors) {
+                        if field_names.contains(root) && is_plain_symbol(root) {
+                            *name = format!("self.{root}.{field}.chans");
+                        }
                     }
                 }
                 let method_name = name.clone();
@@ -474,6 +492,12 @@ pub(crate) fn rewrite_proc_expr_symbols(
                         || in_array_slots.contains_key(base)
                     {
                         Some(base.to_owned())
+                    } else if let Some((root, field)) = split_field_path(base, errors) {
+                        if field_names.contains(root) && is_plain_symbol(root) {
+                            Some(format!("self.{root}.{field}"))
+                        } else {
+                            None
+                        }
                     } else if field_names.contains(base) && is_plain_symbol(base) {
                         Some(format!("self.{base}"))
                     } else {
@@ -496,6 +520,12 @@ pub(crate) fn rewrite_proc_expr_symbols(
                         || in_array_slots.contains_key(base)
                     {
                         Some(base.to_owned())
+                    } else if let Some((root, field)) = split_field_path(base, errors) {
+                        if field_names.contains(root) && is_plain_symbol(root) {
+                            Some(format!("self.{root}.{field}"))
+                        } else {
+                            None
+                        }
                     } else if field_names.contains(base) && is_plain_symbol(base) {
                         Some(format!("self.{base}"))
                     } else {
@@ -634,7 +664,9 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 }
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             rewrite_proc_expr_symbols(
                 inner,
                 owner_proc,
@@ -720,6 +752,18 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 is_typed_decl: false,
                                 expr: expr_rewritten,
                             });
+                        }
+                        if let Some((base, field)) = split_field_path(name, errors) {
+                            if field_names.contains(base) && is_plain_symbol(base) {
+                                return Some(Stmt::Assign {
+                                    loc: source_loc.clone(),
+                                    target: AssignTarget::Var(format!("self.{base}.{field}")),
+                                    decl_ty: None,
+                                    generic_decl_ty: None,
+                                    is_typed_decl: false,
+                                    expr: expr_rewritten,
+                                });
+                            }
                         }
                         Some(Stmt::Assign {
                             loc: source_loc.clone(),
@@ -822,6 +866,12 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         }
                         let target_base = if field_names.contains(base) && is_plain_symbol(base) {
                             format!("self.{base}")
+                        } else if let Some((root, field)) = split_field_path(base, errors) {
+                            if field_names.contains(root) && is_plain_symbol(root) {
+                                format!("self.{root}.{field}")
+                            } else {
+                                base.clone()
+                            }
                         } else {
                             base.clone()
                         };
@@ -1094,4 +1144,3 @@ pub(crate) fn rewrite_proc_stmt_symbols(
         }
     })
 }
-

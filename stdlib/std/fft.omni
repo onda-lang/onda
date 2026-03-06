@@ -1,0 +1,620 @@
+import std/math
+
+namespace std::fft<N = 256>:
+  assert(N > 0 && (N & (N - 1)) == 0)
+
+  def _min_i(a: i32, b: i32):
+    if (a < b):
+      return a
+    return b
+
+  def _ilog2(n: i32):
+    bits = 0
+    value = n
+    while (value > 1):
+      value = value >> 1
+      bits = bits + 1
+    return bits
+
+  def _bit_reverse(value: i32, bits: i32):
+    x = value
+    rev = 0
+    i = 0
+    while (i < bits):
+      rev = (rev << 1) | (x & 1)
+      x = x >> 1
+      i = i + 1
+    return rev
+
+  def _clear_complex(re: [], im: [], n: i32):
+    for i in 0..n:
+      re[i] = 0.0
+      im[i] = 0.0
+
+  def _build_bitrev(bitrev: i32[], n: i32):
+    bits = _ilog2(n)
+    for i in 0..n:
+      bitrev[i] = _bit_reverse(i, bits)
+
+  def _build_twiddles(tw_re: [], tw_im: [], n: i32, step_r, step_i):
+    half = n >> 1
+    if (half > 0):
+      tw_re[0] = 1.0
+      tw_im[0] = 0.0
+      wr = 1.0
+      wi = 0.0
+      for i in 1..half:
+        next_wr = wr * step_r - wi * step_i
+        next_wi = wr * step_i + wi * step_r
+        wr = next_wr
+        wi = next_wi
+        tw_re[i] = wr
+        tw_im[i] = wi
+
+  def _wrap_add(base: i32, offset: i32, n: i32):
+    idx = base + offset
+    if (idx >= n):
+      idx = idx - n
+    return idx
+
+  def _transform_inplace(re: [], im: [], tw_re: [], tw_im: [], bitrev: i32[], n: i32, inverse: bool, inverse_scale):
+    for i in 0..n:
+      j = bitrev[i]
+      if (j > i):
+        temp_r = re[i]
+        temp_i = im[i]
+        re[i] = re[j]
+        im[i] = im[j]
+        re[j] = temp_r
+        im[j] = temp_i
+
+    stage = 2
+    while (stage <= n):
+      half = stage >> 1
+      tw_stride = n / stage
+
+      start = 0
+      while (start < n):
+        k = 0
+        while (k < half):
+          tw_idx = k * tw_stride
+          wr = tw_re[tw_idx]
+          wi = tw_im[tw_idx]
+          if (!inverse):
+            wi = -wi
+
+          even_i = start + k
+          odd_i = even_i + half
+
+          odd_r = re[odd_i]
+          odd_im = im[odd_i]
+
+          tw_r = wr * odd_r - wi * odd_im
+          tw_i = wr * odd_im + wi * odd_r
+
+          even_r = re[even_i]
+          even_im = im[even_i]
+
+          re[even_i] = even_r + tw_r
+          im[even_i] = even_im + tw_i
+          re[odd_i] = even_r - tw_r
+          im[odd_i] = even_im - tw_i
+
+          k = k + 1
+        start = start + stage
+      stage = stage << 1
+
+    if (inverse):
+      for i in 0..n:
+        re[i] = re[i] * inverse_scale
+        im[i] = im[i] * inverse_scale
+
+  struct FFT<T>:
+    re: T[N]
+    im: T[N]
+    tw_re: T[N]
+    tw_im: T[N]
+    bitrev: i32[N]
+    prepared: bool
+
+    def size(self):
+      return N
+
+    def real_bin_count(self):
+      return (N >> 1) + 1
+
+    def clear(self):
+      _clear_complex(self.re, self.im, N)
+
+    def load_real(self, input: T[]):
+      self.clear()
+      count = _min_i(input.len(), N)
+      for i in 0..count:
+        self.re[i] = input[i]
+
+    def load_complex(self, real: T[], imag: T[]):
+      self.clear()
+      count = _min_i(real.len(), imag.len())
+      count = _min_i(count, N)
+      for i in 0..count:
+        self.re[i] = real[i]
+        self.im[i] = imag[i]
+
+    def store_real(self, output: T[]):
+      count = _min_i(output.len(), N)
+      for i in 0..count:
+        output[i] = self.re[i]
+
+    def store_imag(self, output: T[]):
+      count = _min_i(output.len(), N)
+      for i in 0..count:
+        output[i] = self.im[i]
+
+    def store_magnitude(self, output: T[]):
+      count = _min_i(output.len(), N)
+      for i in 0..count:
+        output[i] = self.magnitude(i)
+
+    def store_power(self, output: T[]):
+      count = _min_i(output.len(), N)
+      for i in 0..count:
+        output[i] = self.power(i)
+
+    def store_phase(self, output: T[]):
+      count = _min_i(output.len(), N)
+      for i in 0..count:
+        output[i] = self.phase(i)
+
+    def store_real_packed(self, output: T[]):
+      half = N >> 1
+      count = _min_i(output.len(), N)
+      for i in 0..count:
+        output[i] = T(0.0)
+      real_count = _min_i(count, half + 1)
+      for i in 0..real_count:
+        output[i] = self.re[i]
+      imag_count = _min_i(count - (half + 1), half - 1)
+      for i in 0..imag_count:
+        output[half + 1 + i] = self.im[i + 1]
+
+    def load_real_packed(self, input: T[]):
+      self.clear()
+      half = N >> 1
+      count = _min_i(input.len(), N)
+
+      if (count > 0):
+        self.re[0] = input[0]
+
+      if (count > half):
+        self.re[half] = input[half]
+
+      imag_count = _min_i(count - (half + 1), half - 1)
+      if (imag_count < 0):
+        imag_count = 0
+
+      real_count = _min_i(count, half)
+      for i in 1..real_count:
+        self.re[i] = input[i]
+        self.re[N - i] = input[i]
+
+      for i in 0..imag_count:
+        imag_v = input[half + 1 + i]
+        bin = i + 1
+        self.im[bin] = imag_v
+        self.im[N - bin] = -imag_v
+
+    def store_real_spectrum_magnitude(self, output: T[]):
+      count = _min_i(output.len(), self.real_bin_count())
+      for i in 0..count:
+        output[i] = self.magnitude(i)
+
+    def store_real_spectrum_power(self, output: T[]):
+      count = _min_i(output.len(), self.real_bin_count())
+      for i in 0..count:
+        output[i] = self.power(i)
+
+    def store_real_spectrum_phase(self, output: T[]):
+      count = _min_i(output.len(), self.real_bin_count())
+      for i in 0..count:
+        output[i] = self.phase(i)
+
+    def real(self, i: i32):
+      return self.re[i]
+
+    def imag(self, i: i32):
+      return self.im[i]
+
+    def power(self, i: i32):
+      return self.re[i] * self.re[i] + self.im[i] * self.im[i]
+
+    def magnitude(self, i: i32):
+      return sqrt(self.power(i))
+
+    def phase(self, i: i32):
+      return atan2(self.im[i], self.re[i])
+
+    def forward_real(self, input: T[]):
+      self.load_real(input)
+      self.forward()
+
+    def forward_real_packed(self, input: T[], output: T[]):
+      self.forward_real(input)
+      self.store_real_packed(output)
+
+    def forward_complex(self, real: T[], imag: T[]):
+      self.load_complex(real, imag)
+      self.forward()
+
+    def forward_real_magnitude(self, input: T[], output: T[]):
+      self.forward_real(input)
+      self.store_real_spectrum_magnitude(output)
+
+    def forward_real_power(self, input: T[], output: T[]):
+      self.forward_real(input)
+      self.store_real_spectrum_power(output)
+
+    def forward_real_phase(self, input: T[], output: T[]):
+      self.forward_real(input)
+      self.store_real_spectrum_phase(output)
+
+    def forward(self):
+      self._transform(false)
+
+    def inverse(self):
+      self._transform(true)
+
+    def inverse_real_packed(self, input: T[], output: T[]):
+      self.load_real_packed(input)
+      self.inverse()
+      self.store_real(output)
+
+    def _ensure_tables(self):
+      if (!self.prepared):
+        _build_bitrev(self.bitrev, N)
+        angle_step: T = T(TWO_PI) / T(N)
+        step_r = cos(angle_step)
+        step_i = sin(angle_step)
+        _build_twiddles(self.tw_re, self.tw_im, N, step_r, step_i)
+        self.prepared = true
+
+    def _transform(self, inverse: bool):
+      self._ensure_tables()
+      _transform_inplace(self.re, self.im, self.tw_re, self.tw_im, self.bitrev, N, inverse, T(1.0) / T(N))
+
+  struct STFT<T>:
+    fft: FFT<T>
+    window: T[N]
+    window_ready: bool
+
+    def size(self):
+      return N
+
+    def real_bin_count(self):
+      return (N >> 1) + 1
+
+    def _set_single_point_window(self, value: T):
+      self.window[0] = value
+      self.window_ready = true
+
+    def _window_denominator(self):
+      if (N <= 1):
+        return T(1.0)
+      return T(N - 1)
+
+    def _ensure_window(self):
+      if (!self.window_ready):
+        self.set_rectangular()
+
+    def set_rectangular(self):
+      for i in 0..N:
+        self.window[i] = T(1.0)
+      self.window_ready = true
+
+    def set_hann(self):
+      if (N <= 1):
+        self._set_single_point_window(T(1.0))
+      else:
+        denom: T = self._window_denominator()
+        for i in 0..N:
+          phase: T = T(TWO_PI) * T(i) / denom
+          self.window[i] = T(0.5) - T(0.5) * cos(phase)
+        self.window_ready = true
+
+    def set_hamming(self):
+      if (N <= 1):
+        self._set_single_point_window(T(1.0))
+      else:
+        denom: T = self._window_denominator()
+        for i in 0..N:
+          phase: T = T(TWO_PI) * T(i) / denom
+          self.window[i] = T(0.54) - T(0.46) * cos(phase)
+        self.window_ready = true
+
+    def set_blackman(self):
+      if (N <= 1):
+        self._set_single_point_window(T(1.0))
+      else:
+        denom: T = self._window_denominator()
+        for i in 0..N:
+          phase: T = T(TWO_PI) * T(i) / denom
+          self.window[i] = T(0.42) - T(0.5) * cos(phase) + T(0.08) * cos(T(2.0) * phase)
+        self.window_ready = true
+
+    def window_value(self, i: i32):
+      self._ensure_window()
+      return self.window[i]
+
+    def store_window(self, output: T[]):
+      self._ensure_window()
+      count = _min_i(output.len(), N)
+      for i in 0..count:
+        output[i] = self.window[i]
+
+    def clear(self):
+      self.fft.clear()
+
+    def real(self, i: i32):
+      return self.fft.real(i)
+
+    def imag(self, i: i32):
+      return self.fft.imag(i)
+
+    def power(self, i: i32):
+      return self.fft.power(i)
+
+    def magnitude(self, i: i32):
+      return self.fft.magnitude(i)
+
+    def phase(self, i: i32):
+      return self.fft.phase(i)
+
+    def store_real_packed(self, output: T[]):
+      self.fft.store_real_packed(output)
+
+    def store_real_spectrum_magnitude(self, output: T[]):
+      self.fft.store_real_spectrum_magnitude(output)
+
+    def store_real_spectrum_power(self, output: T[]):
+      self.fft.store_real_spectrum_power(output)
+
+    def store_real_spectrum_phase(self, output: T[]):
+      self.fft.store_real_spectrum_phase(output)
+
+    def _load_windowed_real(self, input: T[]):
+      self._ensure_window()
+      self.fft.clear()
+      count = _min_i(input.len(), N)
+      for i in 0..count:
+        self.fft.re[i] = input[i] * self.window[i]
+
+    def forward_real(self, input: T[]):
+      self._load_windowed_real(input)
+      self.fft.forward()
+
+    def forward_real_packed(self, input: T[], output: T[]):
+      self.forward_real(input)
+      self.store_real_packed(output)
+
+    def forward_real_magnitude(self, input: T[], output: T[]):
+      self.forward_real(input)
+      self.store_real_spectrum_magnitude(output)
+
+    def forward_real_power(self, input: T[], output: T[]):
+      self.forward_real(input)
+      self.store_real_spectrum_power(output)
+
+    def forward_real_phase(self, input: T[], output: T[]):
+      self.forward_real(input)
+      self.store_real_spectrum_phase(output)
+
+  struct RealFFT<T>:
+    fft: FFT<T>
+    input: T[N]
+    packed: T[N]
+    window: T[N]
+    write: i32
+    filled: i32
+    since_hop: i32
+    ready: bool
+    window_ready: bool
+
+    def size(self):
+      return N
+
+    def real_bin_count(self):
+      return (N >> 1) + 1
+
+    def hop_size(self):
+      return N >> 1
+
+    def _set_single_point_window(self, value: T):
+      self.window[0] = value
+      self.window_ready = true
+
+    def _window_denominator(self):
+      if (N <= 1):
+        return T(1.0)
+      return T(N - 1)
+
+    def _ensure_window(self):
+      if (!self.window_ready):
+        self.set_hann()
+
+    def set_rectangular(self):
+      for i in 0..N:
+        self.window[i] = T(1.0)
+      self.window_ready = true
+
+    def set_hann(self):
+      if (N <= 1):
+        self._set_single_point_window(T(1.0))
+      else:
+        denom: T = self._window_denominator()
+        for i in 0..N:
+          phase: T = T(TWO_PI) * T(i) / denom
+          self.window[i] = T(0.5) - T(0.5) * cos(phase)
+        self.window_ready = true
+
+    def clear(self):
+      self.fft.clear()
+      self.write = 0
+      self.filled = 0
+      self.since_hop = 0
+      self.ready = false
+      for i in 0..N:
+        self.input[i] = T(0.0)
+        self.packed[i] = T(0.0)
+
+    def push(self, x: T):
+      self.input[self.write] = x
+      self.ready = false
+
+      self.write = self.write + 1
+      if (self.write >= N):
+        self.write = 0
+
+      if (self.filled < N):
+        self.filled = self.filled + 1
+
+      self.since_hop = self.since_hop + 1
+      if (self.filled >= N && self.since_hop >= (N >> 1)):
+        self.since_hop = 0
+        self._ensure_window()
+        self.fft.clear()
+        for i in 0..N:
+          idx = _wrap_add(self.write, i, N)
+          self.fft.re[i] = self.input[idx] * self.window[i]
+        self.fft.forward()
+        half = N >> 1
+        real_count = half + 1
+        imag_bins = half - 1
+        for i in 0..N:
+          self.packed[i] = T(0.0)
+        for i in 0..real_count:
+          self.packed[i] = self.fft.re[i]
+        for i in 0..imag_bins:
+          self.packed[half + 1 + i] = self.fft.im[i + 1]
+        self.ready = true
+      if (self.ready):
+        return true
+      return false
+
+    def is_ready(self):
+      return self.ready
+
+    def packed_value(self, i: i32):
+      return self.packed[i]
+
+  struct RealIFFT<T>:
+    fft: FFT<T>
+    output: T[N]
+    norm: T[N]
+    window: T[N]
+    frame: i32
+    pending: i32
+    window_ready: bool
+
+    def size(self):
+      return N
+
+    def hop_size(self):
+      return N >> 1
+
+    def _set_single_point_window(self, value: T):
+      self.window[0] = value
+      self.window_ready = true
+
+    def _window_denominator(self):
+      if (N <= 1):
+        return T(1.0)
+      return T(N - 1)
+
+    def _ensure_window(self):
+      if (!self.window_ready):
+        self.set_hann()
+
+    def set_rectangular(self):
+      for i in 0..N:
+        self.window[i] = T(1.0)
+      self.window_ready = true
+
+    def set_hann(self):
+      if (N <= 1):
+        self._set_single_point_window(T(1.0))
+      else:
+        denom: T = self._window_denominator()
+        for i in 0..N:
+          phase: T = T(TWO_PI) * T(i) / denom
+          self.window[i] = T(0.5) - T(0.5) * cos(phase)
+        self.window_ready = true
+
+    def clear(self):
+      self.fft.clear()
+      self.frame = 0
+      self.pending = 0
+      for i in 0..N:
+        self.output[i] = T(0.0)
+        self.norm[i] = T(0.0)
+
+    def load_packed(self, input: T[]):
+      self.fft.clear()
+      half = N >> 1
+      count = _min_i(input.len(), N)
+
+      if (count > 0):
+        self.fft.re[0] = input[0]
+
+      if (count > half):
+        self.fft.re[half] = input[half]
+
+      imag_count = _min_i(count - (half + 1), half - 1)
+      if (imag_count < 0):
+        imag_count = 0
+
+      real_count = _min_i(count, half)
+      for i in 1..real_count:
+        self.fft.re[i] = input[i]
+        self.fft.re[N - i] = input[i]
+
+      for i in 0..imag_count:
+        imag_v = input[half + 1 + i]
+        bin = i + 1
+        self.fft.im[bin] = imag_v
+        self.fft.im[N - bin] = -imag_v
+
+      self.fft.inverse()
+      self._accumulate_ifft_frame()
+
+    def load_complex(self, real: T[], imag: T[]):
+      self.fft.load_complex(real, imag)
+      self.fft.inverse()
+      self._accumulate_ifft_frame()
+
+    def _accumulate_ifft_frame(self):
+      self._ensure_window()
+      for i in 0..N:
+        idx = _wrap_add(self.frame, i, N)
+        w = self.window[i]
+        self.output[idx] = self.output[idx] + self.fft.re[i] * w
+        self.norm[idx] = self.norm[idx] + w * w
+      self.pending = N
+
+    def tick(self):
+      if (self.pending <= 0):
+        return T(0.0)
+
+      y = self.output[self.frame]
+      denom = self.norm[self.frame]
+      if (denom > T(0.0)):
+        y = y / denom
+
+      self.output[self.frame] = T(0.0)
+      self.norm[self.frame] = T(0.0)
+      self.frame = self.frame + 1
+      if (self.frame >= N):
+        self.frame = 0
+      self.pending = self.pending - 1
+      return y
+
+    def is_active(self):
+      return self.pending > 0

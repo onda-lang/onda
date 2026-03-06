@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DeclType,
-    EventParamType, Expr, FieldType, PrimitiveType, Stmt,
+    EventParamType, Expr, FieldType, FnParamType, PrimitiveType, Stmt,
 };
 
 use super::{
@@ -274,13 +274,16 @@ sample {
   out1 = 0.0
 }
 "#;
-    assert!(parse_program(src).is_err(), "top-level assert should be rejected");
+    assert!(
+        parse_program(src).is_err(),
+        "top-level assert should be rejected"
+    );
 }
 
 #[test]
 fn parses_namespaced_assert_after_template_instantiation() {
     let src = r#"
-namespace FFT[N = 4] {
+namespace FFT<N = 4> {
   assert((N & (N - 1)) == 0)
   struct Tag {
     value
@@ -288,7 +291,7 @@ namespace FFT[N = 4] {
 }
 outs { out1 }
 init {
-  tag: FFT[8]::Tag
+  tag: FFT<8>::Tag
 }
 sample {
   out1 = 0.0
@@ -298,10 +301,9 @@ sample {
     let program = parse_program(src).expect("program should parse");
     assert!(program.blocks.iter().any(|b| matches!(b, Block::Assert(_))));
     assert!(
-        program
-            .blocks
-            .iter()
-            .any(|b| matches!(b, Block::Struct(s) if s.name.contains("FFT") && s.name.ends_with("::Tag"))),
+        program.blocks.iter().any(
+            |b| matches!(b, Block::Struct(s) if s.name.contains("FFT") && s.name.ends_with("::Tag"))
+        ),
         "expected instantiated namespaced struct"
     );
 }
@@ -516,6 +518,32 @@ sample {
         Stmt::For { start, end, .. } => {
             assert!(matches!(start, Expr::Int(0)));
             assert!(matches!(end, Expr::Var(v) if v == "n"));
+        }
+        _ => panic!("expected for statement"),
+    }
+}
+
+#[test]
+fn parses_for_statement_with_parenthesized_expression_bound() {
+    let src = r#"
+outs { out1 }
+sample {
+  n = 5
+  for i in 0..(n - 1) { out1 = out1 + 1.0 }
+}
+"#;
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    match &sample[1] {
+        Stmt::For { end, .. } => {
+            assert!(matches!(end, Expr::Binary { .. }));
         }
         _ => panic!("expected for statement"),
     }
@@ -774,7 +802,7 @@ fn rejects_generic_struct_method_type_params() {
 outs { out1 }
 struct Voice {
   phase: f32
-  def id[T](self, x: T) {
+  def id<T>(self, x: T) {
     return x
   }
 }
@@ -1502,7 +1530,7 @@ sample { out1 = 0.0 }
 #[test]
 fn rejects_generic_def_type_params() {
     let src = r#"
-def pair[T, U](a: T, b: U) {
+def pair<T, U>(a: T, b: U) {
   return a
 }
 sample { out1 = 0.0 }
@@ -1516,7 +1544,7 @@ sample { out1 = 0.0 }
 #[test]
 fn parses_generic_proc_type_params_and_decl_types() {
     let src = r#"
-proc Gain[T] {
+proc Gain<T> {
   ins { in1: T, in2: T[2] }
   outs { out1: T }
   params { g: T = 1.0, coeffs: T[2] = [1.0, 0.5] }
@@ -1573,7 +1601,7 @@ sample { out1 = 0.0 }
 #[test]
 fn parses_generic_proc_section_default_types_with_overrides() {
     let src = r#"
-proc Fx[T] {
+proc Fx<T> {
   ins[T] { in1, trig: bool }
   outs[T] { out1, meter: f32 }
   params[T] { gain = 1.0, mode: i32 = 0 }
@@ -1640,11 +1668,11 @@ sample { out1 = 0.0 }
 #[test]
 fn parses_generic_proc_ctor_with_explicit_type_args() {
     let src = r#"
-proc Gain[T] {
+proc Gain<T> {
   outs { out1: T }
   sample { out1 = 0.0 }
 }
-init { p = Gain[f64]() }
+init { p = Gain<f64>() }
 sample { out1 = 0.0 }
 "#;
     let program = parse_program(src).expect("parse_program should succeed");
@@ -1680,7 +1708,7 @@ sample { out1 = 0.0 }
 fn parses_user_call_with_explicit_generic_type_args() {
     let src = r#"
 sample {
-  out1 = id[f64](1.0)
+  out1 = id<f64>(1.0)
 }
 "#;
     let program = parse_program(src).expect("parse_program should succeed");
@@ -1715,9 +1743,9 @@ sample {
 #[test]
 fn parses_user_call_with_generic_type_param_arg() {
     let src = r#"
-proc Wrap[T] {
+proc Wrap<T> {
   sample {
-    out1 = id[T](1.0)
+    out1 = id<T>(1.0)
   }
 }
 sample { out1 = 0.0 }
@@ -1754,7 +1782,7 @@ sample { out1 = 0.0 }
 #[test]
 fn parses_generic_struct_type_params_and_fields() {
     let src = r#"
-struct Pair[T] { a: T, b: T }
+struct Pair<T> { a: T, b: T }
 sample { out1 = 0.0 }
 "#;
     let program = parse_program(src).expect("parse_program should succeed");
@@ -1775,7 +1803,7 @@ sample { out1 = 0.0 }
 #[test]
 fn parses_generic_struct_array_field_type() {
     let src = r#"
-struct Bank[T] { taps: T[4] }
+struct Bank<T> { taps: T[4] }
 sample { out1 = 0.0 }
 "#;
     let program = parse_program(src).expect("parse_program should succeed");
@@ -1798,9 +1826,9 @@ sample { out1 = 0.0 }
 #[test]
 fn parses_generic_struct_ctor_with_explicit_type_args() {
     let src = r#"
-struct Pair[T] { a: T, b: T }
+struct Pair<T> { a: T, b: T }
 init {
-  p = Pair[f64](f64(1.0), f64(2.0))
+  p = Pair<f64>(f64(1.0), f64(2.0))
 }
 sample { out1 = 0.0 }
 "#;
@@ -2026,7 +2054,7 @@ sample:
 #[test]
 fn parses_indentation_section_default_types() {
     let src = r#"
-proc Gain[T]:
+proc Gain<T>:
   ins[T]:
     in1
   outs[T]:
@@ -2070,7 +2098,7 @@ sample:
 #[test]
 fn parses_init_section_default_types() {
     let src = r#"
-proc Voice[T]:
+proc Voice<T>:
   init[T]:
     x = 0.0
   sample:
@@ -2221,13 +2249,13 @@ sample:
 #[test]
 fn parses_namespace_template_inline_instantiation_and_dedups() {
     let src = r#"
-namespace Data[S = SR, C = 1]:
-  struct Data[T]:
+namespace Data<S = SR, C = 1>:
+  struct Data<T>:
     storage: T[S * C]
 
 init:
-  d1 = Data[SR, 1]::Data[f64]()
-  d2 = Data[S = SR, C = 1]::Data[f64]()
+  d1 = Data<SR, 1>::Data<f64>()
+  d2 = Data<S = SR, C = 1>::Data<f64>()
 sample:
   out1 = 0.0
 "#;
@@ -2276,14 +2304,14 @@ sample:
 #[test]
 fn parses_namespace_alias_target_single_segment_template_call() {
     let src = r#"
-namespace Data[S = SR, C = 1]:
-  struct Data[T]:
+namespace Data<S = SR, C = 1>:
+  struct Data<T>:
     storage: T[S * C]
 
-namespace D = Data[SR, 1]
+namespace D = Data<SR, 1>
 
 init:
-  d = D::Data[f32]()
+  d = D::Data<f32>()
 sample:
   out1 = 0.0
 "#;
@@ -2310,12 +2338,12 @@ sample:
 #[test]
 fn parses_namespace_template_implicit_default_instantiation() {
     let src = r#"
-namespace Data[S = SR, C = 1]:
-  struct Data[T]:
+namespace Data<S = SR, C = 1>:
+  struct Data<T>:
     storage: T[S * C]
 
 init:
-  d = Data::Data[f32]()
+  d = Data::Data<f32>()
 sample:
   out1 = 0.0
 "#;
@@ -2344,10 +2372,10 @@ sample:
 fn parses_namespace_local_alias_with_relative_template_target() {
     let src = r#"
 namespace A:
-  namespace Data[S = SR]:
+  namespace Data<S = SR>:
     struct X:
       storage: f32[S]
-  namespace D = Data[SR]
+  namespace D = Data<SR>
   def make():
     x = D::X()
     return 0.0
@@ -2373,6 +2401,44 @@ sample:
     };
     assert!(call_name.starts_with("A::Data__nsinst"));
     assert!(call_name.ends_with("::X"));
+}
+
+#[test]
+fn parses_namespace_local_alias_to_relative_template_generic_struct_ctor() {
+    let src = r#"
+namespace A:
+  namespace Data<S = SR>:
+    struct Store<T>:
+      storage: T[S]
+  namespace D = Data<SR>
+  def make():
+    s = D::Store<f64>()
+    return 0.0
+
+sample:
+  out1 = A::make()
+"#;
+    let program = parse_program(src).expect("local namespace alias generic ctor should parse");
+    let make_def = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Def(d) if d.name == "A::make" => Some(d),
+            _ => None,
+        })
+        .expect("A::make");
+    let (call_name, type_args) = match &make_def.body[0] {
+        Stmt::Assign { expr, .. } => match expr {
+            Expr::UserCall {
+                name, type_args, ..
+            } => (name.clone(), type_args.clone()),
+            _ => panic!("expected constructor call"),
+        },
+        _ => panic!("expected assignment"),
+    };
+    assert!(call_name.starts_with("A::Data__nsinst"));
+    assert!(call_name.ends_with("::Store"));
+    assert_eq!(type_args, vec![CallTypeArg::Primitive(PrimitiveType::F64)]);
 }
 
 #[test]
@@ -3150,7 +3216,7 @@ fn parse_program_in_memory_supports_std_data_module() {
 import std/data
 outs { out1 }
 init {
-  d = std::data::Data[f32]()
+  d = std::data::Data<f32>()
 }
 sample {
   out1 = d.readL(0.5)
@@ -3171,7 +3237,7 @@ fn parses_typed_init_struct_decl_with_explicit_type_args_and_ctor() {
     let src = r#"
 import std/data
 init {
-  line: std::data::Data[f32] = std::data::Data()
+  line: std::data::Data<f32> = std::data::Data()
 }
 "#;
     let program = parse_program(src).expect("typed init struct declaration should parse");
@@ -3213,7 +3279,7 @@ fn parses_typed_init_struct_decl_with_explicit_type_args_and_default_ctor() {
     let src = r#"
 import std/data
 init {
-  line: std::data::Data[f32]
+  line: std::data::Data<f32>
 }
 "#;
     let program = parse_program(src).expect("typed init struct declaration should parse");
@@ -3250,6 +3316,36 @@ init {
     assert_eq!(
         type_args.as_slice(),
         &[CallTypeArg::Primitive(PrimitiveType::F32)]
+    );
+}
+
+#[test]
+fn rejects_old_bracket_generic_type_args_in_typed_decl() {
+    let src = r#"
+import std/data
+init {
+  line: std::data::Data[f32]
+}
+"#;
+    let result = parse_program(src);
+    assert!(
+        result.is_err(),
+        "old bracket generic type-arg syntax should be rejected"
+    );
+}
+
+#[test]
+fn rejects_old_bracket_namespace_and_generic_instantiation_syntax() {
+    let src = r#"
+import std/fft
+init {
+  fft: std::fft[8]::FFT[f32]
+}
+"#;
+    let result = parse_program(src);
+    assert!(
+        result.is_err(),
+        "old bracket namespace/generic instantiation syntax should be rejected"
     );
 }
 
@@ -3300,7 +3396,7 @@ fn parses_typed_init_namespace_instantiated_struct_decl_without_type_args() {
     let src = r#"
 import std/data
 init {
-  line: std::data[SR, 1]::Data
+  line: std::data<SR, 1>::Data
 }
 "#;
     let program = parse_program(src).expect("typed init namespace-instantiated decl should parse");
@@ -3513,13 +3609,13 @@ sample:
 #[test]
 fn parses_2_level_nested_namespace_template() {
     let src = r#"
-namespace Outer[A = 1]:
-  namespace Inner[B = 2]:
+namespace Outer<A = 1>:
+  namespace Inner<B = 2>:
     struct S:
       x: f32
 
 init:
-  s = Outer[10]::Inner[20]::S()
+  s = Outer<10>::Inner<20>::S()
 sample:
   out1 = 0.0
 "#;
@@ -3575,14 +3671,14 @@ sample:
 #[test]
 fn parses_3_level_nested_namespace_template() {
     let src = r#"
-namespace L1[A = 1]:
-  namespace L2[B = 2]:
-    namespace L3[C = 3]:
+namespace L1<A = 1>:
+  namespace L2<B = 2>:
+    namespace L3<C = 3>:
       struct S:
         x: f32
 
 init:
-  s = L1[10]::L2[20]::L3[30]::S()
+  s = L1<10>::L2<20>::L3<30>::S()
 sample:
   out1 = 0.0
 "#;
@@ -3628,13 +3724,13 @@ sample:
 #[test]
 fn parses_nested_template_inner_uses_outer_const_as_default() {
     let src = r#"
-namespace Outer[S = SR]:
-  namespace Inner[N = S]:
+namespace Outer<S = SR>:
+  namespace Inner<N = S>:
     struct Buf:
       data: f32
 
 init:
-  b = Outer[48000]::Inner::Buf()
+  b = Outer<48000>::Inner::Buf()
 sample:
   out1 = 0.0
 "#;
@@ -3681,14 +3777,14 @@ sample:
 #[test]
 fn deduplicates_nested_namespace_template_instantiations() {
     let src = r#"
-namespace Outer[S = SR]:
-  namespace Inner[N = 1]:
+namespace Outer<S = SR>:
+  namespace Inner<N = 1>:
     struct S:
       x: f32
 
 init:
-  a = Outer[SR]::Inner[1]::S()
-  b = Outer[SR]::Inner[1]::S()
+  a = Outer<SR>::Inner<1>::S()
+  b = Outer<SR>::Inner<1>::S()
 sample:
   out1 = 0.0
 "#;
@@ -3744,12 +3840,12 @@ sample:
 #[test]
 fn parses_generic_struct_inside_namespace_template_t_s_pattern() {
     let src = r#"
-namespace Data[S = SR]:
-  struct Store[T]:
+namespace Data<S = SR>:
+  struct Store<T>:
     buf: T[S]
 
 init:
-  s = Data[1024]::Store[f32]()
+  s = Data<1024>::Store<f32>()
 sample:
   out1 = 0.0
 "#;
@@ -3817,8 +3913,8 @@ sample:
 #[test]
 fn parses_generic_proc_inside_namespace_template() {
     let src = r#"
-namespace FX[S = SR]:
-  proc Delay[T]:
+namespace FX<S = SR>:
+  proc Delay<T>:
     ins[T] 1
     outs[T] 1
     init:
@@ -3827,7 +3923,7 @@ namespace FX[S = SR]:
       out1 = in1
 
 init:
-  d = FX[48000]::Delay[f32]()
+  d = FX<48000>::Delay<f32>()
 sample:
   out1 = 0.0
 "#;
@@ -3851,17 +3947,73 @@ sample:
 }
 
 #[test]
+fn parses_generic_struct_method_array_param_type() {
+    let src = r#"
+struct Store<T>:
+  buf: T[2]
+  def load(self, input: T[]):
+    self.buf[0] = input[0]
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("generic struct method array param should parse");
+    let st = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Struct(s) if s.name == "Store" => Some(s),
+            _ => None,
+        })
+        .expect("Store struct");
+    assert_eq!(st.type_params, vec!["T".to_owned()]);
+    assert!(matches!(
+        st.methods[0].params[1].ty,
+        Some(FnParamType::ArrayGeneric(ref n)) if n == "T"
+    ));
+}
+
+#[test]
+fn parses_nested_generic_struct_field_type() {
+    let src = r#"
+struct Inner<T>:
+  data: T[2]
+
+struct Outer<T>:
+  inner: Inner<T>
+  banks: Inner<f32>[2]
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("nested generic struct fields should parse");
+    let outer = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Struct(s) if s.name == "Outer" => Some(s),
+            _ => None,
+        })
+        .expect("Outer struct");
+    assert_eq!(outer.fields[0].name, "inner");
+    assert!(matches!(
+        outer.fields[1].ty,
+        FieldType::Array(ref spec)
+            if matches!(spec.elem, ArrayElemType::Struct(ref n) if n == "Inner<f32>")
+    ));
+}
+
+#[test]
 fn parses_namespace_qualified_generic_type_in_call_type_args() {
     let src = r#"
 namespace NS:
-  struct Pair[T]:
+  struct Pair<T>:
     a: T
     b: T
 
-proc Container[T]:
+proc Container<T>:
   outs 1
   init:
-    p = NS::Pair[T](T(1.0), T(2.0))
+    p = NS::Pair<T>(T(1.0), T(2.0))
   sample:
     out1 = f32(p.a)
 

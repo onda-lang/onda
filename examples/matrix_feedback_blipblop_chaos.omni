@@ -16,22 +16,22 @@ def sat(x):
   return clamp(x - 0.18 * x * x * x, -1.0, 1.0)
 
 init:
-  o1 = std::osc::Saw[f32](freq = 9.0)
-  o2 = std::osc::Saw[f32](freq = 17.0)
-  o3 = std::osc::Sine[f32](freq = 21.0)
-  o4 = std::osc::Sine[f32](freq = 23.0)
+  o1 = std::osc::Saw<f32>(freq = 9.0)
+  o2 = std::osc::Saw<f32>(freq = 17.0)
+  o3 = std::osc::Sine<f32>(freq = 21.0)
+  o4 = std::osc::Sine<f32>(freq = 23.0)
 
-  m1 = std::osc::Phasor[f32](freq = 0.013)
-  m2 = std::osc::Phasor[f32](freq = 0.021)
-  m3 = std::osc::Phasor[f32](freq = 0.034)
+  m1 = std::osc::Phasor<f32>(freq = 0.013)
+  m2 = std::osc::Phasor<f32>(freq = 0.021)
+  m3 = std::osc::Phasor<f32>(freq = 0.034)
 
-  d1 = std::delay::Delay[f32](delay_s = 0.041, feedback = 0.68, mix = 1.0)
-  d2 = std::delay::Delay[f32](delay_s = 0.053, feedback = 0.67, mix = 1.0)
-  d3 = std::delay::Delay[f32](delay_s = 0.067, feedback = 0.66, mix = 1.0)
-  d4 = std::delay::Delay[f32](delay_s = 0.079, feedback = 0.65, mix = 1.0)
+  d1 = std::delay::Delay<f32>(delay_s = 0.041, feedback = 0.68, mix = 1.0)
+  d2 = std::delay::Delay<f32>(delay_s = 0.053, feedback = 0.67, mix = 1.0)
+  d3 = std::delay::Delay<f32>(delay_s = 0.067, feedback = 0.66, mix = 1.0)
+  d4 = std::delay::Delay<f32>(delay_s = 0.079, feedback = 0.65, mix = 1.0)
 
-  lp_l = std::filter::OnePole[f32](cutoff = 7600.0)
-  lp_r = std::filter::OnePole[f32](cutoff = 6800.0)
+  lp_l = std::filter::OnePole<f32>(cutoff = 7600.0)
+  lp_r = std::filter::OnePole<f32>(cutoff = 6800.0)
 
   fb1: f32 = 0.0
   fb2: f32 = 0.0
@@ -121,3 +121,4 @@ sample:
   right = sat((y2 + y4 * 0.74 + (y1 - y3) * 0.28) * 0.72)
   out1 = lp_l(left)
   out2 = lp_r(right)
+

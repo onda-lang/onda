@@ -1,7 +1,7 @@
 import std/math
 
-namespace std::data[S = SR, C = 1]:
-  struct Data[T]:
+namespace std::data<S = SR, C = 1>:
+  struct Data<T>:
     storage: T[S * C]
 
     def len(self):
@@ -47,4 +47,3 @@ namespace std::data[S = SR, C = 1]:
       y2 = self.read(i1 + 1, ch_i)
       y3 = self.read(i1 + 2, ch_i)
       return std::math::cubic_interp(y0, y1, y2, y3, t)
-

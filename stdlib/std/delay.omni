@@ -1,5 +1,5 @@
 namespace std::delay:
-  proc Delay[T]:
+  proc Delay<T>:
     ins[T] 1
     outs[T] 1
 

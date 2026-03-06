@@ -712,6 +712,7 @@ pub(super) unsafe fn bind_struct_data_element_aliases(
                     },
                 );
             }
+            TypedFieldType::Struct => {}
             TypedFieldType::Array(field_len) => {
                 let start_idx = build_data_segment_start_index(
                     ctx.builder,

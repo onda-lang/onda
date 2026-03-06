@@ -7,10 +7,11 @@ outs:
   out1: f64
 
 init:
-  osc = std::osc::Saw[f64](freq = 110.0)
-  lp = std::filter::OnePole[f64](cutoff = 900.0)
-  env = std::env::DecayEnv[f64](decay_s = 0.35, trigger = 1.0)
-  delay = std::delay::Delay[f64](delay_s = 0.5, feedback = 0.5, mix = 0.5)
+  osc = std::osc::Saw<f64>(freq = 110.0)
+  lp = std::filter::OnePole<f64>(cutoff = 900.0)
+  env = std::env::DecayEnv<f64>(decay_s = 0.35, trigger = 1.0)
+  delay = std::delay::Delay<f64>(delay_s = 0.5, feedback = 0.5, mix = 0.5)
 
 sample:
   out1 = delay(lp(osc()) * env())
+

@@ -166,7 +166,9 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                     else_branch: Vec::new(),
                 });
             }
-            Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+            Expr::Cast { expr: inner, .. }
+            | Expr::UnaryNot { expr: inner }
+            | Expr::UnaryBitNot { expr: inner } => {
                 collect_guards_from_expr(inner, managed_arrays, proc_api, used_arrays, guards);
             }
             Expr::ArrayLiteral(values) => {
@@ -717,6 +719,7 @@ fn generate_nested_wrapper_defs(
                             })
                             .collect::<Vec<_>>(),
                         &struct_def,
+                        &struct_defs_by_name,
                         errors,
                     );
                     for expanded_stmt in expanded {
@@ -1738,8 +1741,14 @@ pub(super) fn generate_lowered_proc_blocks(
                             ));
                         }
                     }
-                    let expanded =
-                        expand_nested_struct_ctor_assign(var, ctor_name, args, &struct_def, errors);
+                    let expanded = expand_nested_struct_ctor_assign(
+                        var,
+                        ctor_name,
+                        args,
+                        &struct_def,
+                        &struct_defs_by_name,
+                        errors,
+                    );
                     for expanded_stmt in expanded {
                         if let Some(rewritten) = rewrite_owner_proc_stmt(
                             expanded_stmt,
@@ -2273,4 +2282,3 @@ pub(super) fn generate_lowered_proc_blocks(
         proc_step_oversample_meta,
     )
 }
-

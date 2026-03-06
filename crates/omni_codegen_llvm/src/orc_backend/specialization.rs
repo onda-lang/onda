@@ -100,12 +100,74 @@ pub(super) fn default_scalar_signature(def: &TypedFunction) -> Vec<PrimitiveType
     def.param_kinds
         .iter()
         .filter_map(|k| match k {
-            TypedFnParam::Scalar => Some(PrimitiveType::F32),
+            TypedFnParam::Scalar { ty } => Some(resolve_scalar_param_type(*ty, PrimitiveType::F32)),
             TypedFnParam::Struct { .. } => None,
             TypedFnParam::Array { .. } => None,
             TypedFnParam::Buffer { .. } => None,
         })
         .collect::<Vec<_>>()
+}
+
+pub(super) fn resolve_scalar_param_type(
+    explicit_ty: Option<PrimitiveType>,
+    fallback_ty: PrimitiveType,
+) -> PrimitiveType {
+    explicit_ty.unwrap_or(fallback_ty)
+}
+
+pub(super) fn count_param_kinds(param_kinds: &[TypedFnParam]) -> (usize, usize, usize) {
+    let mut scalar = 0usize;
+    let mut array = 0usize;
+    let mut buffer = 0usize;
+    for kind in param_kinds {
+        match kind {
+            TypedFnParam::Scalar { .. } => scalar += 1,
+            TypedFnParam::Array { .. } => array += 1,
+            TypedFnParam::Buffer { .. } => buffer += 1,
+            TypedFnParam::Struct { .. } => {}
+        }
+    }
+    (scalar, array, buffer)
+}
+
+pub(super) fn validate_param_signatures(
+    name: &str,
+    param_kinds: &[TypedFnParam],
+    scalar_types: &[PrimitiveType],
+    array_types: &[(PrimitiveType, usize)],
+    buffer_types: &[(PrimitiveType, TypedBufferChannels)],
+    context: &str,
+) -> Result<(), Diagnostic> {
+    let (expected_scalar_count, expected_array_count, expected_buffer_count) =
+        count_param_kinds(param_kinds);
+    if scalar_types.len() != expected_scalar_count {
+        return Err(Diagnostic::internal(format!(
+            "function '{}' scalar signature length mismatch in {}: expected {}, got {}",
+            name,
+            context,
+            expected_scalar_count,
+            scalar_types.len()
+        )));
+    }
+    if array_types.len() != expected_array_count {
+        return Err(Diagnostic::internal(format!(
+            "function '{}' array signature length mismatch in {}: expected {}, got {}",
+            name,
+            context,
+            expected_array_count,
+            array_types.len()
+        )));
+    }
+    if buffer_types.len() != expected_buffer_count {
+        return Err(Diagnostic::internal(format!(
+            "function '{}' buffer signature length mismatch in {}: expected {}, got {}",
+            name,
+            context,
+            expected_buffer_count,
+            buffer_types.len()
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn default_array_signature(def: &TypedFunction) -> Vec<(PrimitiveType, usize)> {
@@ -235,6 +297,7 @@ pub(super) fn collect_array_struct_bindings(
         let flat = format!("{base}.{}", field.name);
         match field.ty {
             TypedFieldType::Scalar(prim) => leaves.push((flat, len, prim)),
+            TypedFieldType::Struct => {}
             TypedFieldType::Array(field_len) => {
                 let nested_len = len.saturating_mul(field_len);
                 if let Some(elem_struct) = &field.array_elem_struct {
@@ -412,9 +475,9 @@ pub(super) fn infer_specialized_expr_return_type(
             let mut buffer_types = Vec::<(PrimitiveType, TypedBufferChannels)>::new();
             for (idx, kind) in param_kinds.iter().enumerate() {
                 match kind {
-                    TypedFnParam::Scalar => {
+                    TypedFnParam::Scalar { ty: explicit_ty } => {
                         let resolved_arg = resolved.get(idx).copied().flatten();
-                        let ty = if let Some(arg_expr) = resolved_arg {
+                        let fallback_ty = if let Some(arg_expr) = resolved_arg {
                             infer_specialized_expr_return_type(arg_expr, locals, registry)?
                                 .unwrap_or(PrimitiveType::F32)
                         } else if let Some(default_expr) =
@@ -425,7 +488,7 @@ pub(super) fn infer_specialized_expr_return_type(
                         } else {
                             PrimitiveType::F32
                         };
-                        scalar_types.push(ty);
+                        scalar_types.push(resolve_scalar_param_type(*explicit_ty, fallback_ty));
                     }
                     TypedFnParam::Array { elem_ty } => {
                         let resolved_arg = resolved.get(idx).copied().flatten();
@@ -574,11 +637,12 @@ pub(super) fn infer_specialized_def_return_type(
         let mut array_idx = 0usize;
         for (param_name, kind) in def.params.iter().zip(def.param_kinds.iter()) {
             match kind {
-                TypedFnParam::Scalar => {
-                    let param_ty = scalar_types
+                TypedFnParam::Scalar { ty } => {
+                    let fallback_ty = scalar_types
                         .get(scalar_idx)
                         .copied()
                         .unwrap_or(PrimitiveType::F32);
+                    let param_ty = resolve_scalar_param_type(*ty, fallback_ty);
                     scalar_idx += 1;
                     locals.insert(param_name.clone(), param_ty);
                 }

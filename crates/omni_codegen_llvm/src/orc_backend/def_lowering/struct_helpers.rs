@@ -231,6 +231,7 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                             out_args.push(loaded);
                         }
                     }
+                    TypedFieldType::Struct => {}
                     TypedFieldType::Array(_) => {
                         if let Some(elem_struct) = &field.array_elem_struct {
                             let root_len = *ctx.array_len.get(&flat).ok_or_else(|| {
@@ -462,6 +463,7 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                                     out_args.push(loaded);
                                 }
                             }
+                            TypedFieldType::Struct => {}
                             TypedFieldType::Array(_) => {
                                 return Err(Diagnostic::internal(format!(
                                     "function '{callee_name}' indexed struct argument '{base}[...]' requires struct-array root metadata for array field '{}'",
@@ -497,6 +499,7 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                             out_args.push(loaded);
                         }
                     }
+                    TypedFieldType::Struct => {}
                     TypedFieldType::Array(field_len) => {
                         let start_idx = build_data_segment_start_index(
                             ctx.builder,
@@ -608,6 +611,7 @@ pub(super) unsafe fn bind_struct_data_element_aliases_in_def(
                     },
                 );
             }
+            TypedFieldType::Struct => {}
             TypedFieldType::Array(field_len) => {
                 let start_idx = build_data_segment_start_index(
                     ctx.builder,

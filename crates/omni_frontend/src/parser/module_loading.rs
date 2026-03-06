@@ -33,6 +33,7 @@ struct LoadState {
     builtin_stack: Vec<String>,
     namespace_templates: HashMap<String, NamespaceTemplateDecl>,
     namespace_aliases: HashMap<String, NamespaceAliasDecl>,
+    namespace_members: HashSet<String>,
     namespace_instantiations: HashMap<String, String>,
     next_namespace_instantiation_id: u64,
 }
@@ -105,6 +106,7 @@ fn builtin_std_module_source(module: &str) -> Option<&'static str> {
         "std/env" => Some(include_str!("../../../../stdlib/std/env.omni")),
         "std/delay" => Some(include_str!("../../../../stdlib/std/delay.omni")),
         "std/data" => Some(include_str!("../../../../stdlib/std/data.omni")),
+        "std/fft" => Some(include_str!("../../../../stdlib/std/fft.omni")),
         "std/lookup" => Some(include_str!("../../../../stdlib/std/lookup.omni")),
         "std/prelude" => Some(include_str!("../../../../stdlib/std/prelude.omni")),
         _ => None,
@@ -134,11 +136,7 @@ fn parse_assert_decl(pair: Pair<'_, Rule>) -> Result<AssertDecl, Vec<Diagnostic>
     }
     let mut inner = pair.into_inner();
     let Some(expr_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(
-            "missing assert expression",
-            0,
-            0,
-        )]);
+        return Err(vec![Diagnostic::syntax("missing assert expression", 0, 0)]);
     };
     Ok(AssertDecl {
         expr: parse_expr(expr_pair)?,
@@ -1578,6 +1576,32 @@ fn resolve_namespace_symbol_name(
     resolve_namespace_segments_internal(&segments, current_ns, const_env, state, generated, 0)
 }
 
+fn split_named_type_base_and_suffix(name: &str) -> (&str, &str) {
+    if let Some(idx) = name.find('<') {
+        (&name[..idx], &name[idx..])
+    } else {
+        (name, "")
+    }
+}
+
+fn qualify_local_namespace_member_name(
+    name: &str,
+    current_ns: &str,
+    state: &LoadState,
+) -> Option<String> {
+    if name.is_empty() || name.contains("::") || name.contains('.') {
+        return None;
+    }
+    let (base, suffix) = split_named_type_base_and_suffix(name);
+    for ns in namespace_candidates(current_ns) {
+        let candidate = namespace_join(&ns, base);
+        if state.namespace_members.contains(&candidate) {
+            return Some(format!("{candidate}{suffix}"));
+        }
+    }
+    None
+}
+
 fn resolve_namespace_segments_internal(
     segments: &[NamespaceRefSegment],
     current_ns: &str,
@@ -1819,6 +1843,29 @@ fn emit_instantiated_namespace_items(
 ) -> Result<(), Vec<Diagnostic>> {
     for item in items {
         match item {
+            NamespaceDeclItem::Struct(s) => {
+                state
+                    .namespace_members
+                    .insert(namespace_join(namespace, &s.name));
+            }
+            NamespaceDeclItem::Def(d) => {
+                state
+                    .namespace_members
+                    .insert(namespace_join(namespace, &d.name));
+            }
+            NamespaceDeclItem::Proc(p) => {
+                state
+                    .namespace_members
+                    .insert(namespace_join(namespace, &p.name));
+            }
+            NamespaceDeclItem::Assert(_)
+            | NamespaceDeclItem::Namespace(_)
+            | NamespaceDeclItem::Alias(_) => {}
+        }
+    }
+
+    for item in items {
+        match item {
             NamespaceDeclItem::Assert(assert_decl) => {
                 let mut block = Block::Assert(assert_decl.clone());
                 rewrite_block_namespace_refs(&mut block, namespace, const_env, state, generated)?;
@@ -2037,7 +2084,13 @@ fn rewrite_block_namespace_refs(
             }
         }
         Block::Assert(assert_decl) => {
-            rewrite_expr(&mut assert_decl.expr, current_ns, const_env, state, generated)?;
+            rewrite_expr(
+                &mut assert_decl.expr,
+                current_ns,
+                const_env,
+                state,
+                generated,
+            )?;
         }
         Block::Events(events) => {
             for event in events {
@@ -2179,13 +2232,17 @@ fn rewrite_decl_type(
 ) -> Result<(), Vec<Diagnostic>> {
     match ty {
         DeclType::Generic(name) => {
-            if looks_like_namespace_ref(name) {
+            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+                *name = qualified;
+            } else if looks_like_namespace_ref(name) {
                 *name =
                     resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
             }
         }
         DeclType::ArrayGeneric { elem, size } => {
-            if looks_like_namespace_ref(elem) {
+            if let Some(qualified) = qualify_local_namespace_member_name(elem, current_ns, state) {
+                *elem = qualified;
+            } else if looks_like_namespace_ref(elem) {
                 *elem =
                     resolve_namespace_symbol_name(elem, current_ns, const_env, state, generated)?;
             }
@@ -2208,14 +2265,20 @@ fn rewrite_field_type(
 ) -> Result<(), Vec<Diagnostic>> {
     match ty {
         FieldType::Generic(name) => {
-            if looks_like_namespace_ref(name) {
+            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+                *name = qualified;
+            } else if looks_like_namespace_ref(name) {
                 *name =
                     resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
             }
         }
         FieldType::Array(spec) => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
-                if looks_like_namespace_ref(name) {
+                if let Some(qualified) =
+                    qualify_local_namespace_member_name(name, current_ns, state)
+                {
+                    *name = qualified;
+                } else if looks_like_namespace_ref(name) {
                     *name = resolve_namespace_symbol_name(
                         name, current_ns, const_env, state, generated,
                     )?;
@@ -2237,7 +2300,17 @@ fn rewrite_fn_param_type(
 ) -> Result<(), Vec<Diagnostic>> {
     match ty {
         FnParamType::Struct(name) => {
-            if looks_like_namespace_ref(name) {
+            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+                *name = qualified;
+            } else if looks_like_namespace_ref(name) {
+                *name =
+                    resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
+            }
+        }
+        FnParamType::ArrayGeneric(name) => {
+            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+                *name = qualified;
+            } else if looks_like_namespace_ref(name) {
                 *name =
                     resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
             }
@@ -2258,7 +2331,9 @@ fn rewrite_buffer_type(
     generated: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
     if let BufferElemType::Generic(name) = &mut ty.elem {
-        if looks_like_namespace_ref(name) {
+        if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+            *name = qualified;
+        } else if looks_like_namespace_ref(name) {
             *name = resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
         }
     }
@@ -2373,13 +2448,17 @@ fn rewrite_expr(
 
     match expr {
         Expr::Var(name) => {
-            if looks_like_namespace_ref(name) {
+            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+                *name = qualified;
+            } else if looks_like_namespace_ref(name) {
                 *name =
                     resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
             }
         }
         Expr::Index { base, index } => {
-            if looks_like_namespace_ref(base) {
+            if let Some(qualified) = qualify_local_namespace_member_name(base, current_ns, state) {
+                *base = qualified;
+            } else if looks_like_namespace_ref(base) {
                 *base =
                     resolve_namespace_symbol_name(base, current_ns, const_env, state, generated)?;
             }
@@ -2387,7 +2466,11 @@ fn rewrite_expr(
         }
         Expr::ArrayCtor { spec, init } => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
-                if looks_like_namespace_ref(name) {
+                if let Some(qualified) =
+                    qualify_local_namespace_member_name(name, current_ns, state)
+                {
+                    *name = qualified;
+                } else if looks_like_namespace_ref(name) {
                     *name = resolve_namespace_symbol_name(
                         name, current_ns, const_env, state, generated,
                     )?;
@@ -2412,7 +2495,9 @@ fn rewrite_expr(
             }
         }
         Expr::UserCall { name, args, .. } => {
-            if looks_like_namespace_ref(name) {
+            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+                *name = qualified;
+            } else if looks_like_namespace_ref(name) {
                 *name =
                     resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
             }

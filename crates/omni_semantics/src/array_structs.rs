@@ -80,6 +80,7 @@ fn collect_data_struct_layout_inner(
                 name: field.name,
                 kind: StructArrayLayoutKind::Scalar(prim),
             }),
+            TypedFieldType::Struct => {}
             TypedFieldType::Array(len) => {
                 if let Some(elem_struct) = &field.array_elem_struct {
                     let nested_context = format!(
@@ -200,6 +201,7 @@ fn register_data_struct_root_inner(
                 );
                 state_arrays.entry(flat).or_insert(len);
             }
+            TypedFieldType::Struct => {}
             TypedFieldType::Array(field_len) => {
                 let nested_len = len.saturating_mul(field_len);
                 if let Some(elem_struct) = &field.array_elem_struct {

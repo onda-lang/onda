@@ -267,12 +267,13 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
     )?;
 
     let mut scalar_values = Vec::new();
+    let mut scalar_types = Vec::<PrimitiveType>::new();
     let mut array_types = Vec::<(PrimitiveType, usize)>::new();
     let mut buffer_types = Vec::<(PrimitiveType, TypedBufferChannels)>::new();
     for (idx, kind) in param_kinds.iter().enumerate() {
         let resolved_arg = resolved.get(idx).copied().flatten();
         match kind {
-            TypedFnParam::Scalar => {
+            TypedFnParam::Scalar { ty: explicit_ty } => {
                 let value = if let Some(arg_expr) = resolved_arg {
                     lower_scalar_expr(arg_expr)?
                 } else {
@@ -299,6 +300,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                     }
                 };
                 scalar_values.push(value);
+                scalar_types.push(resolve_scalar_param_type(*explicit_ty, value.ty));
             }
             TypedFnParam::Array { .. } => {
                 let arg_expr = resolved_arg.ok_or_else(|| {
@@ -322,7 +324,6 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
         }
     }
 
-    let mut scalar_types = scalar_values.iter().map(|v| v.ty).collect::<Vec<_>>();
     let explicit_type_args =
         resolve_explicit_call_type_args_for_codegen(name, call_context, type_args)?;
     apply_explicit_generic_type_args_for_call(
@@ -388,7 +389,7 @@ pub(super) unsafe fn materialize_user_call_args_common(
     for (idx, kind) in prepared.param_kinds.iter().enumerate() {
         let resolved_arg = prepared.resolved.get(idx).copied().flatten();
         match kind {
-            TypedFnParam::Scalar => {
+            TypedFnParam::Scalar { .. } => {
                 if scalar_idx >= prepared.scalar_values.len() {
                     return Err(Diagnostic::internal(format!(
                         "function '{callee_name}' scalar argument index out of range in {call_context}"

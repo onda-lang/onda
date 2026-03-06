@@ -1,5 +1,5 @@
 namespace std::filter:
-  proc OnePole[T]:
+  proc OnePole<T>:
     ins[T] 1
     outs[T] 1
 

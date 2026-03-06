@@ -28,7 +28,6 @@ struct ProcBaseShape {
     field_array_slots: HashMap<String, Vec<String>>,
     nested_proc_array_slots: HashMap<String, Vec<String>>,
     state: ProcStateFields,
-    instance_fields: HashMap<String, HashSet<String>>,
     fields: Vec<StructField>,
     field_names: HashSet<String>,
     array_field_names: HashSet<String>,
@@ -753,15 +752,7 @@ fn build_proc_lowering_env(
         proc_sample_oversample_factors.insert(proc.name.clone(), factor);
     }
 
-    let struct_symbols = program
-        .blocks
-        .iter()
-        .filter_map(|b| match b {
-            Block::Struct(s) => Some(s.name.clone()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    let struct_defs_by_name = program
+    let raw_struct_defs_by_name = program
         .blocks
         .iter()
         .filter_map(|b| match b {
@@ -769,6 +760,59 @@ fn build_proc_lowering_env(
             _ => None,
         })
         .collect::<HashMap<_, _>>();
+    let mut generic_struct_templates = HashMap::<String, StructDef>::new();
+    for (name, def) in &raw_struct_defs_by_name {
+        if !def.type_params.is_empty() {
+            generic_struct_templates.insert(name.clone(), def.clone());
+        }
+    }
+    let mut generated_struct_specializations = HashMap::<String, StructDef>::new();
+    if !generic_struct_templates.is_empty() {
+        for proc in &mut proc_defs {
+            rewrite_generic_struct_ctor_stmt_list(
+                &mut proc.init,
+                &generic_struct_templates,
+                &mut generated_struct_specializations,
+                errors,
+            );
+            rewrite_generic_struct_ctor_stmt_list(
+                &mut proc.block_pre,
+                &generic_struct_templates,
+                &mut generated_struct_specializations,
+                errors,
+            );
+            rewrite_generic_struct_ctor_stmt_list(
+                &mut proc.block_post,
+                &generic_struct_templates,
+                &mut generated_struct_specializations,
+                errors,
+            );
+            rewrite_generic_struct_ctor_stmt_list(
+                &mut proc.sample,
+                &generic_struct_templates,
+                &mut generated_struct_specializations,
+                errors,
+            );
+            for event in &mut proc.events {
+                rewrite_generic_struct_ctor_stmt_list(
+                    &mut event.body,
+                    &generic_struct_templates,
+                    &mut generated_struct_specializations,
+                    errors,
+                );
+            }
+        }
+        finalize_generated_generic_struct_specializations(
+            &generic_struct_templates,
+            &mut generated_struct_specializations,
+            errors,
+        );
+    }
+    let mut struct_defs_by_name = raw_struct_defs_by_name;
+    for (name, def) in generated_struct_specializations {
+        struct_defs_by_name.entry(name).or_insert(def);
+    }
+    let struct_symbols = struct_defs_by_name.keys().cloned().collect::<HashSet<_>>();
     let proc_symbols = proc_defs
         .iter()
         .map(|p| p.name.clone())
@@ -778,11 +822,8 @@ fn build_proc_lowering_env(
         .cloned()
         .chain(proc_symbols.iter().cloned())
         .collect::<HashSet<_>>();
-    let proc_defs_by_name = proc_defs
-        .iter()
-        .map(|p| (p.name.clone(), p.clone()))
-        .collect::<HashMap<_, _>>();
-    let pre_desugar_defs = program
+    let typed_struct_defs = struct_defs_for_scalar_expr_inference(&struct_defs_by_name);
+    let mut pre_desugar_defs = program
         .blocks
         .iter()
         .filter_map(|b| match b {
@@ -790,6 +831,45 @@ fn build_proc_lowering_env(
             _ => None,
         })
         .collect::<Vec<_>>();
+    let mut callable_symbols_for_method_sugar = pre_desugar_defs
+        .iter()
+        .map(|d| d.name.clone())
+        .collect::<HashSet<_>>();
+    for (struct_name, struct_def) in &struct_defs_by_name {
+        for method in &struct_def.methods {
+            callable_symbols_for_method_sugar.insert(format!("{struct_name}.{}", method.name));
+        }
+    }
+    for (struct_name, struct_def) in &struct_defs_by_name {
+        for method in &struct_def.methods {
+            let mut desugared_method_body = method.body.clone();
+            let mut method_struct_instances = HashMap::<String, String>::new();
+            if method.params.first().map(|p| p.name.as_str()) == Some("self") {
+                register_struct_instance_roots(
+                    "self",
+                    struct_name,
+                    &typed_struct_defs,
+                    &mut method_struct_instances,
+                );
+            }
+            let method_ns = namespace_of_symbol(struct_name);
+            for stmt in &mut desugared_method_body {
+                desugar_init_instance_method_calls(
+                    stmt,
+                    &mut method_struct_instances,
+                    &typed_struct_defs,
+                    &method_ns,
+                    &callable_symbols_for_method_sugar,
+                );
+            }
+            pre_desugar_defs.push(FunctionDef {
+                type_params: Vec::new(),
+                name: format!("{struct_name}.{}", method.name),
+                params: method.params.clone(),
+                body: desugared_method_body,
+            });
+        }
+    }
     let mut pre_desugar_fn_signatures = HashMap::<String, FnSignature>::new();
     for def in &pre_desugar_defs {
         pre_desugar_fn_signatures
@@ -806,6 +886,17 @@ fn build_proc_lowering_env(
         &pre_desugar_fn_signatures,
         &HashMap::new(),
     );
+    for proc in &mut proc_defs {
+        desugar_processor_instance_method_calls(
+            proc,
+            &typed_struct_defs,
+            &callable_symbols_for_method_sugar,
+        );
+    }
+    let proc_defs_by_name = proc_defs
+        .iter()
+        .map(|p| (p.name.clone(), p.clone()))
+        .collect::<HashMap<_, _>>();
 
     let mut base_shapes = HashMap::<String, ProcBaseShape>::new();
     let mut proc_api = HashMap::<String, ProcApi>::new();
@@ -1242,6 +1333,14 @@ fn infer_mono_arg_key(
             // Default to f32 if we can't infer
             Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
         }
+        Some(FnParamType::ArrayGeneric(_)) => {
+            if let Expr::Var(var_name) = arg_expr {
+                if let Some(elem_ty) = env.array_elem_types.get(var_name) {
+                    return Some(MonoParamKey::ResolvedArray(*elem_ty));
+                }
+            }
+            Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
+        }
         Some(FnParamType::BareBuffer) => {
             if let Expr::Var(var_name) = arg_expr {
                 if let Some((elem_ty, channels)) = env.buffer_types.get(var_name) {
@@ -1672,6 +1771,11 @@ fn score_overload_param_match(
             OverloadArgShape::Unknown => Some(2),
             _ => None,
         },
+        Some(FnParamType::ArrayGeneric(_)) => match arg_shape {
+            OverloadArgShape::Array => Some(0),
+            OverloadArgShape::Unknown => Some(2),
+            _ => None,
+        },
         Some(FnParamType::Array(None)) => match arg_shape {
             OverloadArgShape::Array => Some(1),
             OverloadArgShape::Unknown => Some(2),
@@ -1692,6 +1796,7 @@ fn format_fn_param_for_overload(name: &str, ty: Option<&FnParamType>, has_defaul
         Some(FnParamType::Struct(struct_name)) => format!("{name}: {struct_name}"),
         Some(FnParamType::Buffer(buffer_ty)) => format!("{name}: {:?}", buffer_ty),
         Some(FnParamType::Array(Some(prim))) => format!("{name}: {prim:?}[]").to_lowercase(),
+        Some(FnParamType::ArrayGeneric(param)) => format!("{name}: {param}[]"),
         Some(FnParamType::Array(None)) => format!("{name}: []"),
         Some(FnParamType::BareBuffer) => format!("{name}: buffer"),
         None => name.to_owned(),
@@ -2124,6 +2229,20 @@ pub(crate) fn desugar_processors(
             proc_step_oversample_meta: HashMap::new(),
         };
     };
+    let existing_struct_names = program
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Struct(s) => Some(s.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let mut proc_specialized_structs = struct_defs_by_name
+        .values()
+        .filter(|def| !existing_struct_names.contains(&def.name))
+        .cloned()
+        .collect::<Vec<_>>();
+    proc_specialized_structs.sort_by(|a, b| a.name.cmp(&b.name));
 
     let (
         generated_structs,
@@ -2139,6 +2258,9 @@ pub(crate) fn desugar_processors(
         errors,
     );
     program.blocks.retain(|b| !matches!(b, Block::Proc(_)));
+    program
+        .blocks
+        .extend(proc_specialized_structs.into_iter().map(Block::Struct));
     program.blocks.extend(generated_structs);
     program.blocks.extend(generated_defs);
 
@@ -2540,6 +2662,12 @@ pub fn analyze_with_options(
 
         let mut generated_specializations = HashMap::<String, StructDef>::new();
         for s in &mut concrete_structs {
+            rewrite_generic_struct_field_types(
+                s,
+                &generic_templates,
+                &mut generated_specializations,
+                &mut errors,
+            );
             for field in &mut s.fields {
                 if let Some(default) = &mut field.default {
                     let mut locals = GenericInferenceLocals::default();
@@ -2779,7 +2907,14 @@ pub fn analyze_with_options(
             ));
             continue;
         }
-        let typed_fields = coerce_struct_fields(&s.name, &s.fields, options, &mut errors);
+        let typed_fields = coerce_struct_fields(
+            &s.name,
+            &s.type_params,
+            &s.fields,
+            &struct_defs,
+            options,
+            &mut errors,
+        );
         struct_defs.insert(s.name.clone(), typed_fields.clone());
         typed_structs.push(TypedStruct {
             name: s.name.clone(),
@@ -2815,7 +2950,12 @@ pub fn analyze_with_options(
             let mut method_struct_instances = HashMap::<String, String>::new();
             let method_ns = namespace_of_symbol(&s.name);
             if method.params.first().map(|p| p.name.as_str()) == Some("self") {
-                method_struct_instances.insert("self".to_owned(), s.name.clone());
+                register_struct_instance_roots(
+                    "self",
+                    &s.name,
+                    &struct_defs,
+                    &mut method_struct_instances,
+                );
             }
             for stmt in &mut desugared_method_body {
                 desugar_init_instance_method_calls(
@@ -2897,7 +3037,12 @@ pub fn analyze_with_options(
         for param in &def.params {
             if let Some(FnParamType::Struct(struct_name)) = &param.ty {
                 if struct_defs.contains_key(struct_name) {
-                    def_struct_instances.insert(param.name.clone(), struct_name.clone());
+                    register_struct_instance_roots(
+                        &param.name,
+                        struct_name,
+                        &struct_defs,
+                        &mut def_struct_instances,
+                    );
                 }
             }
         }
@@ -3022,6 +3167,7 @@ pub fn analyze_with_options(
                 Some(FnParamType::Array(Some(prim))) => {
                     def_env.array_elem_types.insert(param.name.clone(), *prim);
                 }
+                Some(FnParamType::ArrayGeneric(_)) => {}
                 Some(FnParamType::Array(None)) | Some(FnParamType::BareBuffer) | None => {}
             }
             if let Some(default_expr) = &mut param.default {
@@ -3147,6 +3293,7 @@ pub fn analyze_with_options(
                     p.ty,
                     Some(FnParamType::Buffer(_))
                         | Some(FnParamType::Array(_))
+                        | Some(FnParamType::ArrayGeneric(_))
                         | Some(FnParamType::BareBuffer)
                 ) {
                     errors.push(Diagnostic::semantic(
@@ -3178,7 +3325,9 @@ pub fn analyze_with_options(
                     Some(FnParamType::Struct(s)) if generic_struct_template_names.contains(s) => {
                         true
                     }
-                    Some(FnParamType::Array(None)) | Some(FnParamType::BareBuffer) => true,
+                    Some(FnParamType::Array(None))
+                    | Some(FnParamType::ArrayGeneric(_))
+                    | Some(FnParamType::BareBuffer) => true,
                     _ => false,
                 });
                 if needs_mono {
@@ -3193,6 +3342,7 @@ pub fn analyze_with_options(
             let mut generated_defs = Vec::<FunctionDef>::new();
             let mut generated_sigs = HashMap::<String, FnSignature>::new();
             let mut mono_cache = HashMap::<(String, Vec<MonoParamKey>), String>::new();
+            let original_defs_snapshot = defs.clone();
 
             // Rewrite calls in-place across all scopes.
             monomorphize_calls_in_stmts(
@@ -3273,6 +3423,7 @@ pub fn analyze_with_options(
                         Some(FnParamType::Array(Some(prim))) => {
                             def_env.array_elem_types.insert(param.name.clone(), *prim);
                         }
+                        Some(FnParamType::ArrayGeneric(_)) => {}
                         Some(FnParamType::Buffer(buffer_ty)) => {
                             let channels = match &buffer_ty.channels {
                                 BufferChannels::Mono => TypedBufferChannels::Mono,
@@ -3299,7 +3450,7 @@ pub fn analyze_with_options(
                     &def_env,
                     &mono_eligible,
                     &fn_signatures,
-                    &[],
+                    &original_defs_snapshot,
                     &generic_struct_template_names,
                     &struct_defs,
                     &mut generated_defs,
@@ -3648,6 +3799,7 @@ pub fn analyze_with_options(
                     FnParamType::Struct(_)
                     | FnParamType::Buffer(_)
                     | FnParamType::Array(_)
+                    | FnParamType::ArrayGeneric(_)
                     | FnParamType::BareBuffer => None,
                 });
             if let Some(param_ty) = explicit_prim {
@@ -3812,7 +3964,7 @@ pub fn analyze_with_options(
                 let param_kinds = inferred_def_params
                     .get(&d.name)
                     .cloned()
-                    .unwrap_or_else(|| vec![TypedFnParam::Scalar; d.params.len()]);
+                    .unwrap_or_else(|| vec![TypedFnParam::Scalar { ty: None }; d.params.len()]);
                 TypedFunction {
                     method_of: method_self_struct.get(&d.name).cloned(),
                     type_params: d.type_params.clone(),

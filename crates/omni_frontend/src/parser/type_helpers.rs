@@ -122,8 +122,8 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
         Rule::type_name => Ok(DeclType::Scalar(
             parse_primitive_type(pair.as_str()).map_err(|d| vec![d])?,
         )),
-        Rule::qualified_ident | Rule::namespace_ref => {
-            Ok(DeclType::Generic(pair.as_str().to_owned()))
+        Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+            Ok(DeclType::Generic(pair.as_str().trim().to_owned()))
         }
         Rule::array_type => {
             let mut inner = pair.into_inner();
@@ -141,10 +141,12 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
                         size: parse_expr_inner(size_pair),
                     })
                 }
-                Rule::qualified_ident | Rule::namespace_ref => Ok(DeclType::ArrayGeneric {
-                    elem: elem_pair.as_str().to_owned(),
-                    size: parse_expr_inner(size_pair),
-                }),
+                Rule::qualified_ident | Rule::namespace_ref | Rule::array_named_type => {
+                    Ok(DeclType::ArrayGeneric {
+                        elem: elem_pair.as_str().trim().to_owned(),
+                        size: parse_expr_inner(size_pair),
+                    })
+                }
                 _ => Err(vec![Diagnostic::syntax(
                     "array declarations for ports/params require primitive or generic element type",
                     0,
@@ -202,8 +204,22 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
     let out = match inner.as_rule() {
         Rule::fn_typed_array_param => {
             let inner_type = inner.into_inner().next().unwrap();
-            let prim = parse_primitive_type(inner_type.as_str()).map_err(|d| vec![d])?;
-            FnParamType::Array(Some(prim))
+            match inner_type.as_rule() {
+                Rule::type_name => {
+                    let prim = parse_primitive_type(inner_type.as_str()).map_err(|d| vec![d])?;
+                    FnParamType::Array(Some(prim))
+                }
+                Rule::qualified_ident | Rule::namespace_ref => {
+                    FnParamType::ArrayGeneric(inner_type.as_str().trim().to_owned())
+                }
+                _ => {
+                    return Err(vec![Diagnostic::syntax(
+                        "unsupported typed array parameter element type",
+                        0,
+                        0,
+                    )])
+                }
+            }
         }
         Rule::fn_untyped_array_param => FnParamType::Array(None),
         Rule::fn_bare_buffer => FnParamType::BareBuffer,
@@ -212,7 +228,7 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
             FnParamType::Primitive(parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?)
         }
         Rule::qualified_ident | Rule::namespace_ref => {
-            FnParamType::Struct(inner.as_str().to_owned())
+            FnParamType::Struct(inner.as_str().trim().to_owned())
         }
         _ => {
             return Err(vec![Diagnostic::syntax(
@@ -373,6 +389,10 @@ pub(super) fn parse_array_elem_type(text: &str) -> ArrayElemType {
     }
 }
 
+fn is_primitive_type_name(text: &str) -> bool {
+    matches!(text, "f32" | "f64" | "i32" | "i64" | "bool")
+}
+
 pub(super) fn parse_array_type_spec(
     pair: Pair<'_, Rule>,
 ) -> Result<ArrayTypeSpec, Vec<Diagnostic>> {
@@ -393,16 +413,26 @@ pub(super) fn parse_array_type_spec(
     let elem = match elem_pair.as_rule() {
         Rule::type_name => parse_array_elem_type(elem_pair.as_str()),
         Rule::qualified_ident | Rule::namespace_ref => {
-            ArrayElemType::Struct(elem_pair.as_str().to_owned())
+            ArrayElemType::Struct(elem_pair.as_str().trim().to_owned())
         }
         Rule::array_named_type => {
             ArrayElemType::Struct(parse_array_named_type_base_name(elem_pair)?)
         }
         _ => return Err(vec![Diagnostic::syntax("invalid array element type", 0, 0)]),
     };
+    let size = parse_expr_inner(size_pair);
+    if matches!(elem, ArrayElemType::Struct(_))
+        && matches!(&size, Expr::Var(name) if is_primitive_type_name(name))
+    {
+        return Err(vec![Diagnostic::syntax(
+            "generic type arguments must use '<...>'; bracket syntax is reserved for array sizes",
+            0,
+            0,
+        )]);
+    }
     Ok(ArrayTypeSpec {
         elem,
-        size: Box::new(parse_expr_inner(size_pair)),
+        size: Box::new(size),
     })
 }
 
@@ -414,7 +444,7 @@ fn parse_array_named_type_base_name(pair: Pair<'_, Rule>) -> Result<String, Vec<
             0,
         )]);
     }
-    Ok(pair.as_str().to_owned())
+    Ok(pair.as_str().trim().to_owned())
 }
 
 pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Diagnostic>> {
@@ -433,11 +463,8 @@ pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Di
                 let ty = parse_primitive_type(child.as_str()).map_err(|d| vec![d])?;
                 return Ok(FieldType::Scalar(ty));
             }
-            Rule::qualified_ident => {
-                return Ok(FieldType::Generic(child.as_str().to_owned()));
-            }
-            Rule::namespace_ref => {
-                return Ok(FieldType::Generic(child.as_str().to_owned()));
+            Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+                return Ok(FieldType::Generic(child.as_str().trim().to_owned()));
             }
             Rule::array_type => {
                 return Ok(FieldType::Array(parse_array_type_spec(child)?));

@@ -127,6 +127,19 @@ sample {
 }
 "#;
 
+const FOR_PAREN_EXPR_BOUND_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  n: i32 = 5
+}
+sample {
+  out1 = 0.0
+  for i in 0..(n - 1) {
+    out1 = out1 + 1.0
+  }
+}
+"#;
+
 const FOR_DESCENDING_STEP_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
@@ -1060,6 +1073,37 @@ sample {
   out1 = v.delay[0.0]
 }
 "#;
+
+const INIT_ARRAY_INDEX_SCALAR_COPY_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  buf: f32[2]
+  buf[0.0] = 3.5
+  x = buf[0.0]
+}
+sample {
+  out1 = x
+}
+"#;
+
+const DEF_STRUCT_ARRAY_INDEX_SCALAR_COPY_EXAMPLE: &str = r#"
+outs { out1 }
+struct Voice {
+  delay: f32[2]
+
+  def read(self, i: i32) {
+    tap = self.delay[i]
+    return tap
+  }
+}
+init {
+  v = Voice()
+  v.delay[1.0] = 4.0
+}
+sample {
+  out1 = v.read(1)
+}
+"#;
 const DATA_CONST_CAPACITY_EXAMPLE: &str = r#"
 outs { out1 }
 struct Delay { buf: f32[SR * 2] }
@@ -1478,7 +1522,7 @@ sample {
 "#;
 
 const ASSERT_NAMESPACE_POWER_OF_TWO_ERROR_EXAMPLE: &str = r#"
-namespace FFT[N = 4] {
+namespace FFT<N = 4> {
   assert((N & (N - 1)) == 0)
   struct Tag {
     value
@@ -1486,10 +1530,333 @@ namespace FFT[N = 4] {
 }
 outs { out1 }
 init {
-  tag: FFT[6]::Tag
+  tag: FFT<6>::Tag
 }
 sample {
   out1 = 0.0
+}
+"#;
+
+const STDLIB_FFT_ZERO_SIZE_ERROR_EXAMPLE: &str = r#"
+import std/fft
+outs { out1 }
+init {
+  fft: std::fft<0>::FFT<f32>
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
+const STDLIB_FFT_IMPULSE_EXAMPLE: &str = r#"
+import std/fft
+outs { out1 }
+init {
+  input: f32[8]
+  input[0] = 1.0
+  input[1] = 0.0
+  input[2] = 0.0
+  input[3] = 0.0
+  input[4] = 0.0
+  input[5] = 0.0
+  input[6] = 0.0
+  input[7] = 0.0
+  fft: std::fft<8>::FFT<f32>
+}
+sample {
+  fft.forward_real(input)
+  out1 = fft.real(0) + fft.real(1) + fft.real(2) + fft.real(3) + fft.real(4) + fft.real(5) + fft.real(6) + fft.real(7)
+}
+"#;
+
+const STDLIB_FFT_IMPULSE_F64_EXAMPLE: &str = r#"
+import std/fft
+outs { out1 }
+init {
+  input: f64[8]
+  input[0] = f64(1.0)
+  input[1] = f64(0.0)
+  input[2] = f64(0.0)
+  input[3] = f64(0.0)
+  input[4] = f64(0.0)
+  input[5] = f64(0.0)
+  input[6] = f64(0.0)
+  input[7] = f64(0.0)
+  fft: std::fft<8>::FFT<f64>
+}
+sample {
+  fft.forward_real(input)
+  out1 = f32(fft.real(0) + fft.real(1) + fft.real(2) + fft.real(3) + fft.real(4) + fft.real(5) + fft.real(6) + fft.real(7))
+}
+"#;
+
+const STDLIB_FFT_REAL_PACKED_EXAMPLE: &str = r#"
+import std/fft
+outs { out1 }
+init {
+  input: f32[8]
+  packed: f32[8]
+  input[0] = 1.0
+  input[1] = 0.0
+  input[2] = 0.0
+  input[3] = 0.0
+  input[4] = 0.0
+  input[5] = 0.0
+  input[6] = 0.0
+  input[7] = 0.0
+  fft: std::fft<8>::FFT<f32>
+}
+sample {
+  fft.forward_real_packed(input, packed)
+  out1 = packed[0] + packed[1] + packed[2] + packed[3] + packed[4] + packed[5] + packed[6] + packed[7]
+}
+"#;
+
+const STDLIB_FFT_REAL_PACKED_ROUNDTRIP_EXAMPLE: &str = r#"
+import std/fft
+outs 4
+init {
+  input: f32[4]
+  packed: f32[4]
+  output: f32[4]
+  input[0] = 1.0
+  input[1] = 2.0
+  input[2] = 3.0
+  input[3] = 4.0
+  fft: std::fft<4>::FFT<f32>
+}
+sample {
+  fft.forward_real_packed(input, packed)
+  fft.inverse_real_packed(packed, output)
+  out1 = output[0]
+  out2 = output[1]
+  out3 = output[2]
+  out4 = output[3]
+}
+"#;
+
+const STDLIB_FFT_REAL_SPECTRUM_HELPERS_EXAMPLE: &str = r#"
+import std/fft
+outs 4
+init {
+  input: f32[8]
+  mags: f32[5]
+  power: f32[5]
+  phase: f32[5]
+  input[0] = 0.0
+  input[1] = 1.0
+  input[2] = 0.0
+  input[3] = 0.0
+  input[4] = 0.0
+  input[5] = 0.0
+  input[6] = 0.0
+  input[7] = 0.0
+  fft: std::fft<8>::FFT<f32>
+}
+sample {
+  fft.forward_real_magnitude(input, mags)
+  fft.forward_real_power(input, power)
+  fft.forward_real_phase(input, phase)
+  out1 = mags[0] + mags[1] + mags[2] + mags[3] + mags[4]
+  out2 = power[0] + power[1] + power[2] + power[3] + power[4]
+  out3 = phase[0] + phase[1] + phase[2] + phase[3] + phase[4]
+  out4 = f32(fft.size() + fft.real_bin_count())
+}
+"#;
+
+const STDLIB_STFT_HANN_WINDOW_EXAMPLE: &str = r#"
+import std/fft
+outs 4
+init {
+  input: f32[8]
+  mags: f32[5]
+  window: f32[8]
+  input[0] = 0.0
+  input[1] = 1.0
+  input[2] = 0.0
+  input[3] = 0.0
+  input[4] = 0.0
+  input[5] = 0.0
+  input[6] = 0.0
+  input[7] = 0.0
+  stft: std::fft<8>::STFT<f32>
+}
+sample {
+  stft.set_hann()
+  stft.store_window(window)
+  stft.forward_real_magnitude(input, mags)
+  out1 = mags[0] + mags[1] + mags[2] + mags[3] + mags[4]
+  out2 = window[1] + window[6]
+  out3 = stft.magnitude(0)
+  out4 = f32(stft.size() + stft.real_bin_count())
+}
+"#;
+
+const STDLIB_REALFFT_STRUCT_EXAMPLE: &str = r#"
+import std/fft
+import std/osc
+outs 1
+init {
+  saw = std::osc::Saw(freq = 440.0)
+  fwd = std::fft<64>::RealFFT()
+  inv = std::fft<64>::RealIFFT()
+  scratch_re: f32[64]
+  scratch_im: f32[64]
+}
+sample {
+  saw.freq = 440.0
+  if (fwd.push(saw())) {
+    for i in 0..64 {
+      scratch_re[i] = 0.0
+      scratch_im[i] = 0.0
+    }
+    scratch_re[0] = fwd.fft.re[0]
+    half = 64 >> 1
+    for k in 1..half {
+      shifted = k + 1
+      if (shifted < half) {
+        scratch_re[shifted] = fwd.fft.re[k]
+        scratch_im[shifted] = fwd.fft.im[k]
+        scratch_re[64 - shifted] = fwd.fft.re[64 - k]
+        scratch_im[64 - shifted] = fwd.fft.im[64 - k]
+      }
+    }
+    inv.load_complex(scratch_re, scratch_im)
+  }
+  out1 = inv.tick()
+}
+"#;
+
+const STDLIB_REALFFT_NAMESPACED_PROC_EXAMPLE: &str = r#"
+import std/fft
+import std/osc
+
+namespace BinShift<N = 64>:
+  proc Main:
+    outs 1
+    params:
+      freq = 440.0
+    init:
+      saw = std::osc::Saw(freq = freq)
+      fwd = std::fft<N>::RealFFT()
+      inv = std::fft<N>::RealIFFT()
+      scratch_re: f32[N]
+      scratch_im: f32[N]
+    block:
+      saw.freq = freq
+      sample:
+        if (fwd.push(saw())):
+          for i in 0..N:
+            scratch_re[i] = 0.0
+            scratch_im[i] = 0.0
+          scratch_re[0] = fwd.fft.re[0]
+          half = N >> 1
+          for k in 1..half:
+            shifted = k + 1
+            if (shifted < half):
+              scratch_re[shifted] = fwd.fft.re[k]
+              scratch_im[shifted] = fwd.fft.im[k]
+              scratch_re[N - shifted] = fwd.fft.re[N - k]
+              scratch_im[N - shifted] = fwd.fft.im[N - k]
+          inv.load_complex(scratch_re, scratch_im)
+        out1 = inv.tick()
+
+outs 1
+init:
+  p = BinShift<64>::Main()
+sample:
+  out1 = p()
+"#;
+
+const STDLIB_REALFFT_HANN_OLA_PASSTHROUGH_EXAMPLE: &str = r#"
+import std/fft
+import std/osc
+outs 3
+init {
+  osc = std::osc::Sine(freq = 220.0)
+  fwd = std::fft<64>::RealFFT()
+  inv = std::fft<64>::RealIFFT()
+  delay: f32[64]
+  delay_i: i32 = 0
+  frames_seen: i32 = 0
+}
+sample {
+  x = osc()
+  expected_i = delay_i + 1
+  if (expected_i >= 64) {
+    expected_i = expected_i - 64
+  }
+  expected = delay[expected_i]
+  delay[delay_i] = x
+  delay_i = delay_i + 1
+  if (delay_i >= 64) {
+    delay_i = 0
+  }
+
+  if (fwd.push(x)) {
+    inv.load_complex(fwd.fft.re, fwd.fft.im)
+  }
+
+  y = inv.tick()
+  frames_seen = frames_seen + 1
+  if (frames_seen > 192) {
+    out1 = y - expected
+  } else {
+    out1 = 0.0
+  }
+  out2 = f32(fwd.hop_size())
+  out3 = f32(inv.hop_size())
+}
+"#;
+
+const NESTED_STRUCT_FIELD_AND_METHOD_EXAMPLE: &str = r#"
+outs 2
+struct Inner<T>:
+  data: T[2]
+
+  def set_pair(self, a: T, b: T):
+    self.data[0] = a
+    self.data[1] = b
+
+  def sum(self):
+    return self.data[0] + self.data[1]
+
+struct Outer<T>:
+  inner: Inner<T>
+
+  def init_pair(self, a: T, b: T):
+    self.inner.set_pair(a, b)
+
+  def sum(self):
+    return self.inner.sum()
+
+init {
+  outer: Outer<f32>
+}
+sample {
+  outer.init_pair(1.5, 2.5)
+  out1 = outer.inner.data[0]
+  out2 = outer.sum()
+}
+"#;
+
+const NESTED_GENERIC_STRUCT_ARRAY_FIELD_EXAMPLE: &str = r#"
+outs 2
+struct Stereo<T>:
+  v: T[2]
+
+struct Rack:
+  items: Stereo<f32>[2]
+
+init {
+  rack: Rack
+}
+sample {
+  s = rack.items[1]
+  s.v[0] = 1.0
+  s.v[1] = 2.0
+  out1 = s.v[0]
+  out2 = s.v[0] + s.v[1]
 }
 "#;
 
@@ -1773,15 +2140,15 @@ def id(x) {
   return x
 }
 sample {
-  out1 = id[f32](1.0)
+  out1 = id<f32>(1.0)
 }
 "#;
 
 const GENERIC_STRUCT_EXPLICIT_TYPE_ARGS_OK_EXAMPLE: &str = r#"
 outs { out1 }
-struct Pair[T] { a: T, b: T }
+struct Pair<T> { a: T, b: T }
 init {
-  p = Pair[f64](f64(1.25), f64(0.5))
+  p = Pair<f64>(f64(1.25), f64(0.5))
 }
 sample {
   out1 = f32(p.a + p.b)
@@ -1790,7 +2157,7 @@ sample {
 
 const GENERIC_STRUCT_MISSING_TYPE_ARGS_ERROR_EXAMPLE: &str = r#"
 outs { out1 }
-struct Pair[T] { a: T, b: T }
+struct Pair<T> { a: T, b: T }
 init {
   p = Pair(1.0, 2.0)
 }
@@ -1801,7 +2168,7 @@ sample {
 
 const GENERIC_STRUCT_INFER_FROM_VAR_OK_EXAMPLE: &str = r#"
 outs { out1 }
-struct Box[T] { v: T }
+struct Box<T> { v: T }
 init {
   x = f64(2.5)
   b = Box(x)
@@ -1813,7 +2180,7 @@ sample {
 
 const GENERIC_STRUCT_UNRESOLVED_INFERENCE_ERROR_EXAMPLE: &str = r#"
 outs { out1 }
-struct Bank[T] { taps: T[2] }
+struct Bank<T> { taps: T[2] }
 init {
   b = Bank()
 }
@@ -1824,9 +2191,9 @@ sample {
 
 const GENERIC_STRUCT_TYPE_ARG_ARITY_ERROR_EXAMPLE: &str = r#"
 outs { out1 }
-struct Pair[T] { a: T, b: T }
+struct Pair<T> { a: T, b: T }
 init {
-  p = Pair[f32, f64](1.0, 2.0)
+  p = Pair<f32, f64>(1.0, 2.0)
 }
 sample {
   out1 = 0.0
@@ -1837,7 +2204,7 @@ const NON_GENERIC_STRUCT_WITH_TYPE_ARGS_ERROR_EXAMPLE: &str = r#"
 outs { out1 }
 struct Pair { a: f32, b: f32 }
 init {
-  p = Pair[f32](1.0, 2.0)
+  p = Pair<f32>(1.0, 2.0)
 }
 sample {
   out1 = p.a + p.b
@@ -1846,10 +2213,10 @@ sample {
 
 const GENERIC_STRUCT_MULTIPLE_SPECIALIZATIONS_OK_EXAMPLE: &str = r#"
 outs { out1 }
-struct Box[T] { v: T }
+struct Box<T> { v: T }
 init {
-  a = Box[f32](1.0)
-  b = Box[f64](f64(0.25))
+  a = Box<f32>(1.0)
+  b = Box<f64>(f64(0.25))
 }
 sample {
   out1 = a.v + f32(b.v)
@@ -1858,9 +2225,9 @@ sample {
 
 const GENERIC_STRUCT_ARRAY_FIELD_OK_EXAMPLE: &str = r#"
 outs { out1 }
-struct Bank[T] { taps: T[2] }
+struct Bank<T> { taps: T[2] }
 init {
-  b = Bank[f64]()
+  b = Bank<f64>()
   b.taps[0.0] = f64(1.5)
   b.taps[1.0] = f64(0.5)
 }
@@ -1871,7 +2238,7 @@ sample {
 
 const GENERIC_STRUCT_METHOD_OK_EXAMPLE: &str = r#"
 outs { out1 }
-struct Pair[T] {
+struct Pair<T> {
   a: T
   b: T
   def sum(self) {
@@ -1879,7 +2246,7 @@ struct Pair[T] {
   }
 }
 init {
-  p = Pair[f64](f64(1.25), f64(0.75))
+  p = Pair<f64>(f64(1.25), f64(0.75))
 }
 sample {
   out1 = f32(p.sum())
@@ -1887,7 +2254,7 @@ sample {
 "#;
 
 const GENERIC_PROC_EXPLICIT_TYPE_ARGS_OK_EXAMPLE: &str = r#"
-proc Gain[T] {
+proc Gain<T> {
   ins { in1: T }
   outs { out1: T }
   params { g: T = 1.0 }
@@ -1897,7 +2264,7 @@ proc Gain[T] {
 }
 outs { out1 }
 init {
-  p = Gain[f64](g = f64(0.5))
+  p = Gain<f64>(g = f64(0.5))
 }
 sample {
   out1 = f32(p(f64(2.0)))
@@ -1905,7 +2272,7 @@ sample {
 "#;
 
 const GENERIC_PROC_MISSING_TYPE_ARGS_ERROR_EXAMPLE: &str = r#"
-proc Gain[T] {
+proc Gain<T> {
   ins { in1: T }
   outs { out1: T }
   params { g: T = 1.0 }
@@ -1923,7 +2290,7 @@ sample {
 "#;
 
 const GENERIC_PROC_DEFAULT_ONLY_INFERENCE_OK_EXAMPLE: &str = r#"
-proc Gain[T] {
+proc Gain<T> {
   ins { in1: T }
   outs { out1: T }
   params { g: T = 0.5 }
@@ -1941,7 +2308,7 @@ sample {
 "#;
 
 const GENERIC_PROC_ARRAY_INFER_FROM_ARRAY_VAR_OK_EXAMPLE: &str = r#"
-proc Tap[T] {
+proc Tap<T> {
   params { w: T[2] = [0.0, 0.0] }
   outs { out1: T }
   sample {
@@ -1961,7 +2328,7 @@ sample {
 "#;
 
 const GENERIC_PROC_UNRESOLVED_INFERENCE_ERROR_EXAMPLE: &str = r#"
-proc Hold[T] {
+proc Hold<T> {
   outs { out1: T }
   sample {
     out1 = 0.0
@@ -1999,12 +2366,12 @@ sample {
 "#;
 
 const PROC_STATE_GENERIC_STRUCT_CTOR_EXPLICIT_TYPE_ARGS_OK_EXAMPLE: &str = r#"
-struct Pair[T] { a: T, b: T }
+struct Pair<T> { a: T, b: T }
 
 proc Voice {
   outs { out1 }
   init {
-    s = Pair[f64](f64(1.0), f64(2.0))
+    s = Pair<f64>(f64(1.0), f64(2.0))
   }
   sample {
     out1 = f32(s.a + s.b)
@@ -2021,7 +2388,7 @@ sample {
 "#;
 
 const PROC_STATE_GENERIC_STRUCT_CTOR_INFERRED_TYPE_ARGS_OK_EXAMPLE: &str = r#"
-struct Pair[T] { a: T, b: T }
+struct Pair<T> { a: T, b: T }
 
 proc Voice {
   outs { out1 }
@@ -2045,7 +2412,7 @@ sample {
 "#;
 
 const GENERIC_PROC_TYPE_ARG_ARITY_ERROR_EXAMPLE: &str = r#"
-proc Gain[T, U] {
+proc Gain<T, U> {
   ins { in1: T }
   outs { out1: T }
   sample {
@@ -2054,7 +2421,7 @@ proc Gain[T, U] {
 }
 outs { out1 }
 init {
-  p = Gain[f64]()
+  p = Gain<f64>()
 }
 sample {
   out1 = f32(p(f64(2.0)))
@@ -2071,7 +2438,7 @@ proc Gain {
 }
 outs { out1 }
 init {
-  p = Gain[f64]()
+  p = Gain<f64>()
 }
 sample {
   out1 = p(2.0)
@@ -2079,7 +2446,7 @@ sample {
 "#;
 
 const GENERIC_PROC_MULTIPLE_SPECIALIZATIONS_OK_EXAMPLE: &str = r#"
-proc Gain[T] {
+proc Gain<T> {
   ins { in1: T }
   outs { out1: T }
   params { g: T = 1.0 }
@@ -2089,8 +2456,8 @@ proc Gain[T] {
 }
 outs { out1 }
 init {
-  p1 = Gain[f32](g = 2.0)
-  p2 = Gain[f64](g = f64(0.25))
+  p1 = Gain<f32>(g = 2.0)
+  p2 = Gain<f64>(g = f64(0.25))
 }
 sample {
   out1 = p1(1.0) + f32(p2(f64(2.0)))
@@ -2098,7 +2465,7 @@ sample {
 "#;
 
 const GENERIC_PROC_ARRAY_DECL_TYPES_OK_EXAMPLE: &str = r#"
-proc Mix[T] {
+proc Mix<T> {
   ins { in1: T[2] }
   outs { out1: T }
   params { gains: T[2] = [1.0, 0.5] }
@@ -2108,7 +2475,7 @@ proc Mix[T] {
 }
 outs { out1 }
 init {
-  p = Mix[f64]()
+  p = Mix<f64>()
 }
 sample {
   out1 = f32(p([f64(2.0), f64(4.0)]))
@@ -2116,7 +2483,7 @@ sample {
 "#;
 
 const GENERIC_PROC_INIT_TYPED_ARRAY_GENERIC_OK_EXAMPLE: &str = r#"
-proc Sum2[T] {
+proc Sum2<T> {
   outs { out1: T }
   init {
     x: T[2]
@@ -2129,7 +2496,7 @@ proc Sum2[T] {
 }
 outs { out1 }
 init {
-  p = Sum2[f64]()
+  p = Sum2<f64>()
 }
 sample {
   out1 = f32(p())
@@ -2138,7 +2505,7 @@ sample {
 
 const GENERIC_PROC_BUFFER_DECL_TYPE_COMPILES_EXAMPLE: &str = r#"
 buffers { buf1: buffer[f64] }
-proc Tap[T] {
+proc Tap<T> {
   buffers { line: buffer[T] }
   outs { out1: T }
   sample {
@@ -2147,7 +2514,7 @@ proc Tap[T] {
 }
 outs { out1 }
 init {
-  p = Tap[f64](line = buf1)
+  p = Tap<f64>(line = buf1)
 }
 sample {
   out1 = f32(p())
@@ -4903,6 +5270,21 @@ fn for_loop_accepts_variable_bound() {
 }
 
 #[test]
+fn for_loop_accepts_parenthesized_expression_bound() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(FOR_PAREN_EXPR_BOUND_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 4.0, 1e-6);
+    }
+}
+
+#[test]
 fn for_loop_supports_descending_step_and_inclusive_end() {
     let frames = 8;
     let (mut instance, in_channels, out_channels) =
@@ -5754,6 +6136,36 @@ fn primitive_struct_field_data_local_alias_binding_is_rejected() {
         result.is_ok(),
         "semantic analysis should allow primitive struct-array indexed reads as scalar copies via 'x = v.delay[i]'"
     );
+}
+
+#[test]
+fn init_array_index_scalar_copy_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(INIT_ARRAY_INDEX_SCALAR_COPY_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.5, 1e-6);
+    }
+}
+
+#[test]
+fn def_struct_array_index_scalar_copy_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_STRUCT_ARRAY_INDEX_SCALAR_COPY_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 4.0, 1e-6);
+    }
 }
 #[test]
 fn typed_local_array_declaration_in_sample_is_allowed() {
@@ -7233,7 +7645,7 @@ fn def_declaration_rejects_generic_type_params_syntax() {
     let parsed = parse_program(
         r#"
 outs { out1 }
-def bad[T](x) {
+def bad<T>(x) {
   return x
 }
 sample { out1 = 0.0 }
@@ -7369,6 +7781,32 @@ fn generic_struct_method_compile_and_run() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+fn struct_method_local_int_inference_matches_def_for_bitwise_ops() {
+    let src = r#"
+struct Bits<T>:
+  def run(self, n: i32):
+    bits = 0
+    value = n
+    while (value > 1):
+      value = value >> 1
+      bits = bits + 1
+    return f32(bits)
+outs { out1 }
+init:
+  b = Bits<f32>()
+sample:
+  out1 = b.run(8)
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
     }
 }
 
@@ -7530,7 +7968,7 @@ fn generic_proc_buffer_decl_type_analyzes_and_codegen_compiles() {
     );
     assert!(
         result.is_ok(),
-        "codegen should succeed for generic proc buffer[T] specialization"
+        "codegen should succeed for generic proc buffer<T> specialization"
     );
 }
 
@@ -9585,7 +10023,7 @@ fn analyze_supports_typed_init_generic_struct_ctor_decl() {
 import std/data
 outs { out1 }
 init {
-  line: std::data::Data[f32] = std::data::Data()
+  line: std::data::Data<f32> = std::data::Data()
 }
 sample {
   out1 = line.read(0)
@@ -9602,7 +10040,7 @@ fn analyze_supports_typed_init_generic_struct_default_ctor_decl() {
 import std/data
 outs { out1 }
 init {
-  line: std::data::Data[f32]
+  line: std::data::Data<f32>
 }
 sample {
   out1 = line.read(0)
@@ -9639,7 +10077,7 @@ fn analyze_rejects_typed_init_namespace_instantiated_struct_default_ctor_decl_wi
 import std/data
 outs { out1 }
 init {
-  line: std::data[SR, 1]::Data
+  line: std::data<SR, 1>::Data
 }
 sample {
   out1 = line.read(0)
@@ -9658,15 +10096,15 @@ sample {
 #[test]
 fn nested_namespace_template_compiles_and_runs() {
     let src = r#"
-namespace Outer[A = 1]:
-  namespace Inner[B = 2]:
+namespace Outer<A = 1>:
+  namespace Inner<B = 2>:
     struct S:
       x: f32
       def val(self):
         return f32(A + B)
 outs 1
 init:
-  s = Outer[10]::Inner[20]::S()
+  s = Outer<10>::Inner<20>::S()
 sample:
   out1 = s.val()
 "#;
@@ -9682,14 +10120,14 @@ sample:
 #[test]
 fn three_level_nested_namespace_template_compiles_and_runs() {
     let src = r#"
-namespace L1[A = 1]:
-  namespace L2[B = 2]:
-    namespace L3[C = 3]:
+namespace L1<A = 1>:
+  namespace L2<B = 2>:
+    namespace L3<C = 3>:
       def sum():
         return f32(A + B + C)
 outs 1
 sample:
-  out1 = L1[10]::L2[20]::L3[30]::sum()
+  out1 = L1<10>::L2<20>::L3<30>::sum()
 "#;
     let frames = 4;
     let (mut instance, _, _) = compile_instance(src, frames);
@@ -9703,8 +10141,8 @@ sample:
 #[test]
 fn generic_struct_inside_namespace_template_t_s_pattern_compiles_and_runs() {
     let src = r#"
-namespace Data[S = SR]:
-  struct Store[T]:
+namespace Data<S = SR>:
+  struct Store<T>:
     buf: T[S]
     def write_first(self, v: T):
       self.buf[0] = v
@@ -9712,7 +10150,7 @@ namespace Data[S = SR]:
       return self.buf[0]
 outs 1
 init:
-  s = Data[4]::Store[f32]()
+  s = Data<4>::Store<f32>()
 sample:
   s.write_first(0.75)
   out1 = s.read_first()
@@ -9727,10 +10165,62 @@ sample:
 }
 
 #[test]
+fn generic_struct_method_typed_array_param_compile_and_run() {
+    let src = r#"
+namespace NS:
+  struct Store<T>:
+    buf: T[2]
+    def load(self, input: T[]):
+      self.buf[0] = input[0]
+      self.buf[1] = input[1]
+    def sum(self):
+      return self.buf[0] + self.buf[1]
+outs 1
+init:
+  input: f64[2] = [1.25, 0.75]
+  s = NS::Store<f64>()
+sample:
+  s.load(input)
+  out1 = f32(s.sum())
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_proc_t_cast_integer_specialization_compile_and_run() {
+    let src = r#"
+proc ConstVal<T>:
+  outs[T] 1
+  init:
+    v: T = T(3)
+  sample:
+    out1 = v
+outs 1
+init:
+  p = ConstVal<i64>()
+sample:
+  out1 = f32(p())
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
 fn generic_proc_inside_namespace_template_compiles_and_runs() {
     let src = r#"
 namespace FX:
-  proc Gain[T]:
+  proc Gain<T>:
     ins[T] 1
     outs[T] 1
     params[T]:
@@ -9739,7 +10229,7 @@ namespace FX:
       out1 = in1 * g
 outs 1
 init:
-  g = FX::Gain[f64](g = f64(0.5))
+  g = FX::Gain<f64>(g = f64(0.5))
 sample:
   out1 = f32(g(f64(2.0)))
 "#;
@@ -9783,15 +10273,15 @@ sample:
 #[test]
 fn multiple_specializations_of_generic_struct_inside_namespace_template_compiles_and_runs() {
     let src = r#"
-namespace Data[S = 4]:
-  struct Store[T]:
+namespace Data<S = 4>:
+  struct Store<T>:
     buf: T[S]
     def first(self):
       return self.buf[0]
 outs 1
 init:
-  sf = Data[4]::Store[f32]()
-  sd = Data[4]::Store[f64]()
+  sf = Data<4>::Store<f32>()
+  sd = Data<4>::Store<f64>()
 sample:
   out1 = sf.first() + f32(sd.first())
 "#;
@@ -9807,13 +10297,13 @@ sample:
 #[test]
 fn nested_template_with_alias_compiles_and_runs() {
     let src = r#"
-namespace Outer[S = SR]:
-  namespace Inner[C = 1]:
+namespace Outer<S = SR>:
+  namespace Inner<C = 1>:
     struct Buf:
       data: f32[S * C]
       def capacity(self):
         return i32(S * C)
-namespace MyBuf = Outer[100]::Inner[2]
+namespace MyBuf = Outer<100>::Inner<2>
 outs 1
 init:
   b = MyBuf::Buf()
@@ -9830,10 +10320,133 @@ sample:
 }
 
 #[test]
+fn namespace_local_alias_to_generic_struct_runtime_compile_and_run() {
+    let src = r#"
+namespace A:
+  namespace Data<S = 4>:
+    struct Store<T>:
+      storage: T[S]
+  namespace D = Data<4>
+  proc Runner:
+    outs 1
+    init:
+      s = D::Store<f32>()
+    sample:
+      s.storage[0] = 1.25
+      out1 = s.storage[0]
+outs 1
+init:
+  r = A::Runner()
+sample:
+  out1 = r()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[test]
+fn namespace_local_alias_to_generic_struct_proc_method_sugar_compile_and_run() {
+    let src = r#"
+namespace A:
+  namespace Data<S = 4>:
+    struct Store<T>:
+      storage: T[S]
+      def write_first(self, v: T):
+        self.storage[0] = v
+      def read_first(self):
+        return self.storage[0]
+  namespace D = Data<4>
+  proc Runner:
+    outs 1
+    init:
+      s = D::Store<f32>()
+    sample:
+      s.write_first(1.25)
+      out1 = s.read_first()
+outs 1
+init:
+  r = A::Runner()
+sample:
+  out1 = r()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[test]
+fn nested_namespace_instantiated_generic_struct_with_nested_struct_field_compiles_and_runs() {
+    let src = r#"
+namespace Outer<S = 3>:
+  namespace Inner<C = 2>:
+    struct Pair<T>:
+      values: T[S * C]
+      def write_ends(self, a: T, b: T):
+        self.values[0] = a
+        self.values[S * C - 1] = b
+      def sum_ends(self):
+        return self.values[0] + self.values[S * C - 1]
+
+    struct Wrap<T>:
+      pair: Pair<T>
+      def init_vals(self, a: T, b: T):
+        self.pair.write_ends(a, b)
+      def sum_vals(self):
+        return self.pair.sum_ends()
+
+outs 1
+init:
+  w = Outer<3>::Inner<2>::Wrap<f32>()
+sample:
+  w.init_vals(1.0, 2.5)
+  out1 = w.sum_vals()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.5, 1e-6);
+    }
+}
+
+#[test]
+fn namespace_param_return_without_i32_cast_infers_i32() {
+    let src = r#"
+namespace Outer<S = SR>:
+  struct Buf:
+    def capacity(self):
+      return S
+outs 1
+init:
+  b = Outer<200>::Buf()
+sample:
+  frames: i32 = b.capacity()
+  out1 = f32(frames)
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 200.0, 1e-6);
+    }
+}
+
+#[test]
 fn generic_typed_decl_in_proc_sample_block() {
     let parsed = parse_program(
         r#"
-proc Gen[T] {
+proc Gen<T> {
   outs { out1: T }
   init {
     v: T = 1.0
@@ -9845,7 +10458,7 @@ proc Gen[T] {
 }
 outs { out1 }
 init {
-  g = Gen[f64]()
+  g = Gen<f64>()
 }
 sample {
   out1 = f32(g.out1)
@@ -9865,7 +10478,7 @@ sample {
 fn generic_typed_decl_in_struct_method() {
     let src = r#"
 namespace NS:
-  struct Pair[T]:
+  struct Pair<T>:
     a: T
     b: T
     def sum(self):
@@ -9873,7 +10486,7 @@ namespace NS:
       return tmp
 outs 1
 init:
-  p = NS::Pair[f64](3.0, 4.0)
+  p = NS::Pair<f64>(3.0, 4.0)
 sample:
   out1 = f32(p.sum())
 "#;
@@ -9890,7 +10503,7 @@ sample:
 fn generic_typed_decl_in_proc_event() {
     let parsed = parse_program(
         r#"
-proc Gen[T] {
+proc Gen<T> {
   outs { out1: T }
   events {
     reset() {
@@ -9907,7 +10520,7 @@ proc Gen[T] {
 }
 outs { out1 }
 init {
-  g = Gen[f64]()
+  g = Gen<f64>()
 }
 sample {
   out1 = f32(g.out1)
@@ -9928,9 +10541,9 @@ fn bool_type_arg_rejected_for_struct() {
     let parsed = parse_program(
         r#"
 outs { out1 }
-struct Box[T] { v: T }
+struct Box<T> { v: T }
 init {
-  b = Box[bool](true)
+  b = Box<bool>(true)
 }
 sample {
   out1 = 0.0
@@ -9949,13 +10562,13 @@ sample {
 fn bool_type_arg_rejected_for_proc() {
     let parsed = parse_program(
         r#"
-proc Gen[T] {
+proc Gen<T> {
   outs { out1: T }
   sample { out1 = 0.0 }
 }
 outs { out1 }
 init {
-  g = Gen[bool]()
+  g = Gen<bool>()
 }
 sample {
   out1 = 0.0
@@ -10189,6 +10802,206 @@ fn assert_rejects_false_namespace_compile_time_condition() {
 }
 
 #[test]
+fn stdlib_fft_impulse_compile_and_run() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_FFT_IMPULSE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 8.0, 1e-4);
+    }
+}
+
+#[test]
+fn stdlib_fft_f64_impulse_compile_and_run() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_FFT_IMPULSE_F64_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 8.0, 1e-4);
+    }
+}
+
+#[test]
+fn stdlib_fft_real_packed_compile_and_run() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_FFT_REAL_PACKED_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 5.0, 1e-4);
+    }
+}
+
+#[test]
+fn stdlib_fft_real_packed_roundtrip_compile_and_run() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_FFT_REAL_PACKED_ROUNDTRIP_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for frame in 0..frames {
+        let base = frame * out_channels;
+        assert_near(output[base], 1.0, 1e-4);
+        assert_near(output[base + 1], 2.0, 1e-4);
+        assert_near(output[base + 2], 3.0, 1e-4);
+        assert_near(output[base + 3], 4.0, 1e-4);
+    }
+}
+
+#[test]
+fn stdlib_fft_real_spectrum_helpers_compile_and_run() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_FFT_REAL_SPECTRUM_HELPERS_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for frame in 0..frames {
+        let base = frame * out_channels;
+        assert_near(output[base], 5.0, 1e-4);
+        assert_near(output[base + 1], 5.0, 1e-4);
+        assert_near(output[base + 2], -0.5 * std::f32::consts::PI, 1e-4);
+        assert_near(output[base + 3], 13.0, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_stft_hann_window_compile_and_run() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_STFT_HANN_WINDOW_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for frame in 0..frames {
+        let base = frame * out_channels;
+        assert_near(output[base], 0.941_275_5, 1e-4);
+        assert_near(output[base + 1], 0.376_510_2, 1e-4);
+        assert_near(output[base + 2], 0.188_255_1, 1e-4);
+        assert_near(output[base + 3], 13.0, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_realfft_struct_compile_and_run() {
+    let frames = 128;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_REALFFT_STRUCT_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|v| v.abs() > 1e-4),
+        "real fft proc should produce non-zero output after its frame latency"
+    );
+}
+
+#[test]
+fn stdlib_realfft_namespaced_proc_compile_and_run() {
+    let frames = 128;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_REALFFT_NAMESPACED_PROC_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|v| v.abs() > 1e-4),
+        "namespaced real fft proc should produce non-zero output after its frame latency"
+    );
+}
+
+#[test]
+fn stdlib_realfft_hann_ola_passthrough_compile_and_run() {
+    let frames = 2048;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_REALFFT_HANN_OLA_PASSTHROUGH_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 3);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let mut peak = 0.0_f32;
+    for frame in 256..frames {
+        let base = frame * out_channels;
+        peak = peak.max(output[base].abs());
+        assert_near(output[base + 1], 32.0, 1e-6);
+        assert_near(output[base + 2], 32.0, 1e-6);
+    }
+    assert!(
+        peak < 0.02,
+        "hann overlap-add passthrough should reconstruct the delayed signal closely, peak error was {peak}"
+    );
+}
+
+#[test]
+fn nested_struct_field_and_method_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(NESTED_STRUCT_FIELD_AND_METHOD_EXAMPLE, frames);
+
+    let mut outputs = vec![0.0_f32; frames * 2];
+    process_interleaved(&mut instance, &[], &mut outputs, frames).expect("process should succeed");
+
+    for frame in 0..frames {
+        let base = frame * 2;
+        assert_near(outputs[base], 1.5, 1e-6);
+        assert_near(outputs[base + 1], 4.0, 1e-6);
+    }
+}
+
+#[test]
+fn nested_generic_struct_array_field_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(NESTED_GENERIC_STRUCT_ARRAY_FIELD_EXAMPLE, frames);
+
+    let mut outputs = vec![0.0_f32; frames * 2];
+    process_interleaved(&mut instance, &[], &mut outputs, frames).expect("process should succeed");
+
+    for frame in 0..frames {
+        let base = frame * 2;
+        assert_near(outputs[base], 1.0, 1e-6);
+        assert_near(outputs[base + 1], 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_fft_rejects_zero_size() {
+    let parsed = parse_program(STDLIB_FFT_ZERO_SIZE_ERROR_EXAMPLE).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject zero-sized std::fft instantiations"
+    );
+}
+
+#[test]
 fn analyze_mutable_typed_array_param() {
     let src = r#"
 outs { out1 }
@@ -10240,14 +11053,14 @@ sample {
 fn analyze_generic_struct_def_param() {
     let src = r#"
 outs { out1 }
-struct Box[T] {
+struct Box<T> {
   value: T = 0.0
 }
 def unbox(b: Box) {
   return b.value
 }
 init {
-  mybox = Box[f32](value = 42.0)
+  mybox = Box<f32>(value = 42.0)
 }
 sample {
   out1 = unbox(mybox)
@@ -10265,14 +11078,14 @@ sample {
 // Test generic struct def param compiles and runs
 const DEF_GENERIC_STRUCT_PARAM: &str = r#"
 outs { out1 }
-struct Box[T] {
+struct Box<T> {
   value: T = 0.0
 }
 def unbox(b: Box) {
   return b.value
 }
 init {
-  mybox = Box[f32](value = 42.0)
+  mybox = Box<f32>(value = 42.0)
 }
 sample {
   out1 = unbox(mybox)
@@ -10510,11 +11323,11 @@ fn untyped_array_param_from_init_array_compile_and_run() {
 
 const GENERIC_STRUCT_ARRAY_EXPLICIT_F32_TYPE_ARG_EXAMPLE: &str = r#"
 outs { out1 }
-struct Stereo[T] {
+struct Stereo<T> {
   v: T[2]
 }
 init {
-  data: Stereo[f32][1000]
+  data: Stereo<f32>[1000]
 }
 sample {
   s = data[10]
@@ -10540,7 +11353,7 @@ fn generic_struct_array_explicit_f32_type_arg_compile_and_run() {
 
 const GENERIC_STRUCT_ARRAY_IMPLICIT_DEFAULT_F32_EXAMPLE: &str = r#"
 outs { out1 }
-struct Stereo[T] {
+struct Stereo<T> {
   v: T[2]
 }
 init {
@@ -10570,11 +11383,11 @@ fn generic_struct_array_implicit_default_f32_compile_and_run() {
 
 const GENERIC_STRUCT_ARRAY_EXPLICIT_F64_TYPE_ARG_EXAMPLE: &str = r#"
 outs { out1 }
-struct Stereo[T] {
+struct Stereo<T> {
   v: T[2]
 }
 init {
-  data: Stereo[f64][1000]
+  data: Stereo<f64>[1000]
 }
 sample {
   s = data[10]
@@ -10600,11 +11413,11 @@ fn generic_struct_array_explicit_f64_type_arg_compile_and_run() {
 
 const GENERIC_STRUCT_ARRAY_EXPLICIT_I32_TYPE_ARG_EXAMPLE: &str = r#"
 outs { out1 }
-struct Stereo[T] {
+struct Stereo<T> {
   v: T[2]
 }
 init {
-  data: Stereo[i32][1000]
+  data: Stereo<i32>[1000]
 }
 sample {
   s = data[10]
@@ -10630,11 +11443,11 @@ fn generic_struct_array_explicit_i32_type_arg_compile_and_run() {
 
 const GENERIC_STRUCT_ARRAY_EXPLICIT_I64_TYPE_ARG_EXAMPLE: &str = r#"
 outs { out1 }
-struct Stereo[T] {
+struct Stereo<T> {
   v: T[2]
 }
 init {
-  data: Stereo[i64][1000]
+  data: Stereo<i64>[1000]
 }
 sample {
   s = data[10]
@@ -10660,11 +11473,11 @@ fn generic_struct_array_explicit_i64_type_arg_compile_and_run() {
 
 const GENERIC_STRUCT_ARRAY_EXPLICIT_BOOL_TYPE_ARG_ERROR_EXAMPLE: &str = r#"
 outs { out1 }
-struct Stereo[T] {
+struct Stereo<T> {
   v: T[2]
 }
 init {
-  data: Stereo[bool][1000]
+  data: Stereo<bool>[1000]
 }
 sample {
   out1 = 0.0
@@ -10686,12 +11499,12 @@ fn generic_struct_array_explicit_bool_type_arg_is_rejected() {
 
 const GENERIC_STRUCT_TWO_TYPE_PARAMS_EXPLICIT_TYPE_ARGS_EXAMPLE: &str = r#"
 outs { out1 }
-struct Pair[T, U] {
+struct Pair<T, U> {
   a: T
   b: U
 }
 init {
-  p = Pair[f32, i64](1.5, i64(2))
+  p = Pair<f32, i64>(1.5, i64(2))
 }
 sample {
   out1 = p.a + f32(p.b)
@@ -10716,12 +11529,12 @@ fn generic_struct_two_type_params_explicit_type_args_compile_and_run() {
 
 const GENERIC_STRUCT_ARRAY_TWO_TYPE_PARAMS_EXPLICIT_TYPE_ARGS_EXAMPLE: &str = r#"
 outs { out1 }
-struct Pair[T, U] {
+struct Pair<T, U> {
   a: T
   b: U
 }
 init {
-  data: Pair[f32, i64][1000]
+  data: Pair<f32, i64>[1000]
 }
 sample {
   s = data[10]
@@ -10748,7 +11561,7 @@ fn generic_struct_array_two_type_params_explicit_type_args_compile_and_run() {
 }
 
 const GENERIC_PROC_TWO_TYPE_PARAMS_EXPLICIT_TYPE_ARGS_EXAMPLE: &str = r#"
-proc Duo[T, U] {
+proc Duo<T, U> {
   ins {
     in1: T
     in2: U
@@ -10764,7 +11577,7 @@ proc Duo[T, U] {
 }
 outs { out1 }
 init {
-  p = Duo[f32, i64]()
+  p = Duo<f32, i64>()
 }
 sample {
   p(1.25, i64(2))

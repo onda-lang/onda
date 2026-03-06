@@ -249,6 +249,9 @@ Runtime behavior:
 - params are held within the base sample
 - outputs are filtered/decimated back to base rate by compiler-managed conversion
 
+For/loop bounds:
+- `A`, `B`, and `N` may be general expressions, including parenthesized forms like `0..(n - 1)`.
+
 ## 6 Functions (`def`)
 
 Supported:
@@ -292,7 +295,7 @@ In addition to primitive types and struct types, `def` parameters support:
 - **Untyped array**: `arr: []` — accepts an array of any element type. Monomorphized at each call site based on the concrete element type.
 - **Typed buffer**: `buf: buffer[f32]`, `buf: buffer[f64[2]]` — accepts a buffer matching the given type/channels.
 - **Bare buffer**: `buf: buffer` — accepts any buffer. Monomorphized at each call site based on the concrete buffer type.
-- **Generic struct/proc**: `v: Voice` where `Voice[T]` is a generic struct or proc — monomorphized at each call site based on the concrete specialization passed.
+- **Generic struct/proc**: `v: Voice` where `Voice<T>` is a generic struct or proc — monomorphized at each call site based on the concrete specialization passed.
 
 ```omni
 # typed array param
@@ -311,7 +314,7 @@ def read_first(buf: buffer):
   return buf[0]
 
 # generic struct param (monomorphized per call site)
-struct Box[T]:
+struct Box<T>:
   val: T = 0.0
 
 def unbox(b: Box):
@@ -332,7 +335,7 @@ Method-style sugar works with generic params: `voice.process()` desugars to `pro
 - Struct methods still cannot be overloaded; duplicate method names in the same struct are rejected.
 - For overloads involving generic params: explicit type > generic/duck-typed > untyped.
 
-Explicit `def` type parameters (`def fn[T]`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
+Explicit `def` type parameters (`def fn<T>`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
 
 ## 7 Structs
 
@@ -356,17 +359,17 @@ import std/data
 
 init:
   # explicit constructor
-  a: std::data::Data[f32] = std::data::Data()
+  a: std::data::Data<f32> = std::data::Data()
   # declaration-only: auto-initializes with default ctor state
-  b: std::data::Data[f32]
+  b: std::data::Data<f32>
   # namespace-instantiated owner type works too
-  c: std::data[SR, 1]::Data
+  c: std::data<SR, 1>::Data
 ```
 
 Rules:
 - Typed struct declarations are `init`-only.
 - Declaration-only form (`x: Type`) desugars to default constructor initialization.
-- Generic typed declarations require explicit type args (for example `x: Box[f32]`; `x: Box` is rejected for generic `Box[T]`).
+- Generic typed declarations require explicit type args (for example `x: Box<f32>`; `x: Box` is rejected for generic `Box<T>`).
 - For untyped constructor assignments (`x = Box()` / `p = Proc()`), unresolved generic constructor type parameters default to `f32`.
 
 ## 8 Processors (`proc`)
@@ -487,18 +490,18 @@ Rules:
 Supported for `struct` and `proc` with primitive specialization:
 
 ```omni
-struct Pair[T]:
+struct Pair<T>:
   a: T
   b: T
 
-proc OnePole[T]:
+proc OnePole<T>:
   ins[T] 1
   outs[T] 1
   sample:
     out1 = in1
 ```
 
-Type arguments can be explicit (`Name[f64](...)`) or inferred in many constructor cases.
+Type arguments can be explicit (`Name<f64>(...)`) or inferred in many constructor cases.
 
 Generic type parameters are restricted to numeric primitives: `f32`, `f64`, `i32`, `i64`. Using `bool` as a generic type argument is a semantic error.
 
@@ -508,8 +511,12 @@ Generic typed local declarations (`x: T = expr`) are supported in all executable
 - `def` bodies (struct methods)
 - `events`
 
+Generic casts and generic array function params are also supported where the corresponding primitive forms are valid:
+- `T(expr)` rewrites to the bound primitive cast inside a specialized generic owner
+- `T[]` is valid for `def`/method array parameters
+
 ```omni
-proc Filter[T]:
+proc Filter<T>:
   ins[T] 1
   outs[T] 1
   init:
@@ -520,7 +527,7 @@ proc Filter[T]:
     out1 = state
 ```
 
-Unresolved generic type parameters in declaration/type positions produce an error (no implicit defaulting there). For untyped constructor assignments only, unresolved constructor type parameters default to `f32`.
+Unresolved generic type parameters in declaration/type positions produce an error (no implicit defaulting there). This includes generic array function params such as `T[]`. For untyped constructor assignments only, unresolved constructor type parameters default to `f32`.
 
 Generic struct and proc types can be used as `def` parameter types for call-site monomorphization (see section 6).
 
@@ -542,6 +549,7 @@ Imports:
   - `std/delay`
   - `std/data`
   - `std/lookup`
+  - `std/fft`
 - `std/prelude` is auto-imported (explicit import is optional), and it currently re-exports `std/math` + `std/lookup`.
 
 Include:
@@ -558,26 +566,31 @@ namespace my::dsp:
 Templated namespaces with compile-time int params are supported:
 
 ```omni
-namespace Data[S = SR, C = 1]:
-  struct Data[T]:
+namespace Data<S = SR, C = 1>:
+  struct Data<T>:
     storage: T[S * C]
 ```
+
+Syntax split:
+- `<>` is used for namespace instantiation and generic type specialization.
+- `[]` is used for arrays and indexing only.
 
 Namespace-local compile-time assertions are supported:
 
 ```omni
-namespace FFT[N = 256]:
+namespace FFT<N = 256>:
+  assert(N > 0)
   assert((N & (N - 1)) == 0)
 ```
 
 Use sites support inline instantiation and aliases:
 
 ```omni
-namespace D = Data[SR, 1]
+namespace D = Data<SR, 1>
 
 init:
-  a = Data[SR, 1]::Data[f64]()
-  b = D::Data[f64]()
+  a = Data<SR, 1>::Data<f64>()
+  b = D::Data<f64>()
 ```
 
 Rules:
@@ -585,6 +598,134 @@ Rules:
 - Namespace template args support positional and named forms.
 - Args are normalized as `i32(...)` at compile time.
 - Alias declarations are declaration sugar and can appear at top-level or inside namespaces.
+
+`std/fft` currently provides a namespace-parameterized in-place complex FFT:
+
+```omni
+import std/fft
+
+init:
+  fft: std::fft<256>::FFT<f32>
+```
+
+Current API:
+- `std::fft<N>::FFT<T>`
+- `std::fft<N>::RealFFT<T>`
+- `std::fft<N>::RealIFFT<T>`
+- namespace contract: `N > 0` and `N` must be a power of two
+- `T` is intended for floating-point use (`f32` or `f64`)
+- internal storage: `re: T[N]`, `im: T[N]`
+- introspection helpers:
+  - `size() -> i32`
+  - `real_bin_count() -> i32` (`N / 2 + 1` unique bins for real-input spectra)
+- packed real-spectrum layout uses `N` scalars:
+  - `packed[0..N/2]` = real bins `0..N/2`
+  - `packed[N/2 + 1..N - 1]` = imaginary bins `1..N/2 - 1`
+- methods:
+  - `clear()`
+  - `load_real(input: T[])`
+  - `load_complex(real: T[], imag: T[])`
+  - `load_real_packed(input: T[])`
+  - `store_real(output: T[])`
+  - `store_imag(output: T[])`
+  - `store_magnitude(output: T[])`
+  - `store_power(output: T[])`
+  - `store_phase(output: T[])`
+  - `store_real_packed(output: T[])`
+  - `store_real_spectrum_magnitude(output: T[])`
+  - `store_real_spectrum_power(output: T[])`
+  - `store_real_spectrum_phase(output: T[])`
+  - `forward_real(input: T[])`
+  - `forward_real_packed(input: T[], output: T[])`
+  - `forward_real_magnitude(input: T[], output: T[])`
+  - `forward_real_power(input: T[], output: T[])`
+  - `forward_real_phase(input: T[], output: T[])`
+  - `forward_complex(real: T[], imag: T[])`
+  - `forward()`
+  - `inverse()`
+  - `inverse_real_packed(input: T[], output: T[])`
+  - bin accessors returning `T`:
+    - `real(i: i32)`
+    - `imag(i: i32)`
+    - `power(i: i32)`
+    - `magnitude(i: i32)`
+    - `phase(i: i32)`
+
+Streaming wrappers:
+- `std::fft<N>::RealFFT<T>`
+  - fields:
+    - `fft: FFT<T>`
+    - `packed: T[N]`
+    - `ready: bool`
+  - methods:
+    - `clear()`
+    - `size() -> i32`
+    - `real_bin_count() -> i32`
+    - `hop_size() -> i32`
+    - `set_rectangular()`
+    - `set_hann()`
+    - `push(x: T) -> bool`
+    - `is_ready() -> bool`
+    - `packed_value(i: i32) -> T`
+- `std::fft<N>::RealIFFT<T>`
+  - fields:
+    - `fft: FFT<T>`
+  - methods:
+    - `clear()`
+    - `size() -> i32`
+    - `hop_size() -> i32`
+    - `set_rectangular()`
+    - `set_hann()`
+    - `load_packed(input: T[])`
+    - `load_complex(real: T[], imag: T[])`
+    - `tick() -> T`
+    - `is_active() -> bool`
+
+`RealFFT` / `RealIFFT` are streaming STFT-style wrappers:
+- default window is Hann
+- default hop is `N / 2`
+- `RealFFT.push()` emits a new spectrum every hop after the first full frame
+- `RealIFFT` performs windowed overlap-add reconstruction and normalizes by the accumulated window power
+
+Example:
+
+```omni
+import std/fft
+import std/osc
+
+params:
+  freq = 440.0
+
+init:
+  saw = std::osc::Saw(freq = freq)
+  fwd = std::fft<64>::RealFFT()
+  inv = std::fft<64>::RealIFFT()
+  scratch_re: f32[64]
+  scratch_im: f32[64]
+
+sample:
+  saw.freq = freq
+
+  if (fwd.push(saw())):
+    for i in 0..64:
+      scratch_re[i] = 0.0
+      scratch_im[i] = 0.0
+
+    scratch_re[0] = fwd.fft.re[0]
+
+    half = 64 >> 1
+    for k in 1..half:
+      shifted = k + 1
+      if (shifted < half):
+        scratch_re[shifted] = fwd.fft.re[k]
+        scratch_im[shifted] = fwd.fft.im[k]
+        scratch_re[64 - shifted] = fwd.fft.re[64 - k]
+        scratch_im[64 - shifted] = fwd.fft.im[64 - k]
+
+    inv.load_complex(scratch_re, scratch_im)
+
+  out1 = inv.tick()
+```
 
 ## 12 Example-driven starting points
 
@@ -594,4 +735,5 @@ Useful examples in `examples/`:
 - Struct + methods: `cross_fm.omni`
 - Processor usage and output forms: `proc_gain.omni`, `proc_split.omni`, `proc_array_stereo_sine.omni`, `reverb.omni`
 - Array-heavy DSP: `karplus_strong_data.omni`, `multitap_feedback_struct_data.omni`
-- Stdlib and generics: `stdlib_f32.omni`, `stdlib_f64.omni`
+- Stdlib and generics: `stdlib_f32.omni`, `stdlib_f64.omni`, `fft_bin_shift.omni`
+

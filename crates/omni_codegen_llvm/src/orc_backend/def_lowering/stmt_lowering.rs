@@ -305,11 +305,7 @@ unsafe fn try_bind_struct_data_alias_in_def(
 
     if let Some(alias) = ctx.local_array_aliases.get(base).cloned() {
         match alias {
-            LocalArrayAlias::Primitive { .. } => {
-                return Err(Diagnostic::internal(format!(
-                    "local alias binding '{target_name} = {base}[...]' is not supported for primitive arrays in def lowering; use direct indexed access"
-                )));
-            }
+            LocalArrayAlias::Primitive { .. } => return Ok(false),
             LocalArrayAlias::Struct {
                 root_base,
                 elem_struct,
@@ -343,9 +339,7 @@ unsafe fn try_bind_struct_data_alias_in_def(
     }
 
     if ctx.array_ptrs.contains_key(base) {
-        return Err(Diagnostic::internal(format!(
-            "local alias binding '{target_name} = {base}[...]' is not supported for primitive arrays in def lowering; use direct indexed access"
-        )));
+        return Ok(false);
     }
 
     Ok(false)

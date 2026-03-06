@@ -91,7 +91,9 @@ fn rewrite_proc_alias_calls_in_expr(expr: &mut Expr, aliases: &ProcArrayAliases)
                 }
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             rewrite_proc_alias_calls_in_expr(inner, aliases);
         }
         Expr::ArrayLiteral(values) => {
@@ -1348,7 +1350,9 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 rewrite_proc_calls_in_expr(arg, proc_vars, proc_array_slots, proc_api, errors);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             rewrite_proc_calls_in_expr(inner, proc_vars, proc_array_slots, proc_api, errors);
         }
         Expr::ArrayLiteral(values) => {
@@ -1830,7 +1834,9 @@ pub(super) fn normalize_proc_output_aliases_in_expr(
                 normalize_proc_output_aliases_in_expr(&mut arg.expr, proc_vars, proc_api);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             normalize_proc_output_aliases_in_expr(inner, proc_vars, proc_api);
         }
         Expr::ArrayLiteral(values) => {
@@ -2208,7 +2214,9 @@ pub(super) fn collect_called_proc_instances_in_expr(
                 collect_called_proc_instances_in_expr(arg, proc_vars, proc_array_slots, out);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             collect_called_proc_instances_in_expr(inner, proc_vars, proc_array_slots, out);
         }
         Expr::ArrayLiteral(values) => {
@@ -2448,7 +2456,9 @@ pub(super) fn desugar_expr_instance_method_calls(
                 );
             }
         }
-        Expr::Cast { expr: arg, .. } | Expr::UnaryNot { expr: arg } | Expr::UnaryBitNot { expr: arg } => {
+        Expr::Cast { expr: arg, .. }
+        | Expr::UnaryNot { expr: arg }
+        | Expr::UnaryBitNot { expr: arg } => {
             desugar_expr_instance_method_calls(arg, struct_instances, current_ns, callable_symbols)
         }
         Expr::ArrayLiteral(values) => {
@@ -2470,7 +2480,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                     callable_symbols,
                 );
             }
-            if let Some((base, method)) = split_simple_field_path(name) {
+            if let Some((base, method)) = split_receiver_method_path(name) {
                 if let Some(struct_name) = struct_instances.get(base) {
                     let base_name = base.to_owned();
                     let method_name = method.to_owned();
@@ -2532,6 +2542,17 @@ pub(super) fn desugar_init_instance_method_calls(
                 {
                     if type_args.is_empty() && struct_defs.contains_key(struct_name) {
                         struct_instances.insert(name.clone(), struct_name.clone());
+                    } else if !type_args.is_empty() && struct_defs.contains_key(struct_name) {
+                        let mut local_errors = Vec::new();
+                        if resolve_explicit_call_type_args(
+                            type_args,
+                            &format!("proc init struct constructor '{}'", struct_name),
+                            &mut local_errors,
+                        )
+                        .is_some()
+                        {
+                            struct_instances.insert(name.clone(), struct_name.clone());
+                        }
                     }
                 }
             }
@@ -2753,3 +2774,56 @@ pub(super) fn desugar_sample_instance_method_calls(
     }
 }
 
+pub(super) fn desugar_processor_instance_method_calls(
+    proc: &mut ProcessorDef,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    callable_symbols: &HashSet<String>,
+) {
+    let current_ns = namespace_of_symbol(&proc.name);
+    let mut struct_instances = HashMap::<String, String>::new();
+
+    for stmt in &mut proc.init {
+        desugar_init_instance_method_calls(
+            stmt,
+            &mut struct_instances,
+            struct_defs,
+            &current_ns,
+            callable_symbols,
+        );
+    }
+
+    for stmt in &mut proc.block_pre {
+        desugar_sample_instance_method_calls(
+            stmt,
+            &struct_instances,
+            &current_ns,
+            callable_symbols,
+        );
+    }
+    for stmt in &mut proc.block_post {
+        desugar_sample_instance_method_calls(
+            stmt,
+            &struct_instances,
+            &current_ns,
+            callable_symbols,
+        );
+    }
+    for stmt in &mut proc.sample {
+        desugar_sample_instance_method_calls(
+            stmt,
+            &struct_instances,
+            &current_ns,
+            callable_symbols,
+        );
+    }
+    for event in &mut proc.events {
+        for stmt in &mut event.body {
+            desugar_sample_instance_method_calls(
+                stmt,
+                &struct_instances,
+                &current_ns,
+                callable_symbols,
+            );
+        }
+    }
+}

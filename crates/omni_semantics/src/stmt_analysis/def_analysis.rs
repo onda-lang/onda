@@ -432,6 +432,16 @@ pub(crate) fn analyze_def_stmt(
                                     0,
                                 ));
                             }
+                            TypedFieldType::Struct => {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "nested struct field '{}.{}' must be assigned via subfields or constructor",
+                                        base, field
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                            }
                         }
                         return;
                     }
@@ -444,90 +454,14 @@ pub(crate) fn analyze_def_stmt(
                         && !state_scalars.contains_key(name)
                     {
                         if let Expr::Index { base, index } = expr {
-                            let mut is_scalar_data_base = false;
-                            let mut array_struct_elem_struct: Option<String> = None;
-                            let mut is_proc_array_base = false;
-
-                            if let Some(alias) = local_array_aliases.get(base) {
-                                if let Some(elem_struct) = &alias.elem_struct {
-                                    array_struct_elem_struct = Some(elem_struct.clone());
-                                } else {
-                                    is_scalar_data_base = true;
-                                }
-                            }
-
-                            if !is_scalar_data_base && array_struct_elem_struct.is_none() {
-                                if let Some((root, field)) = split_field_path(base, errors) {
-                                    if let Some(struct_name) = param_structs.get(root) {
-                                        if let Some(fields) = struct_defs.get(struct_name) {
-                                            if let Some(field_decl) =
-                                                fields.iter().find(|f| f.name == field)
-                                            {
-                                                if matches!(field_decl.ty, TypedFieldType::Array(_))
-                                                {
-                                                    if let Some(elem_struct) =
-                                                        &field_decl.array_elem_struct
-                                                    {
-                                                        if struct_defs.contains_key(elem_struct) {
-                                                            array_struct_elem_struct =
-                                                                Some(elem_struct.clone());
-                                                        } else {
-                                                            is_proc_array_base = true;
-                                                        }
-                                                    } else {
-                                                        is_scalar_data_base = true;
-                                                    }
-                                                }
-                                            } else if fields.iter().any(|f| {
-                                                let prefix = format!("{field}[");
-                                                f.name.starts_with(&prefix)
-                                            }) {
-                                                is_proc_array_base = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if !is_scalar_data_base && array_struct_elem_struct.is_none() {
-                                if split_field_path(base, errors).is_none() {
-                                    if let Some(self_struct) = param_structs.get("self") {
-                                        if !struct_defs.contains_key(self_struct) {
-                                            is_proc_array_base = true;
-                                        } else if let Some(fields) = struct_defs.get(self_struct) {
-                                            if let Some(field_decl) =
-                                                fields.iter().find(|f| f.name == *base)
-                                            {
-                                                if matches!(field_decl.ty, TypedFieldType::Array(_))
-                                                {
-                                                    if let Some(elem_struct) =
-                                                        &field_decl.array_elem_struct
-                                                    {
-                                                        if struct_defs.contains_key(elem_struct) {
-                                                            array_struct_elem_struct =
-                                                                Some(elem_struct.clone());
-                                                        } else {
-                                                            is_proc_array_base = true;
-                                                        }
-                                                    } else {
-                                                        is_scalar_data_base = true;
-                                                    }
-                                                }
-                                            } else if fields.iter().any(|f| {
-                                                let prefix = format!("{base}[");
-                                                f.name.starts_with(&prefix)
-                                            }) {
-                                                is_proc_array_base = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if is_scalar_data_base
-                                || array_struct_elem_struct.is_some()
-                                || is_proc_array_base
-                            {
+                            if let Some(binding_kind) = classify_def_indexed_binding(
+                                base,
+                                local_array_aliases,
+                                param_structs,
+                                state_scalars,
+                                struct_defs,
+                                errors,
+                            ) {
                                 validate_expr(
                                     index,
                                     ExprEnv {
@@ -558,37 +492,38 @@ pub(crate) fn analyze_def_stmt(
                                     errors,
                                 );
                                 require_numeric_type(idx_ty, "array index expression", errors);
-                                if is_proc_array_base {
-                                    local_proc_aliases.insert(
-                                        name.clone(),
-                                        ProcArrayAliasInfo {
-                                            array_base: base.clone(),
-                                            index_expr: index.as_ref().clone(),
-                                        },
-                                    );
-                                } else if is_scalar_data_base {
-                                    errors.push(Diagnostic::semantic(
-                                        format!(
-                                            "local alias binding '{name} = {base}[...]' is not supported for primitive arrays; use direct indexed access"
-                                        ),
-                                        0,
-                                        0,
-                                    ));
-                                } else if let Some(struct_name) = array_struct_elem_struct {
-                                    if !add_struct_element_alias_bindings(
-                                        name,
-                                        &struct_name,
-                                        struct_defs,
-                                        known_scalars,
-                                        local_aliases,
-                                        local_array_aliases,
-                                        &format!("array alias '{name}' from '{base}[...]'"),
-                                        errors,
-                                    ) {
+                                match binding_kind {
+                                    IndexedBindingKind::ProcArrayAlias => {
+                                        local_proc_aliases.insert(
+                                            name.clone(),
+                                            ProcArrayAliasInfo {
+                                                array_base: base.clone(),
+                                                index_expr: index.as_ref().clone(),
+                                            },
+                                        );
                                         return;
                                     }
+                                    IndexedBindingKind::StructElementAlias(struct_name) => {
+                                        if !add_struct_element_alias_bindings(
+                                            name,
+                                            &struct_name,
+                                            struct_defs,
+                                            known_scalars,
+                                            local_aliases,
+                                            local_array_aliases,
+                                            &format!("array alias '{name}' from '{base}[...]'"),
+                                            errors,
+                                        ) {
+                                            return;
+                                        }
+                                        return;
+                                    }
+                                    IndexedBindingKind::PrimitiveScalar => {
+                                        // Primitive array indexed reads are scalar expressions.
+                                        // Allow normal first-assignment local inference to handle:
+                                        //   x = arr[idx]
+                                    }
                                 }
-                                return;
                             }
                         }
                     }

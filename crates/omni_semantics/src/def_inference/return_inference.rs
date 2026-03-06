@@ -283,6 +283,9 @@ fn infer_def_return_type(
             Some(FnParamType::Array(Some(prim))) => {
                 locals.insert(param.clone(), *prim);
             }
+            Some(FnParamType::ArrayGeneric(_)) => {
+                locals.insert(param.clone(), PrimitiveType::F32);
+            }
             Some(FnParamType::Array(None)) | None => {
                 locals.insert(param.clone(), PrimitiveType::F32);
             }

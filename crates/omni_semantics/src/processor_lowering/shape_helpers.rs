@@ -119,41 +119,7 @@ pub(super) fn infer_primary_output_type_from_processor(proc: &ProcessorDef) -> P
 pub(super) fn struct_defs_for_scalar_expr_inference(
     struct_defs: &HashMap<String, omni_frontend::StructDef>,
 ) -> HashMap<String, Vec<TypedStructField>> {
-    struct_defs
-        .iter()
-        .map(|(name, def)| {
-            let fields = def
-                .fields
-                .iter()
-                .map(|field| {
-                    let (ty, array_elem_ty, array_elem_struct) = match &field.ty {
-                        FieldType::Scalar(prim) => (TypedFieldType::Scalar(*prim), None, None),
-                        FieldType::Generic(_) => {
-                            // Generic struct fields are unresolved in this prepass; default like other unresolved scalar contexts.
-                            (TypedFieldType::Scalar(PrimitiveType::F32), None, None)
-                        }
-                        FieldType::Array(spec) => {
-                            let (elem_ty, elem_struct) = match &spec.elem {
-                                ArrayElemType::Primitive(prim) => (Some(*prim), None),
-                                ArrayElemType::Struct(struct_name) => {
-                                    (None, Some(struct_name.clone()))
-                                }
-                            };
-                            (TypedFieldType::Array(0), elem_ty, elem_struct)
-                        }
-                    };
-                    TypedStructField {
-                        name: field.name.clone(),
-                        ty,
-                        default: field.default.clone(),
-                        array_elem_ty,
-                        array_elem_struct,
-                    }
-                })
-                .collect::<Vec<_>>();
-            (name.clone(), fields)
-        })
-        .collect::<HashMap<_, _>>()
+    coerce_struct_defs_for_inference(struct_defs, AnalysisOptions::default())
 }
 
 fn is_proc_output_alias_name(name: &str, out_count: usize) -> bool {
@@ -413,7 +379,9 @@ pub(super) fn compute_proc_shape(
                         resolved_struct_name.clone(),
                         coerce_struct_fields(
                             &resolved_struct_name,
+                            &resolved_def.type_params,
                             &resolved_def.fields,
+                            &typed_struct_defs,
                             options,
                             errors,
                         ),
@@ -712,7 +680,6 @@ pub(super) fn compute_proc_shape(
     struct_instance_names.sort();
 
     let mut fields = Vec::<StructField>::new();
-    let mut instance_fields = HashMap::<String, HashSet<String>>::new();
     for spec in &param_specs {
         for slot in &spec.slots {
             fields.push(StructField {
@@ -800,47 +767,24 @@ pub(super) fn compute_proc_shape(
         else {
             continue;
         };
-        let mut member_names = HashSet::<String>::new();
+        fields.push(StructField {
+            name: instance.clone(),
+            ty: FieldType::Generic(struct_def.name.clone()),
+            default: None,
+        });
         for field in &struct_def.fields {
-            let flat_name = nested_field_name(instance, &field.name);
-            member_names.insert(field.name.clone());
-            match &field.ty {
-                FieldType::Scalar(prim) => {
-                    fields.push(StructField {
-                        name: flat_name,
-                        ty: FieldType::Scalar(*prim),
-                        default: None,
-                    });
-                }
-                FieldType::Array(spec) => {
-                    let _ = eval_data_size_expr(
-                        &spec.size,
-                        options,
-                        &format!(
-                            "processor '{}.{}' struct field '{}' array size",
-                            proc.name, instance, field.name
-                        ),
-                        errors,
-                    );
-                    fields.push(StructField {
-                        name: flat_name,
-                        ty: FieldType::Array(spec.clone()),
-                        default: None,
-                    });
-                }
-                FieldType::Generic(param) => {
-                    errors.push(Diagnostic::semantic(
-                        format!(
-                            "processor '{}' state symbol '{}' field '{}' uses unresolved generic type parameter '{}'",
-                            proc.name, instance, field.name, param
-                        ),
-                        0,
-                        0,
-                    ));
-                }
+            if let FieldType::Array(spec) = &field.ty {
+                let _ = eval_data_size_expr(
+                    &spec.size,
+                    options,
+                    &format!(
+                        "processor '{}.{}' struct field '{}' array size",
+                        proc.name, instance, field.name
+                    ),
+                    errors,
+                );
             }
         }
-        instance_fields.insert(instance.clone(), member_names);
     }
 
     let field_names = fields
@@ -867,7 +811,6 @@ pub(super) fn compute_proc_shape(
         field_array_slots,
         nested_proc_array_slots,
         state,
-        instance_fields,
         fields,
         field_names,
         array_field_names,
@@ -957,7 +900,7 @@ pub(super) fn build_proc_lowering_shape(
     let mut array_field_names = base.array_field_names.clone();
     let mut field_array_slots = base.field_array_slots.clone();
     let mut nested_proc_array_slots = base.nested_proc_array_slots.clone();
-    let mut nested_fields = base.instance_fields.clone();
+    let mut nested_fields = HashMap::<String, HashSet<String>>::new();
 
     let mut nested_vars = base.state.nested_procs.keys().cloned().collect::<Vec<_>>();
     nested_vars.sort();

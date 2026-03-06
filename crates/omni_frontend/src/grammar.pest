@@ -10,12 +10,12 @@ namespace_alias_decl = { "namespace" ~ ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ names
 namespace_item = _{ assert_block | struct_block | def_block | proc_block | namespace_block | namespace_alias_decl }
 namespace_decl_head = { namespace_name ~ namespace_param_list? }
 namespace_name = @{ ident ~ ("::" ~ ident)* }
-namespace_param_list = { "[" ~ namespace_param_decl ~ ("," ~ namespace_param_decl)* ~ "]" }
+namespace_param_list = { "<" ~ namespace_param_decl ~ ("," ~ namespace_param_decl)* ~ ">" }
 namespace_param_decl = { ident ~ "=" ~ expr }
 namespace_any_ref = { namespace_ref_segment ~ ("::" ~ namespace_ref_segment)* }
 namespace_ref = { namespace_ref_segment ~ ("::" ~ namespace_ref_segment)+ }
 namespace_ref_segment = { ident ~ namespace_call_arg_list? }
-namespace_call_arg_list = { "[" ~ namespace_call_arg ~ ("," ~ namespace_call_arg)* ~ "]" }
+namespace_call_arg_list = { "<" ~ namespace_call_arg ~ ("," ~ namespace_call_arg)* ~ ">" }
 namespace_call_arg = { (ident ~ "=")? ~ expr }
 
 ins_block = {
@@ -83,15 +83,15 @@ field_decl = {
   | (ident ~ "=" ~ expr)
   | (ident ~ &field_sep)
 }
-field_type = { array_type | type_name | namespace_ref | qualified_ident }
+field_type = { array_type | type_name | named_type }
 array_named_type = { (qualified_ident | ident) ~ generic_type_arg_list ~ &"[" }
 array_type = { (type_name | namespace_ref | array_named_type | qualified_ident) ~ "[" ~ expr ~ "]" }
 type_name = { "f32" | "f64" | "i32" | "i64" | "bool" }
-generic_param_list = { "[" ~ ident ~ ("," ~ ident)* ~ "]" }
-generic_type_arg_list = { "[" ~ generic_type_arg ~ ("," ~ generic_type_arg)* ~ "]" }
+generic_param_list = { "<" ~ ident ~ ("," ~ ident)* ~ ">" }
+generic_type_arg_list = { "<" ~ generic_type_arg ~ ("," ~ generic_type_arg)* ~ ">" }
 generic_type_arg = { type_name | ident }
 fn_param_list = { fn_param_decl ~ ("," ~ fn_param_decl)* }
-fn_typed_array_param = { type_name ~ "[" ~ "]" }
+fn_typed_array_param = { (type_name | namespace_ref | qualified_ident) ~ "[" ~ "]" }
 fn_untyped_array_param = { "[" ~ "]" }
 fn_bare_buffer = { "buffer" }
 fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_bare_buffer | type_name | namespace_ref | qualified_ident }
@@ -120,7 +120,7 @@ while_stmt = { "while" ~ expr ~ stmt_block }
 loop_stmt = { "loop" ~ for_bound ~ stmt_block }
 break_stmt = { "break" }
 continue_stmt = { "continue" }
-for_bound = { int_lit | path_ident }
+for_bound = { int_lit | namespace_ref | path_ident | "(" ~ expr ~ ")" }
 stmt_block = { "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" }
 
 list_sep = _{ "," | ";" | NEWLINE+ }

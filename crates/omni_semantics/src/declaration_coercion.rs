@@ -1,14 +1,38 @@
 use super::*;
+use omni_frontend::ArrayTypeSpec;
+
+fn is_primitive_type_name(name: &str) -> bool {
+    matches!(name, "f32" | "f64" | "i32" | "i64" | "bool")
+}
+
+fn reinterpret_scalar_specialized_struct_field(
+    spec: &ArrayTypeSpec,
+    type_param_set: &HashSet<String>,
+) -> Option<String> {
+    let ArrayElemType::Struct(base) = &spec.elem else {
+        return None;
+    };
+    let Expr::Var(type_arg) = spec.size.as_ref() else {
+        return None;
+    };
+    if !type_param_set.contains(type_arg) && !is_primitive_type_name(type_arg.as_str()) {
+        return None;
+    }
+    Some(format!("{base}<{type_arg}>"))
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn coerce_struct_fields(
     struct_name: &str,
+    type_params: &[String],
     fields: &[StructField],
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<TypedStructField> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
+    let type_param_set = type_params.iter().cloned().collect::<HashSet<_>>();
     for field in fields {
         if !seen.insert(field.name.clone()) {
             errors.push(Diagnostic::semantic(
@@ -21,7 +45,7 @@ pub(crate) fn coerce_struct_fields(
             ));
             continue;
         }
-        let (ty, default, array_elem_ty, array_elem_struct) = match &field.ty {
+        let (ty, default, struct_name_ref, array_elem_ty, array_elem_struct) = match &field.ty {
             FieldType::Scalar(prim) => {
                 if let Some(expr) = &field.default {
                     validate_default_expr(
@@ -35,9 +59,10 @@ pub(crate) fn coerce_struct_fields(
                     field.default.clone(),
                     None,
                     None,
+                    None,
                 )
             }
-            FieldType::Generic(param) => {
+            FieldType::Generic(param) if type_param_set.contains(param) => {
                 errors.push(Diagnostic::semantic(
                     format!(
                         "field '{}.{}' uses unresolved generic type '{}'",
@@ -51,9 +76,118 @@ pub(crate) fn coerce_struct_fields(
                     field.default.clone(),
                     None,
                     None,
+                    None,
                 )
             }
+            FieldType::Generic(nested_struct_name) => {
+                let nested_fields = struct_defs.get(nested_struct_name).cloned();
+                if nested_fields.is_none() && !nested_struct_name.contains('<') {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "field '{}.{}' references unknown struct '{}'",
+                            struct_name, field.name, nested_struct_name
+                        ),
+                        0,
+                        0,
+                    ));
+                    out.push(TypedStructField {
+                        name: field.name.clone(),
+                        ty: TypedFieldType::Scalar(PrimitiveType::F32),
+                        default: field.default.clone(),
+                        struct_name: None,
+                        array_elem_ty: None,
+                        array_elem_struct: None,
+                    });
+                    continue;
+                }
+                if field.default.is_some() {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "struct field '{}.{}' cannot have a default expression",
+                            struct_name, field.name
+                        ),
+                        0,
+                        0,
+                    ));
+                }
+                out.push(TypedStructField {
+                    name: field.name.clone(),
+                    ty: TypedFieldType::Struct,
+                    default: None,
+                    struct_name: Some(nested_struct_name.clone()),
+                    array_elem_ty: None,
+                    array_elem_struct: None,
+                });
+                if let Some(nested_fields) = nested_fields {
+                    for nested in nested_fields {
+                        out.push(TypedStructField {
+                            name: format!("{}.{}", field.name, nested.name),
+                            ty: nested.ty,
+                            default: nested.default,
+                            struct_name: nested.struct_name,
+                            array_elem_ty: nested.array_elem_ty,
+                            array_elem_struct: nested.array_elem_struct,
+                        });
+                    }
+                }
+                continue;
+            }
             FieldType::Array(spec) => {
+                if let Some(nested_struct_name) =
+                    reinterpret_scalar_specialized_struct_field(spec, &type_param_set)
+                {
+                    let nested_fields = struct_defs.get(&nested_struct_name).cloned();
+                    if nested_fields.is_none() && !nested_struct_name.contains('<') {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "field '{}.{}' references unknown struct '{}'",
+                                struct_name, field.name, nested_struct_name
+                            ),
+                            0,
+                            0,
+                        ));
+                        out.push(TypedStructField {
+                            name: field.name.clone(),
+                            ty: TypedFieldType::Scalar(PrimitiveType::F32),
+                            default: field.default.clone(),
+                            struct_name: None,
+                            array_elem_ty: None,
+                            array_elem_struct: None,
+                        });
+                        continue;
+                    }
+                    if field.default.is_some() {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "struct field '{}.{}' cannot have a default expression",
+                                struct_name, field.name
+                            ),
+                            0,
+                            0,
+                        ));
+                    }
+                    out.push(TypedStructField {
+                        name: field.name.clone(),
+                        ty: TypedFieldType::Struct,
+                        default: None,
+                        struct_name: Some(nested_struct_name.clone()),
+                        array_elem_ty: None,
+                        array_elem_struct: None,
+                    });
+                    if let Some(nested_fields) = nested_fields {
+                        for nested in nested_fields {
+                            out.push(TypedStructField {
+                                name: format!("{}.{}", field.name, nested.name),
+                                ty: nested.ty,
+                                default: nested.default,
+                                struct_name: nested.struct_name,
+                                array_elem_ty: nested.array_elem_ty,
+                                array_elem_struct: nested.array_elem_struct,
+                            });
+                        }
+                    }
+                    continue;
+                }
                 let size_context = format!("field '{}.{}' array size", struct_name, field.name);
                 let size =
                     eval_data_size_expr(&spec.size, options, &size_context, errors).unwrap_or(1);
@@ -71,38 +205,132 @@ pub(crate) fn coerce_struct_fields(
                     ArrayElemType::Primitive(prim) => (Some(*prim), None),
                     ArrayElemType::Struct(name) => (None, Some(name.clone())),
                 };
-                (TypedFieldType::Array(size), None, elem_ty, elem_struct)
+                (
+                    TypedFieldType::Array(size),
+                    None,
+                    None,
+                    elem_ty,
+                    elem_struct,
+                )
             }
         };
         out.push(TypedStructField {
             name: field.name.clone(),
             ty,
             default,
+            struct_name: struct_name_ref,
             array_elem_ty,
             array_elem_struct,
         });
     }
     out
 }
+
+pub(crate) fn coerce_struct_defs_for_inference(
+    struct_defs: &HashMap<String, omni_frontend::StructDef>,
+    options: AnalysisOptions,
+) -> HashMap<String, Vec<TypedStructField>> {
+    let mut typed = HashMap::<String, Vec<TypedStructField>>::new();
+    let mut names = struct_defs.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+    let mut sink = Vec::<Diagnostic>::new();
+
+    for _ in 0..names.len().max(1) {
+        for name in &names {
+            let Some(def) = struct_defs.get(name) else {
+                continue;
+            };
+            let fields = coerce_struct_fields(
+                name,
+                &def.type_params,
+                &def.fields,
+                &typed,
+                options,
+                &mut sink,
+            );
+            typed.insert(name.clone(), fields);
+        }
+    }
+
+    typed
+}
+
 pub(crate) fn split_field_path<'a>(
     name: &'a str,
-    errors: &mut Vec<Diagnostic>,
+    _errors: &mut Vec<Diagnostic>,
 ) -> Option<(&'a str, &'a str)> {
-    let mut parts = name.split('.');
-    let first = parts.next()?;
-    let second = parts.next();
-    let third = parts.next();
-    match (second, third) {
-        (None, None) => None,
-        (Some(f), None) => Some((first, f)),
-        _ => {
-            errors.push(Diagnostic::semantic(
-                format!("unsupported nested path '{name}'"),
-                0,
-                0,
-            ));
-            None
+    split_root_field_path(name)
+}
+
+pub(crate) fn split_root_field_path(name: &str) -> Option<(&str, &str)> {
+    let (base, field) = name.split_once('.')?;
+    if base.is_empty() || field.is_empty() {
+        return None;
+    }
+    Some((base, field))
+}
+
+pub(crate) fn resolve_struct_field_decl<'a>(
+    struct_name: &str,
+    field_path: &str,
+    struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+) -> Option<&'a TypedStructField> {
+    let fields = struct_defs.get(struct_name)?;
+    if let Some(field_decl) = fields.iter().find(|f| f.name == field_path) {
+        return Some(field_decl);
+    }
+
+    let mut current_struct = struct_name;
+    let mut parts = field_path.split('.').peekable();
+
+    while let Some(part) = parts.next() {
+        let fields = struct_defs.get(current_struct)?;
+        let field_decl = fields.iter().find(|f| f.name == part)?;
+
+        if parts.peek().is_none() {
+            return Some(field_decl);
         }
+
+        if field_decl.ty != TypedFieldType::Struct {
+            return None;
+        }
+        current_struct = field_decl.struct_name.as_deref()?;
+    }
+
+    None
+}
+
+pub(crate) fn split_receiver_method_path(name: &str) -> Option<(&str, &str)> {
+    let (receiver, method) = name.rsplit_once('.')?;
+    if receiver.is_empty() || method.is_empty() {
+        return None;
+    }
+    Some((receiver, method))
+}
+
+pub(crate) fn register_struct_instance_roots(
+    base: &str,
+    struct_name: &str,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_instances: &mut HashMap<String, String>,
+) {
+    struct_instances.insert(base.to_owned(), struct_name.to_owned());
+    let Some(fields) = struct_defs.get(struct_name) else {
+        return;
+    };
+    for field in fields {
+        if field.ty != TypedFieldType::Struct {
+            continue;
+        }
+        let Some(nested_struct_name) = &field.struct_name else {
+            continue;
+        };
+        register_struct_instance_roots(
+            &format!("{base}.{}", field.name),
+            nested_struct_name,
+            struct_defs,
+            struct_instances,
+        );
     }
 }
 

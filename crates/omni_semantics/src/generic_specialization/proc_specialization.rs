@@ -118,7 +118,9 @@ pub(crate) fn rewrite_generic_array_ctor_expr_types(
                 rewrite_generic_array_ctor_expr_types(&mut arg.expr, type_bindings);
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             rewrite_generic_array_ctor_expr_types(inner, type_bindings);
         }
         Expr::ArrayLiteral(values) => {
@@ -672,7 +674,9 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                 );
             }
         }
-        Expr::Cast { expr: inner, .. } | Expr::UnaryNot { expr: inner } | Expr::UnaryBitNot { expr: inner } => {
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner }
+        | Expr::UnaryBitNot { expr: inner } => {
             rewrite_generic_proc_ctor_expr(inner, templates, generated, errors, locals, current_ns);
         }
         Expr::ArrayLiteral(values) => {
@@ -938,4 +942,3 @@ pub(crate) fn finalize_generated_generic_proc_specializations(
         }
     }
 }
-

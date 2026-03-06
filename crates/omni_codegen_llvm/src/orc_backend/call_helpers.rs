@@ -1029,6 +1029,7 @@ pub(super) unsafe fn lower_struct_call_args_in_orc(
                             out_args.push(value);
                         }
                     }
+                    TypedFieldType::Struct => {}
                     TypedFieldType::Array(_) => {
                         let mut symbols = Vec::<String>::new();
                         if let Some(elem_struct) = &field.array_elem_struct {
@@ -1229,6 +1230,7 @@ pub(super) unsafe fn lower_struct_call_args_in_orc(
                             out_args.push(value);
                         }
                     }
+                    TypedFieldType::Struct => {}
                     TypedFieldType::Array(field_len) => {
                         let start_idx = build_data_segment_start_index(
                             ctx.builder,

@@ -18,8 +18,17 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 return;
             }
             if let Some((base, field)) = split_field_path(name, errors) {
-                if let Some(struct_name) = env.param_structs.get(base) {
-                    let Some(fields) = env.struct_defs.get(struct_name) else {
+                if let Some((struct_name, owner_kind)) = env
+                    .param_structs
+                    .get(base)
+                    .map(|s| (s.as_str(), "parameter"))
+                    .or_else(|| {
+                        env.struct_instances
+                            .get(base)
+                            .map(|s| (s.as_str(), "instance"))
+                    })
+                {
+                    let Some(_fields) = env.struct_defs.get(struct_name) else {
                         errors.push(Diagnostic::semantic(
                             format!("unknown struct type '{}'", struct_name),
                             0,
@@ -27,11 +36,13 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         ));
                         return;
                     };
-                    let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
+                    let Some(field_decl) =
+                        resolve_struct_field_decl(struct_name, field, env.struct_defs)
+                    else {
                         errors.push(Diagnostic::semantic(
                             format!(
-                                "struct parameter '{}' (type '{}') has no field '{}'",
-                                base, struct_name, field
+                                "struct {} '{}' (type '{}') has no field '{}'",
+                                owner_kind, base, struct_name, field
                             ),
                             0,
                             0,
@@ -115,8 +126,17 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
         }
         Expr::Index { base, index } => {
             if let Some((root, field)) = split_field_path(base, errors) {
-                if let Some(struct_name) = env.param_structs.get(root) {
-                    let Some(fields) = env.struct_defs.get(struct_name) else {
+                if let Some((struct_name, owner_kind)) = env
+                    .param_structs
+                    .get(root)
+                    .map(|s| (s.as_str(), "parameter"))
+                    .or_else(|| {
+                        env.struct_instances
+                            .get(root)
+                            .map(|s| (s.as_str(), "instance"))
+                    })
+                {
+                    let Some(_fields) = env.struct_defs.get(struct_name) else {
                         errors.push(Diagnostic::semantic(
                             format!("unknown struct type '{}'", struct_name),
                             0,
@@ -124,11 +144,13 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         ));
                         return;
                     };
-                    let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
+                    let Some(field_decl) =
+                        resolve_struct_field_decl(struct_name, field, env.struct_defs)
+                    else {
                         errors.push(Diagnostic::semantic(
                             format!(
-                                "struct parameter '{}' (type '{}') has no field '{}'",
-                                root, struct_name, field
+                                "struct {} '{}' (type '{}') has no field '{}'",
+                                owner_kind, root, struct_name, field
                             ),
                             0,
                             0,
@@ -335,7 +357,9 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         }
                         if matches!(
                             param_ty,
-                            Some(FnParamType::Array(_)) | Some(FnParamType::BareBuffer)
+                            Some(FnParamType::Array(_))
+                                | Some(FnParamType::ArrayGeneric(_))
+                                | Some(FnParamType::BareBuffer)
                         ) {
                             // Array and bare buffer params accept data-like args;
                             // skip scalar validation.
@@ -410,13 +434,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
 }
 
 fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
-    let mut parts = name.split('.');
-    let first = parts.next()?;
-    let second = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((first, second))
+    split_root_field_path(name)
 }
 
 fn is_internal_proc_helper_call(name: &str) -> bool {
@@ -455,10 +473,9 @@ fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
             .get(root)
             .or_else(|| env.struct_instances.get(root));
         if let Some(struct_name) = struct_name {
-            if let Some(fields) = env.struct_defs.get(struct_name) {
-                if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
-                    return matches!(field_decl.ty, TypedFieldType::Array(_));
-                }
+            if let Some(field_decl) = resolve_struct_field_decl(struct_name, field, env.struct_defs)
+            {
+                return matches!(field_decl.ty, TypedFieldType::Array(_));
             }
         }
     }
@@ -479,11 +496,10 @@ fn is_builtin_unsafe_data_receiver(base: &str, env: ExprEnv<'_>) -> bool {
             .get(root)
             .or_else(|| env.struct_instances.get(root));
         if let Some(struct_name) = struct_name {
-            if let Some(fields) = env.struct_defs.get(struct_name) {
-                if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
-                    return matches!(field_decl.ty, TypedFieldType::Array(_))
-                        && field_decl.array_elem_struct.is_none();
-                }
+            if let Some(field_decl) = resolve_struct_field_decl(struct_name, field, env.struct_defs)
+            {
+                return matches!(field_decl.ty, TypedFieldType::Array(_))
+                    && field_decl.array_elem_struct.is_none();
             }
         }
     }
@@ -531,23 +547,35 @@ fn validate_data_len_builtin_call(
             .get(root)
             .or_else(|| env.struct_instances.get(root));
         if let Some(struct_name) = struct_name {
-            if let Some(fields) = env.struct_defs.get(struct_name) {
-                if let Some(field_decl) = fields.iter().find(|f| f.name == field) {
-                    match field_decl.ty {
-                        TypedFieldType::Array(_) => true,
-                        TypedFieldType::Scalar(_) => {
-                            errors.push(Diagnostic::semantic(
-                                format!(
-                                    "builtin method '{}' requires a array symbol, but '{}.{}' is scalar",
-                                    name, root, field
-                                ),
-                                0,
-                                0,
-                            ));
-                            false
-                        }
+            if let Some(field_decl) = resolve_struct_field_decl(struct_name, field, env.struct_defs)
+            {
+                match field_decl.ty {
+                    TypedFieldType::Array(_) => true,
+                    TypedFieldType::Struct => {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "builtin method '{}' requires a array symbol, but '{}.{}' is a nested struct",
+                                name, root, field
+                            ),
+                            0,
+                            0,
+                        ));
+                        false
                     }
-                } else {
+                    TypedFieldType::Scalar(_) => {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "builtin method '{}' requires a array symbol, but '{}.{}' is scalar",
+                                name, root, field
+                            ),
+                            0,
+                            0,
+                        ));
+                        false
+                    }
+                }
+            } else {
+                if env.struct_defs.contains_key(struct_name) {
                     errors.push(Diagnostic::semantic(
                         format!(
                             "struct instance '{}' (type '{}') has no field '{}'",
@@ -556,14 +584,13 @@ fn validate_data_len_builtin_call(
                         0,
                         0,
                     ));
-                    false
+                } else {
+                    errors.push(Diagnostic::semantic(
+                        format!("unknown struct type '{}'", struct_name),
+                        0,
+                        0,
+                    ));
                 }
-            } else {
-                errors.push(Diagnostic::semantic(
-                    format!("unknown struct type '{}'", struct_name),
-                    0,
-                    0,
-                ));
                 false
             }
         } else {
@@ -1108,7 +1135,7 @@ fn validate_unsafe_data_builtin_call(
 
                 if let Some((root, field)) = split_field_path(base, errors) {
                     if let Some(struct_name) = env.param_structs.get(root) {
-                        let Some(fields) = env.struct_defs.get(struct_name) else {
+                        let Some(_fields) = env.struct_defs.get(struct_name) else {
                             errors.push(Diagnostic::semantic(
                                 format!("unknown struct type '{}'", struct_name),
                                 0,
@@ -1116,7 +1143,9 @@ fn validate_unsafe_data_builtin_call(
                             ));
                             return;
                         };
-                        let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
+                        let Some(field_decl) =
+                            resolve_struct_field_decl(struct_name, field, env.struct_defs)
+                        else {
                             errors.push(Diagnostic::semantic(
                                 format!(
                                     "struct parameter '{}' (type '{}') has no field '{}'",
@@ -1146,6 +1175,16 @@ fn validate_unsafe_data_builtin_call(
                                 errors.push(Diagnostic::semantic(
                                     format!(
                                         "builtin '{}' expects a array symbol as first argument, but '{}.{}' is scalar",
+                                        name, root, field
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                            }
+                            TypedFieldType::Struct => {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "builtin '{}' expects a array symbol as first argument, but '{}.{}' is a nested struct",
                                         name, root, field
                                     ),
                                     0,
@@ -1196,4 +1235,3 @@ fn validate_unsafe_data_builtin_call(
         }
     }
 }
-

@@ -16,11 +16,12 @@ outs:
   out: f32[2]
 
 init:
-  osc_l = std::osc::Sine[f32](freq = 220.0)
-  osc_r = std::osc::Sine[f32](freq = 330.0)
+  osc_l = std::osc::Sine<f32>(freq = 220.0)
+  osc_r = std::osc::Sine<f32>(freq = 330.0)
   p = StereoGain(gain = [1.0, 0.1])
 
 sample:
   p([osc_l(), osc_r()])
   out[0] = p.out1
   out[1] = p.out2
+

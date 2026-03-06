@@ -211,6 +211,7 @@ pub enum FnParamType {
     Struct(String),
     Buffer(BufferType),
     Array(Option<PrimitiveType>),
+    ArrayGeneric(String),
     BareBuffer,
 }
 
