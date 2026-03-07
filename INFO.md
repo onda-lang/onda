@@ -148,6 +148,7 @@
 - Event params support read-only primitive slice forms such as `f32[]` for both top-level and proc events.
 - Proc events also support generic primitive slices such as `T[]` when `T` is a proc generic type parameter that specializes to a primitive.
 - Event array/slice params are passed as read-only references.
+- Fixed-array event params are lowered internally as array-typed params rather than one scalar arg per element.
   - Event params without explicit type default to `f32`.
   - Event handlers can declare local fixed-size primitive arrays via untyped literals (for example `b = [1, 2, 3]`).
   - Event handlers can write init-root state only (plus local symbols); output/input/event-param writes are rejected.

@@ -507,6 +507,7 @@ Rules:
 - Event parameters are immutable.
 - Array and slice event parameters are read-only references in handlers.
 - Event payload reads from fixed arrays and slices clamp the same way as other primitive array reads.
+- Fixed-array event params are lowered internally as array-typed params, not one scalar argument per element.
 - For event payload passing, prefer slices (`T[]`) over large fixed arrays (`T[N]`).
 - Keep fixed arrays for true fixed-size storage and fixed-shape interfaces where the compile-time size is part of the contract.
 - Proc event names must not collide with callable endpoint names in the same proc.

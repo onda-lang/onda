@@ -987,7 +987,7 @@ pub(super) fn expand_proc_event_call_args(
                 continue;
             }
         };
-        if param.slice_elem_ty.is_some() {
+        if param.fixed_array_elem_ty.is_some() || param.slice_elem_ty.is_some() {
             expanded.push(CallArg {
                 name: None,
                 expr: resolved_expr.clone(),

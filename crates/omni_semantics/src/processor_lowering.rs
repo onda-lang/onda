@@ -286,6 +286,7 @@ fn expand_proc_event_specs(
                         name: param.name.clone(),
                         ty: *ty,
                     }],
+                    fixed_array_elem_ty: None,
                     slice_elem_ty: None,
                 }),
                 EventParamType::Array { elem, size } => {
@@ -304,16 +305,10 @@ fn expand_proc_event_specs(
                             0,
                         ));
                     }
-                    let mut slots = Vec::<ProcEventParamSlotSpec>::new();
-                    for idx in 0..len {
-                        slots.push(ProcEventParamSlotSpec {
-                            name: format!("{}[{idx}]", param.name),
-                            ty: *elem,
-                        });
-                    }
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
-                        slots,
+                        slots: Vec::new(),
+                        fixed_array_elem_ty: Some(*elem),
                         slice_elem_ty: None,
                     });
                 }
@@ -321,6 +316,7 @@ fn expand_proc_event_specs(
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
+                        fixed_array_elem_ty: None,
                         slice_elem_ty: Some(*elem),
                     });
                 }
@@ -336,6 +332,7 @@ fn expand_proc_event_specs(
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
+                        fixed_array_elem_ty: None,
                         slice_elem_ty: Some(PrimitiveType::F32),
                     });
                 }

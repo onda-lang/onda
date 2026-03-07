@@ -64,6 +64,7 @@ pub(crate) struct ProcEventSpec {
 pub(crate) struct ProcEventParamSpec {
     pub(crate) name: String,
     pub(crate) slots: Vec<ProcEventParamSlotSpec>,
+    pub(crate) fixed_array_elem_ty: Option<PrimitiveType>,
     pub(crate) slice_elem_ty: Option<PrimitiveType>,
 }
 

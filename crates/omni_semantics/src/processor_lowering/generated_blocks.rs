@@ -940,7 +940,7 @@ fn generate_nested_wrapper_defs(
                 let mut callee_event_in_array_slots = HashMap::<String, Vec<String>>::new();
                 for param in &event_spec.params {
                     callee_event_ins_names.insert(param.name.clone());
-                    if let Some(elem_ty) = param.slice_elem_ty {
+                    if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty) {
                         nested_event_params.push(omni_frontend::FnParamDecl {
                             name: param.name.clone(),
                             ty: Some(FnParamType::Array(Some(elem_ty))),
@@ -1846,7 +1846,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 let mut event_in_array_slots = HashMap::<String, Vec<String>>::new();
                 for param in &event_spec.params {
                     event_ins_names.insert(param.name.clone());
-                    if let Some(elem_ty) = param.slice_elem_ty {
+                    if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty) {
                         event_params.push(omni_frontend::FnParamDecl {
                             name: param.name.clone(),
                             ty: Some(FnParamType::Array(Some(elem_ty))),

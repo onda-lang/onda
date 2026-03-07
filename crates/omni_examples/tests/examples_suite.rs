@@ -4787,6 +4787,30 @@ sample {
 }
 "#;
 
+const PROC_EVENT_FIXED_ARRAY_FROM_TOP_LEVEL_INIT_STATE_EXAMPLE: &str = r#"
+proc Loader {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    set_values(values: f32[4]) {
+      sum = values[0] + values[1] + values[2] + values[3]
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+outs { out1 }
+init {
+  loader = Loader()
+  ir: f32[4] = [0.1, 0.2, 0.3, 0.4]
+  loader.set_values(ir)
+}
+sample {
+  out1 = loader()
+}
+"#;
+
 const GENERIC_PROC_EVENT_SLICE_EXAMPLE: &str = r#"
 proc Loader<T> {
   params { sum = 0.0 }
@@ -4849,6 +4873,62 @@ events {
 }
 sample {
   out1 = gate
+}
+"#;
+
+const TOP_LEVEL_EVENT_FIXED_ARRAY_PROC_FORWARD_EXAMPLE: &str = r#"
+proc Loader {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    set_values(values: f32[4]) {
+      sum = values[0] + values[1] + values[2] + values[3]
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+outs { out1 }
+events {
+  load(values: f32[4]) {
+    loader.set_values(values)
+  }
+}
+init {
+  loader = Loader()
+}
+sample {
+  out1 = loader()
+}
+"#;
+
+const TOP_LEVEL_EVENT_LARGE_FIXED_ARRAY_PROC_FORWARD_EXAMPLE: &str = r#"
+const N = 96000
+
+proc Loader {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    set_values(values: f32[N]) {
+      sum = values[0] + values[N - 1]
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+outs { out1 }
+events {
+  load(values: f32[N]) {
+    loader.set_values(values)
+  }
+}
+init {
+  loader = Loader()
+}
+sample {
+  out1 = loader()
 }
 "#;
 
@@ -5942,6 +6022,21 @@ fn proc_event_slice_params_accept_internal_array_sources() {
 }
 
 #[test]
+fn proc_event_fixed_array_params_accept_internal_array_sources() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_EVENT_FIXED_ARRAY_FROM_TOP_LEVEL_INIT_STATE_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 1.0, 1e-6);
+}
+
+#[test]
 fn top_level_events_accept_slice_payloads() {
     let frames = 1;
     let (mut instance, in_channels, out_channels) =
@@ -5962,6 +6057,54 @@ fn top_level_events_accept_slice_payloads() {
     let mut output = vec![0.0_f32; frames];
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 2.25, 1e-6);
+}
+
+#[test]
+fn top_level_events_forward_fixed_array_payloads_to_proc_events() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_EVENT_FIXED_ARRAY_PROC_FORWARD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let event_idx = instance.event_index("load").expect("load event must exist");
+    assert_eq!(instance.event_payload_bytes(event_idx), Some(16));
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0.1_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.2_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.3_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.4_f32.to_ne_bytes());
+    trigger_event_by_index(&mut instance, event_idx, &payload)
+        .expect("fixed-array forwarding event trigger should succeed");
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 1.0, 1e-6);
+}
+
+#[test]
+fn top_level_events_forward_large_fixed_array_payloads_to_proc_events() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        TOP_LEVEL_EVENT_LARGE_FIXED_ARRAY_PROC_FORWARD_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let event_idx = instance.event_index("load").expect("load event must exist");
+    assert_eq!(instance.event_payload_bytes(event_idx), Some(96000 * 4));
+
+    let mut payload = vec![0_u8; 96000 * 4];
+    payload[0..4].copy_from_slice(&0.25_f32.to_ne_bytes());
+    payload[(96000 - 1) * 4..96000 * 4].copy_from_slice(&0.75_f32.to_ne_bytes());
+    trigger_event_by_index(&mut instance, event_idx, &payload)
+        .expect("large fixed-array forwarding event trigger should succeed");
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 1.0, 1e-6);
 }
 
 #[test]
