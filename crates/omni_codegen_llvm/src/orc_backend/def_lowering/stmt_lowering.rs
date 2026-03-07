@@ -5,6 +5,7 @@ pub(super) unsafe fn lower_def_stmt(
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
     match stmt {
+        Stmt::Const { .. } => Ok(false),
         Stmt::Assign {
             target,
             decl_ty,

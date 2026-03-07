@@ -561,6 +561,7 @@ fn collect_stmt_indexable_param_usage(
     kinds: &mut [InferredFnParam],
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { base, index } = target {
                 mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
@@ -694,6 +695,7 @@ fn propagate_stmt_callee_buffer_requirements_to_params(
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
                 propagate_expr_callee_buffer_requirements_to_params(
@@ -1131,6 +1133,7 @@ fn collect_stmt_field_usage(
     errors: &mut Vec<Diagnostic>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {
                 AssignTarget::Var(name) => {

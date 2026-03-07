@@ -64,6 +64,7 @@ pub(crate) struct ProcEventSpec {
 pub(crate) struct ProcEventParamSpec {
     pub(crate) name: String,
     pub(crate) slots: Vec<ProcEventParamSlotSpec>,
+    pub(crate) slice_elem_ty: Option<PrimitiveType>,
 }
 
 #[derive(Debug, Clone)]
@@ -702,6 +703,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
     with_stmt_diag_context(stmt, || {
         let source_loc = stmt.loc().cloned();
         match stmt {
+            Stmt::Const { .. } => None,
             Stmt::Assign {
                 target,
                 decl_ty,

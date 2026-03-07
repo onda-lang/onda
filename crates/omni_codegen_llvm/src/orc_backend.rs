@@ -183,6 +183,7 @@ fn collect_proc_slot_buffer_ref_signatures(
         out: &mut BTreeSet<Vec<usize>>,
     ) {
         match stmt {
+            Stmt::Const { .. } => {}
             Stmt::Assign { target, expr, .. } => {
                 if let AssignTarget::Index { index, .. } = target {
                     visit_expr(index, buffer_index, out);
@@ -936,6 +937,7 @@ struct LoweringCtx<'a> {
     param_arrays: &'a HashMap<String, TypedArrayInfo>,
     output_arrays: &'a HashMap<String, TypedArrayInfo>,
     array_len: &'a HashMap<String, usize>,
+    array_len_values: HashMap<String, LLVMValueRef>,
     array_elem_ty: &'a HashMap<String, PrimitiveType>,
     array_struct_roots: &'a HashMap<String, String>,
     array_struct_len: &'a HashMap<String, usize>,

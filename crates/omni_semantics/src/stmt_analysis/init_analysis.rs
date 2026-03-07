@@ -1,6 +1,7 @@
 use super::*;
 
 pub(crate) struct ProcResolutionCtx<'a> {
+    pub owner_proc_name: &'a str,
     pub reserved: &'a HashSet<String>,
     pub current_ns: &'a str,
     pub proc_symbols: &'a HashSet<String>,
@@ -30,6 +31,44 @@ impl<'a> InitAnalysisCtx<'a> {
             ScopeKind::Block | ScopeKind::Sample | ScopeKind::Def => None,
         }
     }
+}
+
+fn specialized_proc_template_bases(proc_symbols: &HashSet<String>) -> HashSet<String> {
+    proc_symbols
+        .iter()
+        .filter_map(|name| {
+            name.rsplit_once(".__gen__")
+                .map(|(base, _)| base.to_owned())
+        })
+        .collect()
+}
+
+fn resolve_specialized_proc_ctor_name(
+    ctor_name: &str,
+    type_args: &[CallTypeArg],
+    current_ns: &str,
+    proc_symbols: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    if type_args.is_empty() {
+        return None;
+    }
+
+    let resolved_type_args = resolve_explicit_call_type_args(
+        type_args,
+        &format!("processor constructor '{}'", ctor_name),
+        errors,
+    )?;
+
+    let resolved_base = if ctor_name.contains("::") {
+        ctor_name.to_owned()
+    } else {
+        let template_bases = specialized_proc_template_bases(proc_symbols);
+        resolve_unqualified_symbol_name(ctor_name, current_ns, &template_bases)?
+    };
+
+    let specialized = specialized_struct_name(&resolved_base, &resolved_type_args);
+    proc_symbols.contains(&specialized).then_some(specialized)
 }
 
 #[derive(Clone)]
@@ -167,12 +206,14 @@ pub(crate) fn analyze_init_stmt(
             },
             state_scalars: &st.state_scalars,
             declared_symbols: &st.declared_symbols,
+            local_aliases: &st.local_aliases,
             local_array_aliases: &st.local_array_aliases,
             input_names: ctx.input_names,
             output_names: ctx.output_names,
             param_names: ctx.param_names,
         };
         match stmt {
+            Stmt::Const { .. } => {}
             Stmt::Assign {
                 target,
                 decl_ty,
@@ -191,7 +232,31 @@ pub(crate) fn analyze_init_stmt(
                 locals,
                 errors,
             ),
-            Stmt::Expr { expr, .. } => analyze_stmt_expr(expr, stmt_expr_env(ctx.scope), errors),
+            Stmt::Expr { expr, .. } => {
+                let mut handled_proc_event_stmt = false;
+                if let Some(_pctx) = ctx.proc_init_resolution() {
+                    if let Expr::UserCall { name, args, .. } = expr {
+                        if let Some((base, _event_name)) = split_dot_path(name) {
+                            if base == PROC_INDEX_CALL_SENTINEL
+                                || st.nested_procs.contains_key(base)
+                                || st.nested_proc_arrays.contains_key(base)
+                            {
+                                handled_proc_event_stmt = true;
+                                for arg in args {
+                                    analyze_proc_event_arg_expr(
+                                        &arg.expr,
+                                        stmt_expr_env(ctx.scope),
+                                        errors,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                if !handled_proc_event_stmt {
+                    analyze_stmt_expr(expr, stmt_expr_env(ctx.scope), errors)
+                }
+            }
             Stmt::Return { .. } => errors.push(Diagnostic::semantic(
                 "return is only allowed inside def blocks",
                 0,
@@ -418,6 +483,7 @@ fn analyze_assign_init(
                 &st.state_scalars,
                 &st.declared_symbols,
                 None,
+                &st.local_aliases,
                 &st.local_array_aliases,
                 locals,
                 ctx.input_names,
@@ -433,6 +499,7 @@ fn analyze_assign_init(
                 &st.state_scalars,
                 &st.declared_symbols,
                 None,
+                &st.local_aliases,
                 &st.local_array_aliases,
                 locals,
                 ctx.input_names,
@@ -555,6 +622,7 @@ fn analyze_assign_init(
                     &st.state_scalars,
                     &st.declared_symbols,
                     None,
+                    &st.local_aliases,
                     &st.local_array_aliases,
                     locals,
                     ctx.input_names,
@@ -666,6 +734,7 @@ fn analyze_assign_init(
                     &st.state_scalars,
                     &st.declared_symbols,
                     None,
+                    &st.local_aliases,
                     &st.local_array_aliases,
                     locals,
                     ctx.input_names,
@@ -682,6 +751,7 @@ fn analyze_assign_init(
                         &st.state_scalars,
                         &st.declared_symbols,
                         None,
+                        &st.local_aliases,
                         &st.local_array_aliases,
                         locals,
                         ctx.input_names,
@@ -739,8 +809,29 @@ fn analyze_assign_init(
                             pctx.current_ns,
                             pctx.proc_symbols,
                         )
-                    };
+                    }
+                    .or_else(|| {
+                        resolve_specialized_proc_ctor_name(
+                            ctor_name,
+                            type_args,
+                            pctx.current_ns,
+                            pctx.proc_symbols,
+                            errors,
+                        )
+                    });
                     if let Some(proc_ctor) = resolved_proc_ctor {
+                        if proc_ctor == pctx.owner_proc_name {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "{} cannot instantiate itself as state symbol '{}'",
+                                    ctx.context_label, name
+                                ),
+                                0,
+                                0,
+                            ));
+                            st.known_scalars.insert(name.clone());
+                            return;
+                        }
                         if !type_args.is_empty() {
                             errors.push(Diagnostic::semantic(
                                 format!(
@@ -1023,6 +1114,25 @@ fn analyze_assign_init(
                         ArrayElemType::Primitive(_) => None,
                     };
                     if let Some(proc_ctor) = resolved_proc_ctor {
+                        if proc_ctor == pctx.owner_proc_name {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "{} cannot instantiate itself as processor array '{}'",
+                                    ctx.context_label, name
+                                ),
+                                0,
+                                0,
+                            ));
+                            insert_declared_symbol(
+                                &mut st.state_scalars,
+                                &mut st.declared_symbols,
+                                name.clone(),
+                                DeclaredSymbolInfo::DataArray {
+                                    elem_ty: PrimitiveType::F32,
+                                },
+                            );
+                            return;
+                        }
                         if !pctx.in_init_scope {
                             errors.push(Diagnostic::semantic(
                                 format!(
@@ -1200,6 +1310,7 @@ fn analyze_assign_init(
                                     &st.state_scalars,
                                     &st.declared_symbols,
                                     None,
+                                    &st.local_aliases,
                                     &st.local_array_aliases,
                                     locals,
                                     ctx.input_names,
@@ -1285,6 +1396,7 @@ fn analyze_assign_init(
                             &st.state_scalars,
                             &st.declared_symbols,
                             None,
+                            &st.local_aliases,
                             &st.local_array_aliases,
                             locals,
                             ctx.input_names,
@@ -1368,6 +1480,7 @@ fn analyze_assign_init(
                 &st.state_scalars,
                 &st.declared_symbols,
                 None,
+                &st.local_aliases,
                 &st.local_array_aliases,
                 locals,
                 ctx.input_names,

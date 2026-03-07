@@ -103,6 +103,7 @@ pub(super) fn rewrite_nested_field_paths_in_stmt(
     nested_fields: &HashMap<String, HashSet<String>>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {
                 AssignTarget::Var(name) => {
@@ -214,7 +215,11 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
             for arg in args {
                 remap_nested_symbols_in_expr(&mut arg.expr, remap);
             }
-            if let Some(mapped) = remap.get(name) {
+            if let Some((base, field)) = split_simple_field_path(name) {
+                if let Some(mapped) = remap.get(base) {
+                    *name = format!("{mapped}.{field}");
+                }
+            } else if let Some(mapped) = remap.get(name) {
                 *name = mapped.clone();
             } else if let Some(raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
                 if let Some(mapped) = remap.get(raw) {
@@ -236,6 +241,7 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
 
 pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<String, String>) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {
                 AssignTarget::Var(name) => {
@@ -368,6 +374,7 @@ pub(super) fn prefix_self_fields_in_stmt(
     nested_field_names: &HashSet<String>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {
                 AssignTarget::Var(name) => {

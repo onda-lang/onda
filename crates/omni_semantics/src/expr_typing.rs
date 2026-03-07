@@ -13,8 +13,8 @@ use crate::decl_symbols::{
 };
 use crate::def_inference::{can_implicitly_assign, merge_numeric_types};
 use crate::{
-    resolve_struct_field_decl, split_field_path, LocalArrayAliasInfo, TypedFieldType,
-    TypedStructField,
+    resolve_struct_field_decl, split_field_path, LocalAliasTypes, LocalArrayAliasInfo,
+    TypedFieldType, TypedStructField,
 };
 
 fn merge_integer_types_for_expr(
@@ -75,6 +75,7 @@ pub(crate) fn infer_scalar_expr_type(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
     declared_symbols: &DeclaredSymbolMap,
+    local_aliases: &LocalAliasTypes,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     input_names: &HashSet<String>,
@@ -121,6 +122,8 @@ pub(crate) fn infer_scalar_expr_type(
                 }
                 None
             } else if let Some(ty) = state_scalars.get(name).copied() {
+                Some(ty)
+            } else if let Some(ty) = local_aliases.get(name).copied() {
                 Some(ty)
             } else if locals.contains(name) {
                 Some(PrimitiveType::I32)
@@ -184,6 +187,7 @@ pub(crate) fn infer_scalar_expr_type(
                 expr,
                 state_scalars,
                 declared_symbols,
+                local_aliases,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -203,6 +207,7 @@ pub(crate) fn infer_scalar_expr_type(
                 expr,
                 state_scalars,
                 declared_symbols,
+                local_aliases,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -222,6 +227,7 @@ pub(crate) fn infer_scalar_expr_type(
                         arg,
                         state_scalars,
                         declared_symbols,
+                        local_aliases,
                         local_array_aliases,
                         locals,
                         input_names,
@@ -381,6 +387,7 @@ pub(crate) fn infer_scalar_expr_type(
                 lhs,
                 state_scalars,
                 declared_symbols,
+                local_aliases,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -394,6 +401,7 @@ pub(crate) fn infer_scalar_expr_type(
                 rhs,
                 state_scalars,
                 declared_symbols,
+                local_aliases,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -435,12 +443,14 @@ pub(crate) fn infer_expr_type_for_semantics(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
+    let empty_local_aliases = LocalAliasTypes::new();
     let empty_local_data_aliases = HashMap::<String, LocalArrayAliasInfo>::new();
     infer_expr_type_for_semantics_with_local_data(
         expr,
         state_scalars,
         declared_symbols,
         param_structs,
+        &empty_local_aliases,
         &empty_local_data_aliases,
         locals,
         input_names,
@@ -458,6 +468,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data(
     state_scalars: &HashMap<String, PrimitiveType>,
     declared_symbols: &DeclaredSymbolMap,
     param_structs: Option<&HashMap<String, String>>,
+    local_aliases: &LocalAliasTypes,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     locals: &HashSet<String>,
     input_names: &HashSet<String>,
@@ -493,6 +504,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data(
         expr,
         state_scalars,
         &declared_symbols,
+        local_aliases,
         local_array_aliases,
         locals,
         input_names,

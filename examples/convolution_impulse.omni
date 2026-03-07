@@ -1,0 +1,16 @@
+import std/convolution
+
+const FFT_SIZE = 8
+const IR_LEN = 4
+
+events:
+  set_ir(values: f32[IR_LEN]):
+    conv.set_impulse(values)
+
+init:
+  conv = std::convolution<FFT_SIZE, IR_LEN>::TimeDomainConvolver<f32>()
+  ir: f32[IR_LEN] = [1.0, 0.5, 0.25, 0.0]
+  conv.set_impulse(ir)
+
+sample:
+  out1 = conv(in1)

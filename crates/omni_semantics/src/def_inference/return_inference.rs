@@ -171,6 +171,7 @@ fn infer_stmt_returns_for_def_return_inference(
 ) {
     for stmt in stmts {
         match stmt {
+            Stmt::Const { .. } => {}
             Stmt::Assign {
                 target: AssignTarget::Var(name),
                 decl_ty,

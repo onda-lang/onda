@@ -400,6 +400,70 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     base_raw.to_owned()
                 };
 
+                if base == "self" {
+                    if let Some(owner_api) = proc_api.get(owner_proc) {
+                        if owner_api.events.contains_key(event_name) {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "cannot call event '{}.{}' on the owning proc instance",
+                                    owner_proc, event_name
+                                ),
+                                0,
+                                0,
+                            ));
+                            return;
+                        }
+                    }
+                }
+
+                if let Some((array_base, _, slots)) = &dynamic_index {
+                    let Some((_proc_name, api, _slot_instances)) =
+                        resolve_proc_array_dispatch_context(
+                            slots,
+                            nested_instances,
+                            proc_api,
+                            "nested processor indexed event call",
+                            errors,
+                        )
+                    else {
+                        return;
+                    };
+                    if api.events.contains_key(event_name) {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "processor event call '{}[...].{}(...)' is statement-only",
+                                array_base, event_name
+                            ),
+                            0,
+                            0,
+                        ));
+                        return;
+                    }
+                }
+
+                if let Some(instance) = nested_instances.get(base.as_str()) {
+                    let proc_name = instance.proc_name.clone();
+                    let Some(api) = proc_api.get(&proc_name) else {
+                        errors.push(Diagnostic::semantic(
+                            format!("unknown processor type '{proc_name}'"),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    if api.events.contains_key(event_name) {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "processor event call '{}.{}(...)' is statement-only",
+                                base, event_name
+                            ),
+                            0,
+                            0,
+                        ));
+                        return;
+                    }
+                }
+
                 if let Some((array_base, index_expr, slots)) = dynamic_index {
                     let Some((proc_name, api, _slot_instances)) =
                         resolve_proc_array_dispatch_context(
@@ -524,6 +588,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { expr, .. } => rewrite_nested_proc_calls_in_expr(
             expr,
             owner_proc,
@@ -533,15 +598,17 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
             errors,
         ),
         Stmt::Expr { expr, .. } => {
-            rewrite_nested_proc_calls_in_expr(
-                expr,
-                owner_proc,
-                nested_instances,
-                proc_array_slots,
-                proc_api,
-                errors,
-            );
             if let Expr::UserCall { name, args, .. } = expr {
+                for arg in args.iter_mut() {
+                    rewrite_nested_proc_calls_in_expr(
+                        &mut arg.expr,
+                        owner_proc,
+                        nested_instances,
+                        proc_array_slots,
+                        proc_api,
+                        errors,
+                    );
+                }
                 if *name == PROC_INDEX_CALL_SENTINEL {
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
@@ -659,7 +726,160 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                         *name = nested_step_fn_name(owner_proc, &nested_var);
                     }
                     *args = rewritten;
+                    return;
                 }
+                if let Some((base_raw, event_name)) = split_dot_path(name) {
+                    if base_raw == "self" {
+                        if let Some(owner_api) = proc_api.get(owner_proc) {
+                            if owner_api.events.contains_key(event_name) {
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "cannot call event '{}.{}' on the owning proc instance",
+                                        owner_proc, event_name
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                                return;
+                            }
+                        }
+                    }
+
+                    let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                    let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
+                        let Some(index_target) = resolve_proc_index_target_mut(
+                            args,
+                            proc_array_slots,
+                            "nested processor indexed event statement call",
+                            errors,
+                        ) else {
+                            return;
+                        };
+                        match index_target {
+                            ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
+                            ProcIndexResolution::Dynamic {
+                                array_base,
+                                index_expr,
+                                slots,
+                            } => {
+                                dynamic_index = Some((array_base, index_expr, slots));
+                                String::new()
+                            }
+                        }
+                    } else {
+                        base_raw.to_owned()
+                    };
+
+                    if let Some((array_base, index_expr, slots)) = dynamic_index {
+                        let Some((proc_name, api, _slot_instances)) =
+                            resolve_proc_array_dispatch_context(
+                                &slots,
+                                nested_instances,
+                                proc_api,
+                                "nested processor indexed event statement call",
+                                errors,
+                            )
+                        else {
+                            return;
+                        };
+                        let Some(event_spec) = api.events.get(event_name) else {
+                            let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
+                            known_events.sort();
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "unknown processor event '{}.{}'; expected one of [{}]",
+                                    array_base,
+                                    event_name,
+                                    known_events.join(", ")
+                                ),
+                                0,
+                                0,
+                            ));
+                            return;
+                        };
+                        let expanded = expand_proc_event_call_args(
+                            args,
+                            event_spec,
+                            &format!("{array_base}[...].{event_name}"),
+                            errors,
+                        );
+                        let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
+                        rewritten.push(CallArg {
+                            name: None,
+                            expr: Expr::Index {
+                                base: array_base.clone(),
+                                index: Box::new(index_expr.clone()),
+                            },
+                        });
+                        rewritten.extend(expanded);
+                        *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
+                        *args = rewritten;
+                        return;
+                    }
+
+                    if let Some(instance) = nested_instances.get(base.as_str()) {
+                        let proc_name = instance.proc_name.clone();
+                        let Some(api) = proc_api.get(&proc_name) else {
+                            errors.push(Diagnostic::semantic(
+                                format!("unknown processor type '{proc_name}'"),
+                                0,
+                                0,
+                            ));
+                            return;
+                        };
+                        let Some(event_spec) = api.events.get(event_name) else {
+                            let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
+                            known_events.sort();
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "unknown processor event '{}.{}'; expected one of [{}]",
+                                    base,
+                                    event_name,
+                                    known_events.join(", ")
+                                ),
+                                0,
+                                0,
+                            ));
+                            return;
+                        };
+                        let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
+                        let is_array_slot = find_proc_array_slot(&base, proc_array_slots).is_some();
+                        if is_array_slot {
+                            rewritten.push(CallArg {
+                                name: None,
+                                expr: Expr::Var(base.clone()),
+                            });
+                        } else {
+                            rewritten.push(CallArg {
+                                name: None,
+                                expr: Expr::Var("self".to_owned()),
+                            });
+                        }
+                        let expanded = expand_proc_event_call_args(
+                            args,
+                            event_spec,
+                            &format!("{base}.{event_name}"),
+                            errors,
+                        );
+                        rewritten.extend(expanded);
+                        if is_array_slot {
+                            *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
+                        } else {
+                            *name = nested_event_fn_name(owner_proc, base.as_str(), event_name);
+                        }
+                        *args = rewritten;
+                        return;
+                    }
+                }
+            } else {
+                rewrite_nested_proc_calls_in_expr(
+                    expr,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    errors,
+                );
             }
         }
         Stmt::Return { expr, .. } => rewrite_nested_proc_calls_in_expr(

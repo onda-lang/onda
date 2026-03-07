@@ -1,0 +1,342 @@
+import std/fft
+
+namespace std::convolution<FFTSize = 256, MaxImpulseLen = 64>:
+  assert(FFTSize > 0 && (FFTSize & (FFTSize - 1)) == 0)
+  assert((FFTSize & 1) == 0)
+  assert(MaxImpulseLen > 0)
+
+  const HopSize = FFTSize / 2
+  const MaxPartitions = (MaxImpulseLen + HopSize - 1) / HopSize
+  const FFTStorageSize = MaxPartitions * FFTSize
+  const TailStart = HopSize
+  const TailLimit = MaxImpulseLen - TailStart
+
+  def _min_i(a: i32, b: i32):
+    if (a < b):
+      return a
+    return b
+
+  def _max_i(a: i32, b: i32):
+    if (a > b):
+      return a
+    return b
+
+  def _ceil_div_i(n: i32, d: i32):
+    if (n <= 0):
+      return 0
+    return (n + d - 1) / d
+
+  def _wrap_sub_i(base: i32, offset: i32, n: i32):
+    idx = base - offset
+    if (idx < 0):
+      idx = idx + n
+    return idx
+
+  def _partition_slot(part: i32, bin: i32):
+    return part * FFTSize + bin
+
+  proc TimeDomainConvolver<T>:
+    ins[T] 1
+    outs[T] 1
+
+    init:
+      impulse: T[MaxImpulseLen]
+      delay: T[MaxImpulseLen]
+      active_taps: i32 = 0
+      write: i32 = 0
+
+    events:
+      set_impulse(values: T[]):
+        values_len = values.len()
+        active_taps = values_len
+        if (active_taps < 0):
+          active_taps = 0
+        if (active_taps > MaxImpulseLen):
+          active_taps = MaxImpulseLen
+
+        for i in 0..MaxImpulseLen:
+          impulse[i] = T(0.0)
+          delay[i] = T(0.0)
+          if (i < active_taps && i < values_len):
+            impulse[i] = values[i]
+
+        write = 0
+
+      set_impulse_window(values: T[], start: i32, limit: i32):
+        values_len = values.len()
+        active_taps = values_len - start
+        if (active_taps < 0):
+          active_taps = 0
+        if (active_taps > limit):
+          active_taps = limit
+        if (active_taps > MaxImpulseLen):
+          active_taps = MaxImpulseLen
+
+        for i in 0..MaxImpulseLen:
+          impulse[i] = T(0.0)
+          delay[i] = T(0.0)
+          src = start + i
+          if (i < active_taps && src >= 0 && src < values_len):
+            impulse[i] = values[src]
+
+        write = 0
+
+      reset():
+        for i in 0..MaxImpulseLen:
+          delay[i] = T(0.0)
+        active_taps = 0
+        write = 0
+
+    sample:
+      if (active_taps <= 0):
+        out1 = T(0.0)
+      else:
+        delay[write] = in1
+
+        y = T(0.0)
+        read = write
+        for i in 0..active_taps:
+          y = y + delay[read] * impulse[i]
+          read = read - 1
+          if (read < 0):
+            read = active_taps - 1
+
+        write = write + 1
+        if (write >= active_taps):
+          write = 0
+
+        out1 = y
+
+  proc BlockConvolver<T>:
+    ins[T] 1
+    outs[T] 1
+
+    init:
+      fwd = std::fft<FFTSize>::FFT<T>()
+      inv = std::fft<FFTSize>::FFT<T>()
+
+      pending: T[HopSize]
+      output: T[HopSize]
+      overlap: T[HopSize]
+      block_time: T[FFTSize]
+      time_domain: T[FFTSize]
+
+      x_re: T[FFTSize]
+      x_im: T[FFTSize]
+      y_re: T[FFTSize]
+      y_im: T[FFTSize]
+
+      impulse_fft_re: T[FFTStorageSize]
+      impulse_fft_im: T[FFTStorageSize]
+      input_fft_re: T[FFTStorageSize]
+      input_fft_im: T[FFTStorageSize]
+
+      active_taps = 0
+      active_partitions = 0
+      pending_count = 0
+      output_idx = HopSize
+      current_partition = 0
+
+    events:
+      set_impulse(values: T[]):
+        values_len = values.len()
+
+        active_taps = values_len
+        if (active_taps < 0):
+          active_taps = 0
+        if (active_taps > MaxImpulseLen):
+          active_taps = MaxImpulseLen
+        active_partitions = _ceil_div_i(active_taps, HopSize)
+
+        for i in 0..HopSize:
+          pending[i] = T(0.0)
+          output[i] = T(0.0)
+          overlap[i] = T(0.0)
+
+        for i in 0..FFTSize:
+          block_time[i] = T(0.0)
+          time_domain[i] = T(0.0)
+          x_re[i] = T(0.0)
+          x_im[i] = T(0.0)
+          y_re[i] = T(0.0)
+          y_im[i] = T(0.0)
+
+        for i in 0..FFTStorageSize:
+          impulse_fft_re[i] = T(0.0)
+          impulse_fft_im[i] = T(0.0)
+          input_fft_re[i] = T(0.0)
+          input_fft_im[i] = T(0.0)
+
+        for part in 0..active_partitions:
+          for i in 0..HopSize:
+            block_time[i] = T(0.0)
+
+          for i in 0..HopSize:
+            src = part * HopSize + i
+            if (src >= 0 && src < values_len && src < active_taps):
+              block_time[i] = values[src]
+
+          fwd.forward_real(block_time)
+          fwd.store_real(x_re)
+          fwd.store_imag(x_im)
+
+          for i in 0..FFTSize:
+            slot = _partition_slot(part, i)
+            impulse_fft_re[slot] = x_re[i]
+            impulse_fft_im[slot] = x_im[i]
+
+        pending_count = 0
+        output_idx = HopSize
+        current_partition = 0
+
+      set_impulse_window(values: T[], start: i32, limit: i32):
+        values_len = values.len()
+
+        active_taps = values_len - start
+        if (active_taps < 0):
+          active_taps = 0
+        if (active_taps > limit):
+          active_taps = limit
+        if (active_taps > MaxImpulseLen):
+          active_taps = MaxImpulseLen
+        active_partitions = _ceil_div_i(active_taps, HopSize)
+
+        for i in 0..HopSize:
+          pending[i] = T(0.0)
+          output[i] = T(0.0)
+          overlap[i] = T(0.0)
+
+        for i in 0..FFTSize:
+          block_time[i] = T(0.0)
+          time_domain[i] = T(0.0)
+          x_re[i] = T(0.0)
+          x_im[i] = T(0.0)
+          y_re[i] = T(0.0)
+          y_im[i] = T(0.0)
+
+        for i in 0..FFTStorageSize:
+          impulse_fft_re[i] = T(0.0)
+          impulse_fft_im[i] = T(0.0)
+          input_fft_re[i] = T(0.0)
+          input_fft_im[i] = T(0.0)
+
+        for part in 0..active_partitions:
+          for i in 0..HopSize:
+            block_time[i] = T(0.0)
+
+          for i in 0..HopSize:
+            src = start + part * HopSize + i
+            if (src >= 0 && src < values_len && (part * HopSize + i) < active_taps):
+              block_time[i] = values[src]
+
+          fwd.forward_real(block_time)
+          fwd.store_real(x_re)
+          fwd.store_imag(x_im)
+
+          for i in 0..FFTSize:
+            slot = _partition_slot(part, i)
+            impulse_fft_re[slot] = x_re[i]
+            impulse_fft_im[slot] = x_im[i]
+
+        pending_count = 0
+        output_idx = HopSize
+        current_partition = 0
+
+      reset():
+        active_taps = 0
+        active_partitions = 0
+        pending_count = 0
+        output_idx = HopSize
+        current_partition = 0
+
+        for i in 0..HopSize:
+          pending[i] = T(0.0)
+          output[i] = T(0.0)
+          overlap[i] = T(0.0)
+
+        for i in 0..FFTSize:
+          block_time[i] = T(0.0)
+          time_domain[i] = T(0.0)
+          x_re[i] = T(0.0)
+          x_im[i] = T(0.0)
+          y_re[i] = T(0.0)
+          y_im[i] = T(0.0)
+
+        for i in 0..FFTStorageSize:
+          input_fft_re[i] = T(0.0)
+          input_fft_im[i] = T(0.0)
+
+    sample:
+      y = T(0.0)
+      if (output_idx < HopSize):
+        y = output[output_idx]
+        output_idx = output_idx + 1
+      out1 = y
+
+      pending[pending_count] = in1
+      pending_count = pending_count + 1
+
+      if (pending_count >= HopSize):
+        # The upper half stays zero between blocks; only refresh the live input half.
+        for i in 0..HopSize:
+          block_time[i] = pending[i]
+
+        fwd.forward_real(block_time)
+        fwd.store_real(x_re)
+        fwd.store_imag(x_im)
+
+        for i in 0..FFTSize:
+          slot = _partition_slot(current_partition, i)
+          input_fft_re[slot] = x_re[i]
+          input_fft_im[slot] = x_im[i]
+          y_re[i] = T(0.0)
+          y_im[i] = T(0.0)
+
+        for part in 0..active_partitions:
+          data_part = _wrap_sub_i(current_partition, part, MaxPartitions)
+          for i in 0..FFTSize:
+            data_slot = _partition_slot(data_part, i)
+            impulse_slot = _partition_slot(part, i)
+            xr = input_fft_re[data_slot]
+            xi = input_fft_im[data_slot]
+            hr = impulse_fft_re[impulse_slot]
+            hi = impulse_fft_im[impulse_slot]
+            y_re[i] = y_re[i] + xr * hr - xi * hi
+            y_im[i] = y_im[i] + xr * hi + xi * hr
+
+        inv.load_complex(y_re, y_im)
+        inv.inverse()
+        inv.store_real(time_domain)
+
+        for i in 0..HopSize:
+          output[i] = time_domain[i] + overlap[i]
+          overlap[i] = time_domain[HopSize + i]
+          pending[i] = T(0.0)
+
+        pending_count = 0
+        output_idx = 0
+        current_partition = current_partition + 1
+        if (current_partition >= MaxPartitions):
+          current_partition = 0
+
+  proc ZeroLatencyConvolver<T>:
+    ins[T] 1
+    outs[T] 1
+
+    init:
+      td = TimeDomainConvolver<T>()
+      tail = BlockConvolver<T>()
+
+    events:
+      set_impulse(values: T[]):
+        td.set_impulse_window(values, 0, HopSize)
+        tail.set_impulse_window(values, TailStart, TailLimit)
+
+      reset():
+        td.reset()
+        tail.reset()
+
+    sample:
+      early = td(in1)
+      late = tail(in1)
+      out1 = early + late

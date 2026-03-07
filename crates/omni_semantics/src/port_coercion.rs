@@ -319,6 +319,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
     clamp_params: bool,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
                 rewrite_top_level_range_clamps_in_expr(

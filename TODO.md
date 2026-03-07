@@ -7,6 +7,10 @@
   - Evaluate extending overloads to struct methods (currently still rejected as duplicate method names).
   - Clarify/document overload behavior for complex untyped array/buffer inference-heavy call sites.
 
+- `const` follow-ups
+  - Evaluate extending `const` beyond scalar primitives to arrays/structural compile-time values where justified.
+  - Decide whether forward references and cycle diagnostics should be supported instead of the current strict lexical-order rule.
+
 - Graph composition syntax
   - Locked MVP syntax:
     - `graph` is an alternative to `sample` (mutually exclusive), while `init` stays available.
@@ -128,8 +132,9 @@
       - runtime/codegen tests for multi-out routing, param modulation, and delayed feedback behavior.
 
 - Events follow-ups
-  - Clarify/lock policy for triggering proc events from general Omni code paths outside event handlers (direct/indexed proc-array targets lower directly in top-level and nested paths).
   - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.
+  - Add deeper conformance tests for proc-event slice forwarding edge cases (aliases, nested field arrays, and diagnostic coverage).
+  - Add deeper conformance tests for host slice-event payload layouts, truncation diagnostics, and mixed fixed/slice event signatures.
 
 - Oversampling follow-ups
   - Consider selective/local oversampling syntax in addition to full-block `sample N:`.

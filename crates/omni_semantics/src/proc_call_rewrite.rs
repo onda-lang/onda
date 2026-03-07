@@ -973,17 +973,8 @@ pub(super) fn expand_proc_event_call_args(
     );
     let mut expanded = Vec::<CallArg>::new();
     for (idx, param) in event.params.iter().enumerate() {
-        let slot_count = param.slots.len();
-        let slot_exprs = match resolved.get(idx).and_then(|a| *a) {
-            Some(arg_expr) => expand_expr_to_slots(
-                arg_expr,
-                slot_count,
-                &format!(
-                    "processor event call '{call_display_name}(...)' argument '{}'",
-                    param.name
-                ),
-                errors,
-            ),
+        let resolved_expr = match resolved.get(idx).and_then(|a| *a) {
+            Some(arg_expr) => arg_expr,
             None => {
                 errors.push(Diagnostic::semantic(
                     format!(
@@ -996,6 +987,22 @@ pub(super) fn expand_proc_event_call_args(
                 continue;
             }
         };
+        if param.slice_elem_ty.is_some() {
+            expanded.push(CallArg {
+                name: None,
+                expr: resolved_expr.clone(),
+            });
+            continue;
+        }
+        let slot_exprs = expand_expr_to_slots(
+            resolved_expr,
+            param.slots.len(),
+            &format!(
+                "processor event call '{call_display_name}(...)' argument '{}'",
+                param.name
+            ),
+            errors,
+        );
         for expr in slot_exprs {
             expanded.push(CallArg { name: None, expr });
         }
@@ -1616,6 +1623,54 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     base_raw.to_owned()
                 };
 
+                if let Some((array_base, _, slots)) = &dynamic_index {
+                    let Some((_proc_name, api, _slot_instances)) =
+                        resolve_proc_array_dispatch_context(
+                            slots,
+                            proc_vars,
+                            proc_api,
+                            "processor indexed event call",
+                            errors,
+                        )
+                    else {
+                        return;
+                    };
+                    if api.events.contains_key(event_name) {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "processor event call '{}[...].{}(...)' is statement-only",
+                                array_base, event_name
+                            ),
+                            0,
+                            0,
+                        ));
+                        return;
+                    }
+                }
+
+                if let Some(instance) = proc_vars.get(base.as_str()) {
+                    let proc_name = instance.proc_name.clone();
+                    let Some(api) = proc_api.get(&proc_name) else {
+                        errors.push(Diagnostic::semantic(
+                            format!("unknown processor type '{proc_name}'"),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    if api.events.contains_key(event_name) {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "processor event call '{}.{}(...)' is statement-only",
+                                base, event_name
+                            ),
+                            0,
+                            0,
+                        ));
+                        return;
+                    }
+                }
+
                 if let Some((array_base, index_expr, slots)) = dynamic_index {
                     let Some((proc_name, api, _slot_instances)) =
                         resolve_proc_array_dispatch_context(
@@ -1868,6 +1923,7 @@ pub(super) fn normalize_proc_output_aliases_in_stmt(
     proc_api: &HashMap<String, ProcApi>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             normalize_proc_output_aliases_in_assign_target(target, proc_vars, proc_api);
             normalize_proc_output_aliases_in_expr(expr, proc_vars, proc_api);
@@ -1951,6 +2007,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Var(name) = target {
                 if let Expr::Index { base, index } = expr {
@@ -2054,6 +2111,126 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                     *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
                     *args = rewritten;
                     handled_proc_stmt_call = true;
+                }
+                if !handled_proc_stmt_call {
+                    if let Some((base_raw, event_name)) = split_dot_path(name) {
+                        let mut dynamic_index = None::<(String, Expr, Vec<String>)>;
+                        let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
+                            if !can_resolve_proc_index_base(args, proc_array_slots) {
+                                return;
+                            }
+                            let Some(index_target) = resolve_proc_index_target_mut(
+                                args,
+                                proc_array_slots,
+                                "processor indexed event statement call",
+                                errors,
+                            ) else {
+                                return;
+                            };
+                            match index_target {
+                                ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
+                                ProcIndexResolution::Dynamic {
+                                    array_base,
+                                    index_expr,
+                                    slots,
+                                } => {
+                                    dynamic_index = Some((array_base, index_expr, slots));
+                                    String::new()
+                                }
+                            }
+                        } else {
+                            base_raw.to_owned()
+                        };
+
+                        if let Some((array_base, index_expr, slots)) = dynamic_index {
+                            let Some((proc_name, api, _slot_instances)) =
+                                resolve_proc_array_dispatch_context(
+                                    &slots,
+                                    proc_vars,
+                                    proc_api,
+                                    "processor indexed event statement call",
+                                    errors,
+                                )
+                            else {
+                                return;
+                            };
+                            let Some(event_spec) = api.events.get(event_name) else {
+                                let mut known_events =
+                                    api.events.keys().cloned().collect::<Vec<_>>();
+                                known_events.sort();
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "unknown processor event '{}.{}'; expected one of [{}]",
+                                        array_base,
+                                        event_name,
+                                        known_events.join(", ")
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                                return;
+                            };
+                            let expanded = expand_proc_event_call_args(
+                                args,
+                                event_spec,
+                                &format!("{array_base}[...].{event_name}"),
+                                errors,
+                            );
+                            let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
+                            rewritten.push(CallArg {
+                                name: None,
+                                expr: Expr::Index {
+                                    base: array_base.clone(),
+                                    index: Box::new(index_expr.clone()),
+                                },
+                            });
+                            rewritten.extend(expanded);
+                            *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
+                            *args = rewritten;
+                            handled_proc_stmt_call = true;
+                        } else if let Some(instance) = proc_vars.get(base.as_str()) {
+                            let proc_name = instance.proc_name.clone();
+                            let Some(api) = proc_api.get(&proc_name) else {
+                                errors.push(Diagnostic::semantic(
+                                    format!("unknown processor type '{proc_name}'"),
+                                    0,
+                                    0,
+                                ));
+                                return;
+                            };
+                            let Some(event_spec) = api.events.get(event_name) else {
+                                let mut known_events =
+                                    api.events.keys().cloned().collect::<Vec<_>>();
+                                known_events.sort();
+                                errors.push(Diagnostic::semantic(
+                                    format!(
+                                        "unknown processor event '{}.{}'; expected one of [{}]",
+                                        base,
+                                        event_name,
+                                        known_events.join(", ")
+                                    ),
+                                    0,
+                                    0,
+                                ));
+                                return;
+                            };
+                            let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
+                            rewritten.push(CallArg {
+                                name: None,
+                                expr: proc_instance_self_expr(&base, proc_array_slots),
+                            });
+                            let expanded = expand_proc_event_call_args(
+                                args,
+                                event_spec,
+                                &format!("{base}.{event_name}"),
+                                errors,
+                            );
+                            rewritten.extend(expanded);
+                            *name = format!("{proc_name}{PROC_EVENT_FN_PREFIX}{event_name}");
+                            *args = rewritten;
+                            handled_proc_stmt_call = true;
+                        }
+                    }
                 }
             }
             if !handled_proc_stmt_call {
@@ -2252,6 +2429,7 @@ fn collect_called_proc_instances_in_stmt(
     out: &mut HashSet<String>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             let mut expr_for_collect = expr.clone();
             rewrite_proc_alias_calls_in_expr(&mut expr_for_collect, aliases);
@@ -2532,6 +2710,7 @@ pub(super) fn desugar_init_instance_method_calls(
     callable_symbols: &HashSet<String>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Var(name) = target {
                 if let Expr::UserCall {
@@ -2670,6 +2849,7 @@ pub(super) fn desugar_sample_instance_method_calls(
     callable_symbols: &HashSet<String>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
                 desugar_expr_instance_method_calls(

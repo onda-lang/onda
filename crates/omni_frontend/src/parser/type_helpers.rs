@@ -262,6 +262,28 @@ pub(super) fn parse_event_param_type(
         Rule::type_name => Ok(EventParamType::Scalar(
             parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?,
         )),
+        Rule::fn_typed_array_param => {
+            let Some(elem_pair) = inner.into_inner().next() else {
+                return Err(vec![Diagnostic::syntax(
+                    "missing event slice element type",
+                    0,
+                    0,
+                )]);
+            };
+            match elem_pair.as_rule() {
+                Rule::type_name => Ok(EventParamType::Slice {
+                    elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+                }),
+                Rule::qualified_ident | Rule::namespace_ref => Ok(EventParamType::GenericSlice {
+                    elem: elem_pair.as_str().trim().to_owned(),
+                }),
+                _ => Err(vec![Diagnostic::syntax(
+                    "event slice parameters require primitive or generic primitive element type",
+                    0,
+                    0,
+                )]),
+            }
+        }
         Rule::array_type => {
             let mut array_inner = inner.into_inner();
             let Some(elem_pair) = array_inner.next() else {

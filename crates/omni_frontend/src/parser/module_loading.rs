@@ -34,6 +34,7 @@ struct LoadState {
     namespace_templates: HashMap<String, NamespaceTemplateDecl>,
     namespace_aliases: HashMap<String, NamespaceAliasDecl>,
     namespace_members: HashSet<String>,
+    namespace_const_values: HashMap<String, Expr>,
     namespace_instantiations: HashMap<String, String>,
     next_namespace_instantiation_id: u64,
 }
@@ -55,6 +56,7 @@ struct NamespaceTemplateParam {
 #[derive(Debug, Clone)]
 enum NamespaceDeclItem {
     Assert(AssertDecl),
+    Const(ConstDecl),
     Struct(StructDef),
     Def(FunctionDef),
     Proc(ProcessorDef),
@@ -107,6 +109,7 @@ fn builtin_std_module_source(module: &str) -> Option<&'static str> {
         "std/delay" => Some(include_str!("../../../../stdlib/std/delay.omni")),
         "std/data" => Some(include_str!("../../../../stdlib/std/data.omni")),
         "std/fft" => Some(include_str!("../../../../stdlib/std/fft.omni")),
+        "std/convolution" => Some(include_str!("../../../../stdlib/std/convolution.omni")),
         "std/lookup" => Some(include_str!("../../../../stdlib/std/lookup.omni")),
         "std/prelude" => Some(include_str!("../../../../stdlib/std/prelude.omni")),
         _ => None,
@@ -395,11 +398,32 @@ fn parse_program_preprocessed(
             .ok_or_else(|| vec![Diagnostic::syntax("empty parse result", 1, 1)])?;
 
         let mut blocks = Vec::new();
+        let mut top_level_consts = HashMap::<String, Expr>::new();
+        let mut top_level_const_names = HashSet::<String>::new();
+        let mut generated = Vec::<Block>::new();
         for pair in program_pair.into_inner() {
             match pair.as_rule() {
                 Rule::ins_block => blocks.push(Block::Ins(parse_port_block(pair)?)),
                 Rule::outs_block => blocks.push(Block::Outs(parse_port_block(pair)?)),
                 Rule::params_block => blocks.push(Block::Params(parse_params_block(pair)?)),
+                Rule::const_block => {
+                    let mut decl = parse_const_decl(pair)?;
+                    if !top_level_const_names.insert(decl.name.clone()) {
+                        return Err(vec![Diagnostic::semantic(
+                            format!("duplicate top-level constant '{}'", decl.name),
+                            0,
+                            0,
+                        )]);
+                    }
+                    let value = finalize_const_decl_expr(
+                        &mut decl,
+                        "",
+                        &top_level_consts,
+                        state,
+                        &mut generated,
+                    )?;
+                    top_level_consts.insert(decl.name.clone(), value);
+                }
                 Rule::events_block => blocks.push(Block::Events(parse_events_block(pair)?)),
                 Rule::buffers_block => blocks.push(Block::Buffers(parse_buffers_block(pair)?)),
                 Rule::assert_block => blocks.push(Block::Assert(parse_assert_decl(pair)?)),
@@ -408,7 +432,7 @@ fn parse_program_preprocessed(
                 Rule::def_block => blocks.push(Block::Def(parse_def_block(pair)?)),
                 Rule::namespace_block => {
                     let ns_decl = parse_namespace_decl(pair)?;
-                    process_namespace_decl(ns_decl, "", state, &mut blocks)?
+                    process_namespace_decl(ns_decl, "", &top_level_consts, state, &mut blocks)?
                 }
                 Rule::namespace_alias_decl => {
                     let alias = parse_namespace_alias_decl(pair)?;
@@ -421,8 +445,7 @@ fn parse_program_preprocessed(
             }
         }
 
-        let mut generated = Vec::<Block>::new();
-        rewrite_blocks_namespace_refs(&mut blocks, "", &HashMap::new(), state, &mut generated)?;
+        rewrite_blocks_namespace_refs(&mut blocks, "", &top_level_consts, state, &mut generated)?;
         blocks.extend(generated);
 
         Ok(Program { blocks })
@@ -1065,6 +1088,7 @@ fn parse_namespace_decl(
     for item in inner {
         match item.as_rule() {
             Rule::assert_block => items.push(NamespaceDeclItem::Assert(parse_assert_decl(item)?)),
+            Rule::const_block => items.push(NamespaceDeclItem::Const(parse_const_decl(item)?)),
             Rule::struct_block => items.push(NamespaceDeclItem::Struct(parse_struct_block(item)?)),
             Rule::def_block => items.push(NamespaceDeclItem::Def(parse_def_block(item)?)),
             Rule::proc_block => items.push(NamespaceDeclItem::Proc(parse_proc_block(item)?)),
@@ -1268,12 +1292,13 @@ fn parse_namespace_ref_pair(
 fn process_namespace_decl(
     decl: NamespaceTemplateDecl,
     parent_ns: &str,
+    const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     out: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
     let full_ns = namespace_join(parent_ns, &decl.name);
     if decl.params.is_empty() {
-        emit_namespace_items(&decl.items, &full_ns, state, out)
+        emit_namespace_items(&decl.items, &full_ns, const_env, state, out)
     } else {
         if state.namespace_templates.contains_key(&full_ns) {
             return Err(vec![Diagnostic::semantic(
@@ -1290,44 +1315,130 @@ fn process_namespace_decl(
 fn emit_namespace_items(
     items: &[NamespaceDeclItem],
     ns: &str,
+    const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     out: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
     for item in items {
         match item {
+            NamespaceDeclItem::Struct(s) => {
+                state.namespace_members.insert(namespace_join(ns, &s.name));
+            }
+            NamespaceDeclItem::Def(d) => {
+                state.namespace_members.insert(namespace_join(ns, &d.name));
+            }
+            NamespaceDeclItem::Proc(p) => {
+                state.namespace_members.insert(namespace_join(ns, &p.name));
+            }
+            NamespaceDeclItem::Assert(_)
+            | NamespaceDeclItem::Const(_)
+            | NamespaceDeclItem::Namespace(_)
+            | NamespaceDeclItem::Alias(_) => {}
+        }
+    }
+
+    let mut local_consts = const_env.clone();
+    let mut local_const_names = HashSet::<String>::new();
+    for item in items {
+        match item {
             NamespaceDeclItem::Assert(assert_decl) => {
                 let mut block = Block::Assert(assert_decl.clone());
                 let mut generated = Vec::<Block>::new();
+                rewrite_block_namespace_refs(&mut block, ns, &local_consts, state, &mut generated)?;
+                out.push(block);
+                out.extend(generated);
+            }
+            NamespaceDeclItem::Const(decl) => {
+                if !local_const_names.insert(decl.name.clone()) {
+                    return Err(vec![Diagnostic::semantic(
+                        format!("duplicate constant '{}' in namespace '{}'", decl.name, ns),
+                        0,
+                        0,
+                    )]);
+                }
+                let mut decl = decl.clone();
+                let mut generated = Vec::<Block>::new();
+                let value =
+                    finalize_const_decl_expr(&mut decl, ns, &local_consts, state, &mut generated)?;
+                out.extend(generated);
+                state
+                    .namespace_const_values
+                    .insert(namespace_join(ns, &decl.name), value.clone());
+                local_consts.insert(decl.name.clone(), value);
+            }
+            NamespaceDeclItem::Struct(s) => {
+                let mut s = s.clone();
+                s.name = namespace_join(ns, &s.name);
+                let mut block = Block::Struct(s);
+                let ns2 = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
+                let mut generated = Vec::<Block>::new();
                 rewrite_block_namespace_refs(
                     &mut block,
-                    ns,
-                    &HashMap::new(),
+                    &ns2,
+                    &local_consts,
                     state,
                     &mut generated,
                 )?;
                 out.push(block);
                 out.extend(generated);
             }
-            NamespaceDeclItem::Struct(s) => {
-                let mut s = s.clone();
-                s.name = namespace_join(ns, &s.name);
-                out.push(Block::Struct(s));
-            }
             NamespaceDeclItem::Def(d) => {
                 let mut d = d.clone();
                 d.name = namespace_join(ns, &d.name);
-                out.push(Block::Def(d));
+                let mut block = Block::Def(d);
+                let ns2 = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
+                let mut generated = Vec::<Block>::new();
+                rewrite_block_namespace_refs(
+                    &mut block,
+                    &ns2,
+                    &local_consts,
+                    state,
+                    &mut generated,
+                )?;
+                out.push(block);
+                out.extend(generated);
             }
             NamespaceDeclItem::Proc(p) => {
                 let mut p = p.clone();
                 p.name = namespace_join(ns, &p.name);
-                out.push(Block::Proc(p));
+                let mut block = Block::Proc(p);
+                let ns2 = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
+                let mut generated = Vec::<Block>::new();
+                rewrite_block_namespace_refs(
+                    &mut block,
+                    &ns2,
+                    &local_consts,
+                    state,
+                    &mut generated,
+                )?;
+                out.push(block);
+                out.extend(generated);
             }
             NamespaceDeclItem::Namespace(nested) => {
-                process_namespace_decl(nested.clone(), ns, state, out)?;
+                let mut nested = nested.clone();
+                if nested.params.is_empty() {
+                    let full_nested = namespace_join(ns, &nested.name);
+                    emit_instantiated_namespace_items(
+                        &nested.items,
+                        &full_nested,
+                        &local_consts,
+                        state,
+                        out,
+                    )?;
+                } else {
+                    let full_nested = namespace_join(ns, &nested.name);
+                    let mut captured = nested.captured_consts.clone();
+                    for (k, v) in &local_consts {
+                        captured.insert(k.clone(), v.clone());
+                    }
+                    nested.captured_consts = captured;
+                    state.namespace_templates.insert(full_nested, nested);
+                }
             }
             NamespaceDeclItem::Alias(alias) => {
-                register_namespace_alias(ns, alias.clone(), state)?;
+                let mut alias = alias.clone();
+                substitute_namespace_ref_consts(&mut alias.target, &local_consts);
+                register_namespace_alias(ns, alias, state)?;
             }
         }
     }
@@ -1502,17 +1613,7 @@ fn validate_compile_time_expr(
 ) -> Result<(), Vec<Diagnostic>> {
     match expr {
         Expr::Number(_) | Expr::Bool(_) => Ok(()),
-        Expr::Int(v) => {
-            if *v < i32::MIN as i64 || *v > i32::MAX as i64 {
-                Err(vec![Diagnostic::semantic(
-                    format!("{context}: value {v} is outside i32 bounds"),
-                    0,
-                    0,
-                )])
-            } else {
-                Ok(())
-            }
-        }
+        Expr::Int(_) => Ok(()),
         Expr::Var(name) => {
             if known_consts.contains_key(name) || is_builtin_compile_time_const(name) {
                 Ok(())
@@ -1546,6 +1647,38 @@ fn validate_compile_time_expr(
             0,
         )]),
     }
+}
+
+fn finalize_const_decl_expr(
+    decl: &mut ConstDecl,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<Expr, Vec<Diagnostic>> {
+    if is_builtin_compile_time_const(&decl.name) {
+        return Err(vec![Diagnostic::semantic(
+            format!(
+                "constant name '{}' is reserved as a builtin compile-time constant",
+                decl.name
+            ),
+            0,
+            0,
+        )]);
+    }
+
+    rewrite_expr(&mut decl.expr, current_ns, const_env, state, generated)?;
+    validate_compile_time_expr(&decl.expr, const_env, &format!("const '{}'", decl.name))?;
+
+    let expr = decl.expr.clone();
+    Ok(if let Some(ty) = decl.ty {
+        Expr::Cast {
+            to: ty,
+            expr: Box::new(expr),
+        }
+    } else {
+        expr
+    })
 }
 
 fn resolve_visible_alias(
@@ -1859,24 +1992,57 @@ fn emit_instantiated_namespace_items(
                     .insert(namespace_join(namespace, &p.name));
             }
             NamespaceDeclItem::Assert(_)
+            | NamespaceDeclItem::Const(_)
             | NamespaceDeclItem::Namespace(_)
             | NamespaceDeclItem::Alias(_) => {}
         }
     }
 
+    let mut local_consts = const_env.clone();
+    let mut local_const_names = HashSet::<String>::new();
     for item in items {
         match item {
             NamespaceDeclItem::Assert(assert_decl) => {
                 let mut block = Block::Assert(assert_decl.clone());
-                rewrite_block_namespace_refs(&mut block, namespace, const_env, state, generated)?;
+                rewrite_block_namespace_refs(
+                    &mut block,
+                    namespace,
+                    &local_consts,
+                    state,
+                    generated,
+                )?;
                 generated.push(block);
+            }
+            NamespaceDeclItem::Const(decl) => {
+                if !local_const_names.insert(decl.name.clone()) {
+                    return Err(vec![Diagnostic::semantic(
+                        format!(
+                            "duplicate constant '{}' in namespace '{}'",
+                            decl.name, namespace
+                        ),
+                        0,
+                        0,
+                    )]);
+                }
+                let mut decl = decl.clone();
+                let value = finalize_const_decl_expr(
+                    &mut decl,
+                    namespace,
+                    &local_consts,
+                    state,
+                    generated,
+                )?;
+                state
+                    .namespace_const_values
+                    .insert(namespace_join(namespace, &decl.name), value.clone());
+                local_consts.insert(decl.name.clone(), value);
             }
             NamespaceDeclItem::Struct(s) => {
                 let mut s = s.clone();
                 s.name = namespace_join(namespace, &s.name);
                 let mut block = Block::Struct(s);
                 let ns = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
-                rewrite_block_namespace_refs(&mut block, &ns, const_env, state, generated)?;
+                rewrite_block_namespace_refs(&mut block, &ns, &local_consts, state, generated)?;
                 generated.push(block);
             }
             NamespaceDeclItem::Def(d) => {
@@ -1884,7 +2050,7 @@ fn emit_instantiated_namespace_items(
                 d.name = namespace_join(namespace, &d.name);
                 let mut block = Block::Def(d);
                 let ns = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
-                rewrite_block_namespace_refs(&mut block, &ns, const_env, state, generated)?;
+                rewrite_block_namespace_refs(&mut block, &ns, &local_consts, state, generated)?;
                 generated.push(block);
             }
             NamespaceDeclItem::Proc(p) => {
@@ -1892,7 +2058,7 @@ fn emit_instantiated_namespace_items(
                 p.name = namespace_join(namespace, &p.name);
                 let mut block = Block::Proc(p);
                 let ns = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
-                rewrite_block_namespace_refs(&mut block, &ns, const_env, state, generated)?;
+                rewrite_block_namespace_refs(&mut block, &ns, &local_consts, state, generated)?;
                 generated.push(block);
             }
             NamespaceDeclItem::Namespace(nested) => {
@@ -1902,13 +2068,13 @@ fn emit_instantiated_namespace_items(
                     emit_instantiated_namespace_items(
                         &nested.items,
                         &full_nested,
-                        const_env,
+                        &local_consts,
                         state,
                         generated,
                     )?;
                 } else {
                     let mut captured = nested.captured_consts.clone();
-                    for (k, v) in const_env {
+                    for (k, v) in &local_consts {
                         captured.insert(k.clone(), v.clone());
                     }
                     nested.captured_consts = captured;
@@ -1917,7 +2083,7 @@ fn emit_instantiated_namespace_items(
             }
             NamespaceDeclItem::Alias(alias) => {
                 let mut alias = alias.clone();
-                substitute_namespace_ref_consts(&mut alias.target, const_env);
+                substitute_namespace_ref_consts(&mut alias.target, &local_consts);
                 register_namespace_alias(namespace, alias, state)?;
             }
         }
@@ -2018,21 +2184,38 @@ fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, Expr>) -> E
 }
 
 fn rewrite_blocks_namespace_refs(
-    blocks: &mut [Block],
+    blocks: &mut Vec<Block>,
     _current_ns: &str,
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
-    for block in blocks {
+    let mut scope_consts = const_env.clone();
+    let mut local_const_names = HashSet::<String>::new();
+    let mut rewritten = Vec::<Block>::with_capacity(blocks.len());
+    for mut block in std::mem::take(blocks) {
+        if let Block::Const(decl) = &mut block {
+            if !local_const_names.insert(decl.name.clone()) {
+                return Err(vec![Diagnostic::semantic(
+                    format!("duplicate top-level constant '{}'", decl.name),
+                    0,
+                    0,
+                )]);
+            }
+            let value = finalize_const_decl_expr(decl, "", &scope_consts, state, generated)?;
+            scope_consts.insert(decl.name.clone(), value);
+            continue;
+        }
         let current_ns = match block {
-            Block::Struct(s) => namespace_of_symbol(&s.name),
-            Block::Def(d) => namespace_of_symbol(&d.name),
-            Block::Proc(p) => namespace_of_symbol(&p.name),
+            Block::Struct(ref s) => namespace_of_symbol(&s.name),
+            Block::Def(ref d) => namespace_of_symbol(&d.name),
+            Block::Proc(ref p) => namespace_of_symbol(&p.name),
             _ => String::new(),
         };
-        rewrite_block_namespace_refs(block, &current_ns, const_env, state, generated)?;
+        rewrite_block_namespace_refs(&mut block, &current_ns, &scope_consts, state, generated)?;
+        rewritten.push(block);
     }
+    *blocks = rewritten;
     Ok(())
 }
 
@@ -2076,6 +2259,7 @@ fn rewrite_block_namespace_refs(
                 }
             }
         }
+        Block::Const(_) => {}
         Block::Buffers(decls) => {
             for decl in decls {
                 if let Some(ty) = &mut decl.ty {
@@ -2216,8 +2400,13 @@ fn rewrite_event_def(
     generated: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
     for param in &mut event.params {
-        if let EventParamType::Array { size, .. } = &mut param.ty {
-            rewrite_expr(size, current_ns, const_env, state, generated)?;
+        match &mut param.ty {
+            EventParamType::Array { size, .. } => {
+                rewrite_expr(size, current_ns, const_env, state, generated)?;
+            }
+            EventParamType::Scalar(_)
+            | EventParamType::Slice { .. }
+            | EventParamType::GenericSlice { .. } => {}
         }
     }
     rewrite_stmts(&mut event.body, current_ns, const_env, state, generated)
@@ -2344,15 +2533,33 @@ fn rewrite_buffer_type(
 }
 
 fn rewrite_stmts(
-    stmts: &mut [Stmt],
+    stmts: &mut Vec<Stmt>,
     current_ns: &str,
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
-    for stmt in stmts {
-        rewrite_stmt(stmt, current_ns, const_env, state, generated)?;
+    let mut scope_consts = const_env.clone();
+    let mut local_const_names = HashSet::<String>::new();
+    let mut rewritten = Vec::<Stmt>::with_capacity(stmts.len());
+    for mut stmt in std::mem::take(stmts) {
+        if let Stmt::Const { decl, .. } = &mut stmt {
+            if !local_const_names.insert(decl.name.clone()) {
+                return Err(vec![Diagnostic::semantic(
+                    format!("duplicate constant '{}' in scope", decl.name),
+                    0,
+                    0,
+                )]);
+            }
+            let value =
+                finalize_const_decl_expr(decl, current_ns, &scope_consts, state, generated)?;
+            scope_consts.insert(decl.name.clone(), value);
+            continue;
+        }
+        rewrite_stmt(&mut stmt, current_ns, &scope_consts, state, generated)?;
+        rewritten.push(stmt);
     }
+    *stmts = rewritten;
     Ok(())
 }
 
@@ -2364,6 +2571,7 @@ fn rewrite_stmt(
     generated: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
             generic_decl_ty,
@@ -2372,17 +2580,40 @@ fn rewrite_stmt(
         } => {
             match target {
                 AssignTarget::Var(name) => {
+                    if const_env.contains_key(name) {
+                        return Err(vec![Diagnostic::semantic(
+                            format!("cannot assign to constant '{}'", name),
+                            0,
+                            0,
+                        )]);
+                    }
                     if looks_like_namespace_ref(name) {
-                        *name = resolve_namespace_symbol_name(
+                        let resolved = resolve_namespace_symbol_name(
                             name, current_ns, const_env, state, generated,
                         )?;
+                        if state.namespace_const_values.contains_key(&resolved) {
+                            return Err(vec![Diagnostic::semantic(
+                                format!("cannot assign to constant '{}'", name),
+                                0,
+                                0,
+                            )]);
+                        }
+                        *name = resolved;
                     }
                 }
                 AssignTarget::Index { base, index } => {
                     if looks_like_namespace_ref(base) {
-                        *base = resolve_namespace_symbol_name(
+                        let resolved = resolve_namespace_symbol_name(
                             base, current_ns, const_env, state, generated,
                         )?;
+                        if state.namespace_const_values.contains_key(&resolved) {
+                            return Err(vec![Diagnostic::semantic(
+                                format!("cannot assign to constant '{}'", base),
+                                0,
+                                0,
+                            )]);
+                        }
+                        *base = resolved;
                     }
                     rewrite_expr(index, current_ns, const_env, state, generated)?;
                 }
@@ -2449,10 +2680,19 @@ fn rewrite_expr(
     match expr {
         Expr::Var(name) => {
             if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+                if let Some(value) = state.namespace_const_values.get(&qualified).cloned() {
+                    *expr = value;
+                    return rewrite_expr(expr, current_ns, const_env, state, generated);
+                }
                 *name = qualified;
             } else if looks_like_namespace_ref(name) {
-                *name =
+                let resolved =
                     resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
+                if let Some(value) = state.namespace_const_values.get(&resolved).cloned() {
+                    *expr = value;
+                    return rewrite_expr(expr, current_ns, const_env, state, generated);
+                }
+                *name = resolved;
             }
         }
         Expr::Index { base, index } => {

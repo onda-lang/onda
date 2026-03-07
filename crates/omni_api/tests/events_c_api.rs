@@ -167,6 +167,86 @@ sample { out1 = amp }
 }
 
 #[test]
+fn c_api_slice_events_report_dynamic_payload_and_dispatch() {
+    unsafe {
+        let frames = 512_i32;
+        let program = compile_program(
+            r#"
+outs { out1 }
+init { gate = 0.0 }
+events {
+  load(values: f32[]) {
+    gate = values[0] + f32(values.len())
+  }
+}
+sample { out1 = gate }
+"#,
+        );
+
+        let load = CString::new("load").expect("valid cstr");
+        let event_idx = omni_event_index(program.0, load.as_ptr());
+        assert_eq!(event_idx, 0);
+        assert_eq!(omni_event_payload_bytes(program.0, event_idx), -1);
+
+        let mut diag = omni_diag_t {
+            code: 0,
+            line: 0,
+            column: 0,
+            message: std::ptr::null(),
+            file: std::ptr::null(),
+            trace: std::ptr::null(),
+        };
+        let instance = omni_instance_create(program.0, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            omni_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+
+        let bad_payload = 2_i32.to_ne_bytes();
+        assert_eq!(
+            omni_trigger_event_by_index(
+                instance.0,
+                event_idx,
+                bad_payload.as_ptr().cast::<c_void>(),
+                bad_payload.len() as i32,
+            ),
+            -2
+        );
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(2_i32).to_ne_bytes());
+        payload.extend_from_slice(&0.25_f32.to_ne_bytes());
+        payload.extend_from_slice(&0.75_f32.to_ne_bytes());
+        assert_eq!(
+            omni_trigger_event_by_index(
+                instance.0,
+                event_idx,
+                payload.as_ptr().cast::<c_void>(),
+                payload.len() as i32,
+            ),
+            0
+        );
+        assert_eq!(omni_process_bound(instance.0, frames), 0);
+        for sample in out {
+            assert!((sample - 2.25).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
 fn c_api_reset_instance_state_restores_initial_state() {
     unsafe {
         let frames = 512_i32;

@@ -537,6 +537,7 @@ pub(super) fn infer_specialized_stmt_returns(
 ) -> Result<(), Diagnostic> {
     for stmt in stmts {
         match stmt {
+            Stmt::Const { .. } => {}
             Stmt::Assign {
                 target: AssignTarget::Var(name),
                 decl_ty,

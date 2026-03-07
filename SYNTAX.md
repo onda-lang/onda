@@ -25,6 +25,7 @@ Top-level blocks:
 - `ins`
 - `outs`
 - `params`
+- `const`
 - `events`
 - `buffers`
 - `init`
@@ -186,6 +187,23 @@ Constants:
   - `PI`/`TWO_PI`: `f64`
   - `SAMPLE_RATE`: `f32`
   - `BLOCK_SIZE`: `i32`
+
+User-defined compile-time constants:
+
+```omni
+const MAX_IR = 100000
+const HOP: i32 = BLOCK_SIZE / 2
+```
+
+Rules:
+- `const NAME = expr` and `const NAME: T = expr` are supported.
+- `T` is primitive scalar only in the current implementation (`f32`, `f64`, `i32`, `i64`, `bool`).
+- `expr` must be compile-time evaluable.
+- `const` is supported at top-level, inside namespaces, and inside executable scopes (`init`, `block`, `sample`, `events`, `def`).
+- Namespace consts are accessible from outside via qualified paths such as `NS::VALUE` and instantiated namespace forms like `std::convolution<8, 8>::HopSize`.
+- Visibility is lexical and forward references are not supported in the current implementation.
+- Reassignment is rejected.
+- Builtin compile-time constant names such as `SR` / `SAMPLE_RATE` / `BLOCK_SIZE` remain reserved.
 
 Compile-time assertions:
 
@@ -470,20 +488,32 @@ events {
 Event parameter types:
 - Primitive scalars (`f32`, `f64`, `i32`, `i64`, `bool`)
 - Fixed-size primitive arrays (`T[N]`)
+- Read-only primitive slices (`T[]`)
+- Proc-event-only generic primitive slices (`U[]` where `U` is a proc generic type parameter specialized to a primitive)
 - Untyped scalar event params default to `f32` (for example `note_on(note)` -> `note: f32`)
 
 Rules:
-- Top-level events are host-entry handlers; proc events are reached through explicit calls (for example `voice.note_on(...)`).
+- Top-level events are host-entry handlers.
+- Proc events are receiver-only proc commands reached through explicit proc-instance calls (for example `voice.note_on(...)`).
+- Slice event params such as `f32[]` are allowed on both top-level host events and proc events.
+- Generic slice event params such as `U[]` are allowed on proc events only, and `U` must specialize to a primitive type before lowering.
+- Proc-event calls are statements, not expressions.
+- Unqualified calls never resolve to proc events.
 - Top-level event handlers may write only to top-level state rooted in `init` declarations.
 - Proc event handlers may write proc state rooted in `init` declarations and proc params.
 - Event handlers cannot write input symbols.
 - Event handlers cannot write output symbols (including `outN` aliases).
 - Top-level params are immutable in top-level event handlers.
 - Event parameters are immutable.
-- Array event parameters are read-only references in handlers.
+- Array and slice event parameters are read-only references in handlers.
+- Event payload reads from fixed arrays and slices clamp the same way as other primitive array reads.
+- For event payload passing, prefer slices (`T[]`) over large fixed arrays (`T[N]`).
+- Keep fixed arrays for true fixed-size storage and fixed-shape interfaces where the compile-time size is part of the contract.
 - Proc event names must not collide with callable endpoint names in the same proc.
+- A proc cannot instantiate its own type directly in its state/`init` (for example `other = Voice()` inside `proc Voice` is invalid).
 - Unknown host event indices are ignored.
 - Invalid payload size for a known event is a runtime error.
+- For top-level host events with slice params, payload bytes are encoded as `i32 len` followed by contiguous element bytes.
 
 ## 9 Generics
 

@@ -583,7 +583,16 @@ pub(super) unsafe fn lower_data_element_ptr_with_bounds_mode(
     }
 
     let final_index = if clamp_index {
-        if let Some(const_idx) = try_constant_index_i64(index_expr) {
+        if let Some(len_val) = ctx.array_len_values.get(base).copied() {
+            let raw_index = if let Some(const_idx) = try_constant_index_i64(index_expr) {
+                LLVMConstInt(ctx.i32_ty, const_idx as u64, 1)
+            } else {
+                let raw_index =
+                    lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
+                cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0")
+            };
+            clamp_data_index_dynamic(ctx.builder, ctx.i32_ty, raw_index, len_val)
+        } else if let Some(const_idx) = try_constant_index_i64(index_expr) {
             LLVMConstInt(
                 ctx.i32_ty,
                 checked_constant_data_index_u64(

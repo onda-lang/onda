@@ -175,7 +175,7 @@ impl DeclaredBuffer {
 pub struct DeclaredEvent {
     name: String,
     params: Vec<DeclaredEventParam>,
-    payload_bytes: usize,
+    payload_bytes: Option<usize>,
 }
 
 impl DeclaredEvent {
@@ -187,7 +187,7 @@ impl DeclaredEvent {
         &self.params
     }
 
-    pub fn payload_bytes(&self) -> usize {
+    pub fn payload_bytes(&self) -> Option<usize> {
         self.payload_bytes
     }
 }
@@ -197,6 +197,7 @@ pub struct DeclaredEventParam {
     name: String,
     elem_ty: PrimitiveType,
     array_len: usize,
+    is_slice: bool,
     byte_offset: usize,
 }
 
@@ -213,11 +214,18 @@ impl DeclaredEventParam {
         self.array_len
     }
 
+    pub fn is_slice(&self) -> bool {
+        self.is_slice
+    }
+
     pub fn byte_offset(&self) -> usize {
         self.byte_offset
     }
 
     pub fn type_repr(&self) -> String {
+        if self.is_slice {
+            return format!("{}[]", primitive_type_name(self.elem_ty));
+        }
         if self.array_len == 1 {
             primitive_type_name(self.elem_ty).to_owned()
         } else {
@@ -225,8 +233,11 @@ impl DeclaredEventParam {
         }
     }
 
-    pub fn byte_size(&self) -> usize {
-        primitive_type_bytes(self.elem_ty).saturating_mul(self.array_len)
+    pub fn byte_size(&self) -> Option<usize> {
+        if self.is_slice {
+            return None;
+        }
+        Some(primitive_type_bytes(self.elem_ty).saturating_mul(self.array_len))
     }
 }
 
@@ -597,6 +608,7 @@ fn collect_stmt_buffer_write_usage(
     global_writes: &mut HashSet<String>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { base, index } = target {
                 mark_buffer_symbol_write(
@@ -1047,6 +1059,7 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
         .map(|event| {
             let mut params = Vec::<DeclaredEventParam>::new();
             let mut byte_offset = 0usize;
+            let mut payload_bytes = Some(0usize);
             for param in &event.params {
                 match param.ty {
                     TypedEventParamType::Scalar(elem_ty) => {
@@ -1054,29 +1067,144 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
                             name: param.name.clone(),
                             elem_ty,
                             array_len: 1,
+                            is_slice: false,
                             byte_offset,
                         });
                         byte_offset = byte_offset.saturating_add(primitive_type_bytes(elem_ty));
+                        if let Some(total) = payload_bytes.as_mut() {
+                            *total = total.saturating_add(primitive_type_bytes(elem_ty));
+                        }
                     }
                     TypedEventParamType::Array { elem, len } => {
                         params.push(DeclaredEventParam {
                             name: param.name.clone(),
                             elem_ty: elem,
                             array_len: len,
+                            is_slice: false,
                             byte_offset,
                         });
-                        byte_offset = byte_offset
-                            .saturating_add(primitive_type_bytes(elem).saturating_mul(len));
+                        let bytes = primitive_type_bytes(elem).saturating_mul(len);
+                        byte_offset = byte_offset.saturating_add(bytes);
+                        if let Some(total) = payload_bytes.as_mut() {
+                            *total = total.saturating_add(bytes);
+                        }
+                    }
+                    TypedEventParamType::Slice { elem } => {
+                        params.push(DeclaredEventParam {
+                            name: param.name.clone(),
+                            elem_ty: elem,
+                            array_len: 0,
+                            is_slice: true,
+                            byte_offset,
+                        });
+                        payload_bytes = None;
                     }
                 }
             }
             DeclaredEvent {
                 name: event.name.clone(),
                 params,
-                payload_bytes: byte_offset,
+                payload_bytes,
             }
         })
         .collect::<Vec<_>>()
+}
+
+fn validate_event_payload<'a>(desc: &'a DeclaredEvent, payload: &[u8]) -> Result<(), Diagnostic> {
+    if let Some(expected) = desc.payload_bytes() {
+        if payload.len() != expected {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "event '{}' expects {} payload bytes, got {}",
+                    desc.name(),
+                    expected,
+                    payload.len()
+                ),
+                0,
+                0,
+            ));
+        }
+        return Ok(());
+    }
+
+    let mut offset = 0usize;
+    for param in desc.params() {
+        if param.is_slice() {
+            if payload.len().saturating_sub(offset) < std::mem::size_of::<i32>() {
+                return Err(Diagnostic::runtime(
+                    format!(
+                        "event '{}' payload is truncated before slice parameter '{}'",
+                        desc.name(),
+                        param.name()
+                    ),
+                    0,
+                    0,
+                ));
+            }
+            let len_bytes: [u8; 4] = payload[offset..offset + 4]
+                .try_into()
+                .expect("slice len bytes");
+            let len = i32::from_ne_bytes(len_bytes);
+            if len < 0 {
+                return Err(Diagnostic::runtime(
+                    format!(
+                        "event '{}' slice parameter '{}' has negative length {}",
+                        desc.name(),
+                        param.name(),
+                        len
+                    ),
+                    0,
+                    0,
+                ));
+            }
+            let len = len as usize;
+            let data_bytes = primitive_type_bytes(param.elem_ty()).saturating_mul(len);
+            offset = offset.saturating_add(4);
+            if payload.len().saturating_sub(offset) < data_bytes {
+                return Err(Diagnostic::runtime(
+                    format!(
+                        "event '{}' payload is truncated in slice parameter '{}'; expected {} element bytes after length prefix",
+                        desc.name(),
+                        param.name(),
+                        data_bytes
+                    ),
+                    0,
+                    0,
+                ));
+            }
+            offset = offset.saturating_add(data_bytes);
+        } else {
+            let bytes = param.byte_size().unwrap_or(0);
+            if payload.len().saturating_sub(offset) < bytes {
+                return Err(Diagnostic::runtime(
+                    format!(
+                        "event '{}' payload is truncated in parameter '{}'; expected {} bytes",
+                        desc.name(),
+                        param.name(),
+                        bytes
+                    ),
+                    0,
+                    0,
+                ));
+            }
+            offset = offset.saturating_add(bytes);
+        }
+    }
+
+    if offset != payload.len() {
+        return Err(Diagnostic::runtime(
+            format!(
+                "event '{}' expects {} payload bytes for its dynamic layout, got {}",
+                desc.name(),
+                offset,
+                payload.len()
+            ),
+            0,
+            0,
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn lower_and_jit(typed: TypedProgram) -> Result<JitProgram, Vec<Diagnostic>> {
@@ -1327,7 +1455,9 @@ impl JitProgram {
     }
 
     pub fn event_payload_bytes(&self, index: usize) -> Option<usize> {
-        self.events.get(index).map(DeclaredEvent::payload_bytes)
+        self.events
+            .get(index)
+            .and_then(DeclaredEvent::payload_bytes)
     }
 
     pub fn input_type_bytes(&self, index: usize) -> Option<usize> {
@@ -1506,19 +1636,7 @@ impl JitProgram {
         let Some(desc) = self.event_descriptor(event_index) else {
             return Ok(());
         };
-        let expected = desc.payload_bytes();
-        if payload.len() != expected {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "event '{}' expects {} payload bytes, got {}",
-                    desc.name(),
-                    expected,
-                    payload.len()
-                ),
-                0,
-                0,
-            ));
-        }
+        validate_event_payload(desc, payload)?;
         #[cfg(feature = "llvm-orc")]
         {
             return trigger_event_orc(

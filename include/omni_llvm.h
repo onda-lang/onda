@@ -185,7 +185,7 @@ int omni_input_type_bytes(const omni_program_t* program, int index);
 int omni_output_type_bytes(const omni_program_t* program, int index);
 /* Returns parameter entry byte width, or -1 if invalid. */
 int omni_param_type_bytes(const omni_program_t* program, int index);
-/* Returns event payload byte width, or -1 if invalid. */
+/* Returns event payload byte width for fixed-shape events, or -1 if invalid or dynamic. */
 int omni_event_payload_bytes(const omni_program_t* program, int index);
 /* Returns buffer element primitive type id, or -1 if invalid. */
 int omni_buffer_elem_type(const omni_program_t* program, int index);

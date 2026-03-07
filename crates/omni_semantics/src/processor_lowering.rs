@@ -109,9 +109,13 @@ fn runtime_symbol_root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
 }
 
-fn collect_runtime_state_roots(state_scalars: &HashMap<String, PrimitiveType>) -> HashSet<String> {
+fn collect_runtime_state_roots(
+    state_scalars: &HashMap<String, PrimitiveType>,
+    state_arrays: &HashMap<String, usize>,
+) -> HashSet<String> {
     state_scalars
         .keys()
+        .chain(state_arrays.keys())
         .map(|name| runtime_symbol_root(name).to_owned())
         .collect::<HashSet<_>>()
 }
@@ -148,6 +152,8 @@ fn internal_proc_index_call_signature(include_field_arg: bool) -> FnSignature {
 
 fn coerce_typed_events(
     events: &[EventDef],
+    allow_slices: bool,
+    event_owner_desc: &str,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<TypedEvent> {
@@ -204,6 +210,32 @@ fn coerce_typed_events(
                     }
                     TypedEventParamType::Array { elem: *elem, len }
                 }
+                EventParamType::Slice { elem } => {
+                    if !allow_slices {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "{event_owner_desc} event parameter '{}.{}' cannot use slice type '{:?}[]'; top-level host events must stay fixed-size",
+                                event.name, param.name, elem
+                            ),
+                            0,
+                            0,
+                        ));
+                    }
+                    TypedEventParamType::Slice { elem: *elem }
+                }
+                EventParamType::GenericSlice { elem } => {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "{event_owner_desc} event parameter '{}.{}' has unresolved generic slice type '{}[]'; generic event slices must be specialized before lowering",
+                            event.name, param.name, elem
+                        ),
+                        0,
+                        0,
+                    ));
+                    TypedEventParamType::Slice {
+                        elem: PrimitiveType::F32,
+                    }
+                }
             };
             typed_params.push(TypedEventParam {
                 name: param.name.clone(),
@@ -254,6 +286,7 @@ fn expand_proc_event_specs(
                         name: param.name.clone(),
                         ty: *ty,
                     }],
+                    slice_elem_ty: None,
                 }),
                 EventParamType::Array { elem, size } => {
                     let context = format!(
@@ -281,6 +314,29 @@ fn expand_proc_event_specs(
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots,
+                        slice_elem_ty: None,
+                    });
+                }
+                EventParamType::Slice { elem } => {
+                    params.push(ProcEventParamSpec {
+                        name: param.name.clone(),
+                        slots: Vec::new(),
+                        slice_elem_ty: Some(*elem),
+                    });
+                }
+                EventParamType::GenericSlice { elem } => {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "processor '{}.{}' event parameter '{}' has unresolved generic slice type '{}[]'; generic event slices must be specialized before processor lowering",
+                            proc.name, event.name, param.name, elem
+                        ),
+                        0,
+                        0,
+                    ));
+                    params.push(ProcEventParamSpec {
+                        name: param.name.clone(),
+                        slots: Vec::new(),
+                        slice_elem_ty: Some(PrimitiveType::F32),
                     });
                 }
             }
@@ -400,6 +456,7 @@ fn validate_event_stmt_restrictions(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context(stmt, || match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, .. } => validate_event_assign_target_restrictions(
             target,
             locals,
@@ -499,6 +556,7 @@ pub(super) fn analyze_runtime_scope_stmts<'a>(
     declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    nested_proc_instances: &HashMap<String, ProcNestedState>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     struct_instances: &HashMap<String, String>,
     input_names: &HashSet<String>,
@@ -517,6 +575,7 @@ pub(super) fn analyze_runtime_scope_stmts<'a>(
         declared_symbols,
         state_arrays,
         state_array_struct_roots,
+        nested_proc_instances,
         proc_array_roots,
         struct_instances,
         registration_input_names: input_names,
@@ -564,6 +623,7 @@ pub(super) fn register_and_analyze_runtime_scope<'a>(
     declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    nested_proc_instances: &HashMap<String, ProcNestedState>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     struct_instances: &HashMap<String, String>,
     registration_input_names: &HashSet<String>,
@@ -588,6 +648,7 @@ pub(super) fn register_and_analyze_runtime_scope<'a>(
         declared_symbols,
         state_arrays,
         state_array_struct_roots,
+        nested_proc_instances,
         proc_array_roots,
         struct_instances,
         registration_input_names,
@@ -631,6 +692,7 @@ pub(super) fn analyze_runtime_events(
     declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    nested_proc_instances: &HashMap<String, ProcNestedState>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     struct_instances: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
@@ -669,6 +731,18 @@ pub(super) fn analyze_runtime_events(
                         },
                     );
                 }
+                TypedEventParamType::Slice { elem } => {
+                    array_event_params.insert(param.name.clone());
+                    event_local_data_aliases.insert(
+                        param.name.clone(),
+                        LocalArrayAliasInfo {
+                            len: 1,
+                            elem_ty: elem,
+                            elem_struct: None,
+                            writable: false,
+                        },
+                    );
+                }
             }
         }
 
@@ -701,6 +775,7 @@ pub(super) fn analyze_runtime_events(
             declared_symbols,
             state_arrays,
             state_array_struct_roots,
+            nested_proc_instances,
             if proc_array_roots.is_empty() {
                 &empty_proc_array_roots
             } else {
@@ -1451,6 +1526,7 @@ fn monomorphize_calls_in_stmt(
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { expr, .. } => {
             monomorphize_calls_in_expr(
                 expr,
@@ -2035,6 +2111,7 @@ fn rewrite_overloaded_calls_in_stmt_list(
 ) {
     for stmt in stmts {
         with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+            Stmt::Const { .. } => {}
             Stmt::Assign {
                 target,
                 decl_ty,
@@ -3584,7 +3661,8 @@ pub fn analyze_with_options(
         nested_proc_arrays,
         ..
     } = init_st;
-    let init_writable_roots = collect_runtime_state_roots(&state_scalars);
+    let init_writable_roots = collect_runtime_state_roots(&state_scalars, &state_arrays);
+    let empty_nested_proc_instances = HashMap::<String, ProcNestedState>::new();
 
     let block_known_scalars = build_known_scalars_from_state(&param_names, &state_scalars);
     let block_locals = HashSet::new();
@@ -3603,6 +3681,7 @@ pub fn analyze_with_options(
         &declared_symbols,
         &state_arrays,
         &state_array_struct_roots,
+        &empty_nested_proc_instances,
         &nested_proc_arrays,
         &struct_instances,
         &input_names,
@@ -3639,6 +3718,7 @@ pub fn analyze_with_options(
         &declared_symbols,
         &state_arrays,
         &state_array_struct_roots,
+        &empty_nested_proc_instances,
         &nested_proc_arrays,
         &struct_instances,
         &input_names,
@@ -3658,8 +3738,8 @@ pub fn analyze_with_options(
         &mut errors,
     );
 
-    let typed_events = coerce_typed_events(&events, options, &mut errors);
-    let final_state_roots = collect_runtime_state_roots(&state_scalars);
+    let typed_events = coerce_typed_events(&events, true, "top-level", options, &mut errors);
+    let final_state_roots = collect_runtime_state_roots(&state_scalars, &state_arrays);
     let immutable_event_roots = final_state_roots
         .difference(&init_writable_roots)
         .cloned()
@@ -3680,6 +3760,7 @@ pub fn analyze_with_options(
         &declared_symbols,
         &state_arrays,
         &state_array_struct_roots,
+        &empty_nested_proc_instances,
         &nested_proc_arrays,
         &struct_instances,
         &struct_defs,
@@ -3962,5 +4043,288 @@ pub fn analyze_with_options(
         })
     } else {
         Err(errors)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omni_frontend::{parse_program, AssignTarget, Expr, Stmt};
+
+    const WRAPPER_CONST_ZERO_LATENCY_REPRO: &str = r#"
+import std/convolution
+const MAX_IR = 100000
+const FFT_SIZE = 1024
+
+namespace convolution_wav_impulse<N = MAX_IR>:
+  proc Engine:
+    init:
+      conv = std::convolution<FFT_SIZE, N>::ZeroLatencyConvolver<f32>()
+    sample:
+      out1 = 0.0
+
+init:
+  engine = convolution_wav_impulse<MAX_IR>::Engine()
+
+sample:
+  out1 = 0.0
+"#;
+
+    #[test]
+    fn generic_proc_rewrite_specializes_nested_std_convolution_children_through_wrapper_namespace()
+    {
+        let mut program =
+            parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let mut errors = Vec::new();
+        rewrite_and_materialize_generic_processors(&mut program, &mut errors);
+        assert!(
+            errors.is_empty(),
+            "generic proc rewrite should not emit errors: {errors:?}"
+        );
+
+        let zero_latency = program
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Proc(proc) if proc.name.contains("::ZeroLatencyConvolver.__gen__f32") => {
+                    Some(proc)
+                }
+                _ => None,
+            })
+            .expect("specialized ZeroLatencyConvolver proc");
+
+        let init_calls = zero_latency
+            .init
+            .iter()
+            .filter_map(|stmt| match stmt {
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr:
+                        Expr::UserCall {
+                            name: call_name, ..
+                        },
+                    ..
+                } => Some((name.clone(), call_name.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            init_calls.iter().any(|(name, call_name)| {
+                name == "td" && call_name.contains("::TimeDomainConvolver.__gen__f32")
+            }),
+            "expected td ctor to be specialized, got {init_calls:?}"
+        );
+        assert!(
+            init_calls.iter().any(|(name, call_name)| {
+                name == "tail" && call_name.contains("::BlockConvolver.__gen__f32")
+            }),
+            "expected tail ctor to be specialized, got {init_calls:?}"
+        );
+    }
+
+    #[test]
+    fn build_proc_lowering_env_tracks_zero_latency_child_procs_through_wrapper_namespace() {
+        let mut program =
+            parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let mut errors = Vec::new();
+        rewrite_and_materialize_generic_processors(&mut program, &mut errors);
+        assert!(
+            errors.is_empty(),
+            "generic proc rewrite should not emit errors: {errors:?}"
+        );
+        let env = build_proc_lowering_env(&program, AnalysisOptions::default(), &mut errors)
+            .expect("proc lowering env should exist");
+        assert!(
+            errors.is_empty(),
+            "proc lowering env should not emit errors: {errors:?}"
+        );
+
+        let zero_latency_name = env
+            .proc_defs_by_name
+            .keys()
+            .find(|name| name.contains("::ZeroLatencyConvolver.__gen__f32"))
+            .cloned()
+            .expect("specialized ZeroLatencyConvolver proc");
+        let shape = env
+            .lowering_shapes
+            .get(&zero_latency_name)
+            .expect("lowering shape for specialized ZeroLatencyConvolver");
+
+        assert!(
+            shape.state.nested_procs.contains_key("td"),
+            "expected td nested proc, got {:?}",
+            shape.state.nested_procs.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            shape.state.nested_procs.contains_key("tail"),
+            "expected tail nested proc, got {:?}",
+            shape.state.nested_procs.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn desugar_processors_accepts_wrapper_namespace_zero_latency_repro() {
+        let program =
+            parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let mut errors = Vec::new();
+        let _desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        assert!(
+            errors.is_empty(),
+            "processor desugaring should not emit errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn desugared_wrapper_namespace_program_has_no_raw_nested_proc_event_calls_left() {
+        let program =
+            parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let mut errors = Vec::new();
+        let desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        assert!(
+            errors.is_empty(),
+            "processor desugaring should not emit errors: {errors:?}"
+        );
+
+        let mut offending = Vec::<String>::new();
+        for block in desugared.program.blocks {
+            match block {
+                Block::Def(def) => {
+                    for stmt in def.body {
+                        collect_offending_proc_event_calls_in_stmt(
+                            &stmt,
+                            &def.name,
+                            &mut offending,
+                        );
+                    }
+                }
+                Block::Events(events) => {
+                    for event in events {
+                        for stmt in event.body {
+                            collect_offending_proc_event_calls_in_stmt(
+                                &stmt,
+                                &format!("event:{}", event.name),
+                                &mut offending,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            offending.is_empty(),
+            "expected no raw nested proc event calls after desugaring, got {offending:?}"
+        );
+    }
+
+    fn collect_offending_proc_event_calls_in_stmt(
+        stmt: &Stmt,
+        owner: &str,
+        offending: &mut Vec<String>,
+    ) {
+        match stmt {
+            Stmt::Expr {
+                expr: Expr::UserCall { name, .. },
+                ..
+            } if name == "td.set_impulse_window"
+                || name == "tail.set_impulse_window"
+                || name == "td.reset"
+                || name == "tail.reset" =>
+            {
+                offending.push(format!("{owner}:{name}"));
+            }
+            Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
+                collect_offending_proc_event_calls_in_expr(expr, owner, offending);
+            }
+            Stmt::Expr { expr, .. } => {
+                collect_offending_proc_event_calls_in_expr(expr, owner, offending)
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_offending_proc_event_calls_in_expr(cond, owner, offending);
+                for stmt in then_branch {
+                    collect_offending_proc_event_calls_in_stmt(stmt, owner, offending);
+                }
+                for stmt in else_branch {
+                    collect_offending_proc_event_calls_in_stmt(stmt, owner, offending);
+                }
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                collect_offending_proc_event_calls_in_expr(start, owner, offending);
+                collect_offending_proc_event_calls_in_expr(end, owner, offending);
+                if let Some(step) = step {
+                    collect_offending_proc_event_calls_in_expr(step, owner, offending);
+                }
+                for stmt in body {
+                    collect_offending_proc_event_calls_in_stmt(stmt, owner, offending);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_offending_proc_event_calls_in_expr(cond, owner, offending);
+                for stmt in body {
+                    collect_offending_proc_event_calls_in_stmt(stmt, owner, offending);
+                }
+            }
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+    }
+
+    fn collect_offending_proc_event_calls_in_expr(
+        expr: &Expr,
+        owner: &str,
+        offending: &mut Vec<String>,
+    ) {
+        match expr {
+            Expr::UserCall { name, args, .. } => {
+                if name == "td.set_impulse_window"
+                    || name == "tail.set_impulse_window"
+                    || name == "td.reset"
+                    || name == "tail.reset"
+                {
+                    offending.push(format!("{owner}:{name}"));
+                }
+                for arg in args {
+                    collect_offending_proc_event_calls_in_expr(&arg.expr, owner, offending);
+                }
+            }
+            Expr::Index { index, .. } => {
+                collect_offending_proc_event_calls_in_expr(index, owner, offending);
+            }
+            Expr::ArrayCtor { spec, init } => {
+                collect_offending_proc_event_calls_in_expr(&spec.size, owner, offending);
+                if let Some(init) = init {
+                    for expr in init {
+                        collect_offending_proc_event_calls_in_expr(expr, owner, offending);
+                    }
+                }
+            }
+            Expr::Compare { lhs, rhs, .. }
+            | Expr::Logical { lhs, rhs, .. }
+            | Expr::Binary { lhs, rhs, .. } => {
+                collect_offending_proc_event_calls_in_expr(lhs, owner, offending);
+                collect_offending_proc_event_calls_in_expr(rhs, owner, offending);
+            }
+            Expr::Call { args, .. } | Expr::ArrayLiteral(args) => {
+                for expr in args {
+                    collect_offending_proc_event_calls_in_expr(expr, owner, offending);
+                }
+            }
+            Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+                collect_offending_proc_event_calls_in_expr(expr, owner, offending);
+            }
+            Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        }
     }
 }

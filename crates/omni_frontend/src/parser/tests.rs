@@ -3534,6 +3534,110 @@ sample:
 }
 
 #[test]
+fn parses_proc_event_slice_param_syntax() {
+    let src = r#"
+proc Loader:
+  events:
+    set_ir(values: f32[]):
+      last = values[0]
+  init:
+    last = 0.0
+  sample:
+    out1 = last
+outs 1
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("proc event slice syntax should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert_eq!(proc.events.len(), 1);
+    assert_eq!(proc.events[0].params.len(), 1);
+    match &proc.events[0].params[0].ty {
+        EventParamType::Slice { elem } => assert_eq!(*elem, PrimitiveType::F32),
+        other => panic!("expected proc event slice param, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_generic_proc_event_slice_param_syntax() {
+    let src = r#"
+proc Loader<T>:
+  init:
+    last = 0.0
+  events:
+    set_ir(values: T[]):
+      last = f32(values[0])
+  sample:
+    out1 = last
+outs 1
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("generic proc event slice syntax should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert_eq!(proc.type_params, vec!["T".to_owned()]);
+    match &proc.events[0].params[0].ty {
+        EventParamType::GenericSlice { elem } => assert_eq!(elem, "T"),
+        other => panic!("expected generic proc event slice param, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_generic_proc_event_slice_with_scalar_params() {
+    let src = r#"
+proc Loader<T>:
+  events:
+    set_ir(values: T[], start: i32, limit: i32):
+      x = start + limit
+  sample:
+    out1 = 0.0
+outs 1
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("generic proc event mixed param syntax should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert_eq!(proc.events.len(), 1);
+    assert_eq!(proc.events[0].params.len(), 3);
+    match &proc.events[0].params[0].ty {
+        EventParamType::GenericSlice { elem } => assert_eq!(elem, "T"),
+        other => panic!("expected generic proc event slice param, got {other:?}"),
+    }
+    match proc.events[0].params[1].ty {
+        EventParamType::Scalar(PrimitiveType::I32) => {}
+        ref other => panic!("expected i32 event param, got {other:?}"),
+    }
+    match proc.events[0].params[2].ty {
+        EventParamType::Scalar(PrimitiveType::I32) => {}
+        ref other => panic!("expected i32 event param, got {other:?}"),
+    }
+}
+
+#[test]
 fn defaults_untyped_event_params_to_f32() {
     let src = r#"
 outs { out1 }
@@ -4043,4 +4147,286 @@ sample:
         })
         .expect("NS::Pair struct");
     assert_eq!(pair.type_params, vec!["T".to_owned()]);
+}
+
+#[test]
+fn parses_and_rewrites_const_decls_in_top_level_namespace_and_local_scopes() {
+    let src = r#"
+const N = 4
+
+namespace NS:
+  const M = N
+  def value():
+    return f32(M)
+
+outs { out1 }
+events {
+  load(values: f32[N]) {}
+}
+sample {
+  const X = N
+  out1 = f32(X) + NS::value()
+}
+"#;
+    let program = parse_program(src).expect("const rewriting should succeed");
+
+    assert!(
+        !program.blocks.iter().any(|b| matches!(b, Block::Const(_))),
+        "const declarations should be stripped from the rewritten program"
+    );
+
+    let events = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Events(v) => Some(v),
+            _ => None,
+        })
+        .expect("top-level events");
+    assert!(matches!(
+        events[0].params[0].ty,
+        EventParamType::Array {
+            elem: PrimitiveType::F32,
+            size: Expr::Int(4),
+        }
+    ));
+
+    let def = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Def(d) if d.name == "NS::value" => Some(d),
+            _ => None,
+        })
+        .expect("NS::value def");
+    assert!(matches!(
+        def.body[0],
+        Stmt::Return {
+            expr: Expr::Cast {
+                to: PrimitiveType::F32,
+                ..
+            },
+            ..
+        }
+    ));
+
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+    assert_eq!(
+        sample.body.len(),
+        1,
+        "local const should be stripped from the sample body"
+    );
+}
+
+#[test]
+fn rewrites_qualified_namespace_const_paths_to_compile_time_values() {
+    let src = r#"
+import std/convolution
+
+outs {
+  out1
+  out2
+}
+sample {
+  out1 = f32(std::convolution<8, 8>::HopSize)
+  out2 = f32(std::convolution::HopSize)
+}
+"#;
+    let program =
+        parse_program(src).expect("qualified namespace const access should rewrite successfully");
+
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+
+    for stmt in &sample.body {
+        assert!(
+            !stmt_contains_var_with_suffix(stmt, "::HopSize"),
+            "expected HopSize namespace const paths to fold away, got {stmt:?}"
+        );
+    }
+}
+
+fn stmt_contains_var_with_suffix(stmt: &Stmt, suffix: &str) -> bool {
+    match stmt {
+        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,
+        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            expr_contains_var_with_suffix(expr, suffix)
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            expr_contains_var_with_suffix(cond, suffix)
+                || then_branch
+                    .iter()
+                    .any(|stmt| stmt_contains_var_with_suffix(stmt, suffix))
+                || else_branch
+                    .iter()
+                    .any(|stmt| stmt_contains_var_with_suffix(stmt, suffix))
+        }
+        Stmt::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            expr_contains_var_with_suffix(start, suffix)
+                || expr_contains_var_with_suffix(end, suffix)
+                || step
+                    .as_ref()
+                    .map(|expr| expr_contains_var_with_suffix(expr, suffix))
+                    .unwrap_or(false)
+                || body
+                    .iter()
+                    .any(|stmt| stmt_contains_var_with_suffix(stmt, suffix))
+        }
+        Stmt::While { cond, body, .. } => {
+            expr_contains_var_with_suffix(cond, suffix)
+                || body
+                    .iter()
+                    .any(|stmt| stmt_contains_var_with_suffix(stmt, suffix))
+        }
+    }
+}
+
+fn expr_contains_var_with_suffix(expr: &Expr, suffix: &str) -> bool {
+    match expr {
+        Expr::Var(name) => name.ends_with(suffix),
+        Expr::Index { base, index } => {
+            base.ends_with(suffix) || expr_contains_var_with_suffix(index, suffix)
+        }
+        Expr::ArrayCtor { spec, init } => {
+            expr_contains_var_with_suffix(&spec.size, suffix)
+                || init
+                    .as_ref()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .any(|expr| expr_contains_var_with_suffix(expr, suffix))
+                    })
+                    .unwrap_or(false)
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            expr_contains_var_with_suffix(lhs, suffix) || expr_contains_var_with_suffix(rhs, suffix)
+        }
+        Expr::Call { args, .. } | Expr::ArrayLiteral(args) => args
+            .iter()
+            .any(|expr| expr_contains_var_with_suffix(expr, suffix)),
+        Expr::UserCall { name, args, .. } => {
+            name.ends_with(suffix)
+                || args
+                    .iter()
+                    .any(|arg| expr_contains_var_with_suffix(&arg.expr, suffix))
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+            expr_contains_var_with_suffix(expr, suffix)
+        }
+        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => false,
+    }
+}
+
+#[test]
+fn instantiates_std_convolution_with_user_consts_and_rewrites_nested_proc_calls() {
+    let src = r#"
+import std/convolution
+
+const FFT_SIZE = 1024
+const MAX_IR = 100000
+
+proc Engine:
+  init:
+    conv = std::convolution<FFT_SIZE, MAX_IR>::ZeroLatencyConvolver<f32>()
+  sample:
+    out1 = 0.0
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("std::convolution const instantiation should parse");
+
+    let zero_latency = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) if p.name.ends_with("::ZeroLatencyConvolver") => Some(p),
+            _ => None,
+        })
+        .expect("instantiated ZeroLatencyConvolver proc");
+
+    let init_calls: Vec<_> = zero_latency
+        .init
+        .body
+        .iter()
+        .filter_map(|stmt| match stmt {
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                expr: Expr::UserCall {
+                    name: call_name, ..
+                },
+                ..
+            } => Some((name.clone(), call_name.clone())),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        init_calls
+            .iter()
+            .any(|(name, call_name)| name == "td" && call_name.contains("::TimeDomainConvolver")),
+        "expected td ctor to be namespaced, got {init_calls:?}"
+    );
+    assert!(
+        init_calls
+            .iter()
+            .any(|(name, call_name)| name == "tail" && call_name.contains("::BlockConvolver")),
+        "expected tail ctor to be namespaced, got {init_calls:?}"
+    );
+
+    let set_impulse = zero_latency
+        .events
+        .iter()
+        .find(|e| e.name == "set_impulse")
+        .expect("set_impulse event");
+    let event_calls: Vec<_> = set_impulse
+        .body
+        .iter()
+        .filter_map(|stmt| match stmt {
+            Stmt::Expr {
+                expr: Expr::UserCall { name, .. },
+                ..
+            } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        event_calls
+            .iter()
+            .any(|name| name == "td.set_impulse_window"),
+        "expected td event call to remain receiver-based, got {event_calls:?}"
+    );
+    assert!(
+        event_calls
+            .iter()
+            .any(|name| name == "tail.set_impulse_window"),
+        "expected tail event call to remain receiver-based, got {event_calls:?}"
+    );
 }

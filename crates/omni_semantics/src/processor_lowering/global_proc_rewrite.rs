@@ -255,6 +255,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
     }
 
     match stmt {
+        Stmt::Const { .. } => Vec::new(),
         Stmt::If {
             loc,
             cond,
@@ -739,6 +740,13 @@ pub(super) fn rewrite_top_level_proc_calls(
             }
         }
         init.body = rewritten_init;
+        rewrite_proc_calls_in_stmts(
+            &mut init.body,
+            &global_proc_instances,
+            &global_proc_array_slots,
+            &proc_api,
+            errors,
+        );
     }
 
     let mut called_proc_instances = HashSet::<String>::new();

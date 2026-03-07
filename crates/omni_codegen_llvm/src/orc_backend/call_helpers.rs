@@ -263,7 +263,8 @@ pub(super) fn is_orc_builtin_data_len_receiver(
     base: &str,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> bool {
-    lookup_orc_data_symbol_len(ctx, base, local_array_aliases).is_some()
+    ctx.array_len_values.contains_key(base)
+        || lookup_orc_data_symbol_len(ctx, base, local_array_aliases).is_some()
         || ctx.buffer_index.contains_key(base)
 }
 
@@ -307,6 +308,12 @@ pub(super) unsafe fn lower_orc_data_len_call(
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_builtin_instance_call_no_args(method_name, args, "ORC expression lowering")?;
+    if let Some(len_val) = ctx.array_len_values.get(base).copied() {
+        return Ok(OrcValue {
+            value: len_val,
+            ty: PrimitiveType::I32,
+        });
+    }
     if let Some(len) = lookup_orc_data_symbol_len(ctx, base, local_array_aliases) {
         let len_const = checked_len_const_i32(len, "ORC expression lowering")?;
         return Ok(OrcValue {
@@ -1561,7 +1568,11 @@ pub(super) unsafe fn lower_array_call_args_in_orc(
         return match alias {
             LocalArrayAlias::Primitive { base_ptr, len, .. } => {
                 out_args.push(*base_ptr);
-                out_args.push(LLVMConstInt(ctx.i32_ty, *len as u64, 0));
+                if let Some(len_val) = ctx.array_len_values.get(base).copied() {
+                    out_args.push(len_val);
+                } else {
+                    out_args.push(LLVMConstInt(ctx.i32_ty, *len as u64, 0));
+                }
                 Ok(())
             }
             LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(

@@ -1,5 +1,39 @@
 use super::*;
 
+pub(crate) fn specialize_generic_proc_event_param_type(
+    ty: &EventParamType,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    proc_name: &str,
+    event_name: &str,
+    param_name: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> EventParamType {
+    match ty {
+        EventParamType::Scalar(prim) => EventParamType::Scalar(*prim),
+        EventParamType::Array { elem, size } => EventParamType::Array {
+            elem: *elem,
+            size: size.clone(),
+        },
+        EventParamType::Slice { elem } => EventParamType::Slice { elem: *elem },
+        EventParamType::GenericSlice { elem } => match type_bindings.get(elem).copied() {
+            Some(bound) => EventParamType::Slice { elem: bound },
+            None => {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "processor '{}.{}' event parameter '{}' references unknown generic slice element type '{}'",
+                        proc_name, event_name, param_name, elem
+                    ),
+                    0,
+                    0,
+                ));
+                EventParamType::Slice {
+                    elem: PrimitiveType::F32,
+                }
+            }
+        },
+    }
+}
+
 pub(crate) fn specialize_generic_proc_decl_type(
     ty: &DeclType,
     type_bindings: &HashMap<String, PrimitiveType>,
@@ -137,6 +171,7 @@ pub(crate) fn rewrite_generic_array_ctor_stmt_types(
     type_bindings: &HashMap<String, PrimitiveType>,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
                 rewrite_generic_array_ctor_expr_types(index, type_bindings);
@@ -193,6 +228,7 @@ pub(crate) fn specialize_generic_typed_decls(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
             decl_ty,
@@ -500,6 +536,18 @@ pub(crate) fn specialize_generic_proc_template(
     let mut sample = template.sample.clone();
     let mut block_post = template.block_post.clone();
     let mut events = template.events.clone();
+    for event in &mut events {
+        for param in &mut event.params {
+            param.ty = specialize_generic_proc_event_param_type(
+                &param.ty,
+                &type_bindings,
+                &template.name,
+                &event.name,
+                &param.name,
+                errors,
+            );
+        }
+    }
     if let Some(init_default_ty) = init.default_ty.clone() {
         let specialized = specialize_generic_proc_decl_type(
             &init_default_ty,
@@ -759,6 +807,7 @@ pub(crate) fn rewrite_generic_proc_ctor_stmt(
     current_ns: &str,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
             decl_ty,

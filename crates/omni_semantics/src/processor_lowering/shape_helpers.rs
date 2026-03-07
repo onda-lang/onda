@@ -219,7 +219,13 @@ pub(super) fn compute_proc_shape(
             ));
         }
     }
-    let typed_events = coerce_typed_events(&proc.events, options, errors);
+    let typed_events = coerce_typed_events(
+        &proc.events,
+        true,
+        &format!("processor '{}'", proc.name),
+        options,
+        errors,
+    );
     let mut reserved = HashSet::<String>::new();
     reserved.extend(param_names.iter().cloned());
     reserved.extend(ins_names.iter().cloned());
@@ -272,6 +278,7 @@ pub(super) fn compute_proc_shape(
 
     // Unified init scope: use analyze_init_stmt
     let proc_resolution = Some(ProcResolutionCtx {
+        owner_proc_name: &proc.name,
         reserved: &reserved,
         current_ns: &proc_ns,
         proc_symbols,
@@ -480,7 +487,7 @@ pub(super) fn compute_proc_shape(
 
     // Snapshot init-scope scalar keys to detect new additions later
     let init_scalar_keys: HashSet<String> = proc_state_scalars.keys().cloned().collect();
-    let init_writable_roots = collect_runtime_state_roots(&proc_state_scalars);
+    let init_writable_roots = collect_runtime_state_roots(&proc_state_scalars, &proc_state_arrays);
 
     // Register + analyze block scope state
     let mut block_known_scalars = reserved.clone();
@@ -499,6 +506,7 @@ pub(super) fn compute_proc_shape(
         &proc_declared_symbols,
         &proc_state_arrays,
         &proc_state_array_struct_roots,
+        &state.nested_procs,
         &state.nested_proc_arrays,
         &proc_struct_instances_typed,
         &ins_names,
@@ -536,6 +544,7 @@ pub(super) fn compute_proc_shape(
         &proc_declared_symbols,
         &proc_state_arrays,
         &proc_state_array_struct_roots,
+        &state.nested_procs,
         &state.nested_proc_arrays,
         &proc_struct_instances_typed,
         &ins_names,
@@ -556,7 +565,7 @@ pub(super) fn compute_proc_shape(
     );
 
     // Analyze event statements via the same runtime statement analyzer path.
-    let final_state_roots = collect_runtime_state_roots(&proc_state_scalars);
+    let final_state_roots = collect_runtime_state_roots(&proc_state_scalars, &proc_state_arrays);
     let immutable_event_roots = final_state_roots
         .difference(&init_writable_roots)
         .cloned()
@@ -584,6 +593,7 @@ pub(super) fn compute_proc_shape(
         &proc_declared_symbols,
         &proc_state_arrays,
         &proc_state_array_struct_roots,
+        &state.nested_procs,
         &state.nested_proc_arrays,
         &proc_struct_instances_typed,
         &typed_struct_defs,

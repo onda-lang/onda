@@ -445,6 +445,7 @@ pub(super) unsafe fn build_process_ir(
                 param_arrays: &typed.param_arrays,
                 output_arrays: &typed.out_arrays,
                 array_len: &array_len,
+                array_len_values: HashMap::new(),
                 array_elem_ty: &array_elem_ty,
                 array_struct_roots: &array_struct_roots,
                 array_struct_len: &array_struct_len,
@@ -529,6 +530,7 @@ pub(super) unsafe fn build_process_ir(
                 param_arrays: &typed.param_arrays,
                 output_arrays: &typed.out_arrays,
                 array_len: &array_len,
+                array_len_values: HashMap::new(),
                 array_elem_ty: &array_elem_ty,
                 array_struct_roots: &array_struct_roots,
                 array_struct_len: &array_struct_len,
@@ -846,6 +848,7 @@ pub(super) unsafe fn build_process_ir(
                 oversample_alpha: Some(sub_alpha),
                 oversample_prev_inputs,
                 oversample_input_cache,
+                array_len_values: HashMap::new(),
                 loop_stack: Vec::new(),
             };
             let mut locals = HashMap::new();
@@ -1047,6 +1050,7 @@ pub(super) unsafe fn build_process_ir(
             param_arrays: &typed.param_arrays,
             output_arrays: &typed.out_arrays,
             array_len: &array_len,
+            array_len_values: HashMap::new(),
             array_elem_ty: &array_elem_ty,
             array_struct_roots: &array_struct_roots,
             array_struct_len: &array_struct_len,
@@ -1215,6 +1219,7 @@ pub(super) unsafe fn build_process_ir(
                 param_arrays: &typed.param_arrays,
                 output_arrays: &typed.out_arrays,
                 array_len: &array_len,
+                array_len_values: HashMap::new(),
                 array_elem_ty: &array_elem_ty,
                 array_struct_roots: &array_struct_roots,
                 array_struct_len: &array_struct_len,
@@ -1456,6 +1461,7 @@ pub(super) unsafe fn build_init_ir(
             param_arrays: &typed.param_arrays,
             output_arrays: &output_arrays,
             array_len: &array_len,
+            array_len_values: HashMap::new(),
             array_elem_ty: &array_elem_ty,
             array_struct_roots: &array_struct_roots,
             array_struct_len: &array_struct_len,
@@ -1729,6 +1735,7 @@ pub(super) unsafe fn build_event_ir(
                 param_arrays: &typed.param_arrays,
                 output_arrays: &output_arrays,
                 array_len: &array_len,
+                array_len_values: HashMap::new(),
                 array_elem_ty: &array_elem_ty,
                 array_struct_roots: &array_struct_roots,
                 array_struct_len: &array_struct_len,
@@ -1749,7 +1756,7 @@ pub(super) unsafe fn build_event_ir(
             let mut locals = HashMap::<String, OrcValue>::new();
             let mut local_aliases = HashMap::new();
             let mut local_array_aliases = HashMap::new();
-            let mut payload_offset = 0usize;
+            let mut payload_offset = const_i32(i32_ty, 0);
             for param in &event.params {
                 match param.ty {
                     TypedEventParamType::Scalar(ty) => {
@@ -1757,7 +1764,7 @@ pub(super) unsafe fn build_event_ir(
                             builder,
                             context,
                             payload_ptr,
-                            const_i32(i32_ty, payload_offset as i32),
+                            payload_offset,
                             ty,
                             b"evt_param_ptr_i8\0",
                             b"evt_param_ptr_typed\0",
@@ -1769,14 +1776,19 @@ pub(super) unsafe fn build_event_ir(
                             b"evt_param_load\0".as_ptr().cast(),
                         );
                         locals.insert(param.name.clone(), OrcValue { value: loaded, ty });
-                        payload_offset = payload_offset.saturating_add(primitive_type_bytes(ty));
+                        payload_offset = LLVMBuildAdd(
+                            builder,
+                            payload_offset,
+                            const_i32(i32_ty, primitive_type_bytes(ty) as i32),
+                            b"evt_payload_off_next\0".as_ptr().cast(),
+                        );
                     }
                     TypedEventParamType::Array { elem, len } => {
                         let base_ptr = build_typed_ptr_from_byte_offset(
                             builder,
                             context,
                             payload_ptr,
-                            const_i32(i32_ty, payload_offset as i32),
+                            payload_offset,
                             elem,
                             b"evt_arr_ptr_i8\0",
                             b"evt_arr_ptr_typed\0",
@@ -1789,8 +1801,68 @@ pub(super) unsafe fn build_event_ir(
                                 elem_ty: elem,
                             },
                         );
-                        payload_offset = payload_offset
-                            .saturating_add(primitive_type_bytes(elem).saturating_mul(len));
+                        payload_offset = LLVMBuildAdd(
+                            builder,
+                            payload_offset,
+                            const_i32(
+                                i32_ty,
+                                primitive_type_bytes(elem).saturating_mul(len) as i32,
+                            ),
+                            b"evt_payload_off_next\0".as_ptr().cast(),
+                        );
+                    }
+                    TypedEventParamType::Slice { elem } => {
+                        let len_ptr = build_typed_ptr_from_byte_offset(
+                            builder,
+                            context,
+                            payload_ptr,
+                            payload_offset,
+                            PrimitiveType::I32,
+                            b"evt_slice_len_i8\0",
+                            b"evt_slice_len_ptr\0",
+                        );
+                        let len_val = LLVMBuildLoad2(
+                            builder,
+                            llvm_ty_for_primitive(context, PrimitiveType::I32),
+                            len_ptr,
+                            b"evt_slice_len\0".as_ptr().cast(),
+                        );
+                        let data_offset = LLVMBuildAdd(
+                            builder,
+                            payload_offset,
+                            const_i32(i32_ty, std::mem::size_of::<i32>() as i32),
+                            b"evt_slice_data_off\0".as_ptr().cast(),
+                        );
+                        let base_ptr = build_typed_ptr_from_byte_offset(
+                            builder,
+                            context,
+                            payload_ptr,
+                            data_offset,
+                            elem,
+                            b"evt_slice_ptr_i8\0",
+                            b"evt_slice_ptr_typed\0",
+                        );
+                        local_array_aliases.insert(
+                            param.name.clone(),
+                            LocalArrayAlias::Primitive {
+                                base_ptr,
+                                len: 1,
+                                elem_ty: elem,
+                            },
+                        );
+                        lctx.array_len_values.insert(param.name.clone(), len_val);
+                        let slice_bytes = LLVMBuildMul(
+                            builder,
+                            len_val,
+                            const_i32(i32_ty, primitive_type_bytes(elem) as i32),
+                            b"evt_slice_bytes\0".as_ptr().cast(),
+                        );
+                        payload_offset = LLVMBuildAdd(
+                            builder,
+                            data_offset,
+                            slice_bytes,
+                            b"evt_payload_off_next\0".as_ptr().cast(),
+                        );
                     }
                 }
             }

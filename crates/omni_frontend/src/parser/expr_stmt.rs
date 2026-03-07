@@ -184,6 +184,7 @@ pub(super) fn parse_struct_method_decl(
 
 pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
     match pair.as_rule() {
+        Rule::const_decl => parse_const_stmt(pair),
         Rule::assign_stmt => parse_assign_stmt(pair),
         Rule::return_stmt => parse_return_stmt(pair),
         Rule::if_stmt => parse_if_stmt(pair),
@@ -199,6 +200,63 @@ pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> 
             0,
         )]),
     }
+}
+
+pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Diagnostic>> {
+    let pair = if pair.as_rule() == Rule::const_block {
+        let mut inner = pair.into_inner();
+        inner
+            .next()
+            .ok_or_else(|| vec![Diagnostic::syntax("missing const declaration", 0, 0)])?
+    } else {
+        pair
+    };
+    if pair.as_rule() != Rule::const_decl {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected const declaration",
+            0,
+            0,
+        )]);
+    }
+    let mut name = None::<String>;
+    let mut ty = None::<PrimitiveType>;
+    let mut expr = None::<Expr>;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::ident => {
+                if name.is_none() {
+                    name = Some(child.as_str().to_owned());
+                }
+            }
+            Rule::type_name => {
+                ty = Some(parse_primitive_type(child.as_str()).map_err(|d| vec![d])?);
+            }
+            Rule::expr => {
+                expr = Some(parse_expr_inner(child));
+            }
+            _ => {}
+        }
+    }
+    let Some(name) = name else {
+        return Err(vec![Diagnostic::syntax("missing const name", 0, 0)]);
+    };
+    let Some(expr) = expr else {
+        return Err(vec![Diagnostic::syntax(
+            format!("missing initializer for const '{name}'"),
+            0,
+            0,
+        )]);
+    };
+    Ok(ConstDecl { name, ty, expr })
+}
+
+fn parse_const_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
+    let decl = parse_const_decl(pair)?;
+    Ok(Stmt::Const {
+        loc: loc.clone(),
+        decl,
+    })
 }
 
 pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {

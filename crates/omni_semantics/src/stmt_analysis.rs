@@ -16,6 +16,7 @@ pub(crate) struct StmtExprAnalysisEnv<'a> {
     pub(crate) expr_env: ExprEnv<'a>,
     pub(crate) state_scalars: &'a HashMap<String, PrimitiveType>,
     pub(crate) declared_symbols: &'a DeclaredSymbolMap,
+    pub(crate) local_aliases: &'a LocalAliasTypes,
     pub(crate) local_array_aliases: &'a HashMap<String, LocalArrayAliasInfo>,
     pub(crate) input_names: &'a HashSet<String>,
     pub(crate) output_names: &'a HashSet<String>,
@@ -33,6 +34,7 @@ pub(crate) fn validate_and_infer_stmt_expr_type(
         env.state_scalars,
         env.declared_symbols,
         None,
+        env.local_aliases,
         env.local_array_aliases,
         env.expr_env.locals,
         env.input_names,
@@ -50,6 +52,25 @@ pub(crate) fn analyze_stmt_expr(
     errors: &mut Vec<Diagnostic>,
 ) {
     let _ = validate_and_infer_stmt_expr_type(expr, env, errors);
+}
+
+fn is_bare_array_ref_expr(expr: &Expr, env: StmtExprAnalysisEnv<'_>) -> bool {
+    let Expr::Var(name) = expr else {
+        return false;
+    };
+    env.expr_env.array_vars.contains_key(name)
+        || is_declared_data_array_symbol(env.declared_symbols, name)
+}
+
+pub(crate) fn analyze_proc_event_arg_expr(
+    expr: &Expr,
+    env: StmtExprAnalysisEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if is_bare_array_ref_expr(expr, env) {
+        return;
+    }
+    analyze_stmt_expr(expr, env, errors);
 }
 
 pub(crate) fn require_validated_bool_stmt_expr(

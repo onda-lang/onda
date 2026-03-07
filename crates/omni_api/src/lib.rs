@@ -978,6 +978,7 @@ pub unsafe extern "C" fn omni_event_payload_bytes(program: *const omni_program, 
     if program.is_null() {
         return -1;
     }
+    /* Dynamic slice-event payloads also report -1 here. */
     bytes_from_index(index, |idx| (*program).jit.event_payload_bytes(idx))
 }
 

@@ -12,6 +12,7 @@ pub(super) fn infer_stmt_calls(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context(stmt, || match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
                 infer_expr_calls(

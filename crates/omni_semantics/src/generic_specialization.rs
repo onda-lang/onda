@@ -153,6 +153,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
                 substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
@@ -410,6 +411,7 @@ pub(crate) fn generic_inference_seed_for_top_level(blocks: &[Block]) -> GenericI
     let mut locals = GenericInferenceLocals::default();
     for block in blocks {
         match block {
+            Block::Const(_) => {}
             Block::Ins(ports) | Block::Outs(ports) => {
                 for port in ports {
                     add_decl_type_to_generic_inference_locals(
@@ -732,6 +734,7 @@ pub(crate) fn rewrite_generic_struct_ctor_stmt(
     locals: &mut GenericInferenceLocals,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
             decl_ty,

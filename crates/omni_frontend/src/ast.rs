@@ -16,6 +16,7 @@ pub enum Block {
     Ins(Vec<PortDecl>),
     Outs(Vec<PortDecl>),
     Params(Vec<ParamDecl>),
+    Const(ConstDecl),
     Events(Vec<EventDef>),
     Buffers(Vec<BufferDecl>),
     Assert(AssertDecl),
@@ -33,6 +34,7 @@ impl Block {
             Self::Ins(_) => BlockKind::Ins,
             Self::Outs(_) => BlockKind::Outs,
             Self::Params(_) => BlockKind::Params,
+            Self::Const(_) => BlockKind::Const,
             Self::Events(_) => BlockKind::Events,
             Self::Buffers(_) => BlockKind::Buffers,
             Self::Assert(_) => BlockKind::Assert,
@@ -51,6 +53,7 @@ pub enum BlockKind {
     Ins,
     Outs,
     Params,
+    Const,
     Events,
     Buffers,
     Assert,
@@ -170,6 +173,13 @@ pub struct AssertDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ConstDecl {
+    pub name: String,
+    pub ty: Option<PrimitiveType>,
+    pub expr: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProcessorDef {
     pub name: String,
     pub type_params: Vec<String>,
@@ -258,6 +268,8 @@ pub struct EventParamDecl {
 pub enum EventParamType {
     Scalar(PrimitiveType),
     Array { elem: PrimitiveType, size: Expr },
+    Slice { elem: PrimitiveType },
+    GenericSlice { elem: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,6 +330,10 @@ pub struct SourceLoc {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
+    Const {
+        loc: Option<SourceLoc>,
+        decl: ConstDecl,
+    },
     Assign {
         loc: Option<SourceLoc>,
         target: AssignTarget,
@@ -365,6 +381,7 @@ pub enum Stmt {
 impl Stmt {
     pub fn loc(&self) -> Option<&SourceLoc> {
         match self {
+            Self::Const { loc, .. } => loc.as_ref(),
             Self::Assign { loc, .. } => loc.as_ref(),
             Self::Expr { loc, .. } => loc.as_ref(),
             Self::Return { loc, .. } => loc.as_ref(),

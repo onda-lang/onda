@@ -1887,6 +1887,108 @@ sample {
 }
 "#;
 
+const STDLIB_CONVOLUTION_TIME_DOMAIN_EVENT_EXAMPLE: &str = r#"
+import std/convolution
+outs { out1 }
+events {
+  set_ir(values: f32[4]) {
+    conv.set_impulse(values)
+  }
+}
+init {
+  conv = std::convolution<8, 4>::TimeDomainConvolver<f32>()
+}
+sample {
+  out1 = conv(in1)
+}
+"#;
+
+const STDLIB_CONVOLUTION_BLOCK_EXAMPLE: &str = r#"
+import std/convolution
+outs { out1 }
+init {
+  conv = std::convolution<8, 4>::BlockConvolver<f32>()
+  ir: f32[4] = [1.0, 0.5, 0.25, 0.0]
+  conv.set_impulse(ir)
+}
+sample {
+  out1 = conv(in1)
+}
+"#;
+
+const STDLIB_CONVOLUTION_ZERO_LATENCY_EXAMPLE: &str = r#"
+import std/convolution
+outs { out1 }
+init {
+  conv = std::convolution<8, 8>::ZeroLatencyConvolver<f32>()
+  ir: f32[5] = [1.0, 0.5, 0.25, 0.0, 0.125]
+  conv.set_impulse(ir)
+}
+sample {
+  out1 = conv(in1)
+}
+"#;
+
+const STDLIB_CONVOLUTION_ZERO_LATENCY_CONST_NAMESPACE_EXAMPLE: &str = r#"
+import std/convolution
+const FFT_SIZE = 8
+const MAX_IR = 8
+outs { out1 }
+init {
+  conv = std::convolution<FFT_SIZE, MAX_IR>::ZeroLatencyConvolver<f32>()
+  ir: f32[5] = [1.0, 0.5, 0.25, 0.0, 0.125]
+  conv.set_impulse(ir)
+}
+sample {
+  out1 = conv(in1)
+}
+"#;
+
+const STDLIB_CONVOLUTION_ZERO_LATENCY_LARGE_CONST_ANALYZE_EXAMPLE: &str = r#"
+import std/convolution
+const FFT_SIZE = 1024
+const MAX_IR = 100000
+outs { out1 }
+init {
+  conv = std::convolution<FFT_SIZE, MAX_IR>::ZeroLatencyConvolver<f32>()
+}
+sample {
+  out1 = 0.0
+}
+"#;
+
+const STDLIB_CONVOLUTION_ZERO_LATENCY_LARGE_CONST_WRAPPER_ANALYZE_EXAMPLE: &str = r#"
+import std/convolution
+const MAX_IR = 100000
+const FFT_SIZE = 1024
+
+namespace convolution_wav_impulse<N = MAX_IR>:
+  proc Engine:
+    init:
+      conv = std::convolution<FFT_SIZE, N>::ZeroLatencyConvolver<f32>()
+    sample:
+      out1 = 0.0
+
+init:
+  engine = convolution_wav_impulse<MAX_IR>::Engine()
+
+sample:
+  out1 = 0.0
+"#;
+
+const STDLIB_CONVOLUTION_F64_EXAMPLE: &str = r#"
+import std/convolution
+outs { out1 }
+init {
+  conv = std::convolution<8, 4>::TimeDomainConvolver<f64>()
+  ir: f64[4] = [1.0, 0.5, 0.25, 0.0]
+  conv.set_impulse(ir)
+}
+sample {
+  out1 = f32(conv(f64(in1)))
+}
+"#;
+
 const NESTED_STRUCT_FIELD_AND_METHOD_EXAMPLE: &str = r#"
 outs 2
 struct Inner<T>:
@@ -4281,6 +4383,76 @@ sample {
 }
 "#;
 
+const EVENT_PROC_CALL_FROM_TOP_LEVEL_INIT_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+outs { out1 }
+init {
+  voice = Voice()
+  voice.note_on(0.55)
+}
+sample {
+  out1 = voice()
+}
+"#;
+
+const EVENT_PROC_CALL_FROM_TOP_LEVEL_SAMPLE_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+outs { out1 }
+init {
+  voice = Voice()
+}
+sample {
+  voice.note_on(0.35)
+  out1 = voice()
+}
+"#;
+
+const EVENT_PROC_ARRAY_DYNAMIC_CALL_FROM_TOP_LEVEL_SAMPLE_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 99
+}
+sample {
+  voices[idx].note_on(0.42)
+  out1 = voices[idx]()
+}
+"#;
+
 const EVENT_PROC_ARRAY_INDEXED_FORWARD_EXAMPLE: &str = r#"
 proc Voice {
   params { amp = 0.0 }
@@ -4451,6 +4623,367 @@ init {
 }
 sample {
   out1 = racks[r_idx]()
+}
+"#;
+
+const PROC_EVENT_EXPRESSION_POSITION_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+outs { out1 }
+init {
+  voice = Voice()
+}
+sample {
+  out1 = voice.note_on(0.5)
+}
+"#;
+
+const PROC_EVENT_OWNING_SELF_CALL_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    self.note_on(0.5)
+    out1 = amp
+  }
+}
+outs { out1 }
+init {
+  voice = Voice()
+}
+sample {
+  out1 = voice()
+}
+"#;
+
+const PROC_EVENT_UNKNOWN_IN_PARENT_INIT_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+
+proc Bank {
+  outs { out1 }
+  init {
+    voice = Voice()
+    voice.not_real(0.5)
+  }
+  sample {
+    out1 = voice()
+  }
+}
+
+outs { out1 }
+init {
+  bank = Bank()
+}
+sample {
+  out1 = bank()
+}
+"#;
+
+const PROC_EVENT_MISSING_ARG_IN_TOP_LEVEL_SAMPLE_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+outs { out1 }
+init {
+  voice = Voice()
+}
+sample {
+  voice.note_on()
+  out1 = voice()
+}
+"#;
+
+const PROC_EVENT_SLICE_FROM_TOP_LEVEL_INIT_STATE_EXAMPLE: &str = r#"
+proc Loader {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    set_values(values: f32[]) {
+      sum = values[0] + values[1] + values[2] + values[3]
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+outs { out1 }
+init {
+  loader = Loader()
+  ir: f32[4] = [0.1, 0.2, 0.3, 0.4]
+  loader.set_values(ir)
+}
+sample {
+  out1 = loader()
+}
+"#;
+
+const PROC_EVENT_SLICE_FROM_PARENT_PROC_STATE_EXAMPLE: &str = r#"
+proc Loader {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    set_values(values: f32[]) {
+      sum = values[0] + values[1]
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+
+proc Bank {
+  outs { out1 }
+  init {
+    loader = Loader()
+    values: f32[2] = [0.25, 0.75]
+  }
+  sample {
+    loader.set_values(values)
+    out1 = loader()
+  }
+}
+
+outs { out1 }
+init {
+  bank = Bank()
+}
+sample {
+  out1 = bank()
+}
+"#;
+
+const GENERIC_PROC_EVENT_SLICE_EXAMPLE: &str = r#"
+proc Loader<T> {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    set_values(values: T[]) {
+      sum = f32(values[0]) + f32(values.len())
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+outs { out1 }
+init {
+  loader = Loader<f32>()
+  values: f32[2] = [0.25, 0.75]
+  loader.set_values(values)
+}
+sample {
+  out1 = loader()
+}
+"#;
+
+const GENERIC_PROC_EVENT_SLICE_WITH_SCALAR_PARAMS_EXAMPLE: &str = r#"
+proc Loader<T> {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    set_values(values: T[], start: i32, limit: i32) {
+      values_len: i32 = i32(values.len())
+      n: i32 = values_len - start
+      if (n < 0) { n = 0 }
+      if (n > limit) { n = limit }
+      sum = f32(n)
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+outs { out1 }
+init {
+  loader = Loader<f32>()
+  values: f32[4] = [0.25, 0.75, 1.25, 1.75]
+  loader.set_values(values, 1, 2)
+}
+sample {
+  out1 = loader()
+}
+"#;
+
+const TOP_LEVEL_EVENT_SLICE_PARAM_EXAMPLE: &str = r#"
+outs { out1 }
+init { gate = 0.0 }
+events {
+  load(values: f32[]) {
+    gate = values[0] + f32(values.len())
+  }
+}
+sample {
+  out1 = gate
+}
+"#;
+
+const EVENT_PROC_PARENT_INIT_CALL_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+
+proc Bank {
+  outs { out1 }
+  init {
+    voice = Voice()
+    voice.note_on(0.62)
+  }
+  sample {
+    out1 = voice()
+  }
+}
+
+outs { out1 }
+init {
+  bank = Bank()
+}
+sample {
+  out1 = bank()
+}
+"#;
+
+const EVENT_PROC_PARENT_BLOCK_CALL_EXAMPLE: &str = r#"
+proc Voice:
+  params:
+    amp = 0.0
+  outs:
+    out1
+  events:
+    note_on(value: f32):
+      amp = value
+  sample:
+    out1 = amp
+
+proc Bank:
+  outs:
+    out1
+  init:
+    voice = Voice()
+  block:
+    voice.note_on(0.73)
+    sample:
+      out1 = voice()
+
+outs:
+  out1
+init:
+  bank = Bank()
+sample:
+  out1 = bank()
+"#;
+
+const EVENT_PROC_PARENT_EVENT_CALLED_FROM_TOP_LEVEL_SAMPLE_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+
+proc Bank {
+  outs { out1 }
+  init {
+    voice = Voice()
+  }
+  events {
+    note_on(value: f32) {
+      voice.note_on(value)
+    }
+  }
+  sample {
+    out1 = voice()
+  }
+}
+
+outs { out1 }
+init {
+  bank = Bank()
+}
+sample {
+  bank.note_on(0.81)
+  out1 = bank()
+}
+"#;
+
+const PROC_SELF_RECURSIVE_INSTANCE_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1 }
+  init {
+    other = Voice()
+  }
+  sample {
+    out1 = 0.0
+  }
+}
+outs { out1 }
+sample {
+  out1 = 0.0
+}
+"#;
+
+const PROC_SELF_RECURSIVE_ARRAY_ERROR_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1 }
+  init {
+    voices: Voice[2] = Voice()
+  }
+  sample {
+    out1 = 0.0
+  }
+}
+outs { out1 }
+sample {
+  out1 = 0.0
 }
 "#;
 
@@ -4667,6 +5200,38 @@ fn decode_planar_f64(bytes: &[u8]) -> Vec<f64> {
             f64::from_ne_bytes(arr)
         })
         .collect()
+}
+
+fn read_wav_mono_f32(path: &str) -> Vec<f32> {
+    let mut reader = hound::WavReader::open(path).expect("wav should open");
+    let spec = reader.spec();
+    assert_eq!(spec.channels, 1, "expected mono wav");
+
+    match (spec.sample_format, spec.bits_per_sample) {
+        (hound::SampleFormat::Float, 32) => reader
+            .samples::<f32>()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("float wav samples"),
+        (hound::SampleFormat::Int, 8) => reader
+            .samples::<i8>()
+            .map(|s| s.map(|v| v as f32 / i8::MAX as f32))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("int8 wav samples"),
+        (hound::SampleFormat::Int, 16) => reader
+            .samples::<i16>()
+            .map(|s| s.map(|v| v as f32 / i16::MAX as f32))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("int16 wav samples"),
+        (hound::SampleFormat::Int, 24) | (hound::SampleFormat::Int, 32) => reader
+            .samples::<i32>()
+            .map(|s| s.map(|v| v as f32 / i32::MAX as f32))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("int24/int32 wav samples"),
+        _ => panic!(
+            "unsupported wav format: {:?} {} bits",
+            spec.sample_format, spec.bits_per_sample
+        ),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -5103,6 +5668,50 @@ fn proc_event_forwarding_from_top_level_event_runs() {
 }
 
 #[test]
+fn proc_event_call_from_top_level_init_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_PROC_CALL_FROM_TOP_LEVEL_INIT_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.55, 1e-6);
+    }
+}
+
+#[test]
+fn proc_event_call_from_top_level_sample_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_PROC_CALL_FROM_TOP_LEVEL_SAMPLE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.35, 1e-6);
+    }
+}
+
+#[test]
+fn proc_event_dynamic_proc_array_call_from_top_level_sample_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        EVENT_PROC_ARRAY_DYNAMIC_CALL_FROM_TOP_LEVEL_SAMPLE_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.42, 1e-6);
+    }
+}
+
+#[test]
 fn proc_array_indexed_event_forwarding_from_top_level_event_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -5118,6 +5727,50 @@ fn proc_array_indexed_event_forwarding_from_top_level_event_runs() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 0.6, 1e-6);
+    }
+}
+
+#[test]
+fn proc_event_call_from_parent_proc_init_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_PROC_PARENT_INIT_CALL_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.62, 1e-6);
+    }
+}
+
+#[test]
+fn proc_event_call_from_parent_proc_block_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_PROC_PARENT_BLOCK_CALL_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.73, 1e-6);
+    }
+}
+
+#[test]
+fn proc_event_call_from_parent_proc_event_via_top_level_sample_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        EVENT_PROC_PARENT_EVENT_CALLED_FROM_TOP_LEVEL_SAMPLE_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.81, 1e-6);
     }
 }
 
@@ -5207,6 +5860,159 @@ fn events_reject_forbidden_writes_and_immutability() {
         errs.iter()
             .any(|d| d.message.contains("immutable event array parameter")),
         "expected immutable event param error, got {:?}",
+        errs
+    );
+}
+
+#[test]
+fn proc_events_reject_expression_position_and_owning_self_calls() {
+    let parsed =
+        parse_program(PROC_EVENT_EXPRESSION_POSITION_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("proc event expression use should fail");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("statement-only") && d.message.contains("voice.note_on")),
+        "expected statement-only proc event error, got {:?}",
+        errs
+    );
+
+    let parsed =
+        parse_program(PROC_EVENT_OWNING_SELF_CALL_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("owning self proc event call should fail");
+    assert!(
+        errs.iter().any(|d| {
+            d.message
+                .contains("cannot call event 'Voice.note_on' on the owning proc instance")
+        }),
+        "expected owning-proc self-call error, got {:?}",
+        errs
+    );
+}
+
+#[test]
+fn proc_events_reject_unknown_targets_and_bad_argument_shapes() {
+    let parsed = parse_program(PROC_EVENT_UNKNOWN_IN_PARENT_INIT_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("unknown proc event target should fail");
+    assert!(
+        errs.iter().any(|d| {
+            d.message
+                .contains("unknown processor event 'voice.not_real'; expected one of [note_on]")
+        }),
+        "expected unknown proc event error, got {:?}",
+        errs
+    );
+
+    let parsed = parse_program(PROC_EVENT_MISSING_ARG_IN_TOP_LEVEL_SAMPLE_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("missing proc event argument should fail");
+    assert!(
+        errs.iter().any(|d| {
+            d.message.contains(
+                "processor event call 'voice.note_on(...)' is missing required argument 'value'",
+            )
+        }),
+        "expected missing proc event argument error, got {:?}",
+        errs
+    );
+}
+
+#[test]
+fn proc_event_slice_params_accept_internal_array_sources() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_EVENT_SLICE_FROM_TOP_LEVEL_INIT_STATE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_EVENT_SLICE_FROM_PARENT_PROC_STATE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn top_level_events_accept_slice_payloads() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_EVENT_SLICE_PARAM_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let event_idx = instance.event_index("load").expect("load event must exist");
+    assert_eq!(instance.event_payload_bytes(event_idx), None);
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(2_i32).to_ne_bytes());
+    payload.extend_from_slice(&0.25_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.75_f32.to_ne_bytes());
+    trigger_event_by_index(&mut instance, event_idx, &payload)
+        .expect("slice event trigger should succeed");
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 2.25, 1e-6);
+}
+
+#[test]
+fn generic_proc_events_accept_generic_slice_params() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_EVENT_SLICE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 2.25, 1e-6);
+}
+
+#[test]
+fn generic_proc_events_accept_generic_slice_and_scalar_params() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_EVENT_SLICE_WITH_SCALAR_PARAMS_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 2.0, 1e-6);
+}
+
+#[test]
+fn procs_reject_direct_self_recursive_instantiation() {
+    let parsed =
+        parse_program(PROC_SELF_RECURSIVE_INSTANCE_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("direct self-recursive proc state should fail");
+    assert!(
+        errs.iter().any(|d| {
+            d.message
+                .contains("processor 'Voice' cannot instantiate itself as state symbol 'other'")
+        }),
+        "expected direct self-recursive proc-instance error, got {:?}",
+        errs
+    );
+
+    let parsed =
+        parse_program(PROC_SELF_RECURSIVE_ARRAY_ERROR_EXAMPLE).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("direct self-recursive proc arrays should fail");
+    assert!(
+        errs.iter().any(|d| {
+            d.message
+                .contains("processor 'Voice' cannot instantiate itself as processor array 'voices'")
+        }),
+        "expected direct self-recursive proc-array error, got {:?}",
         errs
     );
 }
@@ -11159,6 +11965,212 @@ fn stdlib_realfft_hann_ola_passthrough_compile_and_run() {
 }
 
 #[test]
+fn stdlib_convolution_time_domain_event_compile_and_run() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_CONVOLUTION_TIME_DOMAIN_EVENT_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let idx = instance
+        .event_index("set_ir")
+        .expect("set_ir event must exist");
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&1.0_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.5_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.25_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.0_f32.to_ne_bytes());
+    trigger_event_by_index(&mut instance, idx, &payload).expect("event trigger should succeed");
+
+    let input = vec![1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-6);
+    assert_near(output[1], 0.5, 1e-6);
+    assert_near(output[2], 0.25, 1e-6);
+    assert_near(output[3], 0.0, 1e-6);
+    for sample in output.iter().skip(4) {
+        assert_near(*sample, 0.0, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_convolution_block_compile_and_run() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_CONVOLUTION_BLOCK_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 0.0, 1e-5);
+    assert_near(output[1], 0.0, 1e-5);
+    assert_near(output[2], 0.0, 1e-5);
+    assert_near(output[3], 0.0, 1e-5);
+    assert_near(output[4], 1.0, 1e-4);
+    assert_near(output[5], 0.5, 1e-4);
+    assert_near(output[6], 0.25, 1e-4);
+    assert_near(output[7], 0.0, 1e-4);
+}
+
+#[test]
+fn stdlib_convolution_zero_latency_compile_and_run() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_CONVOLUTION_ZERO_LATENCY_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-4);
+    assert_near(output[1], 0.5, 1e-4);
+    assert_near(output[2], 0.25, 1e-4);
+    assert_near(output[3], 0.0, 1e-4);
+    assert_near(output[4], 0.125, 1e-4);
+    for sample in output.iter().skip(5) {
+        assert_near(*sample, 0.0, 1e-4);
+    }
+}
+
+#[test]
+fn stdlib_convolution_zero_latency_with_const_namespace_args_compile_and_run() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        STDLIB_CONVOLUTION_ZERO_LATENCY_CONST_NAMESPACE_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-4);
+    assert_near(output[1], 0.5, 1e-4);
+    assert_near(output[2], 0.25, 1e-4);
+    assert_near(output[3], 0.0, 1e-4);
+    assert_near(output[4], 0.125, 1e-4);
+    for sample in output.iter().skip(5) {
+        assert_near(*sample, 0.0, 1e-4);
+    }
+}
+
+#[test]
+fn stdlib_convolution_zero_latency_large_const_namespace_args_analyze() {
+    let parsed = parse_program(STDLIB_CONVOLUTION_ZERO_LATENCY_LARGE_CONST_ANALYZE_EXAMPLE)
+        .expect("parse should succeed");
+    let _typed = analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: 44_100.0,
+            block_size: 1024,
+        },
+    )
+    .expect("semantic analysis should succeed");
+}
+
+#[test]
+fn stdlib_convolution_zero_latency_large_const_wrapper_namespace_analyze() {
+    let parsed = parse_program(STDLIB_CONVOLUTION_ZERO_LATENCY_LARGE_CONST_WRAPPER_ANALYZE_EXAMPLE)
+        .expect("parse should succeed");
+    let _typed = analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: 44_100.0,
+            block_size: 1024,
+        },
+    )
+    .expect("semantic analysis should succeed");
+}
+
+#[test]
+fn stdlib_convolution_generic_f64_compile_and_run() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_CONVOLUTION_F64_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-4);
+    assert_near(output[1], 0.5, 1e-4);
+    assert_near(output[2], 0.25, 1e-4);
+    assert_near(output[3], 0.0, 1e-4);
+}
+
+#[test]
+fn convolution_wav_impulse_example_reproduces_ir_from_event_payload() {
+    let src = include_str!("../../../examples/convolution_wav_impulse.omni");
+    let ir_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("examples")
+        .join("impulse.wav");
+    let ir = read_wav_mono_f32(ir_path.to_str().expect("utf8 path"));
+    assert_eq!(
+        ir.len(),
+        87_085,
+        "expected fixed impulse length for example"
+    );
+
+    let frames = 131_072;
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        src,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::Auto,
+            sample_rate: 44_100.0,
+            block_size: frames,
+            fast_math: false,
+        },
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let event_idx = instance
+        .event_index("load_ir")
+        .expect("load_ir event must exist");
+    assert_eq!(instance.event_payload_bytes(event_idx), None);
+
+    let mut payload =
+        Vec::with_capacity(std::mem::size_of::<i32>() + ir.len() * std::mem::size_of::<f32>());
+    payload.extend_from_slice(&(ir.len() as i32).to_ne_bytes());
+    for sample in &ir {
+        payload.extend_from_slice(&sample.to_ne_bytes());
+    }
+    trigger_event_by_index(&mut instance, event_idx, &payload)
+        .expect("event trigger should succeed");
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let latency = 0usize;
+    for sample in output.iter().take(latency) {
+        assert_near(*sample, 0.0, 1e-4);
+    }
+
+    for (idx, expected) in ir.iter().enumerate() {
+        assert_near(output[latency + idx], *expected, 1e-3);
+    }
+}
+
+#[test]
 fn nested_struct_field_and_method_compile_and_run() {
     let frames = 4;
     let (mut instance, _, _) = compile_instance(NESTED_STRUCT_FIELD_AND_METHOD_EXAMPLE, frames);
@@ -11795,5 +12807,181 @@ fn generic_proc_two_type_params_explicit_type_args_compile_and_run() {
 
     for sample in &output {
         assert_near(*sample, 3.25, 1e-6);
+    }
+}
+
+const TOP_LEVEL_CONST_EVENT_SIZE_EXAMPLE: &str = r#"
+const N = 3
+
+proc Voice {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    load(values: f32[N]) {
+      sum = values[0] + values[1] + values[2]
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+
+outs { out1 }
+events {
+  load(values: f32[N]) {
+    voice.load(values)
+  }
+}
+init {
+  voice = Voice()
+}
+sample {
+  out1 = voice()
+}
+"#;
+
+#[test]
+fn top_level_consts_can_drive_event_sizes_and_proc_apis() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_CONST_EVENT_SIZE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let event_idx = instance.event_index("load").expect("load event must exist");
+    assert_eq!(instance.event_payload_bytes(event_idx), Some(12));
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&1.0_f32.to_ne_bytes());
+    payload.extend_from_slice(&2.0_f32.to_ne_bytes());
+    payload.extend_from_slice(&3.0_f32.to_ne_bytes());
+    trigger_event_by_index(&mut instance, event_idx, &payload).expect("event trigger should work");
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 6.0, 1e-6);
+    }
+}
+
+const CONST_SCOPE_COMPILE_AND_RUN_EXAMPLE: &str = r#"
+const N = 3
+
+outs { out1 }
+
+def bonus() {
+  const X = 0.5
+  return X
+}
+
+init {
+  const BASE: i32 = 1
+  vals: f32[N] = [0.0, 0.0, 0.0]
+  vals[BASE + 1] = 1.25
+  seed = vals[2]
+}
+
+sample {
+  const SCALE: f32 = 2.0
+  out1 = seed + bonus() + SCALE
+}
+"#;
+
+#[test]
+fn consts_work_in_def_init_and_sample_scopes() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(CONST_SCOPE_COMPILE_AND_RUN_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.75, 1e-6);
+    }
+}
+
+const CONST_ASSIGN_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  const X = 1
+  X = 2
+  out1 = 0.0
+}
+"#;
+
+const CONST_RESERVED_NAME_ERROR_EXAMPLE: &str = r#"
+const SR = 1
+outs { out1 }
+sample {
+  out1 = 0.0
+}
+"#;
+
+const CONST_RUNTIME_INIT_ERROR_EXAMPLE: &str = r#"
+outs { out1 }
+sample {
+  x = 1.0
+  const BAD = x
+  out1 = 0.0
+}
+"#;
+
+const NAMESPACE_CONST_ACCESS_EXAMPLE: &str = r#"
+import std/convolution
+
+outs {
+  out1
+  out2
+}
+
+sample {
+  out1 = f32(std::convolution<8, 8>::HopSize)
+  out2 = f32(std::convolution::HopSize)
+}
+"#;
+
+#[test]
+fn consts_reject_assignment_reserved_names_and_runtime_initializers() {
+    let errs = parse_program(CONST_ASSIGN_ERROR_EXAMPLE)
+        .expect_err("assigning to a const should be rejected");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("cannot assign to constant 'X'")),
+        "expected const assignment error, got {:?}",
+        errs
+    );
+
+    let errs = parse_program(CONST_RESERVED_NAME_ERROR_EXAMPLE)
+        .expect_err("builtin const names should be reserved");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("constant name 'SR' is reserved")),
+        "expected reserved const name error, got {:?}",
+        errs
+    );
+
+    let errs = parse_program(CONST_RUNTIME_INIT_ERROR_EXAMPLE)
+        .expect_err("runtime initializer should be rejected");
+    assert!(
+        errs.iter().any(|d| {
+            d.message.contains("const 'BAD'") && d.message.contains("non-compile-time symbol 'x'")
+        }),
+        "expected compile-time const initializer error, got {:?}",
+        errs
+    );
+}
+
+#[test]
+fn namespace_consts_are_accessible_via_qualified_paths() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(NAMESPACE_CONST_ACCESS_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * 2];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for frame in 0..frames {
+        assert_near(output[frame * 2], 4.0, 1e-6);
+        assert_near(output[frame * 2 + 1], 128.0, 1e-6);
     }
 }

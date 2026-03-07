@@ -194,6 +194,7 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
     }
 
     match stmt {
+        Stmt::Const { .. } => Vec::new(),
         Stmt::If {
             loc,
             cond,
@@ -939,6 +940,14 @@ fn generate_nested_wrapper_defs(
                 let mut callee_event_in_array_slots = HashMap::<String, Vec<String>>::new();
                 for param in &event_spec.params {
                     callee_event_ins_names.insert(param.name.clone());
+                    if let Some(elem_ty) = param.slice_elem_ty {
+                        nested_event_params.push(omni_frontend::FnParamDecl {
+                            name: param.name.clone(),
+                            ty: Some(FnParamType::Array(Some(elem_ty))),
+                            default: None,
+                        });
+                        continue;
+                    }
                     let mut slot_names = Vec::<String>::new();
                     for slot in &param.slots {
                         slot_names.push(slot.name.clone());
@@ -1837,6 +1846,14 @@ pub(super) fn generate_lowered_proc_blocks(
                 let mut event_in_array_slots = HashMap::<String, Vec<String>>::new();
                 for param in &event_spec.params {
                     event_ins_names.insert(param.name.clone());
+                    if let Some(elem_ty) = param.slice_elem_ty {
+                        event_params.push(omni_frontend::FnParamDecl {
+                            name: param.name.clone(),
+                            ty: Some(FnParamType::Array(Some(elem_ty))),
+                            default: None,
+                        });
+                        continue;
+                    }
                     let mut slot_names = Vec::<String>::new();
                     for slot in &param.slots {
                         slot_names.push(slot.name.clone());

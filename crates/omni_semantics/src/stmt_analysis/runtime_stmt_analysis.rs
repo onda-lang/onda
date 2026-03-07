@@ -162,6 +162,7 @@ pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
     pub declared_symbols: &'a DeclaredSymbolMap,
     pub state_arrays: &'a HashMap<String, usize>,
     pub state_array_struct_roots: &'a HashMap<String, ArrayStructRootInfo>,
+    pub nested_proc_instances: &'a HashMap<String, ProcNestedState>,
     pub struct_instances: &'a HashMap<String, String>,
     pub registration_input_names: &'a HashSet<String>,
     pub registration_output_names: &'a HashSet<String>,
@@ -174,6 +175,22 @@ pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
     pub fn_signatures: &'a HashMap<String, FnSignature>,
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub options: AnalysisOptions,
+}
+
+fn is_proc_event_stmt_call(
+    expr: &Expr,
+    nested_proc_instances: &HashMap<String, ProcNestedState>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+) -> bool {
+    let Expr::UserCall { name, .. } = expr else {
+        return false;
+    };
+    let Some((base, _event_name)) = split_dot_path(name) else {
+        return false;
+    };
+    base == PROC_INDEX_CALL_SENTINEL
+        || nested_proc_instances.contains_key(base)
+        || proc_array_roots.contains_key(base)
 }
 
 #[derive(Clone)]
@@ -275,6 +292,7 @@ fn analyze_runtime_stmt_inner(
     let declared_symbols = ctx.declared_symbols;
     let state_arrays = ctx.state_arrays;
     let state_array_struct_roots = ctx.state_array_struct_roots;
+    let nested_proc_instances = ctx.nested_proc_instances;
     let struct_instances = ctx.struct_instances;
     let input_names = ctx.input_names;
     let output_names = ctx.output_names;
@@ -304,12 +322,14 @@ fn analyze_runtime_stmt_inner(
             },
             state_scalars,
             declared_symbols,
+            local_aliases,
             local_array_aliases,
             input_names,
             output_names,
             param_names,
         };
         match stmt {
+            Stmt::Const { .. } => {}
             Stmt::Assign {
                 target,
                 decl_ty,
@@ -348,7 +368,19 @@ fn analyze_runtime_stmt_inner(
             }
             Stmt::Expr { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-                analyze_stmt_expr(&expr, stmt_expr_env(ctx.scope), errors);
+                if is_proc_event_stmt_call(&expr, nested_proc_instances, proc_array_roots) {
+                    if let Expr::UserCall { args, .. } = &expr {
+                        for arg in args {
+                            analyze_proc_event_arg_expr(
+                                &arg.expr,
+                                stmt_expr_env(ctx.scope),
+                                errors,
+                            );
+                        }
+                    }
+                } else {
+                    analyze_stmt_expr(&expr, stmt_expr_env(ctx.scope), errors);
+                }
             }
             Stmt::Return { .. } => {
                 errors.push(Diagnostic::semantic(
@@ -608,6 +640,7 @@ fn analyze_assign_sample(
                 state_scalars,
                 declared_symbols,
                 None,
+                local_aliases,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -623,6 +656,7 @@ fn analyze_assign_sample(
                 state_scalars,
                 declared_symbols,
                 None,
+                local_aliases,
                 local_array_aliases,
                 locals,
                 input_names,
@@ -752,6 +786,7 @@ fn analyze_assign_sample(
                                         state_scalars,
                                         declared_symbols,
                                         None,
+                                        local_aliases,
                                         local_array_aliases,
                                         locals,
                                         input_names,
@@ -854,6 +889,7 @@ fn analyze_assign_sample(
                     state_scalars,
                     declared_symbols,
                     None,
+                    local_aliases,
                     local_array_aliases,
                     locals,
                     input_names,
@@ -870,6 +906,7 @@ fn analyze_assign_sample(
                         state_scalars,
                         declared_symbols,
                         None,
+                        local_aliases,
                         local_array_aliases,
                         locals,
                         input_names,
@@ -937,6 +974,7 @@ fn analyze_assign_sample(
                     state_scalars,
                     declared_symbols,
                     None,
+                    local_aliases,
                     local_array_aliases,
                     locals,
                     input_names,
@@ -1009,6 +1047,7 @@ fn analyze_assign_sample(
                                 state_scalars,
                                 declared_symbols,
                                 None,
+                                local_aliases,
                                 local_array_aliases,
                                 locals,
                                 input_names,
@@ -1101,6 +1140,7 @@ fn analyze_assign_sample(
                             state_scalars,
                             declared_symbols,
                             None,
+                            local_aliases,
                             local_array_aliases,
                             locals,
                             input_names,
@@ -1238,6 +1278,7 @@ fn analyze_assign_sample(
                 state_scalars,
                 declared_symbols,
                 None,
+                local_aliases,
                 local_array_aliases,
                 locals,
                 input_names,

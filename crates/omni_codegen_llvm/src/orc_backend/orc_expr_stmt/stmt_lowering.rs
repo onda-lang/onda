@@ -8,6 +8,7 @@ pub(super) unsafe fn lower_stmt(
     local_array_aliases: &mut HashMap<String, LocalArrayAlias>,
 ) -> Result<(), Diagnostic> {
     match stmt {
+        Stmt::Const { .. } => Ok(()),
         Stmt::Assign {
             target,
             decl_ty,

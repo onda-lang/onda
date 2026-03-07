@@ -98,6 +98,7 @@ pub(crate) fn infer_numbered_io_from_sample(sample: &[Stmt]) -> IoInference {
 
 pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {
                 AssignTarget::Var(name) => {
@@ -260,6 +261,7 @@ fn register_scope_stmt_state(
     registration_mode: RuntimeRegistrationMode,
 ) {
     match stmt {
+        Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
             decl_ty,

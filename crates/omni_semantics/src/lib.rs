@@ -93,6 +93,7 @@ pub struct TypedEventParam {
 pub enum TypedEventParamType {
     Scalar(PrimitiveType),
     Array { elem: PrimitiveType, len: usize },
+    Slice { elem: PrimitiveType },
 }
 
 #[derive(Debug, Clone)]

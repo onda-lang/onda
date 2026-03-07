@@ -47,7 +47,7 @@
 ## Current implementation snapshot (2026-03)
 
 ### Language and parser
-- Top-level and proc blocks: `ins`, `outs`, `params`, `events`, `buffers`, `init`, `block`, `sample`, `def`, `struct`, `proc`/`processor`, `namespace`.
+- Top-level and proc blocks: `ins`, `outs`, `params`, `const`, `events`, `buffers`, `init`, `block`, `sample`, `def`, `struct`, `proc`/`processor`, `namespace`.
 - Both brace and indentation syntaxes are supported.
 - Statement separators support both newline and `;`.
 - Import system is implemented:
@@ -109,6 +109,12 @@
   - `>>` lowers as arithmetic right shift.
 - Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
   - Default constant types: `PI`/`TWO_PI` are `f64`; `SAMPLE_RATE` is `f32`; `BLOCK_SIZE` is `i32`.
+- User-defined scalar compile-time constants are supported via `const NAME = expr` and optional typed form `const NAME: T = expr`.
+  - Supported in top-level, namespaces, and executable scopes (`init`, `block`, `sample`, `events`, `def`).
+  - Namespace consts can be referenced from outside with qualified paths and namespace instantiation, for example `NS::VALUE` or `std::convolution<8, 8>::HopSize`.
+  - Initializers must be compile-time evaluable.
+  - Visibility is lexical; forward references and cycles are not part of the current implementation.
+  - Reassignment is rejected.
 - `std/prelude` is auto-imported during semantic analysis.
 - `std/prelude` currently imports `std/math` and `std/lookup`.
 - Local symbols with the same name take precedence over auto-imported unqualified std helpers; qualified calls remain available via `std::math::...` and `std::lookup::...`.
@@ -138,14 +144,19 @@
     - `for i @ STEP in A..B` (`@ STEP` optional, defaults to `1`; use negative step for descending)
 - Events:
   - Top-level and proc-level `events` blocks are supported.
-  - Event params support primitive scalars and fixed-size primitive arrays.
-  - Event array params are passed as read-only references.
+  - Top-level event params support primitive scalars and fixed-size primitive arrays.
+- Event params support read-only primitive slice forms such as `f32[]` for both top-level and proc events.
+- Proc events also support generic primitive slices such as `T[]` when `T` is a proc generic type parameter that specializes to a primitive.
+- Event array/slice params are passed as read-only references.
   - Event params without explicit type default to `f32`.
   - Event handlers can declare local fixed-size primitive arrays via untyped literals (for example `b = [1, 2, 3]`).
   - Event handlers can write init-root state only (plus local symbols); output/input/event-param writes are rejected.
   - Top-level handlers are host-triggered and run immediately on the audio thread.
   - Unknown host event indices are ignored; payload-size mismatches are runtime errors.
-  - Proc events are reached through explicit calls/forwarding (for example `voice.note_on(...)`).
+  - Proc events are receiver-only synchronous proc commands reached through explicit calls/forwarding (for example `voice.note_on(...)`).
+  - Proc-event calls are statement-only; unqualified calls never resolve to proc events.
+  - A proc cannot directly instantiate its own proc type as state.
+  - The full target semantics for synchronous proc events are tracked in `SYNC_EVENT_SPEC.md`.
 - Functions (`def`):
   - positional + named args, default values, early return.
   - `def` bodies are lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not in scope unless passed as parameters.
@@ -242,6 +253,7 @@
   - top-level ranged params are hoisted and clamped once per block in JITed code.
   - top-level ranged inputs are hoisted and clamped once per sample in JITed code.
   - host-triggered events execute synchronously via index-based dispatch.
+  - host-triggered slice events use dynamic payload layout: `i32 len` followed by contiguous element bytes.
 
 ## C API and CLI
 - C ABI exposes compile/create/process/destroy and bind/set calls:
@@ -252,6 +264,7 @@
   - buffers: pointer + frames + channels + element type binding
   - outputs: `bind_output` and `copy_output`
 - Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
+  - `omni_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
 - CLI (`omni`) supports:
   - `compile <file> [--ir] [--meta]`
   - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--ir]`
