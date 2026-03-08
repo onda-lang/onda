@@ -357,6 +357,7 @@ fn validate_event_assign_target_restrictions(
     let (base, indexed) = match target {
         AssignTarget::Var(name) => (name.as_str(), false),
         AssignTarget::Index { base, .. } => (base.as_str(), true),
+        AssignTarget::Slice { base, .. } => (base.as_str(), true),
     };
     let root = runtime_symbol_root(base);
 
@@ -910,12 +911,14 @@ fn build_proc_lowering_env(
         for method in &struct_def.methods {
             let mut desugared_method_body = method.body.clone();
             let mut method_struct_instances = HashMap::<String, String>::new();
+            let mut method_struct_array_roots = HashMap::<String, String>::new();
             if method.params.first().map(|p| p.name.as_str()) == Some("self") {
-                register_struct_instance_roots(
+                register_struct_instance_and_array_roots(
                     "self",
                     struct_name,
                     &typed_struct_defs,
                     &mut method_struct_instances,
+                    &mut method_struct_array_roots,
                 );
             }
             let method_ns = namespace_of_symbol(struct_name);
@@ -923,6 +926,7 @@ fn build_proc_lowering_env(
                 desugar_init_instance_method_calls(
                     stmt,
                     &mut method_struct_instances,
+                    &mut method_struct_array_roots,
                     &typed_struct_defs,
                     &method_ns,
                     &callable_symbols_for_method_sugar,
@@ -1164,6 +1168,7 @@ fn infer_scalar_expr_type_for_overload(
             }
             None
         }
+        Expr::Slice { .. } => None,
         Expr::Cast { to, .. } => Some(*to),
         Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
             Some(PrimitiveType::Bool)
@@ -1265,6 +1270,13 @@ fn infer_overload_arg_shape(expr: &Expr, env: &OverloadRewriteEnv) -> OverloadAr
                 }
             }
             OverloadArgShape::Unknown
+        }
+        Expr::Slice { base, .. } => {
+            if env.array_elem_types.contains_key(base) || env.buffer_types.contains_key(base) {
+                OverloadArgShape::Array
+            } else {
+                OverloadArgShape::Unknown
+            }
         }
         _ => {
             if let Some(ty) = infer_scalar_expr_type_for_overload(expr, env) {
@@ -2053,6 +2065,14 @@ fn rewrite_overloaded_calls_in_expr(
     match expr {
         Expr::Index { index, .. } => {
             rewrite_overloaded_calls_in_expr(index, env, overloads, errors);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                rewrite_overloaded_calls_in_expr(start, env, overloads, errors);
+            }
+            if let Some(end) = end {
+                rewrite_overloaded_calls_in_expr(end, env, overloads, errors);
+            }
         }
         Expr::ArrayCtor { spec, init } => {
             rewrite_overloaded_calls_in_expr(&mut spec.size, env, overloads, errors);
@@ -3016,19 +3036,22 @@ pub fn analyze_with_options(
             }
             let mut desugared_method_body = method.body.clone();
             let mut method_struct_instances = HashMap::<String, String>::new();
+            let mut method_struct_array_roots = HashMap::<String, String>::new();
             let method_ns = namespace_of_symbol(&s.name);
             if method.params.first().map(|p| p.name.as_str()) == Some("self") {
-                register_struct_instance_roots(
+                register_struct_instance_and_array_roots(
                     "self",
                     &s.name,
                     &struct_defs,
                     &mut method_struct_instances,
+                    &mut method_struct_array_roots,
                 );
             }
             for stmt in &mut desugared_method_body {
                 desugar_init_instance_method_calls(
                     stmt,
                     &mut method_struct_instances,
+                    &mut method_struct_array_roots,
                     &struct_defs,
                     &method_ns,
                     &callable_symbols_for_method_sugar,
@@ -3054,10 +3077,12 @@ pub fn analyze_with_options(
     }
 
     let mut desugar_struct_instances = HashMap::<String, String>::new();
+    let mut desugar_struct_array_roots = HashMap::<String, String>::new();
     for stmt in &mut init {
         desugar_init_instance_method_calls(
             stmt,
             &mut desugar_struct_instances,
+            &mut desugar_struct_array_roots,
             &struct_defs,
             "",
             &callable_symbols_for_method_sugar,
@@ -3067,6 +3092,7 @@ pub fn analyze_with_options(
         desugar_sample_instance_method_calls(
             stmt,
             &desugar_struct_instances,
+            &desugar_struct_array_roots,
             "",
             &callable_symbols_for_method_sugar,
         );
@@ -3075,6 +3101,7 @@ pub fn analyze_with_options(
         desugar_sample_instance_method_calls(
             stmt,
             &desugar_struct_instances,
+            &desugar_struct_array_roots,
             "",
             &callable_symbols_for_method_sugar,
         );
@@ -3083,6 +3110,7 @@ pub fn analyze_with_options(
         desugar_sample_instance_method_calls(
             stmt,
             &desugar_struct_instances,
+            &desugar_struct_array_roots,
             "",
             &callable_symbols_for_method_sugar,
         );
@@ -3092,6 +3120,7 @@ pub fn analyze_with_options(
             desugar_sample_instance_method_calls(
                 stmt,
                 &desugar_struct_instances,
+                &desugar_struct_array_roots,
                 "",
                 &callable_symbols_for_method_sugar,
             );
@@ -3102,14 +3131,16 @@ pub fn analyze_with_options(
             continue;
         }
         let mut def_struct_instances = HashMap::<String, String>::new();
+        let mut def_struct_array_roots = HashMap::<String, String>::new();
         for param in &def.params {
             if let Some(FnParamType::Struct(struct_name)) = &param.ty {
                 if struct_defs.contains_key(struct_name) {
-                    register_struct_instance_roots(
+                    register_struct_instance_and_array_roots(
                         &param.name,
                         struct_name,
                         &struct_defs,
                         &mut def_struct_instances,
+                        &mut def_struct_array_roots,
                     );
                 }
             }
@@ -3119,6 +3150,7 @@ pub fn analyze_with_options(
             desugar_sample_instance_method_calls(
                 stmt,
                 &def_struct_instances,
+                &def_struct_array_roots,
                 &def_ns,
                 &callable_symbols_for_method_sugar,
             );

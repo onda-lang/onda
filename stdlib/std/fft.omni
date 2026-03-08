@@ -1,4 +1,5 @@
 import std/math
+import std/complex
 
 namespace std::fft<N = 256>:
   assert(N > 0 && (N & (N - 1)) == 0)
@@ -26,30 +27,10 @@ namespace std::fft<N = 256>:
       i = i + 1
     return rev
 
-  def _clear_complex(re: [], im: [], n: i32):
-    for i in 0..n:
-      re[i] = 0.0
-      im[i] = 0.0
-
   def _build_bitrev(bitrev: i32[], n: i32):
     bits = _ilog2(n)
     for i in 0..n:
       bitrev[i] = _bit_reverse(i, bits)
-
-  def _build_twiddles(tw_re: [], tw_im: [], n: i32, step_r, step_i):
-    half = n >> 1
-    if (half > 0):
-      tw_re[0] = 1.0
-      tw_im[0] = 0.0
-      wr = 1.0
-      wi = 0.0
-      for i in 1..half:
-        next_wr = wr * step_r - wi * step_i
-        next_wi = wr * step_i + wi * step_r
-        wr = next_wr
-        wi = next_wi
-        tw_re[i] = wr
-        tw_im[i] = wi
 
   def _wrap_add(base: i32, offset: i32, n: i32):
     idx = base + offset
@@ -57,63 +38,9 @@ namespace std::fft<N = 256>:
       idx = idx - n
     return idx
 
-  def _transform_inplace(re: [], im: [], tw_re: [], tw_im: [], bitrev: i32[], n: i32, inverse: bool, inverse_scale):
-    for i in 0..n:
-      j = bitrev[i]
-      if (j > i):
-        temp_r = re[i]
-        temp_i = im[i]
-        re[i] = re[j]
-        im[i] = im[j]
-        re[j] = temp_r
-        im[j] = temp_i
-
-    stage = 2
-    while (stage <= n):
-      half = stage >> 1
-      tw_stride = n / stage
-
-      start = 0
-      while (start < n):
-        k = 0
-        while (k < half):
-          tw_idx = k * tw_stride
-          wr = tw_re[tw_idx]
-          wi = tw_im[tw_idx]
-          if (!inverse):
-            wi = -wi
-
-          even_i = start + k
-          odd_i = even_i + half
-
-          odd_r = re[odd_i]
-          odd_im = im[odd_i]
-
-          tw_r = wr * odd_r - wi * odd_im
-          tw_i = wr * odd_im + wi * odd_r
-
-          even_r = re[even_i]
-          even_im = im[even_i]
-
-          re[even_i] = even_r + tw_r
-          im[even_i] = even_im + tw_i
-          re[odd_i] = even_r - tw_r
-          im[odd_i] = even_im - tw_i
-
-          k = k + 1
-        start = start + stage
-      stage = stage << 1
-
-    if (inverse):
-      for i in 0..n:
-        re[i] = re[i] * inverse_scale
-        im[i] = im[i] * inverse_scale
-
   struct FFT<T>:
-    re: T[N]
-    im: T[N]
-    tw_re: T[N]
-    tw_im: T[N]
+    bins: std::complex::Complex<T>[N]
+    twiddles: std::complex::Complex<T>[N]
     bitrev: i32[N]
     prepared: bool
 
@@ -124,31 +51,34 @@ namespace std::fft<N = 256>:
       return (N >> 1) + 1
 
     def clear(self):
-      _clear_complex(self.re, self.im, N)
+      for i in 0..N:
+        self.bins[i].clear()
+
+    def set_bin(self, i: i32, re, im):
+      self.bins[i].set(re, im)
 
     def load_real(self, input: T[]):
       self.clear()
       count = _min_i(input.len(), N)
       for i in 0..count:
-        self.re[i] = input[i]
+        self.bins[i].set(input[i], T(0.0))
 
     def load_complex(self, real: T[], imag: T[]):
       self.clear()
       count = _min_i(real.len(), imag.len())
       count = _min_i(count, N)
       for i in 0..count:
-        self.re[i] = real[i]
-        self.im[i] = imag[i]
+        self.bins[i].set(real[i], imag[i])
 
     def store_real(self, output: T[]):
       count = _min_i(output.len(), N)
       for i in 0..count:
-        output[i] = self.re[i]
+        output[i] = self.bins[i].real()
 
     def store_imag(self, output: T[]):
       count = _min_i(output.len(), N)
       for i in 0..count:
-        output[i] = self.im[i]
+        output[i] = self.bins[i].imag()
 
     def store_magnitude(self, output: T[]):
       count = _min_i(output.len(), N)
@@ -172,10 +102,10 @@ namespace std::fft<N = 256>:
         output[i] = T(0.0)
       real_count = _min_i(count, half + 1)
       for i in 0..real_count:
-        output[i] = self.re[i]
+        output[i] = self.bins[i].real()
       imag_count = _min_i(count - (half + 1), half - 1)
       for i in 0..imag_count:
-        output[half + 1 + i] = self.im[i + 1]
+        output[half + 1 + i] = self.bins[i + 1].imag()
 
     def load_real_packed(self, input: T[]):
       self.clear()
@@ -183,10 +113,10 @@ namespace std::fft<N = 256>:
       count = _min_i(input.len(), N)
 
       if (count > 0):
-        self.re[0] = input[0]
+        self.set_bin(0, input[0], T(0.0))
 
       if (count > half):
-        self.re[half] = input[half]
+        self.set_bin(half, input[half], T(0.0))
 
       imag_count = _min_i(count - (half + 1), half - 1)
       if (imag_count < 0):
@@ -194,14 +124,14 @@ namespace std::fft<N = 256>:
 
       real_count = _min_i(count, half)
       for i in 1..real_count:
-        self.re[i] = input[i]
-        self.re[N - i] = input[i]
+        self.set_bin(i, input[i], T(0.0))
+        self.set_bin(N - i, input[i], T(0.0))
 
       for i in 0..imag_count:
         imag_v = input[half + 1 + i]
         bin = i + 1
-        self.im[bin] = imag_v
-        self.im[N - bin] = -imag_v
+        self.set_bin(bin, self.real(bin), imag_v)
+        self.set_bin(N - bin, self.real(N - bin), -imag_v)
 
     def store_real_spectrum_magnitude(self, output: T[]):
       count = _min_i(output.len(), self.real_bin_count())
@@ -219,19 +149,21 @@ namespace std::fft<N = 256>:
         output[i] = self.phase(i)
 
     def real(self, i: i32):
-      return self.re[i]
+      return self.bins[i].real()
 
     def imag(self, i: i32):
-      return self.im[i]
+      return self.bins[i].imag()
 
     def power(self, i: i32):
-      return self.re[i] * self.re[i] + self.im[i] * self.im[i]
+      re = self.real(i)
+      im = self.imag(i)
+      return re * re + im * im
 
     def magnitude(self, i: i32):
       return sqrt(self.power(i))
 
     def phase(self, i: i32):
-      return atan2(self.im[i], self.re[i])
+      return atan2(self.imag(i), self.real(i))
 
     def forward_real(self, input: T[]):
       self.load_real(input)
@@ -274,12 +206,67 @@ namespace std::fft<N = 256>:
         angle_step: T = T(TWO_PI) / T(N)
         step_r = cos(angle_step)
         step_i = sin(angle_step)
-        _build_twiddles(self.tw_re, self.tw_im, N, step_r, step_i)
+        half = N >> 1
+        if (half > 0):
+          self.twiddles[0].set(T(1.0), T(0.0))
+          wr = T(1.0)
+          wi = T(0.0)
+          for i in 1..half:
+            next_wr = wr * step_r - wi * step_i
+            next_wi = wr * step_i + wi * step_r
+            wr = next_wr
+            wi = next_wi
+            self.twiddles[i].set(wr, wi)
         self.prepared = true
 
     def _transform(self, inverse: bool):
       self._ensure_tables()
-      _transform_inplace(self.re, self.im, self.tw_re, self.tw_im, self.bitrev, N, inverse, T(1.0) / T(N))
+      for i in 0..N:
+        j = self.bitrev[i]
+        if (j > i):
+          temp_r = self.bins[i].real()
+          temp_i = self.bins[i].imag()
+          self.bins[i].set(self.bins[j].real(), self.bins[j].imag())
+          self.bins[j].set(temp_r, temp_i)
+
+      stage = 2
+      while (stage <= N):
+        half = stage >> 1
+        tw_stride = N / stage
+
+        start = 0
+        while (start < N):
+          k = 0
+          while (k < half):
+            tw_idx = k * tw_stride
+            wr = self.twiddles[tw_idx].real()
+            wi = self.twiddles[tw_idx].imag()
+            if (!inverse):
+              wi = -wi
+
+            even_i = start + k
+            odd_i = even_i + half
+
+            odd_r = self.bins[odd_i].real()
+            odd_i_v = self.bins[odd_i].imag()
+
+            tw_r = wr * odd_r - wi * odd_i_v
+            tw_i = wr * odd_i_v + wi * odd_r
+
+            even_r = self.bins[even_i].real()
+            even_i_v = self.bins[even_i].imag()
+
+            self.bins[even_i].set(even_r + tw_r, even_i_v + tw_i)
+            self.bins[odd_i].set(even_r - tw_r, even_i_v - tw_i)
+
+            k = k + 1
+          start = start + stage
+        stage = stage << 1
+
+      if (inverse):
+        inverse_scale = T(1.0) / T(N)
+        for i in 0..N:
+          self.bins[i].set(self.bins[i].real() * inverse_scale, self.bins[i].imag() * inverse_scale)
 
   struct STFT<T>:
     fft: FFT<T>
@@ -385,7 +372,7 @@ namespace std::fft<N = 256>:
       self.fft.clear()
       count = _min_i(input.len(), N)
       for i in 0..count:
-        self.fft.re[i] = input[i] * self.window[i]
+        self.fft.set_bin(i, input[i] * self.window[i], T(0.0))
 
     def forward_real(self, input: T[]):
       self._load_windowed_real(input)
@@ -483,7 +470,7 @@ namespace std::fft<N = 256>:
         self.fft.clear()
         for i in 0..N:
           idx = _wrap_add(self.write, i, N)
-          self.fft.re[i] = self.input[idx] * self.window[i]
+          self.fft.set_bin(i, self.input[idx] * self.window[i], T(0.0))
         self.fft.forward()
         half = N >> 1
         real_count = half + 1
@@ -491,9 +478,9 @@ namespace std::fft<N = 256>:
         for i in 0..N:
           self.packed[i] = T(0.0)
         for i in 0..real_count:
-          self.packed[i] = self.fft.re[i]
+          self.packed[i] = self.fft.real(i)
         for i in 0..imag_bins:
-          self.packed[half + 1 + i] = self.fft.im[i + 1]
+          self.packed[half + 1 + i] = self.fft.imag(i + 1)
         self.ready = true
       if (self.ready):
         return true
@@ -562,10 +549,10 @@ namespace std::fft<N = 256>:
       count = _min_i(input.len(), N)
 
       if (count > 0):
-        self.fft.re[0] = input[0]
+        self.fft.set_bin(0, input[0], T(0.0))
 
       if (count > half):
-        self.fft.re[half] = input[half]
+        self.fft.set_bin(half, input[half], T(0.0))
 
       imag_count = _min_i(count - (half + 1), half - 1)
       if (imag_count < 0):
@@ -573,14 +560,14 @@ namespace std::fft<N = 256>:
 
       real_count = _min_i(count, half)
       for i in 1..real_count:
-        self.fft.re[i] = input[i]
-        self.fft.re[N - i] = input[i]
+        self.fft.set_bin(i, input[i], T(0.0))
+        self.fft.set_bin(N - i, input[i], T(0.0))
 
       for i in 0..imag_count:
         imag_v = input[half + 1 + i]
         bin = i + 1
-        self.fft.im[bin] = imag_v
-        self.fft.im[N - bin] = -imag_v
+        self.fft.set_bin(bin, self.fft.real(bin), imag_v)
+        self.fft.set_bin(N - bin, self.fft.real(N - bin), -imag_v)
 
       self.fft.inverse()
       self._accumulate_ifft_frame()
@@ -595,7 +582,7 @@ namespace std::fft<N = 256>:
       for i in 0..N:
         idx = _wrap_add(self.frame, i, N)
         w = self.window[i]
-        self.output[idx] = self.output[idx] + self.fft.re[i] * w
+        self.output[idx] = self.output[idx] + self.fft.real(i) * w
         self.norm[idx] = self.norm[idx] + w * w
       self.pending = N
 

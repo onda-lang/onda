@@ -239,6 +239,31 @@ pub(crate) fn validate_proc_expr_decl_order(
             }
             ok &= validate_proc_expr_decl_order(index, reserved, locals, out, errors);
         }
+        Expr::Slice { base, start, end } => {
+            if let Some((root, _field)) = split_field_path(base, errors) {
+                if !is_declared_proc_symbol(root, reserved, locals, out) {
+                    errors.push(Diagnostic::semantic(
+                        format!("symbol '{root}' used before declaration"),
+                        0,
+                        0,
+                    ));
+                    ok = false;
+                }
+            } else if !is_declared_proc_symbol(base, reserved, locals, out) {
+                errors.push(Diagnostic::semantic(
+                    format!("symbol '{base}' used before declaration"),
+                    0,
+                    0,
+                ));
+                ok = false;
+            }
+            if let Some(start) = start {
+                ok &= validate_proc_expr_decl_order(start, reserved, locals, out, errors);
+            }
+            if let Some(end) = end {
+                ok &= validate_proc_expr_decl_order(end, reserved, locals, out, errors);
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             ok &= validate_proc_expr_decl_order(&spec.size, reserved, locals, out, errors);
             if let Some(values) = init {
@@ -393,6 +418,35 @@ pub(crate) fn rewrite_proc_expr_symbols(
                     };
                 }
                 return;
+            }
+            if field_names.contains(base) && is_plain_symbol(base) {
+                *base = format!("self.{base}");
+            } else if let Some((root, field)) = split_field_path(base, errors) {
+                if field_names.contains(root) && is_plain_symbol(root) {
+                    *base = format!("self.{root}.{field}");
+                }
+            }
+        }
+        Expr::Slice { base, start, end } => {
+            if let Some(start) = start {
+                rewrite_proc_expr_symbols(
+                    start,
+                    owner_proc,
+                    field_names,
+                    field_array_slots,
+                    in_array_slots,
+                    errors,
+                );
+            }
+            if let Some(end) = end {
+                rewrite_proc_expr_symbols(
+                    end,
+                    owner_proc,
+                    field_names,
+                    field_array_slots,
+                    in_array_slots,
+                    errors,
+                );
             }
             if field_names.contains(base) && is_plain_symbol(base) {
                 *base = format!("self.{base}");
@@ -880,6 +934,60 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             target: AssignTarget::Index {
                                 base: target_base,
                                 index: idx_rewritten,
+                            },
+                            decl_ty: None,
+                            generic_decl_ty: None,
+                            is_typed_decl: false,
+                            expr: expr_rewritten,
+                        })
+                    }
+                    AssignTarget::Slice { base, start, end } => {
+                        let mut start_rewritten = start.clone();
+                        let mut end_rewritten = end.clone();
+                        if let Some(start) = &mut start_rewritten {
+                            rewrite_proc_expr_symbols(
+                                start,
+                                owner_proc,
+                                field_names,
+                                field_array_slots,
+                                in_array_slots,
+                                errors,
+                            );
+                        }
+                        if let Some(end) = &mut end_rewritten {
+                            rewrite_proc_expr_symbols(
+                                end,
+                                owner_proc,
+                                field_names,
+                                field_array_slots,
+                                in_array_slots,
+                                errors,
+                            );
+                        }
+                        if in_array_slots.contains_key(base) {
+                            errors.push(Diagnostic::semantic(
+                                format!("cannot assign to processor input '{base}'"),
+                                0,
+                                0,
+                            ));
+                        }
+                        let target_base = if field_names.contains(base) && is_plain_symbol(base) {
+                            format!("self.{base}")
+                        } else if let Some((root, field)) = split_field_path(base, errors) {
+                            if field_names.contains(root) && is_plain_symbol(root) {
+                                format!("self.{root}.{field}")
+                            } else {
+                                base.clone()
+                            }
+                        } else {
+                            base.clone()
+                        };
+                        Some(Stmt::Assign {
+                            loc: source_loc.clone(),
+                            target: AssignTarget::Slice {
+                                base: target_base,
+                                start: start_rewritten,
+                                end: end_rewritten,
                             },
                             decl_ty: None,
                             generic_decl_ty: None,

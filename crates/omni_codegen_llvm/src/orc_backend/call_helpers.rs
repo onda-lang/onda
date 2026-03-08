@@ -1377,6 +1377,8 @@ pub(super) unsafe fn lower_buffer_call_args_in_orc(
             |ptr_out| {
                 lower_array_call_args_in_orc(
                     ctx,
+                    locals,
+                    local_aliases,
                     local_array_aliases,
                     ptr_out,
                     arg_expr,
@@ -1509,20 +1511,68 @@ pub(super) fn infer_buffer_arg_signature_in_orc(
     })
 }
 
-pub(super) fn infer_array_arg_signature_in_orc(
+fn infer_static_slice_len_hint_codegen(
+    total_len: Option<usize>,
+    start: Option<&Expr>,
+    end: Option<&Expr>,
+) -> usize {
+    let Some(total_len) = total_len else {
+        return 1;
+    };
+    let start = normalize_static_slice_bound_codegen(start, total_len, false);
+    let end = normalize_static_slice_bound_codegen(end, total_len, true);
+    end.saturating_sub(start).max(1)
+}
+
+fn normalize_static_slice_bound_codegen(
+    expr: Option<&Expr>,
+    total_len: usize,
+    default_to_len: bool,
+) -> usize {
+    let Some(expr) = expr else {
+        return if default_to_len { total_len } else { 0 };
+    };
+    let raw = match expr {
+        Expr::Int(v) => Some(*v),
+        Expr::Number(v) => {
+            let truncated = v.trunc();
+            if (v - truncated).abs() <= 1e-6 {
+                Some(truncated as i64)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+    .unwrap_or(if default_to_len { total_len as i64 } else { 0 });
+    let adjusted = if raw < 0 { total_len as i64 + raw } else { raw };
+    adjusted.clamp(0, total_len as i64) as usize
+}
+
+struct OrcArrayViewSig {
+    elem_ty: PrimitiveType,
+    len_hint: usize,
+}
+
+pub(super) struct OrcArrayView {
+    pub(super) base_ptr: LLVMValueRef,
+    pub(super) len_val: LLVMValueRef,
+    pub(super) elem_ty: PrimitiveType,
+    pub(super) len_hint: usize,
+}
+
+fn infer_orc_array_base_signature(
     ctx: &LoweringCtx<'_>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
-    arg_expr: &Expr,
+    base: &str,
     callee_name: &str,
-) -> Result<(PrimitiveType, usize), Diagnostic> {
-    let Expr::Var(base) = arg_expr else {
-        return Err(Diagnostic::internal(format!(
-            "function '{callee_name}' array argument must be a array symbol variable in ORC expression lowering"
-        )));
-    };
+) -> Result<OrcArrayViewSig, Diagnostic> {
     if let Some(alias) = local_array_aliases.get(base) {
         return match alias {
-            LocalArrayAlias::Primitive { elem_ty, len, .. } => Ok((*elem_ty, *len)),
+            LocalArrayAlias::Primitive { elem_ty, len, .. } => Ok(OrcArrayViewSig {
+                elem_ty: *elem_ty,
+                len_hint: *len,
+            }),
             LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
                 "function '{callee_name}' array argument '{base}' must have primitive elements in ORC expression lowering"
             ))),
@@ -1534,10 +1584,16 @@ pub(super) fn infer_array_arg_signature_in_orc(
         )));
     }
     if let Some(info) = ctx.param_arrays.get(base).copied() {
-        return Ok((info.elem_ty, info.len));
+        return Ok(OrcArrayViewSig {
+            elem_ty: info.elem_ty,
+            len_hint: info.len,
+        });
     }
     if let Some(info) = ctx.output_arrays.get(base).copied() {
-        return Ok((info.elem_ty, info.len));
+        return Ok(OrcArrayViewSig {
+            elem_ty: info.elem_ty,
+            len_hint: info.len,
+        });
     }
     if let Some(len) = ctx.array_len.get(base).copied() {
         let elem_ty = *ctx.array_elem_ty.get(base).ok_or_else(|| {
@@ -1545,36 +1601,72 @@ pub(super) fn infer_array_arg_signature_in_orc(
                 "missing array element type metadata for '{base}' in ORC array signature inference"
             ))
         })?;
-        return Ok((elem_ty, len));
+        return Ok(OrcArrayViewSig {
+            elem_ty,
+            len_hint: len,
+        });
+    }
+    if let Some(elem_ty) = ctx.buffer_elem_types.get(base).copied() {
+        return Ok(OrcArrayViewSig {
+            elem_ty,
+            len_hint: 1,
+        });
     }
     Err(Diagnostic::internal(format!(
         "unknown array symbol '{base}' in ORC array signature inference for function '{callee_name}'"
     )))
 }
 
-pub(super) unsafe fn lower_array_call_args_in_orc(
-    ctx: &mut LoweringCtx<'_>,
+fn infer_orc_array_view_signature(
+    ctx: &LoweringCtx<'_>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
-    out_args: &mut Vec<LLVMValueRef>,
     arg_expr: &Expr,
     callee_name: &str,
-) -> Result<(), Diagnostic> {
-    let Expr::Var(base) = arg_expr else {
-        return Err(Diagnostic::internal(format!(
-            "function '{callee_name}' array argument must be a array symbol variable in ORC expression lowering"
-        )));
-    };
+) -> Result<(PrimitiveType, usize), Diagnostic> {
+    match arg_expr {
+        Expr::Var(base) => {
+            let sig = infer_orc_array_base_signature(ctx, local_array_aliases, base, callee_name)?;
+            Ok((sig.elem_ty, sig.len_hint))
+        }
+        Expr::Slice { base, start, end } => {
+            let sig = infer_orc_array_base_signature(ctx, local_array_aliases, base, callee_name)?;
+            Ok((
+                sig.elem_ty,
+                infer_static_slice_len_hint_codegen(
+                    Some(sig.len_hint),
+                    start.as_deref(),
+                    end.as_deref(),
+                ),
+            ))
+        }
+        _ => Err(Diagnostic::internal(format!(
+            "function '{callee_name}' array argument must be an array symbol or slice in ORC expression lowering"
+        ))),
+    }
+}
+
+unsafe fn lower_orc_array_base_view(
+    ctx: &mut LoweringCtx<'_>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    base: &str,
+    callee_name: &str,
+) -> Result<OrcArrayView, Diagnostic> {
     if let Some(alias) = local_array_aliases.get(base) {
         return match alias {
-            LocalArrayAlias::Primitive { base_ptr, len, .. } => {
-                out_args.push(*base_ptr);
-                if let Some(len_val) = ctx.array_len_values.get(base).copied() {
-                    out_args.push(len_val);
-                } else {
-                    out_args.push(LLVMConstInt(ctx.i32_ty, *len as u64, 0));
-                }
-                Ok(())
-            }
+            LocalArrayAlias::Primitive {
+                base_ptr,
+                len,
+                elem_ty,
+            } => Ok(OrcArrayView {
+                base_ptr: *base_ptr,
+                len_val: ctx
+                    .array_len_values
+                    .get(base)
+                    .copied()
+                    .unwrap_or_else(|| LLVMConstInt(ctx.i32_ty, *len as u64, 0)),
+                elem_ty: *elem_ty,
+                len_hint: *len,
+            }),
             LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
                 "function '{callee_name}' array argument '{base}' must have primitive elements in ORC expression lowering"
             ))),
@@ -1596,26 +1688,31 @@ pub(super) unsafe fn lower_array_call_args_in_orc(
                 "parameter array offset exceeds supported i32 index range in ORC lowering",
             ));
         }
-        let ptr = build_typed_ptr_from_byte_offset(
-            ctx.builder,
-            ctx.context,
-            ctx.params_ptr,
-            LLVMConstInt(ctx.i32_ty, base_byte_offset as u64, 0),
-            info.elem_ty,
-            b"param_arr_ref_ptr_i8\0",
-            b"param_arr_ref_ptr_typed\0",
-        );
-        out_args.push(ptr);
-        out_args.push(LLVMConstInt(ctx.i32_ty, info.len as u64, 0));
-        return Ok(());
+        return Ok(OrcArrayView {
+            base_ptr: build_typed_ptr_from_byte_offset(
+                ctx.builder,
+                ctx.context,
+                ctx.params_ptr,
+                LLVMConstInt(ctx.i32_ty, base_byte_offset as u64, 0),
+                info.elem_ty,
+                b"param_arr_ref_ptr_i8\0",
+                b"param_arr_ref_ptr_typed\0",
+            ),
+            len_val: LLVMConstInt(ctx.i32_ty, info.len as u64, 0),
+            elem_ty: info.elem_ty,
+            len_hint: info.len,
+        });
     }
     if let Some(info) = ctx.output_arrays.get(base).copied() {
         let ptr = *ctx.out_array_base_ptrs.get(base).ok_or_else(|| {
             Diagnostic::internal(format!("missing output array storage for '{base}'"))
         })?;
-        out_args.push(ptr);
-        out_args.push(LLVMConstInt(ctx.i32_ty, info.len as u64, 0));
-        return Ok(());
+        return Ok(OrcArrayView {
+            base_ptr: ptr,
+            len_val: LLVMConstInt(ctx.i32_ty, info.len as u64, 0),
+            elem_ty: info.elem_ty,
+            len_hint: info.len,
+        });
     }
     if let Some(ptr) = ctx.array_base_ptrs.get(base).copied() {
         if !ctx.array_elem_ty.contains_key(base) {
@@ -1624,13 +1721,224 @@ pub(super) unsafe fn lower_array_call_args_in_orc(
             )));
         }
         let len = ctx.array_len.get(base).copied().unwrap_or(1);
-        out_args.push(ptr);
-        out_args.push(LLVMConstInt(ctx.i32_ty, len as u64, 0));
-        return Ok(());
+        return Ok(OrcArrayView {
+            base_ptr: ptr,
+            len_val: ctx
+                .array_len_values
+                .get(base)
+                .copied()
+                .unwrap_or_else(|| LLVMConstInt(ctx.i32_ty, len as u64, 0)),
+            elem_ty: *ctx.array_elem_ty.get(base).unwrap_or(&PrimitiveType::F32),
+            len_hint: len,
+        });
+    }
+    if let Some(buf_idx) = ctx.buffer_index.get(base).copied() {
+        let elem_ty = *ctx.buffer_elem_types.get(base).ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "missing element type metadata for buffer '{base}' in ORC expression lowering"
+            ))
+        })?;
+        let idx = LLVMConstInt(ctx.i32_ty, buf_idx as u64, 0);
+        let i8_ty = LLVMInt8TypeInContext(ctx.context);
+        let i8_ptr_ty = LLVMPointerType(i8_ty, 0);
+        let ptr_ptr = build_ptr_offset(
+            ctx.builder,
+            i8_ptr_ty,
+            ctx.buffer_ptrs,
+            idx,
+            b"buf_slice_ptr_ptr\0",
+        );
+        let raw_ptr = LLVMBuildLoad2(
+            ctx.builder,
+            i8_ptr_ty,
+            ptr_ptr,
+            b"buf_slice_ptr\0".as_ptr().cast(),
+        );
+        let typed_ptr = LLVMBuildBitCast(
+            ctx.builder,
+            raw_ptr,
+            LLVMPointerType(llvm_ty_for_primitive(ctx.context, elem_ty), 0),
+            b"buf_slice_ptr_typed\0".as_ptr().cast(),
+        );
+        return Ok(OrcArrayView {
+            base_ptr: typed_ptr,
+            len_val: load_orc_buffer_total_len_i32(ctx, base)?,
+            elem_ty,
+            len_hint: 1,
+        });
     }
     Err(Diagnostic::internal(format!(
         "unknown array symbol '{base}' in ORC array call argument lowering for function '{callee_name}'"
     )))
+}
+
+unsafe fn lower_orc_slice_bound(
+    ctx: &mut LoweringCtx<'_>,
+    expr: Option<&Expr>,
+    len_val: LLVMValueRef,
+    default_to_len: bool,
+    locals: &HashMap<String, OrcValue>,
+    local_aliases: &HashMap<String, AliasSlot>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+) -> Result<LLVMValueRef, Diagnostic> {
+    let raw = if let Some(expr) = expr {
+        let lowered = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
+        cast_orc_value_to(ctx, lowered, PrimitiveType::I32, b"slice_bound_i32\0")
+    } else if default_to_len {
+        len_val
+    } else {
+        const_i32(ctx.i32_ty, 0)
+    };
+    let zero = const_i32(ctx.i32_ty, 0);
+    let is_neg = LLVMBuildICmp(
+        ctx.builder,
+        llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+        raw,
+        zero,
+        b"slice_bound_neg\0".as_ptr().cast(),
+    );
+    let adjusted = LLVMBuildSelect(
+        ctx.builder,
+        is_neg,
+        LLVMBuildAdd(
+            ctx.builder,
+            len_val,
+            raw,
+            b"slice_bound_add_len\0".as_ptr().cast(),
+        ),
+        raw,
+        b"slice_bound_adj\0".as_ptr().cast(),
+    );
+    let clamped_low = LLVMBuildSelect(
+        ctx.builder,
+        LLVMBuildICmp(
+            ctx.builder,
+            llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+            adjusted,
+            zero,
+            b"slice_bound_lt_zero\0".as_ptr().cast(),
+        ),
+        zero,
+        adjusted,
+        b"slice_bound_clamped_low\0".as_ptr().cast(),
+    );
+    Ok(LLVMBuildSelect(
+        ctx.builder,
+        LLVMBuildICmp(
+            ctx.builder,
+            llvm_sys::LLVMIntPredicate::LLVMIntSGT,
+            clamped_low,
+            len_val,
+            b"slice_bound_gt_len\0".as_ptr().cast(),
+        ),
+        len_val,
+        clamped_low,
+        b"slice_bound_clamped\0".as_ptr().cast(),
+    ))
+}
+
+pub(super) unsafe fn lower_orc_array_view(
+    ctx: &mut LoweringCtx<'_>,
+    locals: &HashMap<String, OrcValue>,
+    local_aliases: &HashMap<String, AliasSlot>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    arg_expr: &Expr,
+    callee_name: &str,
+) -> Result<OrcArrayView, Diagnostic> {
+    match arg_expr {
+        Expr::Var(base) => lower_orc_array_base_view(ctx, local_array_aliases, base, callee_name),
+        Expr::Slice { base, start, end } => {
+            let base_view = lower_orc_array_base_view(ctx, local_array_aliases, base, callee_name)?;
+            let start_idx = lower_orc_slice_bound(
+                ctx,
+                start.as_deref(),
+                base_view.len_val,
+                false,
+                locals,
+                local_aliases,
+                local_array_aliases,
+            )?;
+            let end_idx = lower_orc_slice_bound(
+                ctx,
+                end.as_deref(),
+                base_view.len_val,
+                true,
+                locals,
+                local_aliases,
+                local_array_aliases,
+            )?;
+            let end_before_start = LLVMBuildICmp(
+                ctx.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+                end_idx,
+                start_idx,
+                b"slice_end_before_start\0".as_ptr().cast(),
+            );
+            let diff = LLVMBuildSub(
+                ctx.builder,
+                end_idx,
+                start_idx,
+                b"slice_len_diff\0".as_ptr().cast(),
+            );
+            let slice_len = LLVMBuildSelect(
+                ctx.builder,
+                end_before_start,
+                const_i32(ctx.i32_ty, 0),
+                diff,
+                b"slice_len\0".as_ptr().cast(),
+            );
+            Ok(OrcArrayView {
+                base_ptr: build_f32_ptr_offset(
+                    ctx.builder,
+                    llvm_ty_for_primitive(ctx.context, base_view.elem_ty),
+                    base_view.base_ptr,
+                    start_idx,
+                    b"slice_base_ptr\0",
+                ),
+                len_val: slice_len,
+                elem_ty: base_view.elem_ty,
+                len_hint: infer_static_slice_len_hint_codegen(
+                    Some(base_view.len_hint),
+                    start.as_deref(),
+                    end.as_deref(),
+                ),
+            })
+        }
+        _ => Err(Diagnostic::internal(format!(
+            "function '{callee_name}' array argument must be an array symbol or slice in ORC expression lowering"
+        ))),
+    }
+}
+
+pub(super) fn infer_array_arg_signature_in_orc(
+    ctx: &LoweringCtx<'_>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    arg_expr: &Expr,
+    callee_name: &str,
+) -> Result<(PrimitiveType, usize), Diagnostic> {
+    infer_orc_array_view_signature(ctx, local_array_aliases, arg_expr, callee_name)
+}
+
+pub(super) unsafe fn lower_array_call_args_in_orc(
+    ctx: &mut LoweringCtx<'_>,
+    locals: &HashMap<String, OrcValue>,
+    local_aliases: &HashMap<String, AliasSlot>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    out_args: &mut Vec<LLVMValueRef>,
+    arg_expr: &Expr,
+    callee_name: &str,
+) -> Result<(), Diagnostic> {
+    let view = lower_orc_array_view(
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        arg_expr,
+        callee_name,
+    )?;
+    out_args.push(view.base_ptr);
+    out_args.push(view.len_val);
+    Ok(())
 }
 
 pub(super) unsafe fn lower_buffer_call_args_in_def(
@@ -1785,23 +2093,39 @@ pub(super) fn infer_buffer_arg_signature_in_def(
     })
 }
 
-pub(super) fn infer_array_arg_signature_in_def(
+struct DefArrayViewSig {
+    elem_ty: PrimitiveType,
+    len_hint: usize,
+}
+
+pub(super) struct DefArrayView {
+    pub(super) base_ptr: LLVMValueRef,
+    pub(super) len_val: LLVMValueRef,
+    pub(super) elem_ty: PrimitiveType,
+    pub(super) len_hint: usize,
+}
+
+fn infer_def_array_base_signature(
     ctx: &DefLoweringCtx<'_>,
-    arg_expr: &Expr,
+    base: &str,
     callee_name: &str,
-) -> Result<(PrimitiveType, usize), Diagnostic> {
-    let Expr::Var(base) = arg_expr else {
-        return Err(Diagnostic::internal(format!(
-            "function '{callee_name}' array argument must be a array symbol variable in def lowering"
-        )));
-    };
+) -> Result<DefArrayViewSig, Diagnostic> {
     if let Some(alias) = ctx.local_array_aliases.get(base) {
         return match alias {
-            LocalArrayAlias::Primitive { elem_ty, len, .. } => Ok((*elem_ty, *len)),
+            LocalArrayAlias::Primitive { elem_ty, len, .. } => Ok(DefArrayViewSig {
+                elem_ty: *elem_ty,
+                len_hint: *len,
+            }),
             LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
                 "function '{callee_name}' array argument '{base}' must have primitive elements in def lowering"
             ))),
         };
+    }
+    if let Some(info) = ctx.buffer_params.get(base) {
+        return Ok(DefArrayViewSig {
+            elem_ty: info.elem_ty,
+            len_hint: 1,
+        });
     }
     let len = ctx.array_len.get(base).copied().ok_or_else(|| {
         Diagnostic::internal(format!(
@@ -1813,7 +2137,217 @@ pub(super) fn infer_array_arg_signature_in_def(
             "missing array element type metadata for '{base}' in def array signature inference"
         ))
     })?;
-    Ok((elem_ty, len))
+    Ok(DefArrayViewSig {
+        elem_ty,
+        len_hint: len,
+    })
+}
+
+unsafe fn lower_def_array_base_view(
+    ctx: &mut DefLoweringCtx<'_>,
+    base: &str,
+    callee_name: &str,
+) -> Result<DefArrayView, Diagnostic> {
+    if let Some(alias) = ctx.local_array_aliases.get(base) {
+        return match alias {
+            LocalArrayAlias::Primitive {
+                base_ptr,
+                len,
+                elem_ty,
+            } => Ok(DefArrayView {
+                base_ptr: *base_ptr,
+                len_val: ctx
+                    .array_len_values
+                    .get(base)
+                    .copied()
+                    .unwrap_or_else(|| LLVMConstInt(ctx.i32_ty, *len as u64, 0)),
+                elem_ty: *elem_ty,
+                len_hint: *len,
+            }),
+            LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
+                "function '{callee_name}' array argument '{base}' must have primitive elements in def lowering"
+            ))),
+        };
+    }
+    if let Some(info) = ctx.buffer_params.get(base).cloned() {
+        let typed_ptr = LLVMBuildBitCast(
+            ctx.builder,
+            info.ptr,
+            LLVMPointerType(llvm_ty_for_primitive(ctx.context, info.elem_ty), 0),
+            b"def_buf_slice_ptr_typed\0".as_ptr().cast(),
+        );
+        return Ok(DefArrayView {
+            base_ptr: typed_ptr,
+            len_val: load_def_buffer_total_len_i32(ctx, base, &info)?,
+            elem_ty: info.elem_ty,
+            len_hint: 1,
+        });
+    }
+    let ptr = *ctx.array_ptrs.get(base).ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "unknown array symbol '{base}' in def array call argument lowering"
+        ))
+    })?;
+    let len = ctx.array_len.get(base).copied().unwrap_or(1);
+    let elem_ty = *ctx.array_elem_ty.get(base).ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "array argument '{base}' is not primitive in def lowering"
+        ))
+    })?;
+    Ok(DefArrayView {
+        base_ptr: ptr,
+        len_val: ctx
+            .array_len_values
+            .get(base)
+            .copied()
+            .unwrap_or_else(|| LLVMConstInt(ctx.i32_ty, len as u64, 0)),
+        elem_ty,
+        len_hint: len,
+    })
+}
+
+unsafe fn lower_def_slice_bound(
+    ctx: &mut DefLoweringCtx<'_>,
+    expr: Option<&Expr>,
+    len_val: LLVMValueRef,
+    default_to_len: bool,
+) -> Result<LLVMValueRef, Diagnostic> {
+    let raw = if let Some(expr) = expr {
+        let lowered = lower_def_expr(expr, ctx)?;
+        cast_def_value_to(ctx, lowered, PrimitiveType::I32, b"def_slice_bound_i32\0")
+    } else if default_to_len {
+        len_val
+    } else {
+        const_i32(ctx.i32_ty, 0)
+    };
+    let zero = const_i32(ctx.i32_ty, 0);
+    let is_neg = LLVMBuildICmp(
+        ctx.builder,
+        llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+        raw,
+        zero,
+        b"def_slice_bound_neg\0".as_ptr().cast(),
+    );
+    let adjusted = LLVMBuildSelect(
+        ctx.builder,
+        is_neg,
+        LLVMBuildAdd(
+            ctx.builder,
+            len_val,
+            raw,
+            b"def_slice_bound_add_len\0".as_ptr().cast(),
+        ),
+        raw,
+        b"def_slice_bound_adj\0".as_ptr().cast(),
+    );
+    let clamped_low = LLVMBuildSelect(
+        ctx.builder,
+        LLVMBuildICmp(
+            ctx.builder,
+            llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+            adjusted,
+            zero,
+            b"def_slice_bound_lt_zero\0".as_ptr().cast(),
+        ),
+        zero,
+        adjusted,
+        b"def_slice_bound_clamped_low\0".as_ptr().cast(),
+    );
+    Ok(LLVMBuildSelect(
+        ctx.builder,
+        LLVMBuildICmp(
+            ctx.builder,
+            llvm_sys::LLVMIntPredicate::LLVMIntSGT,
+            clamped_low,
+            len_val,
+            b"def_slice_bound_gt_len\0".as_ptr().cast(),
+        ),
+        len_val,
+        clamped_low,
+        b"def_slice_bound_clamped\0".as_ptr().cast(),
+    ))
+}
+
+pub(super) unsafe fn lower_def_array_view(
+    ctx: &mut DefLoweringCtx<'_>,
+    arg_expr: &Expr,
+    callee_name: &str,
+) -> Result<DefArrayView, Diagnostic> {
+    match arg_expr {
+        Expr::Var(base) => lower_def_array_base_view(ctx, base, callee_name),
+        Expr::Slice { base, start, end } => {
+            let base_view = lower_def_array_base_view(ctx, base, callee_name)?;
+            let start_idx =
+                lower_def_slice_bound(ctx, start.as_deref(), base_view.len_val, false)?;
+            let end_idx = lower_def_slice_bound(ctx, end.as_deref(), base_view.len_val, true)?;
+            let end_before_start = LLVMBuildICmp(
+                ctx.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+                end_idx,
+                start_idx,
+                b"def_slice_end_before_start\0".as_ptr().cast(),
+            );
+            let diff = LLVMBuildSub(
+                ctx.builder,
+                end_idx,
+                start_idx,
+                b"def_slice_len_diff\0".as_ptr().cast(),
+            );
+            let slice_len = LLVMBuildSelect(
+                ctx.builder,
+                end_before_start,
+                const_i32(ctx.i32_ty, 0),
+                diff,
+                b"def_slice_len\0".as_ptr().cast(),
+            );
+            Ok(DefArrayView {
+                base_ptr: build_f32_ptr_offset(
+                    ctx.builder,
+                    llvm_ty_for_primitive(ctx.context, base_view.elem_ty),
+                    base_view.base_ptr,
+                    start_idx,
+                    b"def_slice_base_ptr\0",
+                ),
+                len_val: slice_len,
+                elem_ty: base_view.elem_ty,
+                len_hint: infer_static_slice_len_hint_codegen(
+                    Some(base_view.len_hint),
+                    start.as_deref(),
+                    end.as_deref(),
+                ),
+            })
+        }
+        _ => Err(Diagnostic::internal(format!(
+            "function '{callee_name}' array argument must be an array symbol or slice in def lowering"
+        ))),
+    }
+}
+
+pub(super) fn infer_array_arg_signature_in_def(
+    ctx: &DefLoweringCtx<'_>,
+    arg_expr: &Expr,
+    callee_name: &str,
+) -> Result<(PrimitiveType, usize), Diagnostic> {
+    match arg_expr {
+        Expr::Var(base) => {
+            let sig = infer_def_array_base_signature(ctx, base, callee_name)?;
+            Ok((sig.elem_ty, sig.len_hint))
+        }
+        Expr::Slice { base, start, end } => {
+            let sig = infer_def_array_base_signature(ctx, base, callee_name)?;
+            Ok((
+                sig.elem_ty,
+                infer_static_slice_len_hint_codegen(
+                    Some(sig.len_hint),
+                    start.as_deref(),
+                    end.as_deref(),
+                ),
+            ))
+        }
+        _ => Err(Diagnostic::internal(format!(
+            "function '{callee_name}' array argument must be an array symbol or slice in def lowering"
+        ))),
+    }
 }
 
 pub(super) unsafe fn lower_array_call_args_in_def(
@@ -1822,40 +2356,9 @@ pub(super) unsafe fn lower_array_call_args_in_def(
     arg_expr: &Expr,
     callee_name: &str,
 ) -> Result<(), Diagnostic> {
-    let Expr::Var(base) = arg_expr else {
-        return Err(Diagnostic::internal(format!(
-            "function '{callee_name}' array argument must be a array symbol variable in def lowering"
-        )));
-    };
-    if let Some(alias) = ctx.local_array_aliases.get(base) {
-        return match alias {
-            LocalArrayAlias::Primitive { base_ptr, len, .. } => {
-                out_args.push(*base_ptr);
-                out_args.push(LLVMConstInt(ctx.i32_ty, *len as u64, 0));
-                Ok(())
-            }
-            LocalArrayAlias::Struct { .. } => Err(Diagnostic::internal(format!(
-                "function '{callee_name}' array argument '{base}' must have primitive elements in def lowering"
-            ))),
-        };
-    }
-    let ptr = *ctx.array_ptrs.get(base).ok_or_else(|| {
-        Diagnostic::internal(format!(
-            "unknown array symbol '{base}' in def array call argument lowering"
-        ))
-    })?;
-    if !ctx.array_elem_ty.contains_key(base) {
-        return Err(Diagnostic::internal(format!(
-            "array argument '{base}' is not primitive in def lowering"
-        )));
-    }
-    out_args.push(ptr);
-    if let Some(len_val) = ctx.array_len_values.get(base) {
-        out_args.push(*len_val);
-    } else {
-        let len = ctx.array_len.get(base).copied().unwrap_or(1);
-        out_args.push(LLVMConstInt(ctx.i32_ty, len as u64, 0));
-    }
+    let view = lower_def_array_view(ctx, arg_expr, callee_name)?;
+    out_args.push(view.base_ptr);
+    out_args.push(view.len_val);
     Ok(())
 }
 

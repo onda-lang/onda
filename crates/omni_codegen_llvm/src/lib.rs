@@ -825,6 +825,34 @@ fn collect_expr_buffer_write_usage(
                 global_writes,
             );
         }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                collect_expr_buffer_write_usage(
+                    start,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+            if let Some(end) = end {
+                collect_expr_buffer_write_usage(
+                    end,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             collect_expr_buffer_write_usage(
                 &spec.size,

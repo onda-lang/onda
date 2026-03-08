@@ -334,6 +334,84 @@ pub(crate) fn register_struct_instance_roots(
     }
 }
 
+pub(crate) fn register_struct_array_roots(
+    base: &str,
+    struct_name: &str,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_array_roots: &mut HashMap<String, String>,
+) {
+    struct_array_roots.insert(base.to_owned(), struct_name.to_owned());
+    let Some(fields) = struct_defs.get(struct_name) else {
+        return;
+    };
+    for field in fields {
+        match field.ty {
+            TypedFieldType::Struct => {
+                if let Some(nested_struct_name) = &field.struct_name {
+                    register_struct_array_roots(
+                        &format!("{base}.{}", field.name),
+                        nested_struct_name,
+                        struct_defs,
+                        struct_array_roots,
+                    );
+                }
+            }
+            TypedFieldType::Array(_) => {
+                if let Some(elem_struct_name) = &field.array_elem_struct {
+                    register_struct_array_roots(
+                        &format!("{base}.{}", field.name),
+                        elem_struct_name,
+                        struct_defs,
+                        struct_array_roots,
+                    );
+                }
+            }
+            TypedFieldType::Scalar(_) => {}
+        }
+    }
+}
+
+pub(crate) fn register_struct_instance_and_array_roots(
+    base: &str,
+    struct_name: &str,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_instances: &mut HashMap<String, String>,
+    struct_array_roots: &mut HashMap<String, String>,
+) {
+    struct_instances.insert(base.to_owned(), struct_name.to_owned());
+    let Some(fields) = struct_defs.get(struct_name) else {
+        return;
+    };
+    for field in fields {
+        match field.ty {
+            TypedFieldType::Struct => {
+                let Some(nested_struct_name) = &field.struct_name else {
+                    continue;
+                };
+                register_struct_instance_and_array_roots(
+                    &format!("{base}.{}", field.name),
+                    nested_struct_name,
+                    struct_defs,
+                    struct_instances,
+                    struct_array_roots,
+                );
+            }
+            TypedFieldType::Array(_) => {
+                let Some(elem_struct_name) = &field.array_elem_struct else {
+                    continue;
+                };
+                register_struct_array_roots(
+                    &format!("{base}.{}", field.name),
+                    elem_struct_name,
+                    struct_defs,
+                    struct_array_roots,
+                );
+            }
+            TypedFieldType::Scalar(_) => {}
+        }
+    }
+}
+
 pub(crate) fn coerce_params(
     params: &[ParamDecl],
     options: AnalysisOptions,

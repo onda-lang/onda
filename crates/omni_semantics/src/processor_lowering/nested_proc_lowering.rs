@@ -17,6 +17,28 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             proc_api,
             errors,
         ),
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                rewrite_nested_proc_calls_in_expr(
+                    start,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    errors,
+                );
+            }
+            if let Some(end) = end {
+                rewrite_nested_proc_calls_in_expr(
+                    end,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    errors,
+                );
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             rewrite_nested_proc_calls_in_expr(
                 &mut spec.size,

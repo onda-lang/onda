@@ -112,6 +112,17 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                         .max(parse_numbered_port_index(base, "out").unwrap_or(0));
                     infer_io_from_expr(index, acc);
                 }
+                AssignTarget::Slice { base, start, end } => {
+                    acc.max_out = acc
+                        .max_out
+                        .max(parse_numbered_port_index(base, "out").unwrap_or(0));
+                    if let Some(start) = start {
+                        infer_io_from_expr(start, acc);
+                    }
+                    if let Some(end) = end {
+                        infer_io_from_expr(end, acc);
+                    }
+                }
             }
             infer_io_from_expr(expr, acc);
         }
@@ -164,6 +175,20 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
                 .max_out
                 .max(parse_numbered_port_index(base, "out").unwrap_or(0));
             infer_io_from_expr(index, acc);
+        }
+        Expr::Slice { base, start, end } => {
+            acc.max_in = acc
+                .max_in
+                .max(parse_numbered_port_index(base, "in").unwrap_or(0));
+            acc.max_out = acc
+                .max_out
+                .max(parse_numbered_port_index(base, "out").unwrap_or(0));
+            if let Some(start) = start {
+                infer_io_from_expr(start, acc);
+            }
+            if let Some(end) = end {
+                infer_io_from_expr(end, acc);
+            }
         }
         Expr::Compare { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
             infer_io_from_expr(lhs, acc);

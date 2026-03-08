@@ -317,7 +317,15 @@ pub struct ArrayTypeSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssignTarget {
     Var(String),
-    Index { base: String, index: Expr },
+    Index {
+        base: String,
+        index: Expr,
+    },
+    Slice {
+        base: String,
+        start: Option<Expr>,
+        end: Option<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -404,6 +412,11 @@ pub enum Expr {
     Index {
         base: String,
         index: Box<Expr>,
+    },
+    Slice {
+        base: String,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
     },
     ArrayCtor {
         spec: ArrayTypeSpec,

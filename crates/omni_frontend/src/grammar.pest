@@ -86,8 +86,7 @@ field_decl = {
   | (ident ~ &field_sep)
 }
 field_type = { array_type | type_name | named_type }
-array_named_type = { (qualified_ident | ident) ~ generic_type_arg_list ~ &"[" }
-array_type = { (type_name | namespace_ref | array_named_type | qualified_ident) ~ "[" ~ expr ~ "]" }
+array_type = { (type_name | named_type) ~ "[" ~ expr ~ "]" }
 type_name = { "f32" | "f64" | "i32" | "i64" | "bool" }
 generic_param_list = { "<" ~ ident ~ ("," ~ ident)* ~ ">" }
 generic_type_arg_list = { "<" ~ generic_type_arg ~ ("," ~ generic_type_arg)* ~ ">" }
@@ -104,12 +103,13 @@ struct_method_decl = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ s
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
 stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | const_decl | assign_stmt | call_stmt }
 assign_stmt = { typed_assign_stmt | plain_assign_stmt }
-named_type = { namespace_ref | ((qualified_ident | ident) ~ generic_type_arg_list?) }
+named_type = { (namespace_ref | qualified_ident | ident) ~ generic_type_arg_list? }
 typed_decl_type = { array_type | type_name | named_type }
 typed_assign_stmt = { ident ~ ":" ~ typed_decl_type ~ ("=" ~ expr)? }
 plain_assign_stmt = { assign_target ~ "=" ~ expr }
-assign_target = _{ index_target | path_ident }
+assign_target = _{ slice_target | index_target | path_ident }
 index_target = { path_ident ~ "[" ~ expr ~ "]" ~ ("[" ~ expr ~ "]")? }
+slice_target = { path_ident ~ "[" ~ slice_start? ~ ":" ~ slice_end? ~ "]" }
 return_stmt = { "return" ~ expr }
 call_stmt = { call_expr }
 if_cond = { expr }
@@ -130,16 +130,19 @@ field_sep = _{ "," | ";" | NEWLINE+ }
 stmt_sep = _{ ";" | NEWLINE+ }
 
 expr = { prefix* ~ term ~ ((or_op | and_op | bit_or_op | bit_xor_op | bit_and_op | shift_op | cmp_op | add_op | mul_op) ~ prefix* ~ term)* }
-term = _{ call_field_expr | call_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | "(" ~ expr ~ ")" }
-array_lit = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
+term = _{ call_field_expr | call_expr | slice_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | "(" ~ expr ~ ")" }
+array_lit = { "[" ~ NEWLINE* ~ (expr ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expr)*)? ~ NEWLINE* ~ "]" }
 call_field_expr = { call_expr ~ "." ~ ident }
-call_expr = { call_target ~ generic_type_arg_list? ~ "(" ~ arg_list? ~ ")" }
+call_expr = { call_target ~ generic_type_arg_list? ~ "(" ~ NEWLINE* ~ arg_list? ~ NEWLINE* ~ ")" }
 call_target = { call_index_member_target | call_index_target | namespace_ref | path_ident }
 call_index_member_target = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
 call_index_target = { path_ident ~ "[" ~ expr ~ "]" ~ !"::" }
-arg_list = { call_arg ~ ("," ~ call_arg)* }
+arg_list = { call_arg ~ (NEWLINE* ~ "," ~ NEWLINE* ~ call_arg)* ~ (NEWLINE* ~ ",")? }
 call_arg = { (ident ~ "=")? ~ expr }
 index_expr = { path_ident ~ "[" ~ expr ~ "]" ~ !"::" ~ ("[" ~ expr ~ "]")? }
+slice_expr = { path_ident ~ "[" ~ slice_start? ~ ":" ~ slice_end? ~ "]" ~ !"::" }
+slice_start = { expr }
+slice_end = { expr }
 bool_lit = { "true" | "false" }
 path_ident = @{ ident ~ (("." | "::") ~ ident)* }
 qualified_ident = @{ ident ~ ("::" ~ ident)* }

@@ -11,6 +11,7 @@
 - Language support for overloaded top-level `def` functions (arity/type-based dispatch with ambiguity diagnostics).
 - Processor-instance array dispatch with literal/runtime indices for calls, endpoint reads, statement calls, and proc-event forwarding (direct indexed instance access, with proc-slot buffer refs synced on `process_bound` for dynamic buffer-backed calls).
 - User-defined scalar compile-time constants via `const NAME = expr` / `const NAME: T = expr`, available at top-level, in namespaces, and in executable scopes.
+- Python-style slice expressions and writable slice assignment for primitive arrays/buffers (for example `a[1:-1]`, `a[:] = 0.0`, `dst[:] = src[:]`).
   - Namespace consts are addressable from outside via qualified paths such as `std::convolution<8, 8>::HopSize` or `std::convolution::HopSize`.
   - For procs with a `block` section, dynamic indexed proc-array `()` calls trigger per-slot block hooks only for actually called slots:
     - `block pre` runs lazily on first `()` call for that slot in the current block.
@@ -61,6 +62,7 @@ Notes:
   - Fixed-shape payload bytes are packed in declaration order (native-endian per primitive type; fixed arrays are contiguous).
   - Slice params use dynamic payload layout: `i32 len` followed by contiguous element bytes.
   - `omni_event_payload_bytes` returns `-1` for dynamic event layouts such as slice params.
+- Built-in stdlib modules include `std/math`, `std/lookup`, `std/data`, `std/complex`, `std/fft`, and `std/convolution`.
 - Buffer threading hint (optional): query `omni_buffer_may_write` to detect buffers that may be written by program code.
 
 Binding contract for optimized codegen:

@@ -102,6 +102,17 @@
   - Integer-typed declarations require integer defaults/min/max constant expressions.
   - Ranges on array declarations are rejected.
 - Fixed-size arrays are supported for stateful storage, including typed forms and compile-time capacity expressions.
+- Primitive array and buffer slice syntax is supported with Python-style two-bound forms:
+  - `a[:]`
+  - `a[start:]`
+  - `a[:end]`
+  - `a[start:end]`
+  - negative slice bounds such as `a[:-1]` and `a[1:-2]`
+- Slice expressions lower to normal primitive `T[]` views.
+- Writable slice assignment is supported for mutable primitive array/buffer targets:
+  - scalar fill: `a[1:-1] = 0.0`
+  - slice copy: `dst[:] = src[:]`
+  - slice copy writes `min(dst_len, src_len)` elements and preserves overlap semantics via temporary-copy lowering.
 - Scalar assignment typing follows first-assignment inference by default; explicit declaration typing (`x: i64 = ...`) pins the symbol type.
 - Integer bitwise operators are supported in expressions: unary `~`, binary `&`, `|`, `^`, `<<`, `>>`.
   - Bitwise operators accept `i32`/`i64` operands only.
@@ -119,6 +130,9 @@
 - `std/prelude` currently imports `std/math` and `std/lookup`.
 - Local symbols with the same name take precedence over auto-imported unqualified std helpers; qualified calls remain available via `std::math::...` and `std::lookup::...`.
 - `std/lookup` exposes duck-typed overloaded helpers `read`, `write`, `readL`, and `readC` (mono and channel-explicit forms) that specialize from both primitive arrays and buffers.
+- `std/complex` is available as `import std/complex` and provides `std::complex::Complex<T>` for method-based complex arithmetic in Omni code.
+  - Intended `T` specializations are `f32` and `f64`.
+  - Current surface includes `real`, `imag`, `set`, `clear`, `copy`, `set_polar`, `add_assign`, `add_parts`, `sub_assign`, `sub_parts`, `mul_assign`, `mul_parts`, `scale_assign`, `conjugate`, `power`, `magnitude`, and `phase`.
 - `std/fft` is available as `import std/fft` and currently provides `std::fft<N>::FFT<T>`, an internal-buffer complex FFT specialized by namespace integer `N` and numeric type `T`.
   - Namespace contract: `N > 0` and `N` must be a power of two.
   - Intended `T` specializations are `f32` and `f64`.
@@ -177,6 +191,7 @@
     - bare buffer params (`buf: buffer`) — monomorphized per call site by buffer type.
     - generic struct/proc params (`v: Voice` where `Voice<T>`) — monomorphized per call site by concrete specialization.
   - overload priority: explicit type > generic/duck-typed > untyped.
+  - function and method call argument lists may span multiple lines, and a trailing comma is allowed.
 - Structs:
   - field defaults and methods supported.
   - generic structs are supported; methods can use owner generic parameters and are specialized with the struct.

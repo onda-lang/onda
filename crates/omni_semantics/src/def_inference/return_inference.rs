@@ -14,7 +14,7 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
             PrimitiveType::I64
         }),
         Expr::Bool(_) => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral(_) | Expr::ArrayCtor { .. } => None,
+        Expr::ArrayLiteral(_) | Expr::ArrayCtor { .. } | Expr::Slice { .. } => None,
         Expr::Var(name) => builtin_constant_type(name).or_else(|| locals.get(name).copied()),
         Expr::Index { base, .. } => locals.get(base).copied().or(Some(PrimitiveType::F32)),
         Expr::Cast { to, .. } => Some(*to),
@@ -194,6 +194,10 @@ fn infer_stmt_returns_for_def_return_inference(
             }
             Stmt::Assign {
                 target: AssignTarget::Index { .. },
+                ..
+            }
+            | Stmt::Assign {
+                target: AssignTarget::Slice { .. },
                 ..
             } => {}
             Stmt::Expr { .. } => {}

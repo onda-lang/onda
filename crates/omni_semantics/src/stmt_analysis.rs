@@ -60,6 +60,22 @@ fn is_bare_array_ref_expr(expr: &Expr, env: StmtExprAnalysisEnv<'_>) -> bool {
     };
     env.expr_env.array_vars.contains_key(name)
         || is_declared_data_array_symbol(env.declared_symbols, name)
+        || has_declared_buffer_symbol_info(env.declared_symbols, name)
+}
+
+pub(crate) fn is_data_like_value_expr(expr: &Expr, env: StmtExprAnalysisEnv<'_>) -> bool {
+    matches!(expr, Expr::Slice { .. }) || is_bare_array_ref_expr(expr, env)
+}
+
+pub(crate) fn validate_data_like_value_expr(
+    expr: &Expr,
+    env: StmtExprAnalysisEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if is_bare_array_ref_expr(expr, env) {
+        return;
+    }
+    validate_expr(expr, env.expr_env, errors);
 }
 
 pub(crate) fn analyze_proc_event_arg_expr(
@@ -67,7 +83,8 @@ pub(crate) fn analyze_proc_event_arg_expr(
     env: StmtExprAnalysisEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if is_bare_array_ref_expr(expr, env) {
+    if is_data_like_value_expr(expr, env) {
+        validate_data_like_value_expr(expr, env, errors);
         return;
     }
     analyze_stmt_expr(expr, env, errors);
@@ -103,6 +120,48 @@ pub(crate) fn validate_for_loop_step_expr(
         if matches!(step_expr, Expr::Int(0)) || matches!(step_expr, Expr::Number(v) if *v == 0.0) {
             errors.push(Diagnostic::semantic("for loop step cannot be zero", 0, 0));
         }
+    }
+}
+
+pub(crate) fn infer_static_slice_len_hint(
+    total_len: Option<usize>,
+    start: Option<&Expr>,
+    end: Option<&Expr>,
+) -> usize {
+    let Some(total_len) = total_len else {
+        return 1;
+    };
+    let start = normalize_static_slice_bound(start, total_len, false);
+    let end = normalize_static_slice_bound(end, total_len, true);
+    end.saturating_sub(start).max(1)
+}
+
+fn normalize_static_slice_bound(
+    expr: Option<&Expr>,
+    total_len: usize,
+    default_to_len: bool,
+) -> usize {
+    let Some(expr) = expr else {
+        return if default_to_len { total_len } else { 0 };
+    };
+    let raw =
+        const_slice_bound_i64(expr).unwrap_or(if default_to_len { total_len as i64 } else { 0 });
+    let adjusted = if raw < 0 { total_len as i64 + raw } else { raw };
+    adjusted.clamp(0, total_len as i64) as usize
+}
+
+fn const_slice_bound_i64(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Int(v) => Some(*v),
+        Expr::Number(v) => {
+            let truncated = v.trunc();
+            if (v - truncated).abs() <= 1e-6 {
+                Some(truncated as i64)
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 

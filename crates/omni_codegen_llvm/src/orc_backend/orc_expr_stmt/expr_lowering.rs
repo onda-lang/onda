@@ -316,6 +316,9 @@ pub(super) unsafe fn lower_expr(
                 ty: data.elem_ty,
             })
         }
+        Expr::Slice { .. } => Err(Diagnostic::internal(
+            "slice expressions are not yet supported in ORC scalar lowering",
+        )),
         Expr::ArrayCtor { .. } => Err(Diagnostic::internal(
             "array constructor is only valid as an init assignment value",
         )),
@@ -591,6 +594,8 @@ pub(super) unsafe fn lower_expr(
             let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
                 lower_array_call_args_in_orc(
                     &mut *ctx_ptr,
+                    locals,
+                    local_aliases,
                     local_array_aliases,
                     arg_values,
                     arg_expr,

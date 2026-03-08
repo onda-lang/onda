@@ -181,6 +181,7 @@ pub(crate) fn infer_scalar_expr_type(
             }
             Some(PrimitiveType::F32)
         }
+        Expr::Slice { .. } => None,
         Expr::ArrayCtor { .. } => None,
         Expr::Cast { to, expr } => {
             let _ = infer_scalar_expr_type(

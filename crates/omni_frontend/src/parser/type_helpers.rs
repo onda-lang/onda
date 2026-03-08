@@ -141,7 +141,7 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
                         size: parse_expr_inner(size_pair),
                     })
                 }
-                Rule::qualified_ident | Rule::namespace_ref | Rule::array_named_type => {
+                Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
                     Ok(DeclType::ArrayGeneric {
                         elem: elem_pair.as_str().trim().to_owned(),
                         size: parse_expr_inner(size_pair),
@@ -434,11 +434,8 @@ pub(super) fn parse_array_type_spec(
     };
     let elem = match elem_pair.as_rule() {
         Rule::type_name => parse_array_elem_type(elem_pair.as_str()),
-        Rule::qualified_ident | Rule::namespace_ref => {
+        Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
             ArrayElemType::Struct(elem_pair.as_str().trim().to_owned())
-        }
-        Rule::array_named_type => {
-            ArrayElemType::Struct(parse_array_named_type_base_name(elem_pair)?)
         }
         _ => return Err(vec![Diagnostic::syntax("invalid array element type", 0, 0)]),
     };
@@ -456,17 +453,6 @@ pub(super) fn parse_array_type_spec(
         elem,
         size: Box::new(size),
     })
-}
-
-fn parse_array_named_type_base_name(pair: Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
-    if pair.as_rule() != Rule::array_named_type {
-        return Err(vec![Diagnostic::syntax(
-            "internal parser error: expected named array element type",
-            0,
-            0,
-        )]);
-    }
-    Ok(pair.as_str().trim().to_owned())
 }
 
 pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Diagnostic>> {
@@ -505,6 +491,48 @@ pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Di
 pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, Vec<Diagnostic>> {
     match pair.as_rule() {
         Rule::path_ident => Ok(AssignTarget::Var(pair.as_str().to_owned())),
+        Rule::slice_target => {
+            let mut inner = pair.into_inner();
+            let Some(base_pair) = inner.next() else {
+                return Err(vec![Diagnostic::syntax(
+                    "missing sliced assignment base",
+                    0,
+                    0,
+                )]);
+            };
+            let mut start = None::<Expr>;
+            let mut end = None::<Expr>;
+            for bound in inner {
+                match bound.as_rule() {
+                    Rule::slice_start => {
+                        let expr = bound.into_inner().next().ok_or_else(|| {
+                            vec![Diagnostic::syntax(
+                                "missing sliced assignment start bound",
+                                0,
+                                0,
+                            )]
+                        })?;
+                        start = Some(parse_expr(expr)?);
+                    }
+                    Rule::slice_end => {
+                        let expr = bound.into_inner().next().ok_or_else(|| {
+                            vec![Diagnostic::syntax(
+                                "missing sliced assignment end bound",
+                                0,
+                                0,
+                            )]
+                        })?;
+                        end = Some(parse_expr(expr)?);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(AssignTarget::Slice {
+                base: base_pair.as_str().to_owned(),
+                start,
+                end,
+            })
+        }
         Rule::index_target => {
             let mut inner = pair.into_inner();
             let Some(base_pair) = inner.next() else {

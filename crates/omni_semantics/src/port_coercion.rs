@@ -225,6 +225,26 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 clamp_params,
             );
         }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                rewrite_top_level_range_clamps_in_expr(
+                    start,
+                    input_aliases,
+                    param_aliases,
+                    clamp_inputs,
+                    clamp_params,
+                );
+            }
+            if let Some(end) = end {
+                rewrite_top_level_range_clamps_in_expr(
+                    end,
+                    input_aliases,
+                    param_aliases,
+                    clamp_inputs,
+                    clamp_params,
+                );
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             rewrite_top_level_range_clamps_in_expr(
                 &mut spec.size,

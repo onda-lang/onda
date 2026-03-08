@@ -101,20 +101,25 @@ pub(super) fn qualify_struct_type_name(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if ty_name.contains("::") {
+    let (base_name, suffix) = if let Some(idx) = ty_name.find('<') {
+        (&ty_name[..idx], &ty_name[idx..])
+    } else {
+        (ty_name.as_str(), "")
+    };
+    if base_name.contains("::") {
         if let Some(resolved) = resolve_qualified_symbol_name(
-            ty_name,
+            base_name,
             struct_symbols,
             struct_namespaces,
             context,
             errors,
         ) {
-            *ty_name = resolved;
+            *ty_name = format!("{resolved}{suffix}");
         }
         return;
     }
-    if let Some(resolved) = resolve_unqualified_symbol_name(ty_name, current_ns, struct_symbols) {
-        *ty_name = resolved;
+    if let Some(resolved) = resolve_unqualified_symbol_name(base_name, current_ns, struct_symbols) {
+        *ty_name = format!("{resolved}{suffix}");
     }
 }
 
@@ -212,6 +217,32 @@ pub(super) fn qualify_expr_namespaced_symbols(
             errors,
             context,
         ),
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                qualify_expr_namespaced_symbols(
+                    start,
+                    current_ns,
+                    callable_symbols,
+                    callable_namespaces,
+                    struct_symbols,
+                    struct_namespaces,
+                    errors,
+                    context,
+                );
+            }
+            if let Some(end) = end {
+                qualify_expr_namespaced_symbols(
+                    end,
+                    current_ns,
+                    callable_symbols,
+                    callable_namespaces,
+                    struct_symbols,
+                    struct_namespaces,
+                    errors,
+                    context,
+                );
+            }
+        }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
@@ -295,17 +326,46 @@ pub(super) fn qualify_stmt_namespaced_symbols(
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } = target {
-                qualify_expr_namespaced_symbols(
-                    index,
-                    current_ns,
-                    callable_symbols,
-                    callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
-                    errors,
-                    context,
-                );
+            match target {
+                AssignTarget::Index { index, .. } => {
+                    qualify_expr_namespaced_symbols(
+                        index,
+                        current_ns,
+                        callable_symbols,
+                        callable_namespaces,
+                        struct_symbols,
+                        struct_namespaces,
+                        errors,
+                        context,
+                    );
+                }
+                AssignTarget::Slice { start, end, .. } => {
+                    if let Some(start) = start {
+                        qualify_expr_namespaced_symbols(
+                            start,
+                            current_ns,
+                            callable_symbols,
+                            callable_namespaces,
+                            struct_symbols,
+                            struct_namespaces,
+                            errors,
+                            context,
+                        );
+                    }
+                    if let Some(end) = end {
+                        qualify_expr_namespaced_symbols(
+                            end,
+                            current_ns,
+                            callable_symbols,
+                            callable_namespaces,
+                            struct_symbols,
+                            struct_namespaces,
+                            errors,
+                            context,
+                        );
+                    }
+                }
+                AssignTarget::Var(_) => {}
             }
             qualify_expr_namespaced_symbols(
                 expr,

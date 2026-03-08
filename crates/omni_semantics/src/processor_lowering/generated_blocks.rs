@@ -44,6 +44,14 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
             Expr::Index { index, .. } => {
                 collect_guards_from_expr(index, managed_arrays, proc_api, used_arrays, guards);
             }
+            Expr::Slice { start, end, .. } => {
+                if let Some(start) = start {
+                    collect_guards_from_expr(start, managed_arrays, proc_api, used_arrays, guards);
+                }
+                if let Some(end) = end {
+                    collect_guards_from_expr(end, managed_arrays, proc_api, used_arrays, guards);
+                }
+            }
             Expr::ArrayCtor { spec, init } => {
                 collect_guards_from_expr(&spec.size, managed_arrays, proc_api, used_arrays, guards);
                 if let Some(values) = init {

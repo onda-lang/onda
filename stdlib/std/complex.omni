@@ -1,0 +1,70 @@
+namespace std::complex:
+  struct Complex<T>:
+    re: T = 0.0
+    im: T = 0.0
+
+    def real(self):
+      return self.re
+
+    def imag(self):
+      return self.im
+
+    def set(self, re, im):
+      self.re = re
+      self.im = im
+
+    def clear(self):
+      self.re = T(0.0)
+      self.im = T(0.0)
+
+    def copy(self, other: Complex):
+      self.re = other.re
+      self.im = other.im
+
+    def set_polar(self, magnitude, phase):
+      self.re = magnitude * cos(phase)
+      self.im = magnitude * sin(phase)
+
+    def add_assign(self, other: Complex):
+      self.re = self.re + other.re
+      self.im = self.im + other.im
+
+    def add_parts(self, re, im):
+      self.re = self.re + re
+      self.im = self.im + im
+
+    def sub_assign(self, other: Complex):
+      self.re = self.re - other.re
+      self.im = self.im - other.im
+
+    def sub_parts(self, re, im):
+      self.re = self.re - re
+      self.im = self.im - im
+
+    def mul_assign(self, other: Complex):
+      old_re = self.re
+      old_im = self.im
+      self.re = old_re * other.re - old_im * other.im
+      self.im = old_re * other.im + old_im * other.re
+
+    def mul_parts(self, re, im):
+      old_re = self.re
+      old_im = self.im
+      self.re = old_re * re - old_im * im
+      self.im = old_re * im + old_im * re
+
+    def scale_assign(self, gain):
+      self.re = self.re * gain
+      self.im = self.im * gain
+
+    def conjugate(self):
+      self.im = -self.im
+
+    def power(self):
+      return self.re * self.re + self.im * self.im
+
+    def magnitude(self):
+      return sqrt(self.power())
+
+    def phase(self):
+      return atan2(self.im, self.re)

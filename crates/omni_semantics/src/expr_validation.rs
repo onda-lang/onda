@@ -191,6 +191,75 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             }
             validate_expr(index, env, errors);
         }
+        Expr::Slice { base, start, end } => {
+            if let Some((root, field)) = split_field_path(base, errors) {
+                if let Some((struct_name, owner_kind)) = env
+                    .param_structs
+                    .get(root)
+                    .map(|s| (s.as_str(), "parameter"))
+                    .or_else(|| {
+                        env.struct_instances
+                            .get(root)
+                            .map(|s| (s.as_str(), "instance"))
+                    })
+                {
+                    let Some(_fields) = env.struct_defs.get(struct_name) else {
+                        errors.push(Diagnostic::semantic(
+                            format!("unknown struct type '{}'", struct_name),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    let Some(field_decl) =
+                        resolve_struct_field_decl(struct_name, field, env.struct_defs)
+                    else {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "struct {} '{}' (type '{}') has no field '{}'",
+                                owner_kind, root, struct_name, field
+                            ),
+                            0,
+                            0,
+                        ));
+                        return;
+                    };
+                    if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
+                        errors.push(Diagnostic::semantic(
+                            format!(
+                                "field '{}.{}' is not array and cannot be sliced",
+                                root, field
+                            ),
+                            0,
+                            0,
+                        ));
+                    }
+                }
+            } else if !env.array_vars.contains_key(base)
+                && !has_declared_buffer_symbol_info(env.declared_symbols, base)
+                && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
+            {
+                errors.push(Diagnostic::semantic(
+                    format!("slice expression '{base}[...]' is not an array/buffer symbol"),
+                    0,
+                    0,
+                ));
+            } else if is_declared_multichannel_buffer_info(env.declared_symbols, base) {
+                errors.push(Diagnostic::semantic(
+                    format!(
+                        "slice expression '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
+                    ),
+                    0,
+                    0,
+                ));
+            }
+            if let Some(start) = start {
+                validate_expr(start, env, errors);
+            }
+            if let Some(end) = end {
+                validate_expr(end, env, errors);
+            }
+        }
         Expr::ArrayCtor { init, .. } => {
             if !env.allow_array_ctor {
                 errors.push(Diagnostic::semantic(
@@ -361,8 +430,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 | Some(FnParamType::ArrayGeneric(_))
                                 | Some(FnParamType::BareBuffer)
                         ) {
-                            // Array and bare buffer params accept data-like args;
-                            // skip scalar validation.
+                            if matches!(arg, Expr::Slice { .. }) {
+                                validate_expr(arg, env, errors);
+                            }
+                            // Array and bare buffer params accept data-like args.
                             continue;
                         }
                         if param_ty.is_none() {

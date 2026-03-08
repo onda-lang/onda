@@ -273,6 +273,9 @@ pub(super) unsafe fn lower_def_expr(
                 ty: data.elem_ty,
             })
         }
+        Expr::Slice { .. } => Err(Diagnostic::internal(
+            "slice expressions are not yet supported in def scalar lowering",
+        )),
         Expr::ArrayCtor { .. } => Err(Diagnostic::internal(
             "array constructor is not supported in def lowering",
         )),

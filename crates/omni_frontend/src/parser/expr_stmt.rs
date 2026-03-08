@@ -938,6 +938,36 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 }
             }
         }
+        Rule::slice_expr => {
+            let mut inner = pair.into_inner();
+            let base = inner
+                .next()
+                .expect("slice_expr rule must include base path")
+                .as_str()
+                .to_owned();
+            let mut start = None::<Box<Expr>>;
+            let mut end = None::<Box<Expr>>;
+            for bound in inner {
+                match bound.as_rule() {
+                    Rule::slice_start => {
+                        let expr = bound
+                            .into_inner()
+                            .next()
+                            .expect("slice_start must contain expr");
+                        start = Some(Box::new(parse_expr_inner(expr)));
+                    }
+                    Rule::slice_end => {
+                        let expr = bound
+                            .into_inner()
+                            .next()
+                            .expect("slice_end must contain expr");
+                        end = Some(Box::new(parse_expr_inner(expr)));
+                    }
+                    _ => {}
+                }
+            }
+            Expr::Slice { base, start, end }
+        }
         Rule::call_field_expr => {
             let mut inner = pair.into_inner();
             let call_pair = inner

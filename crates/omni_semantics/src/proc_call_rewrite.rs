@@ -56,6 +56,14 @@ fn rewrite_proc_alias_calls_in_expr(expr: &mut Expr, aliases: &ProcArrayAliases)
             }
         }
         Expr::Index { index, .. } => rewrite_proc_alias_calls_in_expr(index, aliases),
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                rewrite_proc_alias_calls_in_expr(start, aliases);
+            }
+            if let Some(end) = end {
+                rewrite_proc_alias_calls_in_expr(end, aliases);
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             rewrite_proc_alias_calls_in_expr(&mut spec.size, aliases);
             if let Some(values) = init {
@@ -1326,6 +1334,15 @@ pub(super) fn rewrite_proc_calls_in_expr(
             rewrite_proc_calls_in_expr(index, proc_vars, proc_array_slots, proc_api, errors);
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
         }
+        Expr::Slice { base, start, end } => {
+            if let Some(start) = start {
+                rewrite_proc_calls_in_expr(start, proc_vars, proc_array_slots, proc_api, errors);
+            }
+            if let Some(end) = end {
+                rewrite_proc_calls_in_expr(end, proc_vars, proc_array_slots, proc_api, errors);
+            }
+            normalize_proc_output_alias_path(base, proc_vars, proc_api);
+        }
         Expr::ArrayCtor { spec, init } => {
             rewrite_proc_calls_in_expr(
                 &mut spec.size,
@@ -1865,6 +1882,15 @@ pub(super) fn normalize_proc_output_aliases_in_expr(
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
             normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
         }
+        Expr::Slice { base, start, end } => {
+            normalize_proc_output_alias_path(base, proc_vars, proc_api);
+            if let Some(start) = start {
+                normalize_proc_output_aliases_in_expr(start, proc_vars, proc_api);
+            }
+            if let Some(end) = end {
+                normalize_proc_output_aliases_in_expr(end, proc_vars, proc_api);
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             normalize_proc_output_aliases_in_expr(&mut spec.size, proc_vars, proc_api);
             if let Some(values) = init {
@@ -1913,6 +1939,15 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
         AssignTarget::Index { base, index } => {
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
             normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
+        }
+        AssignTarget::Slice { base, start, end } => {
+            normalize_proc_output_alias_path(base, proc_vars, proc_api);
+            if let Some(start) = start {
+                normalize_proc_output_aliases_in_expr(start, proc_vars, proc_api);
+            }
+            if let Some(end) = end {
+                normalize_proc_output_aliases_in_expr(end, proc_vars, proc_api);
+            }
         }
     }
 }
@@ -1980,6 +2015,7 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
     let Some((base, field)) = (match target {
         AssignTarget::Var(name) => split_dot_path(name),
         AssignTarget::Index { base, .. } => split_dot_path(base),
+        AssignTarget::Slice { base, .. } => split_dot_path(base),
     }) else {
         return;
     };
@@ -2372,6 +2408,14 @@ pub(super) fn collect_called_proc_instances_in_expr(
         Expr::Index { index, .. } => {
             collect_called_proc_instances_in_expr(index, proc_vars, proc_array_slots, out)
         }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                collect_called_proc_instances_in_expr(start, proc_vars, proc_array_slots, out);
+            }
+            if let Some(end) = end {
+                collect_called_proc_instances_in_expr(end, proc_vars, proc_array_slots, out);
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             collect_called_proc_instances_in_expr(&spec.size, proc_vars, proc_array_slots, out);
             if let Some(values) = init {
@@ -2590,20 +2634,70 @@ pub(super) fn collect_called_proc_instances_in_stmts(
 pub(super) fn desugar_expr_instance_method_calls(
     expr: &mut Expr,
     struct_instances: &HashMap<String, String>,
+    struct_array_roots: &HashMap<String, String>,
     current_ns: &str,
     callable_symbols: &HashSet<String>,
 ) {
+    fn extract_indexed_receiver(args: &[CallArg]) -> Option<(&str, Expr)> {
+        let mut base = None::<&str>;
+        let mut index = None::<Expr>;
+        for arg in args {
+            match arg.name.as_deref() {
+                Some(PROC_INDEX_BASE_ARG) => {
+                    if let Expr::Var(name) = &arg.expr {
+                        base = Some(name.as_str());
+                    }
+                }
+                Some(PROC_INDEX_EXPR_ARG) => {
+                    index = Some(arg.expr.clone());
+                }
+                _ => {}
+            }
+        }
+        if base.is_none() || index.is_none() {
+            if args.len() >= 2 {
+                if let Expr::Var(name) = &args[0].expr {
+                    base = Some(name.as_str());
+                    index = Some(args[1].expr.clone());
+                }
+            }
+        }
+        Some((base?, index?))
+    }
+
     match expr {
         Expr::Index { index, .. } => desugar_expr_instance_method_calls(
             index,
             struct_instances,
+            struct_array_roots,
             current_ns,
             callable_symbols,
         ),
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                desugar_expr_instance_method_calls(
+                    start,
+                    struct_instances,
+                    struct_array_roots,
+                    current_ns,
+                    callable_symbols,
+                );
+            }
+            if let Some(end) = end {
+                desugar_expr_instance_method_calls(
+                    end,
+                    struct_instances,
+                    struct_array_roots,
+                    current_ns,
+                    callable_symbols,
+                );
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             desugar_expr_instance_method_calls(
                 &mut spec.size,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
@@ -2612,6 +2706,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                     desugar_expr_instance_method_calls(
                         value,
                         struct_instances,
+                        struct_array_roots,
                         current_ns,
                         callable_symbols,
                     );
@@ -2621,14 +2716,27 @@ pub(super) fn desugar_expr_instance_method_calls(
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            desugar_expr_instance_method_calls(lhs, struct_instances, current_ns, callable_symbols);
-            desugar_expr_instance_method_calls(rhs, struct_instances, current_ns, callable_symbols);
+            desugar_expr_instance_method_calls(
+                lhs,
+                struct_instances,
+                struct_array_roots,
+                current_ns,
+                callable_symbols,
+            );
+            desugar_expr_instance_method_calls(
+                rhs,
+                struct_instances,
+                struct_array_roots,
+                current_ns,
+                callable_symbols,
+            );
         }
         Expr::Call { args, .. } => {
             for arg in args {
                 desugar_expr_instance_method_calls(
                     arg,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2636,14 +2744,19 @@ pub(super) fn desugar_expr_instance_method_calls(
         }
         Expr::Cast { expr: arg, .. }
         | Expr::UnaryNot { expr: arg }
-        | Expr::UnaryBitNot { expr: arg } => {
-            desugar_expr_instance_method_calls(arg, struct_instances, current_ns, callable_symbols)
-        }
+        | Expr::UnaryBitNot { expr: arg } => desugar_expr_instance_method_calls(
+            arg,
+            struct_instances,
+            struct_array_roots,
+            current_ns,
+            callable_symbols,
+        ),
         Expr::ArrayLiteral(values) => {
             for value in values {
                 desugar_expr_instance_method_calls(
                     value,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2654,9 +2767,36 @@ pub(super) fn desugar_expr_instance_method_calls(
                 desugar_expr_instance_method_calls(
                     &mut arg.expr,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
+            }
+            if let Some(method) = name.strip_prefix(&format!("{PROC_INDEX_CALL_SENTINEL}.")) {
+                if let Some((base, index_expr)) = extract_indexed_receiver(args) {
+                    let base = base.to_owned();
+                    if let Some(struct_name) = struct_array_roots.get(base.as_str()) {
+                        let method_name = method.to_owned();
+                        *name = format!("{}.{}", struct_name, method_name);
+                        args.retain(|arg| {
+                            !matches!(
+                                arg.name.as_deref(),
+                                Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
+                            )
+                        });
+                        args.insert(
+                            0,
+                            CallArg {
+                                name: None,
+                                expr: Expr::Index {
+                                    base,
+                                    index: Box::new(index_expr),
+                                },
+                            },
+                        );
+                        return;
+                    }
+                }
             }
             if let Some((base, method)) = split_receiver_method_path(name) {
                 if let Some(struct_name) = struct_instances.get(base) {
@@ -2705,6 +2845,7 @@ fn is_builtin_instance_method_name(method: &str) -> bool {
 pub(super) fn desugar_init_instance_method_calls(
     stmt: &mut Stmt,
     struct_instances: &mut HashMap<String, String>,
+    struct_array_roots: &mut HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     current_ns: &str,
     callable_symbols: &HashSet<String>,
@@ -2730,8 +2871,32 @@ pub(super) fn desugar_init_instance_method_calls(
                         )
                         .is_some()
                         {
-                            struct_instances.insert(name.clone(), struct_name.clone());
+                            register_struct_instance_and_array_roots(
+                                name,
+                                struct_name,
+                                struct_defs,
+                                struct_instances,
+                                struct_array_roots,
+                            );
                         }
+                    } else if type_args.is_empty() && struct_defs.contains_key(struct_name) {
+                        register_struct_instance_and_array_roots(
+                            name,
+                            struct_name,
+                            struct_defs,
+                            struct_instances,
+                            struct_array_roots,
+                        );
+                    }
+                }
+                if let Expr::ArrayCtor { spec, .. } = expr {
+                    if let ArrayElemType::Struct(struct_name) = &spec.elem {
+                        register_struct_array_roots(
+                            name,
+                            struct_name,
+                            struct_defs,
+                            struct_array_roots,
+                        );
                     }
                 }
             }
@@ -2739,6 +2904,7 @@ pub(super) fn desugar_init_instance_method_calls(
                 desugar_expr_instance_method_calls(
                     index,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2746,6 +2912,7 @@ pub(super) fn desugar_init_instance_method_calls(
             desugar_expr_instance_method_calls(
                 expr,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
@@ -2754,6 +2921,7 @@ pub(super) fn desugar_init_instance_method_calls(
             desugar_expr_instance_method_calls(
                 expr,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
@@ -2767,6 +2935,7 @@ pub(super) fn desugar_init_instance_method_calls(
             desugar_expr_instance_method_calls(
                 cond,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
@@ -2774,6 +2943,7 @@ pub(super) fn desugar_init_instance_method_calls(
                 desugar_init_instance_method_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     struct_defs,
                     current_ns,
                     callable_symbols,
@@ -2783,6 +2953,7 @@ pub(super) fn desugar_init_instance_method_calls(
                 desugar_init_instance_method_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     struct_defs,
                     current_ns,
                     callable_symbols,
@@ -2799,14 +2970,22 @@ pub(super) fn desugar_init_instance_method_calls(
             desugar_expr_instance_method_calls(
                 start,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
-            desugar_expr_instance_method_calls(end, struct_instances, current_ns, callable_symbols);
+            desugar_expr_instance_method_calls(
+                end,
+                struct_instances,
+                struct_array_roots,
+                current_ns,
+                callable_symbols,
+            );
             if let Some(step_expr) = step {
                 desugar_expr_instance_method_calls(
                     step_expr,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2815,6 +2994,7 @@ pub(super) fn desugar_init_instance_method_calls(
                 desugar_init_instance_method_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     struct_defs,
                     current_ns,
                     callable_symbols,
@@ -2825,6 +3005,7 @@ pub(super) fn desugar_init_instance_method_calls(
             desugar_expr_instance_method_calls(
                 cond,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
@@ -2832,6 +3013,7 @@ pub(super) fn desugar_init_instance_method_calls(
                 desugar_init_instance_method_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     struct_defs,
                     current_ns,
                     callable_symbols,
@@ -2845,6 +3027,7 @@ pub(super) fn desugar_init_instance_method_calls(
 pub(super) fn desugar_sample_instance_method_calls(
     stmt: &mut Stmt,
     struct_instances: &HashMap<String, String>,
+    struct_array_roots: &HashMap<String, String>,
     current_ns: &str,
     callable_symbols: &HashSet<String>,
 ) {
@@ -2855,6 +3038,7 @@ pub(super) fn desugar_sample_instance_method_calls(
                 desugar_expr_instance_method_calls(
                     index,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2862,6 +3046,7 @@ pub(super) fn desugar_sample_instance_method_calls(
             desugar_expr_instance_method_calls(
                 expr,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
@@ -2870,6 +3055,7 @@ pub(super) fn desugar_sample_instance_method_calls(
             desugar_expr_instance_method_calls(
                 expr,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
@@ -2883,6 +3069,7 @@ pub(super) fn desugar_sample_instance_method_calls(
             desugar_expr_instance_method_calls(
                 cond,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
@@ -2890,6 +3077,7 @@ pub(super) fn desugar_sample_instance_method_calls(
                 desugar_sample_instance_method_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2898,6 +3086,7 @@ pub(super) fn desugar_sample_instance_method_calls(
                 desugar_sample_instance_method_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2913,14 +3102,22 @@ pub(super) fn desugar_sample_instance_method_calls(
             desugar_expr_instance_method_calls(
                 start,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
-            desugar_expr_instance_method_calls(end, struct_instances, current_ns, callable_symbols);
+            desugar_expr_instance_method_calls(
+                end,
+                struct_instances,
+                struct_array_roots,
+                current_ns,
+                callable_symbols,
+            );
             if let Some(step_expr) = step {
                 desugar_expr_instance_method_calls(
                     step_expr,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2929,6 +3126,7 @@ pub(super) fn desugar_sample_instance_method_calls(
                 desugar_sample_instance_method_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2938,6 +3136,7 @@ pub(super) fn desugar_sample_instance_method_calls(
             desugar_expr_instance_method_calls(
                 cond,
                 struct_instances,
+                struct_array_roots,
                 current_ns,
                 callable_symbols,
             );
@@ -2945,6 +3144,7 @@ pub(super) fn desugar_sample_instance_method_calls(
                 desugar_sample_instance_method_calls(
                     nested,
                     struct_instances,
+                    struct_array_roots,
                     current_ns,
                     callable_symbols,
                 );
@@ -2961,11 +3161,13 @@ pub(super) fn desugar_processor_instance_method_calls(
 ) {
     let current_ns = namespace_of_symbol(&proc.name);
     let mut struct_instances = HashMap::<String, String>::new();
+    let mut struct_array_roots = HashMap::<String, String>::new();
 
     for stmt in &mut proc.init {
         desugar_init_instance_method_calls(
             stmt,
             &mut struct_instances,
+            &mut struct_array_roots,
             struct_defs,
             &current_ns,
             callable_symbols,
@@ -2976,6 +3178,7 @@ pub(super) fn desugar_processor_instance_method_calls(
         desugar_sample_instance_method_calls(
             stmt,
             &struct_instances,
+            &struct_array_roots,
             &current_ns,
             callable_symbols,
         );
@@ -2984,6 +3187,7 @@ pub(super) fn desugar_processor_instance_method_calls(
         desugar_sample_instance_method_calls(
             stmt,
             &struct_instances,
+            &struct_array_roots,
             &current_ns,
             callable_symbols,
         );
@@ -2992,6 +3196,7 @@ pub(super) fn desugar_processor_instance_method_calls(
         desugar_sample_instance_method_calls(
             stmt,
             &struct_instances,
+            &struct_array_roots,
             &current_ns,
             callable_symbols,
         );
@@ -3001,6 +3206,7 @@ pub(super) fn desugar_processor_instance_method_calls(
             desugar_sample_instance_method_calls(
                 stmt,
                 &struct_instances,
+                &struct_array_roots,
                 &current_ns,
                 callable_symbols,
             );

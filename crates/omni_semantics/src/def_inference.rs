@@ -174,6 +174,7 @@ pub(crate) fn infer_def_param_kinds(
             }
 
             let mut local_struct_instances = HashMap::<String, String>::new();
+            let mut local_struct_array_roots = HashMap::<String, String>::new();
             let mut local_array_bindings = HashMap::<String, InferredArrayParam>::new();
             let mut local_buffer_bindings = HashMap::<String, Vec<InferredBufferParam>>::new();
 
@@ -182,11 +183,12 @@ pub(crate) fn infer_def_param_kinds(
                     if let (Some(struct_name), Some(param)) =
                         (explicit.as_ref(), def.params.get(idx))
                     {
-                        crate::register_struct_instance_roots(
+                        crate::register_struct_instance_and_array_roots(
                             &param.name,
                             struct_name,
                             struct_defs,
                             &mut local_struct_instances,
+                            &mut local_struct_array_roots,
                         );
                     }
                 }
@@ -244,11 +246,13 @@ pub(crate) fn infer_def_param_kinds(
                 }
             }
 
+            let mut merged_struct_array_roots = struct_array_roots.clone();
+            merged_struct_array_roots.extend(local_struct_array_roots);
             for stmt in &def.body {
                 infer_stmt_calls(
                     stmt,
                     &local_struct_instances,
-                    struct_array_roots,
+                    &merged_struct_array_roots,
                     &mut local_array_bindings,
                     &local_buffer_bindings,
                     fn_signatures,
@@ -628,6 +632,15 @@ fn collect_expr_indexable_param_usage(
             mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
             collect_expr_indexable_param_usage(index, param_index, kinds);
         }
+        Expr::Slice { base, start, end } => {
+            mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
+            if let Some(start) = start {
+                collect_expr_indexable_param_usage(start, param_index, kinds);
+            }
+            if let Some(end) = end {
+                collect_expr_indexable_param_usage(end, param_index, kinds);
+            }
+        }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. } => {
@@ -875,6 +888,30 @@ fn propagate_expr_callee_buffer_requirements_to_params(
                 snapshot,
                 kinds,
             );
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                propagate_expr_callee_buffer_requirements_to_params(
+                    start,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+            if let Some(end) = end {
+                propagate_expr_callee_buffer_requirements_to_params(
+                    end,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. }
@@ -1175,6 +1212,43 @@ fn collect_stmt_field_usage(
                         errors,
                     );
                 }
+                AssignTarget::Slice { base, start, end } => {
+                    if let Some((root, field)) = split_simple_field_path(base) {
+                        if let Some(param_idx) = param_index.get(root).copied() {
+                            mark_param_field_usage(
+                                usage,
+                                param_idx,
+                                field,
+                                StructFieldUsage::Array,
+                                fn_name,
+                                root,
+                                errors,
+                            );
+                        }
+                    }
+                    if let Some(start) = start {
+                        collect_expr_field_usage(
+                            start,
+                            fn_name,
+                            param_index,
+                            param_structs,
+                            struct_defs,
+                            usage,
+                            errors,
+                        );
+                    }
+                    if let Some(end) = end {
+                        collect_expr_field_usage(
+                            end,
+                            fn_name,
+                            param_index,
+                            param_structs,
+                            struct_defs,
+                            usage,
+                            errors,
+                        );
+                    }
+                }
             }
             collect_expr_field_usage(
                 expr,
@@ -1377,6 +1451,43 @@ fn collect_expr_field_usage(
                 usage,
                 errors,
             );
+        }
+        Expr::Slice { base, start, end } => {
+            if let Some((root, field)) = split_simple_field_path(base) {
+                if let Some(param_idx) = param_index.get(root).copied() {
+                    mark_param_field_usage(
+                        usage,
+                        param_idx,
+                        field,
+                        StructFieldUsage::Array,
+                        fn_name,
+                        root,
+                        errors,
+                    );
+                }
+            }
+            if let Some(start) = start {
+                collect_expr_field_usage(
+                    start,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
+            }
+            if let Some(end) = end {
+                collect_expr_field_usage(
+                    end,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
+            }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. }

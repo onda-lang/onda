@@ -370,6 +370,57 @@ sample {
 }
 
 #[test]
+fn parses_multiline_method_and_function_calls() {
+    let src = r#"
+outs { out1 }
+struct Pair {
+  a: f32
+  b: f32
+  def set(self, a, b) {
+    self.a = a
+    self.b = b
+  }
+}
+init {
+  p = Pair()
+}
+sample {
+  p.set(
+    1.0,
+    2.0,
+  )
+  out1 = max(
+    p.a,
+    p.b,
+  )
+}
+"#;
+    let program = parse_program(src).expect("multiline calls should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    assert!(matches!(
+        &sample[0],
+        Stmt::Expr {
+            expr: Expr::UserCall { .. },
+            ..
+        }
+    ));
+    assert!(matches!(
+        &sample[1],
+        Stmt::Assign {
+            expr: Expr::Call { .. },
+            ..
+        }
+    ));
+}
+
+#[test]
 fn parses_semicolon_separated_statements() {
     let src = r#"
 outs { out1 }
@@ -913,6 +964,110 @@ sample {
         })
         .expect("sample block");
     assert_eq!(sample.len(), 2);
+}
+
+#[test]
+fn parses_slice_expressions_with_omitted_and_negative_bounds() {
+    let src = r#"
+outs { out1 }
+init {
+  buf: f32[8]
+}
+sample {
+  a = buf[:]
+  b = buf[2:]
+  c = buf[:-1]
+  d = buf[1:-2]
+}
+"#;
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    assert_eq!(sample.len(), 4);
+
+    let slice_exprs = sample
+        .iter()
+        .map(|stmt| match stmt {
+            Stmt::Assign { expr, .. } => expr,
+            other => panic!("expected assignment stmt, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+
+    assert!(matches!(
+        slice_exprs[0],
+        Expr::Slice {
+            base,
+            start: None,
+            end: None
+        } if base == "buf"
+    ));
+    assert!(matches!(
+        slice_exprs[1],
+        Expr::Slice {
+            base,
+            start: Some(_),
+            end: None
+        } if base == "buf"
+    ));
+    assert!(matches!(
+        slice_exprs[2],
+        Expr::Slice {
+            base,
+            start: None,
+            end: Some(_)
+        } if base == "buf"
+    ));
+    assert!(matches!(
+        slice_exprs[3],
+        Expr::Slice {
+            base,
+            start: Some(_),
+            end: Some(_)
+        } if base == "buf"
+    ));
+}
+
+#[test]
+fn parses_slice_assignment_targets() {
+    let src = r#"
+outs { out1 }
+init {
+  buf: f32[8]
+}
+sample {
+  buf[1:-1] = 0.0
+}
+"#;
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    assert_eq!(sample.len(), 1);
+    match &sample[0] {
+        Stmt::Assign { target, expr, .. } => {
+            match target {
+                AssignTarget::Slice { base, start, end } => {
+                    assert_eq!(base, "buf");
+                    assert!(start.is_some());
+                    assert!(end.is_some());
+                }
+                other => panic!("expected slice assignment target, got {other:?}"),
+            }
+            assert!(matches!(expr, Expr::Number(v) if (*v - 0.0).abs() <= 1e-6));
+        }
+        other => panic!("expected assignment stmt, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3434,6 +3589,88 @@ init {
 }
 
 #[test]
+fn parses_typed_init_namespaced_generic_struct_array_decl() {
+    let src = r#"
+import std/complex
+init {
+  bins: std::complex::Complex<f32>[4]
+}
+"#;
+    let program =
+        parse_program(src).expect("typed init namespaced generic struct array should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(init) => Some(init),
+            _ => None,
+        })
+        .expect("init block");
+    let Stmt::Assign { expr, .. } = &init[0] else {
+        panic!("expected assignment in init");
+    };
+    match expr {
+        Expr::ArrayCtor { spec, init } => {
+            assert!(
+                matches!(spec.elem, ArrayElemType::Struct(ref s) if s == "std::complex::Complex<f32>")
+            );
+            assert!(matches!(spec.size.as_ref(), Expr::Int(4)));
+            assert!(
+                init.is_none(),
+                "default ctor array decl should have no explicit initializer"
+            );
+        }
+        other => panic!("expected array ctor, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_typed_init_namespace_instantiated_struct_decl_with_explicit_type_args() {
+    let src = r#"
+import std/fft
+init {
+  fft: std::fft<8>::FFT<f32>
+}
+"#;
+    let program = parse_program(src)
+        .expect("typed init namespace-instantiated struct with type args should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(init) => Some(init),
+            _ => None,
+        })
+        .expect("init block");
+    let Stmt::Assign {
+        is_typed_decl,
+        expr,
+        ..
+    } = &init[0]
+    else {
+        panic!("expected assignment in init");
+    };
+    assert!(
+        !is_typed_decl,
+        "typed struct decl with explicit type args should desugar to constructor-typed assignment"
+    );
+    let Expr::UserCall {
+        name,
+        type_args,
+        args,
+    } = expr
+    else {
+        panic!("expected constructor call");
+    };
+    assert!(name.ends_with("::FFT"));
+    assert!(args.is_empty(), "default ctor should be argument-less");
+    assert_eq!(
+        type_args.as_slice(),
+        &[CallTypeArg::Primitive(PrimitiveType::F32)]
+    );
+}
+
+#[test]
 fn parse_program_in_memory_supports_std_lookup_module() {
     let src = r#"
 import std/lookup
@@ -4310,6 +4547,17 @@ fn expr_contains_var_with_suffix(expr: &Expr, suffix: &str) -> bool {
         Expr::Var(name) => name.ends_with(suffix),
         Expr::Index { base, index } => {
             base.ends_with(suffix) || expr_contains_var_with_suffix(index, suffix)
+        }
+        Expr::Slice { base, start, end } => {
+            base.ends_with(suffix)
+                || start
+                    .as_ref()
+                    .map(|expr| expr_contains_var_with_suffix(expr, suffix))
+                    .unwrap_or(false)
+                || end
+                    .as_ref()
+                    .map(|expr| expr_contains_var_with_suffix(expr, suffix))
+                    .unwrap_or(false)
         }
         Expr::ArrayCtor { spec, init } => {
             expr_contains_var_with_suffix(&spec.size, suffix)

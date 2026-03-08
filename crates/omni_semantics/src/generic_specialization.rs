@@ -74,6 +74,14 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
         Expr::Index { index, .. } => {
             substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
         }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                substitute_call_type_args_with_bindings_expr(start, bindings, context, errors);
+            }
+            if let Some(end) = end {
+                substitute_call_type_args_with_bindings_expr(end, bindings, context, errors);
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             substitute_call_type_args_with_bindings_expr(&mut spec.size, bindings, context, errors);
             if let Some(values) = init {
@@ -155,8 +163,23 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } = target {
-                substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
+            match target {
+                AssignTarget::Index { index, .. } => {
+                    substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
+                }
+                AssignTarget::Slice { start, end, .. } => {
+                    if let Some(start) = start {
+                        substitute_call_type_args_with_bindings_expr(
+                            start, bindings, context, errors,
+                        );
+                    }
+                    if let Some(end) = end {
+                        substitute_call_type_args_with_bindings_expr(
+                            end, bindings, context, errors,
+                        );
+                    }
+                }
+                AssignTarget::Var(_) => {}
             }
             substitute_call_type_args_with_bindings_expr(expr, bindings, context, errors);
         }
@@ -260,7 +283,7 @@ pub(crate) fn specialize_generic_struct_template(
     for field in &template.fields {
         let mut default = field.default.clone();
         if let Some(expr) = &mut default {
-            rewrite_generic_array_ctor_expr_types(expr, &type_bindings);
+            rewrite_generic_array_ctor_expr_types(expr, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 expr,
                 &type_bindings,
@@ -317,7 +340,7 @@ pub(crate) fn specialize_generic_struct_template(
                 param.ty = Some(specialize_fn_param_type(ty));
             }
             if let Some(default) = &mut param.default {
-                rewrite_generic_array_ctor_expr_types(default, &type_bindings);
+                rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     default,
                     &type_bindings,
@@ -333,7 +356,7 @@ pub(crate) fn specialize_generic_struct_template(
             specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
         }
         for stmt in &mut method.body {
-            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
+            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
             substitute_call_type_args_with_bindings_stmt(
                 stmt,
                 &type_bindings,
@@ -480,6 +503,18 @@ pub(crate) fn update_generic_inference_locals_from_assign(
                 locals.array_elem_types.insert(base.clone(), elem_ty);
             }
         }
+        AssignTarget::Slice { base, .. } => {
+            if locals.array_elem_types.contains_key(base) {
+                return;
+            }
+            if let Some(elem_ty) = infer_scalar_type_for_generic_binding(
+                expr,
+                &locals.scalar_types,
+                &locals.array_elem_types,
+            ) {
+                locals.array_elem_types.insert(base.clone(), elem_ty);
+            }
+        }
     }
 }
 
@@ -599,6 +634,14 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
     match expr {
         Expr::Index { index, .. } => {
             rewrite_generic_struct_ctor_expr(index, templates, generated, errors, locals);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                rewrite_generic_struct_ctor_expr(start, templates, generated, errors, locals);
+            }
+            if let Some(end) = end {
+                rewrite_generic_struct_ctor_expr(end, templates, generated, errors, locals);
+            }
         }
         Expr::ArrayCtor { spec, init } => {
             if let ArrayElemType::Struct(elem_name) = &mut spec.elem {

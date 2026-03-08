@@ -365,7 +365,7 @@ pub(super) fn infer_specialized_expr_return_type(
             PrimitiveType::I64
         }),
         Expr::Bool(_) => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral(_) | Expr::ArrayCtor { .. } => None,
+        Expr::ArrayLiteral(_) | Expr::ArrayCtor { .. } | Expr::Slice { .. } => None,
         Expr::Var(name) => builtin_constant_symbol_type(name).or_else(|| locals.get(name).copied()),
         Expr::Index { base, .. } => locals.get(base).copied().or(Some(PrimitiveType::F32)),
         Expr::Cast { to, .. } => Some(*to),
@@ -556,6 +556,10 @@ pub(super) fn infer_specialized_stmt_returns(
             }
             Stmt::Assign {
                 target: AssignTarget::Index { .. },
+                ..
+            }
+            | Stmt::Assign {
+                target: AssignTarget::Slice { .. },
                 ..
             }
             | Stmt::Expr { .. } => {}

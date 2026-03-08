@@ -118,48 +118,68 @@ pub(crate) fn specialize_generic_proc_buffer_type(
 pub(crate) fn rewrite_generic_array_ctor_expr_types(
     expr: &mut Expr,
     type_bindings: &HashMap<String, PrimitiveType>,
+    errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
         Expr::Index { index, .. } => {
-            rewrite_generic_array_ctor_expr_types(index, type_bindings);
+            rewrite_generic_array_ctor_expr_types(index, type_bindings, errors);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                rewrite_generic_array_ctor_expr_types(start, type_bindings, errors);
+            }
+            if let Some(end) = end {
+                rewrite_generic_array_ctor_expr_types(end, type_bindings, errors);
+            }
         }
         Expr::ArrayCtor { spec, init } => {
-            if let ArrayElemType::Struct(param) = &spec.elem {
-                if let Some(bound) = type_bindings.get(param).copied() {
+            if let ArrayElemType::Struct(elem_name) = &spec.elem {
+                if let Some(bound) = type_bindings.get(elem_name).copied() {
                     spec.elem = ArrayElemType::Primitive(bound);
+                } else if let Some(specialized) = specialize_named_type_ref(
+                    elem_name,
+                    type_bindings,
+                    &format!("array element type '{elem_name}'"),
+                    errors,
+                ) {
+                    match specialized {
+                        FieldType::Scalar(bound) => spec.elem = ArrayElemType::Primitive(bound),
+                        FieldType::Generic(name) => spec.elem = ArrayElemType::Struct(name),
+                        FieldType::Array(_) => {}
+                    }
                 }
             }
-            rewrite_generic_array_ctor_expr_types(&mut spec.size, type_bindings);
+            rewrite_generic_array_ctor_expr_types(&mut spec.size, type_bindings, errors);
             if let Some(values) = init {
                 for value in values {
-                    rewrite_generic_array_ctor_expr_types(value, type_bindings);
+                    rewrite_generic_array_ctor_expr_types(value, type_bindings, errors);
                 }
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_generic_array_ctor_expr_types(lhs, type_bindings);
-            rewrite_generic_array_ctor_expr_types(rhs, type_bindings);
+            rewrite_generic_array_ctor_expr_types(lhs, type_bindings, errors);
+            rewrite_generic_array_ctor_expr_types(rhs, type_bindings, errors);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                rewrite_generic_array_ctor_expr_types(arg, type_bindings);
+                rewrite_generic_array_ctor_expr_types(arg, type_bindings, errors);
             }
         }
         Expr::UserCall { args, .. } => {
             for arg in args {
-                rewrite_generic_array_ctor_expr_types(&mut arg.expr, type_bindings);
+                rewrite_generic_array_ctor_expr_types(&mut arg.expr, type_bindings, errors);
             }
         }
         Expr::Cast { expr: inner, .. }
         | Expr::UnaryNot { expr: inner }
         | Expr::UnaryBitNot { expr: inner } => {
-            rewrite_generic_array_ctor_expr_types(inner, type_bindings);
+            rewrite_generic_array_ctor_expr_types(inner, type_bindings, errors);
         }
         Expr::ArrayLiteral(values) => {
             for value in values {
-                rewrite_generic_array_ctor_expr_types(value, type_bindings);
+                rewrite_generic_array_ctor_expr_types(value, type_bindings, errors);
             }
         }
         Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
@@ -169,17 +189,18 @@ pub(crate) fn rewrite_generic_array_ctor_expr_types(
 pub(crate) fn rewrite_generic_array_ctor_stmt_types(
     stmt: &mut Stmt,
     type_bindings: &HashMap<String, PrimitiveType>,
+    errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
-                rewrite_generic_array_ctor_expr_types(index, type_bindings);
+                rewrite_generic_array_ctor_expr_types(index, type_bindings, errors);
             }
-            rewrite_generic_array_ctor_expr_types(expr, type_bindings);
+            rewrite_generic_array_ctor_expr_types(expr, type_bindings, errors);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_generic_array_ctor_expr_types(expr, type_bindings);
+            rewrite_generic_array_ctor_expr_types(expr, type_bindings, errors);
         }
         Stmt::If {
             cond,
@@ -187,12 +208,12 @@ pub(crate) fn rewrite_generic_array_ctor_stmt_types(
             else_branch,
             ..
         } => {
-            rewrite_generic_array_ctor_expr_types(cond, type_bindings);
+            rewrite_generic_array_ctor_expr_types(cond, type_bindings, errors);
             for nested in then_branch {
-                rewrite_generic_array_ctor_stmt_types(nested, type_bindings);
+                rewrite_generic_array_ctor_stmt_types(nested, type_bindings, errors);
             }
             for nested in else_branch {
-                rewrite_generic_array_ctor_stmt_types(nested, type_bindings);
+                rewrite_generic_array_ctor_stmt_types(nested, type_bindings, errors);
             }
         }
         Stmt::For {
@@ -202,19 +223,19 @@ pub(crate) fn rewrite_generic_array_ctor_stmt_types(
             body,
             ..
         } => {
-            rewrite_generic_array_ctor_expr_types(start, type_bindings);
-            rewrite_generic_array_ctor_expr_types(end, type_bindings);
+            rewrite_generic_array_ctor_expr_types(start, type_bindings, errors);
+            rewrite_generic_array_ctor_expr_types(end, type_bindings, errors);
             if let Some(step_expr) = step {
-                rewrite_generic_array_ctor_expr_types(step_expr, type_bindings);
+                rewrite_generic_array_ctor_expr_types(step_expr, type_bindings, errors);
             }
             for nested in body {
-                rewrite_generic_array_ctor_stmt_types(nested, type_bindings);
+                rewrite_generic_array_ctor_stmt_types(nested, type_bindings, errors);
             }
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_generic_array_ctor_expr_types(cond, type_bindings);
+            rewrite_generic_array_ctor_expr_types(cond, type_bindings, errors);
             for nested in body {
-                rewrite_generic_array_ctor_stmt_types(nested, type_bindings);
+                rewrite_generic_array_ctor_stmt_types(nested, type_bindings, errors);
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -439,7 +460,7 @@ pub(crate) fn specialize_generic_proc_template(
         .collect::<Vec<_>>();
     for input in &mut ins {
         if let Some(default) = &mut input.default {
-            rewrite_generic_array_ctor_expr_types(default, &type_bindings);
+            rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 default,
                 &type_bindings,
@@ -449,7 +470,7 @@ pub(crate) fn specialize_generic_proc_template(
         }
         if let Some(range) = &mut input.range {
             if let Some(min) = &mut range.min {
-                rewrite_generic_array_ctor_expr_types(min, &type_bindings);
+                rewrite_generic_array_ctor_expr_types(min, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     min,
                     &type_bindings,
@@ -457,7 +478,7 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 );
             }
-            rewrite_generic_array_ctor_expr_types(&mut range.max, &type_bindings);
+            rewrite_generic_array_ctor_expr_types(&mut range.max, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 &mut range.max,
                 &type_bindings,
@@ -469,7 +490,7 @@ pub(crate) fn specialize_generic_proc_template(
     for output in &mut outs {
         if let Some(range) = &mut output.range {
             if let Some(min) = &mut range.min {
-                rewrite_generic_array_ctor_expr_types(min, &type_bindings);
+                rewrite_generic_array_ctor_expr_types(min, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     min,
                     &type_bindings,
@@ -477,7 +498,7 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 );
             }
-            rewrite_generic_array_ctor_expr_types(&mut range.max, &type_bindings);
+            rewrite_generic_array_ctor_expr_types(&mut range.max, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 &mut range.max,
                 &type_bindings,
@@ -488,7 +509,7 @@ pub(crate) fn specialize_generic_proc_template(
     }
     for param in &mut params {
         if let Some(default) = &mut param.default {
-            rewrite_generic_array_ctor_expr_types(default, &type_bindings);
+            rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 default,
                 &type_bindings,
@@ -498,7 +519,7 @@ pub(crate) fn specialize_generic_proc_template(
         }
         if let Some(range) = &mut param.range {
             if let Some(min) = &mut range.min {
-                rewrite_generic_array_ctor_expr_types(min, &type_bindings);
+                rewrite_generic_array_ctor_expr_types(min, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     min,
                     &type_bindings,
@@ -506,7 +527,7 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 );
             }
-            rewrite_generic_array_ctor_expr_types(&mut range.max, &type_bindings);
+            rewrite_generic_array_ctor_expr_types(&mut range.max, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 &mut range.max,
                 &type_bindings,
@@ -578,7 +599,7 @@ pub(crate) fn specialize_generic_proc_template(
         specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
     }
     for stmt in &mut init.body {
-        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
+        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
             &type_bindings,
@@ -590,7 +611,7 @@ pub(crate) fn specialize_generic_proc_template(
         specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
     }
     for stmt in &mut block_pre {
-        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
+        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
             &type_bindings,
@@ -602,7 +623,7 @@ pub(crate) fn specialize_generic_proc_template(
         specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
     }
     for stmt in &mut sample {
-        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
+        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
             &type_bindings,
@@ -614,7 +635,7 @@ pub(crate) fn specialize_generic_proc_template(
         specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
     }
     for stmt in &mut block_post {
-        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
+        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
             &type_bindings,
@@ -629,7 +650,7 @@ pub(crate) fn specialize_generic_proc_template(
     }
     for event in &mut events {
         for stmt in &mut event.body {
-            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings);
+            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
             substitute_call_type_args_with_bindings_stmt(
                 stmt,
                 &type_bindings,
@@ -691,6 +712,18 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
     match expr {
         Expr::Index { index, .. } => {
             rewrite_generic_proc_ctor_expr(index, templates, generated, errors, locals, current_ns);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                rewrite_generic_proc_ctor_expr(
+                    start, templates, generated, errors, locals, current_ns,
+                );
+            }
+            if let Some(end) = end {
+                rewrite_generic_proc_ctor_expr(
+                    end, templates, generated, errors, locals, current_ns,
+                );
+            }
         }
         Expr::ArrayCtor { spec, init } => {
             rewrite_generic_proc_ctor_expr(

@@ -1,5 +1,113 @@
 use super::*;
 
+fn infer_def_slice_alias_info(
+    base: &str,
+    start: Option<&Expr>,
+    end: Option<&Expr>,
+    declared_symbols: &DeclaredSymbolMap,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    param_structs: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<LocalArrayAliasInfo> {
+    if let Some(alias) = local_array_aliases.get(base) {
+        if alias.elem_struct.is_some() {
+            errors.push(Diagnostic::semantic(
+                format!("slice expression '{base}[...]' requires primitive elements"),
+                0,
+                0,
+            ));
+            return None;
+        }
+        return Some(LocalArrayAliasInfo {
+            len: infer_static_slice_len_hint(Some(alias.len), start, end),
+            elem_ty: alias.elem_ty,
+            elem_struct: None,
+            writable: alias.writable,
+        });
+    }
+    if let Some((elem_ty, _)) = declared_buffer_info(declared_symbols, base) {
+        return Some(LocalArrayAliasInfo {
+            len: 1,
+            elem_ty,
+            elem_struct: None,
+            writable: true,
+        });
+    }
+
+    let Some((root, field)) = split_field_path(base, errors) else {
+        return None;
+    };
+    let Some(struct_name) = param_structs.get(root) else {
+        return None;
+    };
+    let Some(field_decl) = resolve_struct_field_decl(struct_name, field, struct_defs) else {
+        return None;
+    };
+    if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
+        errors.push(Diagnostic::semantic(
+            format!("field '{root}.{field}' is not array and cannot be sliced"),
+            0,
+            0,
+        ));
+        return None;
+    }
+    if field_decl.array_elem_struct.is_some() {
+        errors.push(Diagnostic::semantic(
+            format!("slice expression '{base}[...]' requires primitive elements"),
+            0,
+            0,
+        ));
+        return None;
+    }
+    Some(LocalArrayAliasInfo {
+        len: infer_static_slice_len_hint(
+            match field_decl.ty {
+                TypedFieldType::Array(len) => Some(len),
+                _ => None,
+            },
+            start,
+            end,
+        ),
+        elem_ty: field_decl.array_elem_ty.unwrap_or(PrimitiveType::F32),
+        elem_struct: None,
+        writable: true,
+    })
+}
+
+fn infer_def_data_like_info(
+    expr: &Expr,
+    declared_symbols: &DeclaredSymbolMap,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    param_structs: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<LocalArrayAliasInfo> {
+    match expr {
+        Expr::Var(base) => infer_def_slice_alias_info(
+            base,
+            None,
+            None,
+            declared_symbols,
+            local_array_aliases,
+            param_structs,
+            struct_defs,
+            errors,
+        ),
+        Expr::Slice { base, start, end } => infer_def_slice_alias_info(
+            base,
+            start.as_deref(),
+            end.as_deref(),
+            declared_symbols,
+            local_array_aliases,
+            param_structs,
+            struct_defs,
+            errors,
+        ),
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn analyze_def_stmt(
     stmt: &Stmt,
@@ -306,6 +414,73 @@ pub(crate) fn analyze_def_stmt(
                                 writable: true,
                             },
                         );
+                        return;
+                    }
+                    if let Expr::Slice { base, start, end } = expr {
+                        if declared_ty.is_some() || *is_typed_decl {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "typed declaration for '{name}' is not supported for slice aliases"
+                                ),
+                                0,
+                                0,
+                            ));
+                            return;
+                        }
+                        if split_field_path(name, errors).is_some() {
+                            errors.push(Diagnostic::semantic(
+                                "slice alias target must be a plain variable name",
+                                0,
+                                0,
+                            ));
+                            return;
+                        }
+                        if known_scalars.contains(name)
+                            || local_aliases.contains_key(name)
+                            || local_array_aliases.contains_key(name)
+                            || input_names.contains(name)
+                            || output_names.contains(name)
+                            || param_names.contains(name)
+                            || state_scalars.contains_key(name)
+                        {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "slice alias declaration for '{name}' conflicts with existing symbol"
+                                ),
+                                0,
+                                0,
+                            ));
+                            return;
+                        }
+                        validate_expr(
+                            expr,
+                            ExprEnv {
+                                known_scalars,
+                                locals,
+                                outputs: &empty_outputs,
+                                array_vars: &array_vars,
+                                declared_symbols,
+                                param_structs,
+                                struct_instances: struct_instance_ctx,
+                                struct_defs,
+                                fn_signatures,
+                                allow_array_ctor: false,
+                                scope: ScopeKind::Def,
+                            },
+                            errors,
+                        );
+                        if let Some(alias) = infer_def_slice_alias_info(
+                            base,
+                            start.as_deref(),
+                            end.as_deref(),
+                            declared_symbols,
+                            local_array_aliases,
+                            param_structs,
+                            struct_defs,
+                            errors,
+                        ) {
+                            local_array_aliases.insert(name.clone(), alias);
+                        }
                         return;
                     }
                     if local_aliases.contains_key(name) {
@@ -971,6 +1146,137 @@ pub(crate) fn analyze_def_stmt(
                         0,
                         0,
                     ));
+                }
+                AssignTarget::Slice { base, start, end } => {
+                    if decl_ty.is_some() || generic_decl_ty.is_some() || *is_typed_decl {
+                        errors.push(Diagnostic::semantic(
+                            "typed declaration is only supported for plain scalar variables",
+                            0,
+                            0,
+                        ));
+                    }
+                    let Some(target_info) = infer_def_slice_alias_info(
+                        base,
+                        start.as_ref(),
+                        end.as_ref(),
+                        declared_symbols,
+                        local_array_aliases,
+                        param_structs,
+                        struct_defs,
+                        errors,
+                    ) else {
+                        return;
+                    };
+                    if !target_info.writable {
+                        errors.push(Diagnostic::semantic(
+                            format!("cannot assign to immutable array alias '{base}'"),
+                            0,
+                            0,
+                        ));
+                        return;
+                    }
+                    let slice_env = ExprEnv {
+                        known_scalars,
+                        locals,
+                        outputs: &empty_outputs,
+                        array_vars: &array_vars,
+                        declared_symbols,
+                        param_structs,
+                        struct_instances: struct_instance_ctx,
+                        struct_defs,
+                        fn_signatures,
+                        allow_array_ctor: false,
+                        scope: ScopeKind::Def,
+                    };
+                    if let Some(start) = start {
+                        validate_expr(start, slice_env, errors);
+                        let start_ty = infer_expr_type_for_semantics_with_local_data(
+                            start,
+                            state_scalars,
+                            declared_symbols,
+                            None,
+                            local_aliases,
+                            local_array_aliases,
+                            locals,
+                            input_names,
+                            output_names,
+                            param_names,
+                            struct_instance_ctx,
+                            struct_defs,
+                            errors,
+                        );
+                        require_numeric_type(start_ty, "slice start bound", errors);
+                    }
+                    if let Some(end) = end {
+                        validate_expr(end, slice_env, errors);
+                        let end_ty = infer_expr_type_for_semantics_with_local_data(
+                            end,
+                            state_scalars,
+                            declared_symbols,
+                            None,
+                            local_aliases,
+                            local_array_aliases,
+                            locals,
+                            input_names,
+                            output_names,
+                            param_names,
+                            struct_instance_ctx,
+                            struct_defs,
+                            errors,
+                        );
+                        require_numeric_type(end_ty, "slice end bound", errors);
+                    }
+                    let stmt_env = StmtExprAnalysisEnv {
+                        expr_env: slice_env,
+                        state_scalars,
+                        declared_symbols,
+                        local_aliases,
+                        local_array_aliases,
+                        input_names,
+                        output_names,
+                        param_names,
+                    };
+                    if is_data_like_value_expr(expr, stmt_env) {
+                        validate_data_like_value_expr(expr, stmt_env, errors);
+                        if let Some(src_info) = infer_def_data_like_info(
+                            expr,
+                            declared_symbols,
+                            local_array_aliases,
+                            param_structs,
+                            struct_defs,
+                            errors,
+                        ) {
+                            require_assignable_type(
+                                Some(src_info.elem_ty),
+                                target_info.elem_ty,
+                                "slice copy assignment",
+                                errors,
+                            );
+                        }
+                    } else {
+                        validate_expr(expr, slice_env, errors);
+                        let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                            expr,
+                            state_scalars,
+                            declared_symbols,
+                            None,
+                            local_aliases,
+                            local_array_aliases,
+                            locals,
+                            input_names,
+                            output_names,
+                            param_names,
+                            struct_instance_ctx,
+                            struct_defs,
+                            errors,
+                        );
+                        require_assignable_type(
+                            expr_ty,
+                            target_info.elem_ty,
+                            "slice fill assignment",
+                            errors,
+                        );
+                    }
                 }
             },
             Stmt::Expr { expr, .. } => {

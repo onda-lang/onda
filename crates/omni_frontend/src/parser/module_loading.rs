@@ -103,6 +103,7 @@ thread_local! {
 fn builtin_std_module_source(module: &str) -> Option<&'static str> {
     match module {
         "std/math" => Some(include_str!("../../../../stdlib/std/math.omni")),
+        "std/complex" => Some(include_str!("../../../../stdlib/std/complex.omni")),
         "std/osc" => Some(include_str!("../../../../stdlib/std/osc.omni")),
         "std/filter" => Some(include_str!("../../../../stdlib/std/filter.omni")),
         "std/env" => Some(include_str!("../../../../stdlib/std/env.omni")),
@@ -1532,6 +1533,14 @@ fn expr_key(expr: &Expr) -> String {
             values.iter().map(expr_key).collect::<Vec<_>>().join(",")
         ),
         Expr::Index { base, index } => format!("idx({base},{})", expr_key(index)),
+        Expr::Slice { base, start, end } => format!(
+            "slice({base},{},{})",
+            start
+                .as_ref()
+                .map(|expr| expr_key(expr))
+                .unwrap_or_default(),
+            end.as_ref().map(|expr| expr_key(expr)).unwrap_or_default()
+        ),
         Expr::ArrayCtor { spec, init } => {
             let elem = match &spec.elem {
                 ArrayElemType::Primitive(p) => format!("{p:?}"),
@@ -1640,6 +1649,7 @@ fn validate_compile_time_expr(
         Expr::Call { .. }
         | Expr::UserCall { .. }
         | Expr::Index { .. }
+        | Expr::Slice { .. }
         | Expr::ArrayCtor { .. }
         | Expr::ArrayLiteral(_) => Err(vec![Diagnostic::semantic(
             format!("{context}: expression is not compile-time evaluable"),
@@ -1715,6 +1725,38 @@ fn split_named_type_base_and_suffix(name: &str) -> (&str, &str) {
     } else {
         (name, "")
     }
+}
+
+fn rewrite_named_type_ref_name(
+    name: &mut String,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+        *name = qualified;
+        return Ok(());
+    }
+
+    let (base, suffix) = split_named_type_base_and_suffix(name);
+    if !suffix.is_empty() {
+        if let Some(qualified) = qualify_local_namespace_member_name(base, current_ns, state) {
+            *name = format!("{qualified}{suffix}");
+            return Ok(());
+        }
+        if looks_like_namespace_ref(base) {
+            let resolved =
+                resolve_namespace_symbol_name(base, current_ns, const_env, state, generated)?;
+            *name = format!("{resolved}{suffix}");
+            return Ok(());
+        }
+    }
+
+    if looks_like_namespace_ref(name) {
+        *name = resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
+    }
+    Ok(())
 }
 
 fn qualify_local_namespace_member_name(
@@ -2120,6 +2162,15 @@ fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, Expr>) -> E
             base: base.clone(),
             index: Box::new(substitute_expr_with_env(index, const_env)),
         },
+        Expr::Slice { base, start, end } => Expr::Slice {
+            base: base.clone(),
+            start: start
+                .as_ref()
+                .map(|expr| Box::new(substitute_expr_with_env(expr, const_env))),
+            end: end
+                .as_ref()
+                .map(|expr| Box::new(substitute_expr_with_env(expr, const_env))),
+        },
         Expr::ArrayCtor { spec, init } => Expr::ArrayCtor {
             spec: ArrayTypeSpec {
                 elem: spec.elem.clone(),
@@ -2421,20 +2472,10 @@ fn rewrite_decl_type(
 ) -> Result<(), Vec<Diagnostic>> {
     match ty {
         DeclType::Generic(name) => {
-            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
-                *name = qualified;
-            } else if looks_like_namespace_ref(name) {
-                *name =
-                    resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
-            }
+            rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
         }
         DeclType::ArrayGeneric { elem, size } => {
-            if let Some(qualified) = qualify_local_namespace_member_name(elem, current_ns, state) {
-                *elem = qualified;
-            } else if looks_like_namespace_ref(elem) {
-                *elem =
-                    resolve_namespace_symbol_name(elem, current_ns, const_env, state, generated)?;
-            }
+            rewrite_named_type_ref_name(elem, current_ns, const_env, state, generated)?;
             rewrite_expr(size, current_ns, const_env, state, generated)?;
         }
         DeclType::Array { size, .. } => {
@@ -2454,24 +2495,11 @@ fn rewrite_field_type(
 ) -> Result<(), Vec<Diagnostic>> {
     match ty {
         FieldType::Generic(name) => {
-            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
-                *name = qualified;
-            } else if looks_like_namespace_ref(name) {
-                *name =
-                    resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
-            }
+            rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
         }
         FieldType::Array(spec) => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
-                if let Some(qualified) =
-                    qualify_local_namespace_member_name(name, current_ns, state)
-                {
-                    *name = qualified;
-                } else if looks_like_namespace_ref(name) {
-                    *name = resolve_namespace_symbol_name(
-                        name, current_ns, const_env, state, generated,
-                    )?;
-                }
+                rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
             }
             rewrite_expr(&mut spec.size, current_ns, const_env, state, generated)?;
         }
@@ -2489,20 +2517,10 @@ fn rewrite_fn_param_type(
 ) -> Result<(), Vec<Diagnostic>> {
     match ty {
         FnParamType::Struct(name) => {
-            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
-                *name = qualified;
-            } else if looks_like_namespace_ref(name) {
-                *name =
-                    resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
-            }
+            rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
         }
         FnParamType::ArrayGeneric(name) => {
-            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
-                *name = qualified;
-            } else if looks_like_namespace_ref(name) {
-                *name =
-                    resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
-            }
+            rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
         }
         FnParamType::Buffer(buffer_ty) => {
             rewrite_buffer_type(buffer_ty, current_ns, const_env, state, generated)?;
@@ -2520,11 +2538,7 @@ fn rewrite_buffer_type(
     generated: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
     if let BufferElemType::Generic(name) = &mut ty.elem {
-        if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
-            *name = qualified;
-        } else if looks_like_namespace_ref(name) {
-            *name = resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
-        }
+        rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
     }
     if let BufferChannels::Static(expr) = &mut ty.channels {
         rewrite_expr(expr, current_ns, const_env, state, generated)?;
@@ -2617,6 +2631,27 @@ fn rewrite_stmt(
                     }
                     rewrite_expr(index, current_ns, const_env, state, generated)?;
                 }
+                AssignTarget::Slice { base, start, end } => {
+                    if looks_like_namespace_ref(base) {
+                        let resolved = resolve_namespace_symbol_name(
+                            base, current_ns, const_env, state, generated,
+                        )?;
+                        if state.namespace_const_values.contains_key(&resolved) {
+                            return Err(vec![Diagnostic::semantic(
+                                format!("cannot assign to constant '{}'", base),
+                                0,
+                                0,
+                            )]);
+                        }
+                        *base = resolved;
+                    }
+                    if let Some(start) = start {
+                        rewrite_expr(start, current_ns, const_env, state, generated)?;
+                    }
+                    if let Some(end) = end {
+                        rewrite_expr(end, current_ns, const_env, state, generated)?;
+                    }
+                }
             }
             if let Some(name) = generic_decl_ty {
                 if looks_like_namespace_ref(name) {
@@ -2704,17 +2739,23 @@ fn rewrite_expr(
             }
             rewrite_expr(index, current_ns, const_env, state, generated)?;
         }
+        Expr::Slice { base, start, end } => {
+            if let Some(qualified) = qualify_local_namespace_member_name(base, current_ns, state) {
+                *base = qualified;
+            } else if looks_like_namespace_ref(base) {
+                *base =
+                    resolve_namespace_symbol_name(base, current_ns, const_env, state, generated)?;
+            }
+            if let Some(start) = start {
+                rewrite_expr(start, current_ns, const_env, state, generated)?;
+            }
+            if let Some(end) = end {
+                rewrite_expr(end, current_ns, const_env, state, generated)?;
+            }
+        }
         Expr::ArrayCtor { spec, init } => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
-                if let Some(qualified) =
-                    qualify_local_namespace_member_name(name, current_ns, state)
-                {
-                    *name = qualified;
-                } else if looks_like_namespace_ref(name) {
-                    *name = resolve_namespace_symbol_name(
-                        name, current_ns, const_env, state, generated,
-                    )?;
-                }
+                rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
             }
             rewrite_expr(&mut spec.size, current_ns, const_env, state, generated)?;
             if let Some(values) = init {

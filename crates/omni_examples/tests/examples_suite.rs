@@ -1626,6 +1626,40 @@ sample {
 }
 "#;
 
+const STDLIB_COMPLEX_STRUCT_EXAMPLE: &str = r#"
+import std/complex
+outs 4
+init {
+  z: std::complex::Complex<f32>
+  w: std::complex::Complex<f32>
+  z.set(1.0, 2.0)
+  w.set(3.0, -4.0)
+  z.mul_assign(w)
+}
+sample {
+  out1 = z.real()
+  out2 = z.imag()
+  out3 = z.magnitude()
+  out4 = z.phase()
+}
+"#;
+
+const STDLIB_COMPLEX_POLAR_F64_EXAMPLE: &str = r#"
+import std/complex
+outs 3
+init {
+  z: std::complex::Complex<f64>
+  z.set_polar(f64(2.0), f64(0.5))
+  z.conjugate()
+  z.scale_assign(f64(0.5))
+}
+sample {
+  out1 = f32(z.real())
+  out2 = f32(z.imag())
+  out3 = f32(z.power())
+}
+"#;
+
 const STDLIB_FFT_IMPULSE_EXAMPLE: &str = r#"
 import std/fft
 outs { out1 }
@@ -1788,15 +1822,15 @@ sample {
       scratch_re[i] = 0.0
       scratch_im[i] = 0.0
     }
-    scratch_re[0] = fwd.fft.re[0]
+    scratch_re[0] = fwd.fft.real(0)
     half = 64 >> 1
     for k in 1..half {
       shifted = k + 1
       if (shifted < half) {
-        scratch_re[shifted] = fwd.fft.re[k]
-        scratch_im[shifted] = fwd.fft.im[k]
-        scratch_re[64 - shifted] = fwd.fft.re[64 - k]
-        scratch_im[64 - shifted] = fwd.fft.im[64 - k]
+        scratch_re[shifted] = fwd.fft.real(k)
+        scratch_im[shifted] = fwd.fft.imag(k)
+        scratch_re[64 - shifted] = fwd.fft.real(64 - k)
+        scratch_im[64 - shifted] = fwd.fft.imag(64 - k)
       }
     }
     inv.load_complex(scratch_re, scratch_im)
@@ -1827,15 +1861,15 @@ namespace BinShift<N = 64>:
           for i in 0..N:
             scratch_re[i] = 0.0
             scratch_im[i] = 0.0
-          scratch_re[0] = fwd.fft.re[0]
+          scratch_re[0] = fwd.fft.real(0)
           half = N >> 1
           for k in 1..half:
             shifted = k + 1
             if (shifted < half):
-              scratch_re[shifted] = fwd.fft.re[k]
-              scratch_im[shifted] = fwd.fft.im[k]
-              scratch_re[N - shifted] = fwd.fft.re[N - k]
-              scratch_im[N - shifted] = fwd.fft.im[N - k]
+              scratch_re[shifted] = fwd.fft.real(k)
+              scratch_im[shifted] = fwd.fft.imag(k)
+              scratch_re[N - shifted] = fwd.fft.real(N - k)
+              scratch_im[N - shifted] = fwd.fft.imag(N - k)
           inv.load_complex(scratch_re, scratch_im)
         out1 = inv.tick()
 
@@ -1854,6 +1888,8 @@ init {
   osc = std::osc::Sine(freq = 220.0)
   fwd = std::fft<64>::RealFFT()
   inv = std::fft<64>::RealIFFT()
+  scratch_re: f32[64]
+  scratch_im: f32[64]
   delay: f32[64]
   delay_i: i32 = 0
   frames_seen: i32 = 0
@@ -1872,7 +1908,9 @@ sample {
   }
 
   if (fwd.push(x)) {
-    inv.load_complex(fwd.fft.re, fwd.fft.im)
+    fwd.fft.store_real(scratch_re)
+    fwd.fft.store_imag(scratch_im)
+    inv.load_complex(scratch_re, scratch_im)
   }
 
   y = inv.tick()
@@ -2017,6 +2055,31 @@ sample {
   outer.init_pair(1.5, 2.5)
   out1 = outer.inner.data[0]
   out2 = outer.sum()
+}
+"#;
+
+const MULTILINE_STRUCT_METHOD_CALL_EXAMPLE: &str = r#"
+outs { out1 }
+struct Pair:
+  a: f32
+  b: f32
+
+  def set(self, a, b):
+    self.a = a
+    self.b = b
+
+init {
+  p: Pair
+}
+sample {
+  p.set(
+    1.25,
+    2.75,
+  )
+  out1 = max(
+    p.a,
+    p.b,
+  )
 }
 "#;
 
@@ -4811,6 +4874,75 @@ sample {
 }
 "#;
 
+const PROC_EVENT_DIRECT_SLICE_FORWARD_EXAMPLE: &str = r#"
+proc Loader {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    set_values(values: f32[]) {
+      sum = values[0] + values[1] + f32(values.len())
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+outs { out1 }
+init {
+  loader = Loader()
+  values: f32[4] = [10.0, 20.0, 30.0, 40.0]
+}
+sample {
+  loader.set_values(values[1:-1])
+  out1 = loader()
+}
+"#;
+
+const LOCAL_SLICE_ALIAS_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  values: f32[5] = [5.0, 10.0, 15.0, 20.0, 25.0]
+}
+sample {
+  mid = values[1:-1]
+  out1 = mid[0] + mid[2] + f32(mid.len())
+}
+"#;
+
+const SLICE_FILL_ASSIGN_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  values: f32[5] = [1.0, 2.0, 3.0, 4.0, 5.0]
+}
+sample {
+  values[1:-1] = 0.5
+  out1 = values[0] + values[1] + values[2] + values[3] + values[4]
+}
+"#;
+
+const SLICE_COPY_ASSIGN_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  src: f32[5] = [1.0, 2.0, 3.0, 4.0, 5.0]
+  dst: f32[5] = [10.0, 20.0, 30.0, 40.0, 50.0]
+}
+sample {
+  dst[1:-1] = src[0:3]
+  out1 = dst[1] + dst[2] + dst[3]
+}
+"#;
+
+const SLICE_OVERLAP_COPY_ASSIGN_EXAMPLE: &str = r#"
+outs { out1 }
+init {
+  values: f32[5] = [1.0, 2.0, 3.0, 4.0, 5.0]
+}
+sample {
+  values[1:] = values[:-1]
+  out1 = values[1] + values[2] + values[3] + values[4]
+}
+"#;
+
 const GENERIC_PROC_EVENT_SLICE_EXAMPLE: &str = r#"
 proc Loader<T> {
   params { sum = 0.0 }
@@ -6019,6 +6151,55 @@ fn proc_event_slice_params_accept_internal_array_sources() {
     for sample in &output {
         assert_near(*sample, 1.0, 1e-6);
     }
+}
+
+#[test]
+fn slices_lower_to_array_views_for_direct_calls_and_local_aliases() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_EVENT_DIRECT_SLICE_FORWARD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 52.0, 1e-6);
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(LOCAL_SLICE_ALIAS_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 33.0, 1e-6);
+}
+
+#[test]
+fn slice_assignments_fill_copy_and_preserve_overlap_semantics() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SLICE_FILL_ASSIGN_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 7.5, 1e-6);
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SLICE_COPY_ASSIGN_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 6.0, 1e-6);
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SLICE_OVERLAP_COPY_ASSIGN_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 10.0, 1e-6);
 }
 
 #[test]
@@ -11963,6 +12144,39 @@ fn stdlib_fft_impulse_compile_and_run() {
 }
 
 #[test]
+fn stdlib_complex_struct_compile_and_run() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_COMPLEX_STRUCT_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 11.0, 1e-6);
+    assert_near(output[1], 2.0, 1e-6);
+    assert_near(output[2], 125.0_f32.sqrt(), 1e-5);
+    assert_near(output[3], 2.0_f32.atan2(11.0), 1e-5);
+}
+
+#[test]
+fn stdlib_complex_polar_f64_compile_and_run() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_COMPLEX_POLAR_F64_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 3);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 0.5_f32.cos(), 1e-5);
+    assert_near(output[1], -0.5_f32.sin(), 1e-5);
+    assert_near(output[2], 1.0, 1e-6);
+}
+
+#[test]
 fn stdlib_fft_f64_impulse_compile_and_run() {
     let frames = 2;
     let (mut instance, in_channels, out_channels) =
@@ -12325,6 +12539,19 @@ fn nested_struct_field_and_method_compile_and_run() {
         let base = frame * 2;
         assert_near(outputs[base], 1.5, 1e-6);
         assert_near(outputs[base + 1], 4.0, 1e-6);
+    }
+}
+
+#[test]
+fn multiline_struct_method_call_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(MULTILINE_STRUCT_METHOD_CALL_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.75, 1e-6);
     }
 }
 
@@ -12719,6 +12946,79 @@ sample {
 }
 "#;
 
+const GENERIC_STRUCT_ARRAY_INDEXED_METHOD_CALLS_EXAMPLE: &str = r#"
+outs { out1 }
+struct Complex<T> {
+  re: T
+  im: T
+  def set(self, re, im) {
+    self.re = re
+    self.im = im
+  }
+  def mul_parts(self, re, im) {
+    old_re = self.re
+    old_im = self.im
+    self.re = old_re * re - old_im * im
+    self.im = old_re * im + old_im * re
+  }
+  def sum(self) {
+    return self.re + self.im
+  }
+}
+init {
+  bins: Complex<f32>[4]
+}
+sample {
+  bins[1].set(1.0, 2.0)
+  bins[1].mul_parts(3.0, -4.0)
+  out1 = bins[1].sum()
+}
+"#;
+
+const GENERIC_STRUCT_ARRAY_INDEXED_METHOD_CALLS_F64_EXAMPLE: &str = r#"
+outs { out1 }
+struct Complex<T> {
+  re: T
+  im: T
+  def set_polar(self, magnitude, phase) {
+    self.re = magnitude * cos(phase)
+    self.im = magnitude * sin(phase)
+  }
+  def conjugate(self) {
+    self.im = -self.im
+  }
+  def scale_assign(self, gain) {
+    self.re = self.re * gain
+    self.im = self.im * gain
+  }
+  def sum(self) {
+    return self.re + self.im
+  }
+}
+init {
+  bins: Complex<f64>[4]
+}
+sample {
+  bins[0].set_polar(f64(2.0), f64(0.5))
+  bins[0].conjugate()
+  bins[0].scale_assign(f64(0.5))
+  out1 = f32(bins[0].sum())
+}
+"#;
+
+const STDLIB_COMPLEX_ARRAY_INDEXED_METHOD_CALLS_EXAMPLE: &str = r#"
+import std/complex
+outs { out1 }
+init {
+  bins: std::complex::Complex<f32>[4]
+}
+sample {
+  bins[1].set(1.0, 2.0)
+  bins[1].mul_parts(3.0, -4.0)
+  out1 = bins[1].real() + bins[1].imag()
+}
+"#;
+
 #[test]
 fn generic_struct_array_implicit_default_f32_compile_and_run() {
     let frames = 4;
@@ -12730,6 +13030,51 @@ fn generic_struct_array_implicit_default_f32_compile_and_run() {
 
     for sample in &output {
         assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_struct_array_indexed_method_calls_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) =
+        compile_instance(GENERIC_STRUCT_ARRAY_INDEXED_METHOD_CALLS_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 13.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_struct_array_indexed_method_calls_f64_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(
+        GENERIC_STRUCT_ARRAY_INDEXED_METHOD_CALLS_F64_EXAMPLE,
+        frames,
+    );
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let expected = 0.5_f32.cos() - 0.5_f32.sin();
+    for sample in &output {
+        assert_near(*sample, expected, 1e-5);
+    }
+}
+
+#[test]
+fn stdlib_complex_array_indexed_method_calls_compile_and_run() {
+    let frames = 4;
+    let (mut instance, _, _) =
+        compile_instance(STDLIB_COMPLEX_ARRAY_INDEXED_METHOD_CALLS_EXAMPLE, frames);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 13.0, 1e-6);
     }
 }
 

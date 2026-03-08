@@ -229,6 +229,32 @@ fn infer_expr_calls(
                 errors,
             );
         }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                infer_expr_calls(
+                    start,
+                    struct_instances,
+                    struct_array_roots,
+                    array_bindings,
+                    buffer_bindings,
+                    fn_signatures,
+                    kinds,
+                    errors,
+                );
+            }
+            if let Some(end) = end {
+                infer_expr_calls(
+                    end,
+                    struct_instances,
+                    struct_array_roots,
+                    array_bindings,
+                    buffer_bindings,
+                    fn_signatures,
+                    kinds,
+                    errors,
+                );
+            }
+        }
         Expr::Compare { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
             infer_expr_calls(
                 lhs,
@@ -442,6 +468,7 @@ fn infer_array_binding_from_assignment(expr: &Expr) -> Option<InferredArrayParam
             }),
             omni_frontend::ArrayElemType::Struct(_) => None,
         },
+        Expr::Slice { .. } => None,
         _ => None,
     }
 }

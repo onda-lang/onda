@@ -279,6 +279,7 @@ Supported:
 - Top-level overloads by arity and/or parameter type
 - Method-style sugar for functions: `value.fn(a, b)` is rewritten as `fn(value, a, b)` when a matching function `fn` is in scope.
 - Def scope is lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not directly visible inside a `def`.
+- Call argument lists may span multiple lines, and a trailing comma is allowed in both function calls and method calls.
 
 ```omni
 def wrap_phase(p, upper = TWO_PI):
@@ -567,6 +568,40 @@ Generic struct and proc types can be used as `def` parameter types for call-site
 Fixed-size arrays are supported for state/local storage, including typed forms and capacity expressions.
 Array indexing and assignment are supported in `init`/`sample`/`def` where valid.
 
+Slice expressions are also supported on primitive arrays, slices, and primitive buffers/channels:
+
+```omni
+sample:
+  a = buf[:]
+  b = buf[2:]
+  c = buf[:-1]
+  d = buf[1:-2]
+  last = buf[-1]
+```
+
+Rules:
+- Slice forms are `a[:]`, `a[start:]`, `a[:end]`, and `a[start:end]`.
+- Negative slice bounds are supported and are interpreted relative to the logical length.
+- Slice expressions lower to normal primitive slice views of type `T[]`.
+- Buffer slicing also yields `T[]`, not a new buffer type.
+
+Writable slice assignment is supported for mutable primitive array/buffer targets:
+
+```omni
+sample:
+  values[1:-1] = 0.5
+  dst[:] = src[:]
+  values[1:] = values[:-1]
+```
+
+Rules:
+- Slice assignment is statement-only.
+- Scalar fill writes the full target slice.
+- Slice copy writes `min(dst_len, src_len)` elements.
+- Overlapping slice copies are stable and behave as if the source region is copied through a temporary buffer first.
+- Event payload arrays/slices are read-only and cannot be used as writable slice targets.
+- Struct-element arrays are not sliceable in the current implementation.
+
 ## 11 Imports and namespaces
 
 Imports:
@@ -574,6 +609,7 @@ Imports:
 - Built-in std modules include:
   - `std/prelude`
   - `std/math`
+  - `std/complex`
   - `std/osc`
   - `std/filter`
   - `std/env`
@@ -717,6 +753,44 @@ Streaming wrappers:
 - default hop is `N / 2`
 - `RealFFT.push()` emits a new spectrum every hop after the first full frame
 - `RealIFFT` performs windowed overlap-add reconstruction and normalizes by the accumulated window power
+
+`std/complex` provides a simple generic complex-number struct for FFT-style arithmetic:
+
+```omni
+import std/complex
+
+init:
+  z: std::complex::Complex<f32>
+  w: std::complex::Complex<f32>
+  z.set(1.0, 2.0)
+  w.set(3.0, -4.0)
+  z.mul_assign(w)
+```
+
+Current API:
+- `std::complex::Complex<T>`
+- `T` is intended for floating-point use (`f32` or `f64`)
+- fields:
+  - `re: T`
+  - `im: T`
+- methods:
+  - `real()`
+  - `imag()`
+  - `set(re, im)`
+  - `clear()`
+  - `copy(other: Complex)`
+  - `set_polar(magnitude, phase)`
+  - `add_assign(other: Complex)`
+  - `add_parts(re, im)`
+  - `sub_assign(other: Complex)`
+  - `sub_parts(re, im)`
+  - `mul_assign(other: Complex)`
+  - `mul_parts(re, im)`
+  - `scale_assign(gain)`
+  - `conjugate()`
+  - `power()`
+  - `magnitude()`
+  - `phase()`
 
 Example:
 
