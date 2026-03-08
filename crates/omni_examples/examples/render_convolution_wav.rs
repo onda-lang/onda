@@ -65,8 +65,7 @@ fn main() -> Result<(), Diagnostic> {
     let ir_path = root.join("examples").join("impulse.wav");
     let target_dir = root.join("target");
     fs::create_dir_all(&target_dir).expect("create target dir");
-    let out_full = target_dir.join("convolution_wav_impulse_output_full.wav");
-    let out_trimmed = target_dir.join("convolution_wav_impulse_output_trimmed.wav");
+    let out_path = target_dir.join("convolution_wav_impulse_output.wav");
 
     let src = fs::read_to_string(&example_path).expect("read example source");
     let ir = read_wav_mono_f32(&ir_path);
@@ -126,16 +125,10 @@ fn main() -> Result<(), Diagnostic> {
         })
         .collect::<Vec<_>>();
 
-    let latency = 0usize;
-    let trimmed = full[latency..latency + ir.len()].to_vec();
+    write_wav_mono_f32(&out_path, &full[..ir.len()], sample_rate as u32);
 
-    write_wav_mono_f32(&out_full, &full, sample_rate as u32);
-    write_wav_mono_f32(&out_trimmed, &trimmed, sample_rate as u32);
-
-    println!("Wrote full output: {}", out_full.display());
-    println!("Wrote trimmed output: {}", out_trimmed.display());
-    println!("Latency samples removed in trimmed file: {}", latency);
-    println!("Trimmed file should match: {}", ir_path.display());
+    println!("Wrote output: {}", out_path.display());
+    println!("Output should match: {}", ir_path.display());
 
     Ok(())
 }

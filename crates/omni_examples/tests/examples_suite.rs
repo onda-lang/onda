@@ -14068,20 +14068,19 @@ fn proc_local_def_bad_call_shapes_error() {
         "expected missing-arg error, got {errs:?}"
     );
     assert!(
-        errs.iter().any(|d| d
-            .message
-            .contains("too many arguments in call to proc-local def 'pair'")),
+        errs.iter()
+            .any(|d| d.message.contains("too many positional arguments")),
         "expected too-many-args error, got {errs:?}"
     );
     assert!(
         errs.iter().any(|d| d
             .message
-            .contains("positional argument cannot follow named arguments")),
+            .contains("positional arguments must come before named arguments")),
         "expected positional-after-named error, got {errs:?}"
     );
     assert!(
         errs.iter()
-            .any(|d| d.message.contains("has no parameter named 'z'")),
+            .any(|d| d.message.contains("unknown named argument 'z'")),
         "expected unknown-named-arg error, got {errs:?}"
     );
 }
@@ -14950,6 +14949,185 @@ fn proc_local_def_order_independent() {
     for sample in &output {
         assert_near(*sample, 6.0, 1e-6);
     }
+}
+
+const PROC_LOCAL_DEF_NOT_CALLABLE_FROM_OUTSIDE_EXAMPLE: &str = r#"
+proc LocalOnly {
+  outs 1
+
+  def helper(v) {
+    return v * 2.0
+  }
+
+  sample {
+    out1 = helper(1.0)
+  }
+}
+
+init {
+  p = LocalOnly()
+}
+
+sample {
+  out1 = helper(2.0) + p()
+}
+"#;
+
+#[test]
+fn proc_local_def_not_callable_from_outside_owner_proc() {
+    let parsed =
+        parse_program(PROC_LOCAL_DEF_NOT_CALLABLE_FROM_OUTSIDE_EXAMPLE).expect("parse succeeds");
+    let errs = analyze(parsed).expect_err("outside call to proc-local def should fail");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("unknown function 'helper'")),
+        "expected unknown-function error, got {errs:?}"
+    );
+}
+
+const PROC_LOCAL_DEF_SHADOWS_TOP_LEVEL_DEF_EXAMPLE: &str = r#"
+outs 2
+
+def mix(v) {
+  return v + 100.0
+}
+
+proc UsesLocal {
+  outs 1
+
+  def mix(v) {
+    return v + 1.0
+  }
+
+  sample {
+    out1 = mix(1.0)
+  }
+}
+
+init {
+  p = UsesLocal()
+}
+
+sample {
+  out1 = p()
+  out2 = mix(1.0)
+}
+"#;
+
+#[test]
+fn proc_local_def_name_prefers_local_resolution_over_top_level_def() {
+    let frames = 4;
+    let (mut instance, _, out_channels) =
+        compile_instance(PROC_LOCAL_DEF_SHADOWS_TOP_LEVEL_DEF_EXAMPLE, frames);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * 2];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for frame in output.chunks_exact(2) {
+        assert_near(frame[0], 2.0, 1e-6);
+        assert_near(frame[1], 101.0, 1e-6);
+    }
+}
+
+const PROC_LOCAL_DEF_SAME_NAME_PARENT_CHILD_EXAMPLE: &str = r#"
+proc Child {
+  outs 1
+
+  init {
+    value = 1.0
+  }
+
+  def bump() {
+    value = value + 1.0
+  }
+
+  sample {
+    bump()
+    out1 = value
+  }
+}
+
+proc Parent {
+  outs 1
+
+  init {
+    child = Child()
+    value = 10.0
+  }
+
+  def bump() {
+    value = value + 10.0
+  }
+
+  sample {
+    bump()
+    out1 = value + child()
+  }
+}
+
+init {
+  p = Parent()
+}
+
+sample {
+  out1 = p()
+}
+"#;
+
+#[test]
+fn proc_local_def_same_name_in_parent_and_child_proc_remains_isolated() {
+    let frames = 4;
+    let (mut instance, _, out_channels) =
+        compile_instance(PROC_LOCAL_DEF_SAME_NAME_PARENT_CHILD_EXAMPLE, frames);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 22.0, 1e-6);
+    assert_near(output[1], 33.0, 1e-6);
+    assert_near(output[2], 44.0, 1e-6);
+    assert_near(output[3], 55.0, 1e-6);
+}
+
+const PROC_LOCAL_DEF_DOES_NOT_PARTICIPATE_IN_TOP_LEVEL_OVERLOADS_EXAMPLE: &str = r#"
+def helper(v) {
+  return v + 100.0
+}
+
+proc HiddenOverload {
+  outs 1
+
+  def helper(a, b) {
+    return a + b
+  }
+
+  sample {
+    out1 = helper(1.0, 2.0)
+  }
+}
+
+init {
+  p = HiddenOverload()
+}
+
+sample {
+  out1 = helper(1.0, 2.0) + p()
+}
+"#;
+
+#[test]
+fn proc_local_defs_do_not_participate_in_top_level_overload_resolution() {
+    let parsed = parse_program(PROC_LOCAL_DEF_DOES_NOT_PARTICIPATE_IN_TOP_LEVEL_OVERLOADS_EXAMPLE)
+        .expect("parse succeeds");
+    let errs =
+        analyze(parsed).expect_err("proc-local def should not leak into top-level overloads");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("too many positional arguments")),
+        "expected top-level-only binding error, got {errs:?}"
+    );
 }
 
 #[test]

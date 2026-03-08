@@ -668,6 +668,50 @@ pub(crate) fn specialize_generic_proc_template(
         expand_inline_array_ctor_initializers(&mut event.body);
     }
     for def in &mut local_defs {
+        for param in &mut def.params {
+            if let Some(ty) = &mut param.ty {
+                *ty = match ty {
+                    FnParamType::Primitive(prim) => FnParamType::Primitive(*prim),
+                    FnParamType::Struct(name) => match type_bindings.get(name).copied() {
+                        Some(bound) => FnParamType::Primitive(bound),
+                        None => FnParamType::Struct(name.clone()),
+                    },
+                    FnParamType::Buffer(buffer_ty) => {
+                        let elem = match &buffer_ty.elem {
+                            BufferElemType::Primitive(prim) => BufferElemType::Primitive(*prim),
+                            BufferElemType::Generic(param) => {
+                                match type_bindings.get(param).copied() {
+                                    Some(bound) => BufferElemType::Primitive(bound),
+                                    None => BufferElemType::Generic(param.clone()),
+                                }
+                            }
+                        };
+                        FnParamType::Buffer(BufferType {
+                            elem,
+                            channels: buffer_ty.channels.clone(),
+                        })
+                    }
+                    FnParamType::Array(elem) => FnParamType::Array(*elem),
+                    FnParamType::ArrayGeneric(name) => match type_bindings.get(name).copied() {
+                        Some(bound) => FnParamType::Array(Some(bound)),
+                        None => FnParamType::ArrayGeneric(name.clone()),
+                    },
+                    FnParamType::BareBuffer => FnParamType::BareBuffer,
+                };
+            }
+            if let Some(default) = &mut param.default {
+                rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
+                substitute_call_type_args_with_bindings_expr(
+                    default,
+                    &type_bindings,
+                    &format!(
+                        "processor '{}' local def '{}' parameter default",
+                        template.name, def.name
+                    ),
+                    errors,
+                );
+            }
+        }
         for stmt in &mut def.body {
             specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
         }

@@ -819,6 +819,7 @@ fn build_proc_lowering_env(
             errors,
         );
         proc_sample_oversample_factors.insert(proc.name.clone(), factor);
+        rewrite_proc_local_defs(proc, errors);
     }
 
     let raw_struct_defs_by_name = program
@@ -948,6 +949,11 @@ fn build_proc_lowering_env(
                 params: method.params.clone(),
                 body: desugared_method_body,
             });
+        }
+    }
+    for proc in &proc_defs {
+        for local_def in unique_proc_local_defs(proc) {
+            pre_desugar_defs.push(pre_desugar_proc_local_hidden_def(&proc.name, &local_def));
         }
     }
     let mut pre_desugar_fn_signatures = HashMap::<String, FnSignature>::new();
@@ -2313,10 +2319,10 @@ pub(crate) fn desugar_processors(
 ) -> ProcessorDesugarResult {
     rewrite_and_materialize_generic_processors(&mut program, errors);
 
-    // Inline proc-local defs before proc lowering.
+    // Rewrite proc-local defs into hidden ordinary def calls before proc lowering.
     for block in &mut program.blocks {
         if let Block::Proc(proc) = block {
-            inline_proc_local_defs(proc, errors);
+            rewrite_proc_local_defs(proc, errors);
         }
     }
 

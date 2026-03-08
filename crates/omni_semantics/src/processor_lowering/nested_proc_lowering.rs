@@ -1029,6 +1029,7 @@ pub(super) fn rewrite_owner_proc_stmt(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Stmt> {
+    inject_owner_self_into_hidden_local_calls(&mut stmt, owner_proc);
     normalize_proc_output_aliases_in_stmt(&mut stmt, nested_instances, proc_api);
     rewrite_nested_field_paths_in_stmt(&mut stmt, nested_fields);
     rewrite_nested_proc_calls_in_stmt(
@@ -1471,6 +1472,7 @@ pub(super) fn collect_nested_proc_instances(
 pub(super) fn lower_callee_stmt_for_nested_wrapper(
     stmt: &Stmt,
     owner_proc: &str,
+    callee_proc: &str,
     nested_path: &str,
     callee_shape: &ProcLoweringShape,
     callee_nested_instances: &HashMap<String, ProcCallInstance>,
@@ -1496,6 +1498,7 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
             );
         }
         remap_nested_symbols_in_stmt(&mut stmt, &remap);
+        rewrite_nested_wrapper_local_calls(&mut stmt, callee_proc, owner_proc, nested_path);
 
         let nested_fields = callee_shape
             .nested_fields
