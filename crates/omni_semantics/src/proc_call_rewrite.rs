@@ -3212,4 +3212,15 @@ pub(super) fn desugar_processor_instance_method_calls(
             );
         }
     }
+    for def in &mut proc.local_defs {
+        for stmt in &mut def.body {
+            desugar_sample_instance_method_calls(
+                stmt,
+                &struct_instances,
+                &struct_array_roots,
+                &current_ns,
+                callable_symbols,
+            );
+        }
+    }
 }

@@ -174,7 +174,8 @@
   - The full target semantics for synchronous proc events are tracked in `SYNC_EVENT_SPEC.md`.
 - Functions (`def`):
   - positional + named args, default values, early return.
-  - `def` bodies are lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not in scope unless passed as parameters.
+  - Top-level `def` bodies are lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not in scope unless passed as parameters.
+  - Proc-local `def` blocks have implicit access to proc state (init-declared variables, params, nested procs) without `self`. They are private to the enclosing processor and are inlined at call sites during semantic analysis.
   - top-level overloads are supported (same symbol with different arity and/or parameter types).
   - overload resolution prefers exact typed matches; if no exact match exists, numeric widening candidates can be used.
   - untyped parameters participate with lower priority than typed parameters.
@@ -203,6 +204,7 @@
 - generic processors are supported and specialized/monomorphized on constructor use.
 - `sample` is required; `init` is optional (top-level `init` is also optional).
 - `events` is optional inside `proc`.
+- proc-local `def` blocks are supported inside `proc` bodies. They act as private helper subroutines with implicit state access (no `self`), callable from `init`, `sample`, `block`, `events`, and other proc-local defs. They support parameters, return values, and transitive calls. Recursive/mutually recursive calls are rejected. Implementation is AST-level inlining during semantic analysis.
 - generic typed local declarations (`x: T = ...`) are supported in all executable scopes of a generic owner (`init`, `sample`, `block`, `def` methods, `events`).
 - Processor call forms:
   - `p(...)` (scalar return for single-out procs; sugar for `p.out1` / endpoint name)

@@ -11,30 +11,6 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 64>:
   const FFTStorageSize = MaxPartitions * FFTSize
   const TailStart = HopSize
 
-  def _min_i(a: i32, b: i32):
-    if (a < b):
-      return a
-    return b
-
-  def _max_i(a: i32, b: i32):
-    if (a > b):
-      return a
-    return b
-
-  def _ceil_div_i(n: i32, d: i32):
-    if (n <= 0):
-      return 0
-    return (n + d - 1) / d
-
-  def _wrap_sub_i(base: i32, offset: i32, n: i32):
-    idx = base - offset
-    if (idx < 0):
-      idx = idx + n
-    return idx
-
-  def _partition_slot(part: i32, bin: i32):
-    return part * FFTSize + bin
-
   proc TimeDomainConvolver<T>:
     ins[T] 1
     outs[T] 1
@@ -44,6 +20,10 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 64>:
       delay: T[MaxImpulseLen]
       active_taps: i32 = 0
       write: i32 = 0
+
+    def clear_state():
+      delay[:] = T(0.0)
+      write = 0
 
     events:
       set_impulse(values: T[]):
@@ -55,15 +35,13 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 64>:
           active_taps = MaxImpulseLen
 
         impulse[:] = T(0.0)
-        delay[:] = T(0.0)
         impulse[:] = values[:MaxImpulseLen]
 
-        write = 0
+        clear_state()
 
       reset():
-        delay[:] = T(0.0)
+        clear_state()
         active_taps = 0
-        write = 0
 
     sample:
       if (active_taps <= 0):
@@ -109,28 +87,49 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 64>:
       output_idx = HopSize
       current_partition = 0
 
+    def clear_buffers():
+      pending[:] = T(0.0)
+      output[:] = T(0.0)
+      overlap[:] = T(0.0)
+
+      block_time[:] = T(0.0)
+      time_domain[:] = T(0.0)
+      for i in 0..FFTSize:
+        spectrum[i].clear()
+      for i in 0..FFTStorageSize:
+        impulse_fft[i].clear()
+        input_fft[i].clear()
+
+    def reset_counters():
+      pending_count = 0
+      output_idx = HopSize
+      current_partition = 0
+  
+    def ceil_div_i(n: i32, d: i32):
+      if (n <= 0):
+        return 0
+      return (n + d - 1) / d
+  
+    def wrap_sub_i(base: i32, offset: i32, n: i32):
+      idx = base - offset
+      if (idx < 0):
+        idx = idx + n
+      return idx
+  
+    def partition_slot(part: i32, bin: i32):
+      return part * FFTSize + bin
+
     events:
       set_impulse(values: T[]):
-        values_len = values.len()
-
-        active_taps = values_len
+        active_taps = values.len()
         if (active_taps < 0):
           active_taps = 0
         if (active_taps > MaxImpulseLen):
           active_taps = MaxImpulseLen
-        active_partitions = _ceil_div_i(active_taps, HopSize)
+        active_partitions = ceil_div_i(active_taps, HopSize)
 
-        pending[:] = T(0.0)
-        output[:] = T(0.0)
-        overlap[:] = T(0.0)
-
-        block_time[:] = T(0.0)
-        time_domain[:] = T(0.0)
-        for i in 0..FFTSize:
-          spectrum[i].clear()
-        for i in 0..FFTStorageSize:
-          impulse_fft[i].clear()
-          input_fft[i].clear()
+        clear_buffers()
+        reset_counters()
 
         for part in 0..active_partitions:
           start = part * HopSize
@@ -140,31 +139,14 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 64>:
           fwd.forward_real(block_time)
 
           for i in 0..FFTSize:
-            slot = _partition_slot(part, i)
+            slot = partition_slot(part, i)
             impulse_fft[slot].set(fwd.real(i), fwd.imag(i))
-
-        pending_count = 0
-        output_idx = HopSize
-        current_partition = 0
 
       reset():
         active_taps = 0
         active_partitions = 0
-        pending_count = 0
-        output_idx = HopSize
-        current_partition = 0
-
-        pending[:] = T(0.0)
-        output[:] = T(0.0)
-        overlap[:] = T(0.0)
-
-        block_time[:] = T(0.0)
-        time_domain[:] = T(0.0)
-        for i in 0..FFTSize:
-          spectrum[i].clear()
-        for i in 0..FFTStorageSize:
-          impulse_fft[i].clear()
-          input_fft[i].clear()
+        clear_buffers()
+        reset_counters()
 
     sample:
       y = T(0.0)
@@ -184,15 +166,15 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 64>:
         fwd.forward_real(block_time)
 
         for i in 0..FFTSize:
-          slot = _partition_slot(current_partition, i)
+          slot = partition_slot(current_partition, i)
           input_fft[slot].set(fwd.real(i), fwd.imag(i))
           spectrum[i].clear()
 
         for part in 0..active_partitions:
-          data_part = _wrap_sub_i(current_partition, part, MaxPartitions)
+          data_part = wrap_sub_i(current_partition, part, MaxPartitions)
           for i in 0..FFTSize:
-            data_slot = _partition_slot(data_part, i)
-            impulse_slot = _partition_slot(part, i)
+            data_slot = partition_slot(data_part, i)
+            impulse_slot = partition_slot(part, i)
             xr = input_fft[data_slot].real()
             xi = input_fft[data_slot].imag()
             hr = impulse_fft[impulse_slot].real()

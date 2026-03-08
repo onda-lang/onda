@@ -196,6 +196,7 @@ pub struct ProcessorDef {
     pub block_pre: Vec<Stmt>,
     pub sample: Vec<Stmt>,
     pub block_post: Vec<Stmt>,
+    pub local_defs: Vec<FunctionDef>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]

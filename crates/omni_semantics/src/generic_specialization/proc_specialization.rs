@@ -556,6 +556,7 @@ pub(crate) fn specialize_generic_proc_template(
     let mut block_pre = template.block_pre.clone();
     let mut sample = template.sample.clone();
     let mut block_post = template.block_post.clone();
+    let mut local_defs = template.local_defs.clone();
     let mut events = template.events.clone();
     for event in &mut events {
         for param in &mut event.params {
@@ -666,6 +667,21 @@ pub(crate) fn specialize_generic_proc_template(
     for event in &mut events {
         expand_inline_array_ctor_initializers(&mut event.body);
     }
+    for def in &mut local_defs {
+        for stmt in &mut def.body {
+            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
+        }
+        for stmt in &mut def.body {
+            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
+            substitute_call_type_args_with_bindings_stmt(
+                stmt,
+                &type_bindings,
+                &format!("processor '{}' local def '{}'", template.name, def.name),
+                errors,
+            );
+        }
+        expand_inline_array_ctor_initializers(&mut def.body);
+    }
 
     Some(ProcessorDef {
         name: specialized_struct_name(&template.name, type_args),
@@ -683,6 +699,7 @@ pub(crate) fn specialize_generic_proc_template(
         block_pre,
         sample,
         block_post,
+        local_defs,
     })
 }
 
@@ -1008,6 +1025,16 @@ pub(crate) fn finalize_generated_generic_proc_specializations(
             for event in &mut spec.events {
                 rewrite_generic_proc_ctor_stmt_list(
                     &mut event.body,
+                    templates,
+                    generated,
+                    errors,
+                    &spec_seed,
+                    &spec_ns,
+                );
+            }
+            for def in &mut spec.local_defs {
+                rewrite_generic_proc_ctor_stmt_list(
+                    &mut def.body,
                     templates,
                     generated,
                     errors,

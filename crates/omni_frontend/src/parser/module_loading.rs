@@ -2398,6 +2398,9 @@ fn rewrite_block_namespace_refs(
             }
             rewrite_stmts(&mut p.sample, current_ns, const_env, state, generated)?;
             rewrite_stmts(&mut p.block_post, current_ns, const_env, state, generated)?;
+            for def in &mut p.local_defs {
+                rewrite_function_def(def, current_ns, const_env, state, generated)?;
+            }
         }
         Block::Init(init) => {
             if let Some(default_ty) = &mut init.default_ty {

@@ -410,6 +410,7 @@ pub(super) fn parse_proc_block(
     let mut init: Option<InitBlock> = None;
     let mut block_exec: Option<BlockExec> = None;
     let mut sample: Option<SampleBlock> = None;
+    let mut local_defs = Vec::new();
 
     for child in block_pair.into_inner() {
         match child.as_rule() {
@@ -493,6 +494,9 @@ pub(super) fn parse_proc_block(
                 }
                 sample = Some(parse_sample_block(child)?);
             }
+            Rule::def_block => {
+                local_defs.push(parse_def_block(child)?);
+            }
             _ => {}
         }
     }
@@ -551,6 +555,7 @@ pub(super) fn parse_proc_block(
         block_pre,
         sample: sample_body,
         block_post,
+        local_defs,
     })
 }
 

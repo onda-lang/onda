@@ -7,12 +7,14 @@ mod generic_proc_rewrite;
 mod global_proc_rewrite;
 mod nested_paths;
 mod nested_proc_lowering;
+mod proc_local_defs;
 mod shape_helpers;
 use generated_blocks::*;
 use generic_proc_rewrite::*;
 use global_proc_rewrite::*;
 use nested_paths::*;
 use nested_proc_lowering::*;
+use proc_local_defs::*;
 use shape_helpers::*;
 
 #[derive(Debug, Clone)]
@@ -863,6 +865,14 @@ fn build_proc_lowering_env(
             for event in &mut proc.events {
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut event.body,
+                    &generic_struct_templates,
+                    &mut generated_struct_specializations,
+                    errors,
+                );
+            }
+            for def in &mut proc.local_defs {
+                rewrite_generic_struct_ctor_stmt_list(
+                    &mut def.body,
                     &generic_struct_templates,
                     &mut generated_struct_specializations,
                     errors,
@@ -2302,6 +2312,13 @@ pub(crate) fn desugar_processors(
     errors: &mut Vec<Diagnostic>,
 ) -> ProcessorDesugarResult {
     rewrite_and_materialize_generic_processors(&mut program, errors);
+
+    // Inline proc-local defs before proc lowering.
+    for block in &mut program.blocks {
+        if let Block::Proc(proc) = block {
+            inline_proc_local_defs(proc, errors);
+        }
+    }
 
     let Some(ProcLoweringEnv {
         struct_defs_by_name,
@@ -4352,6 +4369,14 @@ sample:
             }
             Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
                 collect_offending_proc_event_calls_in_expr(expr, owner, offending);
+            }
+            Expr::Slice { start, end, .. } => {
+                if let Some(s) = start {
+                    collect_offending_proc_event_calls_in_expr(s, owner, offending);
+                }
+                if let Some(e) = end {
+                    collect_offending_proc_event_calls_in_expr(e, owner, offending);
+                }
             }
             Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
         }

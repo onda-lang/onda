@@ -4666,15 +4666,11 @@ sample:
         .collect();
 
     assert!(
-        event_calls
-            .iter()
-            .any(|name| name == "td.set_impulse_window"),
+        event_calls.iter().any(|name| name == "td.set_impulse"),
         "expected td event call to remain receiver-based, got {event_calls:?}"
     );
     assert!(
-        event_calls
-            .iter()
-            .any(|name| name == "tail.set_impulse_window"),
+        event_calls.iter().any(|name| name == "tail.set_impulse"),
         "expected tail event call to remain receiver-based, got {event_calls:?}"
     );
 }

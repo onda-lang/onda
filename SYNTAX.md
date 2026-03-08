@@ -397,6 +397,7 @@ Processor blocks:
 - `init` (optional)
 - `sample` (required)
 - `events` (optional)
+- `def` (optional, proc-local helper functions — see section 8.2)
 - optional `block` wrapper with pre/sample/post sections
 
 ```omni
@@ -516,6 +517,50 @@ Rules:
 - Unknown host event indices are ignored.
 - Invalid payload size for a known event is a runtime error.
 - For top-level host events with slice params, payload bytes are encoded as `i32 len` followed by contiguous element bytes.
+
+## 8.2 Proc-local defs
+
+Processors can contain private `def` blocks that act as helper subroutines with implicit access to proc state. Unlike top-level `def` blocks, proc-local defs can read and write `init`-declared state, params, and other proc-scoped symbols directly — no `self` parameter is needed.
+
+```omni
+proc Filter<T>:
+  ins[T] 1
+  outs[T] 1
+
+  init:
+    state: T = 0.0
+    coeff: T = 0.5
+
+  def do_reset():
+    state = T(0.0)
+
+  def apply(x: T):
+    state = state + (x - state) * coeff
+    return state
+
+  events:
+    reset():
+      do_reset()
+
+  sample:
+    out1 = apply(in1)
+```
+
+Proc-local defs support:
+- Parameters (positional, named, defaults) — same as top-level `def`.
+- Return values via `return`.
+- Calling other proc-local defs (transitive inlining).
+- Calling namespace-level `def` functions.
+- Access to proc generic type parameters (e.g. `T`).
+
+Rules:
+- Proc-local defs are always private to the enclosing processor.
+- They are callable from `init`, `sample`, `block`, `events`, and other proc-local defs.
+- State variables are accessed directly by name (no `self`).
+- Parameters and for-loop variables are local to the def; state variables pass through unchanged.
+- Recursive and mutually recursive calls are detected and rejected (max inline depth 16).
+- Proc-local defs are inlined at their call sites during semantic analysis (before codegen). LLVM's `O3` pipeline further optimizes the inlined code.
+- Overloading of proc-local defs is not currently supported.
 
 ## 9 Generics
 
