@@ -1409,6 +1409,14 @@ graph {
 }
 "#;
 
+const GRAPH_ARRAY_BROADCAST_EXAMPLE: &str = r#"
+outs { out_st: f32[2] }
+
+graph {
+  0.25 >> out_st
+}
+"#;
+
 const GRAPH_EVENT_ROUTING_EXAMPLE: &str = r#"
 proc Voice {
   outs { out1 }
@@ -1439,6 +1447,90 @@ events {
   set_gain(v: f32) {
     voice.set_gain(v)
   }
+}
+"#;
+
+const GRAPH_RECEIVER_DELAY_EXAMPLE: &str = r#"
+outs { out1 }
+
+graph {
+  @sample out1 <<[1] 1.0
+}
+"#;
+
+const GRAPH_SLICE_SOURCE_EXAMPLE: &str = r#"
+ins { in_bus: f32[4] }
+outs { out_st: f32[2] }
+
+graph {
+  in_bus[1:3] >> out_st
+}
+"#;
+
+const GRAPH_PROC_LOCAL_GRAPH_EXAMPLE: &str = r#"
+proc Swap {
+  ins 2
+  outs 2
+  graph {
+    in2 >> out1
+    in1 >> out2
+  }
+}
+
+ins 2
+outs 2
+
+init {
+  swap = Swap()
+}
+
+graph {
+  in1 >> swap.in1
+  in2 >> swap.in2
+  swap.out1 >> out1
+  swap.out2 >> out2
+}
+"#;
+
+const GRAPH_PROC_INPUT_ARRAY_BROADCAST_EXAMPLE: &str = r#"
+proc Sum2 {
+  ins { in_st: f32[2] }
+  outs { out1 }
+  sample {
+    out1 = in_st[0] + in_st[1]
+  }
+}
+
+outs { out1 }
+
+init {
+  sum = Sum2()
+}
+
+graph {
+  0.5 >> sum.in_st
+  sum.out1 >> out1
+}
+"#;
+
+const GRAPH_PROC_PARAM_ARRAY_BROADCAST_EXAMPLE: &str = r#"
+proc Sum2 {
+  params { gains: f32[2] = [0.0, 0.0] }
+  outs { out1 }
+  sample {
+    out1 = gains[0] + gains[1]
+  }
+}
+
+outs { out1 }
+
+init {
+  sum = Sum2()
+}
+
+graph {
+  0.5 >> sum.gains
+  sum.out1 >> out1
 }
 "#;
 
@@ -4668,6 +4760,35 @@ sample {
 }
 "#;
 
+const EVENT_PROC_ARRAY_ALIAS_FORWARD_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+outs { out1 }
+events {
+  note_on(value: f32) {
+    v = voices[idx]
+    v.note_on(value)
+  }
+}
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 99
+}
+sample {
+  out1 = voices[1]()
+}
+"#;
+
 const EVENT_NESTED_PROC_ARRAY_INDEXED_FORWARD_EXAMPLE: &str = r#"
 proc Voice {
   params { amp = 0.0 }
@@ -4810,6 +4931,51 @@ init {
 }
 sample {
   out1 = racks[r_idx]()
+}
+"#;
+
+const EVENT_PROC_ARRAY_ALIAS_FORWARD_FROM_PARENT_PROC_EVENT_EXAMPLE: &str = r#"
+proc Voice {
+  params { amp = 0.0 }
+  outs { out1 }
+  events {
+    note_on(value: f32) {
+      amp = value
+    }
+  }
+  sample {
+    out1 = amp
+  }
+}
+
+proc Bank {
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(), Voice()]
+    idx: i32 = 99
+  }
+  events {
+    note_on(value: f32) {
+      v = voices[idx]
+      v.note_on(value)
+    }
+  }
+  sample {
+    out1 = voices[1]()
+  }
+}
+
+outs { out1 }
+events {
+  note_on(value: f32) {
+    bank.note_on(value)
+  }
+}
+init {
+  bank = Bank()
+}
+sample {
+  out1 = bank()
 }
 "#;
 
@@ -5213,6 +5379,33 @@ sample {
 }
 "#;
 
+const TOP_LEVEL_EVENT_SLICE_PROC_FORWARD_EXAMPLE: &str = r#"
+proc Loader {
+  params { sum = 0.0 }
+  outs { out1 }
+  events {
+    set_values(values: f32[]) {
+      sum = values[0] + values[1] + f32(values.len())
+    }
+  }
+  sample {
+    out1 = sum
+  }
+}
+outs { out1 }
+events {
+  load(values: f32[]) {
+    loader.set_values(values)
+  }
+}
+init {
+  loader = Loader()
+}
+sample {
+  out1 = loader()
+}
+"#;
+
 const TOP_LEVEL_EVENT_FIXED_ARRAY_PROC_FORWARD_EXAMPLE: &str = r#"
 proc Loader {
   params { sum = 0.0 }
@@ -5237,6 +5430,19 @@ init {
 }
 sample {
   out1 = loader()
+}
+"#;
+
+const TOP_LEVEL_EVENT_MIXED_FIXED_AND_SLICE_PARAM_EXAMPLE: &str = r#"
+outs { out1 }
+init { gate = 0.0 }
+events {
+  load(head: f32[2], tail: f32[]) {
+    gate = head[0] + head[1] + tail[0] + f32(tail.len())
+  }
+}
+sample {
+  out1 = gate
 }
 "#;
 
@@ -6148,6 +6354,25 @@ fn proc_array_indexed_event_forwarding_from_top_level_event_runs() {
 }
 
 #[test]
+fn proc_array_alias_event_forwarding_from_top_level_event_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EVENT_PROC_ARRAY_ALIAS_FORWARD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let idx = instance
+        .event_index("note_on")
+        .expect("top-level forwarding event must exist");
+    trigger_event_by_index(&mut instance, idx, &0.66_f32.to_ne_bytes())
+        .expect("forwarding event trigger should succeed");
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.66, 1e-6);
+    }
+}
+
+#[test]
 fn proc_event_call_from_parent_proc_init_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -6247,6 +6472,27 @@ fn deeper_nested_proc_array_dynamic_index_event_forwarding_runs() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 0.6, 1e-6);
+    }
+}
+
+#[test]
+fn proc_array_alias_event_forwarding_from_parent_proc_event_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        EVENT_PROC_ARRAY_ALIAS_FORWARD_FROM_PARENT_PROC_EVENT_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let idx = instance
+        .event_index("note_on")
+        .expect("top-level forwarding event must exist");
+    trigger_event_by_index(&mut instance, idx, &0.68_f32.to_ne_bytes())
+        .expect("forwarding event trigger should succeed");
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.68, 1e-6);
     }
 }
 
@@ -6446,6 +6692,48 @@ fn top_level_events_accept_slice_payloads() {
 }
 
 #[test]
+fn top_level_events_forward_slice_payloads_to_proc_events() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_EVENT_SLICE_PROC_FORWARD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let event_idx = instance.event_index("load").expect("load event must exist");
+    assert_eq!(instance.event_payload_bytes(event_idx), None);
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(2_i32).to_ne_bytes());
+    payload.extend_from_slice(&0.5_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.25_f32.to_ne_bytes());
+    trigger_event_by_index(&mut instance, event_idx, &payload)
+        .expect("slice forwarding event trigger should succeed");
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 2.75, 1e-6);
+}
+
+#[test]
+fn top_level_slice_event_truncated_payload_returns_runtime_error() {
+    let frames = 1;
+    let (mut instance, _, _) = compile_instance(TOP_LEVEL_EVENT_SLICE_PARAM_EXAMPLE, frames);
+    let event_idx = instance.event_index("load").expect("load event must exist");
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(3_i32).to_ne_bytes());
+    payload.extend_from_slice(&0.25_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.75_f32.to_ne_bytes());
+    let err = trigger_event_by_index(&mut instance, event_idx, &payload)
+        .expect_err("truncated slice payload should fail");
+    assert!(
+        err.message.contains("payload"),
+        "expected payload-related runtime error, got {:?}",
+        err
+    );
+}
+
+#[test]
 fn top_level_events_forward_fixed_array_payloads_to_proc_events() {
     let frames = 1;
     let (mut instance, in_channels, out_channels) =
@@ -6467,6 +6755,31 @@ fn top_level_events_forward_fixed_array_payloads_to_proc_events() {
     let mut output = vec![0.0_f32; frames];
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 1.0, 1e-6);
+}
+
+#[test]
+fn top_level_events_accept_mixed_fixed_and_slice_payloads() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_EVENT_MIXED_FIXED_AND_SLICE_PARAM_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let event_idx = instance.event_index("load").expect("load event must exist");
+    assert_eq!(instance.event_payload_bytes(event_idx), None);
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0.25_f32.to_ne_bytes());
+    payload.extend_from_slice(&0.75_f32.to_ne_bytes());
+    payload.extend_from_slice(&(2_i32).to_ne_bytes());
+    payload.extend_from_slice(&1.5_f32.to_ne_bytes());
+    payload.extend_from_slice(&2.5_f32.to_ne_bytes());
+    trigger_event_by_index(&mut instance, event_idx, &payload)
+        .expect("mixed fixed/slice event trigger should succeed");
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 4.5, 1e-6);
 }
 
 #[test]
@@ -8023,6 +8336,133 @@ fn graph_array_delays_persist_and_shift_element_wise() {
     ];
     for (sample, target) in second_output.iter().zip(expected_second) {
         assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_scalar_broadcast_to_array_outputs_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_ARRAY_BROADCAST_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 0.25, 1e-6);
+    }
+}
+
+#[test]
+fn graph_receiver_delay_runs_as_one_sample_delay() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_RECEIVER_DELAY_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut first = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut first, frames)
+        .expect("first process should succeed");
+    let expected_first = [0.0_f32, 1.0, 1.0, 1.0];
+    for (sample, target) in first.iter().zip(expected_first) {
+        assert_near(*sample, target, 1e-6);
+    }
+
+    let mut second = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut second, frames)
+        .expect("second process should succeed");
+    for sample in second {
+        assert_near(sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn graph_slice_sources_route_runtime_channels() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_SLICE_SOURCE_EXAMPLE, frames);
+    assert_eq!(in_channels, 4);
+    assert_eq!(out_channels, 2);
+
+    let input = vec![
+        1.0_f32, 10.0, 100.0, 1000.0, //
+        2.0, 20.0, 200.0, 2000.0, //
+        3.0, 30.0, 300.0, 3000.0, //
+        4.0, 40.0, 400.0, 4000.0,
+    ];
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    let expected = [
+        10.0_f32, 100.0, //
+        20.0, 200.0, //
+        30.0, 300.0, //
+        40.0, 400.0,
+    ];
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn proc_local_graphs_compile_and_run_through_top_level_graphs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_PROC_LOCAL_GRAPH_EXAMPLE, frames);
+    assert_eq!(in_channels, 2);
+    assert_eq!(out_channels, 2);
+
+    let input = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    let expected = [
+        10.0_f32, 1.0, //
+        20.0, 2.0, //
+        30.0, 3.0, //
+        40.0, 4.0,
+    ];
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_scalar_broadcast_to_proc_input_arrays_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_PROC_INPUT_ARRAY_BROADCAST_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn graph_scalar_broadcast_to_proc_param_arrays_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_PROC_PARAM_ARRAY_BROADCAST_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 1.0, 1e-6);
     }
 }
 

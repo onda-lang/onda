@@ -4835,3 +4835,86 @@ graph:
         GraphEndpoint::Symbol("out1".to_owned())
     );
 }
+
+#[test]
+fn parses_graph_array_literal_and_slice_sources() {
+    let src = r#"
+ins:
+  in1
+  in2
+  in_bus: f32[4]
+outs:
+  out_st: f32[2]
+
+graph:
+  [in1, in2] >> out_st
+  in_bus[1:3] >> out_st
+"#;
+    let program = parse_program(src).expect("graph array literal/slice program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    match &graph.edges[0].source {
+        Expr::ArrayLiteral(values) => {
+            assert_eq!(values.len(), 2);
+            assert!(matches!(values[0], Expr::Var(ref name) if name == "in1"));
+            assert!(matches!(values[1], Expr::Var(ref name) if name == "in2"));
+        }
+        other => panic!("expected graph array literal source, got {other:?}"),
+    }
+
+    match &graph.edges[1].source {
+        Expr::Slice { base, start, end } => {
+            assert_eq!(base, "in_bus");
+            assert!(matches!(start.as_deref(), Some(Expr::Int(1))));
+            assert!(matches!(end.as_deref(), Some(Expr::Int(3))));
+        }
+        other => panic!("expected graph slice source, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_graph_receiver_proc_array_destinations() {
+    let src = r#"
+proc Voice {
+  params { gain = 0.0 }
+  outs { out1 }
+  sample { out1 = gain }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = Voice()
+}
+graph {
+  voices[1].gain << 0.5
+  out1 << voices[1].out1
+}
+"#;
+
+    let program = parse_program(src).expect("graph receiver proc-array program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    assert_eq!(graph.edges.len(), 2);
+    assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert!(matches!(
+        graph.edges[0].dest,
+        GraphEndpoint::ProcIndexedField {
+            ref proc,
+            index: Expr::Int(1),
+            ref field,
+        } if proc == "voices" && field == "gain"
+    ));
+}

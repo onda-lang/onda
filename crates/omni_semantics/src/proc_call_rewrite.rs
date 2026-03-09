@@ -2776,25 +2776,27 @@ pub(super) fn desugar_expr_instance_method_calls(
                 if let Some((base, index_expr)) = extract_indexed_receiver(args) {
                     let base = base.to_owned();
                     if let Some(struct_name) = struct_array_roots.get(base.as_str()) {
-                        let method_name = method.to_owned();
-                        *name = format!("{}.{}", struct_name, method_name);
-                        args.retain(|arg| {
-                            !matches!(
-                                arg.name.as_deref(),
-                                Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
-                            )
-                        });
-                        args.insert(
-                            0,
-                            CallArg {
-                                name: None,
-                                expr: Expr::Index {
-                                    base,
-                                    index: Box::new(index_expr),
+                        let resolved_method = format!("{}.{}", struct_name, method);
+                        if callable_symbols.contains(&resolved_method) {
+                            *name = resolved_method;
+                            args.retain(|arg| {
+                                !matches!(
+                                    arg.name.as_deref(),
+                                    Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
+                                )
+                            });
+                            args.insert(
+                                0,
+                                CallArg {
+                                    name: None,
+                                    expr: Expr::Index {
+                                        base,
+                                        index: Box::new(index_expr),
+                                    },
                                 },
-                            },
-                        );
-                        return;
+                            );
+                            return;
+                        }
                     }
                 }
             }

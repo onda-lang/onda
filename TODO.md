@@ -27,21 +27,7 @@
     - Widen graph source expressions beyond the current MVP:
       support array-constructor sources and any other remaining non-call source forms where semantics stay unambiguous.
     - Evaluate opt-in graph-edge coercions/broadcasting:
-      scalar-to-array broadcast, endpoint-family expansion for proc arrays, and broader numeric coercion rules.
-      Example scalar-to-array broadcast:
-      ```omni
-      outs:
-        out_st: f32[2]
-
-      graph:
-        0.25 >> out_st
-      ```
-      which would expand to:
-      ```omni
-      graph:
-        0.25 >> out_st[0]
-        0.25 >> out_st[1]
-      ```
+      endpoint-family expansion for proc arrays and broader numeric coercion rules.
       Example endpoint-family expansion:
       ```omni
       init:
@@ -57,20 +43,6 @@
         env.out1 >> voices[1].gain
         env.out1 >> voices[2].gain
         env.out1 >> voices[3].gain
-      ```
-      Example scalar-to-array proc input broadcast:
-      ```omni
-      init:
-        gain = StereoGain()
-
-      graph:
-        in1 >> gain.in_st
-      ```
-      which would expand to:
-      ```omni
-      graph:
-        in1 >> gain.in_st[0]
-        in1 >> gain.in_st[1]
       ```
       Example broader numeric coercion:
       ```omni

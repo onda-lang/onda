@@ -955,12 +955,42 @@ fn lower_graph(
                     ));
                 }
             }
-            (GraphRate::Sample, GraphDestKind::ProcInput { node, port }, _) => {
+            (
+                GraphRate::Sample,
+                GraphDestKind::ProcInput { node, port },
+                GraphValueType::Scalar(_),
+            ) => {
                 if reachable.contains(&node) {
                     sample_input_edges
                         .entry(node.clone())
                         .or_default()
                         .push((port.clone(), edge.source.clone()));
+                }
+            }
+            (
+                GraphRate::Sample,
+                GraphDestKind::ProcInput { node, port },
+                GraphValueType::Array { len, .. },
+            ) => {
+                if reachable.contains(&node) {
+                    let slot_exprs = expand_graph_expr_to_slots(
+                        &edge.source,
+                        *len,
+                        owner,
+                        nodes,
+                        proc_surfaces,
+                        &format!(
+                            "{owner_context} graph input '{}.{}'",
+                            node_ref_name(node),
+                            port
+                        ),
+                        options,
+                        errors,
+                    );
+                    sample_input_edges
+                        .entry(node.clone())
+                        .or_default()
+                        .push((port.clone(), Expr::ArrayLiteral(slot_exprs)));
                 }
             }
             (
@@ -2169,6 +2199,14 @@ fn require_graph_assignable_type(
     match (src, dst) {
         (GraphValueType::Scalar(src_ty), GraphValueType::Scalar(dst_ty)) => {
             require_assignable_type(Some(*src_ty), *dst_ty, context, errors);
+        }
+        (
+            GraphValueType::Scalar(src_ty),
+            GraphValueType::Array {
+                elem_ty: dst_elem, ..
+            },
+        ) => {
+            require_assignable_type(Some(*src_ty), *dst_elem, context, errors);
         }
         (
             GraphValueType::Array {

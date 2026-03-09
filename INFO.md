@@ -122,7 +122,7 @@
   - `graph` is mutually exclusive with `sample` and `block` in the same owner.
   - Edges support send and receiver forms (`src >> dst`, `dst << src`), explicit rates (`@block`, `@sample`), and sample delays (`>>[N]`, `<<[N]`).
   - Proc-array slot references with static indices are supported for graph sources and destinations.
-  - Strict scalar/array shape checking is enforced on graph edges.
+  - Strict scalar/array shape checking is enforced on graph edges, with one narrow convenience rule: scalar-to-fixed-array broadcast expands element-wise.
   - Whole-array routing and element-wise array expressions are supported where shapes match exactly.
   - Cycles are rejected unless broken by positive sample delay.
   - Graph lowering rewrites into generated `init` / `block pre` / `sample` code before proc desugaring.

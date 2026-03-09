@@ -355,7 +355,7 @@ Current MVP limits:
 Type and scheduling rules:
 - graph edges use strict shape matching
 - `f32[2] >> f32[2]` is allowed
-- `f32 >> f32[2]` is rejected
+- scalar-to-fixed-array broadcast is allowed, so `f32 >> f32[2]` expands element-wise
 - `f32[2] >> f32[3]` is rejected
 - delayed edges use the same strict shape rules, so `f32[2] >>[1] f32[2]` is allowed and `f32[2] >>[1] f32[3]` is rejected
 - each destination has a single writer

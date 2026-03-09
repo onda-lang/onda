@@ -4317,6 +4317,83 @@ sample:
     }
 
     #[test]
+    fn desugared_nested_proc_array_event_forwarding_has_no_raw_proc_event_calls_left() {
+        let src = r#"
+proc Voice:
+  params:
+    amp = 0.0
+  outs:
+    out1
+  events:
+    note_on(value: f32):
+      amp = value
+  sample:
+    out1 = amp
+
+proc Bank:
+  outs:
+    out1
+  init:
+    voices: Voice[2] = [Voice(), Voice()]
+  events:
+    note_on(value: f32):
+      idx: i32 = 1
+      voices[idx].note_on(value)
+  sample:
+    out1 = voices[1]()
+
+outs:
+  out1
+events:
+  note_on(value: f32):
+    bank.note_on(value)
+init:
+  bank = Bank()
+sample:
+  out1 = bank()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let mut errors = Vec::new();
+        let desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        assert!(
+            errors.is_empty(),
+            "processor desugaring should not emit errors: {errors:?}"
+        );
+
+        let mut offending = Vec::<String>::new();
+        for block in desugared.program.blocks {
+            match block {
+                Block::Def(def) => {
+                    for stmt in def.body {
+                        collect_offending_proc_event_calls_in_stmt(
+                            &stmt,
+                            &def.name,
+                            &mut offending,
+                        );
+                    }
+                }
+                Block::Events(events) => {
+                    for event in events {
+                        for stmt in event.body {
+                            collect_offending_proc_event_calls_in_stmt(
+                                &stmt,
+                                &format!("event:{}", event.name),
+                                &mut offending,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            offending.is_empty(),
+            "expected no raw nested proc-array event calls after desugaring, got {offending:?}"
+        );
+    }
+
+    #[test]
     fn graph_block_rejects_top_level_sample_coexistence() {
         let src = r#"
 outs { out1 }
@@ -5018,7 +5095,124 @@ graph:
     }
 
     #[test]
-    fn graph_block_rejects_scalar_to_array_output_edges() {
+    fn analyze_accepts_graph_positive_delay_cycles() {
+        let src = r#"
+proc Pass:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+outs:
+  out1
+
+init:
+  a = Pass()
+  b = Pass()
+
+graph:
+  a.out1 >> b.in1
+  b.out1 >>[1] a.in1
+  a.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("positive-delay cycle graph should analyze");
+        assert!(
+            typed.init.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    ..
+                } if name == "__graph_delay_0_buf"
+            )),
+            "expected delay state init for positive-delay cycle: {:?}",
+            typed.init
+        );
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Expr {
+                        expr: Expr::UserCall { name, .. },
+                        ..
+                    } if name == "Pass.__proc_step"
+                ))
+                .count()
+                == 2,
+            "expected both proc nodes to be stepped: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_proc_local_graph_programs() {
+        let src = r#"
+proc Swap:
+  ins:
+    in1
+    in2
+  outs:
+    out1
+    out2
+  graph:
+    in2 >> out1
+    in1 >> out2
+
+ins:
+  in1
+  in2
+outs:
+  out1
+  out2
+
+init:
+  swap = Swap()
+
+graph:
+  in1 >> swap.in1
+  in2 >> swap.in2
+  swap.out1 >> out1
+  swap.out2 >> out2
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("proc-local graph program should analyze");
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Expr {
+                    expr: Expr::UserCall { name, .. },
+                    ..
+                } if name == "Swap.__proc_step"
+            )),
+            "expected proc-local graph proc to lower to a proc step call: {:?}",
+            typed.sample
+        );
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Var(base),
+                        expr: Expr::Var(src),
+                        ..
+                    } if (base == "out1" && src == "swap.out1")
+                        || (base == "out2" && src == "swap.out2")
+                ))
+                .count()
+                == 2,
+            "expected proc-local graph outputs to lower to scalar output writes: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_scalar_broadcast_to_array_outputs() {
         let src = r#"
 outs:
   out_st: f32[2]
@@ -5027,12 +5221,142 @@ graph:
   0.5 >> out_st
 "#;
         let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("scalar to array graph edge should fail");
+        let typed = analyze(program).expect("scalar to array graph edge should analyze");
         assert!(
-            errors.iter().any(|diag| diag
-                .message
-                .contains("shape mismatch: cannot assign F32 to F32[2]")),
-            "expected scalar/array mismatch diagnostic, got {errors:?}"
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Number(v),
+                        ..
+                    } if base == "out_st"
+                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                        && (*v - 0.5).abs() <= f32::EPSILON
+                ))
+                .count()
+                == 2,
+            "expected scalar broadcast to lower to per-slot writes: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_scalar_broadcast_to_proc_array_inputs() {
+        let src = r#"
+proc Sum2:
+  ins:
+    in_st: f32[2]
+  outs:
+    out1
+  sample:
+    out1 = in_st[0] + in_st[1]
+
+outs:
+  out1
+
+init:
+  sum = Sum2()
+
+graph:
+  0.5 >> sum.in_st
+  sum.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("scalar broadcast to proc input array should analyze");
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Expr {
+                    expr: Expr::UserCall { name, args, .. },
+                    ..
+                } if name == "Sum2.__proc_step"
+                    && args.iter().filter(|arg| matches!(arg.expr, Expr::Number(v) if (v - 0.5).abs() <= f32::EPSILON)).count() == 2
+            )),
+            "expected scalar broadcast to expand into per-slot proc input args: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_scalar_broadcast_to_proc_array_params() {
+        let src = r#"
+proc Sum2:
+  params:
+    gains: f32[2] = [0.0, 0.0]
+  outs:
+    out1
+  sample:
+    out1 = gains[0] + gains[1]
+
+outs:
+  out1
+
+init:
+  sum = Sum2()
+
+graph:
+  0.5 >> sum.gains
+  sum.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("scalar broadcast to proc param array should analyze");
+        assert!(
+            typed
+                .block_pre
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Var(name),
+                        expr: Expr::Number(v),
+                        ..
+                    } if (name == "sum.gains[0]" || name == "sum.gains[1]")
+                        && (*v - 0.5).abs() <= f32::EPSILON
+                ))
+                .count()
+                == 2,
+            "expected scalar broadcast to lower to per-slot param writes: {:?}",
+            typed.block_pre
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_negative_slice_sources() {
+        let src = r#"
+ins:
+  in_bus: f32[4]
+outs:
+  out_st: f32[2]
+
+graph:
+  in_bus[:-2] >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("negative slice graph should analyze");
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Index { base: src_base, index: src_index },
+                        ..
+                    } if base == "out_st"
+                        && matches!(
+                            (&index, &**src_index),
+                            (Expr::Int(0), Expr::Int(0)) | (Expr::Int(1), Expr::Int(1))
+                        )
+                        && src_base == "in_bus"
+                ))
+                .count()
+                == 2,
+            "expected negative graph slice source to lower to shifted per-slot writes: {:?}",
+            typed.sample
         );
     }
 
@@ -5107,6 +5431,54 @@ graph:
                 .message
                 .contains("graph destination 'out1' has more than one driver")),
             "expected duplicate-driver diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_proc_output_destinations() {
+        let src = r#"
+proc Gain:
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+init:
+  g = Gain()
+
+graph:
+  0.0 >> g.out1
+  g.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("proc output destination should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph destination 'g.out1' cannot target processor outputs")),
+            "expected proc-output destination diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_top_level_output_sources() {
+        let src = r#"
+outs:
+  out1
+
+graph:
+  out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("top-level output source should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph source cannot read output 'out1'")),
+            "expected top-level output source diagnostic, got {errors:?}"
         );
     }
 

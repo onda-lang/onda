@@ -954,6 +954,21 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 proc_array_slots
                                     .entry(prefixed_base)
                                     .or_insert(prefixed_slots);
+                                for slot in slots {
+                                    if let Some(nested) = shape.state.nested_procs.get(slot) {
+                                        proc_vars.entry(slot.clone()).or_insert(ProcCallInstance {
+                                            proc_name: nested.proc_name.clone(),
+                                            buffer_args: Vec::new(),
+                                        });
+                                        let prefixed_slot = format!("{}.{}", param.name, slot);
+                                        proc_vars.entry(prefixed_slot).or_insert(
+                                            ProcCallInstance {
+                                                proc_name: nested.proc_name.clone(),
+                                                buffer_args: Vec::new(),
+                                            },
+                                        );
+                                    }
+                                }
                             }
                             for (instance_name, nested) in &shape.state.nested_procs {
                                 proc_vars.entry(instance_name.clone()).or_insert(
