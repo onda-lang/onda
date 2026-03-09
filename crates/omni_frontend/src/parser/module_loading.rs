@@ -35,6 +35,7 @@ struct LoadState {
     namespace_aliases: HashMap<String, NamespaceAliasDecl>,
     namespace_members: HashSet<String>,
     namespace_const_values: HashMap<String, Expr>,
+    top_level_const_values: HashMap<String, Expr>,
     namespace_instantiations: HashMap<String, String>,
     next_namespace_instantiation_id: u64,
 }
@@ -123,6 +124,7 @@ fn is_builtin_std_module_path(module: &str) -> bool {
 
 fn block_decl_name(block: &Block) -> Option<&str> {
     match block {
+        Block::Const(c) => Some(c.name.as_str()),
         Block::Struct(s) => Some(s.name.as_str()),
         Block::Def(d) => Some(d.name.as_str()),
         Block::Proc(p) => Some(p.name.as_str()),
@@ -179,6 +181,7 @@ fn preprocess_indentation_blocks(source: &str) -> Result<(String, Vec<usize>), V
     let mut line_map = Vec::<usize>::new();
     let mut indent_stack = vec![0usize];
     let mut pending: Option<PendingIndentBlock> = None;
+    let mut grouping_depth = 0usize;
     let mut last_source_line = 1usize;
 
     for (idx, raw_line) in source.lines().enumerate() {
@@ -204,7 +207,7 @@ fn preprocess_indentation_blocks(source: &str) -> Result<(String, Vec<usize>), V
                 )]);
             }
             indent_stack.push(indent_width);
-        } else if indent_stack.len() > 1 {
+        } else if grouping_depth == 0 && indent_stack.len() > 1 {
             while indent_stack.len() > 1 && indent_width < *indent_stack.last().unwrap_or(&0) {
                 indent_stack.pop();
                 push_mapped_line(&mut out, &mut line_map, "}", line_no);
@@ -237,6 +240,8 @@ fn preprocess_indentation_blocks(source: &str) -> Result<(String, Vec<usize>), V
         } else {
             push_mapped_line(&mut out, &mut line_map, line, line_no);
         }
+
+        grouping_depth = apply_grouping_delta(grouping_depth, code_part);
     }
 
     if let Some(pending_block) = pending {
@@ -399,8 +404,12 @@ fn parse_program_preprocessed(
             .ok_or_else(|| vec![Diagnostic::syntax("empty parse result", 1, 1)])?;
 
         let mut blocks = Vec::new();
-        let mut top_level_consts = HashMap::<String, Expr>::new();
-        let mut top_level_const_names = HashSet::<String>::new();
+        let mut top_level_consts = state.top_level_const_values.clone();
+        let mut top_level_const_names = state
+            .top_level_const_values
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>();
         let mut generated = Vec::<Block>::new();
         for pair in program_pair.into_inner() {
             match pair.as_rule() {
@@ -424,6 +433,7 @@ fn parse_program_preprocessed(
                         &mut generated,
                     )?;
                     top_level_consts.insert(decl.name.clone(), value);
+                    state.top_level_const_values = top_level_consts.clone();
                 }
                 Rule::events_block => blocks.push(Block::Events(parse_events_block(pair)?)),
                 Rule::buffers_block => blocks.push(Block::Buffers(parse_buffers_block(pair)?)),
@@ -609,11 +619,14 @@ fn load_program_blocks_from_file(
 
         if import_module_mode {
             for block in &blocks {
-                if !matches!(block, Block::Struct(_) | Block::Def(_) | Block::Proc(_)) {
+                if !matches!(
+                    block,
+                    Block::Const(_) | Block::Struct(_) | Block::Def(_) | Block::Proc(_)
+                ) {
                     return Err(annotate_diagnostics_with_file(
                         vec![Diagnostic::semantic(
                             format!(
-                                "imported file '{}' can only contain struct/def/proc declarations",
+                                "imported file '{}' can only contain const/struct/def/proc declarations",
                                 display_path(&canonical)
                             ),
                             0,
@@ -753,11 +766,14 @@ fn load_builtin_module_blocks(
         }
         if import_module_mode {
             for block in &blocks {
-                if !matches!(block, Block::Struct(_) | Block::Def(_) | Block::Proc(_)) {
+                if !matches!(
+                    block,
+                    Block::Const(_) | Block::Struct(_) | Block::Def(_) | Block::Proc(_)
+                ) {
                     return Err(annotate_diagnostics_with_file(
                         vec![Diagnostic::semantic(
                             format!(
-                                "imported built-in std module '{module}' can only contain struct/def/proc declarations"
+                                "imported built-in std module '{module}' can only contain const/struct/def/proc declarations"
                             ),
                             0,
                             0,
@@ -2435,6 +2451,17 @@ fn rewrite_block_namespace_refs(
     Ok(())
 }
 
+fn apply_grouping_delta(mut depth: usize, line: &str) -> usize {
+    for ch in line.chars() {
+        match ch {
+            '(' | '[' | '{' => depth = depth.saturating_add(1),
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth
+}
+
 fn rewrite_graph_block(
     graph: &mut GraphBlock,
     current_ns: &str,
@@ -2447,8 +2474,10 @@ fn rewrite_graph_block(
         if let Some(delay) = &mut edge.delay {
             rewrite_expr(delay, current_ns, const_env, state, generated)?;
         }
-        if let GraphEndpoint::ProcIndexedField { index, .. } = &mut edge.dest {
-            rewrite_expr(index, current_ns, const_env, state, generated)?;
+        for dest in &mut edge.dests {
+            if let GraphEndpoint::ProcIndexedField { index, .. } = dest {
+                rewrite_expr(index, current_ns, const_env, state, generated)?;
+            }
         }
     }
     Ok(())

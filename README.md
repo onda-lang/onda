@@ -40,6 +40,8 @@ Current backend target is ORC JIT only.
    - `cargo check --workspace`
 3. Compile an Omni file:
    - `cargo run -p omni_cli -- compile examples/sine.omni`
+   - `cargo run -p omni_cli -- compile examples/proc_gain_graph.omni --dump-graph`
+   - `cargo run -p omni_cli -- compile examples/stdlib_f32_graph.omni --dump-graph`
    - `cargo run -p omni_cli -- compile examples/inspect_feedback_mix_graph.omni --dump-graph`
 4. Render WAV:
    - `cargo run -p omni_cli -- render examples/sine.omni --output ./omni_out.wav --dur 5`

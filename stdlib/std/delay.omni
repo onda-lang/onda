@@ -15,10 +15,10 @@ namespace std::delay:
       max_d: i32 = len_i - 2
 
     block:
-      delay_samples = delay_s * SR
-      d = clamp(delay_samples, 0.0, f32(max_d))
+      delay_samples: T = delay_s * T(SR)
+      d: T = clamp(delay_samples, T(0.0), T(max_d))
       di0 = i32(d)
-      frac = d - f32(di0)
+      frac: T = d - T(di0)
       sample:
         idx_a: i32 = (write_idx - di0 + len_i) % len_i
         idx_b: i32 = (idx_a - 1 + len_i) % len_i
@@ -27,4 +27,4 @@ namespace std::delay:
         delayed = lerp(a, b, frac)
         buf[write_idx] = in1 + delayed * feedback
         write_idx = (write_idx + 1) % len_i
-        out1 = in1 * (1.0 - mix) + delayed * mix
+        out1 = in1 * (T(1.0) - mix) + delayed * mix

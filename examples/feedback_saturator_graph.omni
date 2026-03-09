@@ -1,34 +1,22 @@
-proc Mix {
-  ins {
+proc Mix:
+  ins:
     dry
     fb
-  }
-  outs { out1 }
-  sample {
-    out1 = (dry + fb) * 0.5
-  }
-}
 
-proc Saturate {
-  ins { in1 }
-  outs { out1 }
-  sample {
+  sample:
+    out1 = (dry + fb) * 0.5
+
+proc Saturate:
+  sample:
     x = in1
     out1 = x - (x * x * x) * 0.1
-  }
-}
 
-ins { in1 }
-outs { out1 }
-
-init {
+init:
   mix = Mix()
   sat = Saturate()
-}
 
-graph {
+graph:
   in1 >> mix.dry
   sat.out1 >>[1] mix.fb
   mix.out1 >> sat.in1
   mix.out1 >> out1
-}

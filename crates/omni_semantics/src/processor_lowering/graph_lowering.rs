@@ -18,6 +18,8 @@ struct GraphProcSurface {
     in_value_types: HashMap<String, GraphValueType>,
     param_value_types: HashMap<String, GraphValueType>,
     out_value_types: HashMap<String, GraphValueType>,
+    in_aliases: HashMap<String, String>,
+    out_aliases: HashMap<String, String>,
     param_array_slots: HashMap<String, Vec<String>>,
     out_array_slots: HashMap<String, Vec<String>>,
 }
@@ -27,6 +29,8 @@ struct GraphOwnerSurface {
     input_value_types: HashMap<String, GraphValueType>,
     param_value_types: HashMap<String, GraphValueType>,
     output_value_types: HashMap<String, GraphValueType>,
+    input_aliases: HashMap<String, String>,
+    output_aliases: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -56,15 +60,21 @@ struct GraphDelayState {
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedGraphEdge {
-    original_source: Expr,
-    source: Expr,
+struct ResolvedGraphSourcePlan {
     rate: GraphRate,
     delay: Option<usize>,
+    deps: BTreeSet<GraphNodeKey>,
+    original_source: Expr,
+    source: Expr,
+    delay_state: Option<GraphDelayState>,
+    shared_tmp: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedGraphEdge {
+    source_plan: usize,
     dest: GraphDestKind,
     dest_value_ty: GraphValueType,
-    deps: BTreeSet<GraphNodeKey>,
-    delay_state: Option<GraphDelayState>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,14 +84,250 @@ struct LoweredGraph {
     sample: Vec<Stmt>,
 }
 
+#[derive(Debug, Clone)]
+enum GraphSourceExpansion {
+    Shared { expr: Expr, use_shared_tmp: bool },
+    PerDest(Vec<Expr>),
+}
+
+#[derive(Default)]
+struct GraphIoInference {
+    input_names: BTreeSet<String>,
+    output_names: BTreeSet<String>,
+    max_in: usize,
+    max_out: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum GraphUsePoint {
+    BeforeNode(GraphNodeKey),
+    BeforeOutputs,
+}
+
 pub(super) fn lower_graph_blocks(
     program: &mut Program,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
+    synthesize_graph_port_decls(program);
     let proc_surfaces = build_graph_proc_surfaces(program, options, errors);
     lower_proc_graph_blocks(program, &proc_surfaces, options, errors);
     lower_top_level_graph_block(program, &proc_surfaces, options, errors);
+}
+
+fn synthesize_graph_port_decls(program: &mut Program) {
+    for block in &mut program.blocks {
+        if let Block::Proc(proc) = block {
+            if let Some(graph) = proc.graph.as_ref() {
+                let param_names = proc
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect::<HashSet<_>>();
+                let inferred = infer_io_from_graph(graph, &param_names);
+                proc.ins = merge_graph_inferred_port_decls(
+                    &proc.ins,
+                    "in",
+                    &inferred.input_names,
+                    inferred.max_in,
+                );
+                proc.outs = merge_graph_inferred_port_decls(
+                    &proc.outs,
+                    "out",
+                    &inferred.output_names,
+                    inferred.max_out,
+                );
+            }
+        }
+    }
+
+    if let Some(graph) = program
+        .block(BlockKind::Graph)
+        .and_then(|block| match block {
+            Block::Graph(graph) => Some(graph.clone()),
+            _ => None,
+        })
+    {
+        let param_names = match program.block(BlockKind::Params) {
+            Some(Block::Params(params)) => params.iter().map(|param| param.name.clone()).collect(),
+            _ => HashSet::new(),
+        };
+        let inferred = infer_io_from_graph(&graph, &param_names);
+        let explicit_ins = match program.block(BlockKind::Ins) {
+            Some(Block::Ins(ports)) => ports.clone(),
+            _ => Vec::new(),
+        };
+        let explicit_outs = match program.block(BlockKind::Outs) {
+            Some(Block::Outs(ports)) => ports.clone(),
+            _ => Vec::new(),
+        };
+        upsert_top_level_port_block(
+            &mut program.blocks,
+            BlockKind::Ins,
+            merge_graph_inferred_port_decls(
+                &explicit_ins,
+                "in",
+                &inferred.input_names,
+                inferred.max_in,
+            ),
+        );
+        upsert_top_level_port_block(
+            &mut program.blocks,
+            BlockKind::Outs,
+            merge_graph_inferred_port_decls(
+                &explicit_outs,
+                "out",
+                &inferred.output_names,
+                inferred.max_out,
+            ),
+        );
+    }
+}
+
+fn upsert_top_level_port_block(blocks: &mut Vec<Block>, kind: BlockKind, ports: Vec<PortDecl>) {
+    if let Some(block) = blocks.iter_mut().find(|block| block.kind() == kind) {
+        match block {
+            Block::Ins(existing) | Block::Outs(existing) => *existing = ports,
+            _ => {}
+        }
+        return;
+    }
+    match kind {
+        BlockKind::Ins => blocks.push(Block::Ins(ports)),
+        BlockKind::Outs => blocks.push(Block::Outs(ports)),
+        _ => {}
+    }
+}
+
+fn merge_graph_inferred_port_decls(
+    explicit: &[PortDecl],
+    prefix: &str,
+    inferred_named: &BTreeSet<String>,
+    inferred_max: usize,
+) -> Vec<PortDecl> {
+    let mut out = explicit.to_vec();
+    let mut seen = out
+        .iter()
+        .map(|port| port.name.clone())
+        .collect::<HashSet<_>>();
+    let positional_len = explicit.len().max(inferred_max);
+    for idx in 0..positional_len {
+        if explicit.get(idx).is_some() {
+            continue;
+        }
+        let alias = format!("{prefix}{}", idx + 1);
+        if seen.insert(alias.clone()) {
+            out.push(PortDecl {
+                name: alias,
+                ty: None,
+                default: None,
+                range: None,
+            });
+        }
+    }
+    for name in inferred_named {
+        if parse_numbered_port_index(name, prefix).is_some() {
+            continue;
+        }
+        if seen.insert(name.clone()) {
+            out.push(PortDecl {
+                name: name.clone(),
+                ty: None,
+                default: None,
+                range: None,
+            });
+        }
+    }
+    out
+}
+
+fn infer_io_from_graph(graph: &GraphBlock, param_names: &HashSet<String>) -> GraphIoInference {
+    let mut inferred = GraphIoInference::default();
+    for edge in &graph.edges {
+        for dest in &edge.dests {
+            infer_graph_output_endpoint(dest, &mut inferred);
+        }
+        infer_graph_input_expr(&edge.source, param_names, &mut inferred);
+    }
+    for output in &inferred.output_names {
+        inferred.input_names.remove(output);
+    }
+    inferred
+}
+
+fn infer_graph_output_endpoint(endpoint: &GraphEndpoint, inferred: &mut GraphIoInference) {
+    if let GraphEndpoint::Symbol(name) = endpoint {
+        if let Some(idx) = parse_numbered_port_index(name, "out") {
+            inferred.output_names.insert(name.clone());
+            inferred.max_out = inferred.max_out.max(idx);
+        }
+    }
+}
+
+fn infer_graph_input_expr(
+    expr: &Expr,
+    param_names: &HashSet<String>,
+    inferred: &mut GraphIoInference,
+) {
+    match expr {
+        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Var(name) => infer_graph_input_base(name, param_names, inferred),
+        Expr::Index { base, index } => {
+            infer_graph_input_base(base, param_names, inferred);
+            infer_graph_input_expr(index, param_names, inferred);
+        }
+        Expr::Slice { base, start, end } => {
+            infer_graph_input_base(base, param_names, inferred);
+            if let Some(start) = start {
+                infer_graph_input_expr(start, param_names, inferred);
+            }
+            if let Some(end) = end {
+                infer_graph_input_expr(end, param_names, inferred);
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            infer_graph_input_expr(lhs, param_names, inferred);
+            infer_graph_input_expr(rhs, param_names, inferred);
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+            infer_graph_input_expr(expr, param_names, inferred)
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                infer_graph_input_expr(arg, param_names, inferred);
+            }
+        }
+        Expr::ArrayLiteral(values) => {
+            for value in values {
+                infer_graph_input_expr(value, param_names, inferred);
+            }
+        }
+        Expr::UserCall { .. } => {}
+        Expr::ArrayCtor { spec, init } => {
+            infer_graph_input_expr(&spec.size, param_names, inferred);
+            if let Some(init) = init {
+                for value in init {
+                    infer_graph_input_expr(value, param_names, inferred);
+                }
+            }
+        }
+    }
+}
+
+fn infer_graph_input_base(
+    base: &str,
+    param_names: &HashSet<String>,
+    inferred: &mut GraphIoInference,
+) {
+    if builtin_constant_type(base).is_some() || param_names.contains(base) || base.contains('.') {
+        return;
+    }
+    if let Some(idx) = parse_numbered_port_index(base, "in") {
+        inferred.input_names.insert(base.to_owned());
+        inferred.max_in = inferred.max_in.max(idx);
+    }
 }
 
 fn build_graph_proc_surfaces(
@@ -94,10 +340,15 @@ fn build_graph_proc_surfaces(
         Block::Proc(proc) => Some(proc),
         _ => None,
     }) {
+        let inferred_io = infer_numbered_io_from_sample(&proc.sample);
+        let (graph_ins, in_aliases) =
+            graph_port_decls_with_numbered_aliases(&proc.ins, "in", inferred_io.max_in);
+        let (graph_outs, out_aliases) =
+            graph_port_decls_with_numbered_aliases(&proc.outs, "out", inferred_io.max_out);
         let (_ins, _in_types, in_ports, _) =
-            expand_proc_port_specs(&proc.name, &proc.ins, "ins", options, errors);
+            expand_proc_port_specs(&proc.name, &graph_ins, "ins", options, errors);
         let (outs, _, _, out_array_slots) =
-            expand_proc_port_specs(&proc.name, &proc.outs, "outs", options, errors);
+            expand_proc_port_specs(&proc.name, &graph_outs, "outs", options, errors);
         let (param_specs, param_array_slots) =
             expand_proc_param_specs(&proc.name, &proc.params, options, errors);
         let params = param_specs
@@ -119,7 +370,7 @@ fn build_graph_proc_surfaces(
                     sample_oversample_factor: 1,
                 },
                 in_value_types: value_types_from_ports(
-                    &proc.ins, options, errors, &proc.name, "input",
+                    &graph_ins, options, errors, &proc.name, "input",
                 ),
                 param_value_types: value_types_from_params(
                     &proc.params,
@@ -128,8 +379,14 @@ fn build_graph_proc_surfaces(
                     &proc.name,
                 ),
                 out_value_types: value_types_from_ports(
-                    &proc.outs, options, errors, &proc.name, "output",
+                    &graph_outs,
+                    options,
+                    errors,
+                    &proc.name,
+                    "output",
                 ),
+                in_aliases,
+                out_aliases,
                 param_array_slots,
                 out_array_slots,
             },
@@ -143,25 +400,46 @@ fn graph_owner_surface_from_program(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> GraphOwnerSurface {
+    let sample_body = match program.block(BlockKind::Sample) {
+        Some(Block::Sample(sample)) => sample.body.clone(),
+        _ => Vec::new(),
+    };
+    let inferred_io = infer_numbered_io_from_sample(&sample_body);
+    let raw_ins = match program.block(BlockKind::Ins) {
+        Some(Block::Ins(ports)) => ports.clone(),
+        _ => Vec::new(),
+    };
+    let raw_outs = match program.block(BlockKind::Outs) {
+        Some(Block::Outs(ports)) => ports.clone(),
+        _ => Vec::new(),
+    };
+    let (graph_ins, input_aliases) =
+        graph_port_decls_with_numbered_aliases(&raw_ins, "in", inferred_io.max_in);
+    let (graph_outs, output_aliases) =
+        graph_port_decls_with_numbered_aliases(&raw_outs, "out", inferred_io.max_out);
     GraphOwnerSurface {
-        input_value_types: match program.block(BlockKind::Ins) {
-            Some(Block::Ins(ports)) => {
-                value_types_from_ports(ports, options, errors, "top-level", "input")
-            }
-            _ => HashMap::new(),
-        },
+        input_value_types: value_types_from_ports(
+            &graph_ins,
+            options,
+            errors,
+            "top-level",
+            "input",
+        ),
         param_value_types: match program.block(BlockKind::Params) {
             Some(Block::Params(params)) => {
                 value_types_from_params(params, options, errors, "top-level")
             }
             _ => HashMap::new(),
         },
-        output_value_types: match program.block(BlockKind::Outs) {
-            Some(Block::Outs(ports)) => {
-                value_types_from_ports(ports, options, errors, "top-level", "output")
-            }
-            _ => HashMap::new(),
-        },
+        output_value_types: value_types_from_ports(
+            &graph_outs,
+            options,
+            errors,
+            "top-level",
+            "output",
+        ),
+        input_aliases,
+        output_aliases,
     }
 }
 
@@ -170,13 +448,82 @@ fn graph_owner_surface_from_proc(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> GraphOwnerSurface {
+    let inferred_io = infer_numbered_io_from_sample(&proc.sample);
+    let (graph_ins, input_aliases) =
+        graph_port_decls_with_numbered_aliases(&proc.ins, "in", inferred_io.max_in);
+    let (graph_outs, output_aliases) =
+        graph_port_decls_with_numbered_aliases(&proc.outs, "out", inferred_io.max_out);
     GraphOwnerSurface {
-        input_value_types: value_types_from_ports(&proc.ins, options, errors, &proc.name, "input"),
+        input_value_types: value_types_from_ports(&graph_ins, options, errors, &proc.name, "input"),
         param_value_types: value_types_from_params(&proc.params, options, errors, &proc.name),
         output_value_types: value_types_from_ports(
-            &proc.outs, options, errors, &proc.name, "output",
+            &graph_outs,
+            options,
+            errors,
+            &proc.name,
+            "output",
         ),
+        input_aliases,
+        output_aliases,
     }
+}
+
+fn graph_port_decls_with_numbered_aliases(
+    explicit: &[PortDecl],
+    prefix: &str,
+    inferred_max: usize,
+) -> (Vec<PortDecl>, HashMap<String, String>) {
+    let mut ports = explicit.to_vec();
+    let mut aliases = HashMap::<String, String>::new();
+    let target_len = explicit.len().max(inferred_max);
+    for idx in 0..target_len {
+        let alias = format!("{prefix}{}", idx + 1);
+        if let Some(port) = explicit.get(idx) {
+            if port.name != alias {
+                aliases.insert(alias, port.name.clone());
+            }
+        } else {
+            ports.push(PortDecl {
+                name: alias,
+                ty: None,
+                default: None,
+                range: None,
+            });
+        }
+    }
+    (ports, aliases)
+}
+
+fn resolve_graph_owner_input_name<'a>(owner: &'a GraphOwnerSurface, name: &'a str) -> &'a str {
+    owner
+        .input_aliases
+        .get(name)
+        .map(|s| s.as_str())
+        .unwrap_or(name)
+}
+
+fn resolve_graph_owner_output_name<'a>(owner: &'a GraphOwnerSurface, name: &'a str) -> &'a str {
+    owner
+        .output_aliases
+        .get(name)
+        .map(|s| s.as_str())
+        .unwrap_or(name)
+}
+
+fn resolve_graph_proc_input_name<'a>(surface: &'a GraphProcSurface, name: &'a str) -> &'a str {
+    surface
+        .in_aliases
+        .get(name)
+        .map(|s| s.as_str())
+        .unwrap_or(name)
+}
+
+fn resolve_graph_proc_output_name<'a>(surface: &'a GraphProcSurface, name: &'a str) -> &'a str {
+    surface
+        .out_aliases
+        .get(name)
+        .map(|s| s.as_str())
+        .unwrap_or(name)
 }
 
 fn value_type_from_decl_type(
@@ -401,6 +748,7 @@ fn infer_graph_source_base_value_type(
     nodes: &BTreeMap<GraphNodeKey, GraphNodeInfo>,
     proc_surfaces: &HashMap<String, GraphProcSurface>,
 ) -> Option<GraphValueType> {
+    let base = resolve_graph_owner_input_name(owner, base);
     owner
         .param_value_types
         .get(base)
@@ -737,42 +1085,73 @@ fn lower_graph(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> LoweredGraph {
+    fn inferred_edge_rate(dest: &GraphDestKind) -> GraphRate {
+        match dest {
+            GraphDestKind::ProcParam { .. } => GraphRate::Block,
+            _ => GraphRate::Sample,
+        }
+    }
+
     let mut resolved = Vec::<ResolvedGraphEdge>::new();
+    let mut source_plans = Vec::<ResolvedGraphSourcePlan>::new();
     let mut driven_outputs = HashSet::<String>::new();
     let mut single_writer = HashSet::<String>::new();
     let mut delayed_edge_counter = 0usize;
+    let mut shared_tmp_counter = 0usize;
 
     for edge in &graph.edges {
-        let Ok((dest, dest_key, dest_value_ty)) = resolve_graph_dest(
-            &edge.dest,
-            owner,
-            nodes,
-            proc_surfaces,
-            owner_context,
-            options,
-            errors,
-        ) else {
+        let mut edge_dests = Vec::<(GraphDestKind, String, GraphValueType)>::new();
+        let mut inferred_rates = Vec::<GraphRate>::new();
+        let mut edge_failed = false;
+        for dest in &edge.dests {
+            let Ok((resolved_dest, dest_key, dest_value_ty)) = resolve_graph_dest(
+                dest,
+                owner,
+                nodes,
+                proc_surfaces,
+                owner_context,
+                options,
+                errors,
+            ) else {
+                edge_failed = true;
+                continue;
+            };
+            inferred_rates.push(
+                edge.rate
+                    .unwrap_or_else(|| inferred_edge_rate(&resolved_dest)),
+            );
+            edge_dests.push((resolved_dest, dest_key, dest_value_ty));
+        }
+        if edge_failed || edge_dests.is_empty() {
             continue;
-        };
-
-        if !single_writer.insert(dest_key.clone()) {
-            errors.push(Diagnostic::semantic(
-                format!("graph destination '{dest_key}' has more than one driver"),
-                0,
-                0,
-            ));
         }
-        if let GraphDestKind::TopOutput(name) = &dest {
-            driven_outputs.insert(name.clone());
+        let rate = if let Some(rate) = edge.rate {
+            rate
+        } else {
+            let inferred = inferred_rates[0];
+            if inferred_rates.iter().any(|other| *other != inferred) {
+                errors.push(Diagnostic::semantic(
+                    "graph fanout edge destinations require an explicit rate when their default rates differ",
+                    0,
+                    0,
+                ));
+                continue;
+            }
+            inferred
+        };
+        for (dest, dest_key, _) in &edge_dests {
+            if !single_writer.insert(dest_key.clone()) {
+                errors.push(Diagnostic::semantic(
+                    format!("graph destination '{dest_key}' has more than one driver"),
+                    0,
+                    0,
+                ));
+            }
+            if let GraphDestKind::TopOutput(name) = dest {
+                driven_outputs.insert(name.clone());
+            }
         }
 
-        let rate = match edge.rate {
-            Some(rate) => rate,
-            None => match dest {
-                GraphDestKind::ProcParam { .. } => GraphRate::Block,
-                _ => GraphRate::Sample,
-            },
-        };
         let delay = edge.delay.as_ref().and_then(|expr| {
             let context = format!("{owner_context} graph edge delay");
             eval_graph_nonnegative_int_expr(expr, options, &context, errors)
@@ -785,23 +1164,14 @@ fn lower_graph(
             ));
         }
 
-        let mut deps = BTreeSet::<GraphNodeKey>::new();
-        let inferred_param_rate =
-            edge.rate.is_none() && matches!(dest, GraphDestKind::ProcParam { .. });
-        validate_graph_source_expr(
+        let inferred_param_rate = edge.rate.is_none()
+            && rate == GraphRate::Block
+            && edge_dests
+                .iter()
+                .all(|(dest, _, _)| matches!(dest, GraphDestKind::ProcParam { .. }));
+        let expansion = match expand_graph_bundle_source(
             &edge.source,
-            owner,
-            nodes,
-            proc_surfaces,
-            rate == GraphRate::Block,
-            inferred_param_rate,
-            &mut deps,
-            owner_context,
-            options,
-            errors,
-        );
-        if let Some(src_value_ty) = infer_graph_source_value_type(
-            &edge.source,
+            edge_dests.len(),
             owner,
             nodes,
             proc_surfaces,
@@ -809,68 +1179,74 @@ fn lower_graph(
             options,
             errors,
         ) {
-            require_graph_assignable_type(
-                &src_value_ty,
-                &dest_value_ty,
-                &format!("{owner_context} graph edge source for destination '{dest_key}'"),
-                errors,
-            );
-        }
-
-        let lowered_source = rewrite_graph_source_expr(
-            &edge.source,
-            nodes,
-            proc_surfaces,
-            owner_context,
-            options,
-            errors,
-        );
-        let mut source = lowered_source.clone();
-        let delay_state = if delay.filter(|len| *len > 0).is_some() {
-            let (dest_ty, array_len) = match &dest_value_ty {
-                GraphValueType::Scalar(dest_ty) => (*dest_ty, 1usize),
-                GraphValueType::Array { elem_ty, len } => (*elem_ty, *len),
-            };
-            let buf_name = format!("__graph_delay_{delayed_edge_counter}_buf");
-            let head_name = format!("__graph_delay_{delayed_edge_counter}_head");
-            delayed_edge_counter += 1;
-            source = if array_len == 1 {
-                Expr::Index {
-                    base: buf_name.clone(),
-                    index: Box::new(Expr::Var(head_name.clone())),
-                }
-            } else {
-                Expr::ArrayLiteral(
-                    (0..array_len)
-                        .map(|slot| Expr::Index {
-                            base: buf_name.clone(),
-                            index: Box::new(graph_delay_flat_index_expr(
-                                &head_name, array_len, slot,
-                            )),
-                        })
-                        .collect(),
-                )
-            };
-            Some(GraphDelayState {
-                buf_name,
-                head_name,
-                elem_ty: dest_ty,
-                array_len,
-            })
-        } else {
-            None
+            Ok(Some(expansion)) => expansion,
+            Ok(None) => GraphSourceExpansion::Shared {
+                expr: edge.source.clone(),
+                use_shared_tmp: edge_dests.len() > 1,
+            },
+            Err(()) => continue,
         };
 
-        resolved.push(ResolvedGraphEdge {
-            original_source: lowered_source,
-            source,
-            rate,
-            delay,
-            dest,
-            dest_value_ty,
-            deps,
-            delay_state,
-        });
+        match expansion {
+            GraphSourceExpansion::Shared {
+                expr,
+                use_shared_tmp,
+            } => {
+                let source_plan = push_graph_source_plan(
+                    &expr,
+                    &edge_dests,
+                    rate,
+                    delay,
+                    use_shared_tmp,
+                    owner,
+                    nodes,
+                    proc_surfaces,
+                    owner_context,
+                    options,
+                    inferred_param_rate,
+                    &mut delayed_edge_counter,
+                    &mut shared_tmp_counter,
+                    &mut source_plans,
+                    errors,
+                );
+                for (dest, _, dest_value_ty) in edge_dests {
+                    resolved.push(ResolvedGraphEdge {
+                        source_plan,
+                        dest,
+                        dest_value_ty,
+                    });
+                }
+            }
+            GraphSourceExpansion::PerDest(exprs) => {
+                for (expr, (dest, dest_key, dest_value_ty)) in
+                    exprs.into_iter().zip(edge_dests.into_iter())
+                {
+                    let single_dest = vec![(dest.clone(), dest_key, dest_value_ty.clone())];
+                    let source_plan = push_graph_source_plan(
+                        &expr,
+                        &single_dest,
+                        rate,
+                        delay,
+                        false,
+                        owner,
+                        nodes,
+                        proc_surfaces,
+                        owner_context,
+                        options,
+                        inferred_param_rate,
+                        &mut delayed_edge_counter,
+                        &mut shared_tmp_counter,
+                        &mut source_plans,
+                        errors,
+                    );
+                    resolved.push(ResolvedGraphEdge {
+                        source_plan,
+                        dest,
+                        dest_value_ty,
+                    });
+                }
+            }
+        }
     }
 
     for output in owner.output_value_types.keys() {
@@ -883,15 +1259,20 @@ fn lower_graph(
         }
     }
 
-    let reachable = reachable_nodes_from_outputs(&resolved);
-    let topo = topo_sort_nodes(&resolved, &reachable, errors);
+    let reachable = reachable_nodes_from_outputs(&resolved, &source_plans);
+    let topo = topo_sort_nodes(&resolved, &source_plans, &reachable, errors);
+    let topo_positions = topo
+        .iter()
+        .enumerate()
+        .map(|(idx, node)| (node.clone(), idx))
+        .collect::<HashMap<_, _>>();
 
     let mut init_stmts = Vec::<Stmt>::new();
-    for edge in &resolved {
-        let Some(delay_state) = &edge.delay_state else {
+    for plan in &source_plans {
+        let Some(delay_state) = &plan.delay_state else {
             continue;
         };
-        let delay_len = edge.delay.unwrap_or(0);
+        let delay_len = plan.delay.unwrap_or(0);
         if delay_len == 0 {
             continue;
         }
@@ -919,21 +1300,31 @@ fn lower_graph(
         });
     }
 
+    let mut block_pre_temps = Vec::<Stmt>::new();
     let mut block_pre = Vec::<Stmt>::new();
     let mut sample = Vec::<Stmt>::new();
     let mut sample_input_edges = BTreeMap::<GraphNodeKey, Vec<(String, Expr)>>::new();
     let mut sample_param_edges = BTreeMap::<GraphNodeKey, Vec<(String, Expr)>>::new();
     let mut output_edges = Vec::<(String, Expr)>::new();
+    let mut sample_temp_before_node = BTreeMap::<GraphNodeKey, Vec<Stmt>>::new();
+    let mut sample_temp_before_outputs = Vec::<Stmt>::new();
+    let mut sample_temp_use_points = HashMap::<usize, GraphUsePoint>::new();
 
     for edge in &resolved {
-        match (&edge.rate, &edge.dest, &edge.dest_value_ty) {
+        let plan = &source_plans[edge.source_plan];
+        let edge_source = if let Some(tmp) = &plan.shared_tmp {
+            Expr::Var(tmp.clone())
+        } else {
+            plan.source.clone()
+        };
+        match (&plan.rate, &edge.dest, &edge.dest_value_ty) {
             (
                 GraphRate::Block,
                 GraphDestKind::ProcParam { node, param },
                 GraphValueType::Scalar(_),
             ) => {
                 if reachable.contains(&node) {
-                    block_pre.push(assign_node_field_stmt(&node, param, edge.source.clone()));
+                    block_pre.push(assign_node_field_stmt(&node, param, edge_source));
                 }
             }
             (
@@ -945,7 +1336,7 @@ fn lower_graph(
                     block_pre.extend(assign_node_array_field_stmts(
                         node,
                         param,
-                        &edge.source,
+                        &edge_source,
                         owner,
                         proc_surfaces,
                         nodes,
@@ -961,10 +1352,16 @@ fn lower_graph(
                 GraphValueType::Scalar(_),
             ) => {
                 if reachable.contains(&node) {
+                    note_graph_use_point(
+                        &mut sample_temp_use_points,
+                        edge.source_plan,
+                        GraphUsePoint::BeforeNode(node.clone()),
+                        &topo_positions,
+                    );
                     sample_input_edges
                         .entry(node.clone())
                         .or_default()
-                        .push((port.clone(), edge.source.clone()));
+                        .push((port.clone(), edge_source));
                 }
             }
             (
@@ -973,8 +1370,14 @@ fn lower_graph(
                 GraphValueType::Array { len, .. },
             ) => {
                 if reachable.contains(&node) {
+                    note_graph_use_point(
+                        &mut sample_temp_use_points,
+                        edge.source_plan,
+                        GraphUsePoint::BeforeNode(node.clone()),
+                        &topo_positions,
+                    );
                     let slot_exprs = expand_graph_expr_to_slots(
-                        &edge.source,
+                        &edge_source,
                         *len,
                         owner,
                         nodes,
@@ -999,10 +1402,16 @@ fn lower_graph(
                 GraphValueType::Scalar(_),
             ) => {
                 if reachable.contains(&node) {
+                    note_graph_use_point(
+                        &mut sample_temp_use_points,
+                        edge.source_plan,
+                        GraphUsePoint::BeforeNode(node.clone()),
+                        &topo_positions,
+                    );
                     sample_param_edges
                         .entry(node.clone())
                         .or_default()
-                        .push((param.clone(), edge.source.clone()));
+                        .push((param.clone(), edge_source));
                 }
             }
             (
@@ -1011,10 +1420,16 @@ fn lower_graph(
                 GraphValueType::Array { .. },
             ) => {
                 if reachable.contains(&node) {
+                    note_graph_use_point(
+                        &mut sample_temp_use_points,
+                        edge.source_plan,
+                        GraphUsePoint::BeforeNode(node.clone()),
+                        &topo_positions,
+                    );
                     sample.extend(assign_node_array_field_stmts(
                         node,
                         param,
-                        &edge.source,
+                        &edge_source,
                         owner,
                         proc_surfaces,
                         nodes,
@@ -1025,13 +1440,56 @@ fn lower_graph(
                 }
             }
             (_, GraphDestKind::TopOutput(name), _) => {
-                output_edges.push((name.clone(), edge.source.clone()));
+                if plan.rate == GraphRate::Sample {
+                    note_graph_use_point(
+                        &mut sample_temp_use_points,
+                        edge.source_plan,
+                        GraphUsePoint::BeforeOutputs,
+                        &topo_positions,
+                    );
+                }
+                output_edges.push((name.clone(), edge_source));
             }
             _ => {}
         }
     }
 
+    let mut emitted_block_temp = HashSet::<usize>::new();
+    for edge in &resolved {
+        let plan = &source_plans[edge.source_plan];
+        if plan.rate == GraphRate::Block && plan.shared_tmp.is_some() {
+            emitted_block_temp.insert(edge.source_plan);
+        }
+    }
+    for plan_idx in emitted_block_temp {
+        let plan = &source_plans[plan_idx];
+        block_pre_temps.push(assign_stmt(
+            plan.shared_tmp.clone().unwrap(),
+            plan.source.clone(),
+        ));
+    }
+    for (plan_idx, use_point) in sample_temp_use_points {
+        let plan = &source_plans[plan_idx];
+        let Some(tmp) = &plan.shared_tmp else {
+            continue;
+        };
+        let stmt = assign_stmt(tmp.clone(), plan.source.clone());
+        match use_point {
+            GraphUsePoint::BeforeNode(node) => {
+                sample_temp_before_node.entry(node).or_default().push(stmt);
+            }
+            GraphUsePoint::BeforeOutputs => sample_temp_before_outputs.push(stmt),
+        }
+    }
+    if !block_pre_temps.is_empty() {
+        block_pre_temps.extend(block_pre);
+        block_pre = block_pre_temps;
+    }
+
     for node in topo {
+        if let Some(temp_stmts) = sample_temp_before_node.remove(&node) {
+            sample.extend(temp_stmts);
+        }
         if let Some(param_edges) = sample_param_edges.get(&node) {
             for (param, expr) in param_edges {
                 sample.push(assign_node_field_stmt(&node, param, expr.clone()));
@@ -1050,6 +1508,7 @@ fn lower_graph(
         sample.push(call_stmt(build_node_call_expr(&node, call_args)));
     }
 
+    sample.extend(sample_temp_before_outputs);
     for (name, expr) in output_edges {
         if let Some(GraphValueType::Array { len, .. }) = owner.output_value_types.get(&name) {
             let slot_exprs = expand_graph_expr_to_slots(
@@ -1080,8 +1539,8 @@ fn lower_graph(
         }
     }
 
-    for edge in resolved {
-        let Some(delay_state) = edge.delay_state else {
+    for plan in source_plans {
+        let Some(delay_state) = plan.delay_state else {
             continue;
         };
         if delay_state.array_len == 1 {
@@ -1094,11 +1553,11 @@ fn lower_graph(
                 decl_ty: None,
                 generic_decl_ty: None,
                 is_typed_decl: false,
-                expr: edge.original_source,
+                expr: plan.original_source,
             });
         } else {
             let slot_exprs = expand_graph_expr_to_slots(
-                &edge.original_source,
+                &plan.original_source,
                 delay_state.array_len,
                 owner,
                 nodes,
@@ -1134,7 +1593,7 @@ fn lower_graph(
                     lhs: Box::new(Expr::Var(delay_state.head_name.clone())),
                     rhs: Box::new(Expr::Int(1)),
                 }),
-                rhs: Box::new(Expr::Int(edge.delay.unwrap_or(1) as i64)),
+                rhs: Box::new(Expr::Int(plan.delay.unwrap_or(1) as i64)),
             },
         ));
     }
@@ -1143,6 +1602,269 @@ fn lower_graph(
         init_stmts,
         block_pre,
         sample,
+    }
+}
+
+fn push_graph_source_plan(
+    source_expr: &Expr,
+    edge_dests: &[(GraphDestKind, String, GraphValueType)],
+    rate: GraphRate,
+    delay: Option<usize>,
+    use_shared_tmp: bool,
+    owner: &GraphOwnerSurface,
+    nodes: &BTreeMap<GraphNodeKey, GraphNodeInfo>,
+    proc_surfaces: &HashMap<String, GraphProcSurface>,
+    owner_context: &str,
+    options: AnalysisOptions,
+    inferred_param_rate: bool,
+    delayed_edge_counter: &mut usize,
+    shared_tmp_counter: &mut usize,
+    source_plans: &mut Vec<ResolvedGraphSourcePlan>,
+    errors: &mut Vec<Diagnostic>,
+) -> usize {
+    let mut deps = BTreeSet::<GraphNodeKey>::new();
+    validate_graph_source_expr(
+        source_expr,
+        owner,
+        nodes,
+        proc_surfaces,
+        rate == GraphRate::Block,
+        inferred_param_rate,
+        &mut deps,
+        owner_context,
+        options,
+        errors,
+    );
+    let src_value_ty = infer_graph_source_value_type(
+        source_expr,
+        owner,
+        nodes,
+        proc_surfaces,
+        owner_context,
+        options,
+        errors,
+    );
+    if let Some(src_value_ty) = &src_value_ty {
+        for (_, dest_key, dest_value_ty) in edge_dests {
+            require_graph_assignable_type(
+                src_value_ty,
+                dest_value_ty,
+                &format!("{owner_context} graph edge source for destination '{dest_key}'"),
+                errors,
+            );
+        }
+    }
+
+    let lowered_source = rewrite_graph_source_expr(
+        source_expr,
+        owner,
+        nodes,
+        proc_surfaces,
+        owner_context,
+        options,
+        errors,
+    );
+    let mut source = lowered_source.clone();
+    let delay_state = if delay.filter(|len| *len > 0).is_some() {
+        let (dest_ty, array_len) = match &edge_dests[0].2 {
+            GraphValueType::Scalar(dest_ty) => (*dest_ty, 1usize),
+            GraphValueType::Array { elem_ty, len } => (*elem_ty, *len),
+        };
+        let buf_name = format!("__graph_delay_{}_buf", *delayed_edge_counter);
+        let head_name = format!("__graph_delay_{}_head", *delayed_edge_counter);
+        *delayed_edge_counter += 1;
+        source = if array_len == 1 {
+            Expr::Index {
+                base: buf_name.clone(),
+                index: Box::new(Expr::Var(head_name.clone())),
+            }
+        } else {
+            Expr::ArrayLiteral(
+                (0..array_len)
+                    .map(|slot| Expr::Index {
+                        base: buf_name.clone(),
+                        index: Box::new(graph_delay_flat_index_expr(&head_name, array_len, slot)),
+                    })
+                    .collect(),
+            )
+        };
+        Some(GraphDelayState {
+            buf_name,
+            head_name,
+            elem_ty: dest_ty,
+            array_len,
+        })
+    } else {
+        None
+    };
+    let shared_tmp = if use_shared_tmp && edge_dests.len() > 1 {
+        let name = format!("__graph_fanout_{}", *shared_tmp_counter);
+        *shared_tmp_counter += 1;
+        Some(name)
+    } else {
+        None
+    };
+    let source_plan = source_plans.len();
+    source_plans.push(ResolvedGraphSourcePlan {
+        rate,
+        delay,
+        deps,
+        original_source: lowered_source,
+        source,
+        delay_state,
+        shared_tmp,
+    });
+    source_plan
+}
+
+fn expand_graph_bundle_source(
+    source: &Expr,
+    dest_count: usize,
+    owner: &GraphOwnerSurface,
+    nodes: &BTreeMap<GraphNodeKey, GraphNodeInfo>,
+    proc_surfaces: &HashMap<String, GraphProcSurface>,
+    owner_context: &str,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Result<Option<GraphSourceExpansion>, ()> {
+    if dest_count <= 1 {
+        return Ok(None);
+    }
+
+    let key = match source {
+        Expr::Var(name)
+            if !owner.param_value_types.contains_key(name)
+                && !owner
+                    .input_value_types
+                    .contains_key(resolve_graph_owner_input_name(owner, name))
+                && !owner
+                    .output_value_types
+                    .contains_key(resolve_graph_owner_output_name(owner, name)) =>
+        {
+            GraphNodeKey::Direct(name.clone())
+        }
+        Expr::Index { base, index }
+            if !owner.param_value_types.contains_key(base)
+                && !owner
+                    .input_value_types
+                    .contains_key(resolve_graph_owner_input_name(owner, base))
+                && !owner
+                    .output_value_types
+                    .contains_key(resolve_graph_owner_output_name(owner, base)) =>
+        {
+            let context = format!("{owner_context} graph source '{base}[...]'");
+            let Some(idx) = eval_graph_nonnegative_int_expr(index, options, &context, errors)
+            else {
+                return Err(());
+            };
+            GraphNodeKey::Indexed {
+                base: base.clone(),
+                index: idx,
+            }
+        }
+        _ => return Ok(None),
+    };
+
+    let Some(node) = nodes.get(&key) else {
+        return Ok(None);
+    };
+    let Some(surface) = proc_surfaces.get(&node.proc_name) else {
+        return Ok(None);
+    };
+
+    let output_slots = &surface.api.outs;
+    if output_slots.is_empty() {
+        errors.push(Diagnostic::semantic(
+            format!(
+                "{owner_context} graph source '{}' cannot fan out because it has no outputs",
+                graph_bundle_source_label(&key)
+            ),
+            0,
+            0,
+        ));
+        return Err(());
+    }
+    if output_slots.len() == 1 {
+        return Ok(Some(GraphSourceExpansion::Shared {
+            expr: graph_bundle_slot_expr(&key, &output_slots[0]),
+            use_shared_tmp: false,
+        }));
+    }
+    if output_slots.len() != dest_count {
+        errors.push(Diagnostic::semantic(
+            format!(
+                "{owner_context} graph source '{}' exposes {} output slot(s), but destination set has {} endpoint(s)",
+                graph_bundle_source_label(&key),
+                output_slots.len(),
+                dest_count
+            ),
+            0,
+            0,
+        ));
+        return Err(());
+    }
+    Ok(Some(GraphSourceExpansion::PerDest(
+        output_slots
+            .iter()
+            .map(|slot| graph_bundle_slot_expr(&key, slot))
+            .collect(),
+    )))
+}
+
+fn graph_bundle_source_label(key: &GraphNodeKey) -> String {
+    match key {
+        GraphNodeKey::Direct(name) => name.clone(),
+        GraphNodeKey::Indexed { base, index } => format!("{base}[{index}]"),
+    }
+}
+
+fn graph_bundle_slot_expr(key: &GraphNodeKey, slot: &str) -> Expr {
+    match key {
+        GraphNodeKey::Direct(name) => Expr::Var(format!("{name}.{slot}")),
+        GraphNodeKey::Indexed { base, index } => Expr::UserCall {
+            name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
+            type_args: Vec::new(),
+            args: vec![
+                CallArg {
+                    name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                    expr: Expr::Var(base.clone()),
+                },
+                CallArg {
+                    name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                    expr: Expr::Int(*index as i64),
+                },
+                CallArg {
+                    name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
+                    expr: Expr::Var(slot.to_owned()),
+                },
+            ],
+        },
+    }
+}
+
+fn graph_use_point_rank(
+    point: &GraphUsePoint,
+    topo_positions: &HashMap<GraphNodeKey, usize>,
+) -> usize {
+    match point {
+        GraphUsePoint::BeforeNode(node) => *topo_positions.get(node).unwrap_or(&usize::MAX),
+        GraphUsePoint::BeforeOutputs => usize::MAX,
+    }
+}
+
+fn note_graph_use_point(
+    use_points: &mut HashMap<usize, GraphUsePoint>,
+    source_plan: usize,
+    point: GraphUsePoint,
+    topo_positions: &HashMap<GraphNodeKey, usize>,
+) {
+    match use_points.get(&source_plan) {
+        Some(existing)
+            if graph_use_point_rank(existing, topo_positions)
+                <= graph_use_point_rank(&point, topo_positions) => {}
+        _ => {
+            use_points.insert(source_plan, point);
+        }
     }
 }
 
@@ -1157,8 +1879,13 @@ fn resolve_graph_dest(
 ) -> Result<(GraphDestKind, String, GraphValueType), ()> {
     match dest {
         GraphEndpoint::Symbol(name) => {
-            if let Some(ty) = owner.output_value_types.get(name).cloned() {
-                Ok((GraphDestKind::TopOutput(name.clone()), name.clone(), ty))
+            let resolved = resolve_graph_owner_output_name(owner, name);
+            if let Some(ty) = owner.output_value_types.get(resolved).cloned() {
+                Ok((
+                    GraphDestKind::TopOutput(resolved.to_owned()),
+                    resolved.to_owned(),
+                    ty,
+                ))
             } else {
                 errors.push(Diagnostic::semantic(
                     format!("{owner_context} graph destination '{name}' is not a declared output"),
@@ -1209,6 +1936,8 @@ fn resolve_graph_proc_dest(
     let Some(surface) = proc_surfaces.get(&node.proc_name) else {
         return Err(());
     };
+    let resolved_out = resolve_graph_proc_output_name(surface, field);
+    let resolved_in = resolve_graph_proc_input_name(surface, field);
     if let Some(ty) = surface.param_value_types.get(field).cloned() {
         return Ok((
             GraphDestKind::ProcParam {
@@ -1219,17 +1948,17 @@ fn resolve_graph_proc_dest(
             ty,
         ));
     }
-    if let Some(ty) = surface.in_value_types.get(field).cloned() {
+    if let Some(ty) = surface.in_value_types.get(resolved_in).cloned() {
         return Ok((
             GraphDestKind::ProcInput {
                 node: key.clone(),
-                port: field.to_owned(),
+                port: resolved_in.to_owned(),
             },
-            format!("{}.{}", node_ref_name(key), field),
+            format!("{}.{}", node_ref_name(key), resolved_in),
             ty,
         ));
     }
-    if surface.api.outs.iter().any(|out| out == field) {
+    if surface.api.outs.iter().any(|out| out == resolved_out) {
         errors.push(Diagnostic::semantic(
             format!(
                 "{owner_context} graph destination '{}' cannot target processor outputs",
@@ -1531,10 +2260,12 @@ fn validate_graph_source_base(
     owner_context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let resolved_input = resolve_graph_owner_input_name(owner, base);
+    let resolved_output = resolve_graph_owner_output_name(owner, base);
     if owner.param_value_types.contains_key(base) {
         return;
     }
-    if owner.input_value_types.contains_key(base) {
+    if owner.input_value_types.contains_key(resolved_input) {
         if block_safe_only {
             graph_block_source_error(
                 format!("{owner_context} graph @block edge cannot read sample-rate input '{base}'"),
@@ -1544,7 +2275,7 @@ fn validate_graph_source_base(
         }
         return;
     }
-    if owner.output_value_types.contains_key(base) {
+    if owner.output_value_types.contains_key(resolved_output) {
         errors.push(Diagnostic::semantic(
             format!("{owner_context} graph source cannot read output '{base}'"),
             0,
@@ -1642,7 +2373,8 @@ fn infer_graph_source_value_type(
             if let Some(ty) = owner.param_value_types.get(name).cloned() {
                 return Some(ty);
             }
-            if let Some(ty) = owner.input_value_types.get(name).cloned() {
+            let resolved_input = resolve_graph_owner_input_name(owner, name);
+            if let Some(ty) = owner.input_value_types.get(resolved_input).cloned() {
                 return Some(ty);
             }
             if let Some((base, field)) = name.rsplit_once('.') {
@@ -1673,11 +2405,12 @@ fn infer_graph_source_value_type(
                     proc_surfaces,
                 )
             } else {
+                let resolved_input = resolve_graph_owner_input_name(owner, base);
                 owner
                     .param_value_types
                     .get(base)
                     .cloned()
-                    .or_else(|| owner.input_value_types.get(base).cloned())
+                    .or_else(|| owner.input_value_types.get(resolved_input).cloned())
             };
             match base_ty {
                 Some(GraphValueType::Array { elem_ty, .. }) => {
@@ -1972,15 +2705,17 @@ fn infer_graph_proc_field_value_type(
 ) -> Option<GraphValueType> {
     let node = nodes.get(key)?;
     let surface = proc_surfaces.get(&node.proc_name)?;
+    let resolved_out = resolve_graph_proc_output_name(surface, field);
+    let resolved_in = resolve_graph_proc_input_name(surface, field);
     surface
         .out_value_types
-        .get(field)
+        .get(resolved_out)
         .cloned()
         .or_else(|| surface.param_value_types.get(field).cloned())
-        .or_else(|| surface.in_value_types.get(field).cloned())
+        .or_else(|| surface.in_value_types.get(resolved_in).cloned())
         .or_else(|| {
             surface.out_array_slots.iter().find_map(|(base, slots)| {
-                if slots.iter().any(|slot| slot == field) {
+                if slots.iter().any(|slot| slot == resolved_out) {
                     match surface.out_value_types.get(base) {
                         Some(GraphValueType::Array { elem_ty, .. }) => {
                             Some(GraphValueType::Scalar(*elem_ty))
@@ -2269,7 +3004,9 @@ fn validate_graph_proc_field_source(
     let Some(surface) = proc_surfaces.get(&node.proc_name) else {
         return;
     };
-    if surface.api.outs.iter().any(|out| out == field) {
+    let resolved_out = resolve_graph_proc_output_name(surface, field);
+    let resolved_in = resolve_graph_proc_input_name(surface, field);
+    if surface.api.outs.iter().any(|out| out == resolved_out) {
         if block_safe_only {
             graph_block_source_error(
                 format!(
@@ -2285,7 +3022,7 @@ fn validate_graph_proc_field_source(
         }
         return;
     }
-    if surface.out_array_slots.contains_key(field) {
+    if surface.out_array_slots.contains_key(resolved_out) {
         if block_safe_only {
             graph_block_source_error(
                 format!(
@@ -2315,7 +3052,7 @@ fn validate_graph_proc_field_source(
         }
         return;
     }
-    if surface.api.ins.iter().any(|port| port.name == field) {
+    if surface.api.ins.iter().any(|port| port.name == resolved_in) {
         if block_safe_only {
             graph_block_source_error(
                 format!(
@@ -2341,6 +3078,7 @@ fn validate_graph_proc_field_source(
 
 fn rewrite_graph_source_expr(
     expr: &Expr,
+    owner: &GraphOwnerSurface,
     nodes: &BTreeMap<GraphNodeKey, GraphNodeInfo>,
     proc_surfaces: &HashMap<String, GraphProcSurface>,
     owner_context: &str,
@@ -2353,7 +3091,8 @@ fn rewrite_graph_source_expr(
                 let key = GraphNodeKey::Direct(node_name.to_owned());
                 if let Some(node) = nodes.get(&key) {
                     if let Some(surface) = proc_surfaces.get(&node.proc_name) {
-                        if let Some(slots) = surface.out_array_slots.get(field) {
+                        let resolved_out = resolve_graph_proc_output_name(surface, field);
+                        if let Some(slots) = surface.out_array_slots.get(resolved_out) {
                             return Expr::ArrayLiteral(
                                 slots
                                     .iter()
@@ -2364,11 +3103,27 @@ fn rewrite_graph_source_expr(
                     }
                 }
             }
+            if let Some((node_name, field)) = name.rsplit_once('.') {
+                let key = GraphNodeKey::Direct(node_name.to_owned());
+                if let Some(node) = nodes.get(&key) {
+                    if let Some(surface) = proc_surfaces.get(&node.proc_name) {
+                        let resolved_out = resolve_graph_proc_output_name(surface, field);
+                        if resolved_out != field {
+                            return Expr::Var(format!("{node_name}.{resolved_out}"));
+                        }
+                    }
+                }
+            }
+            let resolved_input = resolve_graph_owner_input_name(owner, name);
+            if resolved_input != name {
+                return Expr::Var(resolved_input.to_owned());
+            }
             expr.clone()
         }
         Expr::Index { base, index } => {
             let rewritten_index = rewrite_graph_source_expr(
                 index,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2379,7 +3134,8 @@ fn rewrite_graph_source_expr(
                 let key = GraphNodeKey::Direct(node_name.to_owned());
                 if let Some(node) = nodes.get(&key) {
                     if let Some(surface) = proc_surfaces.get(&node.proc_name) {
-                        if let Some(slots) = surface.out_array_slots.get(field) {
+                        let resolved_out = resolve_graph_proc_output_name(surface, field);
+                        if let Some(slots) = surface.out_array_slots.get(resolved_out) {
                             let context = format!("{owner_context} graph source '{}[...]'", base);
                             if let Some(idx) =
                                 eval_graph_nonnegative_int_expr(index, options, &context, errors)
@@ -2411,6 +3167,7 @@ fn rewrite_graph_source_expr(
                 .map(|value| {
                     rewrite_graph_source_expr(
                         value,
+                        owner,
                         nodes,
                         proc_surfaces,
                         owner_context,
@@ -2424,6 +3181,7 @@ fn rewrite_graph_source_expr(
             op: *op,
             lhs: Box::new(rewrite_graph_source_expr(
                 lhs,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2432,6 +3190,7 @@ fn rewrite_graph_source_expr(
             )),
             rhs: Box::new(rewrite_graph_source_expr(
                 rhs,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2443,6 +3202,7 @@ fn rewrite_graph_source_expr(
             op: *op,
             lhs: Box::new(rewrite_graph_source_expr(
                 lhs,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2451,6 +3211,7 @@ fn rewrite_graph_source_expr(
             )),
             rhs: Box::new(rewrite_graph_source_expr(
                 rhs,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2462,6 +3223,7 @@ fn rewrite_graph_source_expr(
             op: *op,
             lhs: Box::new(rewrite_graph_source_expr(
                 lhs,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2470,6 +3232,7 @@ fn rewrite_graph_source_expr(
             )),
             rhs: Box::new(rewrite_graph_source_expr(
                 rhs,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2484,6 +3247,7 @@ fn rewrite_graph_source_expr(
                 .map(|arg| {
                     rewrite_graph_source_expr(
                         arg,
+                        owner,
                         nodes,
                         proc_surfaces,
                         owner_context,
@@ -2523,7 +3287,8 @@ fn rewrite_graph_source_expr(
                         };
                         if let Some(node) = nodes.get(&key) {
                             if let Some(surface) = proc_surfaces.get(&node.proc_name) {
-                                if let Some(slots) = surface.out_array_slots.get(&field) {
+                                let resolved_out = resolve_graph_proc_output_name(surface, &field);
+                                if let Some(slots) = surface.out_array_slots.get(resolved_out) {
                                     return Expr::ArrayLiteral(
                                         slots
                                             .iter()
@@ -2583,7 +3348,8 @@ fn rewrite_graph_source_expr(
                         };
                         if let Some(node) = nodes.get(&key) {
                             if let Some(surface) = proc_surfaces.get(&node.proc_name) {
-                                if let Some(slots) = surface.out_array_slots.get(&field) {
+                                let resolved_out = resolve_graph_proc_output_name(surface, &field);
+                                if let Some(slots) = surface.out_array_slots.get(resolved_out) {
                                     let field_context = format!(
                                         "{owner_context} graph source '{}.{}[...]'",
                                         node_ref_name(&key),
@@ -2641,6 +3407,7 @@ fn rewrite_graph_source_expr(
                         name: arg.name.clone(),
                         expr: rewrite_graph_source_expr(
                             &arg.expr,
+                            owner,
                             nodes,
                             proc_surfaces,
                             owner_context,
@@ -2655,6 +3422,7 @@ fn rewrite_graph_source_expr(
             to: *to,
             expr: Box::new(rewrite_graph_source_expr(
                 expr,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2665,6 +3433,7 @@ fn rewrite_graph_source_expr(
         Expr::UnaryNot { expr } => Expr::UnaryNot {
             expr: Box::new(rewrite_graph_source_expr(
                 expr,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2675,6 +3444,7 @@ fn rewrite_graph_source_expr(
         Expr::UnaryBitNot { expr } => Expr::UnaryBitNot {
             expr: Box::new(rewrite_graph_source_expr(
                 expr,
+                owner,
                 nodes,
                 proc_surfaces,
                 owner_context,
@@ -2687,6 +3457,7 @@ fn rewrite_graph_source_expr(
             start: start.as_ref().map(|expr| {
                 Box::new(rewrite_graph_source_expr(
                     expr,
+                    owner,
                     nodes,
                     proc_surfaces,
                     owner_context,
@@ -2697,6 +3468,7 @@ fn rewrite_graph_source_expr(
             end: end.as_ref().map(|expr| {
                 Box::new(rewrite_graph_source_expr(
                     expr,
+                    owner,
                     nodes,
                     proc_surfaces,
                     owner_context,
@@ -2710,6 +3482,7 @@ fn rewrite_graph_source_expr(
                 elem: spec.elem.clone(),
                 size: Box::new(rewrite_graph_source_expr(
                     &spec.size,
+                    owner,
                     nodes,
                     proc_surfaces,
                     owner_context,
@@ -2723,6 +3496,7 @@ fn rewrite_graph_source_expr(
                     .map(|value| {
                         rewrite_graph_source_expr(
                             value,
+                            owner,
                             nodes,
                             proc_surfaces,
                             owner_context,
@@ -2737,7 +3511,10 @@ fn rewrite_graph_source_expr(
     }
 }
 
-fn reachable_nodes_from_outputs(edges: &[ResolvedGraphEdge]) -> BTreeSet<GraphNodeKey> {
+fn reachable_nodes_from_outputs(
+    edges: &[ResolvedGraphEdge],
+    source_plans: &[ResolvedGraphSourcePlan],
+) -> BTreeSet<GraphNodeKey> {
     let mut by_dest = BTreeMap::<GraphNodeKey, Vec<&ResolvedGraphEdge>>::new();
     let mut reachable = BTreeSet::<GraphNodeKey>::new();
     let mut work = Vec::<GraphNodeKey>::new();
@@ -2751,7 +3528,7 @@ fn reachable_nodes_from_outputs(edges: &[ResolvedGraphEdge]) -> BTreeSet<GraphNo
     }
     for edge in edges {
         if matches!(edge.dest, GraphDestKind::TopOutput(_)) {
-            for dep in &edge.deps {
+            for dep in &source_plans[edge.source_plan].deps {
                 if reachable.insert(dep.clone()) {
                     work.push(dep.clone());
                 }
@@ -2762,7 +3539,7 @@ fn reachable_nodes_from_outputs(edges: &[ResolvedGraphEdge]) -> BTreeSet<GraphNo
         if let Some(incoming) = by_dest.get(&node) {
             for edge in incoming {
                 reachable.insert(node.clone());
-                for dep in &edge.deps {
+                for dep in &source_plans[edge.source_plan].deps {
                     if reachable.insert(dep.clone()) {
                         work.push(dep.clone());
                     }
@@ -2775,6 +3552,7 @@ fn reachable_nodes_from_outputs(edges: &[ResolvedGraphEdge]) -> BTreeSet<GraphNo
 
 fn topo_sort_nodes(
     edges: &[ResolvedGraphEdge],
+    source_plans: &[ResolvedGraphSourcePlan],
     reachable: &BTreeSet<GraphNodeKey>,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<GraphNodeKey> {
@@ -2784,7 +3562,8 @@ fn topo_sort_nodes(
         incoming.insert(node.clone(), 0);
     }
     for edge in edges {
-        if edge.delay.unwrap_or(0) > 0 || edge.rate != GraphRate::Sample {
+        let source_plan = &source_plans[edge.source_plan];
+        if source_plan.delay.unwrap_or(0) > 0 || source_plan.rate != GraphRate::Sample {
             continue;
         }
         let dest_node = match &edge.dest {
@@ -2794,7 +3573,7 @@ fn topo_sort_nodes(
         if !reachable.contains(dest_node) {
             continue;
         }
-        for dep in &edge.deps {
+        for dep in &source_plan.deps {
             if !reachable.contains(dep) || dep == dest_node {
                 continue;
             }

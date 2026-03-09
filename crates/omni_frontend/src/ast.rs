@@ -91,7 +91,7 @@ pub struct GraphEdge {
     pub rate: Option<GraphRate>,
     pub source: Expr,
     pub delay: Option<Expr>,
-    pub dest: GraphEndpoint,
+    pub dests: Vec<GraphEndpoint>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

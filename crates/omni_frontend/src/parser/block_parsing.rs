@@ -426,7 +426,7 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
     let mut rate = None::<GraphRate>;
     let mut source = None::<Expr>;
     let mut delay = None::<Expr>;
-    let mut dest = None::<GraphEndpoint>;
+    let mut dests = None::<Vec<GraphEndpoint>>;
 
     for child in edge_pair.into_inner() {
         match child.as_rule() {
@@ -461,7 +461,7 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
                         0,
                     )]);
                 };
-                dest = Some(parse_graph_endpoint(dest_pair)?);
+                dests = Some(parse_graph_edge_targets(dest_pair)?);
             }
             Rule::graph_recv_edge => {
                 let mut inner = child.into_inner();
@@ -472,7 +472,7 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
                         0,
                     )]);
                 };
-                dest = Some(parse_graph_endpoint(dest_pair)?);
+                dests = Some(parse_graph_edge_targets(dest_pair)?);
                 let Some(arrow_pair) = inner.next() else {
                     return Err(vec![Diagnostic::syntax("missing graph edge arrow", 0, 0)]);
                 };
@@ -497,7 +497,7 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
             0,
         )]);
     };
-    let Some(dest) = dest else {
+    let Some(dests) = dests else {
         return Err(vec![Diagnostic::syntax(
             "missing graph edge destination endpoint",
             0,
@@ -509,7 +509,7 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
         rate,
         source,
         delay,
-        dest,
+        dests,
     })
 }
 
@@ -594,6 +594,37 @@ fn parse_graph_endpoint(pair: Pair<'_, Rule>) -> Result<GraphEndpoint, Vec<Diagn
         }
         _ => Err(vec![Diagnostic::syntax(
             "invalid graph destination endpoint",
+            0,
+            0,
+        )]),
+    }
+}
+
+fn parse_graph_edge_targets(pair: Pair<'_, Rule>) -> Result<Vec<GraphEndpoint>, Vec<Diagnostic>> {
+    match pair.as_rule() {
+        Rule::graph_edge_targets => {
+            let mut inner = pair.into_inner();
+            let Some(targets) = inner.next() else {
+                return Err(vec![Diagnostic::syntax(
+                    "missing graph edge destination endpoint",
+                    0,
+                    0,
+                )]);
+            };
+            parse_graph_edge_targets(targets)
+        }
+        Rule::graph_endpoint_set => {
+            let mut out = Vec::new();
+            for part in pair.into_inner() {
+                if part.as_rule() == Rule::graph_endpoint {
+                    out.push(parse_graph_endpoint(part)?);
+                }
+            }
+            Ok(out)
+        }
+        Rule::graph_endpoint => Ok(vec![parse_graph_endpoint(pair)?]),
+        _ => Err(vec![Diagnostic::syntax(
+            "invalid graph destination endpoint list",
             0,
             0,
         )]),

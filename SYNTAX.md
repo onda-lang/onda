@@ -303,6 +303,8 @@ dst << src
 @sample dst << src
 src >>[N] dst
 dst <<[N] src
+src >> { dst1, dst2 }
+{ dst1, dst2 } << src
 ```
 
 Rules:
@@ -330,6 +332,9 @@ graph:
   @sample lfo.out1 >> lp.cutoff
   src.pair >> out_st
   voices[0].pair[1] >> out1
+  osc.out1 * env.out1 >> { reverb.in1, reverb.in2 }
+  reverb >> { out1, out2 }
+  voices[0] >> { out3, out4 }
 ```
 
 Current source support includes:
@@ -346,6 +351,12 @@ Current source support includes:
 Receiver syntax:
 - `dst << src` is exact graph sugar for `src >> dst`
 - all implemented rate/delay forms apply equally to receiver syntax
+- destination sets work in both forms, so `src >> { a, b }` and `{ a, b } << src` are equivalent
+- bare proc-instance and proc-array-slot sources can target destination sets:
+  - `proc >> { a, b }` zips output slots by order when arity matches
+  - `proc >> { a, b }` broadcasts when the proc exposes exactly one output slot
+  - the same rules apply to `proc_array[idx] >> { ... }`
+  - any other output-slot count is a semantic error
 
 Current MVP limits:
 - user-defined calls and proc calls are not supported inside graph source expressions
@@ -360,6 +371,7 @@ Type and scheduling rules:
 - delayed edges use the same strict shape rules, so `f32[2] >>[1] f32[2]` is allowed and `f32[2] >>[1] f32[3]` is rejected
 - each destination has a single writer
 - fan-out is allowed
+- explicit fan-out syntax shares one lowered source evaluation for that edge instead of recomputing the source per destination
 - cycles are rejected unless at least one cycle edge has positive sample delay
 - proc nodes are stepped implicitly according to graph reachability and topological order
 - delayed edge state persists across blocks/process calls
@@ -983,7 +995,8 @@ Useful examples in `examples/`:
 - Basic oscillator: `sine.omni`, `std_sine.omni`
 - Block/sample structure: `block_counter.omni`, `saw_blep.omni`
 - Struct + methods: `cross_fm.omni`
-- Processor usage and output forms: `proc_gain.omni`, `proc_split.omni`, `proc_array_stereo_sine.omni`, `reverb.omni`
+- Processor usage and output forms: `proc_gain.omni`, `proc_gain_graph.omni`, `proc_split.omni`, `proc_split_graph.omni`, `proc_array_stereo_sine.omni`, `proc_array_stereo_sine_graph.omni`, `std_one_pole.omni`, `std_one_pole_graph.omni`, `reverb.omni`, `reverb_sample.omni`, `reverb_graph.omni`
+- Graph feedback systems: `feedback_saturator_graph.omni`, `inspect_feedback_mix_graph.omni`, `stdlib_f32.omni`, `stdlib_f32_graph.omni`
 - Array-heavy DSP: `karplus_strong_data.omni`, `multitap_feedback_struct_data.omni`
 - Stdlib and generics: `stdlib_f32.omni`, `stdlib_f64.omni`, `fft_bin_shift.omni`
 

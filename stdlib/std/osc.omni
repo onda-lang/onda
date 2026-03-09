@@ -5,15 +5,15 @@ namespace std::osc:
     params<T>:
       freq = 1.0
 
-    init:
-      phase: T = 0.0
+    init<T>:
+      phase = 0.0
 
     block:
-      incr = freq / SR
+      incr: T = freq / T(SR)
       sample:
         phase = phase + incr
-        if (phase >= 1.0):
-          phase = phase - 1.0
+        if (phase >= T(1.0)):
+          phase = phase - T(1.0)
         out1 = phase
         
   proc Sine<T>:
@@ -28,18 +28,20 @@ namespace std::osc:
     block:
       phasor.freq = freq
       sample:
-        out1 = sin(phasor() * f32(TWO_PI))
+        out1 = sin(phasor() * T(TWO_PI))
   
   def poly_blep(t, dt):
-    if dt <= 0.0:
-      return 0.0
+    zero = dt - dt
+    if dt <= zero:
+      return zero
+    one = dt / dt
     if t < dt:
       x = t / dt
-      return x + x - x * x - 1.0
-    elif t > 1.0 - dt:
-      x = (t - 1.0) / dt
-      return x * x + x + x + 1.0
-    return 0.0
+      return x + x - x * x - one
+    elif t > one - dt:
+      x = (t - one) / dt
+      return x * x + x + x + one
+    return zero
 
   proc Saw<T>:
     outs<T> 1
@@ -52,8 +54,8 @@ namespace std::osc:
 
     block:
       phasor.freq = freq
-      dt = freq / SR
+      dt: T = freq / T(SR)
       sample:
         phase = phasor()
-        base = phase + phase - 1.0
+        base = phase + phase - T(1.0)
         out1 = base - std::osc::poly_blep(phase, dt)

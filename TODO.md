@@ -13,52 +13,41 @@
   - Decide whether forward references and cycle diagnostics should be supported instead of the current strict lexical-order rule.
 
 - Graph composition follow-ups
-  - `graph` MVP is implemented:
-    - top-level and proc-local `graph` blocks
-    - `@block`, `@sample`, `>>[N]`, and receiver sugar `<<`
-    - proc-array slot references with static indices
-    - strict shape checking for scalar/array edges
-    - whole-array routing and element-wise array expressions
-    - cycle rejection unless broken by positive sample delay
-    - single-writer enforcement, fan-out, and implicit proc scheduling
-    - runtime/event integration coverage for graph-instantiated proc nodes
-    - CLI graph lowering inspection via `--dump-graph`
-  - Remaining graph work:
-    - Widen graph source expressions beyond the current MVP:
-      support array-constructor sources and any other remaining non-call source forms where semantics stay unambiguous.
-    - Evaluate opt-in graph-edge coercions/broadcasting:
-      endpoint-family expansion for proc arrays and broader numeric coercion rules.
-      Example endpoint-family expansion:
-      ```omni
-      init:
-        voices: Voice[4] = Voice()
+  - Widen graph source expressions:
+    support array-constructor sources and any other remaining non-call source forms where semantics stay unambiguous.
+  - Evaluate opt-in graph-edge coercions/broadcasting:
+    endpoint-family expansion for proc arrays and broader numeric coercion rules.
+    Example endpoint-family expansion:
+    ```omni
+    init:
+      voices: Voice[4] = Voice()
 
-      graph:
-        env.out1 >> voices.gain
-      ```
-      which would expand to:
-      ```omni
-      graph:
-        env.out1 >> voices[0].gain
-        env.out1 >> voices[1].gain
-        env.out1 >> voices[2].gain
-        env.out1 >> voices[3].gain
-      ```
-      Example broader numeric coercion:
-      ```omni
-      params:
-        mode: i32 = 0
+    graph:
+      env.out1 >> voices.gain
+    ```
+    which would expand to:
+    ```omni
+    graph:
+      env.out1 >> voices[0].gain
+      env.out1 >> voices[1].gain
+      env.out1 >> voices[2].gain
+      env.out1 >> voices[3].gain
+    ```
+    Example broader numeric coercion:
+    ```omni
+    params:
+      mode: i32 = 0
 
-      graph:
-        gate >> mode
-      ```
-      where today an explicit cast would still be preferred:
-      ```omni
-      graph:
-        i32(gate) >> mode
-      ```
-    - Improve graph diagnostics further where useful:
-      especially more explicit hints on inferred-`@block` failures and richer cycle path reporting.
+    graph:
+      gate >> mode
+    ```
+    where today an explicit cast would still be preferred:
+    ```omni
+    graph:
+      i32(gate) >> mode
+    ```
+  - Improve graph diagnostics further where useful:
+    especially more explicit hints on inferred-`@block` failures and richer cycle path reporting.
 
 - Events follow-ups
   - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.
@@ -66,9 +55,8 @@
   - Add deeper conformance tests for host slice-event payload layouts, truncation diagnostics, and mixed fixed/slice event signatures.
 
 - Oversampling follow-ups
-  - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
   - Consider user-exposed quality/performance modes.
-  - Add explicit performance budget tracking for higher factors (`N=32`, `N=64`) on representative patches.
+  - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
 
 - Standard library follow-ups
   - Keep the built-in module inventory synced across `README.md`, `INFO.md`, and `SYNTAX.md`:

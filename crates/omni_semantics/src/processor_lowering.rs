@@ -4478,6 +4478,188 @@ graph:
     }
 
     #[test]
+    fn analyze_lowers_graph_fanout_to_shared_temp() {
+        let src = r#"
+proc Source:
+  outs:
+    out1
+  sample:
+    out1 = 0.25
+
+proc Sum:
+  ins:
+    a
+    b
+  outs:
+    out1
+  sample:
+    out1 = a + b
+
+outs:
+  out1
+
+init:
+  src = Source()
+  sum = Sum()
+
+graph:
+  src.out1 * 2.0 >> { sum.a, sum.b }
+  sum.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("graph fanout should analyze");
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr: Expr::Binary { op: BinaryOp::Mul, .. },
+                    ..
+                } if name == "__graph_fanout_0"
+            )),
+            "expected shared graph fanout temp assignment in lowered sample: {:?}",
+            typed.sample
+        );
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Expr {
+                    expr: Expr::UserCall { name, args, .. },
+                    ..
+                } if name == "Sum.__proc_step"
+                    && args.iter().filter(|arg| matches!(
+                        arg.expr,
+                        Expr::Var(ref tmp) if tmp == "__graph_fanout_0"
+                    )).count() == 2
+            )),
+            "expected lowered proc call to reuse shared graph fanout temp twice: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_lowers_graph_proc_bundle_source_to_ordered_outputs() {
+        let src = r#"
+proc Pair:
+  outs 2
+  sample:
+    out1 = 0.25
+    out2 = 0.75
+
+outs 2
+
+init:
+  pair = Pair()
+
+graph:
+  pair >> { out1, out2 }
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("graph proc bundle should analyze");
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr: Expr::Var(src),
+                    ..
+                } if name == "out1" && src == "pair.out1"
+            )),
+            "expected out1 to read pair.out1, got {:?}",
+            typed.sample
+        );
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr: Expr::Var(src),
+                    ..
+                } if name == "out2" && src == "pair.out2"
+            )),
+            "expected out2 to read pair.out2, got {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_broadcasts_single_graph_proc_bundle_source() {
+        let src = r#"
+proc Mono:
+  outs:
+    out1
+  sample:
+    out1 = 0.5
+
+outs 2
+
+init:
+  mono = Mono()
+
+graph:
+  mono >> { out1, out2 }
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("single-output proc bundle should analyze");
+        let matching = typed
+            .sample
+            .iter()
+            .filter(|stmt| {
+                matches!(
+                    stmt,
+                    Stmt::Assign {
+                        expr: Expr::Var(src),
+                        ..
+                    } if src == "mono.out1"
+                )
+            })
+            .count();
+        assert_eq!(
+            matching, 2,
+            "expected mono.out1 to drive both outputs, got {:?}",
+            typed.sample
+        );
+        assert!(
+            typed.sample.iter().all(|stmt| !matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    ..
+                } if name.starts_with("__graph_fanout_")
+            )),
+            "single-output proc bundle should not allocate a graph fanout temp: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn graph_proc_bundle_rejects_output_arity_mismatch() {
+        let src = r#"
+proc Pair:
+  outs 2
+  sample:
+    out1 = 0.25
+    out2 = 0.75
+
+outs 3
+
+init:
+  pair = Pair()
+
+graph:
+  pair >> { out1, out2, out3 }
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("bundle arity mismatch should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains(
+                "graph source 'pair' exposes 2 output slot(s), but destination set has 3 endpoint(s)"
+            )),
+            "expected proc bundle arity diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn graph_block_rejects_cycle_without_delay() {
         let src = r#"
 proc Pass:
@@ -5431,6 +5613,36 @@ graph:
                 .message
                 .contains("graph destination 'out1' has more than one driver")),
             "expected duplicate-driver diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_fanout_with_mixed_implicit_rates() {
+        let src = r#"
+proc Gain:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+outs:
+  out1
+
+init:
+  g = Gain()
+
+graph:
+  0.5 >> { g.gain, out1 }
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("mixed implicit-rate fanout should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph fanout edge destinations require an explicit rate when their default rates differ")),
+            "expected mixed implicit-rate fanout diagnostic, got {errors:?}"
         );
     }
 

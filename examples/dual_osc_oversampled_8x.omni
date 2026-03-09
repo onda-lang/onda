@@ -1,10 +1,8 @@
-def add_phase(p, inc) {
+def add_phase(p, inc):
   next = p + inc
-  if (next >= TWO_PI) {
+  if (next >= TWO_PI):
     next = next - TWO_PI
-  }
   return next
-}
 
 proc DualOsc:
   params:

@@ -422,6 +422,42 @@ sample {
 }
 
 #[test]
+fn parses_multiline_named_calls_in_indentation_blocks() {
+    let src = r#"
+import std/env
+outs:
+  out1
+init:
+  env = std::env::DecayEnv(
+    decay_s = 0.05,
+    trigger = 1.0,
+  )
+sample:
+  out1 = env()
+"#;
+    let program = parse_program(src).expect("multiline named calls should parse");
+    let init = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Init(block) => Some(block),
+            _ => None,
+        })
+        .expect("init block");
+    match &init.body[0] {
+        Stmt::Assign {
+            expr: Expr::UserCall { args, .. },
+            ..
+        } => {
+            assert_eq!(args.len(), 2);
+            assert_eq!(args[0].name.as_deref(), Some("decay_s"));
+            assert_eq!(args[1].name.as_deref(), Some("trigger"));
+        }
+        other => panic!("expected init call assignment, got {other:?}"),
+    }
+}
+
+#[test]
 fn parses_semicolon_separated_statements() {
     let src = r#"
 outs { out1 }
@@ -3309,6 +3345,93 @@ sample { out1 = 0.0 }
 }
 
 #[test]
+fn parse_program_file_imports_top_level_consts() {
+    let dir = mk_temp_dir("import_top_level_consts");
+    let main = dir.join("main.omni");
+    let lib = dir.join("lib.omni");
+
+    write_file(
+        &lib,
+        r#"
+const SCALE = 0.25
+def twice(x) { return x + x }
+"#,
+    );
+    write_file(
+        &main,
+        r#"
+import lib
+outs { out1 }
+sample { out1 = twice(SCALE) }
+"#,
+    );
+
+    let program = parse_program_file(&main).expect("parse_program_file should succeed");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    assert!(program.blocks.iter().any(|b| matches!(b, Block::Def(_))));
+    assert!(
+        !program.blocks.iter().any(|b| matches!(b, Block::Const(_))),
+        "top-level consts should be folded away after rewrite"
+    );
+    let Stmt::Assign { expr, .. } = &sample[0] else {
+        panic!("expected sample assignment");
+    };
+    let Expr::UserCall { args, .. } = expr else {
+        panic!("expected rewritten user call");
+    };
+    assert!(matches!(args[0].expr, Expr::Number(n) if (n - 0.25).abs() < 1e-9));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn parse_program_file_includes_top_level_consts() {
+    let dir = mk_temp_dir("include_top_level_consts");
+    let main = dir.join("main.omni");
+    let lib = dir.join("lib.omni");
+
+    write_file(
+        &lib,
+        r#"
+const SCALE = 0.25
+"#,
+    );
+    write_file(
+        &main,
+        r#"
+include "./lib.omni"
+outs { out1 }
+sample { out1 = SCALE }
+"#,
+    );
+
+    let program = parse_program_file(&main).expect("parse_program_file should succeed");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    assert!(
+        !program.blocks.iter().any(|b| matches!(b, Block::Const(_))),
+        "included top-level consts should be folded away after rewrite"
+    );
+    let Stmt::Assign { expr, .. } = &sample[0] else {
+        panic!("expected sample assignment");
+    };
+    assert!(matches!(expr, Expr::Number(n) if (*n - 0.25).abs() < 1e-9));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn parse_program_file_rejects_import_include_same_file_mix() {
     let dir = mk_temp_dir("import_include_mix");
     let main = dir.join("main.omni");
@@ -4709,14 +4832,16 @@ graph {
     assert_eq!(graph.edges.len(), 2);
     assert_eq!(graph.edges[0].rate, Some(GraphRate::Sample));
     assert!(graph.edges[0].delay.is_none());
+    assert_eq!(graph.edges[0].dests.len(), 1);
     assert!(matches!(
-        graph.edges[0].dest,
+        graph.edges[0].dests[0],
         GraphEndpoint::ProcField { ref proc, ref field }
         if proc == "lp" && field == "cutoff"
     ));
     assert_eq!(graph.edges[1].delay, Some(Expr::Int(1)));
+    assert_eq!(graph.edges[1].dests.len(), 1);
     assert!(matches!(
-        graph.edges[1].dest,
+        graph.edges[1].dests[0],
         GraphEndpoint::Symbol(ref name) if name == "out1"
     ));
 }
@@ -4830,8 +4955,9 @@ graph:
     assert_eq!(graph.edges[0].rate, Some(GraphRate::Sample));
     assert_eq!(graph.edges[0].delay, Some(Expr::Int(2)));
     assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert_eq!(graph.edges[0].dests.len(), 1);
     assert_eq!(
-        graph.edges[0].dest,
+        graph.edges[0].dests[0],
         GraphEndpoint::Symbol("out1".to_owned())
     );
 }
@@ -4909,12 +5035,79 @@ graph {
 
     assert_eq!(graph.edges.len(), 2);
     assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert_eq!(graph.edges[0].dests.len(), 1);
     assert!(matches!(
-        graph.edges[0].dest,
+        graph.edges[0].dests[0],
         GraphEndpoint::ProcIndexedField {
             ref proc,
             index: Expr::Int(1),
             ref field,
         } if proc == "voices" && field == "gain"
     ));
+}
+
+#[test]
+fn parses_graph_fanout_destinations() {
+    let src = r#"
+outs:
+  out1
+  out2
+
+graph:
+  0.5 >> { out1, out2 }
+"#;
+    let program = parse_program(src).expect("graph fanout program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    assert_eq!(graph.edges.len(), 1);
+    assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert_eq!(graph.edges[0].dests.len(), 2);
+    assert_eq!(
+        graph.edges[0].dests[0],
+        GraphEndpoint::Symbol("out1".to_owned())
+    );
+    assert_eq!(
+        graph.edges[0].dests[1],
+        GraphEndpoint::Symbol("out2".to_owned())
+    );
+}
+
+#[test]
+fn parses_graph_receiver_fanout_destinations() {
+    let src = r#"
+outs:
+  out1
+  out2
+
+graph:
+  { out1, out2 } << 0.5
+"#;
+    let program = parse_program(src).expect("graph receiver fanout program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    assert_eq!(graph.edges.len(), 1);
+    assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert_eq!(graph.edges[0].dests.len(), 2);
+    assert_eq!(
+        graph.edges[0].dests[0],
+        GraphEndpoint::Symbol("out1".to_owned())
+    );
+    assert_eq!(
+        graph.edges[0].dests[1],
+        GraphEndpoint::Symbol("out2".to_owned())
+    );
 }

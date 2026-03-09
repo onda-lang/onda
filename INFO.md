@@ -52,7 +52,7 @@
 - Statement separators support both newline and `;`.
 - Import system is implemented:
   - `include "path.omni"` (quoted, `.omni` suffix required).
-  - `import module/path` (resolved as `module/path.omni`, imported once, declaration-only files).
+  - `import module/path` (resolved as `module/path.omni`, imported once, declaration-only files limited to `const` / `struct` / `def` / `proc`).
   - Built-in std modules via `import std/...` are supported from both file and in-memory source compilation paths.
 - Namespaces with `::` are supported.
 - Namespace templates are supported (`namespace Name<S = ...>: ...`) with compile-time int args, inline instantiation (`Name<...>::...`), and namespace aliases (`namespace Alias = Name<...>`).
@@ -120,7 +120,7 @@
   - `>>` lowers as arithmetic right shift.
 - Graph routing/composition is implemented at top-level and proc-local scope:
   - `graph` is mutually exclusive with `sample` and `block` in the same owner.
-  - Edges support send and receiver forms (`src >> dst`, `dst << src`), explicit rates (`@block`, `@sample`), and sample delays (`>>[N]`, `<<[N]`).
+  - Edges support send and receiver forms (`src >> dst`, `dst << src`), destination-set fanout (`src >> { a, b }`, `{ a, b } << src`), proc-bundle destination-set routing (`proc >> { a, b }`, `proc_array[idx] >> { a, b }`), explicit rates (`@block`, `@sample`), and sample delays (`>>[N]`, `<<[N]`).
   - Proc-array slot references with static indices are supported for graph sources and destinations.
   - Strict scalar/array shape checking is enforced on graph edges, with one narrow convenience rule: scalar-to-fixed-array broadcast expands element-wise.
   - Whole-array routing and element-wise array expressions are supported where shapes match exactly.
@@ -295,6 +295,7 @@
   - `compile <file> [--dump-graph] [--ir] [--meta]`
   - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--dump-graph] [--ir]`
   - `--dump-graph` prints the program immediately after graph lowering, before proc desugaring/codegen.
+  - Useful graph examples: `examples/proc_gain_graph.omni`, `examples/proc_split_graph.omni`, `examples/proc_array_stereo_sine_graph.omni`, `examples/std_one_pole_graph.omni`, `examples/stdlib_f32_graph.omni`, `examples/feedback_saturator_graph.omni`, `examples/reverb_graph.omni`.
 
 ## LLVM dependency strategy
 - Prebuilt LLVM is vendored under `.deps/llvm/21.1.2`.

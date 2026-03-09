@@ -1,0 +1,15 @@
+import std/osc
+import std/env
+import reverb
+
+init:
+    reverb = Reverb()
+    osc = std::osc::Saw(freq = 100.0)
+    env = std::env::DecayEnv(
+        decay_s = 0.05,
+        trigger = 1.0,
+    )
+
+graph:
+    osc.out1 * env.out1 >> { reverb.in1, reverb.in2 }
+    reverb >> { out1, out2 }

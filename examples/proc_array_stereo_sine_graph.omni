@@ -1,0 +1,27 @@
+import std/osc
+
+proc StereoGain:
+  ins:
+    in: f32[2]
+
+  params:
+    gain: f32[2] = [1.0, 1.0]
+
+  outs:
+    out: f32[2]
+
+  sample:
+    out[0] = in[0] * gain[0]
+    out[1] = in[1] * gain[1]
+
+outs:
+  out: f32[2]
+
+init:
+  osc_l = std::osc::Sine<f32>(freq = 220.0)
+  osc_r = std::osc::Sine<f32>(freq = 330.0)
+  p = StereoGain(gain = [1.0, 0.1])
+
+graph:
+  [osc_l.out1, osc_r.out1] >> p.in
+  p.out >> out

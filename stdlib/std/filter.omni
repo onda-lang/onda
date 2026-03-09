@@ -6,11 +6,11 @@ namespace std::filter:
     params<T>:
       cutoff = 1000.0
 
-    init:
-      z: T = 0.0
+    init<T>:
+      z = 0.0
 
     block:
-      a = 1.0 - exp(-TWO_PI * cutoff / SR)
+      a: T = T(1.0) - exp(-T(TWO_PI) * cutoff / T(SR))
       sample:
         z = z + a * (in1 - z)
         out1 = z

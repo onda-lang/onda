@@ -1391,6 +1391,57 @@ graph {
 }
 "#;
 
+const GRAPH_FANOUT_EXAMPLE: &str = r#"
+proc Sum {
+  ins { a, b }
+  outs { out1 }
+  sample {
+    out1 = a + b
+  }
+}
+
+ins { in1 }
+outs { out1 }
+
+init {
+  s = Sum()
+}
+
+graph {
+  in1 * 0.25 >> { s.a, s.b }
+  s.out1 >> out1
+}
+"#;
+
+const GRAPH_PROC_BUNDLE_FANOUT_EXAMPLE: &str = r#"
+proc Pair {
+  outs 2
+  sample {
+    out1 = 0.25
+    out2 = 0.75
+  }
+}
+
+proc Mono {
+  outs { out1 }
+  sample {
+    out1 = 0.5
+  }
+}
+
+outs 4
+
+init {
+  pair = Pair()
+  monos: Mono[1] = Mono()
+}
+
+graph {
+  pair >> { out1, out2 }
+  monos[0] >> { out3, out4 }
+}
+"#;
+
 const GRAPH_ARRAY_EXPR_EXAMPLE: &str = r#"
 ins { a: f32[2], b: f32[2] }
 outs { out_st: f32[2] }
@@ -1534,6 +1585,79 @@ graph {
 }
 "#;
 
+const GRAPH_PROC_NAMED_PORT_ALIAS_EXAMPLE: &str = r#"
+proc Mix {
+  ins { dry, fb }
+  outs { wet }
+  sample {
+    wet = dry + fb
+  }
+}
+
+outs { out1 }
+
+init {
+  mix = Mix()
+}
+
+graph {
+  0.25 >> mix.in1
+  0.5 >> mix.in2
+  mix.out1 >> out1
+}
+"#;
+
+const GRAPH_TOP_LEVEL_NAMED_IO_ALIAS_EXAMPLE: &str = r#"
+ins { dry }
+outs { wet }
+
+graph {
+  in1 >> out1
+}
+"#;
+
+const GRAPH_TOP_LEVEL_IO_INFERENCE_EXAMPLE: &str = r#"
+graph {
+  in1 * 0.5 >> out1
+}
+"#;
+
+const GRAPH_PROC_IO_INFERENCE_EXAMPLE: &str = r#"
+proc Mix {
+  graph {
+    in1 + in2 >> out1
+  }
+}
+
+graph {
+  0.25 >> mix.in1
+  0.5 >> mix.in2
+  mix.out1 >> out1
+}
+
+init {
+  mix = Mix()
+}
+"#;
+
+const GRAPH_PROC_CUSTOM_IO_NAMES_REQUIRE_DECLS_ERROR_EXAMPLE: &str = r#"
+proc Mix {
+  graph {
+    dry + fb >> wet
+  }
+}
+
+graph {
+  0.25 >> mix.in1
+  0.5 >> mix.in2
+  mix.out1 >> out1
+}
+
+init {
+  mix = Mix()
+}
+"#;
+
 const UNSAFE_TOP_LEVEL_ARRAY_EXAMPLE: &str = r#"
 outs { out1: f32[2] }
 params { p: f32[2] = [1.0, 2.0] }
@@ -1581,6 +1705,17 @@ sample {
 
 const MULTITAP_FEEDBACK_STRUCT_DATA_EXAMPLE: &str =
     include_str!("../../../examples/multitap_feedback_struct_data.omni");
+const PROC_GAIN_GRAPH_FILE_EXAMPLE: &str = include_str!("../../../examples/proc_gain_graph.omni");
+const PROC_SPLIT_GRAPH_FILE_EXAMPLE: &str = include_str!("../../../examples/proc_split_graph.omni");
+const PROC_ARRAY_STEREO_SINE_GRAPH_FILE_EXAMPLE: &str =
+    include_str!("../../../examples/proc_array_stereo_sine_graph.omni");
+const FEEDBACK_SATURATOR_GRAPH_FILE_EXAMPLE: &str =
+    include_str!("../../../examples/feedback_saturator_graph.omni");
+const STD_ONE_POLE_FILE_EXAMPLE: &str = include_str!("../../../examples/std_one_pole.omni");
+const STD_ONE_POLE_GRAPH_FILE_EXAMPLE: &str =
+    include_str!("../../../examples/std_one_pole_graph.omni");
+const STDLIB_F32_FILE_EXAMPLE: &str = include_str!("../../../examples/stdlib_f32.omni");
+const STDLIB_F32_GRAPH_FILE_EXAMPLE: &str = include_str!("../../../examples/stdlib_f32_graph.omni");
 
 const STRUCT_DATA_EXAMPLE: &str = r#"
 outs { out1 }
@@ -5721,12 +5856,57 @@ fn compile_instance(src: &str, frames: usize) -> (omni_runtime::Instance, usize,
     )
 }
 
+fn compile_instance_file(path: &str, frames: usize) -> (omni_runtime::Instance, usize, usize) {
+    compile_instance_file_with_options(
+        path,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::Auto,
+            sample_rate: 48_000.0,
+            block_size: frames,
+            fast_math: false,
+        },
+    )
+}
+
 fn compile_instance_with_options(
     src: &str,
     frames: usize,
     options: CompileOptions,
 ) -> (omni_runtime::Instance, usize, usize) {
     let parsed = parse_program(src).expect("parse should succeed");
+    let typed = analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: options.sample_rate,
+            block_size: options.block_size,
+        },
+    )
+    .expect("semantic analysis should succeed");
+    let in_channels = typed.ins.len();
+    let out_channels = typed.outs.len();
+    let jit = omni_codegen_llvm::lower_and_jit_with_options(typed, options)
+        .expect("jit lowering should succeed");
+
+    let instance = create_instance(
+        jit,
+        InstanceConfig {
+            sample_rate: 48_000.0,
+            frames_per_block: frames,
+            in_channels,
+            out_channels,
+        },
+    )
+    .expect("instance should be created");
+    (instance, in_channels, out_channels)
+}
+
+fn compile_instance_file_with_options(
+    path: &str,
+    frames: usize,
+    options: CompileOptions,
+) -> (omni_runtime::Instance, usize, usize) {
+    let parsed = parse_program_file(std::path::Path::new(path)).expect("parse should succeed");
     let typed = analyze_with_options(
         parsed,
         AnalysisOptions {
@@ -8260,6 +8440,44 @@ fn graph_sample_override_for_param_destinations_runs() {
 }
 
 #[test]
+fn graph_fanout_destinations_run() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(GRAPH_FANOUT_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![1.0_f32, -0.5, 0.0, 2.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    let expected = [0.5_f32, -0.25, 0.0, 1.0];
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_proc_bundle_destinations_run_for_proc_and_proc_array_slot_sources() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_PROC_BUNDLE_FANOUT_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    let expected = [
+        0.25_f32, 0.75, 0.5, 0.5, //
+        0.25, 0.75, 0.5, 0.5, //
+        0.25, 0.75, 0.5, 0.5, //
+        0.25, 0.75, 0.5, 0.5,
+    ];
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
 fn graph_array_expressions_run_element_wise() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -8463,6 +8681,252 @@ fn graph_scalar_broadcast_to_proc_param_arrays_runs() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in output {
         assert_near(sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn graph_proc_named_ports_accept_numbered_aliases() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_PROC_NAMED_PORT_ALIAS_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+fn graph_top_level_named_io_accept_numbered_aliases() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_TOP_LEVEL_NAMED_IO_ALIAS_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![0.25_f32, -0.5, 1.0, 0.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    for (sample, target) in output.iter().zip(input) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_top_level_io_is_inferred_from_graph_block() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_TOP_LEVEL_IO_INFERENCE_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![0.5_f32, -0.25, 0.0, 1.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    let expected = [0.25_f32, -0.125, 0.0, 0.5];
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_proc_io_is_inferred_from_proc_graph_block() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_PROC_IO_INFERENCE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+fn graph_proc_custom_io_names_require_declarations() {
+    let parsed = parse_program(GRAPH_PROC_CUSTOM_IO_NAMES_REQUIRE_DECLS_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("undeclared custom graph proc IO should fail");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("not a declared output"))
+            && errs.iter().any(|d| d.message.contains("unknown endpoint")),
+        "expected graph undeclared-io diagnostic, got {errs:?}"
+    );
+}
+
+#[test]
+fn proc_gain_graph_example_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_GAIN_GRAPH_FILE_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![0.5_f32, -0.25, 0.0, 1.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    let expected = [1.5_f32, -0.75, 0.0, 3.0];
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn proc_split_graph_example_routes_both_outputs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_SPLIT_GRAPH_FILE_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 2);
+
+    let input = vec![0.25_f32, -0.5, 1.0, 0.0];
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    let expected = [
+        0.25_f32, 0.5, //
+        -0.5, -1.0, //
+        1.0, 2.0, //
+        0.0, 0.0,
+    ];
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn proc_array_stereo_sine_graph_example_runs_stereo() {
+    let frames = 64;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_STEREO_SINE_GRAPH_FILE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let left_abs: f32 = output.iter().step_by(2).map(|x| x.abs()).sum();
+    let right_abs: f32 = output.iter().skip(1).step_by(2).map(|x| x.abs()).sum();
+    assert!(
+        left_abs > 1.0,
+        "expected left channel activity, got {left_abs}"
+    );
+    assert!(
+        right_abs > 0.05,
+        "expected right channel activity, got {right_abs}"
+    );
+    assert!(
+        left_abs > right_abs * 5.0,
+        "expected left channel to dominate due to gain scaling, left={left_abs}, right={right_abs}"
+    );
+}
+
+#[test]
+fn feedback_saturator_graph_example_runs_delayed_feedback() {
+    let frames = 6;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(FEEDBACK_SATURATOR_GRAPH_FILE_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 0.5, 1e-6);
+    assert_near(output[1], 0.24375, 1e-6);
+    assert_near(output[2], 0.121150754, 1e-6);
+    for window in output.windows(2) {
+        assert!(
+            window[0] >= window[1] && window[1] >= 0.0,
+            "expected positive decaying feedback tail, got {output:?}"
+        );
+    }
+}
+
+#[test]
+fn reverb_graph_example_matches_sample_version() {
+    let frames = 256;
+    let sample_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/reverb_sample.omni"
+    );
+    let graph_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/reverb_graph.omni"
+    );
+    let (mut sample_instance, sample_in_channels, sample_out_channels) =
+        compile_instance_file(sample_path, frames);
+    let (mut graph_instance, graph_in_channels, graph_out_channels) =
+        compile_instance_file(graph_path, frames);
+    assert_eq!(sample_in_channels, graph_in_channels);
+    assert_eq!(sample_out_channels, graph_out_channels);
+
+    let mut sample_output = vec![0.0_f32; frames * sample_out_channels];
+    let mut graph_output = vec![0.0_f32; frames * graph_out_channels];
+    process_interleaved(&mut sample_instance, &[], &mut sample_output, frames)
+        .expect("sample version should run");
+    process_interleaved(&mut graph_instance, &[], &mut graph_output, frames)
+        .expect("graph version should run");
+
+    for (sample, graph) in sample_output.iter().zip(&graph_output) {
+        assert_near(*graph, *sample, 1e-6);
+    }
+}
+
+#[test]
+fn std_one_pole_graph_example_matches_sample_version() {
+    let frames = 128;
+    let (mut sample_instance, sample_in_channels, sample_out_channels) =
+        compile_instance(STD_ONE_POLE_FILE_EXAMPLE, frames);
+    let (mut graph_instance, graph_in_channels, graph_out_channels) =
+        compile_instance(STD_ONE_POLE_GRAPH_FILE_EXAMPLE, frames);
+    assert_eq!(sample_in_channels, graph_in_channels);
+    assert_eq!(sample_out_channels, graph_out_channels);
+
+    let mut sample_output = vec![0.0_f32; frames * sample_out_channels];
+    let mut graph_output = vec![0.0_f32; frames * graph_out_channels];
+    process_interleaved(&mut sample_instance, &[], &mut sample_output, frames)
+        .expect("sample version should run");
+    process_interleaved(&mut graph_instance, &[], &mut graph_output, frames)
+        .expect("graph version should run");
+
+    for (sample, graph) in sample_output.iter().zip(&graph_output) {
+        assert_near(*graph, *sample, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_f32_graph_example_matches_sample_version() {
+    let frames = 256;
+    let (mut sample_instance, sample_in_channels, sample_out_channels) =
+        compile_instance(STDLIB_F32_FILE_EXAMPLE, frames);
+    let (mut graph_instance, graph_in_channels, graph_out_channels) =
+        compile_instance(STDLIB_F32_GRAPH_FILE_EXAMPLE, frames);
+    assert_eq!(sample_in_channels, graph_in_channels);
+    assert_eq!(sample_out_channels, graph_out_channels);
+
+    let mut sample_output = vec![0.0_f32; frames * sample_out_channels];
+    let mut graph_output = vec![0.0_f32; frames * graph_out_channels];
+    process_interleaved(&mut sample_instance, &[], &mut sample_output, frames)
+        .expect("sample version should run");
+    process_interleaved(&mut graph_instance, &[], &mut graph_output, frames)
+        .expect("graph version should run");
+
+    for (sample, graph) in sample_output.iter().zip(&graph_output) {
+        assert_near(*graph, *sample, 1e-5);
     }
 }
 

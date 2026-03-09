@@ -1,0 +1,15 @@
+import std/delay
+import std/env
+import std/filter
+import std/osc
+
+init:
+  osc = std::osc::Phasor<f32>(freq = 110.0)
+  lp = std::filter::OnePole<f32>(cutoff = 900.0)
+  env = std::env::DecayEnv<f32>(decay_s = 0.35, trigger = 1.0)
+  delay = std::delay::Delay<f32>(delay_s = 0.5, feedback = 0.5, mix = 0.5)
+
+graph:
+  osc.out1 >> lp.in1
+  lp.out1 * env.out1 >> delay.in1
+  delay.out1 >> out1

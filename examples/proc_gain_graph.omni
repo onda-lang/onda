@@ -1,0 +1,14 @@
+proc GainProc:
+  params:
+    gain = 1.0
+
+  sample:
+    out1 = in1 * gain
+
+init:
+  p = GainProc()
+
+graph:
+  in1 >> p.in1
+  3.0 >> p.gain
+  p.out1 >> out1
