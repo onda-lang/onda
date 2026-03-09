@@ -14,7 +14,7 @@ pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, 
     let mut default_ty = None;
     for child in block_pair.into_inner() {
         match child.as_rule() {
-            Rule::section_default_elem_type => {
+            Rule::section_default_decl_type => {
                 default_ty = Some(parse_init_default_decl_type(child)?);
             }
             Rule::stmt_list => {

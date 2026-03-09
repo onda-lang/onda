@@ -12,8 +12,8 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
   const TailStart = HopSize
 
   proc TimeDomainConvolver<T>:
-    ins[T] 1
-    outs[T] 1
+    ins<T> 1
+    outs<T> 1
 
     init:
       impulse: T[MaxImpulseLen]
@@ -64,8 +64,8 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
         out1 = y
 
   proc BlockConvolver<T>:
-    ins[T] 1
-    outs[T] 1
+    ins<T> 1
+    outs<T> 1
 
     init:
       fwd = std::fft<FFTSize>::FFT<T>()
@@ -198,8 +198,8 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
           current_partition = 0
 
   proc ZeroLatencyConvolver<T>:
-    ins[T] 1
-    outs[T] 1
+    ins<T> 1
+    outs<T> 1
 
     init:
       td = TimeDomainConvolver<T>()

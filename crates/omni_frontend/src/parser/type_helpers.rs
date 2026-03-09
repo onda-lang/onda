@@ -4,7 +4,9 @@ pub(super) fn parse_section_default_decl_type(
     pair: Pair<'_, Rule>,
     block_name: &str,
 ) -> Result<DeclType, Vec<Diagnostic>> {
-    if pair.as_rule() != Rule::section_default_elem_type {
+    if pair.as_rule() != Rule::section_default_decl_type
+        && pair.as_rule() != Rule::section_default_elem_type
+    {
         return Err(vec![Diagnostic::syntax(
             format!("internal parser error: expected {block_name} section default type"),
             0,

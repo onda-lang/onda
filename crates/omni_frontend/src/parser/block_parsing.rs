@@ -17,7 +17,7 @@ pub(super) fn parse_port_block(
 
     for child in block_pair.into_inner() {
         match child.as_rule() {
-            Rule::section_default_elem_type => {
+            Rule::section_default_decl_type => {
                 default_ty = Some(parse_section_default_decl_type(child, block_name)?);
             }
             Rule::int_lit => {
@@ -143,7 +143,7 @@ pub(super) fn parse_params_block(
 
     for child in block_pair.into_inner() {
         match child.as_rule() {
-            Rule::section_default_elem_type => {
+            Rule::section_default_decl_type => {
                 default_ty = Some(parse_section_default_decl_type(child, "params")?);
             }
             Rule::int_lit => {

@@ -11604,7 +11604,7 @@ sample:
 fn generic_proc_t_cast_integer_specialization_compile_and_run() {
     let src = r#"
 proc ConstVal<T>:
-  outs[T] 1
+  outs<T> 1
   init:
     v: T = T(3)
   sample:
@@ -11629,9 +11629,9 @@ fn generic_proc_inside_namespace_template_compiles_and_runs() {
     let src = r#"
 namespace FX:
   proc Gain<T>:
-    ins[T] 1
-    outs[T] 1
-    params[T]:
+    ins<T> 1
+    outs<T> 1
+    params<T>:
       g = 1.0
     sample:
       out1 = in1 * g
@@ -14324,8 +14324,8 @@ fn proc_local_def_nested_proc_event_call() {
 
 const PROC_LOCAL_DEF_GENERIC_PROC_EXAMPLE: &str = r#"
 proc Accum<T> {
-  ins[T] 1
-  outs[T] 1
+  ins<T> 1
+  outs<T> 1
 
   init {
     total: T = 0.0
@@ -14389,8 +14389,8 @@ fn proc_local_def_generic_proc() {
 
 const PROC_LOCAL_DEF_GENERIC_SCALAR_PARAM_EXAMPLE: &str = r#"
 proc Scale<T> {
-  ins[T] 1
-  outs[T] 1
+  ins<T> 1
+  outs<T> 1
 
   def mul_add(x: T, gain: T, bias: T) {
     return x * gain + bias

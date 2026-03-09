@@ -1,9 +1,9 @@
 namespace std::delay:
   proc Delay<T>:
-    ins[T] 1
-    outs[T] 1
+    ins<T> 1
+    outs<T> 1
 
-    params[T]:
+    params<T>:
       delay_s = 0.1
       feedback = 0.0
       mix = 1.0

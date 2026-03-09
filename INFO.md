@@ -57,8 +57,8 @@
 - Namespaces with `::` are supported.
 - Namespace templates are supported (`namespace Name<S = ...>: ...`) with compile-time int args, inline instantiation (`Name<...>::...`), and namespace aliases (`namespace Alias = Name<...>`).
 - Surface syntax split:
-  - `<>` is used for namespace instantiation and generic type specialization.
-  - `[]` is reserved for arrays and indexing.
+  - `<>` is used for namespace instantiation, generic type specialization, and section default type modifiers on `ins` / `outs` / `params` / `init`.
+  - `[]` is reserved for arrays, indexing, slices, and buffer/channel forms.
 - Compile-time assertions are supported via `assert(expr)` inside namespaces.
   - `expr` must be compile-time evaluable.
   - `expr` must evaluate to `bool`.
@@ -73,11 +73,11 @@
 - For `ins` / `outs` / `params`, count prefix + explicit list is supported (`ins 2: ...`) and must match the explicit declaration count.
 - For `buffers`, explicit declarations and count shorthand still cannot be mixed in the same block.
 - Section default type shorthand is supported for IO/param/buffer sections:
-  - `ins[T]: ...`, `outs[f64]: ...`, `params[i32]: ...`, `buffers[T]: ...`
-  - Also works with count shorthand (`ins[f64] 2`, `buffers[T] 4`).
+  - `ins<T>: ...`, `outs<f64>: ...`, `params<i32>: ...`, `buffers[T]: ...`
+  - Also works with count shorthand (`ins<f64> 2`, `buffers[T] 4`).
   - Per-entry explicit types override the section default.
 - `init` section default scalar type shorthand is supported:
-  - `init[f64]: ...`, `init[T]: ...`
+  - `init<f64>: ...`, `init<T>: ...`
   - Applies to untyped scalar declarations in `init`.
   - Explicit declaration types still override the section default.
 

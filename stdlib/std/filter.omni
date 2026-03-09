@@ -1,9 +1,9 @@
 namespace std::filter:
   proc OnePole<T>:
-    ins[T] 1
-    outs[T] 1
+    ins<T> 1
+    outs<T> 1
 
-    params[T]:
+    params<T>:
       cutoff = 1000.0
 
     init:

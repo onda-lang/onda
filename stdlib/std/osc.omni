@@ -1,8 +1,8 @@
 namespace std::osc:
   proc Phasor<T>:
-    outs[T] 1
+    outs<T> 1
 
-    params[T]:
+    params<T>:
       freq = 1.0
 
     init:
@@ -17,9 +17,9 @@ namespace std::osc:
         out1 = phase
         
   proc Sine<T>:
-    outs[T] 1
+    outs<T> 1
 
-    params[T]:
+    params<T>:
       freq = 440.0
 
     init:
@@ -42,9 +42,9 @@ namespace std::osc:
     return 0.0
 
   proc Saw<T>:
-    outs[T] 1
+    outs<T> 1
 
-    params[T]:
+    params<T>:
       freq = 440.0
 
     init:

@@ -95,11 +95,11 @@ params 2:
 Section default type shorthand:
 
 ```omni
-ins[f64] 2
-outs[f64]:
+ins<f64> 2
+outs<f64>:
   out1
   meter: f32
-params[i32]:
+params<i32>:
   mode
 buffers[f32]:
   line
@@ -128,15 +128,15 @@ Rules:
 `init` also supports section default scalar type shorthand:
 
 ```omni
-init[f64]:
+init<f64>:
   phase = 0.0
   last = 0.0
 ```
 
 Rules:
-- `init[T]` / `init[f64]` applies to untyped scalar declarations in `init`.
+- `init<T>` / `init<f64>` applies to untyped scalar declarations in `init`.
 - Explicit per-symbol declaration types still win (`x: i32 = ...`).
-- Non-scalar section defaults (for example `init[f32[4]]`) are invalid.
+- Non-scalar section defaults (for example `init<f32[4]>`) are invalid.
 
 ## 4 Variables, assignment, expressions
 
@@ -524,8 +524,8 @@ Processors can contain private `def` blocks that act as helper subroutines with 
 
 ```omni
 proc Filter<T>:
-  ins[T] 1
-  outs[T] 1
+  ins<T> 1
+  outs<T> 1
 
   init:
     state: T = 0.0
@@ -572,8 +572,8 @@ struct Pair<T>:
   b: T
 
 proc OnePole<T>:
-  ins[T] 1
-  outs[T] 1
+  ins<T> 1
+  outs<T> 1
   sample:
     out1 = in1
 ```
@@ -594,8 +594,8 @@ Generic casts and generic array function params are also supported where the cor
 
 ```omni
 proc Filter<T>:
-  ins[T] 1
-  outs[T] 1
+  ins<T> 1
+  outs<T> 1
   init:
     state: T = 0.0
   sample:
@@ -684,8 +684,8 @@ namespace Data<S = SR, C = 1>:
 ```
 
 Syntax split:
-- `<>` is used for namespace instantiation and generic type specialization.
-- `[]` is used for arrays and indexing only.
+- `<>` is used for namespace instantiation, generic type specialization, and section default type modifiers on `ins` / `outs` / `params` / `init`.
+- `[]` is used for arrays, indexing, slices, and buffer/channel forms.
 
 Namespace-local compile-time assertions are supported:
 

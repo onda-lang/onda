@@ -19,19 +19,19 @@ namespace_call_arg_list = { "<" ~ namespace_call_arg ~ ("," ~ namespace_call_arg
 namespace_call_arg = { (ident ~ "=")? ~ expr }
 
 ins_block = {
-  ins_kw ~ section_default_elem_type? ~ (
+  ins_kw ~ section_default_decl_type? ~ (
     (int_lit? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ port_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
     | (int_lit ~ NEWLINE*)
   )
 }
 outs_block = {
-  outs_kw ~ section_default_elem_type? ~ (
+  outs_kw ~ section_default_decl_type? ~ (
     (int_lit? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ port_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
     | (int_lit ~ NEWLINE*)
   )
 }
 params_block = {
-  "params" ~ section_default_elem_type? ~ (
+  "params" ~ section_default_decl_type? ~ (
     (int_lit? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ param_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
     | (int_lit ~ NEWLINE*)
   )
@@ -55,7 +55,7 @@ def_block = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
 const_block = { const_decl ~ NEWLINE* }
 const_decl = { "const" ~ ident ~ (":" ~ type_name)? ~ "=" ~ expr }
-init_block = { "init" ~ section_default_elem_type? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+init_block = { "init" ~ section_default_decl_type? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 block_exec_block = { "block" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ block_exec_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 block_exec_list = { block_exec_item ~ (stmt_sep+ ~ block_exec_item)* ~ stmt_sep* }
 block_exec_item = _{ sample_nested_block | stmt }
@@ -66,6 +66,7 @@ sample_factor = { expr }
 ins_kw = { "ins" | "inputs" }
 outs_kw = { "outs" | "outputs" }
 proc_kw = { "proc" | "processor" }
+section_default_decl_type = { "<" ~ (type_name | namespace_ref | qualified_ident) ~ ">" }
 section_default_elem_type = { "[" ~ (type_name | namespace_ref | qualified_ident) ~ "]" }
 
 port_list = { port_decl ~ (list_sep+ ~ port_decl)* ~ list_sep* }

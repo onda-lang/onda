@@ -1408,9 +1408,9 @@ sample { out1 = in1 + in2 + in3 + param1 + param2 + param3 + param4; out2 = 0.0 
 #[test]
 fn parses_top_level_count_shorthand_with_section_default_types() {
     let src = r#"
-ins[f64] 2
-outs[i32] 1
-params[bool] 3
+ins<f64> 2
+outs<i32> 1
+params<bool> 3
 buffers[f32] 2
 sample { out1 = 0.0 }
 "#;
@@ -1757,9 +1757,9 @@ sample { out1 = 0.0 }
 fn parses_generic_proc_section_default_types_with_overrides() {
     let src = r#"
 proc Fx<T> {
-  ins[T] { in1, trig: bool }
-  outs[T] { out1, meter: f32 }
-  params[T] { gain = 1.0, mode: i32 = 0 }
+  ins<T> { in1, trig: bool }
+  outs<T> { out1, meter: f32 }
+  params<T> { gain = 1.0, mode: i32 = 0 }
   buffers[T] { line, flags: i32 }
   sample { out1 = in1 * gain; meter = f32(mode) }
 }
@@ -2210,11 +2210,11 @@ sample:
 fn parses_indentation_section_default_types() {
     let src = r#"
 proc Gain<T>:
-  ins[T]:
+  ins<T>:
     in1
-  outs[T]:
+  outs<T>:
     out1
-  params[T]:
+  params<T>:
     g = 1.0
   buffers[T]:
     line
@@ -2254,11 +2254,11 @@ sample:
 fn parses_init_section_default_types() {
     let src = r#"
 proc Voice<T>:
-  init[T]:
+  init<T>:
     x = 0.0
   sample:
     out1 = f32(x)
-init[f64]:
+init<f64>:
   acc = 0.0
 sample:
   out1 = f32(acc)
@@ -2293,7 +2293,7 @@ sample:
 #[test]
 fn rejects_non_scalar_init_section_default_type() {
     let src = r#"
-init[f32[4]]:
+init<f32[4]>:
   x = 0.0
 sample:
   out1 = x
@@ -4256,8 +4256,8 @@ fn parses_generic_proc_inside_namespace_template() {
     let src = r#"
 namespace FX<S = SR>:
   proc Delay<T>:
-    ins[T] 1
-    outs[T] 1
+    ins<T> 1
+    outs<T> 1
     init:
       buf: T = T(0.0)
     sample:
