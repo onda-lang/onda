@@ -1,7 +1,7 @@
 import std/complex
 import std/fft
 
-namespace std::convolution<FFTSize = 256, MaxImpulseLen = 64>:
+namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
   assert(FFTSize > 0 && (FFTSize & (FFTSize - 1)) == 0)
   assert((FFTSize & 1) == 0)
   assert(MaxImpulseLen > 0)
