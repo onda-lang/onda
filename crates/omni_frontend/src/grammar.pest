@@ -3,7 +3,7 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 
 program = { SOI ~ NEWLINE* ~ block* ~ EOI }
-block = _{ ins_block | outs_block | params_block | const_block | events_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | init_block | block_exec_block | sample_block }
+block = _{ ins_block | outs_block | params_block | const_block | events_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | init_block | block_exec_block | sample_block | graph_block }
 
 namespace_block = { "namespace" ~ namespace_decl_head ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 namespace_alias_decl = { "namespace" ~ ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ namespace_any_ref ~ NEWLINE* }
@@ -49,7 +49,7 @@ event_param_list = { event_param_decl ~ ("," ~ event_param_decl)* }
 event_param_decl = { ident ~ (":" ~ event_param_type)? }
 event_param_type = { array_type | fn_typed_array_param | type_name }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
-proc_item = _{ ins_block | outs_block | params_block | events_block | buffers_block | init_block | block_exec_block | sample_block | def_block }
+proc_item = _{ ins_block | outs_block | params_block | events_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 def_block = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
@@ -62,6 +62,20 @@ block_exec_item = _{ sample_nested_block | stmt }
 sample_nested_block = { "sample" ~ sample_factor? ~ NEWLINE* ~ stmt_block }
 sample_block = { "sample" ~ sample_factor? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 sample_factor = { expr }
+graph_block = { "graph" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ graph_edge_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+graph_edge_list = { graph_edge ~ (stmt_sep+ ~ graph_edge)* ~ stmt_sep* }
+graph_edge = { graph_rate? ~ (graph_send_edge | graph_recv_edge) }
+graph_send_edge = { graph_expr ~ graph_arrow ~ graph_endpoint }
+graph_recv_edge = { graph_endpoint ~ graph_receiver_arrow ~ graph_expr }
+graph_rate = { "@block" | "@sample" }
+graph_arrow = { ">>" ~ graph_delay? }
+graph_receiver_arrow = { "<<" ~ graph_delay? }
+graph_delay = { "[" ~ expr ~ "]" }
+graph_expr = { prefix* ~ graph_term ~ ((or_op | and_op | bit_or_op | bit_xor_op | bit_and_op | cmp_op | add_op | mul_op) ~ prefix* ~ graph_term)* }
+graph_term = _{ call_field_expr | call_expr | slice_expr | graph_nested_indexed_member_expr | indexed_member_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | "(" ~ graph_expr ~ ")" }
+graph_nested_indexed_member_expr = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ "[" ~ expr ~ "]" ~ !"::" }
+graph_endpoint = { indexed_graph_endpoint | path_ident }
+indexed_graph_endpoint = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
 
 ins_kw = { "ins" | "inputs" }
 outs_kw = { "outs" | "outputs" }
@@ -131,7 +145,7 @@ field_sep = _{ "," | ";" | NEWLINE+ }
 stmt_sep = _{ ";" | NEWLINE+ }
 
 expr = { prefix* ~ term ~ ((or_op | and_op | bit_or_op | bit_xor_op | bit_and_op | shift_op | cmp_op | add_op | mul_op) ~ prefix* ~ term)* }
-term = _{ call_field_expr | call_expr | slice_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | "(" ~ expr ~ ")" }
+term = _{ call_field_expr | call_expr | slice_expr | indexed_member_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | "(" ~ expr ~ ")" }
 array_lit = { "[" ~ NEWLINE* ~ (expr ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expr)*)? ~ NEWLINE* ~ "]" }
 call_field_expr = { call_expr ~ "." ~ ident }
 call_expr = { call_target ~ generic_type_arg_list? ~ "(" ~ NEWLINE* ~ arg_list? ~ NEWLINE* ~ ")" }
@@ -141,6 +155,7 @@ call_index_target = { path_ident ~ "[" ~ expr ~ "]" ~ !"::" }
 arg_list = { call_arg ~ (NEWLINE* ~ "," ~ NEWLINE* ~ call_arg)* ~ (NEWLINE* ~ ",")? }
 call_arg = { (ident ~ "=")? ~ expr }
 index_expr = { path_ident ~ "[" ~ expr ~ "]" ~ !"::" ~ ("[" ~ expr ~ "]")? }
+indexed_member_expr = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
 slice_expr = { path_ident ~ "[" ~ slice_start? ~ ":" ~ slice_end? ~ "]" ~ !"::" }
 slice_start = { expr }
 slice_end = { expr }

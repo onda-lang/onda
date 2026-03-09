@@ -742,7 +742,7 @@ pub(super) fn parse_stmt_block(pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, Vec<Di
 }
 
 pub(super) fn parse_expr(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
-    if pair.as_rule() != Rule::expr {
+    if pair.as_rule() != Rule::expr && pair.as_rule() != Rule::graph_expr {
         return Err(vec![Diagnostic::syntax(
             "internal parser error: expected expression pair",
             0,
@@ -896,11 +896,82 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
         Rule::bool_lit => Expr::Bool(pair.as_str() == "true"),
         Rule::array_lit => Expr::ArrayLiteral(
             pair.into_inner()
-                .filter(|p| p.as_rule() == Rule::expr)
+                .filter(|p| p.as_rule() == Rule::expr || p.as_rule() == Rule::graph_expr)
                 .map(parse_expr_inner)
                 .collect(),
         ),
         Rule::ident | Rule::path_ident | Rule::namespace_ref => Expr::Var(pair.as_str().to_owned()),
+        Rule::indexed_member_expr => {
+            let mut inner = pair.into_inner();
+            let base = inner
+                .next()
+                .expect("indexed_member_expr rule must include base path")
+                .as_str()
+                .to_owned();
+            let index_pair = inner
+                .next()
+                .expect("indexed_member_expr rule must include index expression");
+            let field_pair = inner
+                .next()
+                .expect("indexed_member_expr rule must include field identifier");
+            Expr::UserCall {
+                name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
+                type_args: Vec::new(),
+                args: vec![
+                    CallArg {
+                        name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                        expr: Expr::Var(base),
+                    },
+                    CallArg {
+                        name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                        expr: parse_expr_inner(index_pair),
+                    },
+                    CallArg {
+                        name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
+                        expr: Expr::Var(field_pair.as_str().to_owned()),
+                    },
+                ],
+            }
+        }
+        Rule::graph_nested_indexed_member_expr => {
+            let mut inner = pair.into_inner();
+            let base = inner
+                .next()
+                .expect("graph_nested_indexed_member_expr rule must include base path")
+                .as_str()
+                .to_owned();
+            let proc_index_pair = inner
+                .next()
+                .expect("graph_nested_indexed_member_expr rule must include proc index");
+            let field_pair = inner
+                .next()
+                .expect("graph_nested_indexed_member_expr rule must include field identifier");
+            let field_index_pair = inner
+                .next()
+                .expect("graph_nested_indexed_member_expr rule must include field index");
+            Expr::UserCall {
+                name: GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL.to_owned(),
+                type_args: Vec::new(),
+                args: vec![
+                    CallArg {
+                        name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                        expr: Expr::Var(base),
+                    },
+                    CallArg {
+                        name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                        expr: parse_expr_inner(proc_index_pair),
+                    },
+                    CallArg {
+                        name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
+                        expr: Expr::Var(field_pair.as_str().to_owned()),
+                    },
+                    CallArg {
+                        name: Some(GRAPH_PROC_FIELD_INDEX_EXPR_ARG.to_owned()),
+                        expr: parse_expr_inner(field_index_pair),
+                    },
+                ],
+            }
+        }
         Rule::index_expr => {
             let mut inner = pair.into_inner();
             let base = inner
@@ -1018,7 +1089,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 args,
             }
         }
-        Rule::expr => parse_expr_inner(pair),
+        Rule::expr | Rule::graph_expr => parse_expr_inner(pair),
         _ => unreachable!("unexpected primary expression token"),
     }
 }

@@ -1,0 +1,34 @@
+proc Mix {
+  ins {
+    dry
+    fb
+  }
+  outs { out1 }
+  sample {
+    out1 = (dry + fb) * 0.5
+  }
+}
+
+proc Saturate {
+  ins { in1 }
+  outs { out1 }
+  sample {
+    x = in1
+    out1 = x - (x * x * x) * 0.1
+  }
+}
+
+ins { in1 }
+outs { out1 }
+
+init {
+  mix = Mix()
+  sat = Saturate()
+  prev_fb = 0.0
+}
+
+sample:
+  mix(in1, prev_fb)
+  sat(mix.out1)
+  out1 = mix.out1
+  prev_fb = sat.out1

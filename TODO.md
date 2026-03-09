@@ -12,150 +12,81 @@
   - Evaluate extending `const` beyond scalar primitives to arrays/structural compile-time values where justified.
   - Decide whether forward references and cycle diagnostics should be supported instead of the current strict lexical-order rule.
 
-- Graph composition syntax
-  - Locked MVP syntax:
-    - `graph` is an alternative to `sample` (mutually exclusive), while `init` stays available.
-    - Proc instances/nodes are created in `init`; `graph` only declares connections.
-    - Edge forms:
-      - `src >> dst`
-      - `@block expr >> dst`
-      - `@sample src >> dst` (explicit sample-rate override)
-      - `src >>[N] dst` (static sample delay, `N` compile-time integer `>= 0`)
-    - Edge sources can be endpoint outputs/inputs/params, literals, and expressions.
-    - Endpoint sugar should work the same as outside graph (`p(...).endpoint`, `.outN`, named endpoint access).
-  - Illustrative syntax examples:
-    ```omni
-    proc Main
-      ins 2
-      outs 2
-      params
-        mix = 0.25
-
-      init
-        rev = Reverb(mix: mix)
-
-      graph
-        in1 >> rev.inL
-        in2 >> rev.inR
-        mix >> rev.mix
-        rev.outL >> out1
-        rev.outR >> out2
-        rev.outL >>[1] rev.inL # single-sample delay
-    ```
-  - Rate-behavior examples:
-    ```omni
-    # 1) Sample-rate processing through proc nodes
-    proc Main
-      ins 1
-      outs 1
-
-      init
-        sat = SoftClip()
-
-      graph
-        in1 >> sat.in
-        sat.out1 >> out1
-    ```
-    ```omni
-    # 2) Param destination infers @block (no explicit annotation needed)
-    proc Main
-      ins 1
-      outs 1
-      params
-        mix = 0.25
-
-      init
-        lp = OnePole()
-
-      graph
-        in1 >> lp.in
-        mix >> lp.cutoff         # inferred @block because dst is a param endpoint
-        lp.out1 >> out1
-    ```
-    ```omni
-    # 3) Explicit @sample override for sample-rate modulation into a param
-    proc Main
-      ins 1
-      outs 1
-
-      init
-        lp = OnePole()
-        lfo = Sine(freq: 0.2)
-
-      graph
-        in1 >> lp.in
-        @sample lfo.out1 >> lp.cutoff
-        lp.out1 >> out1
-    ```
-    ```omni
-    # 4) Heavier block-rate control logic in `block`, then routed to graph
-    proc Main
-      ins 1
-      outs 1
-      params
-        target = 0.4
-
-      init
-        lp = OnePole()
-        cutoff_ctrl = 1000.0
-
-      block
-        cutoff_ctrl = cutoff_ctrl + (target * 9000.0 - cutoff_ctrl) * 0.03
-
-      graph
-        in1 >> lp.in
-        cutoff_ctrl >> lp.cutoff # inferred @block
-        lp.out1 >> out1
-    ```
-  - Locked MVP semantics:
-    - Constructor args in `init` are initial/default values; incoming graph edges provide runtime drive.
-    - `graph` is for continuous value routing only; it does not define event propagation syntax in MVP.
-    - Top-level `events` remain imperative and may call proc events on graph nodes instantiated in `init`.
-    - Graph-instantiated proc nodes stay addressable by name outside `graph`, so event handlers can target them directly (for example `voice.note_on(...)`).
-    - Unannotated edges targeting proc `param` endpoints are inferred as `@block`.
-    - Unannotated edges targeting non-param destinations are `@sample` by default.
-    - `@sample` can be used to override inferred `@block` on param destinations.
-    - `@block` edges (explicit or inferred) evaluate once per block and are reused for all samples in the block.
-    - `@block` edges must be block-safe (no sample-rate dependencies).
-    - If a param edge is inferred `@block` but source is sample-rate, emit an error that suggests explicit `@sample`.
-    - Single-writer rule per destination endpoint in MVP (duplicate drivers are semantic errors).
-    - Fan-out is allowed.
-    - Graph cycles are rejected unless total cycle delay is positive via `>>[N]`.
-    - `>>[0]` does not break cycles; delayed feedback requires `N > 0` on at least one cycle edge.
-    - Delayed edge state is per-edge and persistent across blocks.
-    - Function-call processing in graph edges is not part of graph MVP; use proc nodes for transforms.
-    - Complex block-rate control logic should run in `block`, then feed graph param edges.
-    - Illustrative event/control-plane pattern:
+- Graph composition follow-ups
+  - `graph` MVP is implemented:
+    - top-level and proc-local `graph` blocks
+    - `@block`, `@sample`, `>>[N]`, and receiver sugar `<<`
+    - proc-array slot references with static indices
+    - strict shape checking for scalar/array edges
+    - whole-array routing and element-wise array expressions
+    - cycle rejection unless broken by positive sample delay
+    - single-writer enforcement, fan-out, and implicit proc scheduling
+    - runtime/event integration coverage for graph-instantiated proc nodes
+    - CLI graph lowering inspection via `--dump-graph`
+  - Remaining graph work:
+    - Widen graph source expressions beyond the current MVP:
+      support array-constructor sources and any other remaining non-call source forms where semantics stay unambiguous.
+    - Evaluate opt-in graph-edge coercions/broadcasting:
+      scalar-to-array broadcast, endpoint-family expansion for proc arrays, and broader numeric coercion rules.
+      Example scalar-to-array broadcast:
       ```omni
-      proc Main
-        outs 1
+      outs:
+        out_st: f32[2]
 
-        init
-          voice = Voice()
-          env = Env()
-
-        graph
-          env.out1 >> voice.amp
-          voice.out1 >> out1
-
-        events
-          note_on(note: i32, vel: i32)
-            voice.note_on(note, vel)
-            env.gate_on()
-
-          note_off()
-            voice.note_off()
-            env.gate_off()
+      graph:
+        0.25 >> out_st
       ```
-  - Delivery plan:
-    - Frontend: parser + AST for `graph` block, edge annotations (`@block/@sample`), and delayed edges `>>[N]`.
-    - Semantics: node/endpoint resolution from `init`, rate inference (`dst` param => `@block`), rate checking, cycle detection with delay accounting, single-writer enforcement.
-    - Lowering/codegen: deterministic topological scheduling, per-edge delay state lowering, block-vs-sample edge scheduling, param-edge runtime drive.
-    - Diagnostics: unknown node/endpoint, type/shape mismatch, inferred-`@block` source-rate errors (with `@sample` hint), duplicate drivers, invalid cycles with cycle path reporting.
-    - Tests:
-      - parser coverage for all edge forms and invalid variants;
-      - semantic tests for graph/sample exclusivity, node declaration requirements, param-destination rate inference/override, and delay-cycle legality;
-      - runtime/codegen tests for multi-out routing, param modulation, and delayed feedback behavior.
+      which would expand to:
+      ```omni
+      graph:
+        0.25 >> out_st[0]
+        0.25 >> out_st[1]
+      ```
+      Example endpoint-family expansion:
+      ```omni
+      init:
+        voices: Voice[4] = Voice()
+
+      graph:
+        env.out1 >> voices.gain
+      ```
+      which would expand to:
+      ```omni
+      graph:
+        env.out1 >> voices[0].gain
+        env.out1 >> voices[1].gain
+        env.out1 >> voices[2].gain
+        env.out1 >> voices[3].gain
+      ```
+      Example scalar-to-array proc input broadcast:
+      ```omni
+      init:
+        gain = StereoGain()
+
+      graph:
+        in1 >> gain.in_st
+      ```
+      which would expand to:
+      ```omni
+      graph:
+        in1 >> gain.in_st[0]
+        in1 >> gain.in_st[1]
+      ```
+      Example broader numeric coercion:
+      ```omni
+      params:
+        mode: i32 = 0
+
+      graph:
+        gate >> mode
+      ```
+      where today an explicit cast would still be preferred:
+      ```omni
+      graph:
+        i32(gate) >> mode
+      ```
+    - Improve graph diagnostics further where useful:
+      especially more explicit hints on inferred-`@block` failures and richer cycle path reporting.
 
 - Events follow-ups
   - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.

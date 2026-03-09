@@ -458,6 +458,36 @@ pub(super) fn compute_proc_shape(
                 DeclaredSymbolInfo::FunctionReturn { ty: primary_ty },
             );
 
+            let inferred_io = infer_numbered_io_from_sample(&target_proc.sample);
+            let nested_out_ports =
+                normalize_numbered_port_decls(&target_proc.outs, "out", inferred_io.max_out);
+            let (_, nested_out_types, _, nested_out_arrays) = expand_proc_port_specs(
+                &target_proc.name,
+                &nested_out_ports,
+                "output",
+                options,
+                errors,
+            );
+            for port in &nested_out_ports {
+                let flat_base = format!("{instance_name}.{}", port.name);
+                if let Some(slots) = nested_out_arrays.get(&port.name) {
+                    if let Some(elem_ty) = nested_out_types
+                        .get(slots.first().map(|s| s.as_str()).unwrap_or_default())
+                        .copied()
+                    {
+                        insert_declared_symbol(
+                            &mut proc_state_scalars,
+                            &mut proc_declared_symbols,
+                            flat_base.clone(),
+                            DeclaredSymbolInfo::DataArray { elem_ty },
+                        );
+                    }
+                    proc_state_arrays.entry(flat_base).or_insert(slots.len());
+                } else if let Some(ty) = nested_out_types.get(&port.name).copied() {
+                    proc_state_scalars.entry(flat_base).or_insert(ty);
+                }
+            }
+
             let (nested_param_specs, _) =
                 expand_proc_param_specs(&target_proc.name, &target_proc.params, options, errors);
             for spec in nested_param_specs {

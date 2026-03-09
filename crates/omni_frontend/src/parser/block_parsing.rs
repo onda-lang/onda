@@ -397,6 +397,209 @@ pub(super) fn parse_events_block(
     Ok(events)
 }
 
+pub(super) fn parse_graph_block(block_pair: Pair<'_, Rule>) -> Result<GraphBlock, Vec<Diagnostic>> {
+    if block_pair.as_rule() != Rule::graph_block {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected graph block",
+            0,
+            0,
+        )]);
+    }
+
+    let mut edges = Vec::<GraphEdge>::new();
+    for child in block_pair.into_inner() {
+        if child.as_rule() != Rule::graph_edge_list {
+            continue;
+        }
+        for edge_pair in child.into_inner() {
+            if edge_pair.as_rule() != Rule::graph_edge {
+                continue;
+            }
+            edges.push(parse_graph_edge(edge_pair)?);
+        }
+    }
+
+    Ok(GraphBlock { edges })
+}
+
+fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnostic>> {
+    let mut rate = None::<GraphRate>;
+    let mut source = None::<Expr>;
+    let mut delay = None::<Expr>;
+    let mut dest = None::<GraphEndpoint>;
+
+    for child in edge_pair.into_inner() {
+        match child.as_rule() {
+            Rule::graph_rate => {
+                if rate.is_some() {
+                    return Err(vec![Diagnostic::syntax(
+                        "graph edge rate can only be specified once",
+                        0,
+                        0,
+                    )]);
+                }
+                rate = Some(parse_graph_rate(child)?);
+            }
+            Rule::graph_send_edge => {
+                let mut inner = child.into_inner();
+                let Some(source_pair) = inner.next() else {
+                    return Err(vec![Diagnostic::syntax(
+                        "missing graph edge source expression",
+                        0,
+                        0,
+                    )]);
+                };
+                source = Some(parse_expr(source_pair)?);
+                let Some(arrow_pair) = inner.next() else {
+                    return Err(vec![Diagnostic::syntax("missing graph edge arrow", 0, 0)]);
+                };
+                delay = parse_graph_edge_delay(arrow_pair)?;
+                let Some(dest_pair) = inner.next() else {
+                    return Err(vec![Diagnostic::syntax(
+                        "missing graph edge destination endpoint",
+                        0,
+                        0,
+                    )]);
+                };
+                dest = Some(parse_graph_endpoint(dest_pair)?);
+            }
+            Rule::graph_recv_edge => {
+                let mut inner = child.into_inner();
+                let Some(dest_pair) = inner.next() else {
+                    return Err(vec![Diagnostic::syntax(
+                        "missing graph edge destination endpoint",
+                        0,
+                        0,
+                    )]);
+                };
+                dest = Some(parse_graph_endpoint(dest_pair)?);
+                let Some(arrow_pair) = inner.next() else {
+                    return Err(vec![Diagnostic::syntax("missing graph edge arrow", 0, 0)]);
+                };
+                delay = parse_graph_edge_delay(arrow_pair)?;
+                let Some(source_pair) = inner.next() else {
+                    return Err(vec![Diagnostic::syntax(
+                        "missing graph edge source expression",
+                        0,
+                        0,
+                    )]);
+                };
+                source = Some(parse_expr(source_pair)?);
+            }
+            _ => {}
+        }
+    }
+
+    let Some(source) = source else {
+        return Err(vec![Diagnostic::syntax(
+            "missing graph edge source expression",
+            0,
+            0,
+        )]);
+    };
+    let Some(dest) = dest else {
+        return Err(vec![Diagnostic::syntax(
+            "missing graph edge destination endpoint",
+            0,
+            0,
+        )]);
+    };
+
+    Ok(GraphEdge {
+        rate,
+        source,
+        delay,
+        dest,
+    })
+}
+
+fn parse_graph_edge_delay(arrow_pair: Pair<'_, Rule>) -> Result<Option<Expr>, Vec<Diagnostic>> {
+    let mut delay = None::<Expr>;
+    for part in arrow_pair.into_inner() {
+        if part.as_rule() == Rule::graph_delay {
+            let mut delay_inner = part.into_inner();
+            let Some(expr_pair) = delay_inner.next() else {
+                return Err(vec![Diagnostic::syntax(
+                    "missing graph edge delay expression",
+                    0,
+                    0,
+                )]);
+            };
+            delay = Some(parse_expr(expr_pair)?);
+        }
+    }
+    Ok(delay)
+}
+
+fn parse_graph_rate(pair: Pair<'_, Rule>) -> Result<GraphRate, Vec<Diagnostic>> {
+    match pair.as_str() {
+        "@block" => Ok(GraphRate::Block),
+        "@sample" => Ok(GraphRate::Sample),
+        _ => Err(vec![Diagnostic::syntax(
+            "unknown graph edge rate annotation",
+            0,
+            0,
+        )]),
+    }
+}
+
+fn parse_graph_endpoint(pair: Pair<'_, Rule>) -> Result<GraphEndpoint, Vec<Diagnostic>> {
+    let mut inner = pair.into_inner();
+    let Some(first) = inner.next() else {
+        return Err(vec![Diagnostic::syntax(
+            "missing graph destination endpoint",
+            0,
+            0,
+        )]);
+    };
+
+    match first.as_rule() {
+        Rule::path_ident => {
+            let path = first.as_str().to_owned();
+            if let Some((proc, field)) = path.rsplit_once('.') {
+                Ok(GraphEndpoint::ProcField {
+                    proc: proc.to_owned(),
+                    field: field.to_owned(),
+                })
+            } else {
+                Ok(GraphEndpoint::Symbol(path))
+            }
+        }
+        Rule::indexed_graph_endpoint => {
+            let mut endpoint_inner = first.into_inner();
+            let proc = endpoint_inner
+                .next()
+                .ok_or_else(|| vec![Diagnostic::syntax("missing graph proc endpoint base", 0, 0)])?
+                .as_str()
+                .to_owned();
+            let index = parse_expr(endpoint_inner.next().ok_or_else(|| {
+                vec![Diagnostic::syntax(
+                    "missing graph proc endpoint index",
+                    0,
+                    0,
+                )]
+            })?)?;
+            let field = endpoint_inner
+                .next()
+                .ok_or_else(|| {
+                    vec![Diagnostic::syntax(
+                        "missing graph proc endpoint field",
+                        0,
+                        0,
+                    )]
+                })?
+                .as_str()
+                .to_owned();
+            Ok(GraphEndpoint::ProcIndexedField { proc, index, field })
+        }
+        _ => Err(vec![Diagnostic::syntax(
+            "invalid graph destination endpoint",
+            0,
+            0,
+        )]),
+    }
+}
+
 pub(super) fn parse_proc_block(
     block_pair: Pair<'_, Rule>,
 ) -> Result<ProcessorDef, Vec<Diagnostic>> {
@@ -410,6 +613,7 @@ pub(super) fn parse_proc_block(
     let mut init: Option<InitBlock> = None;
     let mut block_exec: Option<BlockExec> = None;
     let mut sample: Option<SampleBlock> = None;
+    let mut graph: Option<GraphBlock> = None;
     let mut local_defs = Vec::new();
 
     for child in block_pair.into_inner() {
@@ -494,6 +698,12 @@ pub(super) fn parse_proc_block(
                 }
                 sample = Some(parse_sample_block(child)?);
             }
+            Rule::graph_block => {
+                if graph.is_some() {
+                    return Err(vec![Diagnostic::syntax("duplicate proc graph block", 0, 0)]);
+                }
+                graph = Some(parse_graph_block(child)?);
+            }
             Rule::def_block => {
                 local_defs.push(parse_def_block(child)?);
             }
@@ -529,7 +739,16 @@ pub(super) fn parse_proc_block(
         sample = Some(nested_sample);
     }
 
+    if graph.is_some() && (sample.is_some() || has_block_block) {
+        return Err(vec![Diagnostic::syntax(
+            "proc graph block cannot be declared with sample or block",
+            0,
+            0,
+        )]);
+    }
+
     let has_sample_block = sample.is_some();
+    let has_graph_block = graph.is_some();
     let (sample_oversample_factor, sample_body) = if let Some(sample_block) = sample {
         (sample_block.oversample_factor, sample_block.body)
     } else {
@@ -547,6 +766,7 @@ pub(super) fn parse_proc_block(
         has_init_block: init.is_some(),
         has_block_block,
         has_sample_block,
+        has_graph_block,
         sample_oversample_factor,
         init: init.unwrap_or(InitBlock {
             default_ty: None,
@@ -555,6 +775,7 @@ pub(super) fn parse_proc_block(
         block_pre,
         sample: sample_body,
         block_post,
+        graph,
         local_defs,
     })
 }

@@ -5,6 +5,7 @@ use crate::*;
 mod generated_blocks;
 mod generic_proc_rewrite;
 mod global_proc_rewrite;
+mod graph_lowering;
 mod nested_paths;
 mod nested_proc_lowering;
 mod proc_local_defs;
@@ -12,6 +13,7 @@ mod shape_helpers;
 use generated_blocks::*;
 use generic_proc_rewrite::*;
 use global_proc_rewrite::*;
+use graph_lowering::*;
 use nested_paths::*;
 use nested_proc_lowering::*;
 use proc_local_defs::*;
@@ -2314,6 +2316,7 @@ pub(crate) fn desugar_processors(
     errors: &mut Vec<Diagnostic>,
 ) -> ProcessorDesugarResult {
     rewrite_and_materialize_generic_processors(&mut program, errors);
+    lower_graph_blocks(&mut program, options, errors);
 
     // Rewrite proc-local defs into hidden ordinary def calls before proc lowering.
     for block in &mut program.blocks {
@@ -2381,6 +2384,49 @@ pub(crate) fn desugar_processors(
 
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     analyze_with_options(program, AnalysisOptions::default())
+}
+
+pub fn lower_graphs_for_inspection_with_options(
+    program: Program,
+    options: AnalysisOptions,
+) -> Result<Program, Vec<Diagnostic>> {
+    if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
+        return Err(vec![Diagnostic::internal(
+            "analysis option 'sample_rate' must be finite and greater than zero",
+        )]);
+    }
+    if options.block_size == 0 {
+        return Err(vec![Diagnostic::internal(
+            "analysis option 'block_size' must be greater than zero",
+        )]);
+    }
+
+    let mut program = program;
+    inject_auto_std_math(&mut program)?;
+
+    let mut errors = Vec::new();
+    for block in &program.blocks {
+        let Block::Assert(assert_decl) = block else {
+            continue;
+        };
+        let context = "assert condition";
+        if let Some(passed) = eval_const_bool_expr(&assert_decl.expr, options, context, &mut errors)
+        {
+            if !passed {
+                errors.push(Diagnostic::semantic("assert failed", 0, 0));
+            }
+        }
+    }
+    program.blocks.retain(|b| !matches!(b, Block::Assert(_)));
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    lower_graph_blocks(&mut program, options, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(program)
 }
 
 pub fn analyze_with_options(
@@ -4100,7 +4146,7 @@ pub fn analyze_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omni_frontend::{parse_program, AssignTarget, Expr, Stmt};
+    use omni_frontend::{parse_program, AssignTarget, BinaryOp, Expr, Stmt};
 
     const WRAPPER_CONST_ZERO_LATENCY_REPRO: &str = r#"
 import std/convolution
@@ -4267,6 +4313,1063 @@ sample:
         assert!(
             offending.is_empty(),
             "expected no raw nested proc event calls after desugaring, got {offending:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_top_level_sample_coexistence() {
+        let src = r#"
+outs { out1 }
+sample { out1 = 0.0 }
+graph { 0.0 >> out1 }
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("graph + sample should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph block cannot be declared with sample block")),
+            "expected graph/sample exclusivity diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_requires_all_declared_outputs_to_be_driven() {
+        let src = r#"
+outs 2
+graph {
+  0.0 >> out1
+}
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("missing graph output driver should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph must drive declared output 'out2'")),
+            "expected missing output diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_simple_graph_program() {
+        let src = r#"
+proc Source:
+  outs:
+    out1
+  sample:
+    out1 = 0.25
+
+proc Gain:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+outs:
+  out1
+
+init:
+  src = Source()
+  gain = Gain()
+
+graph:
+  src.out1 >> gain.in1
+  gain.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("simple graph should analyze");
+        assert!(
+            typed
+                .sample
+                .iter()
+                .any(|stmt| matches!(stmt, Stmt::Expr { .. })),
+            "expected generated processor calls in sample body"
+        );
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    ..
+                } if name == "out1"
+            )),
+            "expected generated out assignment in sample body"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_cycle_without_delay() {
+        let src = r#"
+proc Pass:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+outs:
+  out1
+
+init:
+  a = Pass()
+  b = Pass()
+
+graph:
+  a.out1 >> b.in1
+  b.out1 >> a.in1
+  a.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("cycle should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph contains a cycle without sample delay")),
+            "expected cycle diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_proc_array_param_destinations() {
+        let src = r#"
+proc Voice:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+outs 2
+
+init:
+  voices: Voice[2] = Voice()
+
+graph:
+  0.25 >> voices[0].gain
+  0.75 >> voices[1].gain
+  voices[0].out1 >> out1
+  voices[1].out1 >> out2
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("proc-array param graph should analyze");
+        assert!(
+            typed.block_pre.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Index { base, index },
+                    ..
+                } if base == "voices.gain" && matches!(index, Expr::Int(0) | Expr::Int(1))
+            )),
+            "expected indexed proc-array param assignments in lowered block_pre: {:?}",
+            typed.block_pre
+        );
+        let out_assigns = typed
+            .sample
+            .iter()
+            .filter_map(|stmt| match stmt {
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    ..
+                } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(out_assigns.contains(&"out1") && out_assigns.contains(&"out2"));
+    }
+
+    #[test]
+    fn analyze_accepts_graph_indexed_param_sources() {
+        let src = r#"
+proc Take:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+params:
+  gains: f32[2] = [0.25, 0.75]
+outs:
+  out1
+
+init:
+  take = Take()
+
+graph:
+  gains[1] >> take.in1
+  take.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("indexed param graph should analyze");
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Expr {
+                    expr: Expr::UserCall { name, args, .. },
+                    ..
+                } if name == "Take.__proc_step"
+                    && args.iter().any(|arg| matches!(
+                        arg.expr,
+                        Expr::Index { ref base, ref index }
+                            if base == "gains" && matches!(**index, Expr::Int(1))
+                    ))
+            )),
+            "expected lowered sample call to read gains[1]: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_indexed_proc_output_array_sources() {
+        let src = r#"
+proc Source:
+  outs:
+    pair: f32[2]
+  sample:
+    pair[0] = 0.25
+    pair[1] = 0.75
+
+proc Take:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+outs:
+  out1
+
+init:
+  src = Source()
+  take = Take()
+
+graph:
+  src.pair[1] >> take.in1
+  take.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("indexed proc output array graph should analyze");
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Expr {
+                    expr: Expr::UserCall { name, args, .. },
+                    ..
+                } if name == "Take.__proc_step"
+                    && args.iter().any(|arg| matches!(arg.expr, Expr::Var(ref name) if name == "src.pair[1]"))
+            )),
+            "expected lowered sample call to read flattened proc output slot src.pair[1]: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_whole_proc_output_array_sources() {
+        let src = r#"
+proc Source:
+  outs:
+    pair: f32[2]
+  sample:
+    pair[0] = 0.25
+    pair[1] = 0.75
+
+outs:
+  out_st: f32[2]
+
+init:
+  src = Source()
+
+graph:
+  src.pair >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("whole proc output array graph should analyze");
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Var(src),
+                        ..
+                    } if base == "out_st"
+                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                        && (src == "src.pair[0]" || src == "src.pair[1]")
+                ))
+                .count()
+                == 2,
+            "expected whole proc output array edge to lower to per-slot writes: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_indexed_proc_array_output_array_sources() {
+        let src = r#"
+proc Voice:
+  outs:
+    pair: f32[2]
+  sample:
+    pair[0] = 0.25
+    pair[1] = 0.75
+
+proc Take:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+outs:
+  out1
+
+init:
+  voices: Voice[2] = Voice()
+  take = Take()
+
+graph:
+  voices[0].pair[1] >> take.in1
+  take.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("indexed proc-array output array graph should analyze");
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Expr {
+                    expr: Expr::UserCall { name, args, .. },
+                    ..
+                } if name == "Take.__proc_step"
+                    && args.iter().any(|arg| matches!(
+                        arg.expr,
+                        Expr::UserCall { ref name, ref args, .. }
+                            if name == "Voice.__proc_call_out1"
+                                && args.iter().any(|inner| matches!(
+                                    inner.expr,
+                                    Expr::Index { ref base, ref index }
+                                        if base == "voices" && matches!(**index, Expr::Int(0))
+                                ))
+                    ))
+            )),
+            "expected lowered sample call to read proc-array output slot voices[0].pair[1]: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_whole_proc_array_output_array_sources() {
+        let src = r#"
+proc Voice:
+  outs:
+    pair: f32[2]
+  sample:
+    pair[0] = 0.25
+    pair[1] = 0.75
+
+outs:
+  out_st: f32[2]
+
+init:
+  voices: Voice[2] = Voice()
+
+graph:
+  voices[0].pair >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("whole proc-array output array graph should analyze");
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::UserCall { name, .. },
+                        ..
+                    } if base == "out_st"
+                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                        && name.starts_with("Voice.__proc_call_out")
+                ))
+                .count()
+                == 2,
+            "expected whole proc-array output array edge to lower to per-slot writes: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_array_param_destinations() {
+        let src = r#"
+proc Voice:
+  params:
+    pair: f32[2] = [0.0, 0.0]
+  outs:
+    out1
+  sample:
+    out1 = pair[0] + pair[1]
+
+params:
+  gains: f32[2] = [0.25, 0.75]
+outs:
+  out1
+
+init:
+  voice = Voice()
+
+graph:
+  gains >> voice.pair
+  voice.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("array param destination graph should analyze");
+        assert!(
+            typed
+                .block_pre
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Var(name),
+                        expr: Expr::Index { base, index },
+                        ..
+                    } if (name == "voice.pair[0]" || name == "voice.pair[1]")
+                        && base == "gains"
+                        && matches!(&**index, Expr::Int(0) | Expr::Int(1))
+                ))
+                .count()
+                == 2,
+            "expected array param graph edge to lower to per-slot param writes: {:?}",
+            typed.block_pre
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_array_input_to_array_output_edges() {
+        let src = r#"
+ins:
+  in_st: f32[2]
+outs:
+  out_st: f32[2]
+
+graph:
+  in_st >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("array input/output graph should analyze");
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Index { base: src, .. },
+                        ..
+                    } if base == "out_st"
+                        && src == "in_st"
+                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                ))
+                .count()
+                == 2,
+            "expected lowered per-slot sample assignments from in_st to out_st: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_array_binary_expressions() {
+        let src = r#"
+ins:
+  a: f32[2]
+  b: f32[2]
+outs:
+  out_st: f32[2]
+
+graph:
+  a * 0.5 + b * 0.25 >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("array binary graph should analyze");
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Binary { op: BinaryOp::Add, .. },
+                        ..
+                    } if base == "out_st" && matches!(index, Expr::Int(0) | Expr::Int(1))
+                ))
+                .count()
+                == 2,
+            "expected lowered per-slot binary assignments for out_st: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_slice_sources() {
+        let src = r#"
+ins:
+  in_bus: f32[4]
+outs:
+  out_st: f32[2]
+
+graph:
+  in_bus[1:3] >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("graph slice source should analyze");
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Index { base: src_base, index: src_index },
+                        ..
+                    } if base == "out_st"
+                        && src_base == "in_bus"
+                        && matches!(
+                            (&index, &**src_index),
+                            (Expr::Int(0), Expr::Int(1)) | (Expr::Int(1), Expr::Int(2))
+                        )
+                ))
+                .count()
+                == 2,
+            "expected graph slice source to lower to shifted per-slot writes: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_array_literal_sources() {
+        let src = r#"
+ins:
+  in1
+  in2
+outs:
+  out_st: f32[2]
+
+graph:
+  [in1, in2] >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("graph array literal source should analyze");
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Var(src),
+                        ..
+                    } if base == "out_st"
+                        && ((matches!(index, Expr::Int(0)) && src == "in1")
+                            || (matches!(index, Expr::Int(1)) && src == "in2"))
+                ))
+                .count()
+                == 2,
+            "expected graph array literal source to lower to per-slot writes: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_array_delayed_edges() {
+        let src = r#"
+ins:
+  in_st: f32[2]
+outs:
+  out_st: f32[2]
+
+graph:
+  in_st >>[1] out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("array delayed graph edge should analyze");
+        assert!(
+            typed.init.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr: Expr::ArrayCtor { spec, .. },
+                    ..
+                } if name == "__graph_delay_0_buf"
+                    && matches!(
+                        (&spec.elem, spec.size.as_ref()),
+                        (ArrayElemType::Primitive(PrimitiveType::F32), Expr::Int(2))
+                    )
+            )),
+            "expected flattened array delay buffer init: {:?}",
+            typed.init
+        );
+        assert!(
+            typed
+                .sample
+                .iter()
+                .filter(|stmt| matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Index { base: src_base, .. },
+                        ..
+                    } if base == "out_st"
+                        && src_base == "__graph_delay_0_buf"
+                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                ))
+                .count()
+                == 2,
+            "expected per-slot delayed output reads: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_nonconstant_slice_bounds() {
+        let src = r#"
+params:
+  start = 1.0
+ins:
+  in_bus: f32[4]
+outs:
+  out_st: f32[2]
+
+graph:
+  in_bus[start:3] >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("dynamic graph slice bounds should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|diag| diag.message.contains("graph slice 'in_bus' slice start")),
+            "expected static graph slice bound diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_receiver_syntax() {
+        let src = r#"
+proc Gain:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+outs:
+  out1
+
+init:
+  g = Gain()
+
+graph:
+  g.in1 << 0.25
+  out1 << g.out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("receiver graph should analyze");
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Expr {
+                    expr: Expr::UserCall { name, args, .. },
+                    ..
+                } if name == "Gain.__proc_step"
+                    && args.len() == 2
+                    && matches!(args[0].expr, Expr::Var(ref node) if node == "g")
+                    && args.iter().any(|arg| matches!(arg.expr, Expr::Number(v) if (v - 0.25).abs() <= f32::EPSILON))
+            )),
+            "expected lowered proc step driven by receiver edge: {:?}",
+            typed.sample
+        );
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr: Expr::Var(src),
+                    ..
+                } if name == "out1" && src == "g.out1"
+            )),
+            "expected lowered output assignment driven by receiver edge: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_scalar_to_array_output_edges() {
+        let src = r#"
+outs:
+  out_st: f32[2]
+
+graph:
+  0.5 >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("scalar to array graph edge should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("shape mismatch: cannot assign F32 to F32[2]")),
+            "expected scalar/array mismatch diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_array_length_mismatch_edges() {
+        let src = r#"
+params:
+  a: f32[2] = [0.25, 0.75]
+outs:
+  out_st: f32[3]
+
+graph:
+  a >> out_st
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("array length mismatch graph edge should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("shape mismatch: cannot assign F32[2] to F32[3]")),
+            "expected array length mismatch diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_block_rate_indexed_input_sources() {
+        let src = r#"
+proc Gain:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+ins:
+  in_st: f32[2]
+outs:
+  out1
+
+init:
+  g = Gain()
+
+graph:
+  @block in_st[0] >> g.gain
+  g.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("indexed @block input source should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph @block edge cannot read sample-rate input 'in_st'")),
+            "expected indexed input block-rate diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_duplicate_drivers() {
+        let src = r#"
+outs:
+  out1
+
+graph:
+  0.0 >> out1
+  1.0 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("duplicate graph driver should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph destination 'out1' has more than one driver")),
+            "expected duplicate-driver diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_unknown_source_nodes() {
+        let src = r#"
+proc Gain:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+outs:
+  out1
+
+init:
+  g = Gain()
+
+graph:
+  ghost.out1 >> g.in1
+  g.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("unknown graph node should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph source references unknown node 'ghost'")),
+            "expected unknown-node diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_unknown_destination_endpoints() {
+        let src = r#"
+proc Gain:
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+init:
+  g = Gain()
+
+graph:
+  0.0 >> g.not_real
+  g.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("unknown graph endpoint should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph destination 'g.not_real' references an unknown endpoint")),
+            "expected unknown-endpoint diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_inferred_block_param_edges_from_sample_sources() {
+        let src = r#"
+proc Mod:
+  outs:
+    out1
+  sample:
+    out1 = 0.5
+
+proc Gain:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+outs:
+  out1
+
+init:
+  mod = Mod()
+  g = Gain()
+
+graph:
+  mod.out1 >> g.gain
+  g.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("inferred @block param edge should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph @block edge cannot read sample-rate processor output 'mod.out1'")),
+            "expected inferred-@block sample-source diagnostic, got {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|diag| diag.message.contains("add @sample to this param edge")),
+            "expected inferred-@block @sample hint, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_accepts_graph_sample_override_for_param_destinations() {
+        let src = r#"
+proc Gain:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+ins:
+  in1
+outs:
+  out1
+
+init:
+  g = Gain()
+
+graph:
+  @sample in1 >> g.gain
+  g.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("@sample param override graph should analyze");
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr: Expr::Var(src),
+                    ..
+                } if name == "g.gain" && src == "in1"
+            )),
+            "expected lowered sample assignment to drive g.gain from in1: {:?}",
+            typed.sample
+        );
+        assert!(
+            typed.sample.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Expr {
+                    expr: Expr::UserCall { name, .. },
+                    ..
+                } if name == "Gain.__proc_step"
+            )),
+            "expected lowered sample proc step for g: {:?}",
+            typed.sample
+        );
+    }
+
+    #[test]
+    fn graph_block_rejects_explicit_zero_delay_cycles() {
+        let src = r#"
+proc Pass:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+outs:
+  out1
+
+init:
+  a = Pass()
+  b = Pass()
+
+graph:
+  a.out1 >>[0] b.in1
+  b.out1 >> a.in1
+  a.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("zero-delay cycle should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("graph contains a cycle without sample delay")),
+            "expected zero-delay cycle diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn proc_graph_block_rejects_sample_coexistence() {
+        let src = r#"
+proc Main:
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+  graph:
+    0.0 >> out1
+"#;
+        let errors = parse_program(src).expect_err("proc graph + sample should fail at parse");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("proc graph block cannot be declared with sample or block")),
+            "expected proc graph/sample exclusivity diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn proc_graph_block_rejects_block_coexistence() {
+        let src = r#"
+proc Main:
+  outs:
+    out1
+  block:
+    sample:
+      out1 = 0.0
+  graph:
+    0.0 >> out1
+"#;
+        let errors = parse_program(src).expect_err("proc graph + block should fail at parse");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("proc graph block cannot be declared with sample or block")),
+            "expected proc graph/block exclusivity diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_cycle_diagnostic_reports_cycle_path() {
+        let src = r#"
+proc Pass:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+outs:
+  out1
+
+init:
+  a = Pass()
+  b = Pass()
+  c = Pass()
+
+graph:
+  a.out1 >> b.in1
+  b.out1 >> c.in1
+  c.out1 >> a.in1
+  a.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("cycle should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|diag| diag.message.contains("a -> b -> c -> a")),
+            "expected explicit cycle path, got {errors:?}"
         );
     }
 

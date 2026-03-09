@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use omni_frontend::{
-    inject_auto_std_math, with_diagnostic_location, ArrayElemType, AssignTarget, BinaryOp, Block,
-    BlockExec, BlockKind, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn,
-    CallArg, CallTypeArg, CmpOp, DeclRange, DeclType, Diagnostic, EventDef, EventParamType, Expr,
-    FieldType, FnParamType, FunctionDef, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program,
-    SampleBlock, Stmt, StructDef, StructField,
+    inject_auto_std_math, with_diagnostic_location, ArrayElemType, ArrayTypeSpec, AssignTarget,
+    BinaryOp, Block, BlockExec, BlockKind, BufferChannels, BufferDecl, BufferElemType, BufferType,
+    BuiltinFn, CallArg, CallTypeArg, CmpOp, DeclRange, DeclType, Diagnostic, EventDef,
+    EventParamType, Expr, FieldType, FnParamType, FunctionDef, GraphBlock, GraphEndpoint,
+    GraphRate, InitBlock, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
+    Stmt, StructDef, StructField,
 };
 
 mod array_structs;
@@ -36,7 +37,9 @@ use namespacing::*;
 use port_coercion::*;
 use proc_call_rewrite::*;
 use proc_state_rewrite::*;
-pub use processor_lowering::{analyze, analyze_with_options};
+pub use processor_lowering::{
+    analyze, analyze_with_options, lower_graphs_for_inspection_with_options,
+};
 use stmt_analysis::*;
 
 pub mod internal_names {

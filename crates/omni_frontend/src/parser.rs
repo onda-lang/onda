@@ -13,8 +13,9 @@ use crate::ast::{
     ArrayElemType, ArrayTypeSpec, AssertDecl, AssignTarget, BinaryOp, Block, BlockExec,
     BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp,
     ConstDecl, DeclRange, DeclType, EventDef, EventParamDecl, EventParamType, Expr, FieldType,
-    FnParamDecl, FnParamType, FunctionDef, InitBlock, LogicalOp, ParamDecl, PortDecl,
-    PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Stmt, StructDef, StructField,
+    FnParamDecl, FnParamType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate,
+    InitBlock, LogicalOp, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
+    SourceLoc, Stmt, StructDef, StructField,
 };
 use crate::diagnostics::Diagnostic;
 
@@ -23,6 +24,8 @@ const PROC_FIELD_SENTINEL_ARG: &str = "__proc_field";
 const PROC_INDEX_CALL_SENTINEL: &str = "__omni_proc_index_call";
 const PROC_INDEX_BASE_ARG: &str = "__proc_index_base";
 const PROC_INDEX_EXPR_ARG: &str = "__proc_index_expr";
+const GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL: &str = "__omni_graph_proc_array_field_index";
+const GRAPH_PROC_FIELD_INDEX_EXPR_ARG: &str = "__proc_field_index_expr";
 const BUFFER_READ2_INTERNAL_FN: &str = "__omni_buffer_read2";
 const BUFFER_WRITE2_INTERNAL_FN: &str = "__omni_buffer_write2";
 const STDLIB_AUTO_IMPORT_MODULES: &[&str] = &["std/prelude"];

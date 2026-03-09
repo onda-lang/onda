@@ -47,7 +47,7 @@
 ## Current implementation snapshot (2026-03)
 
 ### Language and parser
-- Top-level and proc blocks: `ins`, `outs`, `params`, `const`, `events`, `buffers`, `init`, `block`, `sample`, `def`, `struct`, `proc`/`processor`, `namespace`.
+- Top-level and proc blocks: `ins`, `outs`, `params`, `const`, `events`, `buffers`, `init`, `block`, `sample`, `graph`, `def`, `struct`, `proc`/`processor`, `namespace`.
 - Both brace and indentation syntaxes are supported.
 - Statement separators support both newline and `;`.
 - Import system is implemented:
@@ -118,6 +118,14 @@
   - Bitwise operators accept `i32`/`i64` operands only.
   - Mixed `i32`/`i64` operands widen to `i64`.
   - `>>` lowers as arithmetic right shift.
+- Graph routing/composition is implemented at top-level and proc-local scope:
+  - `graph` is mutually exclusive with `sample` and `block` in the same owner.
+  - Edges support send and receiver forms (`src >> dst`, `dst << src`), explicit rates (`@block`, `@sample`), and sample delays (`>>[N]`, `<<[N]`).
+  - Proc-array slot references with static indices are supported for graph sources and destinations.
+  - Strict scalar/array shape checking is enforced on graph edges.
+  - Whole-array routing and element-wise array expressions are supported where shapes match exactly.
+  - Cycles are rejected unless broken by positive sample delay.
+  - Graph lowering rewrites into generated `init` / `block pre` / `sample` code before proc desugaring.
 - Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
   - Default constant types: `PI`/`TWO_PI` are `f64`; `SAMPLE_RATE` is `f32`; `BLOCK_SIZE` is `i32`.
 - User-defined scalar compile-time constants are supported via `const NAME = expr` and optional typed form `const NAME: T = expr`.
@@ -284,8 +292,9 @@
 - Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
   - `omni_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
 - CLI (`omni`) supports:
-  - `compile <file> [--ir] [--meta]`
-  - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--ir]`
+  - `compile <file> [--dump-graph] [--ir] [--meta]`
+  - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--dump-graph] [--ir]`
+  - `--dump-graph` prints the program immediately after graph lowering, before proc desugaring/codegen.
 
 ## LLVM dependency strategy
 - Prebuilt LLVM is vendored under `.deps/llvm/21.1.2`.
@@ -299,7 +308,7 @@
 - ORC path is implemented through `llvm-sys`.
 
 ## Major remaining work
-- Graph composition syntax.
+- Graph follow-ups: broader source expressions, optional coercion/broadcasting rules, and richer diagnostics.
 - AOT backend.
 - C++ single-header backend.
 - Standard library expansion/versioning beyond MVP module set.

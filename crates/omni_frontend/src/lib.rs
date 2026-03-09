@@ -6,8 +6,9 @@ pub use ast::{
     ArrayElemType, ArrayTypeSpec, AssertDecl, AssignTarget, BinaryOp, Block, BlockExec, BlockKind,
     BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp,
     ConstDecl, DeclRange, DeclType, EventDef, EventParamDecl, EventParamType, Expr, FieldType,
-    FnParamDecl, FnParamType, FunctionDef, InitBlock, LogicalOp, ParamDecl, PortDecl,
-    PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Stmt, StructDef, StructField,
+    FnParamDecl, FnParamType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate,
+    InitBlock, LogicalOp, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
+    SourceLoc, Stmt, StructDef, StructField,
 };
 pub use diagnostics::{with_diagnostic_location, DiagCode, Diagnostic};
 pub use parser::{

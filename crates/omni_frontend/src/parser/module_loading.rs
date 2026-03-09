@@ -442,6 +442,7 @@ fn parse_program_preprocessed(
                 Rule::init_block => blocks.push(Block::Init(parse_exec_block(pair)?)),
                 Rule::block_exec_block => blocks.push(Block::Block(parse_block_exec_block(pair)?)),
                 Rule::sample_block => blocks.push(Block::Sample(parse_sample_block(pair)?)),
+                Rule::graph_block => blocks.push(Block::Graph(parse_graph_block(pair)?)),
                 _ => {}
             }
         }
@@ -2398,6 +2399,9 @@ fn rewrite_block_namespace_refs(
             }
             rewrite_stmts(&mut p.sample, current_ns, const_env, state, generated)?;
             rewrite_stmts(&mut p.block_post, current_ns, const_env, state, generated)?;
+            if let Some(graph) = &mut p.graph {
+                rewrite_graph_block(graph, current_ns, const_env, state, generated)?;
+            }
             for def in &mut p.local_defs {
                 rewrite_function_def(def, current_ns, const_env, state, generated)?;
             }
@@ -2423,6 +2427,28 @@ fn rewrite_block_namespace_refs(
                 rewrite_expr(os, current_ns, const_env, state, generated)?;
             }
             rewrite_stmts(&mut sample.body, current_ns, const_env, state, generated)?;
+        }
+        Block::Graph(graph) => {
+            rewrite_graph_block(graph, current_ns, const_env, state, generated)?;
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_graph_block(
+    graph: &mut GraphBlock,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    for edge in &mut graph.edges {
+        rewrite_expr(&mut edge.source, current_ns, const_env, state, generated)?;
+        if let Some(delay) = &mut edge.delay {
+            rewrite_expr(delay, current_ns, const_env, state, generated)?;
+        }
+        if let GraphEndpoint::ProcIndexedField { index, .. } = &mut edge.dest {
+            rewrite_expr(index, current_ns, const_env, state, generated)?;
         }
     }
     Ok(())

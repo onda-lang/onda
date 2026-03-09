@@ -31,6 +31,7 @@ Top-level blocks:
 - `init`
 - `block`
 - `sample`
+- `graph`
 - `def`
 - `struct`
 - `proc` / `processor`
@@ -266,6 +267,104 @@ Runtime behavior:
 - input reads are interpolated across oversample substeps
 - params are held within the base sample
 - outputs are filtered/decimated back to base rate by compiler-managed conversion
+
+## 5.2 Graph routing (`graph`)
+
+`graph` is supported at top-level and inside processors.
+
+```omni
+proc Main:
+  ins:
+    in_st: f32[2]
+  outs:
+    out_st: f32[2]
+  params:
+    mix = 0.25
+
+  init:
+    rev = Reverb()
+
+  graph:
+    in_st[0] >> rev.inL
+    in_st[1] >> rev.inR
+    mix >> rev.mix
+    rev.outL >> out_st[0]
+    rev.outR >> out_st[1]
+```
+
+Edge forms:
+
+```omni
+src >> dst
+dst << src
+@block src >> dst
+@block dst << src
+@sample src >> dst
+@sample dst << src
+src >>[N] dst
+dst <<[N] src
+```
+
+Rules:
+- `graph` is mutually exclusive with `sample` and `block` in the same owner.
+- `init` may still be used with `graph`.
+- Proc instances used as graph nodes are created in `init`.
+- Unannotated edges targeting proc `params` are inferred as `@block`.
+- Unannotated edges targeting other destinations are inferred as `@sample`.
+- `@sample` may override the default `@block` behavior for proc param destinations.
+- `>>[N]` uses a compile-time integer `N >= 0`.
+- Delayed edges are sample-rate only.
+- `>>[0]` does not break cycles.
+
+Legal destinations:
+- top-level outputs
+- proc inputs and params
+- proc-array slot inputs and params such as `voices[0].gain`
+
+Examples:
+
+```omni
+graph:
+  in1 >> g.in1
+  env.out1 >> g.gain
+  @sample lfo.out1 >> lp.cutoff
+  src.pair >> out_st
+  voices[0].pair[1] >> out1
+```
+
+Current source support includes:
+- top-level inputs and params
+- proc outputs
+- proc-array slot outputs
+- array literals such as `[in1, in2]`
+- indexed reads such as `gains[1]` and `src.pair[1]`
+- sliced reads such as `in_bus[1:3]` and `src.pair[:-1]`
+- whole-array reads such as `src.pair` and `voices[0].pair`
+- pure arithmetic/logical expressions built from supported graph sources
+- element-wise array expressions such as `in_a + in_b`, `in_a * 0.5 + in_b * 0.5`, and array-plus-scalar forms where the final edge shape still matches the destination
+
+Receiver syntax:
+- `dst << src` is exact graph sugar for `src >> dst`
+- all implemented rate/delay forms apply equally to receiver syntax
+
+Current MVP limits:
+- user-defined calls and proc calls are not supported inside graph source expressions
+- array-constructor expressions such as `f32[2](...)` are not supported as graph sources
+- graph event propagation syntax does not exist; use ordinary `events` blocks for control/event routing
+
+Type and scheduling rules:
+- graph edges use strict shape matching
+- `f32[2] >> f32[2]` is allowed
+- `f32 >> f32[2]` is rejected
+- `f32[2] >> f32[3]` is rejected
+- delayed edges use the same strict shape rules, so `f32[2] >>[1] f32[2]` is allowed and `f32[2] >>[1] f32[3]` is rejected
+- each destination has a single writer
+- fan-out is allowed
+- cycles are rejected unless at least one cycle edge has positive sample delay
+- proc nodes are stepped implicitly according to graph reachability and topological order
+- delayed edge state persists across blocks/process calls
+- `graph` lowering can be inspected with `omni compile <file> --dump-graph`
+- graph slice bounds must be compile-time integer expressions
 
 For/loop bounds:
 - `A`, `B`, and `N` may be general expressions, including parenthesized forms like `0..(n - 1)`.

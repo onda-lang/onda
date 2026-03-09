@@ -4,11 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DeclType,
-    EventParamType, Expr, FieldType, FnParamType, PrimitiveType, Stmt,
+    EventParamType, Expr, FieldType, FnParamType, GraphEndpoint, GraphRate, PrimitiveType, Stmt,
 };
 
 use super::{
-    parse_program, parse_program_file, PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX,
+    parse_program, parse_program_file, GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL,
+    GRAPH_PROC_FIELD_INDEX_EXPR_ARG, PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX,
     PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
 
@@ -4672,5 +4673,165 @@ sample:
     assert!(
         event_calls.iter().any(|name| name == "tail.set_impulse"),
         "expected tail event call to remain receiver-based, got {event_calls:?}"
+    );
+}
+
+#[test]
+fn parses_graph_block_with_rates_and_delay() {
+    let src = r#"
+outs { out1 }
+params { mix = 0.25 }
+proc OnePole {
+  ins { in1 }
+  params { cutoff = 1000.0 }
+  outs { out1 }
+  sample { out1 = in1 }
+}
+init {
+  lp = OnePole()
+}
+graph {
+  @sample mix >> lp.cutoff
+  lp.out1 >>[1] out1
+}
+"#;
+
+    let program = parse_program(src).expect("graph program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    assert_eq!(graph.edges.len(), 2);
+    assert_eq!(graph.edges[0].rate, Some(GraphRate::Sample));
+    assert!(graph.edges[0].delay.is_none());
+    assert!(matches!(
+        graph.edges[0].dest,
+        GraphEndpoint::ProcField { ref proc, ref field }
+        if proc == "lp" && field == "cutoff"
+    ));
+    assert_eq!(graph.edges[1].delay, Some(Expr::Int(1)));
+    assert!(matches!(
+        graph.edges[1].dest,
+        GraphEndpoint::Symbol(ref name) if name == "out1"
+    ));
+}
+
+#[test]
+fn parses_graph_proc_array_slot_endpoints() {
+    let src = r#"
+outs { out1 }
+proc Voice {
+  outs { out1 }
+  sample { out1 = 0.0 }
+}
+init {
+  voices: Voice[2] = Voice()
+}
+graph {
+  voices[1].out1 >> out1
+}
+"#;
+
+    let program = parse_program(src).expect("graph proc-array program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    assert!(matches!(
+        graph.edges[0].source,
+        Expr::UserCall { ref name, .. }
+        if name == &format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}")
+    ));
+}
+
+#[test]
+fn parses_graph_proc_array_output_array_slot_sources() {
+    let src = r#"
+proc Voice {
+  outs:
+    pair: f32[2]
+  sample {
+    pair[0] = 0.0
+    pair[1] = 1.0
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = Voice()
+}
+graph {
+  voices[1].pair[0] >> out1
+}
+"#;
+
+    let program = parse_program(src).expect("graph proc-array output array program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    match &graph.edges[0].source {
+        Expr::UserCall { name, args, .. } => {
+            assert_eq!(name, GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL);
+            assert!(args.iter().any(|arg| {
+                arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG)
+                    && matches!(arg.expr, Expr::Var(ref base) if base == "voices")
+            }));
+            assert!(args.iter().any(|arg| {
+                arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG) && matches!(arg.expr, Expr::Int(1))
+            }));
+            assert!(args.iter().any(|arg| {
+                arg.name.as_deref() == Some(PROC_FIELD_SENTINEL_ARG)
+                    && matches!(arg.expr, Expr::Var(ref field) if field == "pair")
+            }));
+            assert!(args.iter().any(|arg| {
+                arg.name.as_deref() == Some(GRAPH_PROC_FIELD_INDEX_EXPR_ARG)
+                    && matches!(arg.expr, Expr::Int(0))
+            }));
+        }
+        other => panic!("expected graph source sentinel call, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_graph_receiver_edges_with_delay() {
+    let src = r#"
+outs:
+  out1
+
+graph:
+  @sample out1 <<[2] 0.5
+"#;
+    let program = parse_program(src).expect("graph receiver program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    assert_eq!(graph.edges.len(), 1);
+    assert_eq!(graph.edges[0].rate, Some(GraphRate::Sample));
+    assert_eq!(graph.edges[0].delay, Some(Expr::Int(2)));
+    assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert_eq!(
+        graph.edges[0].dest,
+        GraphEndpoint::Symbol("out1".to_owned())
     );
 }

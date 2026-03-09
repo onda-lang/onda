@@ -1318,6 +1318,130 @@ sample {
 }
 "#;
 
+const GRAPH_IMPLICIT_PROC_FANOUT_EXAMPLE: &str = r#"
+proc Source {
+  outs { out1 }
+  sample {
+    out1 = 0.25
+  }
+}
+
+proc Gain {
+  ins { in1 }
+  outs { out1 }
+  sample {
+    out1 = in1 * 2.0
+  }
+}
+
+outs 2
+
+init {
+  src = Source()
+  gain = Gain()
+}
+
+graph {
+  src.out1 >> gain.in1
+  gain.out1 >> out1
+  gain.out1 >> out2
+}
+"#;
+
+const GRAPH_DELAY_FEEDBACK_EXAMPLE: &str = r#"
+proc Acc {
+  ins { in1 }
+  outs { out1 }
+  sample {
+    out1 = in1 + 1.0
+  }
+}
+
+outs { out1 }
+
+init {
+  acc = Acc()
+}
+
+graph {
+  acc.out1 >>[1] acc.in1
+  acc.out1 >> out1
+}
+"#;
+
+const GRAPH_PARAM_SAMPLE_OVERRIDE_EXAMPLE: &str = r#"
+proc Gain {
+  params { gain = 0.0 }
+  outs { out1 }
+  sample {
+    out1 = gain
+  }
+}
+
+ins { in1 }
+outs { out1 }
+
+init {
+  g = Gain()
+}
+
+graph {
+  @sample in1 >> g.gain
+  g.out1 >> out1
+}
+"#;
+
+const GRAPH_ARRAY_EXPR_EXAMPLE: &str = r#"
+ins { a: f32[2], b: f32[2] }
+outs { out_st: f32[2] }
+
+graph {
+  a * 0.5 + b * 0.25 >> out_st
+}
+"#;
+
+const GRAPH_ARRAY_DELAY_EXAMPLE: &str = r#"
+ins { in_st: f32[2] }
+outs { out_st: f32[2] }
+
+graph {
+  in_st >>[1] out_st
+}
+"#;
+
+const GRAPH_EVENT_ROUTING_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1 }
+  init {
+    gain = 0.0
+  }
+  events {
+    set_gain(v: f32) {
+      gain = v
+    }
+  }
+  sample {
+    out1 = gain
+  }
+}
+
+outs { out1 }
+
+init {
+  voice = Voice()
+}
+
+graph {
+  voice.out1 >> out1
+}
+
+events {
+  set_gain(v: f32) {
+    voice.set_gain(v)
+  }
+}
+"#;
+
 const UNSAFE_TOP_LEVEL_ARRAY_EXAMPLE: &str = r#"
 outs { out1: f32[2] }
 params { p: f32[2] = [1.0, 2.0] }
@@ -7761,6 +7885,167 @@ fn top_level_output_array_writes_indexed_channels() {
         assert_near(output[base], 0.25, 1e-6);
         assert_near(output[base + 1], 0.75, 1e-6);
     }
+}
+
+#[test]
+fn graph_implicitly_steps_proc_nodes_and_fanout_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_IMPLICIT_PROC_FANOUT_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for frame in 0..frames {
+        let base = frame * out_channels;
+        assert_near(output[base], 0.5, 1e-6);
+        assert_near(output[base + 1], 0.5, 1e-6);
+    }
+}
+
+#[test]
+fn graph_delayed_feedback_persists_across_process_calls() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_DELAY_FEEDBACK_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut first = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut first, frames)
+        .expect("first process should succeed");
+    let expected_first = [1.0_f32, 2.0, 3.0, 4.0];
+    for (sample, target) in first.iter().zip(expected_first) {
+        assert_near(*sample, target, 1e-6);
+    }
+
+    let mut second = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut second, frames)
+        .expect("second process should succeed");
+    let expected_second = [5.0_f32, 6.0, 7.0, 8.0];
+    for (sample, target) in second.iter().zip(expected_second) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_sample_override_for_param_destinations_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_PARAM_SAMPLE_OVERRIDE_EXAMPLE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = vec![0.1_f32, 0.2, 0.3, 0.4];
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    for (sample, target) in output.iter().zip(input) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_array_expressions_run_element_wise() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_ARRAY_EXPR_EXAMPLE, frames);
+    assert_eq!(in_channels, 4);
+    assert_eq!(out_channels, 2);
+
+    let input = vec![
+        1.0_f32, 4.0, 2.0, 8.0, //
+        2.0, 5.0, 4.0, 10.0, //
+        3.0, 6.0, 6.0, 12.0, //
+        4.0, 7.0, 8.0, 14.0,
+    ];
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    let expected = [
+        1.0_f32 * 0.5 + 2.0 * 0.25,
+        4.0 * 0.5 + 8.0 * 0.25,
+        2.0 * 0.5 + 4.0 * 0.25,
+        5.0 * 0.5 + 10.0 * 0.25,
+        3.0 * 0.5 + 6.0 * 0.25,
+        6.0 * 0.5 + 12.0 * 0.25,
+        4.0 * 0.5 + 8.0 * 0.25,
+        7.0 * 0.5 + 14.0 * 0.25,
+    ];
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_array_delays_persist_and_shift_element_wise() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_ARRAY_DELAY_EXAMPLE, frames);
+    assert_eq!(in_channels, 2);
+    assert_eq!(out_channels, 2);
+
+    let first_input = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+    let mut first_output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &first_input, &mut first_output, frames)
+        .expect("first process should succeed");
+    let expected_first = [
+        0.0_f32, 0.0, //
+        1.0, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0,
+    ];
+    for (sample, target) in first_output.iter().zip(expected_first) {
+        assert_near(*sample, target, 1e-6);
+    }
+
+    let second_input = vec![
+        5.0_f32, 50.0, //
+        6.0, 60.0, //
+        7.0, 70.0, //
+        8.0, 80.0,
+    ];
+    let mut second_output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &second_input, &mut second_output, frames)
+        .expect("second process should succeed");
+    let expected_second = [
+        4.0_f32, 40.0, //
+        5.0, 50.0, //
+        6.0, 60.0, //
+        7.0, 70.0,
+    ];
+    for (sample, target) in second_output.iter().zip(expected_second) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_nodes_remain_addressable_from_top_level_events() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_EVENT_ROUTING_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert!(output.iter().all(|sample| (*sample).abs() <= 1e-6));
+
+    let idx = instance
+        .event_index("set_gain")
+        .expect("top-level graph event must exist");
+    trigger_event_by_index(&mut instance, idx, &0.75_f32.to_ne_bytes())
+        .expect("event trigger should succeed");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert!(output.iter().all(|sample| (*sample - 0.75).abs() <= 1e-6));
 }
 
 #[test]

@@ -26,6 +26,7 @@ pub enum Block {
     Init(InitBlock),
     Block(BlockExec),
     Sample(SampleBlock),
+    Graph(GraphBlock),
 }
 
 impl Block {
@@ -44,6 +45,7 @@ impl Block {
             Self::Init(_) => BlockKind::Init,
             Self::Block(_) => BlockKind::Block,
             Self::Sample(_) => BlockKind::Sample,
+            Self::Graph(_) => BlockKind::Graph,
         }
     }
 }
@@ -63,6 +65,7 @@ pub enum BlockKind {
     Init,
     Block,
     Sample,
+    Graph,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +79,39 @@ pub struct BlockExec {
 pub struct SampleBlock {
     pub oversample_factor: Option<Expr>,
     pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphBlock {
+    pub edges: Vec<GraphEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphEdge {
+    pub rate: Option<GraphRate>,
+    pub source: Expr,
+    pub delay: Option<Expr>,
+    pub dest: GraphEndpoint,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum GraphRate {
+    Block,
+    Sample,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GraphEndpoint {
+    Symbol(String),
+    ProcField {
+        proc: String,
+        field: String,
+    },
+    ProcIndexedField {
+        proc: String,
+        index: Expr,
+        field: String,
+    },
 }
 
 impl Deref for SampleBlock {
@@ -191,11 +227,13 @@ pub struct ProcessorDef {
     pub has_init_block: bool,
     pub has_block_block: bool,
     pub has_sample_block: bool,
+    pub has_graph_block: bool,
     pub sample_oversample_factor: Option<Expr>,
     pub init: InitBlock,
     pub block_pre: Vec<Stmt>,
     pub sample: Vec<Stmt>,
     pub block_post: Vec<Stmt>,
+    pub graph: Option<GraphBlock>,
     pub local_defs: Vec<FunctionDef>,
 }
 
