@@ -109,6 +109,9 @@
     ```
   - Locked MVP semantics:
     - Constructor args in `init` are initial/default values; incoming graph edges provide runtime drive.
+    - `graph` is for continuous value routing only; it does not define event propagation syntax in MVP.
+    - Top-level `events` remain imperative and may call proc events on graph nodes instantiated in `init`.
+    - Graph-instantiated proc nodes stay addressable by name outside `graph`, so event handlers can target them directly (for example `voice.note_on(...)`).
     - Unannotated edges targeting proc `param` endpoints are inferred as `@block`.
     - Unannotated edges targeting non-param destinations are `@sample` by default.
     - `@sample` can be used to override inferred `@block` on param destinations.
@@ -122,6 +125,28 @@
     - Delayed edge state is per-edge and persistent across blocks.
     - Function-call processing in graph edges is not part of graph MVP; use proc nodes for transforms.
     - Complex block-rate control logic should run in `block`, then feed graph param edges.
+    - Illustrative event/control-plane pattern:
+      ```omni
+      proc Main
+        outs 1
+
+        init
+          voice = Voice()
+          env = Env()
+
+        graph
+          env.out1 >> voice.amp
+          voice.out1 >> out1
+
+        events
+          note_on(note: i32, vel: i32)
+            voice.note_on(note, vel)
+            env.gate_on()
+
+          note_off()
+            voice.note_off()
+            env.gate_off()
+      ```
   - Delivery plan:
     - Frontend: parser + AST for `graph` block, edge annotations (`@block/@sample`), and delayed edges `>>[N]`.
     - Semantics: node/endpoint resolution from `init`, rate inference (`dst` param => `@block`), rate checking, cycle detection with delay accounting, single-writer enforcement.
