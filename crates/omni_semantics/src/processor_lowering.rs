@@ -2258,16 +2258,12 @@ fn rewrite_overloaded_calls_in_stmt_list(
 
 fn prepare_function_overloads(
     defs: &mut [FunctionDef],
-    method_self_struct: &HashMap<String, String>,
 ) -> (
     HashMap<String, Vec<OverloadCandidate>>,
     HashMap<String, String>,
 ) {
     let mut by_public_top_level = HashMap::<String, Vec<usize>>::new();
     for (idx, def) in defs.iter().enumerate() {
-        if method_self_struct.contains_key(&def.name) {
-            continue;
-        }
         by_public_top_level
             .entry(def.name.clone())
             .or_default()
@@ -3033,16 +3029,7 @@ pub fn analyze_with_options(
         });
         all_declared.insert(s.name.clone());
 
-        let mut local_method_names = HashSet::new();
         for method in &s.methods {
-            if !local_method_names.insert(method.name.clone()) {
-                errors.push(Diagnostic::semantic(
-                    format!("duplicate method '{}.{}'", s.name, method.name),
-                    0,
-                    0,
-                ));
-                continue;
-            }
             if method.params.first().map(|p| p.name.as_str()) != Some("self") {
                 errors.push(Diagnostic::semantic(
                     format!(
@@ -3180,8 +3167,20 @@ pub fn analyze_with_options(
         }
     }
 
-    let (overload_candidates, def_public_name_by_internal) =
-        prepare_function_overloads(&mut defs, &method_self_struct);
+    let (overload_candidates, def_public_name_by_internal) = prepare_function_overloads(&mut defs);
+    let method_self_struct_internal = defs
+        .iter()
+        .filter_map(|def| {
+            let public_name = def_public_name_by_internal
+                .get(&def.name)
+                .cloned()
+                .unwrap_or_else(|| def.name.clone());
+            method_self_struct
+                .get(&public_name)
+                .cloned()
+                .map(|owner| (def.name.clone(), owner))
+        })
+        .collect::<HashMap<_, _>>();
 
     let mut top_level_env = OverloadRewriteEnv::default();
     top_level_env
@@ -3879,7 +3878,7 @@ pub fn analyze_with_options(
             })
             .collect::<HashMap<_, _>>(),
         &fn_signatures,
-        &method_self_struct,
+        &method_self_struct_internal,
         &struct_defs,
         options,
         &mut errors,
@@ -4050,7 +4049,7 @@ pub fn analyze_with_options(
                     .cloned()
                     .unwrap_or_else(|| vec![TypedFnParam::Scalar { ty: None }; d.params.len()]);
                 TypedFunction {
-                    method_of: method_self_struct.get(&d.name).cloned(),
+                    method_of: method_self_struct_internal.get(&d.name).cloned(),
                     type_params: d.type_params.clone(),
                     param_defaults: d.params.iter().map(|p| p.default.clone()).collect(),
                     param_kinds,

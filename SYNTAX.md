@@ -276,7 +276,7 @@ Supported:
 - Positional and named arguments
 - Default arguments
 - Early return
-- Top-level overloads by arity and/or parameter type
+- Top-level `def` and struct-method overloads only, by arity and/or parameter type
 - Method-style sugar for functions: `value.fn(a, b)` is rewritten as `fn(value, a, b)` when a matching function `fn` is in scope.
 - Def scope is lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not directly visible inside a `def`.
 - Call argument lists may span multiple lines, and a trailing comma is allowed in both function calls and method calls.
@@ -350,8 +350,8 @@ Method-style sugar works with generic params: `voice.process()` desugars to `pro
 - Default arguments participate in overload matching.
 - If multiple candidates are equally valid, the call is a semantic error (ambiguous overload).
 - Return type is not part of overload selection.
-- Overloading currently applies to top-level `def` only.
-- Struct methods still cannot be overloaded; duplicate method names in the same struct are rejected.
+- Overloading currently applies to top-level `def` and struct methods.
+- Proc-local defs still cannot be overloaded; duplicate names in the same processor are rejected.
 - For overloads involving generic params: explicit type > generic/duck-typed > untyped.
 
 Explicit `def` type parameters (`def fn<T>`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
@@ -662,6 +662,7 @@ Imports:
   - `std/data`
   - `std/lookup`
   - `std/fft`
+  - `std/convolution`
 - `std/prelude` is auto-imported (explicit import is optional), and it currently re-exports `std/math` + `std/lookup`.
 
 Include:

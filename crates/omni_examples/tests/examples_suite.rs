@@ -581,7 +581,7 @@ sample {
 }
 "#;
 
-const STRUCT_METHOD_OVERLOAD_ERROR_EXAMPLE: &str = r#"
+const STRUCT_METHOD_OVERLOAD_EXAMPLE: &str = r#"
 outs { out1 }
 struct V {
   def run(self, x) {
@@ -595,7 +595,7 @@ init {
   v = V()
 }
 sample {
-  out1 = v.run(1.0)
+  out1 = v.run(1.0) + v.run(1.0, 2.0)
 }
 "#;
 
@@ -6888,13 +6888,18 @@ fn def_overload_supports_buffer_and_scalar_variants() {
 }
 
 #[test]
-fn struct_methods_do_not_support_overloading() {
-    let parsed = parse_program(STRUCT_METHOD_OVERLOAD_ERROR_EXAMPLE).expect("parse should succeed");
-    let result = analyze(parsed);
-    assert!(
-        result.is_err(),
-        "semantic analysis should reject overloaded struct methods in MVP"
-    );
+fn struct_methods_support_overloading() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STRUCT_METHOD_OVERLOAD_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 4.0, 1e-6);
+    }
 }
 
 #[test]
@@ -9215,6 +9220,30 @@ sample:
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn struct_method_untyped_numeric_calls_compile_and_run() {
+    let src = r#"
+struct Math:
+  def mix(self, x, y):
+    return x * y + x
+
+outs { out1 }
+init:
+  m = Math()
+sample:
+  a = m.mix(f32(1.5), f32(2.0))
+  b = f32(m.mix(f64(1.25), f64(4.0)))
+  out1 = a + b
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 10.75, 1e-6);
     }
 }
 
@@ -14421,6 +14450,40 @@ fn proc_local_def_owner_generic_scalar_param() {
 
     for sample in &output {
         assert_near(*sample, 2.5, 1e-6);
+    }
+}
+
+#[test]
+fn proc_local_def_untyped_numeric_calls_compile_and_run() {
+    let src = r#"
+proc Math {
+  outs 1
+
+  def mix(x, y) {
+    return x * y + x
+  }
+
+  sample {
+    a = mix(f32(1.5), f32(2.0))
+    b = f32(mix(f64(1.25), f64(4.0)))
+    out1 = a + b
+  }
+}
+
+outs 1
+init { m = Math() }
+sample { out1 = m() }
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 10.75, 1e-6);
     }
 }
 

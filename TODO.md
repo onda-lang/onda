@@ -4,7 +4,8 @@
 
 - Polymorph defs follow-ups
   - Improve overload diagnostics to show per-candidate ranking details.
-  - Evaluate extending overloads to struct methods (currently still rejected as duplicate method names).
+  - Evaluate extending overloads from top-level `def` and struct methods to proc-local defs.
+  - Clarify current exclusions in docs: proc-local defs are still not overloadable.
   - Clarify/document overload behavior for complex untyped array/buffer inference-heavy call sites.
 
 - `const` follow-ups
@@ -141,7 +142,12 @@
   - Consider user-exposed quality/performance modes.
   - Add explicit performance budget tracking for higher factors (`N=32`, `N=64`) on representative patches.
 
-- Standard library modules
+- Standard library follow-ups
+  - Keep the built-in module inventory synced across `README.md`, `INFO.md`, and `SYNTAX.md`:
+    `std/prelude`, `std/math`, `std/complex`, `std/osc`, `std/filter`, `std/env`,
+    `std/delay`, `std/data`, `std/lookup`, `std/fft`, `std/convolution`.
+  - Decide which stdlib modules are considered stable MVP surface versus still-evolving API.
+  - Plan the next expansion/versioning pass beyond the current shipped module set.
 
 - Generics follow-ups
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.

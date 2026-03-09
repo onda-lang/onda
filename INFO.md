@@ -176,12 +176,12 @@
   - positional + named args, default values, early return.
   - Top-level `def` bodies are lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not in scope unless passed as parameters.
   - Proc-local `def` blocks have implicit access to proc state (init-declared variables, params, nested procs) without `self`. They are private to the enclosing processor and are inlined at call sites during semantic analysis.
-  - top-level overloads are supported (same symbol with different arity and/or parameter types).
+  - top-level overloads and struct-method overloads are supported (same symbol with different arity and/or parameter types); proc-local defs are excluded.
   - overload resolution prefers exact typed matches; if no exact match exists, numeric widening candidates can be used.
   - untyped parameters participate with lower priority than typed parameters.
   - defaults participate in overload matching.
   - ambiguous matches are semantic errors.
-  - overloads currently apply to top-level `def` only; struct methods with the same name are still rejected as duplicates.
+  - overloads currently apply to top-level `def` and struct methods; proc-local defs with the same name are still rejected.
   - explicit `def` type parameters (`def fn<T>`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
   - explicit struct-typed params are nominal.
   - typed and duck-typed buffer params are supported; duck-typed buffer calls specialize by caller shape/type.
