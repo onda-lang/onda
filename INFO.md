@@ -204,7 +204,7 @@
 - generic processors are supported and specialized/monomorphized on constructor use.
 - `sample` is required; `init` is optional (top-level `init` is also optional).
 - `events` is optional inside `proc`.
-- proc-local `def` blocks are supported inside `proc` bodies. They act as private helper subroutines with implicit state access (no `self`), callable from `init`, `sample`, `block`, `events`, and other proc-local defs. They support parameters, return values, and transitive calls. Recursive/mutually recursive calls are rejected. Implementation is AST-level inlining during semantic analysis.
+- proc-local `def` blocks are supported inside `proc` bodies. They act as private helper subroutines with implicit state access (no `self`), callable from `init`, `sample`, `block`, `events`, and other proc-local defs. They support parameters, return values, and transitive calls. Recursive/mutually recursive calls are rejected. Implementation lowers them to hidden ordinary defs with an implicit proc receiver, so argument binding/defaults/return behavior follow the normal `def` pipeline rather than a bespoke inline-only model.
 - generic typed local declarations (`x: T = ...`) are supported in all executable scopes of a generic owner (`init`, `sample`, `block`, `def` methods, `events`).
 - Processor call forms:
   - `p(...)` (scalar return for single-out procs; sugar for `p.out1` / endpoint name)

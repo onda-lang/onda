@@ -549,7 +549,7 @@ proc Filter<T>:
 Proc-local defs support:
 - Parameters (positional, named, defaults) — same as top-level `def`.
 - Return values via `return`.
-- Calling other proc-local defs (transitive inlining).
+- Calling other proc-local defs.
 - Calling namespace-level `def` functions.
 - Access to proc generic type parameters (e.g. `T`).
 
@@ -558,8 +558,8 @@ Rules:
 - They are callable from `init`, `sample`, `block`, `events`, and other proc-local defs.
 - State variables are accessed directly by name (no `self`).
 - Parameters and for-loop variables are local to the def; state variables pass through unchanged.
-- Recursive and mutually recursive calls are detected and rejected (max inline depth 16).
-- Proc-local defs are inlined at their call sites during semantic analysis (before codegen). LLVM's `O3` pipeline further optimizes the inlined code.
+- Recursive and mutually recursive calls are detected and rejected.
+- Internally, proc-local defs lower to hidden ordinary defs with an implicit proc receiver. Calls inside the proc are rewritten to those hidden defs, so proc-local defs follow the same normal argument binding/default/return semantics as regular `def` blocks.
 - Overloading of proc-local defs is not currently supported.
 
 ## 9 Generics
