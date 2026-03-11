@@ -43,11 +43,12 @@ init:
   n: i32 = 0
 
 sample:
+  tau = f32(TWO_PI)
   ph = chaos()
-  l1 = sin(ph * TWO_PI)
-  l2 = sin(ph * TWO_PI * 1.73 + 0.7)
-  l3 = sin(ph * TWO_PI * 2.41 + 1.9)
-  l4 = sin(ph * TWO_PI * 3.17 + 2.6)
+  l1 = sin(ph * tau)
+  l2 = sin(ph * tau * 1.73 + 0.7)
+  l3 = sin(ph * tau * 2.41 + 1.9)
+  l4 = sin(ph * tau * 3.17 + 2.6)
 
   o1.freq = 55.0 + 42.0 * (l1 + 1.0)
   o2.freq = 73.0 + 54.0 * (l2 + 1.0)

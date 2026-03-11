@@ -1,7 +1,8 @@
 def add_phase(p, inc):
+  tau = f32(TWO_PI)
   next = p + inc
-  if (next >= TWO_PI):
-    next = next - TWO_PI
+  if (next >= tau):
+    next = next - tau
   return next
 
 proc DualOsc:
@@ -20,8 +21,9 @@ proc DualOsc:
     lastB = 0.0
 
   sample 8:
-    incA = frequency * TWO_PI / SR
-    incB = (frequency + detune) * TWO_PI / SR
+    tau = f32(TWO_PI)
+    incA = frequency * tau / SR
+    incB = (frequency + detune) * tau / SR
 
     phaseA = add_phase(phaseA, incA)
     phaseB = add_phase(phaseB, incB)

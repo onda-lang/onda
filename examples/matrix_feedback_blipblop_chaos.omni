@@ -46,12 +46,13 @@ init:
   n: i32 = 0
 
 sample:
+  tau = f32(TWO_PI)
   p1 = m1()
   p2 = m2()
   p3 = m3()
-  ma = sin(p1 * TWO_PI)
-  mb = sin((p1 + p2 * 0.7) * TWO_PI * 1.37 + 1.2)
-  mc = sin((p3 + p2 * 0.3) * TWO_PI * 2.11 + 2.4)
+  ma = sin(p1 * tau)
+  mb = sin((p1 + p2 * 0.7) * tau * 1.37 + 1.2)
+  mc = sin((p3 + p2 * 0.3) * tau * 2.11 + 2.4)
 
   mod_a = 0.5 + 0.5 * ma
   mod_b = 0.5 + 0.5 * mb
@@ -60,7 +61,7 @@ sample:
   o1.freq = 44.0 + 122.0 * mod_a
   o2.freq = 57.0 + 111.0 * mod_b
   o3.freq = 71.0 + 104.0 * mod_c
-  o4.freq = 88.0 + 95.0 * (0.5 + 0.5 * sin((p1 + p2 + p3) * TWO_PI))
+  o4.freq = 88.0 + 95.0 * (0.5 + 0.5 * sin((p1 + p2 + p3) * tau))
 
   d1.feedback = 0.58 + 0.16 * mod_a
   d2.feedback = 0.56 + 0.16 * mod_b

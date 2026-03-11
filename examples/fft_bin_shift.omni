@@ -15,16 +15,16 @@ namespace BinShift<N = 512>:
           scratch_re[i] = 0.0
           scratch_im[i] = 0.0
 
-        scratch_re[0] = fwd.fft.re[0]
+        scratch_re[0] = fwd.fft.real(0)
 
         half = N >> 1
         for k in 1..half:
           shifted = k + 1
           if (shifted < half):
-            scratch_re[shifted] = fwd.fft.re[k]
-            scratch_im[shifted] = fwd.fft.im[k]
-            scratch_re[N - shifted] = fwd.fft.re[N - k]
-            scratch_im[N - shifted] = fwd.fft.im[N - k]
+            scratch_re[shifted] = fwd.fft.real(k)
+            scratch_im[shifted] = fwd.fft.imag(k)
+            scratch_re[N - shifted] = fwd.fft.real(N - k)
+            scratch_im[N - shifted] = fwd.fft.imag(N - k)
 
         inv.load_complex(scratch_re, scratch_im)
 
