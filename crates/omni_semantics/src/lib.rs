@@ -13,14 +13,17 @@ mod array_structs;
 mod builtins;
 mod decl_symbols;
 mod declaration_coercion;
-mod def_inference;
+mod def_semantics;
+mod expr_analysis;
 mod expr_typing;
 mod expr_validation;
 mod generic_specialization;
 mod io_state_helpers;
 mod namespacing;
+mod pipeline;
 mod port_coercion;
 mod proc_call_rewrite;
+mod proc_call_support;
 mod proc_state_rewrite;
 mod processor_lowering;
 mod stmt_analysis;
@@ -28,18 +31,21 @@ use array_structs::*;
 use builtins::*;
 use decl_symbols::*;
 use declaration_coercion::*;
-use def_inference::*;
+use def_semantics::*;
+use expr_analysis::{build_expr_env, build_scope_expr_env, ExprEnv, FnSignature, ScopeExprInputs};
 use expr_typing::*;
 use expr_validation::*;
 use generic_specialization::*;
 use io_state_helpers::*;
 use namespacing::*;
+pub use pipeline::{analyze, analyze_with_options, lower_graphs_for_inspection_with_options};
 use port_coercion::*;
 use proc_call_rewrite::*;
-use proc_state_rewrite::*;
-pub use processor_lowering::{
-    analyze, analyze_with_options, lower_graphs_for_inspection_with_options,
+use proc_call_support::{
+    rewrite_proc_alias_calls_for_validation, rewrite_proc_alias_calls_in_expr, split_dot_path,
+    ProcArrayAliasInfo,
 };
+use proc_state_rewrite::*;
 use stmt_analysis::*;
 
 pub mod internal_names {
@@ -302,7 +308,7 @@ impl TypedProgram {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScopeKind {
     Init,
     Block,

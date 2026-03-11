@@ -642,26 +642,3 @@ pub(super) fn expand_port_decls(
 
     (flat, types, arrays, defaults, ranges)
 }
-
-#[derive(Debug, Clone)]
-pub(crate) struct FnSignature {
-    pub(crate) params: Vec<String>,
-    pub(crate) defaults: Vec<Option<Expr>>,
-    pub(crate) param_types: Vec<Option<FnParamType>>,
-    pub(crate) type_params: Vec<String>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ExprEnv<'a> {
-    pub(crate) known_scalars: &'a HashSet<String>,
-    pub(crate) locals: &'a HashSet<String>,
-    pub(crate) outputs: &'a HashSet<String>,
-    pub(crate) array_vars: &'a HashMap<String, usize>,
-    pub(crate) declared_symbols: &'a DeclaredSymbolMap,
-    pub(crate) param_structs: &'a HashMap<String, String>,
-    pub(crate) struct_instances: &'a HashMap<String, String>,
-    pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
-    pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
-    pub(crate) allow_array_ctor: bool,
-    pub(crate) scope: ScopeKind,
-}

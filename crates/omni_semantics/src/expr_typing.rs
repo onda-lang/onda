@@ -11,7 +11,7 @@ use crate::decl_symbols::{
     declared_buffer_info, declared_symbol_scalar_type, has_declared_buffer_symbol_info,
     is_declared_data_array_symbol, DeclaredSymbolMap,
 };
-use crate::def_inference::{can_implicitly_assign, merge_numeric_types};
+use crate::def_semantics::{can_implicitly_assign, merge_numeric_types};
 use crate::{
     resolve_struct_field_decl, split_field_path, LocalAliasTypes, LocalArrayAliasInfo,
     TypedFieldType, TypedStructField,

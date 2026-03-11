@@ -1,167 +1,7 @@
 use super::*;
 
-#[derive(Clone)]
-pub(crate) struct ProcArrayAliasInfo {
-    pub(crate) array_base: String,
-    pub(crate) index_expr: Expr,
-}
-
-pub(crate) fn rewrite_proc_alias_calls_for_validation(
-    expr: &Expr,
-    aliases: &HashMap<String, ProcArrayAliasInfo>,
-) -> Expr {
-    fn rewrite(expr: &mut Expr, aliases: &HashMap<String, ProcArrayAliasInfo>) {
-        match expr {
-            Expr::Var(name) => {
-                if let Some((base, field)) = split_dot_path(name.as_str()) {
-                    if let Some(alias) = aliases.get(base) {
-                        *expr = Expr::UserCall {
-                            name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
-                            type_args: Vec::new(),
-                            args: vec![
-                                CallArg {
-                                    name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                                    expr: Expr::Var(alias.array_base.clone()),
-                                },
-                                CallArg {
-                                    name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
-                                    expr: alias.index_expr.clone(),
-                                },
-                                CallArg {
-                                    name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
-                                    expr: Expr::Var(field.to_owned()),
-                                },
-                            ],
-                        };
-                    }
-                }
-            }
-            Expr::Index { index, .. } => rewrite(index, aliases),
-            Expr::Slice { start, end, .. } => {
-                if let Some(start) = start {
-                    rewrite(start, aliases);
-                }
-                if let Some(end) = end {
-                    rewrite(end, aliases);
-                }
-            }
-            Expr::ArrayCtor { spec, init } => {
-                rewrite(&mut spec.size, aliases);
-                if let Some(values) = init {
-                    for value in values {
-                        rewrite(value, aliases);
-                    }
-                }
-            }
-            Expr::Compare { lhs, rhs, .. }
-            | Expr::Logical { lhs, rhs, .. }
-            | Expr::Binary { lhs, rhs, .. } => {
-                rewrite(lhs, aliases);
-                rewrite(rhs, aliases);
-            }
-            Expr::Call { args, .. } => {
-                for arg in args {
-                    rewrite(arg, aliases);
-                }
-            }
-            Expr::UserCall { name, args, .. } => {
-                for arg in args.iter_mut() {
-                    rewrite(&mut arg.expr, aliases);
-                }
-                if let Some(alias) = aliases.get(name) {
-                    let mut rest = std::mem::take(args);
-                    rest.retain(|arg| {
-                        !matches!(
-                            arg.name.as_deref(),
-                            Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
-                        )
-                    });
-                    let mut rewritten = Vec::<CallArg>::with_capacity(rest.len() + 2);
-                    rewritten.push(CallArg {
-                        name: None,
-                        expr: Expr::Var(alias.array_base.clone()),
-                    });
-                    rewritten.push(CallArg {
-                        name: None,
-                        expr: alias.index_expr.clone(),
-                    });
-                    rewritten.extend(rest);
-                    *args = rewritten;
-                    *name = PROC_INDEX_CALL_SENTINEL.to_owned();
-                    return;
-                }
-                if let Some((base, field)) = split_dot_path(name.as_str()) {
-                    if let Some(alias) = aliases.get(base) {
-                        let mut rest = std::mem::take(args);
-                        rest.retain(|arg| {
-                            !matches!(
-                                arg.name.as_deref(),
-                                Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
-                            )
-                        });
-                        let mut rewritten = Vec::<CallArg>::with_capacity(rest.len() + 2);
-                        rewritten.push(CallArg {
-                            name: None,
-                            expr: Expr::Var(alias.array_base.clone()),
-                        });
-                        rewritten.push(CallArg {
-                            name: None,
-                            expr: alias.index_expr.clone(),
-                        });
-                        rewritten.extend(rest);
-                        *args = rewritten;
-                        *name = format!("{PROC_INDEX_CALL_SENTINEL}.{field}");
-                    }
-                }
-            }
-            Expr::Cast { expr: inner, .. }
-            | Expr::UnaryNot { expr: inner }
-            | Expr::UnaryBitNot { expr: inner } => {
-                rewrite(inner, aliases);
-            }
-            Expr::ArrayLiteral(values) => {
-                for value in values {
-                    rewrite(value, aliases);
-                }
-            }
-            Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
-        }
-    }
-
-    let mut rewritten = expr.clone();
-    rewrite(&mut rewritten, aliases);
-    rewritten
-}
-
-pub(crate) fn merged_data_vars_for_runtime(
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-) -> HashMap<String, usize> {
-    let mut merged = state_arrays.clone();
-    for (name, alias) in local_array_aliases {
-        if alias.elem_struct.is_none() {
-            merged.insert(name.clone(), alias.len);
-        }
-    }
-    merged
-}
-
-pub(crate) fn seed_top_level_array_aliases(
-    aliases: &mut HashMap<String, LocalArrayAliasInfo>,
-    arrays: &HashMap<String, TypedArrayInfo>,
-    writable: bool,
-) {
-    for (name, info) in arrays {
-        aliases.insert(
-            name.clone(),
-            LocalArrayAliasInfo {
-                len: info.len,
-                elem_ty: info.elem_ty,
-                elem_struct: None,
-                writable,
-            },
-        );
-    }
+pub(crate) fn runtime_symbol_root(name: &str) -> &str {
+    name.split('.').next().unwrap_or(name)
 }
 
 fn infer_runtime_slice_alias_info(
@@ -175,77 +15,17 @@ fn infer_runtime_slice_alias_info(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<LocalArrayAliasInfo> {
-    if let Some(alias) = local_array_aliases.get(base) {
-        if alias.elem_struct.is_some() {
-            errors.push(Diagnostic::semantic(
-                format!("slice expression '{base}[...]' requires primitive elements"),
-                0,
-                0,
-            ));
-            return None;
-        }
-        return Some(LocalArrayAliasInfo {
-            len: infer_static_slice_len_hint(Some(alias.len), start, end),
-            elem_ty: alias.elem_ty,
-            elem_struct: None,
-            writable: alias.writable,
-        });
-    }
-    if let Some(len) = state_arrays.get(base).copied() {
-        return Some(LocalArrayAliasInfo {
-            len: infer_static_slice_len_hint(Some(len), start, end),
-            elem_ty: declared_symbol_scalar_type(declared_symbols, base)
-                .unwrap_or(PrimitiveType::F32),
-            elem_struct: None,
-            writable: true,
-        });
-    }
-    if let Some((elem_ty, _)) = declared_buffer_info(declared_symbols, base) {
-        return Some(LocalArrayAliasInfo {
-            len: 1,
-            elem_ty,
-            elem_struct: None,
-            writable: true,
-        });
-    }
-    let Some((root, field)) = split_field_path(base, errors) else {
-        return None;
-    };
-    let Some(struct_name) = struct_instances.get(root) else {
-        return None;
-    };
-    let Some(field_decl) = resolve_struct_field_decl(struct_name, field, struct_defs) else {
-        return None;
-    };
-    if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
-        errors.push(Diagnostic::semantic(
-            format!("field '{root}.{field}' is not array and cannot be sliced"),
-            0,
-            0,
-        ));
-        return None;
-    }
-    if field_decl.array_elem_struct.is_some() {
-        errors.push(Diagnostic::semantic(
-            format!("slice expression '{base}[...]' requires primitive elements"),
-            0,
-            0,
-        ));
-        return None;
-    }
-    Some(LocalArrayAliasInfo {
-        len: infer_static_slice_len_hint(
-            match field_decl.ty {
-                TypedFieldType::Array(len) => Some(len),
-                _ => None,
-            },
-            start,
-            end,
-        ),
-        elem_ty: field_decl.array_elem_ty.unwrap_or(PrimitiveType::F32),
-        elem_struct: None,
-        writable: true,
-    })
+    infer_scope_slice_alias_info(
+        base,
+        start,
+        end,
+        declared_symbols,
+        Some(state_arrays),
+        local_array_aliases,
+        struct_instances,
+        struct_defs,
+        errors,
+    )
 }
 
 fn infer_runtime_data_like_info(
@@ -257,35 +37,19 @@ fn infer_runtime_data_like_info(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<LocalArrayAliasInfo> {
-    match expr {
-        Expr::Var(base) => infer_runtime_slice_alias_info(
-            base,
-            None,
-            None,
-            declared_symbols,
-            state_arrays,
-            local_array_aliases,
-            struct_instances,
-            struct_defs,
-            errors,
-        ),
-        Expr::Slice { base, start, end } => infer_runtime_slice_alias_info(
-            base,
-            start.as_deref(),
-            end.as_deref(),
-            declared_symbols,
-            state_arrays,
-            local_array_aliases,
-            struct_instances,
-            struct_defs,
-            errors,
-        ),
-        _ => None,
-    }
+    infer_scope_data_like_info(
+        expr,
+        declared_symbols,
+        Some(state_arrays),
+        local_array_aliases,
+        struct_instances,
+        struct_defs,
+        errors,
+    )
 }
 
 pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
-    pub scope: ScopeKind,
+    pub common: ScopeAnalysisCtx<'a>,
     pub registration_mode: RuntimeRegistrationMode,
     pub declared_symbols: &'a DeclaredSymbolMap,
     pub state_arrays: &'a HashMap<String, usize>,
@@ -295,14 +59,19 @@ pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
     pub registration_input_names: &'a HashSet<String>,
     pub registration_output_names: &'a HashSet<String>,
     pub registration_param_names: &'a HashSet<String>,
+    pub forbidden_assign_names: &'a HashSet<String>,
+    pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
+    pub event_policy: Option<EventStmtPolicy<'a>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct EventStmtPolicy<'a> {
+    pub init_writable_roots: &'a HashSet<String>,
+    pub immutable_roots: &'a HashSet<String>,
     pub input_names: &'a HashSet<String>,
     pub output_names: &'a HashSet<String>,
-    pub forbidden_assign_names: &'a HashSet<String>,
-    pub param_names: &'a HashSet<String>,
-    pub struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
-    pub fn_signatures: &'a HashMap<String, FnSignature>,
-    pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
-    pub options: AnalysisOptions,
+    pub scalar_param_names: &'a HashSet<String>,
+    pub array_param_names: &'a HashSet<String>,
 }
 
 fn is_proc_event_stmt_call(
@@ -321,12 +90,389 @@ fn is_proc_event_stmt_call(
         || proc_array_roots.contains_key(base)
 }
 
-#[derive(Clone)]
-pub(crate) struct RuntimeStmtAnalysisState {
-    pub known_scalars: HashSet<String>,
-    pub local_aliases: LocalAliasTypes,
-    pub local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
-    pub local_proc_aliases: HashMap<String, ProcArrayAliasInfo>,
+pub(crate) type RuntimeStmtAnalysisState = ScopeFlowState;
+
+fn has_local_binding_root(
+    root: &str,
+    locals: &HashSet<String>,
+    local_aliases: &LocalAliasTypes,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
+) -> bool {
+    fn has_prefixed_root<'a>(mut names: impl Iterator<Item = &'a String>, root: &str) -> bool {
+        names.any(|name| {
+            name.strip_prefix(root)
+                .is_some_and(|rest| rest.starts_with('.'))
+        })
+    }
+
+    locals.contains(root)
+        || local_aliases.contains_key(root)
+        || local_array_aliases.contains_key(root)
+        || local_proc_aliases.contains_key(root)
+        || has_prefixed_root(local_aliases.keys(), root)
+        || has_prefixed_root(local_array_aliases.keys(), root)
+}
+
+fn validate_event_assign_target_restrictions(
+    target: &AssignTarget,
+    locals: &HashSet<String>,
+    local_aliases: &LocalAliasTypes,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
+    event_policy: EventStmtPolicy<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let (base, indexed) = match target {
+        AssignTarget::Var(name) => (name.as_str(), false),
+        AssignTarget::Index { base, .. } => (base.as_str(), true),
+        AssignTarget::Slice { base, .. } => (base.as_str(), true),
+    };
+    let root = runtime_symbol_root(base);
+
+    if event_policy.scalar_param_names.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!("cannot assign to immutable event parameter '{}'", root),
+            0,
+            0,
+        ));
+        return;
+    }
+    if event_policy.array_param_names.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!(
+                "cannot assign to immutable event array parameter '{}'",
+                root
+            ),
+            0,
+            0,
+        ));
+        return;
+    }
+    if event_policy.input_names.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!("cannot assign to input symbol '{}' in event handler", root),
+            0,
+            0,
+        ));
+        return;
+    }
+    if event_policy.output_names.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!("cannot assign to output symbol '{}' in event handler", root),
+            0,
+            0,
+        ));
+        return;
+    }
+    if event_policy.immutable_roots.contains(root) {
+        errors.push(Diagnostic::semantic(
+            format!(
+                "event handlers can only write init-root state; '{}' is not init-root",
+                root
+            ),
+            0,
+            0,
+        ));
+        return;
+    }
+
+    if indexed || base.contains('.') {
+        let is_local_root = has_local_binding_root(
+            root,
+            locals,
+            local_aliases,
+            local_array_aliases,
+            local_proc_aliases,
+        );
+        if !event_policy.init_writable_roots.contains(root) && !is_local_root {
+            errors.push(Diagnostic::semantic(
+                format!(
+                    "event handlers can only write init-root state; '{}' is not init-root",
+                    root
+                ),
+                0,
+                0,
+            ));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_runtime_stmt_analysis_ctx<'a>(
+    common: ScopeAnalysisCtx<'a>,
+    registration_mode: RuntimeRegistrationMode,
+    declared_symbols: &'a DeclaredSymbolMap,
+    state_arrays: &'a HashMap<String, usize>,
+    state_array_struct_roots: &'a HashMap<String, ArrayStructRootInfo>,
+    nested_proc_instances: &'a HashMap<String, ProcNestedState>,
+    proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
+    struct_instances: &'a HashMap<String, String>,
+    registration_input_names: &'a HashSet<String>,
+    registration_output_names: &'a HashSet<String>,
+    registration_param_names: &'a HashSet<String>,
+    forbidden_assign_names: &'a HashSet<String>,
+    event_policy: Option<EventStmtPolicy<'a>>,
+) -> RuntimeStmtAnalysisCtx<'a> {
+    RuntimeStmtAnalysisCtx {
+        common,
+        registration_mode,
+        declared_symbols,
+        state_arrays,
+        state_array_struct_roots,
+        nested_proc_instances,
+        proc_array_roots,
+        struct_instances,
+        registration_input_names,
+        registration_output_names,
+        registration_param_names,
+        forbidden_assign_names,
+        event_policy,
+    }
+}
+
+fn build_runtime_stmt_analysis_state(
+    known_scalars: HashSet<String>,
+    local_aliases: LocalAliasTypes,
+    local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+) -> RuntimeStmtAnalysisState {
+    ScopeFlowState::new(known_scalars, local_aliases, local_array_aliases)
+}
+
+fn build_runtime_stmt_expr_env<'a>(
+    expr_inputs: ScopeExprInputs<'a>,
+    flow_state: &'a RuntimeStmtAnalysisState,
+    array_vars: &'a HashMap<String, usize>,
+    scope: ScopeKind,
+) -> StmtExprAnalysisEnv<'a> {
+    build_scope_stmt_expr_env(
+        expr_inputs,
+        &flow_state.known_scalars,
+        &flow_state.local_aliases,
+        &flow_state.local_array_aliases,
+        array_vars,
+        scope,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn analyze_runtime_scope_stmts<'a>(
+    stmts: impl IntoIterator<Item = &'a Stmt>,
+    common: ScopeAnalysisCtx<'a>,
+    registration_mode: RuntimeRegistrationMode,
+    locals: &HashSet<String>,
+    known_scalars: HashSet<String>,
+    local_aliases: LocalAliasTypes,
+    local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
+    state_arrays: &HashMap<String, usize>,
+    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    nested_proc_instances: &HashMap<String, ProcNestedState>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    struct_instances: &HashMap<String, String>,
+    forbidden_assign_names: &HashSet<String>,
+    event_policy: Option<EventStmtPolicy<'a>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut state_scalars = state_scalars.clone();
+    let ctx = build_runtime_stmt_analysis_ctx(
+        common,
+        registration_mode,
+        declared_symbols,
+        state_arrays,
+        state_array_struct_roots,
+        nested_proc_instances,
+        proc_array_roots,
+        struct_instances,
+        common.input_names,
+        common.output_names,
+        common.param_names,
+        forbidden_assign_names,
+        event_policy,
+    );
+    let mut state =
+        build_runtime_stmt_analysis_state(known_scalars, local_aliases, local_array_aliases);
+    analyze_runtime_stmts(stmts, locals, &mut state_scalars, &ctx, &mut state, errors);
+}
+
+pub(crate) fn build_known_scalars_from_state(
+    base_names: &HashSet<String>,
+    state_scalars: &HashMap<String, PrimitiveType>,
+) -> HashSet<String> {
+    let mut known = base_names.clone();
+    known.extend(state_scalars.keys().cloned());
+    known
+}
+
+pub(crate) fn extend_known_scalars<'a>(
+    known_scalars: &mut HashSet<String>,
+    names: impl IntoIterator<Item = &'a String>,
+) {
+    known_scalars.extend(names.into_iter().cloned());
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn register_and_analyze_runtime_scope<'a>(
+    stmts: impl IntoIterator<Item = &'a Stmt>,
+    common: ScopeAnalysisCtx<'a>,
+    registration_mode: RuntimeRegistrationMode,
+    state_scalars: &mut HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
+    state_arrays: &HashMap<String, usize>,
+    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    nested_proc_instances: &HashMap<String, ProcNestedState>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    struct_instances: &HashMap<String, String>,
+    registration_input_names: &HashSet<String>,
+    registration_output_names: &HashSet<String>,
+    registration_param_names: &HashSet<String>,
+    runtime_locals: &HashSet<String>,
+    runtime_known_scalars: HashSet<String>,
+    runtime_local_aliases: LocalAliasTypes,
+    runtime_local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    runtime_forbidden_assign_names: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let ctx = build_runtime_stmt_analysis_ctx(
+        common,
+        registration_mode,
+        declared_symbols,
+        state_arrays,
+        state_array_struct_roots,
+        nested_proc_instances,
+        proc_array_roots,
+        struct_instances,
+        registration_input_names,
+        registration_output_names,
+        registration_param_names,
+        runtime_forbidden_assign_names,
+        None,
+    );
+    let mut state = build_runtime_stmt_analysis_state(
+        runtime_known_scalars,
+        runtime_local_aliases,
+        runtime_local_array_aliases,
+    );
+    analyze_runtime_stmts(
+        stmts,
+        runtime_locals,
+        state_scalars,
+        &ctx,
+        &mut state,
+        errors,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn analyze_runtime_events(
+    typed_events: &[TypedEvent],
+    event_known_scalars_seed: &HashSet<String>,
+    event_array_alias_seed: &HashMap<String, LocalArrayAliasInfo>,
+    event_immutable_param_seed: &HashSet<String>,
+    init_writable_roots: &HashSet<String>,
+    immutable_event_roots: &HashSet<String>,
+    validation_input_names: &HashSet<String>,
+    validation_output_names: &HashSet<String>,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
+    state_arrays: &HashMap<String, usize>,
+    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    nested_proc_instances: &HashMap<String, ProcNestedState>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    struct_instances: &HashMap<String, String>,
+    common: ScopeAnalysisCtx<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let empty_runtime_inputs = HashSet::<String>::new();
+    let empty_runtime_outputs = HashSet::<String>::new();
+    let runtime_loop_vars = HashSet::<String>::new();
+    let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
+
+    for event in typed_events {
+        let mut scalar_event_params = HashSet::<String>::new();
+        let mut array_event_params = HashSet::<String>::new();
+        let mut event_known_scalars = event_known_scalars_seed.clone();
+        let mut event_local_aliases = LocalAliasTypes::new();
+        let mut event_local_data_aliases = event_array_alias_seed.clone();
+        for param in &event.params {
+            match param.ty {
+                TypedEventParamType::Scalar(ty) => {
+                    scalar_event_params.insert(param.name.clone());
+                    event_known_scalars.insert(param.name.clone());
+                    event_local_aliases.insert(param.name.clone(), ty);
+                }
+                TypedEventParamType::Array { elem, len } => {
+                    array_event_params.insert(param.name.clone());
+                    event_local_data_aliases.insert(
+                        param.name.clone(),
+                        LocalArrayAliasInfo {
+                            len,
+                            elem_ty: elem,
+                            elem_struct: None,
+                            writable: false,
+                        },
+                    );
+                }
+                TypedEventParamType::Slice { elem } => {
+                    array_event_params.insert(param.name.clone());
+                    event_local_data_aliases.insert(
+                        param.name.clone(),
+                        LocalArrayAliasInfo {
+                            len: 1,
+                            elem_ty: elem,
+                            elem_struct: None,
+                            writable: false,
+                        },
+                    );
+                }
+            }
+        }
+
+        let mut event_param_immutable = event_immutable_param_seed.clone();
+        event_param_immutable.extend(scalar_event_params.iter().cloned());
+
+        let event_common = ScopeAnalysisCtx {
+            policy: ScopePolicy::Event,
+            input_names: &empty_runtime_inputs,
+            output_names: &empty_runtime_outputs,
+            param_names: &event_param_immutable,
+            struct_defs: common.struct_defs,
+            fn_signatures: common.fn_signatures,
+            options: common.options,
+        };
+        let event_policy = EventStmtPolicy {
+            init_writable_roots,
+            immutable_roots: immutable_event_roots,
+            input_names: validation_input_names,
+            output_names: validation_output_names,
+            scalar_param_names: &scalar_event_params,
+            array_param_names: &array_event_params,
+        };
+        analyze_runtime_scope_stmts(
+            event.body.iter(),
+            event_common,
+            RuntimeRegistrationMode::None,
+            &runtime_loop_vars,
+            event_known_scalars,
+            event_local_aliases,
+            event_local_data_aliases,
+            state_scalars,
+            declared_symbols,
+            state_arrays,
+            state_array_struct_roots,
+            nested_proc_instances,
+            if proc_array_roots.is_empty() {
+                &empty_proc_array_roots
+            } else {
+                proc_array_roots
+            },
+            struct_instances,
+            validation_output_names,
+            Some(event_policy),
+            errors,
+        );
+    }
 }
 
 pub(crate) fn analyze_runtime_stmts<'a>(
@@ -339,25 +485,14 @@ pub(crate) fn analyze_runtime_stmts<'a>(
 ) {
     debug_assert!(
         matches!(
-            (ctx.scope, ctx.registration_mode),
+            (ctx.common.scope_kind(), ctx.registration_mode),
             (ScopeKind::Sample, RuntimeRegistrationMode::None)
                 | (ScopeKind::Block, RuntimeRegistrationMode::Block)
                 | (ScopeKind::Sample, RuntimeRegistrationMode::Sample)
         ),
         "runtime analysis scope and registration mode must stay aligned"
     );
-    analyze_runtime_scope(
-        stmts,
-        locals,
-        state_scalars,
-        ctx,
-        &mut state.known_scalars,
-        &mut state.local_aliases,
-        &mut state.local_array_aliases,
-        &mut state.local_proc_aliases,
-        0,
-        errors,
-    );
+    analyze_runtime_scope(stmts, locals, state_scalars, ctx, state, 0, errors);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -366,10 +501,7 @@ fn analyze_runtime_scope<'a>(
     locals: &HashSet<String>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
     ctx: &RuntimeStmtAnalysisCtx<'_>,
-    known_scalars: &mut HashSet<String>,
-    local_aliases: &mut LocalAliasTypes,
-    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
-    local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    state: &mut RuntimeStmtAnalysisState,
     loop_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -384,23 +516,12 @@ fn analyze_runtime_scope<'a>(
         ctx.registration_input_names,
         ctx.registration_output_names,
         ctx.registration_param_names,
-        ctx.struct_defs,
+        ctx.common.struct_defs,
         ctx.registration_mode,
     );
-    known_scalars.extend(state_scalars.keys().cloned());
+    state.known_scalars.extend(state_scalars.keys().cloned());
     for stmt in stmts {
-        analyze_runtime_stmt_inner(
-            stmt,
-            locals,
-            state_scalars,
-            ctx,
-            known_scalars,
-            local_aliases,
-            local_array_aliases,
-            local_proc_aliases,
-            loop_depth,
-            errors,
-        );
+        analyze_runtime_stmt_inner(stmt, locals, state_scalars, ctx, state, loop_depth, errors);
     }
 }
 
@@ -410,52 +531,38 @@ fn analyze_runtime_stmt_inner(
     locals: &HashSet<String>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
     ctx: &RuntimeStmtAnalysisCtx<'_>,
-    known_scalars: &mut HashSet<String>,
-    local_aliases: &mut LocalAliasTypes,
-    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
-    local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    state: &mut RuntimeStmtAnalysisState,
     loop_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let common = ctx.common;
     let declared_symbols = ctx.declared_symbols;
     let state_arrays = ctx.state_arrays;
     let state_array_struct_roots = ctx.state_array_struct_roots;
     let nested_proc_instances = ctx.nested_proc_instances;
     let struct_instances = ctx.struct_instances;
-    let input_names = ctx.input_names;
-    let output_names = ctx.output_names;
+    let input_names = common.input_names;
+    let output_names = common.output_names;
     let forbidden_assign_names = ctx.forbidden_assign_names;
-    let param_names = ctx.param_names;
-    let struct_defs = ctx.struct_defs;
-    let fn_signatures = ctx.fn_signatures;
+    let param_names = common.param_names;
+    let struct_defs = common.struct_defs;
+    let fn_signatures = common.fn_signatures;
     let proc_array_roots = ctx.proc_array_roots;
-    let options = ctx.options;
+    let options = common.options;
+    let scope = common.scope_kind();
 
     with_stmt_diag_context(stmt, || {
-        let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
+        let array_vars = merged_data_vars_for_runtime(state_arrays, &state.local_array_aliases);
         let empty_param_structs = HashMap::<String, String>::new();
-        let stmt_expr_env = |scope| StmtExprAnalysisEnv {
-            expr_env: ExprEnv {
-                known_scalars,
-                locals,
-                outputs: output_names,
-                array_vars: &array_vars,
-                declared_symbols,
-                param_structs: &empty_param_structs,
-                struct_instances,
-                struct_defs,
-                fn_signatures,
-                allow_array_ctor: false,
-                scope,
-            },
+        let expr_inputs = build_scope_analysis_expr_inputs(
+            common,
+            locals,
             state_scalars,
             declared_symbols,
-            local_aliases,
-            local_array_aliases,
-            input_names,
+            &empty_param_structs,
+            struct_instances,
             output_names,
-            param_names,
-        };
+        );
         match stmt {
             Stmt::Const { .. } => {}
             Stmt::Assign {
@@ -466,17 +573,28 @@ fn analyze_runtime_stmt_inner(
                 expr,
                 ..
             } => {
+                if let Some(event_policy) = ctx.event_policy {
+                    validate_event_assign_target_restrictions(
+                        target,
+                        locals,
+                        &state.local_aliases,
+                        &state.local_array_aliases,
+                        &state.local_proc_aliases,
+                        event_policy,
+                        errors,
+                    );
+                }
                 analyze_assign_sample(
                     target,
                     decl_ty,
                     generic_decl_ty,
                     *is_typed_decl,
-                    ctx.scope,
+                    scope,
                     expr,
-                    known_scalars,
-                    local_aliases,
-                    local_array_aliases,
-                    local_proc_aliases,
+                    &mut state.known_scalars,
+                    &mut state.local_aliases,
+                    &mut state.local_array_aliases,
+                    &mut state.local_proc_aliases,
                     locals,
                     state_scalars,
                     declared_symbols,
@@ -495,19 +613,23 @@ fn analyze_runtime_stmt_inner(
                 );
             }
             Stmt::Expr { expr, .. } => {
-                let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+                let expr = rewrite_proc_alias_calls_for_validation(expr, &state.local_proc_aliases);
                 if is_proc_event_stmt_call(&expr, nested_proc_instances, proc_array_roots) {
                     if let Expr::UserCall { args, .. } = &expr {
                         for arg in args {
                             analyze_proc_event_arg_expr(
                                 &arg.expr,
-                                stmt_expr_env(ctx.scope),
+                                build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                                 errors,
                             );
                         }
                     }
                 } else {
-                    analyze_stmt_expr(&expr, stmt_expr_env(ctx.scope), errors);
+                    analyze_stmt_expr(
+                        &expr,
+                        build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
+                        errors,
+                    );
                 }
             }
             Stmt::Return { .. } => {
@@ -523,42 +645,30 @@ fn analyze_runtime_stmt_inner(
                 else_branch,
                 ..
             } => {
-                let cond = rewrite_proc_alias_calls_for_validation(cond, local_proc_aliases);
+                let cond = rewrite_proc_alias_calls_for_validation(cond, &state.local_proc_aliases);
                 require_validated_bool_stmt_expr(
                     &cond,
                     "if condition",
-                    stmt_expr_env(ctx.scope),
+                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
-                let mut then_known = known_scalars.clone();
-                let mut then_aliases = local_aliases.clone();
-                let mut then_data_aliases = local_array_aliases.clone();
-                let mut then_proc_aliases = local_proc_aliases.clone();
+                let mut then_state = state.clone();
                 analyze_runtime_scope(
                     then_branch.iter(),
                     locals,
                     state_scalars,
                     ctx,
-                    &mut then_known,
-                    &mut then_aliases,
-                    &mut then_data_aliases,
-                    &mut then_proc_aliases,
+                    &mut then_state,
                     loop_depth,
                     errors,
                 );
-                let mut else_known = known_scalars.clone();
-                let mut else_aliases = local_aliases.clone();
-                let mut else_data_aliases = local_array_aliases.clone();
-                let mut else_proc_aliases = local_proc_aliases.clone();
+                let mut else_state = state.clone();
                 analyze_runtime_scope(
                     else_branch.iter(),
                     locals,
                     state_scalars,
                     ctx,
-                    &mut else_known,
-                    &mut else_aliases,
-                    &mut else_data_aliases,
-                    &mut else_proc_aliases,
+                    &mut else_state,
                     loop_depth,
                     errors,
                 );
@@ -571,68 +681,57 @@ fn analyze_runtime_stmt_inner(
                 body,
                 ..
             } => {
-                let start = rewrite_proc_alias_calls_for_validation(start, local_proc_aliases);
-                let end = rewrite_proc_alias_calls_for_validation(end, local_proc_aliases);
+                let start =
+                    rewrite_proc_alias_calls_for_validation(start, &state.local_proc_aliases);
+                let end = rewrite_proc_alias_calls_for_validation(end, &state.local_proc_aliases);
                 require_validated_numeric_stmt_expr(
                     &start,
                     "for loop start bound",
-                    stmt_expr_env(ctx.scope),
+                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
                 require_validated_numeric_stmt_expr(
                     &end,
                     "for loop end bound",
-                    stmt_expr_env(ctx.scope),
+                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
                 let rewritten_step = step.as_ref().map(|step_expr| {
-                    rewrite_proc_alias_calls_for_validation(step_expr, local_proc_aliases)
+                    rewrite_proc_alias_calls_for_validation(step_expr, &state.local_proc_aliases)
                 });
                 validate_for_loop_step_expr(
                     rewritten_step.as_ref(),
-                    stmt_expr_env(ctx.scope),
+                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone());
-                let mut loop_known = known_scalars.clone();
-                let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_array_aliases.clone();
-                let mut loop_proc_aliases = local_proc_aliases.clone();
+                let mut loop_state = state.clone();
                 analyze_runtime_scope(
                     body.iter(),
                     &loop_locals,
                     state_scalars,
                     ctx,
-                    &mut loop_known,
-                    &mut loop_aliases,
-                    &mut loop_data_aliases,
-                    &mut loop_proc_aliases,
+                    &mut loop_state,
                     loop_depth + 1,
                     errors,
                 );
             }
             Stmt::While { cond, body, .. } => {
-                let cond = rewrite_proc_alias_calls_for_validation(cond, local_proc_aliases);
+                let cond = rewrite_proc_alias_calls_for_validation(cond, &state.local_proc_aliases);
                 require_validated_bool_stmt_expr(
                     &cond,
                     "while condition",
-                    stmt_expr_env(ctx.scope),
+                    build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
-                let mut loop_known = known_scalars.clone();
-                let mut loop_aliases = local_aliases.clone();
-                let mut loop_data_aliases = local_array_aliases.clone();
-                let mut loop_proc_aliases = local_proc_aliases.clone();
+                let mut loop_state = state.clone();
                 analyze_runtime_scope(
                     body.iter(),
                     locals,
                     state_scalars,
                     ctx,
-                    &mut loop_known,
-                    &mut loop_aliases,
-                    &mut loop_data_aliases,
-                    &mut loop_proc_aliases,
+                    &mut loop_state,
                     loop_depth + 1,
                     errors,
                 );
@@ -671,28 +770,30 @@ fn analyze_assign_sample(
 ) {
     let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
     let empty_param_structs = HashMap::<String, String>::new();
-    let stmt_expr_env = |scope| StmtExprAnalysisEnv {
-        expr_env: ExprEnv {
-            known_scalars,
-            locals,
-            outputs: output_names,
-            array_vars: &array_vars,
-            declared_symbols,
-            param_structs: &empty_param_structs,
-            struct_instances,
-            struct_defs,
-            fn_signatures,
-            allow_array_ctor: false,
-            scope,
-        },
+    let expr_inputs = ScopeExprInputs {
+        locals,
         state_scalars,
         declared_symbols,
-        local_aliases,
-        local_array_aliases,
+        param_structs: &empty_param_structs,
+        struct_instances,
         input_names,
         output_names,
         param_names,
+        struct_defs,
+        fn_signatures,
+        expr_outputs: output_names,
     };
+    let stmt_expr_env = |scope| {
+        build_scope_stmt_expr_env(
+            expr_inputs,
+            known_scalars,
+            local_aliases,
+            local_array_aliases,
+            &array_vars,
+            scope,
+        )
+    };
+    let scope_expr_env = build_scope_expr_env(expr_inputs, known_scalars, &array_vars, scope);
     match target {
         AssignTarget::Index { base, index } => {
             let expr_for_validation =
@@ -752,40 +853,8 @@ fn analyze_assign_sample(
                     0,
                 ));
             }
-            validate_expr(
-                index,
-                ExprEnv {
-                    known_scalars,
-                    locals,
-                    outputs: output_names,
-                    array_vars: &array_vars,
-                    declared_symbols,
-                    param_structs: &HashMap::new(),
-                    struct_instances,
-                    struct_defs,
-                    fn_signatures,
-                    allow_array_ctor: false,
-                    scope,
-                },
-                errors,
-            );
-            validate_expr(
-                &expr_for_validation,
-                ExprEnv {
-                    known_scalars,
-                    locals,
-                    outputs: output_names,
-                    array_vars: &array_vars,
-                    declared_symbols,
-                    param_structs: &HashMap::new(),
-                    struct_instances,
-                    struct_defs,
-                    fn_signatures,
-                    allow_array_ctor: false,
-                    scope,
-                },
-                errors,
-            );
+            validate_expr(index, scope_expr_env, errors);
+            validate_expr(&expr_for_validation, scope_expr_env, errors);
             let index_ty = infer_expr_type_for_semantics_with_local_data(
                 index,
                 state_scalars,
@@ -1027,23 +1096,7 @@ fn analyze_assign_sample(
                                     ));
                                 }
                                 for (idx, value) in values.iter().take(size_value).enumerate() {
-                                    validate_expr(
-                                        value,
-                                        ExprEnv {
-                                            known_scalars,
-                                            locals,
-                                            outputs: output_names,
-                                            array_vars: &array_vars,
-                                            declared_symbols,
-                                            param_structs: &HashMap::new(),
-                                            struct_instances,
-                                            struct_defs,
-                                            fn_signatures,
-                                            allow_array_ctor: false,
-                                            scope,
-                                        },
-                                        errors,
-                                    );
+                                    validate_expr(value, scope_expr_env, errors);
                                     let value_ty = infer_expr_type_for_semantics_with_local_data(
                                         value,
                                         state_scalars,
@@ -1129,23 +1182,7 @@ fn analyze_assign_sample(
                     return;
                 }
                 for value in values {
-                    validate_expr(
-                        value,
-                        ExprEnv {
-                            known_scalars,
-                            locals,
-                            outputs: output_names,
-                            array_vars: &array_vars,
-                            declared_symbols,
-                            param_structs: &HashMap::new(),
-                            struct_instances,
-                            struct_defs,
-                            fn_signatures,
-                            allow_array_ctor: false,
-                            scope,
-                        },
-                        errors,
-                    );
+                    validate_expr(value, scope_expr_env, errors);
                 }
                 let elem_ty = infer_expr_type_for_semantics_with_local_data(
                     &values[0],
@@ -1236,23 +1273,7 @@ fn analyze_assign_sample(
                     ));
                     return;
                 }
-                validate_expr(
-                    expr,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: output_names,
-                        array_vars: &array_vars,
-                        declared_symbols,
-                        param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope,
-                    },
-                    errors,
-                );
+                validate_expr(expr, scope_expr_env, errors);
                 if let Some(alias) = infer_runtime_slice_alias_info(
                     base,
                     start.as_deref(),
@@ -1286,23 +1307,7 @@ fn analyze_assign_sample(
                         ));
                     }
                 }
-                validate_expr(
-                    expr,
-                    ExprEnv {
-                        known_scalars,
-                        locals,
-                        outputs: output_names,
-                        array_vars: &array_vars,
-                        declared_symbols,
-                        param_structs: &HashMap::new(),
-                        struct_instances,
-                        struct_defs,
-                        fn_signatures,
-                        allow_array_ctor: false,
-                        scope,
-                    },
-                    errors,
-                );
+                validate_expr(expr, scope_expr_env, errors);
                 let expr_ty = infer_expr_type_for_semantics_with_local_data(
                     expr,
                     state_scalars,
@@ -1359,23 +1364,7 @@ fn analyze_assign_sample(
                                     0,
                                 ));
                             }
-                            validate_expr(
-                                expr,
-                                ExprEnv {
-                                    known_scalars,
-                                    locals,
-                                    outputs: output_names,
-                                    array_vars: &array_vars,
-                                    declared_symbols,
-                                    param_structs: &HashMap::new(),
-                                    struct_instances,
-                                    struct_defs,
-                                    fn_signatures,
-                                    allow_array_ctor: false,
-                                    scope,
-                                },
-                                errors,
-                            );
+                            validate_expr(expr, scope_expr_env, errors);
                             let expr_ty = infer_expr_type_for_semantics_with_local_data(
                                 expr,
                                 state_scalars,
@@ -1452,23 +1441,7 @@ fn analyze_assign_sample(
                         proc_array_roots,
                         errors,
                     ) {
-                        validate_expr(
-                            index,
-                            ExprEnv {
-                                known_scalars,
-                                locals,
-                                outputs: output_names,
-                                array_vars: &array_vars,
-                                declared_symbols,
-                                param_structs: &HashMap::new(),
-                                struct_instances,
-                                struct_defs,
-                                fn_signatures,
-                                allow_array_ctor: false,
-                                scope,
-                            },
-                            errors,
-                        );
+                        validate_expr(index, scope_expr_env, errors);
                         let idx_ty = infer_expr_type_for_semantics_with_local_data(
                             index,
                             state_scalars,
@@ -1590,23 +1563,7 @@ fn analyze_assign_sample(
 
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-            validate_expr(
-                &expr_for_validation,
-                ExprEnv {
-                    known_scalars,
-                    locals,
-                    outputs: output_names,
-                    array_vars: &array_vars,
-                    declared_symbols,
-                    param_structs: &HashMap::new(),
-                    struct_instances,
-                    struct_defs,
-                    fn_signatures,
-                    allow_array_ctor: false,
-                    scope,
-                },
-                errors,
-            );
+            validate_expr(&expr_for_validation, scope_expr_env, errors);
             let expr_ty = infer_expr_type_for_semantics_with_local_data(
                 &expr_for_validation,
                 state_scalars,

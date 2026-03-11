@@ -1,117 +1,6 @@
 use super::*;
 
-#[derive(Clone)]
-struct ProcArrayAliasRef {
-    array_base: String,
-    index_expr: Expr,
-}
-
-type ProcArrayAliases = HashMap<String, ProcArrayAliasRef>;
-
-fn prepend_proc_index_alias_args(args: &mut Vec<CallArg>, alias: &ProcArrayAliasRef) {
-    let mut rest = std::mem::take(args);
-    rest.retain(|arg| {
-        !matches!(
-            arg.name.as_deref(),
-            Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
-        )
-    });
-    let mut rewritten = Vec::<CallArg>::with_capacity(rest.len() + 2);
-    rewritten.push(CallArg {
-        name: None,
-        expr: Expr::Var(alias.array_base.clone()),
-    });
-    rewritten.push(CallArg {
-        name: None,
-        expr: alias.index_expr.clone(),
-    });
-    rewritten.extend(rest);
-    *args = rewritten;
-}
-
-fn rewrite_proc_alias_calls_in_expr(expr: &mut Expr, aliases: &ProcArrayAliases) {
-    match expr {
-        Expr::Var(name) => {
-            if let Some((base, field)) = split_dot_path(name.as_str()) {
-                if let Some(alias) = aliases.get(base) {
-                    *expr = Expr::UserCall {
-                        name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
-                        type_args: Vec::new(),
-                        args: vec![
-                            CallArg {
-                                name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                                expr: Expr::Var(alias.array_base.clone()),
-                            },
-                            CallArg {
-                                name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
-                                expr: alias.index_expr.clone(),
-                            },
-                            CallArg {
-                                name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
-                                expr: Expr::Var(field.to_owned()),
-                            },
-                        ],
-                    };
-                }
-            }
-        }
-        Expr::Index { index, .. } => rewrite_proc_alias_calls_in_expr(index, aliases),
-        Expr::Slice { start, end, .. } => {
-            if let Some(start) = start {
-                rewrite_proc_alias_calls_in_expr(start, aliases);
-            }
-            if let Some(end) = end {
-                rewrite_proc_alias_calls_in_expr(end, aliases);
-            }
-        }
-        Expr::ArrayCtor { spec, init } => {
-            rewrite_proc_alias_calls_in_expr(&mut spec.size, aliases);
-            if let Some(values) = init {
-                for value in values {
-                    rewrite_proc_alias_calls_in_expr(value, aliases);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_proc_alias_calls_in_expr(lhs, aliases);
-            rewrite_proc_alias_calls_in_expr(rhs, aliases);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rewrite_proc_alias_calls_in_expr(arg, aliases);
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            for arg in args.iter_mut() {
-                rewrite_proc_alias_calls_in_expr(&mut arg.expr, aliases);
-            }
-            if let Some(alias) = aliases.get(name) {
-                *name = PROC_INDEX_CALL_SENTINEL.to_owned();
-                prepend_proc_index_alias_args(args, alias);
-                return;
-            }
-            if let Some((base, field)) = split_dot_path(name.as_str()) {
-                if let Some(alias) = aliases.get(base) {
-                    *name = format!("{PROC_INDEX_CALL_SENTINEL}.{field}");
-                    prepend_proc_index_alias_args(args, alias);
-                }
-            }
-        }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
-            rewrite_proc_alias_calls_in_expr(inner, aliases);
-        }
-        Expr::ArrayLiteral(values) => {
-            for value in values {
-                rewrite_proc_alias_calls_in_expr(value, aliases);
-            }
-        }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
-    }
-}
+type ProcArrayAliases = HashMap<String, ProcArrayAliasInfo>;
 
 pub(super) fn try_constant_index_i64(expr: &Expr) -> Option<i64> {
     match expr {
@@ -1785,17 +1674,6 @@ pub(super) fn rewrite_proc_calls_in_expr(
     }
 }
 
-pub(super) fn split_dot_path(name: &str) -> Option<(&str, &str)> {
-    let (base, field) = name.split_once('.')?;
-    if base.is_empty() || field.is_empty() {
-        return None;
-    }
-    if field.contains('.') {
-        return None;
-    }
-    Some((base, field))
-}
-
 fn parse_proc_output_alias_index(field: &str) -> Option<usize> {
     let raw = field.strip_prefix("out")?;
     if raw.is_empty() {
@@ -2051,7 +1929,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                         .unwrap_or_else(|| base.clone());
                     aliases.insert(
                         name.clone(),
-                        ProcArrayAliasRef {
+                        ProcArrayAliasInfo {
                             array_base: resolved_base,
                             index_expr: index.as_ref().clone(),
                         },
@@ -2489,7 +2367,7 @@ fn collect_called_proc_instances_in_stmt(
                         .unwrap_or_else(|| base.clone());
                     aliases.insert(
                         name.clone(),
-                        ProcArrayAliasRef {
+                        ProcArrayAliasInfo {
                             array_base: resolved_base,
                             index_expr: index.as_ref().clone(),
                         },
@@ -2863,7 +2741,13 @@ pub(super) fn desugar_init_instance_method_calls(
                 } = expr
                 {
                     if type_args.is_empty() && struct_defs.contains_key(struct_name) {
-                        struct_instances.insert(name.clone(), struct_name.clone());
+                        register_struct_instance_and_array_roots(
+                            name,
+                            struct_name,
+                            struct_defs,
+                            struct_instances,
+                            struct_array_roots,
+                        );
                     } else if !type_args.is_empty() && struct_defs.contains_key(struct_name) {
                         let mut local_errors = Vec::new();
                         if resolve_explicit_call_type_args(
@@ -2881,14 +2765,6 @@ pub(super) fn desugar_init_instance_method_calls(
                                 struct_array_roots,
                             );
                         }
-                    } else if type_args.is_empty() && struct_defs.contains_key(struct_name) {
-                        register_struct_instance_and_array_roots(
-                            name,
-                            struct_name,
-                            struct_defs,
-                            struct_instances,
-                            struct_array_roots,
-                        );
                     }
                 }
                 if let Expr::ArrayCtor { spec, .. } = expr {

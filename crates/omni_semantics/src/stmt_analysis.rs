@@ -2,11 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::*;
 
-mod def_analysis;
+mod alias_support;
+mod common;
 mod indexed_binding;
 mod init_analysis;
 mod runtime_stmt_analysis;
-pub(crate) use def_analysis::*;
+pub(crate) use alias_support::*;
+pub(crate) use common::*;
 pub(crate) use indexed_binding::*;
 pub(crate) use init_analysis::*;
 pub(crate) use runtime_stmt_analysis::*;
@@ -21,6 +23,141 @@ pub(crate) struct StmtExprAnalysisEnv<'a> {
     pub(crate) input_names: &'a HashSet<String>,
     pub(crate) output_names: &'a HashSet<String>,
     pub(crate) param_names: &'a HashSet<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ScopeFlowState {
+    pub(crate) known_scalars: HashSet<String>,
+    pub(crate) local_aliases: LocalAliasTypes,
+    pub(crate) local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    pub(crate) local_proc_aliases: HashMap<String, ProcArrayAliasInfo>,
+}
+
+impl ScopeFlowState {
+    pub(crate) fn from_parts(
+        known_scalars: HashSet<String>,
+        local_aliases: LocalAliasTypes,
+        local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+        local_proc_aliases: HashMap<String, ProcArrayAliasInfo>,
+    ) -> Self {
+        Self {
+            known_scalars,
+            local_aliases,
+            local_array_aliases,
+            local_proc_aliases,
+        }
+    }
+
+    pub(crate) fn new(
+        known_scalars: HashSet<String>,
+        local_aliases: LocalAliasTypes,
+        local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
+    ) -> Self {
+        Self::from_parts(
+            known_scalars,
+            local_aliases,
+            local_array_aliases,
+            HashMap::new(),
+        )
+    }
+}
+
+pub(crate) fn fork_scope_flow_state(
+    known_scalars: &HashSet<String>,
+    local_aliases: &LocalAliasTypes,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
+) -> ScopeFlowState {
+    ScopeFlowState::from_parts(
+        known_scalars.clone(),
+        local_aliases.clone(),
+        local_array_aliases.clone(),
+        local_proc_aliases.clone(),
+    )
+}
+
+pub(crate) fn merge_branch_scope_flow_state(
+    known_scalars: &mut HashSet<String>,
+    local_aliases: &mut LocalAliasTypes,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    then_state: ScopeFlowState,
+    else_state: ScopeFlowState,
+) {
+    let mut merged = known_scalars.clone();
+    for name in &then_state.known_scalars {
+        if else_state.known_scalars.contains(name) {
+            merged.insert(name.clone());
+        }
+    }
+    *known_scalars = merged;
+    *local_aliases = then_state.local_aliases;
+    local_aliases.extend(else_state.local_aliases);
+    local_aliases.retain(|name, _| known_scalars.contains(name));
+    *local_array_aliases = then_state.local_array_aliases;
+    for (k, v) in else_state.local_array_aliases {
+        local_array_aliases.entry(k).or_insert(v);
+    }
+    *local_proc_aliases = then_state.local_proc_aliases;
+    for (k, v) in else_state.local_proc_aliases {
+        local_proc_aliases.entry(k).or_insert(v);
+    }
+}
+
+pub(crate) fn adopt_loop_scope_flow_state(
+    known_scalars: &HashSet<String>,
+    local_aliases: &mut LocalAliasTypes,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    loop_state: ScopeFlowState,
+) {
+    *local_aliases = loop_state.local_aliases;
+    local_aliases.retain(|name, _| known_scalars.contains(name));
+    *local_array_aliases = loop_state.local_array_aliases;
+    *local_proc_aliases = loop_state.local_proc_aliases;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_stmt_expr_env<'a>(
+    expr_env: ExprEnv<'a>,
+    state_scalars: &'a HashMap<String, PrimitiveType>,
+    declared_symbols: &'a DeclaredSymbolMap,
+    local_aliases: &'a LocalAliasTypes,
+    local_array_aliases: &'a HashMap<String, LocalArrayAliasInfo>,
+    input_names: &'a HashSet<String>,
+    output_names: &'a HashSet<String>,
+    param_names: &'a HashSet<String>,
+) -> StmtExprAnalysisEnv<'a> {
+    StmtExprAnalysisEnv {
+        expr_env,
+        state_scalars,
+        declared_symbols,
+        local_aliases,
+        local_array_aliases,
+        input_names,
+        output_names,
+        param_names,
+    }
+}
+
+pub(crate) fn build_scope_stmt_expr_env<'a>(
+    inputs: ScopeExprInputs<'a>,
+    known_scalars: &'a HashSet<String>,
+    local_aliases: &'a LocalAliasTypes,
+    local_array_aliases: &'a HashMap<String, LocalArrayAliasInfo>,
+    array_vars: &'a HashMap<String, usize>,
+    scope: ScopeKind,
+) -> StmtExprAnalysisEnv<'a> {
+    build_stmt_expr_env(
+        build_scope_expr_env(inputs, known_scalars, array_vars, scope),
+        inputs.state_scalars,
+        inputs.declared_symbols,
+        local_aliases,
+        local_array_aliases,
+        inputs.input_names,
+        inputs.output_names,
+        inputs.param_names,
+    )
 }
 
 pub(crate) fn validate_and_infer_stmt_expr_type(

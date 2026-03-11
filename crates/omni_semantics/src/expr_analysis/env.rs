@@ -1,0 +1,89 @@
+use std::collections::{HashMap, HashSet};
+
+use crate::*;
+
+#[derive(Debug, Clone)]
+pub(crate) struct FnSignature {
+    pub(crate) params: Vec<String>,
+    pub(crate) defaults: Vec<Option<Expr>>,
+    pub(crate) param_types: Vec<Option<FnParamType>>,
+    pub(crate) type_params: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExprEnv<'a> {
+    pub(crate) known_scalars: &'a HashSet<String>,
+    pub(crate) locals: &'a HashSet<String>,
+    pub(crate) outputs: &'a HashSet<String>,
+    pub(crate) array_vars: &'a HashMap<String, usize>,
+    pub(crate) declared_symbols: &'a DeclaredSymbolMap,
+    pub(crate) param_structs: &'a HashMap<String, String>,
+    pub(crate) struct_instances: &'a HashMap<String, String>,
+    pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+    pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
+    pub(crate) allow_array_ctor: bool,
+    pub(crate) scope: ScopeKind,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ScopeExprInputs<'a> {
+    pub(crate) locals: &'a HashSet<String>,
+    pub(crate) state_scalars: &'a HashMap<String, PrimitiveType>,
+    pub(crate) declared_symbols: &'a DeclaredSymbolMap,
+    pub(crate) param_structs: &'a HashMap<String, String>,
+    pub(crate) struct_instances: &'a HashMap<String, String>,
+    pub(crate) input_names: &'a HashSet<String>,
+    pub(crate) output_names: &'a HashSet<String>,
+    pub(crate) param_names: &'a HashSet<String>,
+    pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+    pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
+    pub(crate) expr_outputs: &'a HashSet<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_expr_env<'a>(
+    known_scalars: &'a HashSet<String>,
+    locals: &'a HashSet<String>,
+    outputs: &'a HashSet<String>,
+    array_vars: &'a HashMap<String, usize>,
+    declared_symbols: &'a DeclaredSymbolMap,
+    param_structs: &'a HashMap<String, String>,
+    struct_instances: &'a HashMap<String, String>,
+    struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+    fn_signatures: &'a HashMap<String, FnSignature>,
+    scope: ScopeKind,
+) -> ExprEnv<'a> {
+    ExprEnv {
+        known_scalars,
+        locals,
+        outputs,
+        array_vars,
+        declared_symbols,
+        param_structs,
+        struct_instances,
+        struct_defs,
+        fn_signatures,
+        allow_array_ctor: false,
+        scope,
+    }
+}
+
+pub(crate) fn build_scope_expr_env<'a>(
+    inputs: ScopeExprInputs<'a>,
+    known_scalars: &'a HashSet<String>,
+    array_vars: &'a HashMap<String, usize>,
+    scope: ScopeKind,
+) -> ExprEnv<'a> {
+    build_expr_env(
+        known_scalars,
+        inputs.locals,
+        inputs.expr_outputs,
+        array_vars,
+        inputs.declared_symbols,
+        inputs.param_structs,
+        inputs.struct_instances,
+        inputs.struct_defs,
+        inputs.fn_signatures,
+        scope,
+    )
+}

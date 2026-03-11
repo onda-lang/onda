@@ -701,7 +701,7 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
                     text.push(']');
                 }
                 text.push(' ');
-                text.push_str(&format_graph_endpoint(&edge.dest));
+                text.push_str(&format_graph_destinations(&edge.dests));
                 push_line(out, indent + 1, &text);
             }
         }
@@ -1023,6 +1023,21 @@ fn format_graph_endpoint(endpoint: &omni_frontend::GraphEndpoint) -> String {
         omni_frontend::GraphEndpoint::ProcIndexedField { proc, index, field } => {
             format!("{proc}[{}].{field}", format_expr(index))
         }
+    }
+}
+
+fn format_graph_destinations(dests: &[omni_frontend::GraphEndpoint]) -> String {
+    match dests {
+        [] => String::new(),
+        [dest] => format_graph_endpoint(dest),
+        _ => format!(
+            "{{ {} }}",
+            dests
+                .iter()
+                .map(format_graph_endpoint)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -1499,8 +1514,8 @@ fn f32_to_i16(sample: f32) -> i16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_expr, parse_args, Command};
-    use omni_frontend::{CallArg, Expr};
+    use super::{format_expr, format_program, parse_args, Command};
+    use omni_frontend::{Block, CallArg, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program};
 
     #[test]
     fn parse_compile_accepts_dump_graph() {
@@ -1541,5 +1556,30 @@ mod tests {
             }],
         };
         assert_eq!(format_expr(&expr), "sat(in1 = mix.out1)");
+    }
+
+    #[test]
+    fn format_program_prints_graph_fanout_destinations() {
+        let program = Program {
+            blocks: vec![Block::Graph(GraphBlock {
+                edges: vec![GraphEdge {
+                    rate: None,
+                    source: Expr::Var("src".to_owned()),
+                    delay: None,
+                    dests: vec![
+                        GraphEndpoint::Symbol("out1".to_owned()),
+                        GraphEndpoint::ProcField {
+                            proc: "mix".to_owned(),
+                            field: "in1".to_owned(),
+                        },
+                    ],
+                }],
+            })],
+        };
+
+        assert_eq!(
+            format_program(&program),
+            "graph:\n  src >> { out1, mix.in1 }\n\n"
+        );
     }
 }

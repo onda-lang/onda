@@ -181,7 +181,7 @@ fn preprocess_indentation_blocks(source: &str) -> Result<(String, Vec<usize>), V
     let mut line_map = Vec::<usize>::new();
     let mut indent_stack = vec![0usize];
     let mut pending: Option<PendingIndentBlock> = None;
-    let mut grouping_depth = 0usize;
+    let mut continuation_depth = 0usize;
     let mut last_source_line = 1usize;
 
     for (idx, raw_line) in source.lines().enumerate() {
@@ -207,7 +207,7 @@ fn preprocess_indentation_blocks(source: &str) -> Result<(String, Vec<usize>), V
                 )]);
             }
             indent_stack.push(indent_width);
-        } else if grouping_depth == 0 && indent_stack.len() > 1 {
+        } else if continuation_depth == 0 && indent_stack.len() > 1 {
             while indent_stack.len() > 1 && indent_width < *indent_stack.last().unwrap_or(&0) {
                 indent_stack.pop();
                 push_mapped_line(&mut out, &mut line_map, "}", line_no);
@@ -241,7 +241,7 @@ fn preprocess_indentation_blocks(source: &str) -> Result<(String, Vec<usize>), V
             push_mapped_line(&mut out, &mut line_map, line, line_no);
         }
 
-        grouping_depth = apply_grouping_delta(grouping_depth, code_part);
+        continuation_depth = apply_continuation_delta(continuation_depth, code_part);
     }
 
     if let Some(pending_block) = pending {
@@ -2451,11 +2451,11 @@ fn rewrite_block_namespace_refs(
     Ok(())
 }
 
-fn apply_grouping_delta(mut depth: usize, line: &str) -> usize {
+fn apply_continuation_delta(mut depth: usize, line: &str) -> usize {
     for ch in line.chars() {
         match ch {
-            '(' | '[' | '{' => depth = depth.saturating_add(1),
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '(' | '[' => depth = depth.saturating_add(1),
+            ')' | ']' => depth = depth.saturating_sub(1),
             _ => {}
         }
     }

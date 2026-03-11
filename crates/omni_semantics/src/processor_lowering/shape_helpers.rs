@@ -293,14 +293,16 @@ pub(super) fn compute_proc_shape(
     );
     let init_ctx = InitAnalysisCtx {
         context_label: &proc_label,
-        scope: ScopeKind::Init,
+        common: ScopeAnalysisCtx {
+            policy: ScopePolicy::Init,
+            input_names: &ins_names,
+            output_names: &out_names,
+            param_names: &typed_param_names,
+            struct_defs: &typed_struct_defs,
+            fn_signatures: &fn_signatures,
+            options,
+        },
         init_default_ty,
-        input_names: &ins_names,
-        output_names: &out_names,
-        param_names: &typed_param_names,
-        struct_defs: &typed_struct_defs,
-        fn_signatures: &fn_signatures,
-        options,
         proc_resolution,
     };
     let mut init_st = InitAnalysisState {
@@ -320,7 +322,16 @@ pub(super) fn compute_proc_shape(
     // Seed known_scalars with reserved names so they're visible for decl-order checks
     init_st.known_scalars.extend(reserved.iter().cloned());
     for stmt in &proc.init {
-        analyze_init_stmt(stmt, &init_ctx, &mut init_st, &proc_locals, 0, errors);
+        analyze_init_stmt(
+            stmt,
+            InitStmtAnalysisCtx {
+                init: &init_ctx,
+                locals: &proc_locals,
+            },
+            &mut init_st,
+            0,
+            errors,
+        );
     }
     let mut state = convert_init_state_to_proc_fields(&init_st);
 
@@ -530,7 +541,15 @@ pub(super) fn compute_proc_shape(
     let block_forbidden = out_names.clone();
     register_and_analyze_runtime_scope(
         proc.block_pre.iter().chain(proc.block_post.iter()),
-        ScopeKind::Block,
+        ScopeAnalysisCtx {
+            policy: ScopePolicy::Runtime(ScopeKind::Block),
+            input_names: &empty_inputs,
+            output_names: &empty_outputs,
+            param_names: &typed_param_names,
+            struct_defs: &typed_struct_defs,
+            fn_signatures: &proc_fn_signatures,
+            options,
+        },
         RuntimeRegistrationMode::Block,
         &mut proc_state_scalars,
         &proc_declared_symbols,
@@ -546,13 +565,7 @@ pub(super) fn compute_proc_shape(
         block_known_scalars,
         LocalAliasTypes::new(),
         HashMap::new(),
-        &empty_inputs,
-        &empty_outputs,
         &block_forbidden,
-        &typed_param_names,
-        &typed_struct_defs,
-        &proc_fn_signatures,
-        options,
         errors,
     );
 
@@ -568,7 +581,15 @@ pub(super) fn compute_proc_shape(
     let sample_forbidden = HashSet::new();
     register_and_analyze_runtime_scope(
         proc.sample.iter(),
-        ScopeKind::Sample,
+        ScopeAnalysisCtx {
+            policy: ScopePolicy::Runtime(ScopeKind::Sample),
+            input_names: &ins_names,
+            output_names: &out_names,
+            param_names: &typed_param_names,
+            struct_defs: &typed_struct_defs,
+            fn_signatures: &proc_fn_signatures,
+            options,
+        },
         RuntimeRegistrationMode::Sample,
         &mut proc_state_scalars,
         &proc_declared_symbols,
@@ -584,13 +605,7 @@ pub(super) fn compute_proc_shape(
         sample_known_scalars,
         LocalAliasTypes::new(),
         HashMap::new(),
-        &ins_names,
-        &out_names,
         &sample_forbidden,
-        &typed_param_names,
-        &typed_struct_defs,
-        &proc_fn_signatures,
-        options,
         errors,
     );
 
@@ -626,9 +641,15 @@ pub(super) fn compute_proc_shape(
         &state.nested_procs,
         &state.nested_proc_arrays,
         &proc_struct_instances_typed,
-        &typed_struct_defs,
-        &proc_fn_signatures,
-        options,
+        ScopeAnalysisCtx {
+            policy: ScopePolicy::Event,
+            input_names: &ins_names,
+            output_names: &out_names,
+            param_names: &typed_param_names,
+            struct_defs: &typed_struct_defs,
+            fn_signatures: &proc_fn_signatures,
+            options,
+        },
         errors,
     );
 

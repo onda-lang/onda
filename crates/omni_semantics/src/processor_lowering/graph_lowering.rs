@@ -104,7 +104,7 @@ enum GraphUsePoint {
     BeforeOutputs,
 }
 
-pub(super) fn lower_graph_blocks(
+pub(crate) fn lower_graph_blocks(
     program: &mut Program,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
