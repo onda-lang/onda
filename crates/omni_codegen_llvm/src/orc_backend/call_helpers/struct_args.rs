@@ -51,6 +51,158 @@ unsafe fn push_scalar_struct_arg(
     }
 }
 
+fn find_struct_array_alias_by_base<'a>(
+    local_array_aliases: &'a HashMap<String, LocalArrayAlias>,
+    base: &str,
+    context_name: &str,
+) -> Result<Option<&'a LocalArrayAlias>, Diagnostic> {
+    if let Some(alias) = local_array_aliases.get(base) {
+        return Ok(Some(alias));
+    }
+    if let Some(stripped) = base.strip_prefix("self.") {
+        if let Some(alias) = local_array_aliases.get(stripped) {
+            return Ok(Some(alias));
+        }
+    } else {
+        let self_base = format!("self.{base}");
+        if let Some(alias) = local_array_aliases.get(&self_base) {
+            return Ok(Some(alias));
+        }
+    }
+
+    let suffix = format!(".{base}");
+    let matches = local_array_aliases
+        .iter()
+        .filter_map(|(key, alias)| {
+            if key.ends_with(&suffix) && matches!(alias, LocalArrayAlias::Struct { .. }) {
+                Some(alias)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err(Diagnostic::internal(format!(
+            "ambiguous struct-array alias base '{base}[...]' in {context_name}"
+        )));
+    }
+    Ok(matches.first().copied())
+}
+
+fn resolve_struct_array_root_base(
+    array_struct_roots: &HashMap<String, String>,
+    base: &str,
+    context_name: &str,
+) -> Result<Option<String>, Diagnostic> {
+    let self_base = format!("self.{base}");
+    let suffix = format!(".{base}");
+    let suffix_match =
+        if !array_struct_roots.contains_key(base) && !array_struct_roots.contains_key(&self_base) {
+            let matches = array_struct_roots
+                .keys()
+                .filter(|key| key.ends_with(&suffix))
+                .collect::<Vec<_>>();
+            if matches.len() > 1 {
+                return Err(Diagnostic::internal(format!(
+                    "ambiguous struct-array root base '{base}[...]' in {context_name}"
+                )));
+            }
+            matches.into_iter().next().cloned()
+        } else {
+            None
+        };
+
+    Ok(if array_struct_roots.contains_key(base) {
+        Some(base.to_owned())
+    } else if array_struct_roots.contains_key(&self_base) {
+        Some(self_base)
+    } else if let Some(stripped) = base.strip_prefix("self.") {
+        if array_struct_roots.contains_key(stripped) {
+            Some(stripped.to_owned())
+        } else {
+            suffix_match
+        }
+    } else {
+        suffix_match
+    })
+}
+
+pub(in crate::orc_backend) unsafe fn resolve_indexed_struct_arg_common<FLowerClampedIndex>(
+    builder: LLVMBuilderRef,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    array_struct_roots: &HashMap<String, String>,
+    array_struct_len: &HashMap<String, usize>,
+    base: &str,
+    struct_name: &str,
+    callee_name: &str,
+    context_name: &str,
+    alias_global_name: &[u8],
+    mut lower_clamped_index: FLowerClampedIndex,
+) -> Result<Option<(String, LLVMValueRef)>, Diagnostic>
+where
+    FLowerClampedIndex: FnMut(usize) -> Result<LLVMValueRef, Diagnostic>,
+{
+    if let Some(alias) = find_struct_array_alias_by_base(local_array_aliases, base, context_name)? {
+        return match alias {
+            LocalArrayAlias::Primitive { .. } => Err(Diagnostic::internal(format!(
+                "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' resolves to a primitive array alias in {context_name}"
+            ))),
+            LocalArrayAlias::Struct {
+                root_base,
+                elem_struct,
+                len,
+                start_index,
+            } => {
+                if elem_struct != struct_name {
+                    return Err(Diagnostic::internal(format!(
+                        "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' alias element type is '{elem_struct}' in {context_name}"
+                    )));
+                }
+                if *len == 0 {
+                    return Err(Diagnostic::internal(format!(
+                        "struct-array alias argument '{base}' has zero length in {context_name} for function '{callee_name}'"
+                    )));
+                }
+                let clamped_local_idx = lower_clamped_index(*len)?;
+                let global_index = LLVMBuildAdd(
+                    builder,
+                    *start_index,
+                    clamped_local_idx,
+                    alias_global_name.as_ptr().cast(),
+                );
+                Ok(Some((root_base.clone(), global_index)))
+            }
+        };
+    }
+
+    let Some(resolved_base) =
+        resolve_struct_array_root_base(array_struct_roots, base, context_name)?
+    else {
+        return Ok(None);
+    };
+    let indexed_struct = array_struct_roots.get(&resolved_base).ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "missing struct-array root metadata for '{resolved_base}[...]' in {context_name}"
+        ))
+    })?;
+    if indexed_struct != struct_name {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' has element type '{indexed_struct}' in {context_name}"
+        )));
+    }
+    let len = array_struct_len.get(&resolved_base).copied().ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "missing struct-array length metadata for '{resolved_base}[...]' in {context_name} for function '{callee_name}'"
+        ))
+    })?;
+    if len == 0 {
+        return Err(Diagnostic::internal(format!(
+            "struct-array argument '{resolved_base}' has zero length in {context_name} for function '{callee_name}'"
+        )));
+    }
+    Ok(Some((resolved_base, lower_clamped_index(len)?)))
+}
+
 pub(in crate::orc_backend) unsafe fn lower_struct_call_args_for_base_common<
     FLookupStructArrayLen,
     FLookupScalarPtr,
@@ -242,148 +394,34 @@ pub(in crate::orc_backend) unsafe fn lower_struct_call_args_in_orc(
             )?;
         }
         Expr::Index { base, index } => {
-            let local_alias = if let Some(alias) = local_array_aliases.get(base) {
-                Some(alias)
-            } else if let Some(stripped) = base.strip_prefix("self.") {
-                local_array_aliases.get(stripped)
-            } else {
-                let self_base = format!("self.{base}");
-                if let Some(alias) = local_array_aliases.get(&self_base) {
-                    Some(alias)
-                } else {
-                    let suffix = format!(".{base}");
-                    let matches = local_array_aliases
-                        .iter()
-                        .filter_map(|(k, v)| {
-                            if k.ends_with(&suffix) && matches!(v, LocalArrayAlias::Struct { .. }) {
-                                Some(v)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    if matches.len() > 1 {
-                        return Err(Diagnostic::internal(format!(
-                            "ambiguous struct-array alias base '{base}[...]' in ORC lowering"
-                        )));
-                    }
-                    matches.first().copied()
-                }
-            };
-            let (resolved_base, clamped_index) = if let Some(alias) = local_alias {
-                match alias {
-                    LocalArrayAlias::Primitive { .. } => {
-                        return Err(Diagnostic::internal(format!(
-                            "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' resolves to a primitive array alias in ORC lowering"
-                        )));
-                    }
-                    LocalArrayAlias::Struct {
-                        root_base,
-                        elem_struct,
+            let ctx_ptr: *mut LoweringCtx<'_> = ctx;
+            let Some((resolved_base, clamped_index)) = resolve_indexed_struct_arg_common(
+                ctx.builder,
+                local_array_aliases,
+                ctx.array_struct_roots,
+                ctx.array_struct_len,
+                base,
+                struct_name,
+                callee_name,
+                "ORC lowering",
+                b"struct_idx_alias_global\0",
+                |len| unsafe {
+                    lower_clamped_data_index(
+                        &mut *ctx_ptr,
+                        index,
                         len,
-                        start_index,
-                    } => {
-                        if elem_struct != struct_name {
-                            return Err(Diagnostic::internal(format!(
-                                "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' alias element type is '{elem_struct}' in ORC lowering"
-                            )));
-                        }
-                        if *len == 0 {
-                            return Err(Diagnostic::internal(format!(
-                                "struct-array alias argument '{base}' has zero length in ORC lowering for function '{callee_name}'"
-                            )));
-                        }
-                        let raw_index =
-                            lower_expr(index, ctx, locals, local_aliases, local_array_aliases)?;
-                        let index_i32 = cast_orc_value_to(
-                            ctx,
-                            raw_index,
-                            PrimitiveType::I32,
-                            b"struct_idx_alias_i32\0",
-                        );
-                        let clamped_local_idx =
-                            clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, *len)?;
-                        let global_index = LLVMBuildAdd(
-                            ctx.builder,
-                            *start_index,
-                            clamped_local_idx,
-                            b"struct_idx_alias_global\0".as_ptr().cast(),
-                        );
-                        (root_base.clone(), global_index)
-                    }
-                }
-            } else {
-                let self_base = format!("self.{base}");
-                let suffix = format!(".{base}");
-                let suffix_match = if !ctx.array_struct_roots.contains_key(base)
-                    && !ctx.array_struct_roots.contains_key(&self_base)
-                {
-                    let matches = ctx
-                        .array_struct_roots
-                        .keys()
-                        .filter(|k| k.ends_with(&suffix))
-                        .collect::<Vec<_>>();
-                    if matches.len() > 1 {
-                        return Err(Diagnostic::internal(format!(
-                            "ambiguous struct-array root base '{base}[...]' in ORC lowering"
-                        )));
-                    }
-                    matches.into_iter().next().map(|k| k.as_str())
-                } else {
-                    None
-                };
-                let resolved_base = if ctx.array_struct_roots.contains_key(base) {
-                    base.as_str()
-                } else if ctx.array_struct_roots.contains_key(&self_base) {
-                    self_base.as_str()
-                } else if let Some(stripped) = base.strip_prefix("self.") {
-                    if ctx.array_struct_roots.contains_key(stripped) {
-                        stripped
-                    } else {
-                        suffix_match.unwrap_or(base.as_str())
-                    }
-                } else {
-                    suffix_match.unwrap_or(base.as_str())
-                };
-                let resolved_base = resolved_base.to_owned();
-                let Some(indexed_struct) =
-                    ctx.array_struct_roots.get(resolved_base.as_str()).cloned()
-                else {
-                    return Err(Diagnostic::internal(format!(
-                        "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' is not a struct-array root in ORC lowering"
-                    )));
-                };
-                if indexed_struct != struct_name {
-                    return Err(Diagnostic::internal(format!(
-                        "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' has element type '{indexed_struct}' in ORC lowering"
-                    )));
-                }
-                let len = ctx
-                    .array_struct_len
-                    .get(resolved_base.as_str())
-                    .copied()
-                    .ok_or_else(|| {
-                        Diagnostic::internal(format!(
-                            "missing struct-array length metadata for '{resolved_base}[...]' in ORC lowering for function '{callee_name}'"
-                        ))
-                    })?;
-                if len == 0 {
-                    return Err(Diagnostic::internal(format!(
-                        "struct-array argument '{resolved_base}' has zero length in ORC lowering for function '{callee_name}'"
-                    )));
-                }
-                let clamped_index = lower_clamped_data_index(
-                    ctx,
-                    index,
-                    len,
-                    locals,
-                    local_aliases,
-                    local_array_aliases,
-                )?;
-                (resolved_base, clamped_index)
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                    )
+                },
+            )?
+            else {
+                return Err(Diagnostic::internal(format!(
+                    "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' is not a struct-array root in ORC lowering"
+                )));
             };
 
-            let ctx_ptr: *mut LoweringCtx<'_> = ctx;
             lower_struct_call_args_for_indexed_base_common(
                 ctx.builder,
                 ctx.context,

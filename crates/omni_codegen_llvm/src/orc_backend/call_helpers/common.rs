@@ -424,23 +424,6 @@ pub(in crate::orc_backend) fn builtin_constant_value_and_type(
     }
 }
 
-fn merge_const_numeric_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<PrimitiveType> {
-    use omni_frontend::PrimitiveType::*;
-    match (lhs, rhs) {
-        (F64, I32)
-        | (I32, F64)
-        | (F64, I64)
-        | (I64, F64)
-        | (F64, F32)
-        | (F32, F64)
-        | (F64, F64) => Some(F64),
-        (F32, I32) | (I32, F32) | (F32, F32) => Some(F32),
-        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
-        (I32, I32) => Some(I32),
-        _ => None,
-    }
-}
-
 fn merge_const_integer_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<PrimitiveType> {
     use omni_frontend::PrimitiveType::*;
     match (lhs, rhs) {
@@ -497,7 +480,7 @@ pub(in crate::orc_backend) fn infer_const_default_expr_type(
                         ))
                     })
                 }
-                _ => merge_const_numeric_types(lhs_ty, rhs_ty).ok_or_else(|| {
+                _ => merge_numeric_primitive(lhs_ty, rhs_ty).ok_or_else(|| {
                     Diagnostic::internal(format!(
                         "default binary expression requires numeric operands, got {:?} and {:?}",
                         lhs_ty, rhs_ty

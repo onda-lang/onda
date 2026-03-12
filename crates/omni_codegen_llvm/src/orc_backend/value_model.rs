@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) unsafe fn merge_numeric_primitive(
+pub(super) fn merge_numeric_primitive(
     lhs: PrimitiveType,
     rhs: PrimitiveType,
 ) -> Option<PrimitiveType> {

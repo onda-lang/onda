@@ -8,18 +8,6 @@ pub(crate) struct ProcSlotBufferRefLayout {
     pub(super) channels_offset: usize,
 }
 
-fn align_up_runtime(value: usize, align: usize) -> usize {
-    if align <= 1 {
-        return value;
-    }
-    let rem = value % align;
-    if rem == 0 {
-        value
-    } else {
-        value + (align - rem)
-    }
-}
-
 fn collect_proc_slot_buffer_ref_signatures(
     typed: &TypedProgram,
     buffer_index: &HashMap<String, usize>,
@@ -199,7 +187,7 @@ pub(super) fn compute_proc_slot_buffer_ref_layouts(
             continue;
         }
 
-        offset = align_up_runtime(offset, align_of::<usize>());
+        offset = align_up(offset, align_of::<usize>());
         let ptr_offset = offset;
         let ptr_bytes = slots_len.checked_mul(size_of::<usize>()).ok_or_else(|| {
             Diagnostic::internal("proc buffer-ref pointer array byte size overflow")
@@ -208,7 +196,7 @@ pub(super) fn compute_proc_slot_buffer_ref_layouts(
             .checked_add(ptr_bytes)
             .ok_or_else(|| Diagnostic::internal("proc buffer-ref pointer layout overflow"))?;
 
-        offset = align_up_runtime(offset, align_of::<i32>());
+        offset = align_up(offset, align_of::<i32>());
         let frames_offset = offset;
         let i32_bytes = slots_len
             .checked_mul(size_of::<i32>())
@@ -217,7 +205,7 @@ pub(super) fn compute_proc_slot_buffer_ref_layouts(
             .checked_add(i32_bytes)
             .ok_or_else(|| Diagnostic::internal("proc buffer-ref frames layout overflow"))?;
 
-        offset = align_up_runtime(offset, align_of::<i32>());
+        offset = align_up(offset, align_of::<i32>());
         let channels_offset = offset;
         offset = offset
             .checked_add(i32_bytes)

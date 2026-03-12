@@ -241,216 +241,104 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
             )?;
         }
         Expr::Index { base, index } => {
-            let local_alias = if let Some(alias) = ctx.local_array_aliases.get(base) {
-                Some(alias.clone())
-            } else if let Some(stripped) = base.strip_prefix("self.") {
-                ctx.local_array_aliases.get(stripped).cloned()
-            } else {
-                let self_base = format!("self.{base}");
-                if let Some(alias) = ctx.local_array_aliases.get(&self_base) {
-                    Some(alias.clone())
-                } else {
-                    let suffix = format!(".{base}");
-                    let mut matches = ctx
-                        .local_array_aliases
-                        .iter()
-                        .filter_map(|(k, v)| {
-                            if k.ends_with(&suffix) && matches!(v, LocalArrayAlias::Struct { .. }) {
-                                Some(v.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    match matches.len() {
-                        0 => None,
-                        1 => matches.pop(),
-                        _ => {
-                            return Err(Diagnostic::internal(format!(
-                                "ambiguous struct-array alias base '{base}[...]' in def lowering"
-                            )));
-                        }
-                    }
-                }
-            };
-            let (resolved_base, clamped_index) = if let Some(alias) = local_alias {
-                match alias {
-                    LocalArrayAlias::Primitive { .. } => {
-                        return Err(Diagnostic::internal(format!(
-                            "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' resolves to a primitive array alias in def lowering"
-                        )));
-                    }
-                    LocalArrayAlias::Struct {
-                        root_base,
-                        elem_struct,
-                        len,
-                        start_index,
-                    } => {
-                        if elem_struct != struct_name {
-                            return Err(Diagnostic::internal(format!(
-                                "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' alias element type is '{elem_struct}' in def lowering"
-                            )));
-                        }
-                        if len == 0 {
-                            return Err(Diagnostic::internal(format!(
-                                "struct-array alias argument '{base}' has zero length in def lowering for function '{callee_name}'"
-                            )));
-                        }
-                        let raw_index = lower_def_expr(index, ctx)?;
-                        let index_i32 = cast_def_value_to(
-                            ctx,
-                            raw_index,
-                            PrimitiveType::I32,
-                            b"def_struct_idx_alias_i32\0",
-                        );
-                        let clamped_local_idx =
-                            clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, len)?;
-                        let global_index = LLVMBuildAdd(
-                            ctx.builder,
-                            start_index,
-                            clamped_local_idx,
-                            b"def_struct_idx_alias_global\0".as_ptr().cast(),
-                        );
-                        (root_base, global_index)
-                    }
-                }
-            } else {
-                let self_base = format!("self.{base}");
-                let suffix = format!(".{base}");
-                let suffix_match = if !ctx.array_struct_roots.contains_key(base)
-                    && !ctx.array_struct_roots.contains_key(&self_base)
-                {
-                    let matches = ctx
-                        .array_struct_roots
-                        .keys()
-                        .filter(|k| k.ends_with(&suffix))
-                        .collect::<Vec<_>>();
-                    if matches.len() > 1 {
-                        return Err(Diagnostic::internal(format!(
-                            "ambiguous struct-array root base '{base}[...]' in def lowering"
-                        )));
-                    }
-                    matches.into_iter().next().map(|k| k.as_str())
-                } else {
-                    None
-                };
-                let resolved_base = if ctx.array_struct_roots.contains_key(base) {
-                    base.as_str()
-                } else if ctx.array_struct_roots.contains_key(&self_base) {
-                    self_base.as_str()
-                } else if let Some(stripped) = base.strip_prefix("self.") {
-                    if ctx.array_struct_roots.contains_key(stripped) {
-                        stripped
-                    } else {
-                        suffix_match.unwrap_or(base.as_str())
-                    }
-                } else {
-                    suffix_match.unwrap_or(base.as_str())
-                };
-                let resolved_base = resolved_base.to_owned();
-                if let Some(indexed_struct) = ctx.array_struct_roots.get(resolved_base.as_str()) {
-                    if indexed_struct != struct_name {
-                        return Err(Diagnostic::internal(format!(
-                            "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' has element type '{indexed_struct}' in def lowering"
-                        )));
-                    }
-                    let len = ctx.array_len.get(resolved_base.as_str()).copied().ok_or_else(|| {
-                        Diagnostic::internal(format!(
-                            "missing struct-array length metadata for '{resolved_base}[...]' in def lowering for function '{callee_name}'"
-                        ))
-                    })?;
-                    if len == 0 {
-                        return Err(Diagnostic::internal(format!(
-                            "struct-array argument '{resolved_base}' has zero length in def lowering for function '{callee_name}'"
-                        )));
-                    };
-                    let raw_index = lower_def_expr(index, ctx)?;
+            let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
+            let resolved = resolve_indexed_struct_arg_common(
+                ctx.builder,
+                &ctx.local_array_aliases,
+                &ctx.array_struct_roots,
+                &ctx.array_len,
+                base,
+                struct_name,
+                callee_name,
+                "def lowering",
+                b"def_struct_idx_alias_global\0",
+                |len| unsafe {
+                    let raw_index = lower_def_expr(index, &mut *ctx_ptr)?;
                     let index_i32 = cast_def_value_to(
-                        ctx,
+                        &*ctx_ptr,
                         raw_index,
                         PrimitiveType::I32,
                         b"def_struct_idx_i32\0",
                     );
-                    let clamped_index = clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, len)?;
-                    (resolved_base, clamped_index)
-                } else {
-                    let slot_indices = collect_def_flat_slot_indices(ctx, base);
-                    if slot_indices.is_empty() {
+                    clamp_data_index((&*ctx_ptr).builder, (&*ctx_ptr).i32_ty, index_i32, len)
+                },
+            )?;
+            let (resolved_base, clamped_index) = if let Some(resolved) = resolved {
+                resolved
+            } else {
+                let slot_indices = collect_def_flat_slot_indices(ctx, base);
+                if slot_indices.is_empty() {
+                    return Err(Diagnostic::internal(format!(
+                        "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' is not a struct-array root in def lowering"
+                    )));
+                }
+                for (expected, actual) in slot_indices.iter().enumerate() {
+                    if *actual != expected {
                         return Err(Diagnostic::internal(format!(
-                            "function '{callee_name}' expects struct '{struct_name}' argument, but '{base}[...]' is not a struct-array root in def lowering"
+                            "function '{callee_name}' expects contiguous flattened slot indices for '{base}[...]' in def lowering, got {:?}",
+                            slot_indices
                         )));
                     }
-                    for (expected, actual) in slot_indices.iter().enumerate() {
-                        if *actual != expected {
+                }
+                let raw_index = lower_def_expr(index, ctx)?;
+                let index_i32 = cast_def_value_to(
+                    ctx,
+                    raw_index,
+                    PrimitiveType::I32,
+                    b"def_struct_idx_slot_i32\0",
+                );
+                let clamped_index =
+                    clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, slot_indices.len())?;
+                let fields = ctx.struct_fields.get(struct_name).ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "unknown struct '{struct_name}' in def call lowering for function '{callee_name}'"
+                    ))
+                })?;
+                for field in fields {
+                    match field.ty {
+                        TypedFieldType::Scalar(prim) => {
+                            let mut slot_ptrs =
+                                Vec::<LLVMValueRef>::with_capacity(slot_indices.len());
+                            for slot_idx in &slot_indices {
+                                let slot_name = format!("{base}[{slot_idx}].{}", field.name);
+                                let slot = find_def_local_slot(ctx, &slot_name).ok_or_else(|| {
+                                    Diagnostic::internal(format!(
+                                        "missing flattened slot state '{}' while lowering struct argument for '{}'",
+                                        slot_name, callee_name
+                                    ))
+                                })?;
+                                slot_ptrs.push(slot.ptr);
+                            }
+                            let ptr = select_def_value_by_slot_index(
+                                ctx,
+                                clamped_index,
+                                &slot_ptrs,
+                                b"def_struct_idx_slot_ptr_sel\0",
+                                "def struct scalar slot dispatch",
+                            )?;
+                            if by_ref {
+                                out_args.push(ptr);
+                            } else {
+                                let loaded = LLVMBuildLoad2(
+                                    ctx.builder,
+                                    llvm_ty_for_primitive(ctx.context, prim),
+                                    ptr,
+                                    b"def_struct_idx_slot_load\0".as_ptr().cast(),
+                                );
+                                out_args.push(loaded);
+                            }
+                        }
+                        TypedFieldType::Struct => {}
+                        TypedFieldType::Array(_) => {
                             return Err(Diagnostic::internal(format!(
-                                "function '{callee_name}' expects contiguous flattened slot indices for '{base}[...]' in def lowering, got {:?}",
-                                slot_indices
+                                "function '{callee_name}' indexed struct argument '{base}[...]' requires struct-array root metadata for array field '{}'",
+                                field.name
                             )));
                         }
                     }
-                    let raw_index = lower_def_expr(index, ctx)?;
-                    let index_i32 = cast_def_value_to(
-                        ctx,
-                        raw_index,
-                        PrimitiveType::I32,
-                        b"def_struct_idx_slot_i32\0",
-                    );
-                    let clamped_index =
-                        clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, slot_indices.len())?;
-                    let fields = ctx.struct_fields.get(struct_name).ok_or_else(|| {
-                        Diagnostic::internal(format!(
-                            "unknown struct '{struct_name}' in def call lowering for function '{callee_name}'"
-                        ))
-                    })?;
-                    for field in fields {
-                        match field.ty {
-                            TypedFieldType::Scalar(prim) => {
-                                let mut slot_ptrs =
-                                    Vec::<LLVMValueRef>::with_capacity(slot_indices.len());
-                                for slot_idx in &slot_indices {
-                                    let slot_name = format!("{base}[{slot_idx}].{}", field.name);
-                                    let slot = find_def_local_slot(ctx, &slot_name).ok_or_else(
-                                        || {
-                                            Diagnostic::internal(format!(
-                                                "missing flattened slot state '{}' while lowering struct argument for '{}'",
-                                                slot_name, callee_name
-                                            ))
-                                        },
-                                    )?;
-                                    slot_ptrs.push(slot.ptr);
-                                }
-                                let ptr = select_def_value_by_slot_index(
-                                    ctx,
-                                    clamped_index,
-                                    &slot_ptrs,
-                                    b"def_struct_idx_slot_ptr_sel\0",
-                                    "def struct scalar slot dispatch",
-                                )?;
-                                if by_ref {
-                                    out_args.push(ptr);
-                                } else {
-                                    let loaded = LLVMBuildLoad2(
-                                        ctx.builder,
-                                        llvm_ty_for_primitive(ctx.context, prim),
-                                        ptr,
-                                        b"def_struct_idx_slot_load\0".as_ptr().cast(),
-                                    );
-                                    out_args.push(loaded);
-                                }
-                            }
-                            TypedFieldType::Struct => {}
-                            TypedFieldType::Array(_) => {
-                                return Err(Diagnostic::internal(format!(
-                                    "function '{callee_name}' indexed struct argument '{base}[...]' requires struct-array root metadata for array field '{}'",
-                                    field.name
-                                )));
-                            }
-                        }
-                    }
-                    return Ok(());
                 }
+                return Ok(());
             };
-            let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
             lower_struct_call_args_for_indexed_base_common(
                 ctx.builder,
                 ctx.context,
