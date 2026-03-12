@@ -401,225 +401,52 @@ unsafe fn lower_def_slice_assign(
 
     if matches!(expr, Expr::Var(_) | Expr::Slice { .. }) {
         let src_view = lower_def_array_view(ctx, expr, "slice assignment source")?;
-        let copy_len = LLVMBuildSelect(
-            ctx.builder,
-            LLVMBuildICmp(
-                ctx.builder,
-                llvm_sys::LLVMIntPredicate::LLVMIntSLT,
-                dst_view.len_val,
-                src_view.len_val,
-                b"def_slice_copy_len_cmp\0".as_ptr().cast(),
-            ),
-            dst_view.len_val,
-            src_view.len_val,
-            b"def_slice_copy_len\0".as_ptr().cast(),
-        );
-        let i8_ty = LLVMInt8TypeInContext(ctx.context);
-        let i8_ptr_ty = LLVMPointerType(i8_ty, 0);
-        let intptr_ty = LLVMInt64TypeInContext(ctx.context);
-        let dst_i8 = LLVMBuildBitCast(
-            ctx.builder,
-            dst_view.base_ptr,
-            i8_ptr_ty,
-            b"def_slice_dst_i8\0".as_ptr().cast(),
-        );
-        let src_i8 = LLVMBuildBitCast(
-            ctx.builder,
-            src_view.base_ptr,
-            i8_ptr_ty,
-            b"def_slice_src_i8\0".as_ptr().cast(),
-        );
-        let dst_addr = LLVMBuildPtrToInt(
-            ctx.builder,
-            dst_i8,
-            intptr_ty,
-            b"def_slice_dst_addr\0".as_ptr().cast(),
-        );
-        let src_addr = LLVMBuildPtrToInt(
-            ctx.builder,
-            src_i8,
-            intptr_ty,
-            b"def_slice_src_addr\0".as_ptr().cast(),
-        );
-        let elem_bytes = LLVMConstInt(intptr_ty, primitive_type_bytes(dst_view.elem_ty) as u64, 0);
-        let copy_len_ptr = LLVMBuildZExt(
-            ctx.builder,
-            copy_len,
-            intptr_ty,
-            b"def_slice_copy_len_ptr\0".as_ptr().cast(),
-        );
-        let copy_bytes = LLVMBuildMul(
-            ctx.builder,
-            copy_len_ptr,
-            elem_bytes,
-            b"def_slice_copy_bytes\0".as_ptr().cast(),
-        );
-        let src_end = LLVMBuildAdd(
-            ctx.builder,
-            src_addr,
-            copy_bytes,
-            b"def_slice_src_end\0".as_ptr().cast(),
-        );
-        let dst_end = LLVMBuildAdd(
-            ctx.builder,
-            dst_addr,
-            copy_bytes,
-            b"def_slice_dst_end\0".as_ptr().cast(),
-        );
-        let dst_after_src = LLVMBuildICmp(
-            ctx.builder,
-            llvm_sys::LLVMIntPredicate::LLVMIntUGT,
-            dst_addr,
-            src_addr,
-            b"def_slice_dst_after_src\0".as_ptr().cast(),
-        );
-        let dst_before_src_end = LLVMBuildICmp(
-            ctx.builder,
-            llvm_sys::LLVMIntPredicate::LLVMIntULT,
-            dst_addr,
-            src_end,
-            b"def_slice_dst_before_src_end\0".as_ptr().cast(),
-        );
-        let src_before_dst_end = LLVMBuildICmp(
-            ctx.builder,
-            llvm_sys::LLVMIntPredicate::LLVMIntULT,
-            src_addr,
-            dst_end,
-            b"def_slice_src_before_dst_end\0".as_ptr().cast(),
-        );
-        let overlaps = LLVMBuildAnd(
-            ctx.builder,
-            dst_before_src_end,
-            src_before_dst_end,
-            b"def_slice_overlaps\0".as_ptr().cast(),
-        );
-        let backward_copy = LLVMBuildAnd(
-            ctx.builder,
-            dst_after_src,
-            overlaps,
-            b"def_slice_backward_copy\0".as_ptr().cast(),
-        );
         let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
-        lower_if_stmt_common(
+        let copy_elem = move |loop_i| unsafe {
+            let ctx = &mut *ctx_ptr;
+            let src_ptr = build_f32_ptr_offset(
+                ctx.builder,
+                llvm_ty_for_primitive(ctx.context, src_view.elem_ty),
+                src_view.base_ptr,
+                loop_i,
+                b"def_slice_copy_src_ptr\0",
+            );
+            let src_val = LLVMBuildLoad2(
+                ctx.builder,
+                llvm_ty_for_primitive(ctx.context, src_view.elem_ty),
+                src_ptr,
+                b"def_slice_copy_src_val\0".as_ptr().cast(),
+            );
+            let casted = cast_def_value_to(
+                ctx,
+                OrcValue {
+                    value: src_val,
+                    ty: src_view.elem_ty,
+                },
+                dst_view.elem_ty,
+                b"def_slice_copy_cast\0",
+            );
+            let dst_ptr = build_f32_ptr_offset(
+                ctx.builder,
+                elem_llvm_ty,
+                dst_view.base_ptr,
+                loop_i,
+                b"def_slice_copy_dst_ptr\0",
+            );
+            LLVMBuildStore(ctx.builder, casted, dst_ptr);
+            Ok(())
+        };
+        lower_slice_copy_common(
             ctx.builder,
             ctx.context,
             ctx.fn_ref,
-            backward_copy,
-            b"def_slice_copy_backward\0",
-            b"def_slice_copy_forward\0",
-            b"def_slice_copy_merge\0",
-            || unsafe {
-                let ctx = &mut *ctx_ptr;
-                let start = LLVMBuildSub(
-                    ctx.builder,
-                    copy_len,
-                    const_i32(ctx.i32_ty, 1),
-                    b"def_slice_back_start\0".as_ptr().cast(),
-                );
-                lower_for_stmt_common(
-                    ctx.builder,
-                    ctx.context,
-                    ctx.fn_ref,
-                    ctx.i32_ty,
-                    start,
-                    const_i32(ctx.i32_ty, 0),
-                    const_i32(ctx.i32_ty, -1),
-                    true,
-                    b"def_slice_back_cond\0",
-                    b"def_slice_back_body\0",
-                    b"def_slice_back_latch\0",
-                    b"def_slice_back_end\0",
-                    "def backward slice copy",
-                    |loop_i, _, _| {
-                        let ctx = &mut *ctx_ptr;
-                        let src_ptr = build_f32_ptr_offset(
-                            ctx.builder,
-                            llvm_ty_for_primitive(ctx.context, src_view.elem_ty),
-                            src_view.base_ptr,
-                            loop_i,
-                            b"def_slice_back_src_ptr\0",
-                        );
-                        let src_val = LLVMBuildLoad2(
-                            ctx.builder,
-                            llvm_ty_for_primitive(ctx.context, src_view.elem_ty),
-                            src_ptr,
-                            b"def_slice_back_src_val\0".as_ptr().cast(),
-                        );
-                        let casted = cast_def_value_to(
-                            ctx,
-                            OrcValue {
-                                value: src_val,
-                                ty: src_view.elem_ty,
-                            },
-                            dst_view.elem_ty,
-                            b"def_slice_back_cast\0",
-                        );
-                        let dst_ptr = build_f32_ptr_offset(
-                            ctx.builder,
-                            elem_llvm_ty,
-                            dst_view.base_ptr,
-                            loop_i,
-                            b"def_slice_back_dst_ptr\0",
-                        );
-                        LLVMBuildStore(ctx.builder, casted, dst_ptr);
-                        Ok(())
-                    },
-                )?;
-                Ok(())
-            },
-            || unsafe {
-                let ctx = &mut *ctx_ptr;
-                lower_for_stmt_common(
-                    ctx.builder,
-                    ctx.context,
-                    ctx.fn_ref,
-                    ctx.i32_ty,
-                    const_i32(ctx.i32_ty, 0),
-                    copy_len,
-                    const_i32(ctx.i32_ty, 1),
-                    false,
-                    b"def_slice_fwd_cond\0",
-                    b"def_slice_fwd_body\0",
-                    b"def_slice_fwd_latch\0",
-                    b"def_slice_fwd_end\0",
-                    "def forward slice copy",
-                    |loop_i, _, _| {
-                        let ctx = &mut *ctx_ptr;
-                        let src_ptr = build_f32_ptr_offset(
-                            ctx.builder,
-                            llvm_ty_for_primitive(ctx.context, src_view.elem_ty),
-                            src_view.base_ptr,
-                            loop_i,
-                            b"def_slice_fwd_src_ptr\0",
-                        );
-                        let src_val = LLVMBuildLoad2(
-                            ctx.builder,
-                            llvm_ty_for_primitive(ctx.context, src_view.elem_ty),
-                            src_ptr,
-                            b"def_slice_fwd_src_val\0".as_ptr().cast(),
-                        );
-                        let casted = cast_def_value_to(
-                            ctx,
-                            OrcValue {
-                                value: src_val,
-                                ty: src_view.elem_ty,
-                            },
-                            dst_view.elem_ty,
-                            b"def_slice_fwd_cast\0",
-                        );
-                        let dst_ptr = build_f32_ptr_offset(
-                            ctx.builder,
-                            elem_llvm_ty,
-                            dst_view.base_ptr,
-                            loop_i,
-                            b"def_slice_fwd_dst_ptr\0",
-                        );
-                        LLVMBuildStore(ctx.builder, casted, dst_ptr);
-                        Ok(())
-                    },
-                )?;
-                Ok(())
-            },
+            ctx.i32_ty,
+            dst_view,
+            src_view,
+            "def_slice",
+            "def backward slice copy",
+            "def forward slice copy",
+            copy_elem,
         )?;
         return Ok(false);
     }
@@ -627,36 +454,30 @@ unsafe fn lower_def_slice_assign(
     let typed_value = lower_def_expr(expr, ctx)?;
     let fill_value = cast_def_value_to(ctx, typed_value, dst_view.elem_ty, b"def_slice_fill\0");
     let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
-    lower_for_stmt_common(
+    let fill_elem = move |loop_i| unsafe {
+        let ctx = &mut *ctx_ptr;
+        let dst_ptr = build_f32_ptr_offset(
+            ctx.builder,
+            elem_llvm_ty,
+            dst_view.base_ptr,
+            loop_i,
+            b"def_slice_fill_ptr\0",
+        );
+        LLVMBuildStore(ctx.builder, fill_value, dst_ptr);
+        Ok(())
+    };
+    lower_slice_fill_common(
         ctx.builder,
         ctx.context,
         ctx.fn_ref,
         ctx.i32_ty,
-        const_i32(ctx.i32_ty, 0),
-        dst_view.len_val,
-        const_i32(ctx.i32_ty, 1),
-        false,
-        b"def_slice_fill_cond\0",
-        b"def_slice_fill_body\0",
-        b"def_slice_fill_latch\0",
-        b"def_slice_fill_end\0",
+        dst_view,
+        "def_slice",
         "def slice fill",
-        |loop_i, _, _| unsafe {
-            let ctx = &mut *ctx_ptr;
-            let dst_ptr = build_f32_ptr_offset(
-                ctx.builder,
-                elem_llvm_ty,
-                dst_view.base_ptr,
-                loop_i,
-                b"def_slice_fill_ptr\0",
-            );
-            LLVMBuildStore(ctx.builder, fill_value, dst_ptr);
-            Ok(())
-        },
+        fill_elem,
     )?;
     Ok(false)
 }
-
 unsafe fn lower_def_if_stmt(
     cond: &Expr,
     then_branch: &[Stmt],

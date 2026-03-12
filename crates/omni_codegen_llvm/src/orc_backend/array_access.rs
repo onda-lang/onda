@@ -113,97 +113,18 @@ pub(super) unsafe fn lower_input_array_index_read(
         ptr,
         b"in_arr_load\0".as_ptr().cast(),
     );
-    if ctx.oversample_factor > 1 {
-        if let Some(input_cache_ptr) = ctx.oversample_input_cache {
-            let cached_ptr = build_f32_ptr_offset(
-                ctx.builder,
-                ctx.float_ty,
-                input_cache_ptr,
-                ch,
-                b"os_cached_in_arr_ptr\0",
-            );
-            let cached_f32 = LLVMBuildLoad2(
-                ctx.builder,
-                ctx.float_ty,
-                cached_ptr,
-                b"os_cached_in_arr\0".as_ptr().cast(),
-            );
-            let value = cast_orc_value_to(
-                ctx,
-                OrcValue {
-                    value: cached_f32,
-                    ty: PrimitiveType::F32,
-                },
-                info.elem_ty,
-                b"os_cached_in_arr_cast\0",
-            );
-            return Ok(OrcValue {
-                value,
-                ty: info.elem_ty,
-            });
-        }
-    }
-    if ctx.oversample_factor > 1 {
-        if let (Some(alpha), Some(prev_inputs_ptr)) =
-            (ctx.oversample_alpha, ctx.oversample_prev_inputs)
-        {
-            let prev_ptr = build_f32_ptr_offset(
-                ctx.builder,
-                ctx.float_ty,
-                prev_inputs_ptr,
-                ch,
-                b"os_prev_in_arr_ptr\0",
-            );
-            let prev = LLVMBuildLoad2(
-                ctx.builder,
-                ctx.float_ty,
-                prev_ptr,
-                b"os_prev_in_arr\0".as_ptr().cast(),
-            );
-            let current_f32 = cast_orc_value_to(
-                ctx,
-                OrcValue {
-                    value: raw,
-                    ty: info.elem_ty,
-                },
-                PrimitiveType::F32,
-                b"os_in_arr_curr_f32\0",
-            );
-            let diff = build_fsub_fast(
-                ctx.builder,
-                current_f32,
-                prev,
-                b"os_in_arr_diff\0",
-                ctx.fast_math_flags,
-            );
-            let scaled = build_fmul_fast(
-                ctx.builder,
-                diff,
-                alpha,
-                b"os_in_arr_scaled\0",
-                ctx.fast_math_flags,
-            );
-            let interp = build_fadd_fast(
-                ctx.builder,
-                prev,
-                scaled,
-                b"os_in_arr_interp\0",
-                ctx.fast_math_flags,
-            );
-            let value = cast_orc_value_to(
-                ctx,
-                OrcValue {
-                    value: interp,
-                    ty: PrimitiveType::F32,
-                },
-                info.elem_ty,
-                b"os_in_arr_interp_cast\0",
-            );
-            return Ok(OrcValue {
-                value,
-                ty: info.elem_ty,
-            });
-        }
+    if let Some(input_cache_ptr) = ctx.oversample_input_cache {
+        let value = load_cached_oversampled_input(
+            ctx.builder,
+            ctx.context,
+            input_cache_ptr,
+            ch,
+            info.elem_ty,
+        );
+        return Ok(OrcValue {
+            value,
+            ty: info.elem_ty,
+        });
     }
     Ok(OrcValue {
         value: raw,

@@ -493,7 +493,7 @@ pub(super) fn infer_specialized_expr_return_type(
                     TypedFnParam::Array { elem_ty } => {
                         let resolved_arg = resolved.get(idx).copied().flatten();
                         let arg_sig = if let Some(Expr::Var(base)) = resolved_arg {
-                            (locals.get(base).copied().unwrap_or(*elem_ty), 1)
+                            (locals.get(base.as_str()).copied().unwrap_or(*elem_ty), 1)
                         } else {
                             (*elem_ty, 1)
                         };

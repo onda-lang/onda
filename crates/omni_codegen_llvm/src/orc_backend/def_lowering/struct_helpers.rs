@@ -203,72 +203,42 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
     callee_name: &str,
     by_ref: bool,
 ) -> Result<(), Diagnostic> {
-    let fields = ctx.struct_fields.get(struct_name).ok_or_else(|| {
-        Diagnostic::internal(format!(
-            "unknown struct '{struct_name}' in def call lowering for function '{callee_name}'"
-        ))
-    })?;
     match arg_expr {
         Expr::Var(base) => {
-            for field in fields {
-                let flat = format!("{base}.{}", field.name);
-                match field.ty {
-                    TypedFieldType::Scalar(_) => {
-                        let local = find_def_local_slot(ctx, &flat).ok_or_else(|| {
-                            Diagnostic::internal(format!(
-                                "missing def local slot for struct field '{flat}' while calling '{callee_name}'"
-                            ))
-                        })?;
-                        if by_ref {
-                            out_args.push(local.ptr);
-                        } else {
-                            let loaded = LLVMBuildLoad2(
-                                ctx.builder,
-                                llvm_ty_for_primitive(ctx.context, local.ty),
-                                local.ptr,
-                                b"def_struct_arg_load\0".as_ptr().cast(),
-                            );
-                            out_args.push(loaded);
-                        }
-                    }
-                    TypedFieldType::Struct => {}
-                    TypedFieldType::Array(_) => {
-                        if let Some(elem_struct) = &field.array_elem_struct {
-                            let root_len = *ctx.array_len.get(&flat).ok_or_else(|| {
-                                Diagnostic::internal(format!(
-                                    "missing def array[Struct] length metadata for '{flat}' while calling '{callee_name}'"
-                                ))
-                            })?;
-                            let mut roots = Vec::new();
-                            let mut leaves = Vec::new();
-                            collect_array_struct_bindings(
-                                ctx.struct_fields,
-                                elem_struct,
-                                &flat,
-                                root_len,
-                                &mut roots,
-                                &mut leaves,
-                                &mut Vec::new(),
-                            )?;
-                            for (leaf_name, _, _) in leaves {
-                                let ptr = find_def_array_ptr(ctx, &leaf_name).ok_or_else(|| {
-                                    Diagnostic::internal(format!(
-                                        "missing def array pointer for struct field '{leaf_name}' while calling '{callee_name}'"
-                                    ))
-                                })?;
-                                out_args.push(ptr);
-                            }
-                        } else {
-                            let ptr = find_def_array_ptr(ctx, &flat).ok_or_else(|| {
-                                Diagnostic::internal(format!(
-                                    "missing def array pointer for struct field '{flat}' while calling '{callee_name}'"
-                                ))
-                            })?;
-                            out_args.push(ptr);
-                        }
-                    }
-                }
-            }
+            lower_struct_call_args_for_base_common(
+                ctx.builder,
+                ctx.context,
+                ctx.struct_fields,
+                out_args,
+                base,
+                struct_name,
+                callee_name,
+                by_ref,
+                "def call lowering",
+                "def_struct",
+                |flat| {
+                    ctx.array_len.get(flat).copied().ok_or_else(|| {
+                        Diagnostic::internal(format!(
+                            "missing def array[Struct] length metadata for '{flat}' while calling '{callee_name}'"
+                        ))
+                    })
+                },
+                |flat| {
+                    let local = find_def_local_slot(ctx, flat).ok_or_else(|| {
+                        Diagnostic::internal(format!(
+                            "missing def local slot for struct field '{flat}' while calling '{callee_name}'"
+                        ))
+                    })?;
+                    Ok((local.ptr, local.ty))
+                },
+                |symbol| {
+                    find_def_array_ptr(ctx, symbol).ok_or_else(|| {
+                        Diagnostic::internal(format!(
+                            "missing def array pointer for struct field '{symbol}' while calling '{callee_name}'"
+                        ))
+                    })
+                },
+            )?;
         }
         Expr::Index { base, index } => {
             let local_alias = if let Some(alias) = ctx.local_array_aliases.get(base) {
@@ -427,6 +397,11 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                     );
                     let clamped_index =
                         clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, slot_indices.len())?;
+                    let fields = ctx.struct_fields.get(struct_name).ok_or_else(|| {
+                        Diagnostic::internal(format!(
+                            "unknown struct '{struct_name}' in def call lowering for function '{callee_name}'"
+                        ))
+                    })?;
                     for field in fields {
                         match field.ty {
                             TypedFieldType::Scalar(prim) => {
@@ -475,74 +450,24 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                     return Ok(());
                 }
             };
-
-            for field in fields {
-                let flat = format!("{resolved_base}.{}", field.name);
-                match field.ty {
-                    TypedFieldType::Scalar(prim) => {
-                        let ptr = load_def_array_ptr_at_index(
-                            ctx,
-                            &flat,
-                            prim,
-                            clamped_index,
-                            b"def_struct_idx_arg_ptr\0",
-                        )?;
-                        if by_ref {
-                            out_args.push(ptr);
-                        } else {
-                            let loaded = LLVMBuildLoad2(
-                                ctx.builder,
-                                llvm_ty_for_primitive(ctx.context, prim),
-                                ptr,
-                                b"def_struct_idx_arg_load\0".as_ptr().cast(),
-                            );
-                            out_args.push(loaded);
-                        }
-                    }
-                    TypedFieldType::Struct => {}
-                    TypedFieldType::Array(field_len) => {
-                        let start_idx = build_data_segment_start_index(
-                            ctx.builder,
-                            ctx.i32_ty,
-                            clamped_index,
-                            field_len,
-                        )?;
-                        if let Some(elem_struct) = &field.array_elem_struct {
-                            let mut roots = Vec::new();
-                            let mut leaves = Vec::new();
-                            collect_array_struct_bindings(
-                                ctx.struct_fields,
-                                elem_struct,
-                                &flat,
-                                field_len,
-                                &mut roots,
-                                &mut leaves,
-                                &mut Vec::new(),
-                            )?;
-                            for (leaf_name, _, leaf_ty) in leaves {
-                                let ptr = load_def_array_ptr_at_index(
-                                    ctx,
-                                    &leaf_name,
-                                    leaf_ty,
-                                    start_idx,
-                                    b"def_struct_idx_leaf_ptr\0",
-                                )?;
-                                out_args.push(ptr);
-                            }
-                        } else {
-                            let elem_ty = field.array_elem_ty.unwrap_or(PrimitiveType::F32);
-                            let ptr = load_def_array_ptr_at_index(
-                                ctx,
-                                &flat,
-                                elem_ty,
-                                start_idx,
-                                b"def_struct_idx_arr_ptr\0",
-                            )?;
-                            out_args.push(ptr);
-                        }
-                    }
-                }
-            }
+            let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
+            lower_struct_call_args_for_indexed_base_common(
+                ctx.builder,
+                ctx.context,
+                ctx.i32_ty,
+                ctx.struct_fields,
+                out_args,
+                &resolved_base,
+                clamped_index,
+                struct_name,
+                callee_name,
+                by_ref,
+                "def call lowering",
+                "def_struct",
+                |flat, elem_ty, index, gep_name| unsafe {
+                    load_def_array_ptr_at_index(&mut *ctx_ptr, flat, elem_ty, index, gep_name)
+                },
+            )?;
         }
         _ => {
             return Err(Diagnostic::internal(format!(

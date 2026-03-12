@@ -890,24 +890,56 @@ fn generate_nested_wrapper_defs(
             .map(|api| api.sample_oversample_factor)
             .unwrap_or(1);
         if callee_sample_oversample_factor > 1 {
+            let stage_count = proc_os_sinc_stage_count(callee_sample_oversample_factor);
             let mut input_state_fields = HashMap::<String, ProcInputOversampleStateFields>::new();
             for in_name in &callee_shape.ins {
+                let in_ty = *callee_shape
+                    .in_types
+                    .get(in_name)
+                    .unwrap_or(&PrimitiveType::F32);
+                let up_stages = if matches!(in_ty, PrimitiveType::F32 | PrimitiveType::F64) {
+                    (0..stage_count)
+                        .map(|stage| ProcSincStageStateFields {
+                            a0: nested_field_name(
+                                &nested_path,
+                                &proc_os_up_stage_tap_field_name(in_name, stage, "a0"),
+                            ),
+                            a1: nested_field_name(
+                                &nested_path,
+                                &proc_os_up_stage_tap_field_name(in_name, stage, "a1"),
+                            ),
+                            a2: nested_field_name(
+                                &nested_path,
+                                &proc_os_up_stage_tap_field_name(in_name, stage, "a2"),
+                            ),
+                            a3: nested_field_name(
+                                &nested_path,
+                                &proc_os_up_stage_tap_field_name(in_name, stage, "a3"),
+                            ),
+                            b0: nested_field_name(
+                                &nested_path,
+                                &proc_os_up_stage_tap_field_name(in_name, stage, "b0"),
+                            ),
+                            b1: nested_field_name(
+                                &nested_path,
+                                &proc_os_up_stage_tap_field_name(in_name, stage, "b1"),
+                            ),
+                            b2: nested_field_name(
+                                &nested_path,
+                                &proc_os_up_stage_tap_field_name(in_name, stage, "b2"),
+                            ),
+                            b3: nested_field_name(
+                                &nested_path,
+                                &proc_os_up_stage_tap_field_name(in_name, stage, "b3"),
+                            ),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 input_state_fields.insert(
                     in_name.clone(),
-                    ProcInputOversampleStateFields {
-                        prev: nested_field_name(
-                            &nested_path,
-                            &proc_os_prev_input_field_name(in_name),
-                        ),
-                        up1: nested_field_name(
-                            &nested_path,
-                            &proc_os_up1_input_field_name(in_name),
-                        ),
-                        up2: nested_field_name(
-                            &nested_path,
-                            &proc_os_up2_input_field_name(in_name),
-                        ),
-                    },
+                    ProcInputOversampleStateFields { up_stages },
                 );
             }
             let mut output_state_fields = HashMap::<String, ProcOutputOversampleStateFields>::new();
@@ -917,23 +949,49 @@ fn generate_nested_wrapper_defs(
                     .get(out_name)
                     .unwrap_or(&PrimitiveType::F32);
                 let output_field = nested_field_name(&nested_path, out_name);
-                let (down1, down2) = if matches!(out_ty, PrimitiveType::F32 | PrimitiveType::F64) {
-                    (
-                        Some(nested_field_name(
-                            &nested_path,
-                            &proc_os_down1_output_field_name(out_name),
-                        )),
-                        Some(nested_field_name(
-                            &nested_path,
-                            &proc_os_down2_output_field_name(out_name),
-                        )),
-                    )
+                let down_stages = if matches!(out_ty, PrimitiveType::F32 | PrimitiveType::F64) {
+                    (0..stage_count)
+                        .map(|stage| ProcSincStageStateFields {
+                            a0: nested_field_name(
+                                &nested_path,
+                                &proc_os_down_stage_tap_field_name(out_name, stage, "a0"),
+                            ),
+                            a1: nested_field_name(
+                                &nested_path,
+                                &proc_os_down_stage_tap_field_name(out_name, stage, "a1"),
+                            ),
+                            a2: nested_field_name(
+                                &nested_path,
+                                &proc_os_down_stage_tap_field_name(out_name, stage, "a2"),
+                            ),
+                            a3: nested_field_name(
+                                &nested_path,
+                                &proc_os_down_stage_tap_field_name(out_name, stage, "a3"),
+                            ),
+                            b0: nested_field_name(
+                                &nested_path,
+                                &proc_os_down_stage_tap_field_name(out_name, stage, "b0"),
+                            ),
+                            b1: nested_field_name(
+                                &nested_path,
+                                &proc_os_down_stage_tap_field_name(out_name, stage, "b1"),
+                            ),
+                            b2: nested_field_name(
+                                &nested_path,
+                                &proc_os_down_stage_tap_field_name(out_name, stage, "b2"),
+                            ),
+                            b3: nested_field_name(
+                                &nested_path,
+                                &proc_os_down_stage_tap_field_name(out_name, stage, "b3"),
+                            ),
+                        })
+                        .collect()
                 } else {
-                    (None, None)
+                    Vec::new()
                 };
                 output_state_fields.insert(
                     output_field,
-                    ProcOutputOversampleStateFields { down1, down2 },
+                    ProcOutputOversampleStateFields { down_stages },
                 );
             }
             proc_step_oversample_meta.insert(
@@ -2243,31 +2301,53 @@ pub(super) fn generate_lowered_proc_blocks(
             .max(1);
         def_sample_oversample_factors.insert(step_fn_name.clone(), proc_sample_oversample_factor);
         if proc_sample_oversample_factor > 1 {
+            let stage_count = proc_os_sinc_stage_count(proc_sample_oversample_factor);
             let mut input_state_fields = HashMap::<String, ProcInputOversampleStateFields>::new();
             for in_name in &shape.ins {
+                let in_ty = *shape.in_types.get(in_name).unwrap_or(&PrimitiveType::F32);
+                let up_stages = if matches!(in_ty, PrimitiveType::F32 | PrimitiveType::F64) {
+                    (0..stage_count)
+                        .map(|stage| ProcSincStageStateFields {
+                            a0: proc_os_up_stage_tap_field_name(in_name, stage, "a0"),
+                            a1: proc_os_up_stage_tap_field_name(in_name, stage, "a1"),
+                            a2: proc_os_up_stage_tap_field_name(in_name, stage, "a2"),
+                            a3: proc_os_up_stage_tap_field_name(in_name, stage, "a3"),
+                            b0: proc_os_up_stage_tap_field_name(in_name, stage, "b0"),
+                            b1: proc_os_up_stage_tap_field_name(in_name, stage, "b1"),
+                            b2: proc_os_up_stage_tap_field_name(in_name, stage, "b2"),
+                            b3: proc_os_up_stage_tap_field_name(in_name, stage, "b3"),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 input_state_fields.insert(
                     in_name.clone(),
-                    ProcInputOversampleStateFields {
-                        prev: proc_os_prev_input_field_name(in_name),
-                        up1: proc_os_up1_input_field_name(in_name),
-                        up2: proc_os_up2_input_field_name(in_name),
-                    },
+                    ProcInputOversampleStateFields { up_stages },
                 );
             }
             let mut output_state_fields = HashMap::<String, ProcOutputOversampleStateFields>::new();
             for out_name in &shape.outs {
                 let out_ty = *shape.out_types.get(out_name).unwrap_or(&PrimitiveType::F32);
-                let (down1, down2) = if matches!(out_ty, PrimitiveType::F32 | PrimitiveType::F64) {
-                    (
-                        Some(proc_os_down1_output_field_name(out_name)),
-                        Some(proc_os_down2_output_field_name(out_name)),
-                    )
+                let down_stages = if matches!(out_ty, PrimitiveType::F32 | PrimitiveType::F64) {
+                    (0..stage_count)
+                        .map(|stage| ProcSincStageStateFields {
+                            a0: proc_os_down_stage_tap_field_name(out_name, stage, "a0"),
+                            a1: proc_os_down_stage_tap_field_name(out_name, stage, "a1"),
+                            a2: proc_os_down_stage_tap_field_name(out_name, stage, "a2"),
+                            a3: proc_os_down_stage_tap_field_name(out_name, stage, "a3"),
+                            b0: proc_os_down_stage_tap_field_name(out_name, stage, "b0"),
+                            b1: proc_os_down_stage_tap_field_name(out_name, stage, "b1"),
+                            b2: proc_os_down_stage_tap_field_name(out_name, stage, "b2"),
+                            b3: proc_os_down_stage_tap_field_name(out_name, stage, "b3"),
+                        })
+                        .collect()
                 } else {
-                    (None, None)
+                    Vec::new()
                 };
                 output_state_fields.insert(
                     out_name.clone(),
-                    ProcOutputOversampleStateFields { down1, down2 },
+                    ProcOutputOversampleStateFields { down_stages },
                 );
             }
             proc_step_oversample_meta.insert(

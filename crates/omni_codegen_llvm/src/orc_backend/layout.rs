@@ -18,15 +18,7 @@ pub(super) struct ArrayLayoutEntry {
     pub(super) offset: usize,
 }
 
-pub(super) fn primitive_type_bytes(ty: PrimitiveType) -> usize {
-    match ty {
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
-        PrimitiveType::F64 | PrimitiveType::I64 => 8,
-        PrimitiveType::Bool => 1,
-    }
-}
-
-fn align_up(value: usize, align: usize) -> usize {
+pub(super) fn align_up(value: usize, align: usize) -> usize {
     if align <= 1 {
         return value;
     }
@@ -38,7 +30,7 @@ fn align_up(value: usize, align: usize) -> usize {
     }
 }
 
-fn primitive_size_align(ty: PrimitiveType) -> (usize, usize) {
+pub(super) fn primitive_size_align(ty: PrimitiveType) -> (usize, usize) {
     match ty {
         PrimitiveType::F32 | PrimitiveType::I32 => (4, 4),
         PrimitiveType::F64 | PrimitiveType::I64 => (8, 8),

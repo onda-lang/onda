@@ -1,23 +1,19 @@
 use super::*;
 
-pub(super) fn proc_os_prev_input_field_name(input_name: &str) -> String {
-    format!("__omni_os_prev_in__{input_name}")
+pub(super) fn proc_os_sinc_stage_count(factor: usize) -> usize {
+    factor.max(1).trailing_zeros() as usize
 }
 
-pub(super) fn proc_os_up1_input_field_name(input_name: &str) -> String {
-    format!("__omni_os_up1_in__{input_name}")
+pub(super) fn proc_os_up_stage_tap_field_name(input_name: &str, stage: usize, tap: &str) -> String {
+    format!("__omni_os_up_in__{input_name}__stage{stage}__{tap}")
 }
 
-pub(super) fn proc_os_up2_input_field_name(input_name: &str) -> String {
-    format!("__omni_os_up2_in__{input_name}")
-}
-
-pub(super) fn proc_os_down1_output_field_name(output_name: &str) -> String {
-    format!("__omni_os_down1_out__{output_name}")
-}
-
-pub(super) fn proc_os_down2_output_field_name(output_name: &str) -> String {
-    format!("__omni_os_down2_out__{output_name}")
+pub(super) fn proc_os_down_stage_tap_field_name(
+    output_name: &str,
+    stage: usize,
+    tap: &str,
+) -> String {
+    format!("__omni_os_down_out__{output_name}__stage{stage}__{tap}")
 }
 
 pub(super) fn compute_effective_proc_block_flags(
@@ -752,32 +748,33 @@ pub(super) fn compute_proc_shape(
         });
     }
     if sample_oversample_factor > 1 {
+        let stage_count = proc_os_sinc_stage_count(sample_oversample_factor);
         for in_name in &ins {
-            for state_name in [
-                proc_os_prev_input_field_name(in_name),
-                proc_os_up1_input_field_name(in_name),
-                proc_os_up2_input_field_name(in_name),
-            ] {
-                fields.push(StructField {
-                    name: state_name,
-                    ty: FieldType::Scalar(PrimitiveType::F32),
-                    default: Some(Expr::Number(0.0)),
-                });
+            let in_ty = *in_types.get(in_name).unwrap_or(&PrimitiveType::F32);
+            if matches!(in_ty, PrimitiveType::F32 | PrimitiveType::F64) {
+                for stage in 0..stage_count {
+                    for tap in ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"] {
+                        fields.push(StructField {
+                            name: proc_os_up_stage_tap_field_name(in_name, stage, tap),
+                            ty: FieldType::Scalar(in_ty),
+                            default: Some(Expr::Number(0.0)),
+                        });
+                    }
+                }
             }
         }
         for out_name in &outs {
             let out_ty = *out_types.get(out_name).unwrap_or(&PrimitiveType::F32);
             if matches!(out_ty, PrimitiveType::F32 | PrimitiveType::F64) {
-                fields.push(StructField {
-                    name: proc_os_down1_output_field_name(out_name),
-                    ty: FieldType::Scalar(out_ty),
-                    default: Some(Expr::Number(0.0)),
-                });
-                fields.push(StructField {
-                    name: proc_os_down2_output_field_name(out_name),
-                    ty: FieldType::Scalar(out_ty),
-                    default: Some(Expr::Number(0.0)),
-                });
+                for stage in 0..stage_count {
+                    for tap in ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"] {
+                        fields.push(StructField {
+                            name: proc_os_down_stage_tap_field_name(out_name, stage, tap),
+                            ty: FieldType::Scalar(out_ty),
+                            default: Some(Expr::Number(0.0)),
+                        });
+                    }
+                }
             }
         }
     }

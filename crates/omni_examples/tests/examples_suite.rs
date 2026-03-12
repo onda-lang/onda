@@ -4556,6 +4556,20 @@ sample 4 {
 }
 "#;
 
+const PROC_EQUIV_SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE: &str = r#"
+proc Counter {
+  outs { out1 }
+  init { acc = 0.0 }
+  sample 4 {
+    acc = acc + 1.0
+    out1 = acc
+  }
+}
+outs { out1 }
+init { c = Counter() }
+sample { out1 = c() }
+"#;
+
 const PROC_SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE: &str = r#"
 proc Counter {
   outs { out1 }
@@ -4568,6 +4582,15 @@ proc Counter {
 outs { out1 }
 init { c = Counter() }
 sample { out1 = c() }
+"#;
+
+const SAMPLE_OVERSAMPLE_FACTOR_2_EXAMPLE: &str = r#"
+outs { out1 }
+init { x = 0.0 }
+sample 2 {
+  x = x + 1.0
+  out1 = x
+}
 "#;
 
 const SAMPLE_OVERSAMPLE_INVALID_FACTOR_EXAMPLE: &str = r#"
@@ -4593,6 +4616,36 @@ sample 2 {
 }
 "#;
 
+const SAMPLE_OVERSAMPLE_PASSTHROUGH_1X_EXAMPLE: &str = r#"
+ins { in1 }
+outs { out1 }
+sample {
+  out1 = in1
+}
+"#;
+
+const SAMPLE_OVERSAMPLE_PASSTHROUGH_4X_EXAMPLE: &str = r#"
+ins { in1 }
+outs { out1 }
+sample 4 {
+  out1 = in1
+}
+"#;
+
+const PROC_EQUIV_SAMPLE_OVERSAMPLE_INPUT_INTERP_EXAMPLE: &str = r#"
+proc Passthrough {
+  ins { in1 }
+  outs { out1 }
+  sample 2 {
+    out1 = in1
+  }
+}
+ins { in1 }
+outs { out1 }
+init { p = Passthrough() }
+sample { out1 = p(in1=in1) }
+"#;
+
 const SAMPLE_OVERSAMPLE_ALIAS_BASELINE_EXAMPLE: &str = r#"
 ins { in1 }
 outs { out1 }
@@ -4607,6 +4660,20 @@ outs { out1 }
 sample 4 {
   out1 = in1 * in1 * in1
 }
+"#;
+
+const PROC_EQUIV_SAMPLE_OVERSAMPLE_ALIAS_FILTERED_EXAMPLE: &str = r#"
+proc Cubic {
+  ins { in1 }
+  outs { out1 }
+  sample 4 {
+    out1 = in1 * in1 * in1
+  }
+}
+ins { in1 }
+outs { out1 }
+init { p = Cubic() }
+sample { out1 = p(in1=in1) }
 "#;
 
 const SAMPLE_OVERSAMPLE_STD_SINE_1X_EXAMPLE: &str = r#"
@@ -5936,6 +6003,16 @@ fn compile_instance_file_with_options(
 fn assert_near(a: f32, b: f32, eps: f32) {
     let delta = (a - b).abs();
     assert!(delta <= eps, "expected {a} ~= {b}, delta={delta}");
+}
+
+fn rms_after_skip(samples: &[f32], skip: usize) -> f32 {
+    let tail = if skip < samples.len() {
+        &samples[skip..]
+    } else {
+        samples
+    };
+    let energy = tail.iter().map(|sample| sample * sample).sum::<f32>();
+    (energy / tail.len().max(1) as f32).sqrt()
 }
 
 fn state_type_of(typed: &omni_semantics::TypedProgram, name: &str) -> Option<PrimitiveType> {
@@ -11389,15 +11466,21 @@ fn sample_oversample_factor_compiles_and_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
         compile_instance(SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE, frames);
+    let (mut proc_instance, proc_in_channels, proc_out_channels) =
+        compile_instance(PROC_EQUIV_SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 1);
+    assert_eq!(proc_in_channels, 0);
+    assert_eq!(proc_out_channels, 1);
 
     let mut output = vec![0.0_f32; frames];
+    let mut proc_output = vec![0.0_f32; frames];
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-    assert_near(output[0], 2.3968143, 1e-6);
-    assert_near(output[1], 6.394737, 1e-6);
-    assert_near(output[2], 10.394737, 1e-6);
-    assert_near(output[3], 14.394737, 1e-6);
+    process_interleaved(&mut proc_instance, &[], &mut proc_output, frames)
+        .expect("proc process should succeed");
+    for (actual, expected) in output.iter().zip(proc_output.iter()) {
+        assert_near(*actual, *expected, 1e-6);
+    }
 }
 
 #[test]
@@ -11412,15 +11495,21 @@ fn proc_sample_oversample_factor_compiles_and_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
         compile_instance(PROC_SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE, frames);
+    let (mut top_level_instance, top_in_channels, top_out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_FACTOR_2_EXAMPLE, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 1);
+    assert_eq!(top_in_channels, 0);
+    assert_eq!(top_out_channels, 1);
 
     let mut output = vec![0.0_f32; frames];
+    let mut top_level_output = vec![0.0_f32; frames];
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-    assert_near(output[0], 0.75, 1e-6);
-    assert_near(output[1], 2.4240382, 1e-6);
-    assert_near(output[2], 4.3591337, 1e-6);
-    assert_near(output[3], 6.3475933, 1e-6);
+    process_interleaved(&mut top_level_instance, &[], &mut top_level_output, frames)
+        .expect("top-level process should succeed");
+    for (actual, expected) in output.iter().zip(top_level_output.iter()) {
+        assert_near(*actual, *expected, 1e-6);
+    }
 }
 
 #[test]
@@ -11492,17 +11581,52 @@ fn sample_oversample_interpolates_input_reads() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
         compile_instance(SAMPLE_OVERSAMPLE_INPUT_INTERP_EXAMPLE, frames);
+    let (mut proc_instance, proc_in_channels, proc_out_channels) =
+        compile_instance(PROC_EQUIV_SAMPLE_OVERSAMPLE_INPUT_INTERP_EXAMPLE, frames);
     assert_eq!(in_channels, 1);
     assert_eq!(out_channels, 1);
+    assert_eq!(proc_in_channels, 1);
+    assert_eq!(proc_out_channels, 1);
 
     let input = vec![0.0_f32, 1.0, 2.0, 3.0];
     let mut output = vec![0.0_f32; frames];
+    let mut proc_output = vec![0.0_f32; frames];
     process_interleaved(&mut instance, &input, &mut output, frames)
         .expect("process should succeed");
-    assert_near(output[0], 0.0, 1e-6);
-    assert_near(output[1], 0.651605, 1e-6);
-    assert_near(output[2], 1.6447935, 1e-6);
-    assert_near(output[3], 2.6447372, 1e-6);
+    process_interleaved(&mut proc_instance, &input, &mut proc_output, frames)
+        .expect("proc process should succeed");
+    for (actual, expected) in output.iter().zip(proc_output.iter()) {
+        assert_near(*actual, *expected, 1e-6);
+    }
+}
+
+#[test]
+fn sample_oversample_passthrough_preserves_more_high_band_level() {
+    let frames = 4096;
+    let sample_rate = 48_000.0_f32;
+    let freq = sample_rate * 0.2;
+    let (mut base_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_PASSTHROUGH_1X_EXAMPLE, frames);
+    let (mut over_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_PASSTHROUGH_4X_EXAMPLE, frames);
+
+    let input = (0..frames)
+        .map(|idx| (f32::sin(2.0 * std::f32::consts::PI * freq * idx as f32 / sample_rate)))
+        .collect::<Vec<_>>();
+    let mut base_output = vec![0.0_f32; frames];
+    let mut over_output = vec![0.0_f32; frames];
+    process_interleaved(&mut base_instance, &input, &mut base_output, frames)
+        .expect("base passthrough should succeed");
+    process_interleaved(&mut over_instance, &input, &mut over_output, frames)
+        .expect("oversampled passthrough should succeed");
+
+    let base_rms = rms_after_skip(&base_output, 512);
+    let over_rms = rms_after_skip(&over_output, 512);
+    let attenuation_db = 20.0 * f32::log10(over_rms / base_rms);
+    assert!(
+        attenuation_db > -3.0,
+        "expected 4x oversampled passthrough to stay within 3 dB at 9.6 kHz, got {attenuation_db} dB"
+    );
 }
 
 #[test]
@@ -11538,6 +11662,34 @@ fn sample_oversample_reduces_high_frequency_energy_on_nonlinear_patch() {
         over_energy < base_energy * 0.5,
         "expected oversampling to reduce high-frequency energy, base={base_energy}, oversampled={over_energy}"
     );
+}
+
+#[test]
+fn sample_oversample_proc_and_top_level_match_on_nonlinear_patch() {
+    let frames = 64;
+    let (mut top_level_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_ALIAS_FILTERED_EXAMPLE, frames);
+    let (mut proc_instance, _, _) =
+        compile_instance(PROC_EQUIV_SAMPLE_OVERSAMPLE_ALIAS_FILTERED_EXAMPLE, frames);
+
+    let input = (0..frames)
+        .map(|idx| if idx % 2 == 0 { 1.0_f32 } else { -1.0_f32 })
+        .collect::<Vec<_>>();
+    let mut top_level_output = vec![0.0_f32; frames];
+    let mut proc_output = vec![0.0_f32; frames];
+    process_interleaved(
+        &mut top_level_instance,
+        &input,
+        &mut top_level_output,
+        frames,
+    )
+    .expect("top-level oversampled process should succeed");
+    process_interleaved(&mut proc_instance, &input, &mut proc_output, frames)
+        .expect("proc oversampled process should succeed");
+
+    for (actual, expected) in top_level_output.iter().zip(proc_output.iter()) {
+        assert_near(*actual, *expected, 1e-6);
+    }
 }
 
 #[test]

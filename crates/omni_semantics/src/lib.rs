@@ -113,15 +113,24 @@ pub struct ProcStepOversampleMeta {
 
 #[derive(Debug, Clone)]
 pub struct ProcInputOversampleStateFields {
-    pub prev: String,
-    pub up1: String,
-    pub up2: String,
+    pub up_stages: Vec<ProcSincStageStateFields>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProcOutputOversampleStateFields {
-    pub down1: Option<String>,
-    pub down2: Option<String>,
+    pub down_stages: Vec<ProcSincStageStateFields>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcSincStageStateFields {
+    pub a0: String,
+    pub a1: String,
+    pub a2: String,
+    pub a3: String,
+    pub b0: String,
+    pub b1: String,
+    pub b2: String,
+    pub b3: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
