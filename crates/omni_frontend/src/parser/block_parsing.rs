@@ -1,5 +1,107 @@
 use super::*;
 
+#[derive(Default)]
+struct ParsedNamedDecl {
+    ty: Option<DeclType>,
+    default: Option<Expr>,
+    range: Option<DeclRange>,
+}
+
+fn parse_positive_count_literal(
+    pair: Pair<'_, Rule>,
+    non_positive_message: &str,
+) -> Result<usize, Vec<Diagnostic>> {
+    let count_i = parse_int(pair.as_str())?;
+    if count_i <= 0 {
+        return Err(vec![Diagnostic::syntax(non_positive_message, 0, 0)]);
+    }
+    Ok(count_i as usize)
+}
+
+fn parse_decl_type_item(
+    pair: Pair<'_, Rule>,
+    missing_type_message: &str,
+) -> Result<DeclType, Vec<Diagnostic>> {
+    let actual = if pair.as_rule() == Rule::decl_type {
+        let mut decl_inner = pair.into_inner();
+        decl_inner
+            .next()
+            .ok_or_else(|| vec![Diagnostic::syntax(missing_type_message, 0, 0)])?
+    } else {
+        pair
+    };
+    parse_decl_type(actual)
+}
+
+fn parse_named_decl(
+    pair: Pair<'_, Rule>,
+    missing_name_message: &str,
+    missing_type_message: &str,
+) -> Result<(String, ParsedNamedDecl), Vec<Diagnostic>> {
+    let mut inner = pair.into_inner();
+    let Some(name_pair) = inner.next() else {
+        return Err(vec![Diagnostic::syntax(missing_name_message, 0, 0)]);
+    };
+
+    let mut parsed = ParsedNamedDecl::default();
+    for item in inner {
+        match item.as_rule() {
+            Rule::decl_type
+            | Rule::type_name
+            | Rule::array_type
+            | Rule::namespace_ref
+            | Rule::qualified_ident => {
+                parsed.ty = Some(parse_decl_type_item(item, missing_type_message)?);
+            }
+            Rule::expr => parsed.default = Some(parse_expr_inner(item)),
+            Rule::decl_range => parsed.range = Some(parse_decl_range_pair(item)?),
+            _ => {}
+        }
+    }
+
+    Ok((name_pair.as_str().to_owned(), parsed))
+}
+
+fn validate_decl_defaults_and_ranges(
+    parsed: &ParsedNamedDecl,
+    block_name: &str,
+) -> Result<(), Vec<Diagnostic>> {
+    if parsed.default.is_some() {
+        return Err(vec![Diagnostic::syntax(
+            format!("{block_name} declarations do not support default values"),
+            0,
+            0,
+        )]);
+    }
+    if parsed.range.is_some() {
+        return Err(vec![Diagnostic::syntax(
+            format!("{block_name} declarations do not support ranges"),
+            0,
+            0,
+        )]);
+    }
+    Ok(())
+}
+
+fn validate_count_prefix_matches(
+    block_name: &str,
+    count_prefix: Option<usize>,
+    actual_count: usize,
+) -> Result<(), Vec<Diagnostic>> {
+    if let Some(n) = count_prefix {
+        if n != actual_count {
+            return Err(vec![Diagnostic::syntax(
+                format!(
+                    "{block_name} block count prefix ({n}) does not match explicit declaration count ({actual_count})"
+                ),
+                0,
+                0,
+            )]);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn parse_port_block(
     block_pair: Pair<'_, Rule>,
 ) -> Result<Vec<PortDecl>, Vec<Diagnostic>> {
@@ -28,15 +130,10 @@ pub(super) fn parse_port_block(
                         0,
                     )]);
                 }
-                let count_i = parse_int(child.as_str())?;
-                if count_i <= 0 {
-                    return Err(vec![Diagnostic::syntax(
-                        format!("{block_name} count shorthand must be greater than zero"),
-                        0,
-                        0,
-                    )]);
-                }
-                count_prefix = Some(count_i as usize);
+                count_prefix = Some(parse_positive_count_literal(
+                    child,
+                    &format!("{block_name} count shorthand must be greater than zero"),
+                )?);
             }
             Rule::port_list => {
                 has_list = true;
@@ -44,61 +141,20 @@ pub(super) fn parse_port_block(
                     if item.as_rule() != Rule::port_decl {
                         continue;
                     }
-                    let mut inner = item.into_inner();
-                    let Some(name_pair) = inner.next() else {
-                        return Err(vec![Diagnostic::syntax("missing port identifier", 0, 0)]);
-                    };
-                    let mut ty = None;
-                    let mut default = None;
-                    let mut range = None;
-                    for inner_item in inner {
-                        match inner_item.as_rule() {
-                            Rule::decl_type
-                            | Rule::type_name
-                            | Rule::array_type
-                            | Rule::namespace_ref
-                            | Rule::qualified_ident => {
-                                let actual = if inner_item.as_rule() == Rule::decl_type {
-                                    let mut decl_inner = inner_item.into_inner();
-                                    decl_inner.next().ok_or_else(|| {
-                                        vec![Diagnostic::syntax(
-                                            "missing port declaration type",
-                                            0,
-                                            0,
-                                        )]
-                                    })?
-                                } else {
-                                    inner_item
-                                };
-                                ty = Some(parse_decl_type(actual)?);
-                            }
-                            Rule::expr => default = Some(parse_expr_inner(inner_item)),
-                            Rule::decl_range => range = Some(parse_decl_range_pair(inner_item)?),
-                            _ => {}
-                        }
-                    }
+                    let (name, parsed) = parse_named_decl(
+                        item,
+                        "missing port identifier",
+                        "missing port declaration type",
+                    )?;
                     if !allow_default_and_range {
-                        if default.is_some() {
-                            return Err(vec![Diagnostic::syntax(
-                                format!("{block_name} declarations do not support default values"),
-                                0,
-                                0,
-                            )]);
-                        }
-                        if range.is_some() {
-                            return Err(vec![Diagnostic::syntax(
-                                format!("{block_name} declarations do not support ranges"),
-                                0,
-                                0,
-                            )]);
-                        }
+                        validate_decl_defaults_and_ranges(&parsed, block_name)?;
                     }
-                    let ty = ty.or_else(|| default_ty.clone());
+                    let ty = parsed.ty.or_else(|| default_ty.clone());
                     ports.push(PortDecl {
-                        name: name_pair.as_str().to_owned(),
+                        name,
                         ty,
-                        default,
-                        range,
+                        default: parsed.default,
+                        range: parsed.range,
                     });
                 }
             }
@@ -107,18 +163,7 @@ pub(super) fn parse_port_block(
     }
 
     if has_list {
-        if let Some(n) = count_prefix {
-            if n != ports.len() {
-                return Err(vec![Diagnostic::syntax(
-                    format!(
-                        "{block_name} block count prefix ({n}) does not match explicit declaration count ({})",
-                        ports.len()
-                    ),
-                    0,
-                    0,
-                )]);
-            }
-        }
+        validate_count_prefix_matches(block_name, count_prefix, ports.len())?;
     } else if let Some(n) = count_prefix {
         for idx in 1..=n {
             ports.push(PortDecl {
@@ -154,15 +199,10 @@ pub(super) fn parse_params_block(
                         0,
                     )]);
                 }
-                let count_i = parse_int(child.as_str())?;
-                if count_i <= 0 {
-                    return Err(vec![Diagnostic::syntax(
-                        "params count shorthand must be greater than zero",
-                        0,
-                        0,
-                    )]);
-                }
-                count_prefix = Some(count_i as usize);
+                count_prefix = Some(parse_positive_count_literal(
+                    child,
+                    "params count shorthand must be greater than zero",
+                )?);
             }
             Rule::param_list => {
                 has_list = true;
@@ -170,45 +210,17 @@ pub(super) fn parse_params_block(
                     if param_pair.as_rule() != Rule::param_decl {
                         continue;
                     }
-                    let mut inner = param_pair.into_inner();
-                    let Some(name_pair) = inner.next() else {
-                        return Err(vec![Diagnostic::syntax("missing param identifier", 0, 0)]);
-                    };
-                    let mut ty = None;
-                    let mut default = None;
-                    let mut range = None;
-                    for item in inner {
-                        match item.as_rule() {
-                            Rule::decl_type
-                            | Rule::type_name
-                            | Rule::array_type
-                            | Rule::namespace_ref
-                            | Rule::qualified_ident => {
-                                let actual = if item.as_rule() == Rule::decl_type {
-                                    let mut decl_inner = item.into_inner();
-                                    decl_inner.next().ok_or_else(|| {
-                                        vec![Diagnostic::syntax(
-                                            "missing param declaration type",
-                                            0,
-                                            0,
-                                        )]
-                                    })?
-                                } else {
-                                    item
-                                };
-                                ty = Some(parse_decl_type(actual)?);
-                            }
-                            Rule::expr => default = Some(parse_expr_inner(item)),
-                            Rule::decl_range => range = Some(parse_decl_range_pair(item)?),
-                            _ => {}
-                        }
-                    }
-                    let ty = ty.or_else(|| default_ty.clone());
+                    let (name, parsed) = parse_named_decl(
+                        param_pair,
+                        "missing param identifier",
+                        "missing param declaration type",
+                    )?;
+                    let ty = parsed.ty.or_else(|| default_ty.clone());
                     params.push(ParamDecl {
-                        name: name_pair.as_str().to_owned(),
+                        name,
                         ty,
-                        default,
-                        range,
+                        default: parsed.default,
+                        range: parsed.range,
                     });
                 }
             }
@@ -217,18 +229,7 @@ pub(super) fn parse_params_block(
     }
 
     if has_list {
-        if let Some(n) = count_prefix {
-            if n != params.len() {
-                return Err(vec![Diagnostic::syntax(
-                    format!(
-                        "params block count prefix ({n}) does not match explicit declaration count ({})",
-                        params.len()
-                    ),
-                    0,
-                    0,
-                )]);
-            }
-        }
+        validate_count_prefix_matches("params", count_prefix, params.len())?;
     } else if let Some(n) = count_prefix {
         for idx in 1..=n {
             params.push(ParamDecl {

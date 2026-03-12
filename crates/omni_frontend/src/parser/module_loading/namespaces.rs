@@ -1,0 +1,1041 @@
+use super::rewrite::{
+    finalize_const_decl_expr, rewrite_block_namespace_refs, substitute_expr_with_env,
+    validate_compile_time_expr,
+};
+use super::*;
+
+#[derive(Debug, Clone)]
+pub(super) struct NamespaceTemplateDecl {
+    name: String,
+    params: Vec<NamespaceTemplateParam>,
+    items: Vec<NamespaceDeclItem>,
+    captured_consts: HashMap<String, Expr>,
+}
+
+#[derive(Debug, Clone)]
+struct NamespaceTemplateParam {
+    name: String,
+    default: Expr,
+}
+
+#[derive(Debug, Clone)]
+enum NamespaceDeclItem {
+    Assert(AssertDecl),
+    Const(ConstDecl),
+    Struct(StructDef),
+    Def(FunctionDef),
+    Proc(ProcessorDef),
+    Namespace(NamespaceTemplateDecl),
+    Alias(NamespaceAliasLocalDecl),
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NamespaceAliasLocalDecl {
+    name: String,
+    target: Vec<NamespaceRefSegment>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NamespaceAliasDecl {
+    declared_ns: String,
+    target: Vec<NamespaceRefSegment>,
+}
+
+#[derive(Debug, Clone)]
+struct NamespaceRefSegment {
+    name: String,
+    args: Option<Vec<NamespaceCallArg>>,
+}
+
+#[derive(Debug, Clone)]
+struct NamespaceCallArg {
+    name: Option<String>,
+    expr: Expr,
+}
+
+pub(super) fn parse_namespace_decl(
+    block_pair: Pair<'_, Rule>,
+) -> Result<NamespaceTemplateDecl, Vec<Diagnostic>> {
+    if block_pair.as_rule() != Rule::namespace_block {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected namespace block",
+            0,
+            0,
+        )]);
+    }
+    let mut inner = block_pair.into_inner();
+    let Some(head_pair) = inner.next() else {
+        return Err(vec![Diagnostic::syntax("missing namespace name", 0, 0)]);
+    };
+    let (name, params) = parse_namespace_decl_head(head_pair)?;
+    let mut items = Vec::<NamespaceDeclItem>::new();
+    for item in inner {
+        match item.as_rule() {
+            Rule::assert_block => items.push(NamespaceDeclItem::Assert(parse_assert_decl(item)?)),
+            Rule::const_block => items.push(NamespaceDeclItem::Const(parse_const_decl(item)?)),
+            Rule::struct_block => items.push(NamespaceDeclItem::Struct(parse_struct_block(item)?)),
+            Rule::def_block => items.push(NamespaceDeclItem::Def(parse_def_block(item)?)),
+            Rule::proc_block => items.push(NamespaceDeclItem::Proc(parse_proc_block(item)?)),
+            Rule::namespace_block => {
+                items.push(NamespaceDeclItem::Namespace(parse_namespace_decl(item)?))
+            }
+            Rule::namespace_alias_decl => {
+                items.push(NamespaceDeclItem::Alias(parse_namespace_alias_decl(item)?))
+            }
+            _ => {}
+        }
+    }
+    Ok(NamespaceTemplateDecl {
+        name,
+        params,
+        items,
+        captured_consts: HashMap::new(),
+    })
+}
+
+fn parse_namespace_decl_head(
+    pair: Pair<'_, Rule>,
+) -> Result<(String, Vec<NamespaceTemplateParam>), Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::namespace_decl_head {
+        return Err(vec![Diagnostic::syntax(
+            "missing namespace declaration head",
+            0,
+            0,
+        )]);
+    }
+    let mut name = None::<String>;
+    let mut params = Vec::<NamespaceTemplateParam>::new();
+    for item in pair.into_inner() {
+        match item.as_rule() {
+            Rule::namespace_name => name = Some(item.as_str().to_owned()),
+            Rule::namespace_param_list => {
+                params = parse_namespace_param_list(item)?;
+            }
+            _ => {}
+        }
+    }
+    let Some(name) = name else {
+        return Err(vec![Diagnostic::syntax("missing namespace name", 0, 0)]);
+    };
+    Ok((name, params))
+}
+
+fn parse_namespace_param_list(
+    pair: Pair<'_, Rule>,
+) -> Result<Vec<NamespaceTemplateParam>, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::namespace_param_list {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected namespace parameter list",
+            0,
+            0,
+        )]);
+    }
+    let mut out = Vec::<NamespaceTemplateParam>::new();
+    let mut seen = HashSet::<String>::new();
+    for item in pair.into_inner() {
+        if item.as_rule() != Rule::namespace_param_decl {
+            continue;
+        }
+        let mut name = None::<String>;
+        let mut default = None::<Expr>;
+        for part in item.into_inner() {
+            match part.as_rule() {
+                Rule::ident => name = Some(part.as_str().to_owned()),
+                Rule::expr => default = Some(parse_expr(part)?),
+                _ => {}
+            }
+        }
+        let Some(name) = name else {
+            return Err(vec![Diagnostic::syntax(
+                "missing namespace template parameter name",
+                0,
+                0,
+            )]);
+        };
+        if !seen.insert(name.clone()) {
+            return Err(vec![Diagnostic::syntax(
+                format!("duplicate namespace template parameter '{name}'"),
+                0,
+                0,
+            )]);
+        }
+        let Some(default) = default else {
+            return Err(vec![Diagnostic::syntax(
+                format!("namespace template parameter '{name}' must define a default"),
+                0,
+                0,
+            )]);
+        };
+        out.push(NamespaceTemplateParam { name, default });
+    }
+    Ok(out)
+}
+
+pub(super) fn parse_namespace_alias_decl(
+    pair: Pair<'_, Rule>,
+) -> Result<NamespaceAliasLocalDecl, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::namespace_alias_decl {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected namespace alias declaration",
+            0,
+            0,
+        )]);
+    }
+    let mut name = None::<String>;
+    let mut target = None::<Vec<NamespaceRefSegment>>;
+    for item in pair.into_inner() {
+        match item.as_rule() {
+            Rule::ident => name = Some(item.as_str().to_owned()),
+            Rule::namespace_any_ref | Rule::namespace_ref => {
+                target = Some(parse_namespace_ref_pair(item)?)
+            }
+            _ => {}
+        }
+    }
+    let Some(name) = name else {
+        return Err(vec![Diagnostic::syntax(
+            "missing namespace alias name",
+            0,
+            0,
+        )]);
+    };
+    let Some(target) = target else {
+        return Err(vec![Diagnostic::syntax(
+            "missing namespace alias target",
+            0,
+            0,
+        )]);
+    };
+    Ok(NamespaceAliasLocalDecl { name, target })
+}
+
+fn parse_namespace_ref_pair(
+    pair: Pair<'_, Rule>,
+) -> Result<Vec<NamespaceRefSegment>, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::namespace_ref && pair.as_rule() != Rule::namespace_any_ref {
+        return Err(vec![Diagnostic::syntax(
+            "internal parser error: expected namespace reference",
+            0,
+            0,
+        )]);
+    }
+    let mut out = Vec::<NamespaceRefSegment>::new();
+    for seg in pair.into_inner() {
+        if seg.as_rule() != Rule::namespace_ref_segment {
+            continue;
+        }
+        let mut name = None::<String>;
+        let mut args = None::<Vec<NamespaceCallArg>>;
+        for item in seg.into_inner() {
+            match item.as_rule() {
+                Rule::ident => name = Some(item.as_str().to_owned()),
+                Rule::namespace_call_arg_list => {
+                    let mut parsed = Vec::<NamespaceCallArg>::new();
+                    for arg in item.into_inner() {
+                        if arg.as_rule() != Rule::namespace_call_arg {
+                            continue;
+                        }
+                        let mut arg_name = None::<String>;
+                        let mut arg_expr = None::<Expr>;
+                        for part in arg.into_inner() {
+                            match part.as_rule() {
+                                Rule::ident => arg_name = Some(part.as_str().to_owned()),
+                                Rule::expr => arg_expr = Some(parse_expr(part)?),
+                                _ => {}
+                            }
+                        }
+                        let Some(arg_expr) = arg_expr else {
+                            return Err(vec![Diagnostic::syntax(
+                                "missing namespace template argument expression",
+                                0,
+                                0,
+                            )]);
+                        };
+                        parsed.push(NamespaceCallArg {
+                            name: arg_name,
+                            expr: arg_expr,
+                        });
+                    }
+                    args = Some(parsed);
+                }
+                _ => {}
+            }
+        }
+        let Some(name) = name else {
+            return Err(vec![Diagnostic::syntax(
+                "missing namespace path segment name",
+                0,
+                0,
+            )]);
+        };
+        out.push(NamespaceRefSegment { name, args });
+    }
+    Ok(out)
+}
+
+pub(super) fn process_namespace_decl(
+    decl: NamespaceTemplateDecl,
+    parent_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    out: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    let full_ns = namespace_join(parent_ns, &decl.name);
+    if decl.params.is_empty() {
+        emit_namespace_items(&decl.items, &full_ns, const_env, state, out)
+    } else {
+        if state.namespace_templates.contains_key(&full_ns) {
+            return Err(vec![Diagnostic::semantic(
+                format!("duplicate namespace template '{full_ns}'"),
+                0,
+                0,
+            )]);
+        }
+        state.namespace_templates.insert(full_ns, decl);
+        Ok(())
+    }
+}
+
+fn emit_namespace_items(
+    items: &[NamespaceDeclItem],
+    ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    out: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    for item in items {
+        match item {
+            NamespaceDeclItem::Struct(s) => {
+                state.namespace_members.insert(namespace_join(ns, &s.name));
+            }
+            NamespaceDeclItem::Def(d) => {
+                state.namespace_members.insert(namespace_join(ns, &d.name));
+            }
+            NamespaceDeclItem::Proc(p) => {
+                state.namespace_members.insert(namespace_join(ns, &p.name));
+            }
+            NamespaceDeclItem::Assert(_)
+            | NamespaceDeclItem::Const(_)
+            | NamespaceDeclItem::Namespace(_)
+            | NamespaceDeclItem::Alias(_) => {}
+        }
+    }
+
+    let mut local_consts = const_env.clone();
+    let mut local_const_names = HashSet::<String>::new();
+    for item in items {
+        match item {
+            NamespaceDeclItem::Assert(assert_decl) => {
+                let mut block = Block::Assert(assert_decl.clone());
+                let mut generated = Vec::<Block>::new();
+                rewrite_block_namespace_refs(&mut block, ns, &local_consts, state, &mut generated)?;
+                out.push(block);
+                out.extend(generated);
+            }
+            NamespaceDeclItem::Const(decl) => {
+                if !local_const_names.insert(decl.name.clone()) {
+                    return Err(vec![Diagnostic::semantic(
+                        format!("duplicate constant '{}' in namespace '{}'", decl.name, ns),
+                        0,
+                        0,
+                    )]);
+                }
+                let mut decl = decl.clone();
+                let mut generated = Vec::<Block>::new();
+                let value =
+                    finalize_const_decl_expr(&mut decl, ns, &local_consts, state, &mut generated)?;
+                out.extend(generated);
+                state
+                    .namespace_const_values
+                    .insert(namespace_join(ns, &decl.name), value.clone());
+                local_consts.insert(decl.name.clone(), value);
+            }
+            NamespaceDeclItem::Struct(s) => {
+                let mut s = s.clone();
+                s.name = namespace_join(ns, &s.name);
+                let mut block = Block::Struct(s);
+                let ns2 = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
+                let mut generated = Vec::<Block>::new();
+                rewrite_block_namespace_refs(
+                    &mut block,
+                    &ns2,
+                    &local_consts,
+                    state,
+                    &mut generated,
+                )?;
+                out.push(block);
+                out.extend(generated);
+            }
+            NamespaceDeclItem::Def(d) => {
+                let mut d = d.clone();
+                d.name = namespace_join(ns, &d.name);
+                let mut block = Block::Def(d);
+                let ns2 = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
+                let mut generated = Vec::<Block>::new();
+                rewrite_block_namespace_refs(
+                    &mut block,
+                    &ns2,
+                    &local_consts,
+                    state,
+                    &mut generated,
+                )?;
+                out.push(block);
+                out.extend(generated);
+            }
+            NamespaceDeclItem::Proc(p) => {
+                let mut p = p.clone();
+                p.name = namespace_join(ns, &p.name);
+                let mut block = Block::Proc(p);
+                let ns2 = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
+                let mut generated = Vec::<Block>::new();
+                rewrite_block_namespace_refs(
+                    &mut block,
+                    &ns2,
+                    &local_consts,
+                    state,
+                    &mut generated,
+                )?;
+                out.push(block);
+                out.extend(generated);
+            }
+            NamespaceDeclItem::Namespace(nested) => {
+                let mut nested = nested.clone();
+                if nested.params.is_empty() {
+                    let full_nested = namespace_join(ns, &nested.name);
+                    emit_instantiated_namespace_items(
+                        &nested.items,
+                        &full_nested,
+                        &local_consts,
+                        state,
+                        out,
+                    )?;
+                } else {
+                    let full_nested = namespace_join(ns, &nested.name);
+                    let mut captured = nested.captured_consts.clone();
+                    for (k, v) in &local_consts {
+                        captured.insert(k.clone(), v.clone());
+                    }
+                    nested.captured_consts = captured;
+                    state.namespace_templates.insert(full_nested, nested);
+                }
+            }
+            NamespaceDeclItem::Alias(alias) => {
+                let mut alias = alias.clone();
+                substitute_namespace_ref_consts(&mut alias.target, &local_consts);
+                register_namespace_alias(ns, alias, state)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn register_namespace_alias(
+    parent_ns: &str,
+    alias: NamespaceAliasLocalDecl,
+    state: &mut LoadState,
+) -> Result<(), Vec<Diagnostic>> {
+    let full_name = namespace_join(parent_ns, &alias.name);
+    if state.namespace_aliases.contains_key(&full_name) {
+        return Err(vec![Diagnostic::semantic(
+            format!("duplicate namespace alias '{full_name}'"),
+            0,
+            0,
+        )]);
+    }
+    state.namespace_aliases.insert(
+        full_name.clone(),
+        NamespaceAliasDecl {
+            declared_ns: parent_ns.to_owned(),
+            target: alias.target,
+        },
+    );
+    Ok(())
+}
+
+fn namespace_parent(ns: &str) -> Option<&str> {
+    ns.rsplit_once("::").map(|(parent, _)| parent)
+}
+
+fn namespace_candidates(current_ns: &str) -> Vec<String> {
+    if current_ns.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out = Vec::<String>::new();
+    let mut cur = Some(current_ns);
+    while let Some(ns) = cur {
+        out.push(ns.to_owned());
+        cur = namespace_parent(ns);
+    }
+    out.push(String::new());
+    out
+}
+
+pub(super) fn namespace_of_symbol(name: &str) -> String {
+    name.rsplit_once("::")
+        .map(|(ns, _)| ns.to_owned())
+        .unwrap_or_default()
+}
+
+fn namespace_join(parent: &str, child: &str) -> String {
+    if parent.is_empty() {
+        child.to_owned()
+    } else {
+        format!("{parent}::{child}")
+    }
+}
+
+fn split_namespace_parent_leaf(name: &str) -> (&str, &str) {
+    if let Some((parent, leaf)) = name.rsplit_once("::") {
+        (parent, leaf)
+    } else {
+        ("", name)
+    }
+}
+
+pub(super) fn looks_like_namespace_ref(name: &str) -> bool {
+    name.contains("::") && !name.contains('.')
+}
+
+fn parse_namespace_ref_text(text: &str) -> Result<Vec<NamespaceRefSegment>, Vec<Diagnostic>> {
+    let mut parsed = OmniParser::parse(Rule::namespace_ref, text)
+        .map_err(|err| vec![diag_from_pest_error(err)])?;
+    let pair = parsed
+        .next()
+        .ok_or_else(|| vec![Diagnostic::syntax("missing namespace reference", 0, 0)])?;
+    let out = parse_namespace_ref_pair(pair)?;
+    if out.len() < 2 {
+        return Err(vec![Diagnostic::syntax(
+            "namespace reference must contain at least one '::'",
+            0,
+            0,
+        )]);
+    }
+    Ok(out)
+}
+
+fn expr_key(expr: &Expr) -> String {
+    match expr {
+        Expr::Number(v) => format!("f32({v})"),
+        Expr::Int(v) => format!("i64({v})"),
+        Expr::Bool(v) => format!("bool({v})"),
+        Expr::Var(v) => format!("var({v})"),
+        Expr::ArrayLiteral(values) => format!(
+            "[{}]",
+            values.iter().map(expr_key).collect::<Vec<_>>().join(",")
+        ),
+        Expr::Index { base, index } => format!("idx({base},{})", expr_key(index)),
+        Expr::Slice { base, start, end } => format!(
+            "slice({base},{},{})",
+            start
+                .as_ref()
+                .map(|expr| expr_key(expr))
+                .unwrap_or_default(),
+            end.as_ref().map(|expr| expr_key(expr)).unwrap_or_default()
+        ),
+        Expr::ArrayCtor { spec, init } => {
+            let elem = match &spec.elem {
+                ArrayElemType::Primitive(p) => format!("{p:?}"),
+                ArrayElemType::Struct(s) => s.clone(),
+            };
+            let init_key = init
+                .as_ref()
+                .map(|v| v.iter().map(expr_key).collect::<Vec<_>>().join(","))
+                .unwrap_or_default();
+            format!("arr({elem};{};{init_key})", expr_key(&spec.size))
+        }
+        Expr::Compare { op, lhs, rhs } => {
+            format!("cmp({op:?},{},{})", expr_key(lhs), expr_key(rhs))
+        }
+        Expr::Call { func, args } => format!(
+            "call({func:?},[{}])",
+            args.iter().map(expr_key).collect::<Vec<_>>().join(",")
+        ),
+        Expr::UserCall {
+            name,
+            type_args,
+            args,
+        } => {
+            let type_key = type_args
+                .iter()
+                .map(|a| match a {
+                    CallTypeArg::Primitive(p) => format!("p:{p:?}"),
+                    CallTypeArg::Generic(g) => format!("g:{g}"),
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let arg_key = args
+                .iter()
+                .map(|a| {
+                    let n = a.name.clone().unwrap_or_default();
+                    format!("{n}={}", expr_key(&a.expr))
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("ucall({name};[{type_key}];[{arg_key}])")
+        }
+        Expr::Cast { to, expr } => format!("cast({to:?},{})", expr_key(expr)),
+        Expr::UnaryNot { expr } => format!("not({})", expr_key(expr)),
+        Expr::UnaryBitNot { expr } => format!("bitnot({})", expr_key(expr)),
+        Expr::Logical { op, lhs, rhs } => {
+            format!("log({op:?},{},{})", expr_key(lhs), expr_key(rhs))
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            format!("bin({op:?},{},{})", expr_key(lhs), expr_key(rhs))
+        }
+    }
+}
+
+fn resolve_visible_alias(
+    alias_leaf: &str,
+    current_ns: &str,
+    state: &LoadState,
+) -> Option<NamespaceAliasDecl> {
+    for ns in namespace_candidates(current_ns) {
+        let candidate = namespace_join(&ns, alias_leaf);
+        if let Some(alias) = state.namespace_aliases.get(&candidate) {
+            return Some(alias.clone());
+        }
+    }
+    None
+}
+
+pub(super) fn resolve_namespace_symbol_name(
+    name: &str,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<String, Vec<Diagnostic>> {
+    if !looks_like_namespace_ref(name) {
+        return Ok(name.to_owned());
+    }
+    let segments = parse_namespace_ref_text(name)?;
+    resolve_namespace_segments_internal(&segments, current_ns, const_env, state, generated, 0)
+}
+
+fn split_named_type_base_and_suffix(name: &str) -> (&str, &str) {
+    if let Some(idx) = name.find('<') {
+        (&name[..idx], &name[idx..])
+    } else {
+        (name, "")
+    }
+}
+
+pub(super) fn rewrite_named_type_ref_name(
+    name: &mut String,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+        *name = qualified;
+        return Ok(());
+    }
+
+    let (base, suffix) = split_named_type_base_and_suffix(name);
+    if !suffix.is_empty() {
+        if let Some(qualified) = qualify_local_namespace_member_name(base, current_ns, state) {
+            *name = format!("{qualified}{suffix}");
+            return Ok(());
+        }
+        if looks_like_namespace_ref(base) {
+            let resolved =
+                resolve_namespace_symbol_name(base, current_ns, const_env, state, generated)?;
+            *name = format!("{resolved}{suffix}");
+            return Ok(());
+        }
+    }
+
+    if looks_like_namespace_ref(name) {
+        *name = resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
+    }
+    Ok(())
+}
+
+pub(super) fn qualify_local_namespace_member_name(
+    name: &str,
+    current_ns: &str,
+    state: &LoadState,
+) -> Option<String> {
+    if name.is_empty() || name.contains("::") || name.contains('.') {
+        return None;
+    }
+    let (base, suffix) = split_named_type_base_and_suffix(name);
+    for ns in namespace_candidates(current_ns) {
+        let candidate = namespace_join(&ns, base);
+        if state.namespace_members.contains(&candidate) {
+            return Some(format!("{candidate}{suffix}"));
+        }
+    }
+    None
+}
+
+fn resolve_namespace_segments_internal(
+    segments: &[NamespaceRefSegment],
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+    depth: usize,
+) -> Result<String, Vec<Diagnostic>> {
+    if depth > 64 {
+        return Err(vec![Diagnostic::semantic(
+            "namespace alias/template resolution exceeded recursion depth",
+            0,
+            0,
+        )]);
+    }
+    if segments.is_empty() {
+        return Err(vec![Diagnostic::semantic(
+            "empty namespace reference",
+            0,
+            0,
+        )]);
+    }
+
+    let mut idx = 0usize;
+    let mut path = String::new();
+    let empty_call_args = Vec::<NamespaceCallArg>::new();
+
+    if segments[0].args.is_none() {
+        if let Some(alias) = resolve_visible_alias(&segments[0].name, current_ns, state) {
+            path = resolve_namespace_segments_internal(
+                &alias.target,
+                &alias.declared_ns,
+                const_env,
+                state,
+                generated,
+                depth + 1,
+            )?;
+            idx = 1;
+        }
+    }
+
+    if idx == 0 {
+        if let Some(args) = &segments[0].args {
+            let mut resolved = None::<String>;
+            for candidate_ns in namespace_candidates(current_ns) {
+                let candidate = namespace_join(&candidate_ns, &segments[0].name);
+                if state.namespace_templates.contains_key(&candidate) {
+                    resolved = Some(instantiate_namespace_template(
+                        &candidate, args, const_env, state, generated,
+                    )?);
+                    break;
+                }
+            }
+            let Some(found) = resolved else {
+                return Err(vec![Diagnostic::semantic(
+                    format!("unknown namespace template '{}'", segments[0].name),
+                    0,
+                    0,
+                )]);
+            };
+            path = found;
+        } else {
+            let mut resolved = None::<String>;
+            for candidate_ns in namespace_candidates(current_ns) {
+                let candidate = namespace_join(&candidate_ns, &segments[0].name);
+                if state.namespace_templates.contains_key(&candidate) {
+                    resolved = Some(instantiate_namespace_template(
+                        &candidate,
+                        &empty_call_args,
+                        const_env,
+                        state,
+                        generated,
+                    )?);
+                    break;
+                }
+            }
+            path = resolved.unwrap_or_else(|| segments[0].name.clone());
+        }
+        idx = 1;
+    }
+
+    for seg in &segments[idx..] {
+        let candidate = namespace_join(&path, &seg.name);
+        if let Some(args) = &seg.args {
+            path = instantiate_namespace_template(&candidate, args, const_env, state, generated)?;
+        } else if state.namespace_templates.contains_key(&candidate) {
+            path = instantiate_namespace_template(
+                &candidate,
+                &empty_call_args,
+                const_env,
+                state,
+                generated,
+            )?;
+        } else {
+            path = candidate;
+        }
+    }
+    Ok(path)
+}
+
+fn instantiate_namespace_template(
+    full_template_name: &str,
+    call_args: &[NamespaceCallArg],
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<String, Vec<Diagnostic>> {
+    let template = state
+        .namespace_templates
+        .get(full_template_name)
+        .cloned()
+        .ok_or_else(|| {
+            vec![Diagnostic::semantic(
+                format!("unknown namespace template '{full_template_name}'"),
+                0,
+                0,
+            )]
+        })?;
+
+    let mut effective_consts = template.captured_consts.clone();
+    for (k, v) in const_env {
+        effective_consts
+            .entry(k.clone())
+            .or_insert_with(|| v.clone());
+    }
+
+    let mut named = HashMap::<String, Expr>::new();
+    let mut positional = Vec::<Expr>::new();
+    for arg in call_args {
+        let expr = substitute_expr_with_env(&arg.expr, &effective_consts);
+        if let Some(name) = &arg.name {
+            if named.insert(name.clone(), expr).is_some() {
+                return Err(vec![Diagnostic::semantic(
+                    format!(
+                        "namespace template '{}' argument '{}' specified more than once",
+                        full_template_name, name
+                    ),
+                    0,
+                    0,
+                )]);
+            }
+        } else {
+            positional.push(expr);
+        }
+    }
+
+    let mut pos_idx = 0usize;
+    for param in &template.params {
+        let value = if let Some(named_expr) = named.remove(&param.name) {
+            named_expr
+        } else if let Some(pos_expr) = positional.get(pos_idx) {
+            pos_idx += 1;
+            pos_expr.clone()
+        } else {
+            substitute_expr_with_env(&param.default, &effective_consts)
+        };
+        validate_compile_time_expr(
+            &value,
+            &effective_consts,
+            &format!(
+                "namespace template '{}' argument '{}'",
+                full_template_name, param.name
+            ),
+        )?;
+        let casted = Expr::Cast {
+            to: PrimitiveType::I32,
+            expr: Box::new(value),
+        };
+        effective_consts.insert(param.name.clone(), casted);
+    }
+
+    if pos_idx < positional.len() {
+        return Err(vec![Diagnostic::semantic(
+            format!(
+                "namespace template '{}' received too many positional arguments",
+                full_template_name
+            ),
+            0,
+            0,
+        )]);
+    }
+    if !named.is_empty() {
+        let mut unknown = named.keys().cloned().collect::<Vec<_>>();
+        unknown.sort();
+        return Err(vec![Diagnostic::semantic(
+            format!(
+                "namespace template '{}' received unknown named arguments: {}",
+                full_template_name,
+                unknown.join(", ")
+            ),
+            0,
+            0,
+        )]);
+    }
+
+    let key = {
+        let values = template
+            .params
+            .iter()
+            .map(|p| {
+                effective_consts
+                    .get(&p.name)
+                    .map(expr_key)
+                    .unwrap_or_else(|| "missing".to_owned())
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{full_template_name}[{values}]")
+    };
+    if let Some(existing) = state.namespace_instantiations.get(&key) {
+        return Ok(existing.clone());
+    }
+
+    let (parent, leaf) = split_namespace_parent_leaf(full_template_name);
+    let concrete_leaf = format!("{leaf}__nsinst{}", state.next_namespace_instantiation_id);
+    state.next_namespace_instantiation_id += 1;
+    let concrete_ns = namespace_join(parent, &concrete_leaf);
+    state
+        .namespace_instantiations
+        .insert(key, concrete_ns.clone());
+
+    emit_instantiated_namespace_items(
+        &template.items,
+        &concrete_ns,
+        &effective_consts,
+        state,
+        generated,
+    )?;
+
+    Ok(concrete_ns)
+}
+
+fn emit_instantiated_namespace_items(
+    items: &[NamespaceDeclItem],
+    namespace: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    for item in items {
+        match item {
+            NamespaceDeclItem::Struct(s) => {
+                state
+                    .namespace_members
+                    .insert(namespace_join(namespace, &s.name));
+            }
+            NamespaceDeclItem::Def(d) => {
+                state
+                    .namespace_members
+                    .insert(namespace_join(namespace, &d.name));
+            }
+            NamespaceDeclItem::Proc(p) => {
+                state
+                    .namespace_members
+                    .insert(namespace_join(namespace, &p.name));
+            }
+            NamespaceDeclItem::Assert(_)
+            | NamespaceDeclItem::Const(_)
+            | NamespaceDeclItem::Namespace(_)
+            | NamespaceDeclItem::Alias(_) => {}
+        }
+    }
+
+    let mut local_consts = const_env.clone();
+    let mut local_const_names = HashSet::<String>::new();
+    for item in items {
+        match item {
+            NamespaceDeclItem::Assert(assert_decl) => {
+                let mut block = Block::Assert(assert_decl.clone());
+                rewrite_block_namespace_refs(
+                    &mut block,
+                    namespace,
+                    &local_consts,
+                    state,
+                    generated,
+                )?;
+                generated.push(block);
+            }
+            NamespaceDeclItem::Const(decl) => {
+                if !local_const_names.insert(decl.name.clone()) {
+                    return Err(vec![Diagnostic::semantic(
+                        format!(
+                            "duplicate constant '{}' in namespace '{}'",
+                            decl.name, namespace
+                        ),
+                        0,
+                        0,
+                    )]);
+                }
+                let mut decl = decl.clone();
+                let value = finalize_const_decl_expr(
+                    &mut decl,
+                    namespace,
+                    &local_consts,
+                    state,
+                    generated,
+                )?;
+                state
+                    .namespace_const_values
+                    .insert(namespace_join(namespace, &decl.name), value.clone());
+                local_consts.insert(decl.name.clone(), value);
+            }
+            NamespaceDeclItem::Struct(s) => {
+                let mut s = s.clone();
+                s.name = namespace_join(namespace, &s.name);
+                let mut block = Block::Struct(s);
+                let ns = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
+                rewrite_block_namespace_refs(&mut block, &ns, &local_consts, state, generated)?;
+                generated.push(block);
+            }
+            NamespaceDeclItem::Def(d) => {
+                let mut d = d.clone();
+                d.name = namespace_join(namespace, &d.name);
+                let mut block = Block::Def(d);
+                let ns = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
+                rewrite_block_namespace_refs(&mut block, &ns, &local_consts, state, generated)?;
+                generated.push(block);
+            }
+            NamespaceDeclItem::Proc(p) => {
+                let mut p = p.clone();
+                p.name = namespace_join(namespace, &p.name);
+                let mut block = Block::Proc(p);
+                let ns = namespace_of_symbol(block_decl_name(&block).unwrap_or_default());
+                rewrite_block_namespace_refs(&mut block, &ns, &local_consts, state, generated)?;
+                generated.push(block);
+            }
+            NamespaceDeclItem::Namespace(nested) => {
+                let mut nested = nested.clone();
+                let full_nested = namespace_join(namespace, &nested.name);
+                if nested.params.is_empty() {
+                    emit_instantiated_namespace_items(
+                        &nested.items,
+                        &full_nested,
+                        &local_consts,
+                        state,
+                        generated,
+                    )?;
+                } else {
+                    let mut captured = nested.captured_consts.clone();
+                    for (k, v) in &local_consts {
+                        captured.insert(k.clone(), v.clone());
+                    }
+                    nested.captured_consts = captured;
+                    state.namespace_templates.insert(full_nested, nested);
+                }
+            }
+            NamespaceDeclItem::Alias(alias) => {
+                let mut alias = alias.clone();
+                substitute_namespace_ref_consts(&mut alias.target, &local_consts);
+                register_namespace_alias(namespace, alias, state)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn substitute_namespace_ref_consts(
+    segments: &mut [NamespaceRefSegment],
+    const_env: &HashMap<String, Expr>,
+) {
+    for seg in segments {
+        if let Some(args) = &mut seg.args {
+            for arg in args {
+                arg.expr = substitute_expr_with_env(&arg.expr, const_env);
+            }
+        }
+    }
+}

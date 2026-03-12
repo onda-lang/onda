@@ -35,7 +35,9 @@ const STDLIB_MODULE_PREFIX: &str = "std/";
 #[grammar = "grammar.pest"]
 struct OmniParser;
 
+mod loading_support;
 mod module_loading;
+mod preprocess;
 
 use module_loading::stmt_loc_from_pair;
 
@@ -50,12 +52,6 @@ use expr_stmt::*;
 
 mod block_parsing;
 use block_parsing::*;
-
-#[derive(Clone, Copy)]
-struct PendingIndentBlock {
-    line: usize,
-    indent: usize,
-}
 
 fn diag_from_pest_error(err: pest::error::Error<Rule>) -> Diagnostic {
     let (line, column) = match err.line_col {
