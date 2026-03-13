@@ -130,6 +130,7 @@ sample {
             op: BinaryOp::Add,
             lhs: _,
             rhs,
+            ..
         } => match rhs.as_ref() {
             Expr::Binary {
                 op: BinaryOp::Mul, ..
@@ -365,6 +366,7 @@ sample {
         Expr::Call {
             func: BuiltinFn::Fma,
             args,
+            ..
         } => assert_eq!(args.len(), 3),
         _ => panic!("top-level should be an fma builtin call"),
     }
@@ -604,8 +606,8 @@ sample {
         .expect("sample block");
     match &sample[1] {
         Stmt::For { start, end, .. } => {
-            assert!(matches!(start, Expr::Int(0)));
-            assert!(matches!(end, Expr::Var(v) if v == "n"));
+            assert!(matches!(start, Expr::Int { value: 0, .. }));
+            assert!(matches!(end, Expr::Var { name: v, .. } if v == "n"));
         }
         _ => panic!("expected for statement"),
     }
@@ -663,8 +665,8 @@ sample {
             ..
         } => {
             assert!(matches!(step, Some(Expr::Binary { .. })));
-            assert!(matches!(start, Expr::Int(10)));
-            assert!(matches!(end, Expr::Int(0)));
+            assert!(matches!(start, Expr::Int { value: 10, .. }));
+            assert!(matches!(end, Expr::Int { value: 0, .. }));
             assert!(!end_inclusive);
         }
         _ => panic!("expected for statement"),
@@ -716,8 +718,8 @@ sample {
             var, start, end, ..
         } => {
             assert_eq!(var, "_");
-            assert!(matches!(start, Expr::Int(0)));
-            assert!(matches!(end, Expr::Int(4)));
+            assert!(matches!(start, Expr::Int { value: 0, .. }));
+            assert!(matches!(end, Expr::Int { value: 4, .. }));
         }
         _ => panic!("expected for statement from loop sugar"),
     }
@@ -1041,7 +1043,8 @@ sample {
         Expr::Slice {
             base,
             start: None,
-            end: None
+            end: None,
+            ..
         } if base == "buf"
     ));
     assert!(matches!(
@@ -1049,7 +1052,8 @@ sample {
         Expr::Slice {
             base,
             start: Some(_),
-            end: None
+            end: None,
+            ..
         } if base == "buf"
     ));
     assert!(matches!(
@@ -1057,7 +1061,8 @@ sample {
         Expr::Slice {
             base,
             start: None,
-            end: Some(_)
+            end: Some(_),
+            ..
         } if base == "buf"
     ));
     assert!(matches!(
@@ -1065,7 +1070,8 @@ sample {
         Expr::Slice {
             base,
             start: Some(_),
-            end: Some(_)
+            end: Some(_),
+            ..
         } if base == "buf"
     ));
 }
@@ -1092,7 +1098,15 @@ sample {
         .expect("sample block");
     assert_eq!(sample.len(), 1);
     match &sample[0] {
-        Stmt::Assign { target, expr, .. } => {
+        Stmt::Assign {
+            target_loc,
+            target,
+            expr,
+            ..
+        } => {
+            let target_loc = target_loc.as_ref().expect("slice target location");
+            assert_eq!((target_loc.line, target_loc.column), (7, 3));
+            assert_eq!(target_loc.end_line(), 7);
             match target {
                 AssignTarget::Slice { base, start, end } => {
                     assert_eq!(base, "buf");
@@ -1101,7 +1115,10 @@ sample {
                 }
                 other => panic!("expected slice assignment target, got {other:?}"),
             }
-            assert!(matches!(expr, Expr::Number(v) if (*v - 0.0).abs() <= 1e-6));
+            assert!(matches!(
+                expr,
+                Expr::Number { value: v, .. } if (*v - 0.0).abs() <= 1e-6
+            ));
         }
         other => panic!("expected assignment stmt, got {other:?}"),
     }
@@ -1328,14 +1345,17 @@ sample:
     assert_eq!(ins[0].name, "in1");
     assert!(matches!(
         ins[0].default,
-        Some(Expr::Number(_)) | Some(Expr::Int(_))
+        Some(Expr::Number { .. }) | Some(Expr::Int { .. })
     ));
     let in1_range = ins[0].range.as_ref().expect("in1 range should be parsed");
     assert!(in1_range.min.is_none());
-    assert!(matches!(in1_range.max, Expr::Int(22000)));
+    assert!(matches!(in1_range.max, Expr::Int { value: 22000, .. }));
     let in2_range = ins[1].range.as_ref().expect("in2 range should be parsed");
     assert!(in2_range.min.is_some());
-    assert!(matches!(in2_range.max, Expr::Number(_) | Expr::Int(22000)));
+    assert!(matches!(
+        in2_range.max,
+        Expr::Number { .. } | Expr::Int { value: 22000, .. }
+    ));
 
     let params = program
         .blocks
@@ -1348,20 +1368,26 @@ sample:
     assert_eq!(params.len(), 2);
     assert_eq!(params[0].name, "freq");
     assert_eq!(params[0].ty, Some(DeclType::Scalar(PrimitiveType::I32)));
-    assert!(matches!(params[0].default, Some(Expr::Int(500))));
+    assert!(matches!(
+        params[0].default,
+        Some(Expr::Int { value: 500, .. })
+    ));
     let freq_range = params[0]
         .range
         .as_ref()
         .expect("freq range should be parsed");
     assert!(freq_range.min.is_none());
-    assert!(matches!(freq_range.max, Expr::Int(8000)));
+    assert!(matches!(freq_range.max, Expr::Int { value: 8000, .. }));
     assert_eq!(params[1].name, "mix");
     let mix_range = params[1]
         .range
         .as_ref()
         .expect("mix range should be parsed");
     assert!(mix_range.min.is_some());
-    assert!(matches!(mix_range.max, Expr::Number(_) | Expr::Int(1)));
+    assert!(matches!(
+        mix_range.max,
+        Expr::Number { .. } | Expr::Int { value: 1, .. }
+    ));
 }
 
 #[test]
@@ -1884,6 +1910,7 @@ sample { out1 = 0.0 }
             name,
             type_args,
             args,
+            ..
         } => {
             assert_eq!(name, "Gain");
             assert_eq!(
@@ -1920,6 +1947,7 @@ sample {
             name,
             type_args,
             args,
+            ..
         } => {
             assert_eq!(name, "id");
             assert_eq!(
@@ -1959,6 +1987,7 @@ sample { out1 = 0.0 }
             name,
             type_args,
             args,
+            ..
         } => {
             assert_eq!(name, "id");
             assert_eq!(
@@ -2041,6 +2070,7 @@ sample { out1 = 0.0 }
             name,
             type_args,
             args,
+            ..
         } => {
             assert_eq!(name, "Pair");
             assert_eq!(
@@ -2843,7 +2873,7 @@ sample 4 {
             _ => None,
         })
         .expect("sample block");
-    assert_eq!(sample.oversample_factor, Some(Expr::Int(4)));
+    assert_eq!(sample.oversample_factor, Some(Expr::int(4)));
     assert_eq!(sample.len(), 1);
 }
 
@@ -2864,7 +2894,7 @@ sample 8:
             _ => None,
         })
         .expect("sample block");
-    assert_eq!(sample.oversample_factor, Some(Expr::Int(8)));
+    assert_eq!(sample.oversample_factor, Some(Expr::int(8)));
     assert_eq!(sample.len(), 1);
 }
 
@@ -2886,7 +2916,7 @@ sample { out1 = 0.0 }
             _ => None,
         })
         .expect("proc block");
-    assert_eq!(proc.sample_oversample_factor, Some(Expr::Int(2)));
+    assert_eq!(proc.sample_oversample_factor, Some(Expr::int(2)));
     assert_eq!(proc.sample.len(), 1);
 }
 
@@ -2910,7 +2940,7 @@ block {
         })
         .expect("block section");
     let sample = block_exec.sample.as_ref().expect("nested sample");
-    assert_eq!(sample.oversample_factor, Some(Expr::Int(16)));
+    assert_eq!(sample.oversample_factor, Some(Expr::int(16)));
     assert_eq!(sample.len(), 1);
 }
 
@@ -3200,7 +3230,7 @@ sample {
     assert!(decl_ty.is_none());
     assert!(!is_typed_decl);
     match expr {
-        Expr::ArrayLiteral(values) => assert_eq!(values.len(), 3),
+        Expr::ArrayLiteral { values, .. } => assert_eq!(values.len(), 3),
         _ => panic!("expected untyped array literal expression"),
     }
 }
@@ -3337,6 +3367,8 @@ sample { out1 = 0.0 }
         Some(expected_file.as_str()),
         "expected leaf diagnostic file to point at imported module"
     );
+    assert_eq!((first.line, first.column), (2, 1));
+    assert_eq!(first.end_line, 3);
     assert!(
         first.trace.iter().any(|t| t.contains("import 'lib'")),
         "expected trace to include import site"
@@ -3386,7 +3418,10 @@ sample { out1 = twice(SCALE) }
     let Expr::UserCall { args, .. } = expr else {
         panic!("expected rewritten user call");
     };
-    assert!(matches!(args[0].expr, Expr::Number(n) if (n - 0.25).abs() < 1e-9));
+    assert!(matches!(
+        args[0].expr,
+        Expr::Number { value: n, .. } if (n - 0.25).abs() < 1e-9
+    ));
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -3427,7 +3462,10 @@ sample { out1 = SCALE }
     let Stmt::Assign { expr, .. } = &sample[0] else {
         panic!("expected sample assignment");
     };
-    assert!(matches!(expr, Expr::Number(n) if (*n - 0.25).abs() < 1e-9));
+    assert!(matches!(
+        expr,
+        Expr::Number { value: n, .. } if (*n - 0.25).abs() < 1e-9
+    ));
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -3586,6 +3624,7 @@ init {
         name,
         type_args,
         args,
+        ..
     } = expr
     else {
         panic!("expected constructor call");
@@ -3661,6 +3700,7 @@ init {
         name,
         type_args,
         args,
+        ..
     } = expr
     else {
         panic!("expected constructor call");
@@ -3703,6 +3743,7 @@ init {
         name,
         type_args,
         args,
+        ..
     } = expr
     else {
         panic!("expected constructor call");
@@ -3734,11 +3775,11 @@ init {
         panic!("expected assignment in init");
     };
     match expr {
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             assert!(
                 matches!(spec.elem, ArrayElemType::Struct(ref s) if s == "std::complex::Complex<f32>")
             );
-            assert!(matches!(spec.size.as_ref(), Expr::Int(4)));
+            assert!(matches!(spec.size.as_ref(), Expr::Int { value: 4, .. }));
             assert!(
                 init.is_none(),
                 "default ctor array decl should have no explicit initializer"
@@ -3782,6 +3823,7 @@ init {
         name,
         type_args,
         args,
+        ..
     } = expr
     else {
         panic!("expected constructor call");
@@ -4548,7 +4590,7 @@ sample {
         events[0].params[0].ty,
         EventParamType::Array {
             elem: PrimitiveType::F32,
-            size: Expr::Int(4),
+            size: Expr::Int { value: 4, .. },
         }
     ));
 
@@ -4668,11 +4710,13 @@ fn stmt_contains_var_with_suffix(stmt: &Stmt, suffix: &str) -> bool {
 
 fn expr_contains_var_with_suffix(expr: &Expr, suffix: &str) -> bool {
     match expr {
-        Expr::Var(name) => name.ends_with(suffix),
-        Expr::Index { base, index } => {
+        Expr::Var { name, .. } => name.ends_with(suffix),
+        Expr::Index { base, index, .. } => {
             base.ends_with(suffix) || expr_contains_var_with_suffix(index, suffix)
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             base.ends_with(suffix)
                 || start
                     .as_ref()
@@ -4683,7 +4727,7 @@ fn expr_contains_var_with_suffix(expr: &Expr, suffix: &str) -> bool {
                     .map(|expr| expr_contains_var_with_suffix(expr, suffix))
                     .unwrap_or(false)
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             expr_contains_var_with_suffix(&spec.size, suffix)
                 || init
                     .as_ref()
@@ -4699,7 +4743,7 @@ fn expr_contains_var_with_suffix(expr: &Expr, suffix: &str) -> bool {
         | Expr::Binary { lhs, rhs, .. } => {
             expr_contains_var_with_suffix(lhs, suffix) || expr_contains_var_with_suffix(rhs, suffix)
         }
-        Expr::Call { args, .. } | Expr::ArrayLiteral(args) => args
+        Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => args
             .iter()
             .any(|expr| expr_contains_var_with_suffix(expr, suffix)),
         Expr::UserCall { name, args, .. } => {
@@ -4708,10 +4752,10 @@ fn expr_contains_var_with_suffix(expr: &Expr, suffix: &str) -> bool {
                     .iter()
                     .any(|arg| expr_contains_var_with_suffix(&arg.expr, suffix))
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             expr_contains_var_with_suffix(expr, suffix)
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => false,
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => false,
     }
 }
 
@@ -4835,14 +4879,14 @@ graph {
     assert_eq!(graph.edges[0].dests.len(), 1);
     assert!(matches!(
         graph.edges[0].dests[0],
-        GraphEndpoint::ProcField { ref proc, ref field }
+        GraphEndpoint::ProcField { ref proc, ref field, .. }
         if proc == "lp" && field == "cutoff"
     ));
-    assert_eq!(graph.edges[1].delay, Some(Expr::Int(1)));
+    assert_eq!(graph.edges[1].delay, Some(Expr::int(1)));
     assert_eq!(graph.edges[1].dests.len(), 1);
     assert!(matches!(
         graph.edges[1].dests[0],
-        GraphEndpoint::Symbol(ref name) if name == "out1"
+        GraphEndpoint::Symbol { ref name, .. } if name == "out1"
     ));
 }
 
@@ -4914,18 +4958,19 @@ graph {
             assert_eq!(name, GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL);
             assert!(args.iter().any(|arg| {
                 arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG)
-                    && matches!(arg.expr, Expr::Var(ref base) if base == "voices")
+                    && matches!(arg.expr, Expr::Var { name: ref base, .. } if base == "voices")
             }));
             assert!(args.iter().any(|arg| {
-                arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG) && matches!(arg.expr, Expr::Int(1))
+                arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG)
+                    && matches!(arg.expr, Expr::Int { value: 1, .. })
             }));
             assert!(args.iter().any(|arg| {
                 arg.name.as_deref() == Some(PROC_FIELD_SENTINEL_ARG)
-                    && matches!(arg.expr, Expr::Var(ref field) if field == "pair")
+                    && matches!(arg.expr, Expr::Var { name: ref field, .. } if field == "pair")
             }));
             assert!(args.iter().any(|arg| {
                 arg.name.as_deref() == Some(GRAPH_PROC_FIELD_INDEX_EXPR_ARG)
-                    && matches!(arg.expr, Expr::Int(0))
+                    && matches!(arg.expr, Expr::Int { value: 0, .. })
             }));
         }
         other => panic!("expected graph source sentinel call, got {other:?}"),
@@ -4953,13 +4998,13 @@ graph:
 
     assert_eq!(graph.edges.len(), 1);
     assert_eq!(graph.edges[0].rate, Some(GraphRate::Sample));
-    assert_eq!(graph.edges[0].delay, Some(Expr::Int(2)));
-    assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert_eq!(graph.edges[0].delay, Some(Expr::int(2)));
+    assert_eq!(graph.edges[0].source, Expr::number(0.5));
     assert_eq!(graph.edges[0].dests.len(), 1);
-    assert_eq!(
+    assert!(matches!(
         graph.edges[0].dests[0],
-        GraphEndpoint::Symbol("out1".to_owned())
-    );
+        GraphEndpoint::Symbol { ref name, .. } if name == "out1"
+    ));
 }
 
 #[test]
@@ -4987,19 +5032,21 @@ graph:
         .expect("graph block");
 
     match &graph.edges[0].source {
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             assert_eq!(values.len(), 2);
-            assert!(matches!(values[0], Expr::Var(ref name) if name == "in1"));
-            assert!(matches!(values[1], Expr::Var(ref name) if name == "in2"));
+            assert!(matches!(values[0], Expr::Var { ref name, .. } if name == "in1"));
+            assert!(matches!(values[1], Expr::Var { ref name, .. } if name == "in2"));
         }
         other => panic!("expected graph array literal source, got {other:?}"),
     }
 
     match &graph.edges[1].source {
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             assert_eq!(base, "in_bus");
-            assert!(matches!(start.as_deref(), Some(Expr::Int(1))));
-            assert!(matches!(end.as_deref(), Some(Expr::Int(3))));
+            assert!(matches!(start.as_deref(), Some(Expr::Int { value: 1, .. })));
+            assert!(matches!(end.as_deref(), Some(Expr::Int { value: 3, .. })));
         }
         other => panic!("expected graph slice source, got {other:?}"),
     }
@@ -5034,14 +5081,15 @@ graph {
         .expect("graph block");
 
     assert_eq!(graph.edges.len(), 2);
-    assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert_eq!(graph.edges[0].source, Expr::number(0.5));
     assert_eq!(graph.edges[0].dests.len(), 1);
     assert!(matches!(
         graph.edges[0].dests[0],
         GraphEndpoint::ProcIndexedField {
             ref proc,
-            index: Expr::Int(1),
+            index: Expr::Int { value: 1, .. },
             ref field,
+            ..
         } if proc == "voices" && field == "gain"
     ));
 }
@@ -5067,16 +5115,16 @@ graph:
         .expect("graph block");
 
     assert_eq!(graph.edges.len(), 1);
-    assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert_eq!(graph.edges[0].source, Expr::number(0.5));
     assert_eq!(graph.edges[0].dests.len(), 2);
-    assert_eq!(
+    assert!(matches!(
         graph.edges[0].dests[0],
-        GraphEndpoint::Symbol("out1".to_owned())
-    );
-    assert_eq!(
+        GraphEndpoint::Symbol { ref name, .. } if name == "out1"
+    ));
+    assert!(matches!(
         graph.edges[0].dests[1],
-        GraphEndpoint::Symbol("out2".to_owned())
-    );
+        GraphEndpoint::Symbol { ref name, .. } if name == "out2"
+    ));
 }
 
 #[test]
@@ -5100,14 +5148,231 @@ graph:
         .expect("graph block");
 
     assert_eq!(graph.edges.len(), 1);
-    assert_eq!(graph.edges[0].source, Expr::Number(0.5));
+    assert_eq!(graph.edges[0].source, Expr::number(0.5));
     assert_eq!(graph.edges[0].dests.len(), 2);
-    assert_eq!(
+    assert!(matches!(
         graph.edges[0].dests[0],
-        GraphEndpoint::Symbol("out1".to_owned())
-    );
-    assert_eq!(
+        GraphEndpoint::Symbol { ref name, .. } if name == "out1"
+    ));
+    assert!(matches!(
         graph.edges[0].dests[1],
-        GraphEndpoint::Symbol("out2".to_owned())
-    );
+        GraphEndpoint::Symbol { ref name, .. } if name == "out2"
+    ));
+}
+
+#[test]
+fn stmt_locations_capture_single_line_end_positions() {
+    let src = "sample:\n  out1 = in1 + 1.0\n";
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+
+    let loc = sample.body[0].loc();
+    assert_eq!(loc.file().as_deref(), Some("<memory>"));
+    assert_eq!(loc.line, 2);
+    assert_eq!(loc.column, 3);
+    assert_eq!(loc.end_line, 2);
+}
+
+#[test]
+fn stmt_locations_capture_multiline_end_positions() {
+    let src = "sample {\n  clamp(\n    in1,\n    0.0,\n    1.0\n  )\n}\n";
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+
+    let loc = sample.body[0].loc();
+    assert_eq!(loc.file().as_deref(), Some("<memory>"));
+    assert_eq!(loc.line, 2);
+    assert_eq!(loc.column, 3);
+    assert_eq!(loc.end_line, 6);
+}
+
+#[test]
+fn declaration_locations_capture_param_ranges() {
+    let src = "params:\n  gain = 1.0\nsample:\n  out1 = gain\n";
+    let program = parse_program(src).expect("program should parse");
+    let params = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Params(params) => Some(params),
+            _ => None,
+        })
+        .expect("params block");
+
+    let loc = params[0].loc.as_ref().expect("param location");
+    assert_eq!(loc.file().as_deref(), Some("<memory>"));
+    assert_eq!(loc.line, 2);
+    assert_eq!(loc.column, 3);
+    assert_eq!(loc.end_line(), 2);
+}
+
+#[test]
+fn graph_locations_capture_edge_and_endpoint_ranges() {
+    let src = "outs:\n  out1\ngraph:\n  0.5 >> out1\n";
+    let program = parse_program(src).expect("program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    let edge_loc = graph.edges[0].loc();
+    assert_eq!(edge_loc.file().as_deref(), Some("<memory>"));
+    assert_eq!(edge_loc.line, 4);
+    assert_eq!(edge_loc.column, 3);
+    assert_eq!(edge_loc.end_line, 4);
+
+    let dest_loc = graph.edges[0].dests[0].loc();
+    assert_eq!(dest_loc.file().as_deref(), Some("<memory>"));
+    assert_eq!(dest_loc.line, 4);
+    assert_eq!(dest_loc.column, 10);
+    assert_eq!(dest_loc.end_line, 4);
+}
+
+#[test]
+fn syntax_diagnostics_report_count_shorthand_span() {
+    let src = "outs 0\nsample:\n  out1 = 0.0\n";
+    let errors = parse_program(src).expect_err("invalid outs count should fail");
+    let diag = errors
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("outs count shorthand must be greater than zero")
+        })
+        .expect("missing outs count diagnostic");
+
+    assert_eq!((diag.line, diag.column), (1, 6));
+    assert_eq!(diag.end_line, 1);
+}
+
+#[test]
+fn const_validation_diagnostics_report_expr_span() {
+    let src = "const X = foo\nouts:\n  out1\nsample:\n  out1 = 0.0\n";
+    let errors = parse_program(src).expect_err("invalid const should fail");
+    let diag = errors
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("const 'X': expression references non-compile-time symbol 'foo'")
+        })
+        .expect("missing const validation diagnostic");
+
+    assert_eq!((diag.line, diag.column), (1, 11));
+    assert_eq!(diag.end_line, 1);
+}
+
+#[test]
+fn duplicate_namespace_template_diagnostics_report_namespace_span() {
+    let src = "namespace Config<T = 1>:\n  struct A:\n    x: f32\nnamespace Config<T = 1>:\n  struct B:\n    x: f32\n";
+    let errors = parse_program(src).expect_err("duplicate namespace template should fail");
+    let diag = errors
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("duplicate namespace template 'Config'")
+        })
+        .expect("missing duplicate namespace template diagnostic");
+
+    assert_eq!((diag.line, diag.column), (4, 11));
+    assert_eq!(diag.end_line, 4);
+}
+
+#[test]
+fn duplicate_namespace_alias_diagnostics_report_alias_span() {
+    let src = "namespace Alias = std::math\nnamespace Alias = std::math\n";
+    let errors = parse_program(src).expect_err("duplicate namespace alias should fail");
+    let diag = errors
+        .iter()
+        .find(|diag| diag.message.contains("duplicate namespace alias 'Alias'"))
+        .expect("missing duplicate namespace alias diagnostic");
+
+    assert_eq!((diag.line, diag.column), (2, 11));
+    assert_eq!(diag.end_line, 2);
+}
+
+#[test]
+fn unknown_namespace_template_diagnostics_report_use_site_span() {
+    let src = "outs:\n  out1\nsample:\n  out1 = Missing<1>::X\n";
+    let errors = parse_program(src).expect_err("unknown namespace template should fail");
+    let diag = errors
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("unknown namespace template 'Missing'")
+        })
+        .expect("missing unknown namespace template diagnostic");
+
+    assert_eq!(diag.file.as_deref(), Some("<memory>"));
+    assert_eq!((diag.line, diag.column), (4, 10));
+    assert_eq!(diag.end_line, 4);
+}
+
+#[test]
+fn namespace_template_argument_count_diagnostics_report_extra_arg_span() {
+    let src = "namespace Data<S = SR, C = 1>:\n  const X = 0.0\nouts:\n  out1\nsample:\n  out1 = Data<1, 2, 3>::X\n";
+    let errors = parse_program(src).expect_err("too many namespace template args should fail");
+    let diag = errors
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("namespace template 'Data' received too many positional arguments")
+        })
+        .expect("missing namespace template argument count diagnostic");
+
+    assert_eq!(diag.file.as_deref(), Some("<memory>"));
+    assert_eq!((diag.line, diag.column), (6, 21));
+    assert_eq!(diag.end_line, 6);
+}
+
+#[test]
+fn typed_decl_namespace_template_diagnostics_report_type_span() {
+    let src = "params:\n  gain: Missing<1>::X = 0.0\nouts:\n  out1\nsample:\n  out1 = 0.0\n";
+    let errors = parse_program(src)
+        .expect_err("unknown namespace template in typed parameter declaration should fail");
+    let diag = errors
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("unknown namespace template 'Missing'")
+        })
+        .expect("missing typed parameter namespace template diagnostic");
+
+    assert_eq!(diag.file.as_deref(), Some("<memory>"));
+    assert_eq!((diag.line, diag.column), (2, 9));
+    assert_eq!(diag.end_line, 2);
+}
+
+#[test]
+fn local_typed_decl_namespace_template_diagnostics_report_type_span() {
+    let src = "outs:\n  out1\ninit:\n  x: Missing<1>::X = 0.0\nsample:\n  out1 = 0.0\n";
+    let errors =
+        parse_program(src).expect_err("unknown namespace template in local typed decl should fail");
+    let diag = errors
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("unknown namespace template 'Missing'")
+        })
+        .expect("missing local typed decl namespace template diagnostic");
+
+    assert_eq!(diag.file.as_deref(), Some("<memory>"));
+    assert_eq!((diag.line, diag.column), (4, 6));
+    assert_eq!(diag.end_line, 4);
 }

@@ -1,5 +1,9 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(super) fn rewrite_nested_proc_calls_in_expr(
     expr: &mut Expr,
     owner_proc: &str,
@@ -8,6 +12,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let expr_diag = DiagCtx::new(expr.loc());
     match expr {
         Expr::Index { index, .. } => rewrite_nested_proc_calls_in_expr(
             index,
@@ -39,7 +44,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 );
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_nested_proc_calls_in_expr(
                 &mut spec.size,
                 owner_proc,
@@ -93,7 +98,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 );
             }
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_nested_proc_calls_in_expr(
                     value,
@@ -128,42 +133,42 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 match index_target {
                     ProcIndexResolution::Slot(resolved_slot) => {
                         let Some(instance) = nested_instances.get(resolved_slot.as_str()) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                expr_diag,
+                                errors,
                                 format!(
                                     "nested processor indexed call target '{}' is not an instance",
                                     resolved_slot
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let proc_name = instance.proc_name.clone();
                         let Some(api) = proc_api.get(&proc_name) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                expr_diag,
+                                errors,
                                 format!("unknown processor type '{proc_name}'"),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         if api.outs.len() != 1 {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                expr_diag,
+                                errors,
                                 format!(
                                     "processor call '{}(...)' has {} outputs; use '{}(...).<endpoint>'/outN",
                                     resolved_slot,
                                     api.outs.len(),
                                     resolved_slot
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                         let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                         rewritten.push(CallArg {
                             name: None,
-                            expr: Expr::Var(resolved_slot.clone()),
+                            expr: Expr::var(resolved_slot.clone()),
                         });
                         let expanded_inputs =
                             expand_proc_call_args(args, api, resolved_slot.as_str(), errors);
@@ -196,16 +201,16 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                             return;
                         };
                         if api.outs.len() != 1 {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                expr_diag,
+                                errors,
                                 format!(
                                     "processor call '{}[...]' has {} outputs; use '{}[...]().<endpoint>'/outN",
                                     array_base,
                                     api.outs.len(),
                                     array_base
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                         let rewritten = build_dynamic_proc_array_dispatch_args(
@@ -254,20 +259,23 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         .unwrap_or(false)
                 });
                 let Some(field_pos) = field_pos else {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         "processor call field selection is missing endpoint name",
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 };
                 let field_arg = args.remove(field_pos);
-                let Expr::Var(field_name) = field_arg.expr else {
-                    errors.push(Diagnostic::semantic(
+                let Expr::Var {
+                    name: field_name, ..
+                } = field_arg.expr
+                else {
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         "processor call field selection must be a compile-time endpoint identifier",
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 };
 
@@ -283,9 +291,13 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     else {
                         return;
                     };
-                    let Some(out_idx) =
-                        resolve_proc_output_field_index(&api, &field_name, &array_base, errors)
-                    else {
+                    let Some(out_idx) = resolve_proc_output_field_index(
+                        &api,
+                        &field_name,
+                        &array_base,
+                        expr_diag,
+                        errors,
+                    ) else {
                         return;
                     };
                     let rewritten = build_dynamic_proc_array_dispatch_args(
@@ -304,16 +316,20 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 if let Some(instance) = nested_instances.get(var.as_str()) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!("unknown processor type '{proc_name}'"),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
-                    let Some(out_idx) =
-                        resolve_proc_output_field_index(api, &field_name, var.as_str(), errors)
-                    else {
+                    let Some(out_idx) = resolve_proc_output_field_index(
+                        api,
+                        &field_name,
+                        var.as_str(),
+                        expr_diag,
+                        errors,
+                    ) else {
                         return;
                     };
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
@@ -322,12 +338,12 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     if is_array_slot {
                         rewritten.push(CallArg {
                             name: None,
-                            expr: Expr::Var(var.to_owned()),
+                            expr: Expr::var(var.to_owned()),
                         });
                     } else {
                         rewritten.push(CallArg {
                             name: None,
-                            expr: Expr::Var("self".to_owned()),
+                            expr: Expr::var("self"),
                         });
                     }
                     let expanded_args = expand_proc_call_args(args, api, var.as_str(), errors);
@@ -347,24 +363,24 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             if let Some(instance) = nested_instances.get(name) {
                 let proc_name = instance.proc_name.clone();
                 let Some(api) = proc_api.get(&proc_name) else {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!("unknown processor type '{proc_name}'"),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 };
                 if api.outs.len() != 1 {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!(
                             "processor call '{}(...)' has {} outputs; use '{}(...).<endpoint>'/outN",
                             name,
                             api.outs.len(),
                             name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 }
                 let nested_var = name.clone();
@@ -374,12 +390,12 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 if is_array_slot {
                     rewritten.push(CallArg {
                         name: None,
-                        expr: Expr::Var(nested_var.clone()),
+                        expr: Expr::var(nested_var.clone()),
                     });
                 } else {
                     rewritten.push(CallArg {
                         name: None,
-                        expr: Expr::Var("self".to_owned()),
+                        expr: Expr::var("self"),
                     });
                 }
                 let expanded_args = expand_proc_call_args(args, api, name, errors);
@@ -425,14 +441,14 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 if base == "self" {
                     if let Some(owner_api) = proc_api.get(owner_proc) {
                         if owner_api.events.contains_key(event_name) {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                expr_diag,
+                                errors,
                                 format!(
                                     "cannot call event '{}.{}' on the owning proc instance",
                                     owner_proc, event_name
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                     }
@@ -451,14 +467,14 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         return;
                     };
                     if api.events.contains_key(event_name) {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!(
                                 "processor event call '{}[...].{}(...)' is statement-only",
                                 array_base, event_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     }
                 }
@@ -466,22 +482,22 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 if let Some(instance) = nested_instances.get(base.as_str()) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!("unknown processor type '{proc_name}'"),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     if api.events.contains_key(event_name) {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!(
                                 "processor event call '{}.{}(...)' is statement-only",
                                 base, event_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     }
                 }
@@ -501,28 +517,30 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     let Some(event_spec) = api.events.get(event_name) else {
                         let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
                         known_events.sort();
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!(
                                 "unknown processor event '{}.{}'; expected one of [{}]",
                                 array_base,
                                 event_name,
                                 known_events.join(", ")
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let expanded = expand_proc_event_call_args(
                         args,
                         event_spec,
                         &format!("{array_base}[...].{event_name}"),
+                        expr_diag,
                         errors,
                     );
                     let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
                     rewritten.push(CallArg {
                         name: None,
                         expr: Expr::Index {
+                            loc: Default::default(),
                             base: array_base.clone(),
                             index: Box::new(index_expr.clone()),
                         },
@@ -536,26 +554,26 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 if let Some(instance) = nested_instances.get(base.as_str()) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!("unknown processor type '{proc_name}'"),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let Some(event_spec) = api.events.get(event_name) else {
                         let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
                         known_events.sort();
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!(
                                 "unknown processor event '{}.{}'; expected one of [{}]",
                                 base,
                                 event_name,
                                 known_events.join(", ")
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
@@ -563,18 +581,19 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     if is_array_slot {
                         rewritten.push(CallArg {
                             name: None,
-                            expr: Expr::Var(base.clone()),
+                            expr: Expr::var(base.clone()),
                         });
                     } else {
                         rewritten.push(CallArg {
                             name: None,
-                            expr: Expr::Var("self".to_owned()),
+                            expr: Expr::var("self"),
                         });
                     }
                     let expanded = expand_proc_event_call_args(
                         args,
                         event_spec,
                         &format!("{base}.{event_name}"),
+                        expr_diag,
                         errors,
                     );
                     rewritten.extend(expanded);
@@ -588,8 +607,8 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => rewrite_nested_proc_calls_in_expr(
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => rewrite_nested_proc_calls_in_expr(
             inner,
             owner_proc,
             nested_instances,
@@ -597,7 +616,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             proc_api,
             errors,
         ),
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -609,7 +628,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+    with_stmt_diag_context_mut(stmt, |diag, stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { expr, .. } => rewrite_nested_proc_calls_in_expr(
             expr,
@@ -644,29 +663,29 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                         ProcIndexResolution::Slot(resolved_slot) => {
                             let Some(instance) = nested_instances.get(resolved_slot.as_str())
                             else {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    diag,
+                                    errors,
                                     format!(
                                         "nested processor indexed statement call target '{}' is not an instance",
                                         resolved_slot
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             };
                             let proc_name = instance.proc_name.clone();
                             let Some(api) = proc_api.get(&proc_name) else {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    diag,
+                                    errors,
                                     format!("unknown processor type '{proc_name}'"),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             };
                             let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                             rewritten.push(CallArg {
                                 name: None,
-                                expr: Expr::Var(resolved_slot.clone()),
+                                expr: Expr::var(resolved_slot.clone()),
                             });
                             let expanded_args =
                                 expand_proc_call_args(args, api, resolved_slot.as_str(), errors);
@@ -715,11 +734,11 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                 if let Some(instance) = nested_instances.get(name) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            diag,
+                            errors,
                             format!("unknown processor type '{proc_name}'"),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let nested_var = name.clone();
@@ -729,12 +748,12 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     if is_array_slot {
                         rewritten.push(CallArg {
                             name: None,
-                            expr: Expr::Var(nested_var.clone()),
+                            expr: Expr::var(nested_var.clone()),
                         });
                     } else {
                         rewritten.push(CallArg {
                             name: None,
-                            expr: Expr::Var("self".to_owned()),
+                            expr: Expr::var("self"),
                         });
                     }
                     let expanded_args = expand_proc_call_args(args, api, &nested_var, errors);
@@ -754,14 +773,14 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     if base_raw == "self" {
                         if let Some(owner_api) = proc_api.get(owner_proc) {
                             if owner_api.events.contains_key(event_name) {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    diag,
+                                    errors,
                                     format!(
                                         "cannot call event '{}.{}' on the owning proc instance",
                                         owner_proc, event_name
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             }
                         }
@@ -807,28 +826,30 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                         let Some(event_spec) = api.events.get(event_name) else {
                             let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
                             known_events.sort();
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                diag,
+                                errors,
                                 format!(
                                     "unknown processor event '{}.{}'; expected one of [{}]",
                                     array_base,
                                     event_name,
                                     known_events.join(", ")
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let expanded = expand_proc_event_call_args(
                             args,
                             event_spec,
                             &format!("{array_base}[...].{event_name}"),
+                            diag,
                             errors,
                         );
                         let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
                         rewritten.push(CallArg {
                             name: None,
                             expr: Expr::Index {
+                                loc: Default::default(),
                                 base: array_base.clone(),
                                 index: Box::new(index_expr.clone()),
                             },
@@ -842,26 +863,26 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     if let Some(instance) = nested_instances.get(base.as_str()) {
                         let proc_name = instance.proc_name.clone();
                         let Some(api) = proc_api.get(&proc_name) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                diag,
+                                errors,
                                 format!("unknown processor type '{proc_name}'"),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let Some(event_spec) = api.events.get(event_name) else {
                             let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
                             known_events.sort();
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                diag,
+                                errors,
                                 format!(
                                     "unknown processor event '{}.{}'; expected one of [{}]",
                                     base,
                                     event_name,
                                     known_events.join(", ")
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
@@ -869,18 +890,19 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                         if is_array_slot {
                             rewritten.push(CallArg {
                                 name: None,
-                                expr: Expr::Var(base.clone()),
+                                expr: Expr::var(base.clone()),
                             });
                         } else {
                             rewritten.push(CallArg {
                                 name: None,
-                                expr: Expr::Var("self".to_owned()),
+                                expr: Expr::var("self"),
                             });
                         }
                         let expanded = expand_proc_event_call_args(
                             args,
                             event_spec,
                             &format!("{base}.{event_name}"),
+                            diag,
                             errors,
                         );
                         rewritten.extend(expanded);
@@ -1061,13 +1083,13 @@ pub(super) fn expand_nested_struct_ctor_assign(
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     if !struct_def.type_params.is_empty() {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!(
                 "processor state constructor '{instance_var} = {ctor_name}(...)' does not support generic struct templates"
             ),
-            0,
-            0,
-        ));
+        );
         return Vec::new();
     }
 
@@ -1084,10 +1106,10 @@ pub(super) fn expand_nested_struct_ctor_assign(
         .iter()
         .map(|f| {
             f.default.clone().or(Some(match f.ty {
-                FieldType::Scalar(PrimitiveType::F32 | PrimitiveType::F64) => Expr::Number(0.0),
-                FieldType::Scalar(PrimitiveType::I32 | PrimitiveType::I64) => Expr::Int(0),
-                FieldType::Scalar(PrimitiveType::Bool) => Expr::Bool(false),
-                _ => Expr::Number(0.0),
+                FieldType::Scalar(PrimitiveType::F32 | PrimitiveType::F64) => Expr::number(0.0),
+                FieldType::Scalar(PrimitiveType::I32 | PrimitiveType::I64) => Expr::int(0),
+                FieldType::Scalar(PrimitiveType::Bool) => Expr::bool(false),
+                _ => Expr::number(0.0),
             }))
         })
         .collect::<Vec<_>>();
@@ -1113,13 +1135,15 @@ pub(super) fn expand_nested_struct_ctor_assign(
                     .flatten()
                     .cloned()
                     .or_else(|| scalar_defaults.get(scalar_idx).cloned().flatten())
-                    .unwrap_or(Expr::Number(0.0));
+                    .unwrap_or(Expr::number(0.0));
                 out.push(Stmt::Assign {
-                    loc: None,
+                    loc: Default::default(),
+                    target_loc: Default::default(),
                     target: AssignTarget::Var(field_path),
                     decl_ty: None,
                     generic_decl_ty: None,
                     is_typed_decl: false,
+                    typed_decl_ty_loc: Default::default(),
                     expr: value,
                 });
                 scalar_idx += 1;
@@ -1127,11 +1151,13 @@ pub(super) fn expand_nested_struct_ctor_assign(
             FieldType::Array(_) => {
                 if let Some(default) = &field.default {
                     out.push(Stmt::Assign {
-                        loc: None,
+                        loc: Default::default(),
+                        target_loc: Default::default(),
                         target: AssignTarget::Var(field_path),
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: false,
+                        typed_decl_ty_loc: Default::default(),
                         expr: default.clone(),
                     });
                 }
@@ -1147,14 +1173,14 @@ pub(super) fn expand_nested_struct_ctor_assign(
                         errors,
                     ));
                 } else {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
                         format!(
                             "processor state struct field '{}.{}' uses unresolved generic parameter '{}'",
                             instance_var, field.name, param
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
             }
         }
@@ -1180,7 +1206,7 @@ pub(super) fn expand_nested_proc_ctor_assign(
         .iter()
         .map(|p| {
             if p.slots.iter().all(|s| s.default.is_some()) {
-                Some(Expr::Number(0.0))
+                Some(Expr::number(0.0))
             } else {
                 None
             }
@@ -1236,25 +1262,27 @@ pub(super) fn expand_nested_proc_ctor_assign(
             None => param
                 .slots
                 .iter()
-                .map(|slot| slot.default.clone().unwrap_or(Expr::Number(0.0)))
+                .map(|slot| slot.default.clone().unwrap_or(Expr::number(0.0)))
                 .collect::<Vec<_>>(),
         };
         for (slot_idx, slot) in param.slots.iter().enumerate() {
             let value = values
                 .get(slot_idx)
                 .cloned()
-                .unwrap_or_else(|| slot.default.clone().unwrap_or(Expr::Number(0.0)));
+                .unwrap_or_else(|| slot.default.clone().unwrap_or(Expr::number(0.0)));
             let value = if let Some(range) = slot.range {
                 clamp_expr_to_range(value, range)
             } else {
                 value
             };
             out.push(Stmt::Assign {
-                loc: None,
+                loc: Default::default(),
+                target_loc: Default::default(),
                 target: AssignTarget::Var(nested_field_name(nested_var, &slot.name)),
                 decl_ty: None,
                 generic_decl_ty: None,
                 is_typed_decl: false,
+                typed_decl_ty_loc: Default::default(),
                 expr: value,
             });
         }
@@ -1262,14 +1290,14 @@ pub(super) fn expand_nested_proc_ctor_assign(
     for (buffer_idx, buffer_spec) in callee_buffer_specs.iter().enumerate() {
         let resolved_idx = callee_param_specs.len() + buffer_idx;
         let Some(mut expr) = resolved.get(resolved_idx).copied().flatten().cloned() else {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "processor constructor '{ctor_name}(...)' for nested state '{nested_var}' is missing required buffer argument '{}'",
                     buffer_spec.name
                 ),
-                0,
-                0,
-            ));
+            );
             continue;
         };
         if let Some((array_slot_idx, array_len)) = proc_array_slot {
@@ -1285,26 +1313,27 @@ pub(super) fn expand_nested_proc_ctor_assign(
                 errors,
             );
         }
-        if !matches!(expr, Expr::Var(_)) {
-            errors.push(Diagnostic::semantic(
+        if !matches!(expr, Expr::Var { .. }) {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "processor constructor '{ctor_name}(...)' buffer argument '{}' for nested state '{nested_var}' must be a buffer symbol",
                     buffer_spec.name
                 ),
-                0,
-                0,
-            ));
+            );
         }
         bound_buffers.push(expr);
     }
     out.push(Stmt::Expr {
-        loc: None,
+        loc: Default::default(),
         expr: Expr::UserCall {
+            loc: Default::default(),
             name: nested_init_fn_name(owner_proc, nested_var),
             type_args: Vec::new(),
             args: vec![CallArg {
                 name: None,
-                expr: Expr::Var("self".to_owned()),
+                expr: Expr::var("self"),
             }],
         },
     });
@@ -1328,7 +1357,7 @@ pub(super) fn expand_proc_instance_ctor_assign(
         .iter()
         .map(|p| {
             if p.slots.iter().all(|s| s.default.is_some()) {
-                Some(Expr::Number(0.0))
+                Some(Expr::number(0.0))
             } else {
                 None
             }
@@ -1381,25 +1410,27 @@ pub(super) fn expand_proc_instance_ctor_assign(
             None => param
                 .slots
                 .iter()
-                .map(|slot| slot.default.clone().unwrap_or(Expr::Number(0.0)))
+                .map(|slot| slot.default.clone().unwrap_or(Expr::number(0.0)))
                 .collect::<Vec<_>>(),
         };
         for (slot_idx, slot) in param.slots.iter().enumerate() {
             let value = values
                 .get(slot_idx)
                 .cloned()
-                .unwrap_or_else(|| slot.default.clone().unwrap_or(Expr::Number(0.0)));
+                .unwrap_or_else(|| slot.default.clone().unwrap_or(Expr::number(0.0)));
             let value = if let Some(range) = slot.range {
                 clamp_expr_to_range(value, range)
             } else {
                 value
             };
             out.push(Stmt::Assign {
-                loc: None,
+                loc: Default::default(),
+                target_loc: Default::default(),
                 target: AssignTarget::Var(format!("{instance_var}.{}", slot.name)),
                 decl_ty: None,
                 generic_decl_ty: None,
                 is_typed_decl: false,
+                typed_decl_ty_loc: Default::default(),
                 expr: value,
             });
         }
@@ -1407,14 +1438,14 @@ pub(super) fn expand_proc_instance_ctor_assign(
     for (buffer_idx, buffer_spec) in buffer_specs.iter().enumerate() {
         let resolved_idx = param_specs.len() + buffer_idx;
         let Some(mut expr) = resolved.get(resolved_idx).copied().flatten().cloned() else {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "processor constructor '{ctor_name}(...)' for instance '{instance_var}' is missing required buffer argument '{}'",
                     buffer_spec.name
                 ),
-                0,
-                0,
-            ));
+            );
             continue;
         };
         if let Some((array_slot_idx, array_len)) = proc_array_slot {
@@ -1430,15 +1461,15 @@ pub(super) fn expand_proc_instance_ctor_assign(
                 errors,
             );
         }
-        if !matches!(expr, Expr::Var(_)) {
-            errors.push(Diagnostic::semantic(
+        if !matches!(expr, Expr::Var { .. }) {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "processor constructor '{ctor_name}(...)' buffer argument '{}' must be a buffer symbol",
                     buffer_spec.name
                 ),
-                0,
-                0,
-            ));
+            );
         }
         bound_buffers.push(expr);
     }
@@ -1483,7 +1514,7 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Stmt> {
-    with_stmt_diag_context(stmt, || {
+    with_stmt_diag_context(stmt, |_diag| {
         let mut stmt = stmt.clone();
         let mut remap = callee_shape
             .state

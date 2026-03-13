@@ -190,18 +190,17 @@ fn infer_const_expr_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     match expr {
-        Expr::Number(_) => Some(PrimitiveType::F32),
-        Expr::Int(v) => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+        Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
             PrimitiveType::I32
         } else {
             PrimitiveType::I64
         }),
-        Expr::Bool(_) => Some(PrimitiveType::Bool),
-        Expr::Var(name) => builtin_constant_type(name).or_else(|| {
-            errors.push(Diagnostic::semantic(
+        Expr::Bool { .. } => Some(PrimitiveType::Bool),
+        Expr::Var { name, .. } => builtin_constant_type(name).or_else(|| {
+            errors.push(Diagnostic::semantic_span(
                 format!("{context} uses non-constant symbol '{name}'"),
-                0,
-                0,
+                expr.loc(),
             ));
             None
         }),
@@ -209,21 +208,20 @@ fn infer_const_expr_type(
         Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
             Some(PrimitiveType::Bool)
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let inner = infer_const_expr_type(expr, options, context, errors)?;
             merge_const_integer_types(inner, inner).or_else(|| {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "{context} bitwise not requires integer operand, got {:?}",
                         inner
                     ),
-                    0,
-                    0,
+                    expr.loc(),
                 ));
                 None
             })
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let lhs_ty = infer_const_expr_type(lhs, options, context, errors)?;
             let rhs_ty = infer_const_expr_type(rhs, options, context, errors)?;
             match op {
@@ -232,13 +230,12 @@ fn infer_const_expr_type(
                 | BinaryOp::BitXor
                 | BinaryOp::ShiftLeft
                 | BinaryOp::ShiftRight => merge_const_integer_types(lhs_ty, rhs_ty).or_else(|| {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "{context} bitwise expression requires integer operands, got {:?} and {:?}",
                             lhs_ty, rhs_ty
                         ),
-                        0,
-                        0,
+                        expr.loc(),
                     ));
                     None
                 }),
@@ -256,13 +253,12 @@ fn infer_const_expr_type(
                         (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
                         (I32, I32) => Some(I32),
                         _ => {
-                            errors.push(Diagnostic::semantic(
+                            errors.push(Diagnostic::semantic_span(
                                 format!(
                                     "{context} requires numeric operands, got {:?} and {:?}",
                                     lhs_ty, rhs_ty
                                 ),
-                                0,
-                                0,
+                                expr.loc(),
                             ));
                             None
                         }
@@ -271,10 +267,9 @@ fn infer_const_expr_type(
             }
         }
         _ => {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("{context} must be a compile-time constant expression"),
-                0,
-                0,
+                expr.loc(),
             ));
             None
         }
@@ -288,22 +283,21 @@ pub(crate) fn eval_const_expr_f64(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
     match expr {
-        Expr::Number(v) => Some(*v as f64),
-        Expr::Int(v) => Some(*v as f64),
-        Expr::Bool(v) => Some(if *v { 1.0 } else { 0.0 }),
-        Expr::Var(name) => {
+        Expr::Number { value: v, .. } => Some(*v as f64),
+        Expr::Int { value: v, .. } => Some(*v as f64),
+        Expr::Bool { value: v, .. } => Some(if *v { 1.0 } else { 0.0 }),
+        Expr::Var { name, .. } => {
             if let Some(value) = builtin_constant_value_f64(name, options) {
                 Some(value)
             } else {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!("{context} uses non-constant symbol '{name}'"),
-                    0,
-                    0,
+                    expr.loc(),
                 ));
                 None
             }
         }
-        Expr::Cast { to, expr } => {
+        Expr::Cast { to, expr, .. } => {
             let value = eval_const_expr_f64(expr, options, context, errors)?;
             Some(match to {
                 PrimitiveType::F32 | PrimitiveType::F64 => value,
@@ -318,30 +312,29 @@ pub(crate) fn eval_const_expr_f64(
                 }
             })
         }
-        Expr::UnaryNot { expr } => {
+        Expr::UnaryNot { expr, .. } => {
             let value = eval_const_expr_f64(expr, options, context, errors)?;
             Some(if value == 0.0 { 1.0 } else { 0.0 })
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let ty = infer_const_expr_type(expr, options, context, errors)?;
             let value = eval_const_expr_f64(expr, options, context, errors)?;
             Some(match ty {
                 PrimitiveType::I32 => (!(value as i32)) as f64,
                 PrimitiveType::I64 => (!(value as i64)) as f64,
                 _ => {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "{context} bitwise not requires integer operand, got {:?}",
                             ty
                         ),
-                        0,
-                        0,
+                        expr.loc(),
                     ));
                     return None;
                 }
             })
         }
-        Expr::Logical { op, lhs, rhs } => {
+        Expr::Logical { op, lhs, rhs, .. } => {
             let lhs_value = eval_const_expr_f64(lhs, options, context, errors)?;
             match op {
                 LogicalOp::And => {
@@ -362,7 +355,7 @@ pub(crate) fn eval_const_expr_f64(
                 }
             }
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let result_ty = infer_const_expr_type(expr, options, context, errors)?;
             let lhs_value = eval_const_expr_f64(lhs, options, context, errors)?;
             let rhs_value = eval_const_expr_f64(rhs, options, context, errors)?;
@@ -399,7 +392,7 @@ pub(crate) fn eval_const_expr_f64(
                 },
             })
         }
-        Expr::Compare { op, lhs, rhs } => {
+        Expr::Compare { op, lhs, rhs, .. } => {
             let lhs_value = eval_const_expr_f64(lhs, options, context, errors)?;
             let rhs_value = eval_const_expr_f64(rhs, options, context, errors)?;
             let pred = match op {
@@ -413,10 +406,9 @@ pub(crate) fn eval_const_expr_f64(
             Some(if pred { 1.0 } else { 0.0 })
         }
         _ => {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("{context} must be a compile-time constant expression"),
-                0,
-                0,
+                expr.loc(),
             ));
             None
         }
@@ -431,13 +423,12 @@ pub(crate) fn eval_const_bool_expr(
 ) -> Option<bool> {
     let ty = infer_const_expr_type(expr, options, context, errors)?;
     if ty != PrimitiveType::Bool {
-        errors.push(Diagnostic::semantic(
+        errors.push(Diagnostic::semantic_span(
             format!(
                 "{context} must evaluate to a compile-time bool, got {:?}",
                 ty
             ),
-            0,
-            0,
+            expr.loc(),
         ));
         return None;
     }
@@ -453,36 +444,32 @@ pub(crate) fn eval_data_size_expr(
 ) -> Option<usize> {
     let value = eval_const_expr_f64(expr, options, context, errors)?;
     if !value.is_finite() {
-        errors.push(Diagnostic::semantic(
+        errors.push(Diagnostic::semantic_span(
             format!("{context} must evaluate to a finite numeric value"),
-            0,
-            0,
+            expr.loc(),
         ));
         return None;
     }
 
     let truncated = value.trunc();
     if (value - truncated).abs() > 1e-6 {
-        errors.push(Diagnostic::semantic(
+        errors.push(Diagnostic::semantic_span(
             format!("{context} must evaluate to an integer value"),
-            0,
-            0,
+            expr.loc(),
         ));
         return None;
     }
     if truncated <= 0.0 {
-        errors.push(Diagnostic::semantic(
+        errors.push(Diagnostic::semantic_span(
             format!("{context} must be greater than zero"),
-            0,
-            0,
+            expr.loc(),
         ));
         return None;
     }
     if truncated > usize::MAX as f64 {
-        errors.push(Diagnostic::semantic(
+        errors.push(Diagnostic::semantic_span(
             format!("{context} exceeds supported range"),
-            0,
-            0,
+            expr.loc(),
         ));
         return None;
     }

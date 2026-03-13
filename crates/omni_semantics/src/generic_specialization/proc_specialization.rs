@@ -1,11 +1,16 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(crate) fn specialize_generic_proc_event_param_type(
     ty: &EventParamType,
     type_bindings: &HashMap<String, PrimitiveType>,
     proc_name: &str,
     event_name: &str,
     param_name: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> EventParamType {
     match ty {
@@ -18,14 +23,14 @@ pub(crate) fn specialize_generic_proc_event_param_type(
         EventParamType::GenericSlice { elem } => match type_bindings.get(elem).copied() {
             Some(bound) => EventParamType::Slice { elem: bound },
             None => {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    diag,
+                    errors,
                     format!(
                         "processor '{}.{}' event parameter '{}' references unknown generic slice element type '{}'",
                         proc_name, event_name, param_name, elem
                     ),
-                    0,
-                    0,
-                ));
+                );
                 EventParamType::Slice {
                     elem: PrimitiveType::F32,
                 }
@@ -40,6 +45,7 @@ pub(crate) fn specialize_generic_proc_decl_type(
     proc_name: &str,
     symbol_kind: &str,
     symbol_name: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> DeclType {
     match ty {
@@ -47,14 +53,14 @@ pub(crate) fn specialize_generic_proc_decl_type(
         DeclType::Generic(param) => match type_bindings.get(param).copied() {
             Some(bound) => DeclType::Scalar(bound),
             None => {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    diag,
+                    errors,
                     format!(
                         "processor '{}' {} '{}' references unknown generic type parameter '{}'",
                         proc_name, symbol_kind, symbol_name, param
                     ),
-                    0,
-                    0,
-                ));
+                );
                 DeclType::Scalar(PrimitiveType::F32)
             }
         },
@@ -64,14 +70,14 @@ pub(crate) fn specialize_generic_proc_decl_type(
                 size: size.clone(),
             },
             None => {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    diag,
+                    errors,
                     format!(
                         "processor '{}' {} '{}' references unknown generic array element type '{}'",
                         proc_name, symbol_kind, symbol_name, elem
                     ),
-                    0,
-                    0,
-                ));
+                );
                 DeclType::Array {
                     elem: PrimitiveType::F32,
                     size: size.clone(),
@@ -90,6 +96,7 @@ pub(crate) fn specialize_generic_proc_buffer_type(
     type_bindings: &HashMap<String, PrimitiveType>,
     proc_name: &str,
     buffer_name: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> BufferType {
     let elem = match &ty.elem {
@@ -97,14 +104,14 @@ pub(crate) fn specialize_generic_proc_buffer_type(
         BufferElemType::Generic(param) => match type_bindings.get(param).copied() {
             Some(bound) => BufferElemType::Primitive(bound),
             None => {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    diag,
+                    errors,
                     format!(
                         "processor '{}' buffer '{}' references unknown generic element type '{}'",
                         proc_name, buffer_name, param
                     ),
-                    0,
-                    0,
-                ));
+                );
                 BufferElemType::Primitive(PrimitiveType::F32)
             }
         },
@@ -120,6 +127,7 @@ pub(crate) fn rewrite_generic_array_ctor_expr_types(
     type_bindings: &HashMap<String, PrimitiveType>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let diag = DiagCtx::new(expr.loc());
     match expr {
         Expr::Index { index, .. } => {
             rewrite_generic_array_ctor_expr_types(index, type_bindings, errors);
@@ -132,7 +140,7 @@ pub(crate) fn rewrite_generic_array_ctor_expr_types(
                 rewrite_generic_array_ctor_expr_types(end, type_bindings, errors);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             if let ArrayElemType::Struct(elem_name) = &spec.elem {
                 if let Some(bound) = type_bindings.get(elem_name).copied() {
                     spec.elem = ArrayElemType::Primitive(bound);
@@ -140,6 +148,7 @@ pub(crate) fn rewrite_generic_array_ctor_expr_types(
                     elem_name,
                     type_bindings,
                     &format!("array element type '{elem_name}'"),
+                    diag,
                     errors,
                 ) {
                     match specialized {
@@ -173,16 +182,16 @@ pub(crate) fn rewrite_generic_array_ctor_expr_types(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_generic_array_ctor_expr_types(inner, type_bindings, errors);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_generic_array_ctor_expr_types(value, type_bindings, errors);
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -191,7 +200,7 @@ pub(crate) fn rewrite_generic_array_ctor_stmt_types(
     type_bindings: &HashMap<String, PrimitiveType>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+    with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
@@ -248,7 +257,7 @@ pub(crate) fn specialize_generic_typed_decls(
     proc_name: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
-    with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+    with_stmt_diag_context_mut(stmt, |diag, stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
@@ -261,23 +270,23 @@ pub(crate) fn specialize_generic_typed_decls(
                 return;
             };
             let AssignTarget::Var(name) = target else {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    diag,
+                    errors,
                     "typed declaration is only supported for plain scalar variables",
-                    0,
-                    0,
-                ));
+                );
                 *generic_decl_ty = None;
                 return;
             };
             if decl_ty.is_some() {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    diag,
+                    errors,
                     format!(
                         "processor '{}' init declaration '{}: {}' cannot combine primitive and generic type annotations",
                         proc_name, name, param
                     ),
-                    0,
-                    0,
-                ));
+                );
                 *generic_decl_ty = None;
                 return;
             }
@@ -288,14 +297,14 @@ pub(crate) fn specialize_generic_typed_decls(
                     *is_typed_decl = true;
                 }
                 None => {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        diag,
+                        errors,
                         format!(
                             "processor '{}' init declaration '{}: {}' references unknown generic type parameter '{}'",
                             proc_name, name, param, param
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
             }
         }
@@ -358,13 +367,15 @@ pub(crate) fn expand_inline_array_ctor_initializers(stmts: &mut Vec<Stmt>) {
                 for (idx, value) in values.into_iter().enumerate() {
                     index_writes.push(Stmt::Assign {
                         loc: loc.clone(),
+                        target_loc: Default::default(),
                         target: AssignTarget::Index {
                             base: base.clone(),
-                            index: Expr::Int(idx as i64),
+                            index: Expr::int(idx as i64),
                         },
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: false,
+                        typed_decl_ty_loc: Default::default(),
                         expr: value,
                     });
                 }
@@ -382,17 +393,18 @@ pub(crate) fn specialize_generic_proc_template(
     type_args: &[PrimitiveType],
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcessorDef> {
+    let diag = DiagCtx::new(template.loc);
     if type_args.len() != template.type_params.len() {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            diag,
+            errors,
             format!(
                 "processor '{}' expects {} type arguments, got {}",
                 template.name,
                 template.type_params.len(),
                 type_args.len()
             ),
-            0,
-            0,
-        ));
+        );
         return None;
     }
 
@@ -405,6 +417,7 @@ pub(crate) fn specialize_generic_proc_template(
         .ins
         .iter()
         .map(|decl| PortDecl {
+            loc: decl.loc.clone(),
             name: decl.name.clone(),
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_decl_type(
@@ -413,9 +426,11 @@ pub(crate) fn specialize_generic_proc_template(
                     &template.name,
                     "input",
                     &decl.name,
+                    DiagCtx::new(decl.ty_loc.or(decl.loc)),
                     errors,
                 )
             }),
+            ty_loc: decl.ty_loc.clone(),
             default: decl.default.clone(),
             range: decl.range.clone(),
         })
@@ -424,6 +439,7 @@ pub(crate) fn specialize_generic_proc_template(
         .outs
         .iter()
         .map(|decl| PortDecl {
+            loc: decl.loc.clone(),
             name: decl.name.clone(),
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_decl_type(
@@ -432,9 +448,11 @@ pub(crate) fn specialize_generic_proc_template(
                     &template.name,
                     "output",
                     &decl.name,
+                    DiagCtx::new(decl.ty_loc.or(decl.loc)),
                     errors,
                 )
             }),
+            ty_loc: decl.ty_loc.clone(),
             default: decl.default.clone(),
             range: decl.range.clone(),
         })
@@ -443,6 +461,7 @@ pub(crate) fn specialize_generic_proc_template(
         .params
         .iter()
         .map(|decl| ParamDecl {
+            loc: decl.loc.clone(),
             name: decl.name.clone(),
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_decl_type(
@@ -451,9 +470,11 @@ pub(crate) fn specialize_generic_proc_template(
                     &template.name,
                     "param",
                     &decl.name,
+                    DiagCtx::new(decl.ty_loc.or(decl.loc)),
                     errors,
                 )
             }),
+            ty_loc: decl.ty_loc.clone(),
             default: decl.default.clone(),
             range: decl.range.clone(),
         })
@@ -540,6 +561,7 @@ pub(crate) fn specialize_generic_proc_template(
         .buffers
         .iter()
         .map(|decl| BufferDecl {
+            loc: decl.loc.clone(),
             name: decl.name.clone(),
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_buffer_type(
@@ -547,9 +569,11 @@ pub(crate) fn specialize_generic_proc_template(
                     &type_bindings,
                     &template.name,
                     &decl.name,
+                    DiagCtx::new(decl.ty_loc.or(decl.loc)),
                     errors,
                 )
             }),
+            ty_loc: decl.ty_loc.clone(),
         })
         .collect::<Vec<_>>();
     let mut init = template.init.clone();
@@ -566,6 +590,7 @@ pub(crate) fn specialize_generic_proc_template(
                 &template.name,
                 &event.name,
                 &param.name,
+                DiagCtx::new(param.ty_loc.or(param.loc)),
                 errors,
             );
         }
@@ -577,6 +602,7 @@ pub(crate) fn specialize_generic_proc_template(
             &template.name,
             "init section default type",
             "init",
+            DiagCtx::new(init.default_ty_loc.or(init.loc)),
             errors,
         );
         match specialized {
@@ -584,14 +610,14 @@ pub(crate) fn specialize_generic_proc_template(
                 init.default_ty = Some(specialized);
             }
             DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::new(init.default_ty_loc.or(init.loc)),
+                    errors,
                     format!(
                         "processor '{}' init section default type must be a scalar primitive or generic type",
                         template.name
                     ),
-                    0,
-                    0,
-                ));
+                );
                 init.default_ty = None;
             }
         }
@@ -728,6 +754,7 @@ pub(crate) fn specialize_generic_proc_template(
     }
 
     Some(ProcessorDef {
+        loc: template.loc.clone(),
         name: specialized_struct_name(&template.name, type_args),
         type_params: Vec::new(),
         ins,
@@ -772,6 +799,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
     locals: &mut GenericInferenceLocals,
     current_ns: &str,
 ) {
+    let diag = DiagCtx::new(expr.loc());
     match expr {
         Expr::Index { index, .. } => {
             rewrite_generic_proc_ctor_expr(index, templates, generated, errors, locals, current_ns);
@@ -788,7 +816,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                 );
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_generic_proc_ctor_expr(
                 &mut spec.size,
                 templates,
@@ -819,11 +847,11 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_generic_proc_ctor_expr(inner, templates, generated, errors, locals, current_ns);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_generic_proc_ctor_expr(
                     value, templates, generated, errors, locals, current_ns,
@@ -834,6 +862,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
             name,
             type_args,
             args,
+            ..
         } => {
             for arg in args.iter_mut() {
                 rewrite_generic_proc_ctor_expr(
@@ -865,12 +894,14 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                         &locals.scalar_types,
                         &locals.array_elem_types,
                         locals.default_ctor_missing_type_params_to_f32,
+                        diag,
                         errors,
                     )
                 } else {
                     resolve_explicit_call_type_args(
                         type_args,
                         &format!("processor constructor '{}'", name),
+                        diag,
                         errors,
                     )
                 };
@@ -890,7 +921,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                 type_args.clear();
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -902,7 +933,7 @@ pub(crate) fn rewrite_generic_proc_ctor_stmt(
     locals: &mut GenericInferenceLocals,
     current_ns: &str,
 ) {
-    with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+    with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign {
             target,

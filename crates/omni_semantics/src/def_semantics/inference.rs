@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use omni_frontend::{
-    AssignTarget, BufferChannels, BufferElemType, BuiltinFn, CallArg, Diagnostic, Expr,
+    AssignTarget, BufferChannels, BufferElemType, BuiltinFn, CallArg, DiagCtx, Diagnostic, Expr,
     FnParamType, FunctionDef, PrimitiveType, Stmt,
 };
 
@@ -9,15 +9,15 @@ mod return_inference;
 pub(crate) use return_inference::*;
 mod call_inference;
 use call_inference::infer_stmt_calls;
-pub(crate) use call_inference::resolve_call_args;
+pub(crate) use call_inference::{resolve_call_args, resolve_call_args_at};
 
 use crate::builtins::{
     builtin_constant_type, eval_data_size_expr, is_builtin_constant_name, is_internal_buffer_2d_fn,
     parse_array_len_instance_base, parse_buffer_chans_instance_base,
 };
 use crate::{
-    resolve_struct_field_decl, with_stmt_diag_context, AnalysisOptions, FnSignature,
-    TypedBufferChannels, TypedFieldType, TypedFnParam, TypedStructField,
+    resolve_struct_field_decl, with_expr_diag_context, with_stmt_diag_context, AnalysisOptions,
+    FnSignature, TypedBufferChannels, TypedFieldType, TypedFnParam, TypedStructField,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +46,10 @@ pub(crate) struct InferredBufferParam {
 pub(crate) struct InferredArrayParam {
     pub(crate) elem_ty: PrimitiveType,
     pub(crate) len: usize,
+}
+
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
 }
 
 pub(crate) fn infer_def_param_kinds(
@@ -297,6 +301,11 @@ pub(crate) fn infer_def_param_kinds(
                 .get(idx)
                 .map(|p| p.name.as_str())
                 .unwrap_or("<param>");
+            let param_diag = def
+                .params
+                .get(idx)
+                .map(|p| DiagCtx::new(p.ty_loc.or(p.loc)))
+                .unwrap_or_default();
             let usage_for_param = usage.get(idx).cloned().unwrap_or_default();
             let has_struct_usage =
                 !inferred_kind.saw_structs.is_empty() || !usage_for_param.is_empty();
@@ -314,14 +323,14 @@ pub(crate) fn infer_def_param_kinds(
             if let Some(FnParamType::ArrayGeneric(param_ty)) =
                 def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    param_diag,
+                    errors,
                     format!(
                         "function '{}' parameter '{}' uses unresolved generic array element type '{}'",
                         def.name, param_name, param_ty
                     ),
-                    0,
-                    0,
-                ));
+                );
                 typed.push(TypedFnParam::Array {
                     elem_ty: PrimitiveType::F32,
                 });
@@ -371,40 +380,40 @@ pub(crate) fn infer_def_param_kinds(
 
             if let Some((elem_ty, channels)) = explicit_buffer {
                 if !inferred_kind.saw_arrays.is_empty() {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as array",
                             def.name,
                             param_name,
                             format_buffer_type_name(*elem_ty, channels)
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 if inferred_kind.saw_scalar {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as scalar",
                             def.name,
                             param_name,
                             format_buffer_type_name(*elem_ty, channels)
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 if has_struct_usage {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as struct",
                             def.name,
                             param_name,
                             format_buffer_type_name(*elem_ty, channels)
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 typed.push(TypedFnParam::Buffer {
                     elem_ty: *elem_ty,
@@ -415,14 +424,14 @@ pub(crate) fn infer_def_param_kinds(
 
             if has_effective_buffer_usage {
                 if has_struct_usage {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        errors,
                         format!(
                             "function '{}' parameter '{}' is used both as struct and buffer",
                             def.name, param_name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 let inferred_buffer = infer_untyped_buffer_from_observations(
                     &def.name,
@@ -444,35 +453,35 @@ pub(crate) fn infer_def_param_kinds(
 
             if let Some(struct_name) = explicit_struct {
                 if inferred_kind.saw_scalar {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as scalar",
                             def.name, param_name, struct_name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 if !inferred_kind.saw_arrays.is_empty() {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as array",
                             def.name, param_name, struct_name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 for observed in &inferred_kind.saw_structs {
                     if observed != struct_name {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            param_diag,
+                            errors,
                             format!(
                                 "function '{}' parameter '{}' is explicitly '{}' but is called with '{}'",
                                 def.name, param_name, struct_name, observed
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                 }
                 typed.push(TypedFnParam::Struct {
@@ -483,14 +492,14 @@ pub(crate) fn infer_def_param_kinds(
 
             if has_struct_usage {
                 if inferred_kind.saw_scalar {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        errors,
                         format!(
                             "function '{}' parameter '{}' is used both as scalar and struct",
                             def.name, param_name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
 
                 let synthetic_name = synthetic_struct_param_name(&def.name, idx, param_name);
@@ -622,17 +631,23 @@ fn collect_expr_indexable_param_usage(
     kinds: &mut [InferredFnParam],
 ) {
     match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral(values) => {
+        Expr::Number { .. }
+        | Expr::Int { .. }
+        | Expr::Bool { .. }
+        | Expr::Var { .. }
+        | Expr::ArrayCtor { .. } => {}
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 collect_expr_indexable_param_usage(value, param_index, kinds);
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
             collect_expr_indexable_param_usage(index, param_index, kinds);
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
             if let Some(start) = start {
                 collect_expr_indexable_param_usage(start, param_index, kinds);
@@ -647,7 +662,7 @@ fn collect_expr_indexable_param_usage(
             collect_expr_indexable_param_usage(lhs, param_index, kinds);
             collect_expr_indexable_param_usage(rhs, param_index, kinds);
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             collect_expr_indexable_param_usage(expr, param_index, kinds);
         }
         Expr::Call { args, .. } => {
@@ -658,7 +673,7 @@ fn collect_expr_indexable_param_usage(
         Expr::UserCall { name, args, .. } => {
             if is_internal_buffer_2d_fn(name) {
                 if let Some(CallArg {
-                    expr: Expr::Var(base),
+                    expr: Expr::Var { name: base, .. },
                     ..
                 }) = args.first()
                 {
@@ -864,8 +879,12 @@ fn propagate_expr_callee_buffer_requirements_to_params(
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
 ) {
     match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral(values) => {
+        Expr::Number { .. }
+        | Expr::Int { .. }
+        | Expr::Bool { .. }
+        | Expr::Var { .. }
+        | Expr::ArrayCtor { .. } => {}
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 propagate_expr_callee_buffer_requirements_to_params(
                     value,
@@ -935,7 +954,7 @@ fn propagate_expr_callee_buffer_requirements_to_params(
                 kinds,
             );
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             propagate_expr_callee_buffer_requirements_to_params(
                 expr,
                 caller_name,
@@ -973,7 +992,7 @@ fn propagate_expr_callee_buffer_requirements_to_params(
                 );
                 if bind_errors.is_empty() {
                     for (param_idx, arg) in resolved.into_iter().enumerate() {
-                        let Some(Expr::Var(symbol)) = arg else {
+                        let Some(Expr::Var { name: symbol, .. }) = arg else {
                             continue;
                         };
                         let Some(caller_param_idx) = caller_param_index.get(symbol).copied() else {
@@ -1022,13 +1041,12 @@ fn collect_declared_struct_param_types(
         for (idx, param) in def.params.iter().enumerate() {
             if let Some(FnParamType::Struct(struct_name)) = &param.ty {
                 if !struct_defs.contains_key(struct_name) {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "function '{}' parameter '{}' references unknown struct '{}'",
                             def.name, param.name, struct_name
                         ),
-                        0,
-                        0,
+                        param.ty_loc.or(param.loc),
                     ));
                 } else {
                     param_structs[idx] = Some(struct_name.clone());
@@ -1040,13 +1058,12 @@ fn collect_declared_struct_param_types(
             if !param_structs.is_empty() {
                 if let Some(existing) = param_structs[0].as_ref() {
                     if existing != method_struct {
-                        errors.push(Diagnostic::semantic(
+                        errors.push(Diagnostic::semantic_span(
                             format!(
                                 "method '{}' self parameter is '{}' but annotation declares '{}'",
                                 def.name, method_struct, existing
                             ),
-                            0,
-                            0,
+                            def.params[0].ty_loc.or(def.params[0].loc),
                         ));
                     }
                 }
@@ -1091,13 +1108,12 @@ fn collect_declared_buffer_param_types(
                 let elem_ty = match buffer_ty.elem {
                     BufferElemType::Primitive(ty) => ty,
                     BufferElemType::Generic(ref param_ty) => {
-                        errors.push(Diagnostic::semantic(
+                        errors.push(Diagnostic::semantic_span(
                             format!(
                                 "function '{}' parameter '{}' uses unresolved generic buffer element type '{}'",
                                 def.name, param.name, param_ty
                             ),
-                            0,
-                            0,
+                            param.ty_loc.or(param.loc),
                         ));
                         PrimitiveType::F32
                     }
@@ -1393,8 +1409,8 @@ fn collect_expr_field_usage(
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral(values) => {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::ArrayCtor { .. } => {}
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 collect_expr_field_usage(
                     value,
@@ -1407,7 +1423,7 @@ fn collect_expr_field_usage(
                 );
             }
         }
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if let Some((base, field)) = split_simple_field_path(name) {
                 if let Some(param_idx) = param_index.get(base).copied() {
                     let kind = param_structs
@@ -1428,7 +1444,7 @@ fn collect_expr_field_usage(
                 }
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if let Some(param_idx) = param_index.get(root).copied() {
                     mark_param_field_usage(
@@ -1452,7 +1468,9 @@ fn collect_expr_field_usage(
                 errors,
             );
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if let Some(param_idx) = param_index.get(root).copied() {
                     mark_param_field_usage(
@@ -1511,7 +1529,7 @@ fn collect_expr_field_usage(
                 errors,
             );
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             collect_expr_field_usage(
                 expr,
                 fn_name,
@@ -1565,14 +1583,14 @@ fn mark_param_field_usage(
     };
     if let Some(existing) = map.get(field).copied() {
         if existing != kind {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "function '{}' parameter '{}' uses field '{}' both as scalar and array",
                     fn_name, param_name, field
                 ),
-                0,
-                0,
-            ));
+            );
         }
         return;
     }
@@ -1629,14 +1647,14 @@ fn build_structural_param_fields(
                 continue;
             };
             let Some(found) = fields.iter().find(|f| f.name == field_name) else {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
                     format!(
                         "function '{}' parameter '{}' requires field '{}' but struct '{}' does not define it",
                         fn_name, param_name, field_name, struct_name
                     ),
-                    0,
-                    0,
-                ));
+                );
                 continue;
             };
 
@@ -1648,14 +1666,14 @@ fn build_structural_param_fields(
                     (TypedFieldType::Scalar(prim), None, None)
                 }
                 (StructFieldUsage::Scalar, TypedFieldType::Array(_)) => {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
                         format!(
                             "function '{}' parameter '{}' uses '{}.{}' as scalar but struct '{}' defines it as array",
                             fn_name, param_name, param_name, field_name, struct_name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     continue;
                 }
                 (StructFieldUsage::Array, TypedFieldType::Array(len)) => (
@@ -1664,25 +1682,25 @@ fn build_structural_param_fields(
                     found.array_elem_struct.clone(),
                 ),
                 (StructFieldUsage::Array, TypedFieldType::Scalar(_)) => {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
                         format!(
                             "function '{}' parameter '{}' uses '{}.{}' as array but struct '{}' defines it as scalar",
                             fn_name, param_name, param_name, field_name, struct_name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     continue;
                 }
                 (_, TypedFieldType::Struct) => {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
                         format!(
                             "function '{}' parameter '{}' uses '{}.{}' as value but struct '{}' defines it as nested struct",
                             fn_name, param_name, param_name, field_name, struct_name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     continue;
                 }
             };
@@ -1694,14 +1712,14 @@ fn build_structural_param_fields(
                     || existing_data_elem_ty != candidate_data_elem_ty
                     || existing_data_elem_struct != candidate_data_elem_struct
                 {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
                         format!(
                             "function '{}' parameter '{}' field '{}' resolves to incompatible types across structs",
                             fn_name, param_name, field_name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
             } else {
                 resolved_ty = Some(candidate);
@@ -1884,25 +1902,25 @@ fn infer_untyped_array_from_observations(
 }
 
 pub(crate) fn validate_default_expr(expr: &Expr, errors: &mut Vec<Diagnostic>, context: &str) {
-    match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
-        Expr::ArrayLiteral(values) => {
+    with_expr_diag_context(expr, |expr_diag| match expr {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 validate_default_expr(value, errors, context);
             }
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                expr_diag,
+                errors,
                 "array literals are only allowed in typed array declarations and parameter defaults",
-                0,
-                0,
-            ));
+            );
         }
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if !is_builtin_constant_name(name) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    expr_diag,
+                    errors,
                     format!("{context} default expression uses non-constant symbol '{name}'"),
-                    0,
-                    0,
-                ));
+                );
             }
         }
         Expr::Binary { lhs, rhs, .. } | Expr::Compare { lhs, rhs, .. } => {
@@ -1910,13 +1928,13 @@ pub(crate) fn validate_default_expr(expr: &Expr, errors: &mut Vec<Diagnostic>, c
             validate_default_expr(rhs, errors, context);
         }
         _ => {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                expr_diag,
+                errors,
                 format!("{context} default expression must be constant"),
-                0,
-                0,
-            ));
+            );
         }
-    }
+    })
 }
 
 pub(crate) fn can_implicitly_assign(src: PrimitiveType, dst: PrimitiveType) -> bool {
@@ -1952,14 +1970,14 @@ pub(crate) fn merge_numeric_types(
         (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
         (I32, I32) => Some(I32),
         _ => {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "{context} requires numeric operands, got {:?} and {:?}",
                     lhs, rhs
                 ),
-                0,
-                0,
-            ));
+            );
             None
         }
     }

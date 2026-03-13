@@ -1,5 +1,9 @@
 use crate::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct OverloadCandidate {
     internal_name: String,
@@ -36,8 +40,10 @@ fn overload_internal_name(public_name: &str, ordinal: usize) -> String {
 
 pub(crate) fn const_positive_usize_for_overload(expr: &Expr) -> Option<usize> {
     match expr {
-        Expr::Int(v) if *v > 0 => usize::try_from(*v).ok(),
-        Expr::Number(v) if *v > 0.0 && v.fract() == 0.0 => usize::try_from(*v as i64).ok(),
+        Expr::Int { value, .. } if *value > 0 => usize::try_from(*value).ok(),
+        Expr::Number { value, .. } if *value > 0.0 && value.fract() == 0.0 => {
+            usize::try_from(*value as i64).ok()
+        }
         _ => None,
     }
 }
@@ -72,10 +78,10 @@ fn infer_scalar_expr_type_for_overload(
     env: &OverloadRewriteEnv,
 ) -> Option<PrimitiveType> {
     match expr {
-        Expr::Number(_) => Some(PrimitiveType::F32),
-        Expr::Int(v) => Some(primitive_type_for_number_literal(*v)),
-        Expr::Bool(_) => Some(PrimitiveType::Bool),
-        Expr::Var(name) => {
+        Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Int { value, .. } => Some(primitive_type_for_number_literal(*value)),
+        Expr::Bool { .. } => Some(PrimitiveType::Bool),
+        Expr::Var { name, .. } => {
             if let Some(ty) = builtin_constant_type(name) {
                 return Some(ty);
             }
@@ -107,7 +113,7 @@ fn infer_scalar_expr_type_for_overload(
         Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
             Some(PrimitiveType::Bool)
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let inner_ty = infer_scalar_expr_type_for_overload(expr, env)?;
             match inner_ty {
                 PrimitiveType::I32 | PrimitiveType::I64 => Some(inner_ty),
@@ -131,7 +137,7 @@ fn infer_scalar_expr_type_for_overload(
             Some(acc)
         }
         Expr::UserCall { .. } => None,
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let lhs_ty = infer_scalar_expr_type_for_overload(lhs, env)?;
             let rhs_ty = infer_scalar_expr_type_for_overload(rhs, env)?;
             match op {
@@ -149,7 +155,7 @@ fn infer_scalar_expr_type_for_overload(
                 _ => merge_numeric_types_no_diag(lhs_ty, rhs_ty),
             }
         }
-        Expr::ArrayCtor { .. } | Expr::ArrayLiteral(_) => None,
+        Expr::ArrayCtor { .. } | Expr::ArrayLiteral { .. } => None,
     }
 }
 
@@ -158,7 +164,7 @@ fn infer_array_elem_type_for_overload(
     env: &OverloadRewriteEnv,
 ) -> Option<PrimitiveType> {
     match expr {
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             let first = values.first()?;
             infer_scalar_expr_type_for_overload(first, env)
         }
@@ -172,7 +178,7 @@ fn infer_array_elem_type_for_overload(
 
 fn infer_overload_arg_shape(expr: &Expr, env: &OverloadRewriteEnv) -> OverloadArgShape {
     match expr {
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if let Some(struct_name) = env.struct_instances.get(name) {
                 return OverloadArgShape::Struct(struct_name.clone());
             }
@@ -372,6 +378,7 @@ fn resolve_overloaded_call_name(
     args: &[CallArg],
     env: &OverloadRewriteEnv,
     overloads: &HashMap<String, Vec<OverloadCandidate>>,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<String> {
     let candidates = overloads.get(public_name)?;
@@ -426,14 +433,14 @@ fn resolve_overloaded_call_name(
             .map(|c| format_overload_signature(public_name, &c.signature))
             .collect::<Vec<_>>()
             .join(", ");
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            diag,
+            errors,
             format!(
                 "no matching overload for function '{}' (candidates: {})",
                 public_name, overload_list
             ),
-            0,
-            0,
-        ));
+        );
         return Some(candidates[0].internal_name.clone());
     }
 
@@ -454,14 +461,14 @@ fn resolve_overloaded_call_name(
             .map(|c| format_overload_signature(public_name, &c.signature))
             .collect::<Vec<_>>()
             .join(", ");
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            diag,
+            errors,
             format!(
                 "ambiguous overload for function '{}'; matching candidates: {}",
                 public_name, overload_list
             ),
-            0,
-            0,
-        ));
+        );
     }
 
     best.first()
@@ -501,7 +508,7 @@ fn update_overload_env_after_assign(
         }
     }
 
-    if let Expr::Var(src) = expr {
+    if let Expr::Var { name: src, .. } = expr {
         if let Some(struct_name) = env.struct_instances.get(src).cloned() {
             env.struct_instances.insert(name.clone(), struct_name);
             env.scalar_types.remove(name);
@@ -521,7 +528,7 @@ pub(crate) fn rewrite_overloaded_calls_in_expr(
     overloads: &HashMap<String, Vec<OverloadCandidate>>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match expr {
+    with_expr_diag_context_mut(expr, |diag, expr| match expr {
         Expr::Index { index, .. } => {
             rewrite_overloaded_calls_in_expr(index, env, overloads, errors);
         }
@@ -533,7 +540,7 @@ pub(crate) fn rewrite_overloaded_calls_in_expr(
                 rewrite_overloaded_calls_in_expr(end, env, overloads, errors);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_overloaded_calls_in_expr(&mut spec.size, env, overloads, errors);
             if let Some(values) = init {
                 for value in values {
@@ -552,10 +559,10 @@ pub(crate) fn rewrite_overloaded_calls_in_expr(
                 rewrite_overloaded_calls_in_expr(arg, env, overloads, errors);
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             rewrite_overloaded_calls_in_expr(expr, env, overloads, errors);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_overloaded_calls_in_expr(value, env, overloads, errors);
             }
@@ -564,18 +571,19 @@ pub(crate) fn rewrite_overloaded_calls_in_expr(
             name,
             type_args: _,
             args,
+            ..
         } => {
             for arg in args.iter_mut() {
                 rewrite_overloaded_calls_in_expr(&mut arg.expr, env, overloads, errors);
             }
             if let Some(resolved_name) =
-                resolve_overloaded_call_name(name, args, env, overloads, errors)
+                resolve_overloaded_call_name(name, args, env, overloads, diag, errors)
             {
                 *name = resolved_name;
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
-    }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    })
 }
 
 pub(crate) fn rewrite_overloaded_calls_in_stmt_list(
@@ -586,7 +594,7 @@ pub(crate) fn rewrite_overloaded_calls_in_stmt_list(
     errors: &mut Vec<Diagnostic>,
 ) {
     for stmt in stmts {
-        with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+        with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
             Stmt::Const { .. } => {}
             Stmt::Assign {
                 target,

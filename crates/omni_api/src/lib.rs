@@ -17,6 +17,7 @@ pub struct omni_diag_t {
     pub code: i32,
     pub line: i32,
     pub column: i32,
+    pub end_line: i32,
     pub message: *const c_char,
     pub file: *const c_char,
     pub trace: *const c_char,
@@ -86,6 +87,7 @@ fn diag_to_c(diag: &Diagnostic) -> omni_diag_t {
         code: diag_code_to_i32(diag.code),
         line: saturating_usize_to_i32(diag.line),
         column: saturating_usize_to_i32(diag.column),
+        end_line: saturating_usize_to_i32(diag.end_line),
         message: msg_ptr,
         file: file_ptr,
         trace: trace_ptr,
@@ -148,6 +150,7 @@ unsafe fn omni_compile_impl(
                 code: DiagCode::Runtime as i32,
                 line: 0,
                 column: 0,
+                end_line: 0,
                 message: STATIC_ERR_NULL_ARG.as_ptr().cast::<c_char>(),
                 file: ptr::null(),
                 trace: ptr::null(),
@@ -164,6 +167,7 @@ unsafe fn omni_compile_impl(
                 code: DiagCode::Runtime as i32,
                 line: 0,
                 column: 0,
+                end_line: 0,
                 message: b"compile options require finite sample_rate > 0\0"
                     .as_ptr()
                     .cast::<c_char>(),
@@ -180,6 +184,7 @@ unsafe fn omni_compile_impl(
                 code: DiagCode::Runtime as i32,
                 line: 0,
                 column: 0,
+                end_line: 0,
                 message: b"compile options require block_size > 0\0"
                     .as_ptr()
                     .cast::<c_char>(),
@@ -200,6 +205,7 @@ unsafe fn omni_compile_impl(
                     code: DiagCode::Syntax as i32,
                     line: 0,
                     column: 0,
+                    end_line: 0,
                     message: STATIC_ERR_INVALID_UTF8.as_ptr().cast::<c_char>(),
                     file: ptr::null(),
                     trace: ptr::null(),
@@ -400,6 +406,7 @@ pub unsafe extern "C" fn omni_instance_create(
                 code: DiagCode::Runtime as i32,
                 line: 0,
                 column: 0,
+                end_line: 0,
                 message: STATIC_ERR_NULL_ARG.as_ptr().cast::<c_char>(),
                 file: ptr::null(),
                 trace: ptr::null(),
@@ -415,6 +422,7 @@ pub unsafe extern "C" fn omni_instance_create(
                 code: DiagCode::Runtime as i32,
                 line: 0,
                 column: 0,
+                end_line: 0,
                 message: b"invalid instance configuration\0"
                     .as_ptr()
                     .cast::<c_char>(),

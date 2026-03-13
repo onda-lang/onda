@@ -19,6 +19,10 @@ use nested_proc_lowering::*;
 use proc_local_defs::*;
 use shape_helpers::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 #[derive(Debug, Clone)]
 struct ProcBaseShape {
     ins: Vec<String>,
@@ -80,30 +84,31 @@ pub(crate) fn validated_sample_oversample_factor(
     let Some(expr) = factor_expr else {
         return 1;
     };
+    let expr_diag = DiagCtx::new(expr.loc());
 
     match expr {
-        Expr::Int(value) => {
+        Expr::Int { value, .. } => {
             if ALLOWED_SAMPLE_OVERSAMPLE_FACTORS.contains(value) {
                 *value as usize
             } else {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    expr_diag,
+                    errors,
                     format!(
                         "{context} oversampling factor must be one of {{1,2,4,8,16,32,64}}; got {value}"
                     ),
-                    0,
-                    0,
-                ));
+                );
                 1
             }
         }
         _ => {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                expr_diag,
+                errors,
                 format!(
                     "{context} oversampling factor must be an integer literal in {{1,2,4,8,16,32,64}}"
                 ),
-                0,
-                0,
-            ));
+                );
             1
         }
     }
@@ -132,7 +137,7 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
 
     for idx in 0..PROC_INDEX_CALL_MAX_POSITIONAL_ARGS {
         params.push(format!("__proc_index_arg{idx}"));
-        defaults.push(Some(Expr::Number(0.0)));
+        defaults.push(Some(Expr::number(0.0)));
         param_types.push(None);
     }
 
@@ -160,37 +165,39 @@ pub(crate) fn coerce_typed_events(
     let mut out = Vec::<TypedEvent>::new();
     let mut seen_events = HashSet::<String>::new();
     for event in events {
+        let event_diag = DiagCtx::new(event.loc);
         if is_builtin_constant_name(&event.name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                event_diag,
+                errors,
                 format!(
                     "event name '{}' is reserved as a builtin constant",
                     event.name
                 ),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         if !seen_events.insert(event.name.clone()) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                event_diag,
+                errors,
                 format!("duplicate event '{}'", event.name),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         let mut seen_params = HashSet::<String>::new();
         let mut typed_params = Vec::<TypedEventParam>::new();
         for param in &event.params {
+            let param_diag = DiagCtx::new(param.ty_loc.or(param.loc));
             if !seen_params.insert(param.name.clone()) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    param_diag,
+                    errors,
                     format!(
                         "duplicate event parameter '{}' in '{}'",
                         param.name, event.name
                     ),
-                    0,
-                    0,
-                ));
+                );
                 continue;
             }
             let typed = match &param.ty {
@@ -199,39 +206,39 @@ pub(crate) fn coerce_typed_events(
                     let context = format!("event '{}.{}' array size", event.name, param.name);
                     let len = eval_data_size_expr(size, options, &context, errors).unwrap_or(1);
                     if len == 0 {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            param_diag,
+                            errors,
                             format!(
                                 "event parameter '{}.{}' array size must be greater than zero",
                                 event.name, param.name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     TypedEventParamType::Array { elem: *elem, len }
                 }
                 EventParamType::Slice { elem } => {
                     if !allow_slices {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            param_diag,
+                            errors,
                             format!(
                                 "{event_owner_desc} event parameter '{}.{}' cannot use slice type '{:?}[]'; top-level host events must stay fixed-size",
                                 event.name, param.name, elem
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     TypedEventParamType::Slice { elem: *elem }
                 }
                 EventParamType::GenericSlice { elem } => {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        errors,
                         format!(
                             "{event_owner_desc} event parameter '{}.{}' has unresolved generic slice type '{}[]'; generic event slices must be specialized before lowering",
                             event.name, param.name, elem
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     TypedEventParamType::Slice {
                         elem: PrimitiveType::F32,
                     }
@@ -258,27 +265,29 @@ fn expand_proc_event_specs(
 ) -> HashMap<String, ProcEventSpec> {
     let mut out = HashMap::<String, ProcEventSpec>::new();
     for event in &proc.events {
+        let event_diag = DiagCtx::new(event.loc);
         if is_builtin_constant_name(&event.name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                event_diag,
+                errors,
                 format!(
                     "processor '{}' event name '{}' is reserved as a builtin constant",
                     proc.name, event.name
                 ),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         if out.contains_key(&event.name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                event_diag,
+                errors,
                 format!("duplicate processor event '{}.{}'", proc.name, event.name),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         let mut params = Vec::<ProcEventParamSpec>::new();
         for param in &event.params {
+            let param_diag = DiagCtx::new(param.ty_loc.or(param.loc));
             match &param.ty {
                 EventParamType::Scalar(ty) => params.push(ProcEventParamSpec {
                     name: param.name.clone(),
@@ -296,14 +305,14 @@ fn expand_proc_event_specs(
                     );
                     let len = eval_data_size_expr(size, options, &context, errors).unwrap_or(1);
                     if len == 0 {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            param_diag,
+                            errors,
                             format!(
                                 "processor '{}.{}' event parameter '{}' array size must be greater than zero",
                                 proc.name, event.name, param.name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
@@ -321,14 +330,14 @@ fn expand_proc_event_specs(
                     });
                 }
                 EventParamType::GenericSlice { elem } => {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        errors,
                         format!(
                             "processor '{}.{}' event parameter '{}' has unresolved generic slice type '{}[]'; generic event slices must be specialized before processor lowering",
                             proc.name, event.name, param.name, elem
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
@@ -493,6 +502,7 @@ fn build_proc_lowering_env(
                 );
             }
             pre_desugar_defs.push(FunctionDef {
+                loc: method.loc.clone(),
                 type_params: Vec::new(),
                 name: format!("{struct_name}.{}", method.name),
                 params: method.params.clone(),
@@ -537,19 +547,20 @@ fn build_proc_lowering_env(
     let mut proc_api = HashMap::<String, ProcApi>::new();
     let mut proc_order = Vec::<String>::new();
     for proc in &proc_defs {
+        let proc_diag = DiagCtx::new(proc.loc);
         if !proc.has_sample_block {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                proc_diag,
+                errors,
                 format!("processor '{}' must declare sample block", proc.name),
-                0,
-                0,
-            ));
+            );
         }
         if base_shapes.contains_key(&proc.name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                proc_diag,
+                errors,
                 format!("duplicate processor '{}'", proc.name),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         let shape = compute_proc_shape(
@@ -568,14 +579,14 @@ fn build_proc_lowering_env(
             errors,
         );
         if shape.outs.is_empty() {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                proc_diag,
+                errors,
                 format!(
                     "processor '{}' must declare outs block or assign to outN in sample",
                     proc.name
                 ),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         proc_api.insert(
@@ -857,7 +868,7 @@ sample:
                     }
                 }
                 Block::Events(events) => {
-                    for event in events {
+                    for event in events.events {
                         for stmt in event.body {
                             collect_offending_proc_event_calls_in_stmt(
                                 &stmt,
@@ -934,7 +945,7 @@ sample:
                     }
                 }
                 Block::Events(events) => {
-                    for event in events {
+                    for event in events.events {
                         for stmt in event.body {
                             collect_offending_proc_event_calls_in_stmt(
                                 &stmt,
@@ -956,19 +967,17 @@ sample:
 
     #[test]
     fn graph_block_rejects_top_level_sample_coexistence() {
-        let src = r#"
-outs { out1 }
-sample { out1 = 0.0 }
-graph { 0.0 >> out1 }
-"#;
+        let src = "outs { out1 }\nsample { out1 = 0.0 }\ngraph { 0.0 >> out1 }\n";
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("graph + sample should fail");
-        assert!(
-            errors.iter().any(|diag| diag
-                .message
-                .contains("graph block cannot be declared with sample block")),
-            "expected graph/sample exclusivity diagnostic, got {errors:?}"
-        );
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("graph block cannot be declared with sample block")
+            })
+            .expect("expected graph/sample exclusivity diagnostic");
+        assert_eq!((diag.line, diag.column), (3, 1));
     }
 
     #[test]
@@ -1090,7 +1099,7 @@ graph:
                 } if name == "Sum.__proc_step"
                     && args.iter().filter(|arg| matches!(
                         arg.expr,
-                        Expr::Var(ref tmp) if tmp == "__graph_fanout_0"
+                        Expr::Var { name: ref tmp, .. } if tmp == "__graph_fanout_0"
                     )).count() == 2
             )),
             "expected lowered proc call to reuse shared graph fanout temp twice: {:?}",
@@ -1122,7 +1131,7 @@ graph:
                 stmt,
                 Stmt::Assign {
                     target: AssignTarget::Var(name),
-                    expr: Expr::Var(src),
+                    expr: Expr::Var { name: src, .. },
                     ..
                 } if name == "out1" && src == "pair.out1"
             )),
@@ -1134,7 +1143,7 @@ graph:
                 stmt,
                 Stmt::Assign {
                     target: AssignTarget::Var(name),
-                    expr: Expr::Var(src),
+                    expr: Expr::Var { name: src, .. },
                     ..
                 } if name == "out2" && src == "pair.out2"
             )),
@@ -1169,7 +1178,7 @@ graph:
                 matches!(
                     stmt,
                     Stmt::Assign {
-                        expr: Expr::Var(src),
+                        expr: Expr::Var { name: src, .. },
                         ..
                     } if src == "mono.out1"
                 )
@@ -1283,7 +1292,11 @@ graph:
                 Stmt::Assign {
                     target: AssignTarget::Index { base, index },
                     ..
-                } if base == "voices.gain" && matches!(index, Expr::Int(0) | Expr::Int(1))
+                } if base == "voices.gain"
+                    && matches!(
+                        index,
+                        Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
+                    )
             )),
             "expected indexed proc-array param assignments in lowered block_pre: {:?}",
             typed.block_pre
@@ -1336,8 +1349,9 @@ graph:
                 } if name == "Take.__proc_step"
                     && args.iter().any(|arg| matches!(
                         arg.expr,
-                        Expr::Index { ref base, ref index }
-                            if base == "gains" && matches!(**index, Expr::Int(1))
+                        Expr::Index { ref base, ref index, .. }
+                            if base == "gains"
+                                && matches!(**index, Expr::Int { value: 1, .. })
                     ))
             )),
             "expected lowered sample call to read gains[1]: {:?}",
@@ -1383,7 +1397,10 @@ graph:
                     expr: Expr::UserCall { name, args, .. },
                     ..
                 } if name == "Take.__proc_step"
-                    && args.iter().any(|arg| matches!(arg.expr, Expr::Var(ref name) if name == "src.pair[1]"))
+                    && args.iter().any(|arg| matches!(
+                        arg.expr,
+                        Expr::Var { ref name, .. } if name == "src.pair[1]"
+                    ))
             )),
             "expected lowered sample call to read flattened proc output slot src.pair[1]: {:?}",
             typed.sample
@@ -1419,10 +1436,13 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Index { base, index },
-                        expr: Expr::Var(src),
+                        expr: Expr::Var { name: src, .. },
                         ..
                     } if base == "out_st"
-                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                        && matches!(
+                            index,
+                            Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
+                        )
                         && (src == "src.pair[0]" || src == "src.pair[1]")
                 ))
                 .count()
@@ -1476,8 +1496,9 @@ graph:
                             if name == "Voice.__proc_call_out1"
                                 && args.iter().any(|inner| matches!(
                                     inner.expr,
-                                    Expr::Index { ref base, ref index }
-                                        if base == "voices" && matches!(**index, Expr::Int(0))
+                                    Expr::Index { ref base, ref index, .. }
+                                        if base == "voices"
+                                            && matches!(**index, Expr::Int { value: 0, .. })
                                 ))
                     ))
             )),
@@ -1518,7 +1539,10 @@ graph:
                         expr: Expr::UserCall { name, .. },
                         ..
                     } if base == "out_st"
-                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                        && matches!(
+                            index,
+                            Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
+                        )
                         && name.starts_with("Voice.__proc_call_out")
                 ))
                 .count()
@@ -1561,11 +1585,14 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Var(name),
-                        expr: Expr::Index { base, index },
+                        expr: Expr::Index { base, index, .. },
                         ..
                     } if (name == "voice.pair[0]" || name == "voice.pair[1]")
                         && base == "gains"
-                        && matches!(&**index, Expr::Int(0) | Expr::Int(1))
+                        && matches!(
+                            &**index,
+                            Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
+                        )
                 ))
                 .count()
                 == 2,
@@ -1599,7 +1626,10 @@ graph:
                         ..
                     } if base == "out_st"
                         && src == "in_st"
-                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                        && matches!(
+                            index,
+                            Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
+                        )
                 ))
                 .count()
                 == 2,
@@ -1632,7 +1662,11 @@ graph:
                         target: AssignTarget::Index { base, index },
                         expr: Expr::Binary { op: BinaryOp::Add, .. },
                         ..
-                    } if base == "out_st" && matches!(index, Expr::Int(0) | Expr::Int(1))
+                    } if base == "out_st"
+                        && matches!(
+                            index,
+                            Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
+                        )
                 ))
                 .count()
                 == 2,
@@ -1662,13 +1696,23 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Index { base, index },
-                        expr: Expr::Index { base: src_base, index: src_index },
+                        expr: Expr::Index {
+                            base: src_base,
+                            index: src_index,
+                            ..
+                        },
                         ..
                     } if base == "out_st"
                         && src_base == "in_bus"
                         && matches!(
                             (&index, &**src_index),
-                            (Expr::Int(0), Expr::Int(1)) | (Expr::Int(1), Expr::Int(2))
+                            (
+                                Expr::Int { value: 0, .. },
+                                Expr::Int { value: 1, .. }
+                            ) | (
+                                Expr::Int { value: 1, .. },
+                                Expr::Int { value: 2, .. }
+                            )
                         )
                 ))
                 .count()
@@ -1700,11 +1744,11 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Index { base, index },
-                        expr: Expr::Var(src),
+                        expr: Expr::Var { name: src, .. },
                         ..
                     } if base == "out_st"
-                        && ((matches!(index, Expr::Int(0)) && src == "in1")
-                            || (matches!(index, Expr::Int(1)) && src == "in2"))
+                        && ((matches!(index, Expr::Int { value: 0, .. }) && src == "in1")
+                            || (matches!(index, Expr::Int { value: 1, .. }) && src == "in2"))
                 ))
                 .count()
                 == 2,
@@ -1736,7 +1780,10 @@ graph:
                 } if name == "__graph_delay_0_buf"
                     && matches!(
                         (&spec.elem, spec.size.as_ref()),
-                        (ArrayElemType::Primitive(PrimitiveType::F32), Expr::Int(2))
+                        (
+                            ArrayElemType::Primitive(PrimitiveType::F32),
+                            Expr::Int { value: 2, .. }
+                        )
                     )
             )),
             "expected flattened array delay buffer init: {:?}",
@@ -1754,7 +1801,10 @@ graph:
                         ..
                     } if base == "out_st"
                         && src_base == "__graph_delay_0_buf"
-                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                        && matches!(
+                            index,
+                            Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
+                        )
                 ))
                 .count()
                 == 2,
@@ -1817,8 +1867,11 @@ graph:
                     ..
                 } if name == "Gain.__proc_step"
                     && args.len() == 2
-                    && matches!(args[0].expr, Expr::Var(ref node) if node == "g")
-                    && args.iter().any(|arg| matches!(arg.expr, Expr::Number(v) if (v - 0.25).abs() <= f32::EPSILON))
+                    && matches!(args[0].expr, Expr::Var { name: ref node, .. } if node == "g")
+                    && args.iter().any(|arg| matches!(
+                        arg.expr,
+                        Expr::Number { value: v, .. } if (v - 0.25).abs() <= f32::EPSILON
+                    ))
             )),
             "expected lowered proc step driven by receiver edge: {:?}",
             typed.sample
@@ -1828,7 +1881,7 @@ graph:
                 stmt,
                 Stmt::Assign {
                     target: AssignTarget::Var(name),
-                    expr: Expr::Var(src),
+                    expr: Expr::Var { name: src, .. },
                     ..
                 } if name == "out1" && src == "g.out1"
             )),
@@ -1942,7 +1995,7 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Var(base),
-                        expr: Expr::Var(src),
+                        expr: Expr::Var { name: src, .. },
                         ..
                     } if (base == "out1" && src == "swap.out1")
                         || (base == "out2" && src == "swap.out2")
@@ -1973,10 +2026,13 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Index { base, index },
-                        expr: Expr::Number(v),
+                        expr: Expr::Number { value: v, .. },
                         ..
                     } if base == "out_st"
-                        && matches!(index, Expr::Int(0) | Expr::Int(1))
+                        && matches!(
+                            index,
+                            Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
+                        )
                         && (*v - 0.5).abs() <= f32::EPSILON
                 ))
                 .count()
@@ -2016,7 +2072,14 @@ graph:
                     expr: Expr::UserCall { name, args, .. },
                     ..
                 } if name == "Sum2.__proc_step"
-                    && args.iter().filter(|arg| matches!(arg.expr, Expr::Number(v) if (v - 0.5).abs() <= f32::EPSILON)).count() == 2
+                    && args
+                        .iter()
+                        .filter(|arg| matches!(
+                            arg.expr,
+                            Expr::Number { value: v, .. } if (v - 0.5).abs() <= f32::EPSILON
+                        ))
+                        .count()
+                        == 2
             )),
             "expected scalar broadcast to expand into per-slot proc input args: {:?}",
             typed.sample
@@ -2054,7 +2117,7 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Var(name),
-                        expr: Expr::Number(v),
+                        expr: Expr::Number { value: v, .. },
                         ..
                     } if (name == "sum.gains[0]" || name == "sum.gains[1]")
                         && (*v - 0.5).abs() <= f32::EPSILON
@@ -2087,12 +2150,22 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Index { base, index },
-                        expr: Expr::Index { base: src_base, index: src_index },
+                        expr: Expr::Index {
+                            base: src_base,
+                            index: src_index,
+                            ..
+                        },
                         ..
                     } if base == "out_st"
                         && matches!(
                             (&index, &**src_index),
-                            (Expr::Int(0), Expr::Int(0)) | (Expr::Int(1), Expr::Int(1))
+                            (
+                                Expr::Int { value: 0, .. },
+                                Expr::Int { value: 0, .. }
+                            ) | (
+                                Expr::Int { value: 1, .. },
+                                Expr::Int { value: 1, .. }
+                            )
                         )
                         && src_base == "in_bus"
                 ))
@@ -2389,7 +2462,7 @@ graph:
                 stmt,
                 Stmt::Assign {
                     target: AssignTarget::Var(name),
-                    expr: Expr::Var(src),
+                    expr: Expr::Var { name: src, .. },
                     ..
                 } if name == "g.gain" && src == "in1"
             )),
@@ -2601,7 +2674,7 @@ graph:
             Expr::Index { index, .. } => {
                 collect_offending_proc_event_calls_in_expr(index, owner, offending);
             }
-            Expr::ArrayCtor { spec, init } => {
+            Expr::ArrayCtor { spec, init, .. } => {
                 collect_offending_proc_event_calls_in_expr(&spec.size, owner, offending);
                 if let Some(init) = init {
                     for expr in init {
@@ -2615,12 +2688,14 @@ graph:
                 collect_offending_proc_event_calls_in_expr(lhs, owner, offending);
                 collect_offending_proc_event_calls_in_expr(rhs, owner, offending);
             }
-            Expr::Call { args, .. } | Expr::ArrayLiteral(args) => {
+            Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => {
                 for expr in args {
                     collect_offending_proc_event_calls_in_expr(expr, owner, offending);
                 }
             }
-            Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+            Expr::Cast { expr, .. }
+            | Expr::UnaryNot { expr, .. }
+            | Expr::UnaryBitNot { expr, .. } => {
                 collect_offending_proc_event_calls_in_expr(expr, owner, offending);
             }
             Expr::Slice { start, end, .. } => {
@@ -2631,7 +2706,7 @@ graph:
                     collect_offending_proc_event_calls_in_expr(e, owner, offending);
                 }
             }
-            Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
         }
     }
 }

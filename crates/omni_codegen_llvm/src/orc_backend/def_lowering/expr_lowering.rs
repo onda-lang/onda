@@ -8,10 +8,10 @@ pub(super) unsafe fn lower_def_expr(
         return Ok(literal);
     }
     match expr {
-        Expr::ArrayLiteral(_) => Err(Diagnostic::internal(
+        Expr::ArrayLiteral { .. } => Err(Diagnostic::internal(
             "array literal is not a scalar expression in def lowering",
         )),
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if let Some((ty, value)) =
                 builtin_constant_value_and_type(name, ctx.sample_rate, ctx.block_size)
             {
@@ -39,7 +39,7 @@ pub(super) unsafe fn lower_def_expr(
                 ty: local.ty,
             })
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let left = lower_def_expr(lhs, ctx)?;
             let right = lower_def_expr(rhs, ctx)?;
             let builder = ctx.builder;
@@ -57,7 +57,7 @@ pub(super) unsafe fn lower_def_expr(
                 "def lowering",
             )
         }
-        Expr::Compare { op, lhs, rhs } => {
+        Expr::Compare { op, lhs, rhs, .. } => {
             let left = lower_def_expr(lhs, ctx)?;
             let right = lower_def_expr(rhs, ctx)?;
             let builder = ctx.builder;
@@ -75,14 +75,14 @@ pub(super) unsafe fn lower_def_expr(
                 "def lowering",
             )
         }
-        Expr::Cast { to, expr } => {
+        Expr::Cast { to, expr, .. } => {
             let value = lower_def_expr(expr, ctx)?;
             Ok(OrcValue {
                 value: cast_def_value_to(ctx, value, *to, b"def_cast\0"),
                 ty: *to,
             })
         }
-        Expr::UnaryNot { expr } => {
+        Expr::UnaryNot { expr, .. } => {
             let value = lower_def_expr(expr, ctx)?;
             let builder = ctx.builder;
             let context = ctx.context;
@@ -96,7 +96,7 @@ pub(super) unsafe fn lower_def_expr(
                 &mut cast_value,
             ))
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let value = lower_def_expr(expr, ctx)?;
             match value.ty {
                 PrimitiveType::I32 | PrimitiveType::I64 => Ok(OrcValue {
@@ -109,8 +109,8 @@ pub(super) unsafe fn lower_def_expr(
                 ))),
             }
         }
-        Expr::Logical { op, lhs, rhs } => lower_def_logical_expr(*op, lhs, rhs, ctx),
-        Expr::Call { func, args } => {
+        Expr::Logical { op, lhs, rhs, .. } => lower_def_logical_expr(*op, lhs, rhs, ctx),
+        Expr::Call { func, args, .. } => {
             let mut lowered = Vec::with_capacity(args.len());
             for arg in args {
                 lowered.push(lower_def_expr(arg, ctx)?);
@@ -121,6 +121,7 @@ pub(super) unsafe fn lower_def_expr(
             name,
             type_args,
             args,
+            ..
         } => {
             if name == "__omni_buffer_read2" {
                 return lower_def_buffer_read2_call(args, ctx, true);
@@ -143,7 +144,7 @@ pub(super) unsafe fn lower_def_expr(
                     let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
                     method_args.push(CallArg {
                         name: None,
-                        expr: Expr::Var(base.to_owned()),
+                        expr: Expr::var(base.to_owned()),
                     });
                     method_args.extend(args.iter().cloned());
                     return lower_def_unsafe_data_read_call(&method_args, ctx);
@@ -154,7 +155,7 @@ pub(super) unsafe fn lower_def_expr(
                     let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
                     method_args.push(CallArg {
                         name: None,
-                        expr: Expr::Var(base.to_owned()),
+                        expr: Expr::var(base.to_owned()),
                     });
                     method_args.extend(args.iter().cloned());
                     return lower_def_unsafe_data_write_call(&method_args, ctx);
@@ -261,7 +262,7 @@ pub(super) unsafe fn lower_def_expr(
                 ty: prepared.ret_ty,
             })
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             let data = lower_def_data_element_ptr(ctx, base, index, true)?;
             Ok(OrcValue {
                 value: LLVMBuildLoad2(
@@ -279,6 +280,6 @@ pub(super) unsafe fn lower_def_expr(
         Expr::ArrayCtor { .. } => Err(Diagnostic::internal(
             "array constructor is not supported in def lowering",
         )),
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => unreachable!(),
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => unreachable!(),
     }
 }

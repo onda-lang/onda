@@ -51,7 +51,7 @@ fn infer_mono_arg_key(
     match param_ty {
         Some(FnParamType::Struct(struct_name)) if generic_templates.contains(struct_name) => {
             // Arg must be a variable whose concrete struct type is known.
-            if let Expr::Var(var_name) = arg_expr {
+            if let Expr::Var { name: var_name, .. } = arg_expr {
                 if let Some(concrete) = env.struct_instances.get(var_name) {
                     // Check if this concrete name is a specialization of the template.
                     if concrete.starts_with(struct_name) || concrete.contains(".__gen__") {
@@ -64,7 +64,7 @@ fn infer_mono_arg_key(
             None // Can't determine concrete struct type
         }
         Some(FnParamType::Array(None)) => {
-            if let Expr::Var(var_name) = arg_expr {
+            if let Expr::Var { name: var_name, .. } = arg_expr {
                 if let Some(elem_ty) = env.array_elem_types.get(var_name) {
                     return Some(MonoParamKey::ResolvedArray(*elem_ty));
                 }
@@ -73,7 +73,7 @@ fn infer_mono_arg_key(
             Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
         }
         Some(FnParamType::ArrayGeneric(_)) => {
-            if let Expr::Var(var_name) = arg_expr {
+            if let Expr::Var { name: var_name, .. } = arg_expr {
                 if let Some(elem_ty) = env.array_elem_types.get(var_name) {
                     return Some(MonoParamKey::ResolvedArray(*elem_ty));
                 }
@@ -81,7 +81,7 @@ fn infer_mono_arg_key(
             Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
         }
         Some(FnParamType::BareBuffer) => {
-            if let Expr::Var(var_name) = arg_expr {
+            if let Expr::Var { name: var_name, .. } = arg_expr {
                 if let Some((elem_ty, channels)) = env.buffer_types.get(var_name) {
                     return Some(MonoParamKey::ResolvedBuffer(*elem_ty, channels.clone()));
                 }
@@ -133,7 +133,7 @@ fn generate_mono_def(
                         TypedBufferChannels::Mono => BufferChannels::Mono,
                         TypedBufferChannels::Dynamic => BufferChannels::Dynamic,
                         TypedBufferChannels::Static(n) => {
-                            BufferChannels::Static(Expr::Int(*n as i64))
+                            BufferChannels::Static(Expr::int(*n as i64))
                         }
                     },
                 };
@@ -443,8 +443,8 @@ fn monomorphize_calls_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             monomorphize_calls_in_expr(
                 inner,
                 env,
@@ -457,7 +457,7 @@ fn monomorphize_calls_in_expr(
                 mono_cache,
             );
         }
-        Expr::ArrayLiteral(elems) => {
+        Expr::ArrayLiteral { values: elems, .. } => {
             for elem in elems.iter_mut() {
                 monomorphize_calls_in_expr(
                     elem,

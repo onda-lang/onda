@@ -3,9 +3,11 @@ use super::rewrite::{
     validate_compile_time_expr,
 };
 use super::*;
+use crate::ast::Span;
 
 #[derive(Debug, Clone)]
 pub(super) struct NamespaceTemplateDecl {
+    loc: Span,
     name: String,
     params: Vec<NamespaceTemplateParam>,
     items: Vec<NamespaceDeclItem>,
@@ -31,6 +33,7 @@ enum NamespaceDeclItem {
 
 #[derive(Debug, Clone)]
 pub(super) struct NamespaceAliasLocalDecl {
+    loc: Span,
     name: String,
     target: Vec<NamespaceRefSegment>,
 }
@@ -53,21 +56,111 @@ struct NamespaceCallArg {
     expr: Expr,
 }
 
+fn expr_span(expr: &Expr) -> Span {
+    expr.loc().span()
+}
+
+fn rebase_relative_loc_to_use_site(loc: &mut SourceLoc, use_site_span: Span) {
+    if use_site_span.is_zero() || loc.is_zero() {
+        return;
+    }
+
+    let base_line = use_site_span.line as usize;
+    let base_column = use_site_span.column as usize;
+    let relative_line = loc.line;
+    let relative_end_line = loc.end_line;
+
+    loc.line = base_line + relative_line.saturating_sub(1);
+    if relative_line == 1 {
+        loc.column = base_column + loc.column.saturating_sub(1);
+    }
+    loc.end_line = base_line + relative_end_line.saturating_sub(1);
+}
+
+fn rebase_namespace_expr_locs(expr: &mut Expr, use_site_span: Span) {
+    let mut loc = expr.loc();
+    rebase_relative_loc_to_use_site(&mut loc, use_site_span);
+    expr.set_loc(loc);
+    match expr {
+        Expr::ArrayLiteral { values, .. } => {
+            for value in values {
+                rebase_namespace_expr_locs(value, use_site_span);
+            }
+        }
+        Expr::Index { index, .. }
+        | Expr::Cast { expr: index, .. }
+        | Expr::UnaryNot { expr: index, .. }
+        | Expr::UnaryBitNot { expr: index, .. } => {
+            rebase_namespace_expr_locs(index, use_site_span);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                rebase_namespace_expr_locs(start, use_site_span);
+            }
+            if let Some(end) = end {
+                rebase_namespace_expr_locs(end, use_site_span);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            rebase_namespace_expr_locs(&mut spec.size, use_site_span);
+            if let Some(init) = init {
+                for value in init {
+                    rebase_namespace_expr_locs(value, use_site_span);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            rebase_namespace_expr_locs(lhs, use_site_span);
+            rebase_namespace_expr_locs(rhs, use_site_span);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                rebase_namespace_expr_locs(arg, use_site_span);
+            }
+        }
+        Expr::UserCall { args, .. } => {
+            for arg in args {
+                rebase_namespace_expr_locs(&mut arg.expr, use_site_span);
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+}
+
+fn rebase_namespace_ref_expr_locs(segments: &mut [NamespaceRefSegment], use_site_span: Span) {
+    if use_site_span.is_zero() {
+        return;
+    }
+
+    for segment in segments {
+        if let Some(args) = &mut segment.args {
+            for arg in args {
+                rebase_namespace_expr_locs(&mut arg.expr, use_site_span);
+            }
+        }
+    }
+}
+
 pub(super) fn parse_namespace_decl(
     block_pair: Pair<'_, Rule>,
 ) -> Result<NamespaceTemplateDecl, Vec<Diagnostic>> {
     if block_pair.as_rule() != Rule::namespace_block {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &block_pair,
             "internal parser error: expected namespace block",
-            0,
-            0,
         )]);
     }
+    let block_loc = stmt_loc_from_pair(&block_pair);
     let mut inner = block_pair.into_inner();
     let Some(head_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing namespace name", 0, 0)]);
+        return Err(vec![syntax_at_loc(
+            block_loc.as_ref(),
+            "missing namespace name",
+        )]);
     };
-    let (name, params) = parse_namespace_decl_head(head_pair)?;
+    let (loc, name, params) = parse_namespace_decl_head(head_pair)?;
     let mut items = Vec::<NamespaceDeclItem>::new();
     for item in inner {
         match item.as_rule() {
@@ -86,6 +179,7 @@ pub(super) fn parse_namespace_decl(
         }
     }
     Ok(NamespaceTemplateDecl {
+        loc,
         name,
         params,
         items,
@@ -95,14 +189,14 @@ pub(super) fn parse_namespace_decl(
 
 fn parse_namespace_decl_head(
     pair: Pair<'_, Rule>,
-) -> Result<(String, Vec<NamespaceTemplateParam>), Vec<Diagnostic>> {
+) -> Result<(Span, String, Vec<NamespaceTemplateParam>), Vec<Diagnostic>> {
     if pair.as_rule() != Rule::namespace_decl_head {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "missing namespace declaration head",
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let mut name = None::<String>;
     let mut params = Vec::<NamespaceTemplateParam>::new();
     for item in pair.into_inner() {
@@ -115,24 +209,24 @@ fn parse_namespace_decl_head(
         }
     }
     let Some(name) = name else {
-        return Err(vec![Diagnostic::syntax("missing namespace name", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing namespace name")]);
     };
-    Ok((name, params))
+    Ok((loc, name, params))
 }
 
 fn parse_namespace_param_list(
     pair: Pair<'_, Rule>,
 ) -> Result<Vec<NamespaceTemplateParam>, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::namespace_param_list {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected namespace parameter list",
-            0,
-            0,
         )]);
     }
     let mut out = Vec::<NamespaceTemplateParam>::new();
     let mut seen = HashSet::<String>::new();
     for item in pair.into_inner() {
+        let item_loc = stmt_loc_from_pair(&item);
         if item.as_rule() != Rule::namespace_param_decl {
             continue;
         }
@@ -146,24 +240,21 @@ fn parse_namespace_param_list(
             }
         }
         let Some(name) = name else {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                item_loc.as_ref(),
                 "missing namespace template parameter name",
-                0,
-                0,
             )]);
         };
         if !seen.insert(name.clone()) {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                item_loc.as_ref(),
                 format!("duplicate namespace template parameter '{name}'"),
-                0,
-                0,
             )]);
         }
         let Some(default) = default else {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                item_loc.as_ref(),
                 format!("namespace template parameter '{name}' must define a default"),
-                0,
-                0,
             )]);
         };
         out.push(NamespaceTemplateParam { name, default });
@@ -175,17 +266,21 @@ pub(super) fn parse_namespace_alias_decl(
     pair: Pair<'_, Rule>,
 ) -> Result<NamespaceAliasLocalDecl, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::namespace_alias_decl {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected namespace alias declaration",
-            0,
-            0,
         )]);
     }
+    let pair_loc = stmt_loc_from_pair(&pair);
+    let mut loc = Span::ZERO;
     let mut name = None::<String>;
     let mut target = None::<Vec<NamespaceRefSegment>>;
     for item in pair.into_inner() {
         match item.as_rule() {
-            Rule::ident => name = Some(item.as_str().to_owned()),
+            Rule::ident => {
+                loc = stmt_loc_from_pair(&item);
+                name = Some(item.as_str().to_owned());
+            }
             Rule::namespace_any_ref | Rule::namespace_ref => {
                 target = Some(parse_namespace_ref_pair(item)?)
             }
@@ -193,34 +288,32 @@ pub(super) fn parse_namespace_alias_decl(
         }
     }
     let Some(name) = name else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            pair_loc.as_ref(),
             "missing namespace alias name",
-            0,
-            0,
         )]);
     };
     let Some(target) = target else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            pair_loc.as_ref(),
             "missing namespace alias target",
-            0,
-            0,
         )]);
     };
-    Ok(NamespaceAliasLocalDecl { name, target })
+    Ok(NamespaceAliasLocalDecl { loc, name, target })
 }
 
 fn parse_namespace_ref_pair(
     pair: Pair<'_, Rule>,
 ) -> Result<Vec<NamespaceRefSegment>, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::namespace_ref && pair.as_rule() != Rule::namespace_any_ref {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected namespace reference",
-            0,
-            0,
         )]);
     }
     let mut out = Vec::<NamespaceRefSegment>::new();
     for seg in pair.into_inner() {
+        let seg_loc = stmt_loc_from_pair(&seg);
         if seg.as_rule() != Rule::namespace_ref_segment {
             continue;
         }
@@ -232,6 +325,7 @@ fn parse_namespace_ref_pair(
                 Rule::namespace_call_arg_list => {
                     let mut parsed = Vec::<NamespaceCallArg>::new();
                     for arg in item.into_inner() {
+                        let arg_loc = stmt_loc_from_pair(&arg);
                         if arg.as_rule() != Rule::namespace_call_arg {
                             continue;
                         }
@@ -245,10 +339,9 @@ fn parse_namespace_ref_pair(
                             }
                         }
                         let Some(arg_expr) = arg_expr else {
-                            return Err(vec![Diagnostic::syntax(
+                            return Err(vec![syntax_at_loc(
+                                arg_loc.as_ref(),
                                 "missing namespace template argument expression",
-                                0,
-                                0,
                             )]);
                         };
                         parsed.push(NamespaceCallArg {
@@ -262,10 +355,9 @@ fn parse_namespace_ref_pair(
             }
         }
         let Some(name) = name else {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                seg_loc.as_ref(),
                 "missing namespace path segment name",
-                0,
-                0,
             )]);
         };
         out.push(NamespaceRefSegment { name, args });
@@ -285,10 +377,9 @@ pub(super) fn process_namespace_decl(
         emit_namespace_items(&decl.items, &full_ns, const_env, state, out)
     } else {
         if state.namespace_templates.contains_key(&full_ns) {
-            return Err(vec![Diagnostic::semantic(
+            return Err(vec![Diagnostic::semantic_span(
                 format!("duplicate namespace template '{full_ns}'"),
-                0,
-                0,
+                decl.loc.as_ref(),
             )]);
         }
         state.namespace_templates.insert(full_ns, decl);
@@ -334,10 +425,9 @@ fn emit_namespace_items(
             }
             NamespaceDeclItem::Const(decl) => {
                 if !local_const_names.insert(decl.name.clone()) {
-                    return Err(vec![Diagnostic::semantic(
+                    return Err(vec![Diagnostic::semantic_span(
                         format!("duplicate constant '{}' in namespace '{}'", decl.name, ns),
-                        0,
-                        0,
+                        decl.loc.as_ref(),
                     )]);
                 }
                 let mut decl = decl.clone();
@@ -436,10 +526,9 @@ pub(super) fn register_namespace_alias(
 ) -> Result<(), Vec<Diagnostic>> {
     let full_name = namespace_join(parent_ns, &alias.name);
     if state.namespace_aliases.contains_key(&full_name) {
-        return Err(vec![Diagnostic::semantic(
+        return Err(vec![Diagnostic::semantic_span(
             format!("duplicate namespace alias '{full_name}'"),
-            0,
-            0,
+            alias.loc.as_ref(),
         )]);
     }
     state.namespace_aliases.insert(
@@ -501,13 +590,13 @@ fn parse_namespace_ref_text(text: &str) -> Result<Vec<NamespaceRefSegment>, Vec<
         .map_err(|err| vec![diag_from_pest_error(err)])?;
     let pair = parsed
         .next()
-        .ok_or_else(|| vec![Diagnostic::syntax("missing namespace reference", 0, 0)])?;
+        .ok_or_else(|| vec![Diagnostic::syntax("missing namespace reference", 1, 1)])?;
     let out = parse_namespace_ref_pair(pair)?;
     if out.len() < 2 {
         return Err(vec![Diagnostic::syntax(
             "namespace reference must contain at least one '::'",
-            0,
-            0,
+            1,
+            1,
         )]);
     }
     Ok(out)
@@ -515,16 +604,18 @@ fn parse_namespace_ref_text(text: &str) -> Result<Vec<NamespaceRefSegment>, Vec<
 
 fn expr_key(expr: &Expr) -> String {
     match expr {
-        Expr::Number(v) => format!("f32({v})"),
-        Expr::Int(v) => format!("i64({v})"),
-        Expr::Bool(v) => format!("bool({v})"),
-        Expr::Var(v) => format!("var({v})"),
-        Expr::ArrayLiteral(values) => format!(
+        Expr::Number { value, .. } => format!("f32({value})"),
+        Expr::Int { value, .. } => format!("i64({value})"),
+        Expr::Bool { value, .. } => format!("bool({value})"),
+        Expr::Var { name, .. } => format!("var({name})"),
+        Expr::ArrayLiteral { values, .. } => format!(
             "[{}]",
             values.iter().map(expr_key).collect::<Vec<_>>().join(",")
         ),
-        Expr::Index { base, index } => format!("idx({base},{})", expr_key(index)),
-        Expr::Slice { base, start, end } => format!(
+        Expr::Index { base, index, .. } => format!("idx({base},{})", expr_key(index)),
+        Expr::Slice {
+            base, start, end, ..
+        } => format!(
             "slice({base},{},{})",
             start
                 .as_ref()
@@ -532,7 +623,7 @@ fn expr_key(expr: &Expr) -> String {
                 .unwrap_or_default(),
             end.as_ref().map(|expr| expr_key(expr)).unwrap_or_default()
         ),
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             let elem = match &spec.elem {
                 ArrayElemType::Primitive(p) => format!("{p:?}"),
                 ArrayElemType::Struct(s) => s.clone(),
@@ -543,10 +634,10 @@ fn expr_key(expr: &Expr) -> String {
                 .unwrap_or_default();
             format!("arr({elem};{};{init_key})", expr_key(&spec.size))
         }
-        Expr::Compare { op, lhs, rhs } => {
+        Expr::Compare { op, lhs, rhs, .. } => {
             format!("cmp({op:?},{},{})", expr_key(lhs), expr_key(rhs))
         }
-        Expr::Call { func, args } => format!(
+        Expr::Call { func, args, .. } => format!(
             "call({func:?},[{}])",
             args.iter().map(expr_key).collect::<Vec<_>>().join(",")
         ),
@@ -554,6 +645,7 @@ fn expr_key(expr: &Expr) -> String {
             name,
             type_args,
             args,
+            ..
         } => {
             let type_key = type_args
                 .iter()
@@ -573,13 +665,13 @@ fn expr_key(expr: &Expr) -> String {
                 .join(",");
             format!("ucall({name};[{type_key}];[{arg_key}])")
         }
-        Expr::Cast { to, expr } => format!("cast({to:?},{})", expr_key(expr)),
-        Expr::UnaryNot { expr } => format!("not({})", expr_key(expr)),
-        Expr::UnaryBitNot { expr } => format!("bitnot({})", expr_key(expr)),
-        Expr::Logical { op, lhs, rhs } => {
+        Expr::Cast { to, expr, .. } => format!("cast({to:?},{})", expr_key(expr)),
+        Expr::UnaryNot { expr, .. } => format!("not({})", expr_key(expr)),
+        Expr::UnaryBitNot { expr, .. } => format!("bitnot({})", expr_key(expr)),
+        Expr::Logical { op, lhs, rhs, .. } => {
             format!("log({op:?},{},{})", expr_key(lhs), expr_key(rhs))
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             format!("bin({op:?},{},{})", expr_key(lhs), expr_key(rhs))
         }
     }
@@ -605,12 +697,22 @@ pub(super) fn resolve_namespace_symbol_name(
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
+    use_site_span: Span,
 ) -> Result<String, Vec<Diagnostic>> {
     if !looks_like_namespace_ref(name) {
         return Ok(name.to_owned());
     }
-    let segments = parse_namespace_ref_text(name)?;
-    resolve_namespace_segments_internal(&segments, current_ns, const_env, state, generated, 0)
+    let mut segments = parse_namespace_ref_text(name)?;
+    rebase_namespace_ref_expr_locs(&mut segments, use_site_span);
+    resolve_namespace_segments_internal(
+        &segments,
+        current_ns,
+        const_env,
+        state,
+        generated,
+        use_site_span,
+        0,
+    )
 }
 
 fn split_named_type_base_and_suffix(name: &str) -> (&str, &str) {
@@ -627,7 +729,10 @@ pub(super) fn rewrite_named_type_ref_name(
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
+    use_site_loc: impl Into<SourceLoc>,
 ) -> Result<(), Vec<Diagnostic>> {
+    let use_site_span = use_site_loc.into().span();
+
     if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
         *name = qualified;
         return Ok(());
@@ -640,15 +745,28 @@ pub(super) fn rewrite_named_type_ref_name(
             return Ok(());
         }
         if looks_like_namespace_ref(base) {
-            let resolved =
-                resolve_namespace_symbol_name(base, current_ns, const_env, state, generated)?;
+            let resolved = resolve_namespace_symbol_name(
+                base,
+                current_ns,
+                const_env,
+                state,
+                generated,
+                use_site_span,
+            )?;
             *name = format!("{resolved}{suffix}");
             return Ok(());
         }
     }
 
     if looks_like_namespace_ref(name) {
-        *name = resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
+        *name = resolve_namespace_symbol_name(
+            name,
+            current_ns,
+            const_env,
+            state,
+            generated,
+            use_site_span,
+        )?;
     }
     Ok(())
 }
@@ -677,20 +795,19 @@ fn resolve_namespace_segments_internal(
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
+    use_site_span: Span,
     depth: usize,
 ) -> Result<String, Vec<Diagnostic>> {
     if depth > 64 {
-        return Err(vec![Diagnostic::semantic(
+        return Err(vec![Diagnostic::semantic_span(
             "namespace alias/template resolution exceeded recursion depth",
-            0,
-            0,
+            use_site_span,
         )]);
     }
     if segments.is_empty() {
-        return Err(vec![Diagnostic::semantic(
+        return Err(vec![Diagnostic::semantic_span(
             "empty namespace reference",
-            0,
-            0,
+            use_site_span,
         )]);
     }
 
@@ -706,6 +823,7 @@ fn resolve_namespace_segments_internal(
                 const_env,
                 state,
                 generated,
+                use_site_span,
                 depth + 1,
             )?;
             idx = 1;
@@ -719,16 +837,20 @@ fn resolve_namespace_segments_internal(
                 let candidate = namespace_join(&candidate_ns, &segments[0].name);
                 if state.namespace_templates.contains_key(&candidate) {
                     resolved = Some(instantiate_namespace_template(
-                        &candidate, args, const_env, state, generated,
+                        &candidate,
+                        args,
+                        const_env,
+                        state,
+                        generated,
+                        use_site_span,
                     )?);
                     break;
                 }
             }
             let Some(found) = resolved else {
-                return Err(vec![Diagnostic::semantic(
+                return Err(vec![Diagnostic::semantic_span(
                     format!("unknown namespace template '{}'", segments[0].name),
-                    0,
-                    0,
+                    use_site_span,
                 )]);
             };
             path = found;
@@ -743,6 +865,7 @@ fn resolve_namespace_segments_internal(
                         const_env,
                         state,
                         generated,
+                        use_site_span,
                     )?);
                     break;
                 }
@@ -755,7 +878,14 @@ fn resolve_namespace_segments_internal(
     for seg in &segments[idx..] {
         let candidate = namespace_join(&path, &seg.name);
         if let Some(args) = &seg.args {
-            path = instantiate_namespace_template(&candidate, args, const_env, state, generated)?;
+            path = instantiate_namespace_template(
+                &candidate,
+                args,
+                const_env,
+                state,
+                generated,
+                use_site_span,
+            )?;
         } else if state.namespace_templates.contains_key(&candidate) {
             path = instantiate_namespace_template(
                 &candidate,
@@ -763,6 +893,7 @@ fn resolve_namespace_segments_internal(
                 const_env,
                 state,
                 generated,
+                use_site_span,
             )?;
         } else {
             path = candidate;
@@ -777,16 +908,16 @@ fn instantiate_namespace_template(
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
+    use_site_span: Span,
 ) -> Result<String, Vec<Diagnostic>> {
     let template = state
         .namespace_templates
         .get(full_template_name)
         .cloned()
         .ok_or_else(|| {
-            vec![Diagnostic::semantic(
+            vec![Diagnostic::semantic_span(
                 format!("unknown namespace template '{full_template_name}'"),
-                0,
-                0,
+                use_site_span,
             )]
         })?;
 
@@ -798,20 +929,26 @@ fn instantiate_namespace_template(
     }
 
     let mut named = HashMap::<String, Expr>::new();
+    let mut named_spans = Vec::<(String, Span)>::new();
     let mut positional = Vec::<Expr>::new();
     for arg in call_args {
         let expr = substitute_expr_with_env(&arg.expr, &effective_consts);
+        let arg_span = expr_span(&arg.expr);
         if let Some(name) = &arg.name {
             if named.insert(name.clone(), expr).is_some() {
-                return Err(vec![Diagnostic::semantic(
+                return Err(vec![Diagnostic::semantic_span(
                     format!(
                         "namespace template '{}' argument '{}' specified more than once",
                         full_template_name, name
                     ),
-                    0,
-                    0,
+                    if arg_span.is_zero() {
+                        use_site_span
+                    } else {
+                        arg_span
+                    },
                 )]);
             }
+            named_spans.push((name.clone(), arg_span));
         } else {
             positional.push(expr);
         }
@@ -836,6 +973,7 @@ fn instantiate_namespace_template(
             ),
         )?;
         let casted = Expr::Cast {
+            loc: value.loc().into(),
             to: PrimitiveType::I32,
             expr: Box::new(value),
         };
@@ -843,26 +981,38 @@ fn instantiate_namespace_template(
     }
 
     if pos_idx < positional.len() {
-        return Err(vec![Diagnostic::semantic(
+        let extra_arg_span = positional
+            .get(pos_idx)
+            .map(expr_span)
+            .filter(|span| !span.is_zero())
+            .unwrap_or(use_site_span);
+        return Err(vec![Diagnostic::semantic_span(
             format!(
                 "namespace template '{}' received too many positional arguments",
                 full_template_name
             ),
-            0,
-            0,
+            extra_arg_span,
         )]);
     }
     if !named.is_empty() {
+        let unknown_entries = named_spans
+            .iter()
+            .filter(|(name, _)| named.contains_key(name))
+            .collect::<Vec<_>>();
         let mut unknown = named.keys().cloned().collect::<Vec<_>>();
         unknown.sort();
-        return Err(vec![Diagnostic::semantic(
+        let unknown_span = unknown_entries
+            .iter()
+            .map(|(_, span)| *span)
+            .find(|span| !span.is_zero())
+            .unwrap_or(use_site_span);
+        return Err(vec![Diagnostic::semantic_span(
             format!(
                 "namespace template '{}' received unknown named arguments: {}",
                 full_template_name,
                 unknown.join(", ")
             ),
-            0,
-            0,
+            unknown_span,
         )]);
     }
 
@@ -951,13 +1101,12 @@ fn emit_instantiated_namespace_items(
             }
             NamespaceDeclItem::Const(decl) => {
                 if !local_const_names.insert(decl.name.clone()) {
-                    return Err(vec![Diagnostic::semantic(
+                    return Err(vec![Diagnostic::semantic_span(
                         format!(
                             "duplicate constant '{}' in namespace '{}'",
                             decl.name, namespace
                         ),
-                        0,
-                        0,
+                        decl.loc.as_ref(),
                     )]);
                 }
                 let mut decl = decl.clone();

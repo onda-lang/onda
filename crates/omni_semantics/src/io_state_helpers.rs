@@ -1,5 +1,9 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(crate) fn resolve_init_default_ty(
     decl_ty: Option<&DeclType>,
     context_label: &str,
@@ -8,23 +12,23 @@ pub(crate) fn resolve_init_default_ty(
     match decl_ty {
         Some(DeclType::Scalar(prim)) => Some(*prim),
         Some(DeclType::Generic(param)) => {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "{context_label} init section default type '[{param}]' is invalid; only primitive scalar types are allowed"
                 ),
-                0,
-                0,
-            ));
+            );
             None
         }
         Some(DeclType::Array { .. }) | Some(DeclType::ArrayGeneric { .. }) => {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "{context_label} init section default type must be a scalar primitive type"
                 ),
-                0,
-                0,
-            ));
+            );
             None
         }
         None => None,
@@ -57,27 +61,27 @@ pub(crate) fn check_unique_set(
     let mut local = HashSet::new();
     for name in names {
         if is_builtin_constant_name(name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!("{kind} name '{name}' is reserved as a builtin constant"),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         if !local.insert(name.clone()) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!("duplicate {kind} '{name}'"),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         if !all_declared.insert(name.clone()) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!("symbol '{name}' declared multiple times across blocks"),
-                0,
-                0,
-            ));
+            );
         }
     }
 }
@@ -158,8 +162,8 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
 
 pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
     match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::ArrayCtor { .. } => {}
-        Expr::Var(name) => {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::ArrayCtor { .. } => {}
+        Expr::Var { name, .. } => {
             acc.max_in = acc
                 .max_in
                 .max(parse_numbered_port_index(name, "in").unwrap_or(0));
@@ -167,7 +171,7 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
                 .max_out
                 .max(parse_numbered_port_index(name, "out").unwrap_or(0));
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             acc.max_in = acc
                 .max_in
                 .max(parse_numbered_port_index(base, "in").unwrap_or(0));
@@ -176,7 +180,9 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
                 .max(parse_numbered_port_index(base, "out").unwrap_or(0));
             infer_io_from_expr(index, acc);
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             acc.max_in = acc
                 .max_in
                 .max(parse_numbered_port_index(base, "in").unwrap_or(0));
@@ -194,7 +200,7 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
             infer_io_from_expr(lhs, acc);
             infer_io_from_expr(rhs, acc);
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             infer_io_from_expr(expr, acc)
         }
         Expr::Logical { lhs, rhs, .. } => {
@@ -206,7 +212,7 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
                 infer_io_from_expr(arg, acc);
             }
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 infer_io_from_expr(value, acc);
             }
@@ -461,8 +467,10 @@ pub(crate) fn normalize_numbered_port_decls(
         .into_iter()
         .map(|name| {
             explicit_map.get(&name).cloned().unwrap_or(PortDecl {
+                loc: Default::default(),
                 name,
                 ty: None,
+                ty_loc: Default::default(),
                 default: None,
                 range: None,
             })
@@ -475,18 +483,12 @@ pub(crate) fn check_local_port_duplicates(
     kind: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let names = ports.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
-    check_local_duplicates(&names, kind, errors);
-}
-
-pub(crate) fn check_local_duplicates(names: &[String], kind: &str, errors: &mut Vec<Diagnostic>) {
     let mut seen = HashSet::new();
-    for name in names {
-        if !seen.insert(name.clone()) {
-            errors.push(Diagnostic::semantic(
-                format!("duplicate {kind} '{name}'"),
-                0,
-                0,
+    for port in ports {
+        if !seen.insert(port.name.clone()) {
+            errors.push(Diagnostic::semantic_span(
+                format!("duplicate {kind} '{}'", port.name),
+                port.loc.as_ref(),
             ));
         }
     }

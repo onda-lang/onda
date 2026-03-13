@@ -1,5 +1,9 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(super) fn proc_os_sinc_stage_count(factor: usize) -> usize {
     factor.max(1).trailing_zeros() as usize
 }
@@ -176,14 +180,14 @@ pub(super) fn compute_proc_shape(
     let mut param_names = typed_param_names.clone();
     for buffer in &buffer_specs {
         if param_names.contains(&buffer.name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::new(proc.loc),
+                errors,
                 format!(
                     "processor '{}' buffer '{}' conflicts with param name",
                     proc.name, buffer.name
                 ),
-                0,
-                0,
-            ));
+            );
         }
         param_names.insert(buffer.name.clone());
     }
@@ -205,14 +209,14 @@ pub(super) fn compute_proc_shape(
             || param_names.contains(&event.name)
             || is_proc_output_alias_name(&event.name, outs.len())
         {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::new(event.loc),
+                errors,
                 format!(
                     "processor '{}.{}' event name conflicts with an existing callable/endpoint name",
                     proc.name, event.name
                 ),
-                0,
-                0,
-            ));
+            );
         }
     }
     let typed_events = coerce_typed_events(
@@ -675,39 +679,39 @@ pub(super) fn compute_proc_shape(
         for idx in 0..len {
             let slot = format!("{array_name}[{idx}]");
             if reserved.contains(&slot) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
                     format!(
                         "processor '{}' processor-array slot '{}' conflicts with reserved symbol",
                         proc.name, slot
                     ),
-                    0,
-                    0,
-                ));
+                );
                 continue;
             }
             if let Some(existing) = state.nested_procs.get(&slot) {
                 if existing.proc_name != array_state.proc_name {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
                         format!(
                             "processor '{}' processor-array slot '{}' has conflicting processor types '{}' and '{}'",
                             proc.name, slot, existing.proc_name, array_state.proc_name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
             } else if state.scalars.contains_key(&slot)
                 || state.data.contains_key(&slot)
                 || state.struct_instances.contains_key(&slot)
             {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
                     format!(
                         "processor '{}' processor-array slot '{}' conflicts with existing state symbol",
                         proc.name, slot
                     ),
-                    0,
-                    0,
-                ));
+                );
                 continue;
             } else {
                 state.nested_procs.insert(
@@ -733,8 +737,10 @@ pub(super) fn compute_proc_shape(
     for spec in &param_specs {
         for slot in &spec.slots {
             fields.push(StructField {
+                loc: Default::default(),
                 name: slot.name.clone(),
                 ty: FieldType::Scalar(slot.ty),
+                ty_loc: Default::default(),
                 default: slot.default.clone(),
             });
         }
@@ -742,8 +748,10 @@ pub(super) fn compute_proc_shape(
     for out_name in &outs {
         let out_ty = *out_types.get(out_name).unwrap_or(&PrimitiveType::F32);
         fields.push(StructField {
+            loc: Default::default(),
             name: out_name.clone(),
             ty: FieldType::Scalar(out_ty),
+            ty_loc: Default::default(),
             default: None,
         });
     }
@@ -755,9 +763,11 @@ pub(super) fn compute_proc_shape(
                 for stage in 0..stage_count {
                     for tap in ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"] {
                         fields.push(StructField {
+                            loc: Default::default(),
                             name: proc_os_up_stage_tap_field_name(in_name, stage, tap),
                             ty: FieldType::Scalar(in_ty),
-                            default: Some(Expr::Number(0.0)),
+                            ty_loc: Default::default(),
+                            default: Some(Expr::number(0.0)),
                         });
                     }
                 }
@@ -769,9 +779,11 @@ pub(super) fn compute_proc_shape(
                 for stage in 0..stage_count {
                     for tap in ["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"] {
                         fields.push(StructField {
+                            loc: Default::default(),
                             name: proc_os_down_stage_tap_field_name(out_name, stage, tap),
                             ty: FieldType::Scalar(out_ty),
-                            default: Some(Expr::Number(0.0)),
+                            ty_loc: Default::default(),
+                            default: Some(Expr::number(0.0)),
                         });
                     }
                 }
@@ -783,8 +795,10 @@ pub(super) fn compute_proc_shape(
             continue;
         }
         fields.push(StructField {
+            loc: Default::default(),
             name: name.clone(),
             ty: FieldType::Scalar(*state.scalars.get(name).unwrap_or(&PrimitiveType::F32)),
+            ty_loc: Default::default(),
             default: None,
         });
     }
@@ -800,8 +814,10 @@ pub(super) fn compute_proc_shape(
                 errors,
             );
             fields.push(StructField {
+                loc: Default::default(),
                 name: name.clone(),
                 ty: FieldType::Array(spec.clone()),
+                ty_loc: Default::default(),
                 default: None,
             });
         }
@@ -819,8 +835,10 @@ pub(super) fn compute_proc_shape(
             continue;
         };
         fields.push(StructField {
+            loc: Default::default(),
             name: instance.clone(),
             ty: FieldType::Generic(struct_def.name.clone()),
+            ty_loc: Default::default(),
             default: None,
         });
         for field in &struct_def.fields {
@@ -876,27 +894,27 @@ pub(super) fn resolve_proc_state_struct_def(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<omni_frontend::StructDef> {
     let Some(struct_template) = struct_defs.get(&state_struct.struct_name) else {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!(
                 "processor '{}' state symbol '{}' references unknown struct '{}'",
                 proc_name, instance, state_struct.struct_name
             ),
-            0,
-            0,
-        ));
+        );
         return None;
     };
 
     if state_struct.type_args.is_empty() {
         if !struct_template.type_params.is_empty() {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "processor '{}' state symbol '{}' uses generic struct '{}' without type arguments",
                     proc_name, instance, state_struct.struct_name
                 ),
-                0,
-                0,
-            ));
+            );
             return None;
         }
         return Some(struct_template.clone());
@@ -924,23 +942,23 @@ pub(super) fn build_proc_lowering_shape(
     if let Some(idx) = visiting.iter().position(|n| n == proc_name) {
         let mut cycle = visiting[idx..].to_vec();
         cycle.push(proc_name.to_owned());
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!(
                 "processor nested-state cycle detected: {}",
                 cycle.join(" -> ")
             ),
-            0,
-            0,
-        ));
+        );
         return None;
     }
 
     let Some(base) = base_shapes.get(proc_name).cloned() else {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("unknown processor '{proc_name}'"),
-            0,
-            0,
-        ));
+        );
         return None;
     };
 
@@ -994,14 +1012,14 @@ pub(super) fn build_proc_lowering_shape(
         for mut nested_field in nested_callee_fields {
             let flat_name = nested_field_name(&nested_var, &nested_field.name);
             if field_names.contains(&flat_name) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
                     format!(
                         "processor '{}' nested field '{}' conflicts with existing field '{}'",
                         proc_name, nested_field.name, flat_name
                     ),
-                    0,
-                    0,
-                ));
+                );
                 continue;
             }
             nested_field.name = flat_name.clone();

@@ -1,5 +1,9 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(super) fn parent_namespace(ns: &str) -> Option<&str> {
     ns.rsplit_once("::").map(|(parent, _)| parent)
 }
@@ -57,24 +61,24 @@ pub(super) fn resolve_qualified_symbol_name(
     }
     if let Some((ns, symbol)) = name.rsplit_once("::") {
         if !namespaces.contains(ns) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!("{context}: unknown namespace '{ns}' in symbol '{name}'"),
-                0,
-                0,
-            ));
+            );
         } else {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!("{context}: unknown symbol '{symbol}' in namespace '{ns}'"),
-                0,
-                0,
-            ));
+            );
         }
     } else {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context}: unknown symbol '{name}'"),
-            0,
-            0,
-        ));
+        );
     }
     None
 }
@@ -171,7 +175,7 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 *name = resolved;
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
                 qualify_struct_type_name(
                     name,
@@ -282,8 +286,8 @@ pub(super) fn qualify_expr_namespaced_symbols(
             }
         }
         Expr::Cast { expr: arg, .. }
-        | Expr::UnaryNot { expr: arg }
-        | Expr::UnaryBitNot { expr: arg } => {
+        | Expr::UnaryNot { expr: arg, .. }
+        | Expr::UnaryBitNot { expr: arg, .. } => {
             qualify_expr_namespaced_symbols(
                 arg,
                 current_ns,
@@ -295,7 +299,7 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 context,
             );
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 qualify_expr_namespaced_symbols(
                     value,
@@ -309,7 +313,7 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 );
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -323,7 +327,7 @@ pub(super) fn qualify_stmt_namespaced_symbols(
     errors: &mut Vec<Diagnostic>,
     context: &str,
 ) {
-    with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+    with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {

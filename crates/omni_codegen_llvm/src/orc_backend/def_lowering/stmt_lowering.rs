@@ -164,7 +164,7 @@ unsafe fn try_lower_def_typed_array_decl(
     expr: &Expr,
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
-    let Expr::ArrayCtor { spec, init } = expr else {
+    let Expr::ArrayCtor { spec, init, .. } = expr else {
         return Ok(false);
     };
 
@@ -231,7 +231,7 @@ unsafe fn try_lower_def_untyped_array_decl(
     expr: &Expr,
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
-    let Expr::ArrayLiteral(values) = expr else {
+    let Expr::ArrayLiteral { values, .. } = expr else {
         return Ok(false);
     };
 
@@ -244,7 +244,7 @@ unsafe fn try_lower_def_untyped_array_decl(
         }
         for (idx, value_expr) in values.iter().enumerate() {
             let typed = lower_def_expr(value_expr, ctx)?;
-            let data = lower_def_data_element_ptr(ctx, target_name, &Expr::Int(idx as i64), true)?;
+            let data = lower_def_data_element_ptr(ctx, target_name, &Expr::int(idx as i64), true)?;
             let casted = cast_def_value_to(ctx, typed, data.elem_ty, b"def_data_store_cast\0");
             LLVMBuildStore(ctx.builder, casted, data.ptr);
         }
@@ -304,7 +304,7 @@ unsafe fn try_bind_struct_data_alias_in_def(
     expr: &Expr,
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
-    let Expr::Index { base, index } = expr else {
+    let Expr::Index { base, index, .. } = expr else {
         return Ok(false);
     };
 
@@ -392,6 +392,7 @@ unsafe fn lower_def_slice_assign(
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
     let dst_expr = Expr::Slice {
+        loc: Default::default(),
         base: base.to_owned(),
         start: start.cloned().map(Box::new),
         end: end.cloned().map(Box::new),
@@ -399,7 +400,7 @@ unsafe fn lower_def_slice_assign(
     let dst_view = lower_def_array_view(ctx, &dst_expr, "slice assignment target")?;
     let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, dst_view.elem_ty);
 
-    if matches!(expr, Expr::Var(_) | Expr::Slice { .. }) {
+    if matches!(expr, Expr::Var { .. } | Expr::Slice { .. }) {
         let src_view = lower_def_array_view(ctx, expr, "slice assignment source")?;
         let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
         let copy_elem = move |loop_i| unsafe {

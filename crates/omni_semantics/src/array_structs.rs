@@ -1,11 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
-use omni_frontend::{Diagnostic, PrimitiveType};
+use omni_frontend::{DiagCtx, Diagnostic, PrimitiveType};
 
 use crate::decl_symbols::{insert_declared_symbol, DeclaredSymbolInfo, DeclaredSymbolMap};
 use crate::{
     ArrayStructRootInfo, LocalAliasTypes, LocalArrayAliasInfo, TypedFieldType, TypedStructField,
 };
+
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
 
 #[derive(Debug, Clone)]
 enum StructArrayLayoutKind {
@@ -55,20 +59,20 @@ fn collect_data_struct_layout_inner(
             cycle.push_str(" -> ");
         }
         cycle.push_str(struct_name);
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context} contains recursive array[Struct, N] cycle: {cycle}"),
-            0,
-            0,
-        ));
+        );
         return None;
     }
     let fields = struct_defs.get(struct_name).cloned();
     let Some(fields) = fields else {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context} references unknown struct '{struct_name}'"),
-            0,
-            0,
-        ));
+        );
         return None;
     };
 
@@ -166,19 +170,19 @@ fn register_data_struct_root_inner(
             cycle.push_str(" -> ");
         }
         cycle.push_str(struct_name);
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context} contains recursive array[Struct, N] cycle: {cycle}"),
-            0,
-            0,
-        ));
+        );
         return false;
     }
     let Some(fields) = struct_defs.get(struct_name).cloned() else {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context} references unknown struct '{struct_name}'"),
-            0,
-            0,
-        ));
+        );
         return false;
     };
     state_array_struct_roots

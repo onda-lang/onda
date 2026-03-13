@@ -11,10 +11,10 @@ pub(super) unsafe fn lower_expr(
         return Ok(literal);
     }
     match expr {
-        Expr::ArrayLiteral(_) => Err(Diagnostic::internal(
+        Expr::ArrayLiteral { .. } => Err(Diagnostic::internal(
             "array literal is not a scalar expression in ORC lowering",
         )),
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if let Some((ty, value)) =
                 builtin_constant_value_and_type(name, ctx.sample_rate, ctx.block_size)
             {
@@ -161,7 +161,7 @@ pub(super) unsafe fn lower_expr(
                 "unknown symbol '{name}' in ORC expression lowering"
             )))
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             if ctx.buffer_index.contains_key(base) {
                 let data = lower_buffer_element_ptr(
                     ctx,
@@ -249,7 +249,7 @@ pub(super) unsafe fn lower_expr(
         Expr::ArrayCtor { .. } => Err(Diagnostic::internal(
             "array constructor is only valid as an init assignment value",
         )),
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases)?;
             let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases)?;
             let builder = ctx.builder;
@@ -267,7 +267,7 @@ pub(super) unsafe fn lower_expr(
                 "ORC expression lowering",
             )
         }
-        Expr::Compare { op, lhs, rhs } => {
+        Expr::Compare { op, lhs, rhs, .. } => {
             let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases)?;
             let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases)?;
             let builder = ctx.builder;
@@ -285,7 +285,7 @@ pub(super) unsafe fn lower_expr(
                 "ORC expression lowering",
             )
         }
-        Expr::Cast { to, expr } => {
+        Expr::Cast { to, expr, .. } => {
             let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
             let casted = cast_orc_value_to(ctx, value, *to, b"cast\0");
             Ok(OrcValue {
@@ -293,7 +293,7 @@ pub(super) unsafe fn lower_expr(
                 ty: *to,
             })
         }
-        Expr::UnaryNot { expr } => {
+        Expr::UnaryNot { expr, .. } => {
             let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
             let builder = ctx.builder;
             let context = ctx.context;
@@ -307,7 +307,7 @@ pub(super) unsafe fn lower_expr(
                 &mut cast_value,
             ))
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
             match value.ty {
                 PrimitiveType::I32 | PrimitiveType::I64 => Ok(OrcValue {
@@ -320,7 +320,7 @@ pub(super) unsafe fn lower_expr(
                 ))),
             }
         }
-        Expr::Logical { op, lhs, rhs } => lower_orc_logical_expr(
+        Expr::Logical { op, lhs, rhs, .. } => lower_orc_logical_expr(
             *op,
             lhs,
             rhs,
@@ -329,7 +329,7 @@ pub(super) unsafe fn lower_expr(
             local_aliases,
             local_array_aliases,
         ),
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             let mut lowered = Vec::with_capacity(args.len());
             for arg in args {
                 lowered.push(lower_expr(
@@ -346,6 +346,7 @@ pub(super) unsafe fn lower_expr(
             name,
             type_args,
             args,
+            ..
         } => {
             if name == "__omni_buffer_read2" {
                 return lower_orc_buffer_read2_call(
@@ -382,7 +383,7 @@ pub(super) unsafe fn lower_expr(
                     let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
                     method_args.push(CallArg {
                         name: None,
-                        expr: Expr::Var(base.to_owned()),
+                        expr: Expr::var(base.to_owned()),
                     });
                     method_args.extend(args.iter().cloned());
                     return lower_orc_unsafe_data_read_call(
@@ -399,7 +400,7 @@ pub(super) unsafe fn lower_expr(
                     let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
                     method_args.push(CallArg {
                         name: None,
-                        expr: Expr::Var(base.to_owned()),
+                        expr: Expr::var(base.to_owned()),
                     });
                     method_args.extend(args.iter().cloned());
                     return lower_orc_unsafe_data_write_call(
@@ -565,6 +566,6 @@ pub(super) unsafe fn lower_expr(
                 ty: prepared.ret_ty,
             })
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => unreachable!(),
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => unreachable!(),
     }
 }

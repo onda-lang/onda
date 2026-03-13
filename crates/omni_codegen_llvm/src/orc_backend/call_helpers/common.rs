@@ -31,7 +31,7 @@ pub(in crate::orc_backend) fn builtin_data_call_base_symbol<'a>(
         ))
     })?;
     match &first.expr {
-        Expr::Var(base) => Ok(base.as_str()),
+        Expr::Var { name: base, .. } => Ok(base.as_str()),
         _ => Err(Diagnostic::internal(format!(
             "builtin '{name}' requires a array/buffer symbol variable as first argument in {context}"
         ))),
@@ -130,6 +130,7 @@ pub(in crate::orc_backend) fn parse_proc_index_buffer_selector_args<'a>(
         name,
         type_args,
         args,
+        ..
     } = arg_expr
     else {
         return Err(Diagnostic::internal(format!(
@@ -152,7 +153,7 @@ pub(in crate::orc_backend) fn parse_proc_index_buffer_selector_args<'a>(
     for arg in args {
         match arg.name.as_deref() {
             Some(PROC_INDEX_BASE_ARG) => {
-                if !matches!(arg.expr, Expr::Var(_)) {
+                if !matches!(arg.expr, Expr::Var { .. }) {
                     return Err(Diagnostic::internal(format!(
                         "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' expects '{PROC_INDEX_BASE_ARG}' as identifier in {context}"
                     )));
@@ -437,14 +438,14 @@ pub(in crate::orc_backend) fn infer_const_default_expr_type(
     expr: &Expr,
 ) -> Result<PrimitiveType, Diagnostic> {
     match expr {
-        Expr::Number(_) => Ok(PrimitiveType::F32),
-        Expr::Int(v) => Ok(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+        Expr::Number { .. } => Ok(PrimitiveType::F32),
+        Expr::Int { value: v, .. } => Ok(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
             PrimitiveType::I32
         } else {
             PrimitiveType::I64
         }),
-        Expr::Bool(_) => Ok(PrimitiveType::Bool),
-        Expr::Var(name) => builtin_constant_value_and_type(name, 0.0, 0.0)
+        Expr::Bool { .. } => Ok(PrimitiveType::Bool),
+        Expr::Var { name, .. } => builtin_constant_value_and_type(name, 0.0, 0.0)
             .map(|(ty, _)| ty)
             .ok_or_else(|| {
                 Diagnostic::internal(format!(
@@ -455,7 +456,7 @@ pub(in crate::orc_backend) fn infer_const_default_expr_type(
         Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
             Ok(PrimitiveType::Bool)
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let inner_ty = infer_const_default_expr_type(expr)?;
             merge_const_integer_types(inner_ty, inner_ty).ok_or_else(|| {
                 Diagnostic::internal(format!(
@@ -464,7 +465,7 @@ pub(in crate::orc_backend) fn infer_const_default_expr_type(
                 ))
             })
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let lhs_ty = infer_const_default_expr_type(lhs)?;
             let rhs_ty = infer_const_default_expr_type(rhs)?;
             match op {
@@ -500,17 +501,17 @@ pub(in crate::orc_backend) fn eval_const_default_expr(
     block_size: f32,
 ) -> Result<f64, Diagnostic> {
     match expr {
-        Expr::Number(v) => Ok(*v as f64),
-        Expr::Int(v) => Ok(*v as f64),
-        Expr::Bool(v) => Ok(if *v { 1.0 } else { 0.0 }),
-        Expr::Var(name) => builtin_constant_value_and_type(name, sample_rate, block_size)
+        Expr::Number { value: v, .. } => Ok(*v as f64),
+        Expr::Int { value: v, .. } => Ok(*v as f64),
+        Expr::Bool { value: v, .. } => Ok(if *v { 1.0 } else { 0.0 }),
+        Expr::Var { name, .. } => builtin_constant_value_and_type(name, sample_rate, block_size)
             .map(|(_, value)| value)
             .ok_or_else(|| {
                 Diagnostic::internal(format!(
                     "default expression uses non-constant symbol '{name}' in codegen"
                 ))
             }),
-        Expr::Cast { to, expr } => {
+        Expr::Cast { to, expr, .. } => {
             let v = eval_const_default_expr(expr, sample_rate, block_size)?;
             let out = match to {
                 PrimitiveType::F32 => (v as f32) as f64,
@@ -527,11 +528,11 @@ pub(in crate::orc_backend) fn eval_const_default_expr(
             };
             Ok(out)
         }
-        Expr::UnaryNot { expr } => {
+        Expr::UnaryNot { expr, .. } => {
             let v = eval_const_default_expr(expr, sample_rate, block_size)?;
             Ok(if v == 0.0 { 1.0 } else { 0.0 })
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let ty = infer_const_default_expr_type(expr)?;
             let v = eval_const_default_expr(expr, sample_rate, block_size)?;
             Ok(match ty {
@@ -545,7 +546,7 @@ pub(in crate::orc_backend) fn eval_const_default_expr(
                 }
             })
         }
-        Expr::Logical { op, lhs, rhs } => {
+        Expr::Logical { op, lhs, rhs, .. } => {
             let l = eval_const_default_expr(lhs, sample_rate, block_size)?;
             match op {
                 LogicalOp::And => {
@@ -566,7 +567,7 @@ pub(in crate::orc_backend) fn eval_const_default_expr(
                 }
             }
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let result_ty = infer_const_default_expr_type(expr)?;
             let l = eval_const_default_expr(lhs, sample_rate, block_size)?;
             let r = eval_const_default_expr(rhs, sample_rate, block_size)?;
@@ -604,7 +605,7 @@ pub(in crate::orc_backend) fn eval_const_default_expr(
             };
             Ok(out)
         }
-        Expr::Compare { op, lhs, rhs } => {
+        Expr::Compare { op, lhs, rhs, .. } => {
             let l = eval_const_default_expr(lhs, sample_rate, block_size)?;
             let r = eval_const_default_expr(rhs, sample_rate, block_size)?;
             let pred = match op {

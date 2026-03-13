@@ -161,11 +161,11 @@ pub(super) unsafe fn lower_literal_expr_common(
     float_ty: LLVMTypeRef,
 ) -> Option<OrcValue> {
     match expr {
-        Expr::Number(value) => Some(OrcValue {
+        Expr::Number { value, .. } => Some(OrcValue {
             value: LLVMConstReal(float_ty, *value as f64),
             ty: PrimitiveType::F32,
         }),
-        Expr::Int(value) => {
+        Expr::Int { value, .. } => {
             if *value >= i32::MIN as i64 && *value <= i32::MAX as i64 {
                 Some(OrcValue {
                     value: const_i32(i32_ty, *value as i32),
@@ -179,7 +179,7 @@ pub(super) unsafe fn lower_literal_expr_common(
                 })
             }
         }
-        Expr::Bool(value) => {
+        Expr::Bool { value, .. } => {
             let bool_ty = llvm_ty_for_primitive(context, PrimitiveType::Bool);
             Some(OrcValue {
                 value: LLVMConstInt(bool_ty, if *value { 1 } else { 0 }, 0),

@@ -12,7 +12,7 @@ fn reinterpret_scalar_specialized_struct_field(
     let ArrayElemType::Struct(base) = &spec.elem else {
         return None;
     };
-    let Expr::Var(type_arg) = spec.size.as_ref() else {
+    let Expr::Var { name: type_arg, .. } = spec.size.as_ref() else {
         return None;
     };
     if !type_param_set.contains(type_arg) && !is_primitive_type_name(type_arg.as_str()) {
@@ -34,25 +34,27 @@ pub(crate) fn coerce_struct_fields(
     let mut seen = HashSet::new();
     let type_param_set = type_params.iter().cloned().collect::<HashSet<_>>();
     for field in fields {
+        let field_loc = field.loc.as_ref();
         if !seen.insert(field.name.clone()) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!(
                     "duplicate field '{}' in struct '{}'",
                     field.name, struct_name
                 ),
-                0,
-                0,
+                field_loc,
             ));
             continue;
         }
         let (ty, default, struct_name_ref, array_elem_ty, array_elem_struct) = match &field.ty {
             FieldType::Scalar(prim) => {
                 if let Some(expr) = &field.default {
-                    validate_default_expr(
-                        expr,
-                        errors,
-                        &format!("struct field '{}.{}'", struct_name, field.name),
-                    );
+                    with_loc_diag_context(field_loc, |_diag| {
+                        validate_default_expr(
+                            expr,
+                            errors,
+                            &format!("struct field '{}.{}'", struct_name, field.name),
+                        );
+                    });
                 }
                 (
                     TypedFieldType::Scalar(*prim),
@@ -63,13 +65,12 @@ pub(crate) fn coerce_struct_fields(
                 )
             }
             FieldType::Generic(param) if type_param_set.contains(param) => {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "field '{}.{}' uses unresolved generic type '{}'",
                         struct_name, field.name, param
                     ),
-                    0,
-                    0,
+                    field_loc,
                 ));
                 (
                     TypedFieldType::Scalar(PrimitiveType::F32),
@@ -82,13 +83,12 @@ pub(crate) fn coerce_struct_fields(
             FieldType::Generic(nested_struct_name) => {
                 let nested_fields = struct_defs.get(nested_struct_name).cloned();
                 if nested_fields.is_none() && !nested_struct_name.contains('<') {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "field '{}.{}' references unknown struct '{}'",
                             struct_name, field.name, nested_struct_name
                         ),
-                        0,
-                        0,
+                        field_loc,
                     ));
                     out.push(TypedStructField {
                         name: field.name.clone(),
@@ -101,13 +101,12 @@ pub(crate) fn coerce_struct_fields(
                     continue;
                 }
                 if field.default.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "struct field '{}.{}' cannot have a default expression",
                             struct_name, field.name
                         ),
-                        0,
-                        0,
+                        field_loc,
                     ));
                 }
                 out.push(TypedStructField {
@@ -138,13 +137,12 @@ pub(crate) fn coerce_struct_fields(
                 {
                     let nested_fields = struct_defs.get(&nested_struct_name).cloned();
                     if nested_fields.is_none() && !nested_struct_name.contains('<') {
-                        errors.push(Diagnostic::semantic(
+                        errors.push(Diagnostic::semantic_span(
                             format!(
                                 "field '{}.{}' references unknown struct '{}'",
                                 struct_name, field.name, nested_struct_name
                             ),
-                            0,
-                            0,
+                            field_loc,
                         ));
                         out.push(TypedStructField {
                             name: field.name.clone(),
@@ -157,13 +155,12 @@ pub(crate) fn coerce_struct_fields(
                         continue;
                     }
                     if field.default.is_some() {
-                        errors.push(Diagnostic::semantic(
+                        errors.push(Diagnostic::semantic_span(
                             format!(
                                 "struct field '{}.{}' cannot have a default expression",
                                 struct_name, field.name
                             ),
-                            0,
-                            0,
+                            field_loc,
                         ));
                     }
                     out.push(TypedStructField {
@@ -189,16 +186,17 @@ pub(crate) fn coerce_struct_fields(
                     continue;
                 }
                 let size_context = format!("field '{}.{}' array size", struct_name, field.name);
-                let size =
-                    eval_data_size_expr(&spec.size, options, &size_context, errors).unwrap_or(1);
+                let size = with_loc_diag_context(field_loc, |_diag| {
+                    eval_data_size_expr(&spec.size, options, &size_context, errors)
+                })
+                .unwrap_or(1);
                 if field.default.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "array field '{}.{}' cannot have a default expression",
                             struct_name, field.name
                         ),
-                        0,
-                        0,
+                        field_loc,
                     ));
                 }
                 let (elem_ty, elem_struct) = match &spec.elem {
@@ -421,22 +419,21 @@ pub(crate) fn coerce_params(
     let mut out = Vec::new();
     let mut arrays = HashMap::new();
     for param in params {
+        let param_loc = param.loc.as_ref();
         if is_builtin_constant_name(&param.name) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!(
                     "param name '{}' is reserved as a builtin constant",
                     param.name
                 ),
-                0,
-                0,
+                param_loc,
             ));
             continue;
         }
         if !seen.insert(param.name.as_str()) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("duplicate param '{}'", param.name),
-                0,
-                0,
+                param_loc,
             ));
             continue;
         }
@@ -447,26 +444,30 @@ pub(crate) fn coerce_params(
                     _ => PrimitiveType::F32,
                 };
                 let raw_default = match &param.default {
-                    Some(expr) => eval_typed_const_expr(
-                        expr,
-                        ty,
-                        options,
-                        &format!("param '{}.{}' default", "<top-level>", param.name),
-                        is_float_type(ty),
-                        matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
-                        errors,
-                    )
+                    Some(expr) => with_loc_diag_context(param_loc, |_diag| {
+                        eval_typed_const_expr(
+                            expr,
+                            ty,
+                            options,
+                            &format!("param '{}.{}' default", "<top-level>", param.name),
+                            is_float_type(ty),
+                            matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
+                            errors,
+                        )
+                    })
                     .unwrap_or_else(|| coerce_const_default_to_typed(0.0, ty)),
                     None => coerce_const_default_to_typed(0.0, ty),
                 };
-                let range = param.range.as_ref().and_then(|r| {
-                    eval_decl_range_for_type(
-                        r,
-                        ty,
-                        options,
-                        &format!("param '{}.{}'", "<top-level>", param.name),
-                        errors,
-                    )
+                let range = with_loc_diag_context(param_loc, |_diag| {
+                    param.range.as_ref().and_then(|r| {
+                        eval_decl_range_for_type(
+                            r,
+                            ty,
+                            options,
+                            &format!("param '{}.{}'", "<top-level>", param.name),
+                            errors,
+                        )
+                    })
                 });
                 let default = range
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
@@ -479,36 +480,39 @@ pub(crate) fn coerce_params(
                 });
             }
             Some(DeclType::Generic(param_ty)) => {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "param '{}.{}' uses unresolved generic type '{}'",
                         "<top-level>", param.name, param_ty
                     ),
-                    0,
-                    0,
+                    param_loc,
                 ));
                 let ty = PrimitiveType::F32;
                 let raw_default = match &param.default {
-                    Some(expr) => eval_typed_const_expr(
-                        expr,
-                        ty,
-                        options,
-                        &format!("param '{}.{}' default", "<top-level>", param.name),
-                        true,
-                        false,
-                        errors,
-                    )
+                    Some(expr) => with_loc_diag_context(param_loc, |_diag| {
+                        eval_typed_const_expr(
+                            expr,
+                            ty,
+                            options,
+                            &format!("param '{}.{}' default", "<top-level>", param.name),
+                            true,
+                            false,
+                            errors,
+                        )
+                    })
                     .unwrap_or(TypedConstValue::F32(0.0)),
                     None => TypedConstValue::F32(0.0),
                 };
-                let range = param.range.as_ref().and_then(|r| {
-                    eval_decl_range_for_type(
-                        r,
-                        ty,
-                        options,
-                        &format!("param '{}.{}'", "<top-level>", param.name),
-                        errors,
-                    )
+                let range = with_loc_diag_context(param_loc, |_diag| {
+                    param.range.as_ref().and_then(|r| {
+                        eval_decl_range_for_type(
+                            r,
+                            ty,
+                            options,
+                            &format!("param '{}.{}'", "<top-level>", param.name),
+                            errors,
+                        )
+                    })
                 });
                 let default = range
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
@@ -522,25 +526,25 @@ pub(crate) fn coerce_params(
             }
             Some(DeclType::ArrayGeneric { elem, size }) => {
                 if param.range.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "param '{}.{}' range is not supported for array declarations",
                             "<top-level>", param.name
                         ),
-                        0,
-                        0,
+                        param_loc,
                     ));
                 }
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "param '{}.{}' uses unresolved generic array element type '{}'",
                         "<top-level>", param.name, elem
                     ),
-                    0,
-                    0,
+                    param_loc,
                 ));
                 let size_context = format!("param '{}.{}' array size", "<top-level>", param.name);
-                let Some(len) = eval_data_size_expr(size, options, &size_context, errors) else {
+                let Some(len) = with_loc_diag_context(param_loc, |_diag| {
+                    eval_data_size_expr(size, options, &size_context, errors)
+                }) else {
                     continue;
                 };
                 arrays.insert(
@@ -554,17 +558,16 @@ pub(crate) fn coerce_params(
 
                 let defaults = match &param.default {
                     None => vec![coerce_const_default_to_typed(0.0, PrimitiveType::F32); len],
-                    Some(Expr::ArrayLiteral(values)) => {
+                    Some(Expr::ArrayLiteral { values, .. }) => {
                         if values.len() != len {
-                            errors.push(Diagnostic::semantic(
+                            errors.push(Diagnostic::semantic_span(
                                 format!(
                                     "param '{}.{}' default expects {len} elements, got {}",
                                     "<top-level>",
                                     param.name,
                                     values.len()
                                 ),
-                                0,
-                                0,
+                                param_loc,
                             ));
                         }
                         let mut defaults = Vec::with_capacity(len);
@@ -572,18 +575,20 @@ pub(crate) fn coerce_params(
                             let value = values
                                 .get(idx)
                                 .and_then(|expr| {
-                                    eval_typed_const_expr(
-                                        expr,
-                                        PrimitiveType::F32,
-                                        options,
-                                        &format!(
-                                            "param '{}.{}' default element [{idx}]",
-                                            "<top-level>", param.name
-                                        ),
-                                        true,
-                                        false,
-                                        errors,
-                                    )
+                                    with_loc_diag_context(param_loc, |_diag| {
+                                        eval_typed_const_expr(
+                                            expr,
+                                            PrimitiveType::F32,
+                                            options,
+                                            &format!(
+                                                "param '{}.{}' default element [{idx}]",
+                                                "<top-level>", param.name
+                                            ),
+                                            true,
+                                            false,
+                                            errors,
+                                        )
+                                    })
                                 })
                                 .unwrap_or(TypedConstValue::F32(0.0));
                             defaults.push(value);
@@ -591,15 +596,17 @@ pub(crate) fn coerce_params(
                         defaults
                     }
                     Some(expr) => {
-                        let value = eval_typed_const_expr(
-                            expr,
-                            PrimitiveType::F32,
-                            options,
-                            &format!("param '{}.{}' default", "<top-level>", param.name),
-                            true,
-                            false,
-                            errors,
-                        )
+                        let value = with_loc_diag_context(param_loc, |_diag| {
+                            eval_typed_const_expr(
+                                expr,
+                                PrimitiveType::F32,
+                                options,
+                                &format!("param '{}.{}' default", "<top-level>", param.name),
+                                true,
+                                false,
+                                errors,
+                            )
+                        })
                         .unwrap_or(TypedConstValue::F32(0.0));
                         vec![value; len]
                     }
@@ -616,17 +623,18 @@ pub(crate) fn coerce_params(
             }
             Some(DeclType::Array { elem, size }) => {
                 if param.range.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "param '{}.{}' range is not supported for array declarations",
                             "<top-level>", param.name
                         ),
-                        0,
-                        0,
+                        param_loc,
                     ));
                 }
                 let size_context = format!("param '{}.{}' array size", "<top-level>", param.name);
-                let Some(len) = eval_data_size_expr(size, options, &size_context, errors) else {
+                let Some(len) = with_loc_diag_context(param_loc, |_diag| {
+                    eval_data_size_expr(size, options, &size_context, errors)
+                }) else {
                     continue;
                 };
                 arrays.insert(
@@ -640,34 +648,35 @@ pub(crate) fn coerce_params(
 
                 let defaults = match &param.default {
                     None => vec![coerce_const_default_to_typed(0.0, *elem); len],
-                    Some(Expr::ArrayLiteral(values)) => {
+                    Some(Expr::ArrayLiteral { values, .. }) => {
                         if values.len() != len {
-                            errors.push(Diagnostic::semantic(
+                            errors.push(Diagnostic::semantic_span(
                                 format!(
                                     "param '{}.{}' default expects {len} elements, got {}",
                                     "<top-level>",
                                     param.name,
                                     values.len()
                                 ),
-                                0,
-                                0,
+                                param_loc,
                             ));
                         }
                         let mut defaults = Vec::with_capacity(len);
                         for idx in 0..len {
                             let value = values.get(idx).and_then(|expr| {
-                                eval_typed_const_expr(
-                                    expr,
-                                    *elem,
-                                    options,
-                                    &format!(
-                                        "param '{}.{}' default element {idx}",
-                                        "<top-level>", param.name
-                                    ),
-                                    is_float_type(*elem),
-                                    matches!(*elem, PrimitiveType::I32 | PrimitiveType::I64),
-                                    errors,
-                                )
+                                with_loc_diag_context(param_loc, |_diag| {
+                                    eval_typed_const_expr(
+                                        expr,
+                                        *elem,
+                                        options,
+                                        &format!(
+                                            "param '{}.{}' default element {idx}",
+                                            "<top-level>", param.name
+                                        ),
+                                        is_float_type(*elem),
+                                        matches!(*elem, PrimitiveType::I32 | PrimitiveType::I64),
+                                        errors,
+                                    )
+                                })
                             });
                             defaults.push(
                                 value.unwrap_or_else(|| coerce_const_default_to_typed(0.0, *elem)),
@@ -676,15 +685,17 @@ pub(crate) fn coerce_params(
                         defaults
                     }
                     Some(expr) => {
-                        let value = eval_typed_const_expr(
-                            expr,
-                            *elem,
-                            options,
-                            &format!("param '{}.{}' default", "<top-level>", param.name),
-                            is_float_type(*elem),
-                            matches!(*elem, PrimitiveType::I32 | PrimitiveType::I64),
-                            errors,
-                        )
+                        let value = with_loc_diag_context(param_loc, |_diag| {
+                            eval_typed_const_expr(
+                                expr,
+                                *elem,
+                                options,
+                                &format!("param '{}.{}' default", "<top-level>", param.name),
+                                is_float_type(*elem),
+                                matches!(*elem, PrimitiveType::I32 | PrimitiveType::I64),
+                                errors,
+                            )
+                        })
                         .unwrap_or_else(|| coerce_const_default_to_typed(0.0, *elem));
                         vec![value; len]
                     }
@@ -713,22 +724,21 @@ pub(crate) fn coerce_buffers(
     let mut out = Vec::<TypedBufferDecl>::new();
 
     for buffer in buffers {
+        let buffer_loc = buffer.loc.as_ref();
         if !seen.insert(buffer.name.as_str()) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("duplicate buffer '{}'", buffer.name),
-                0,
-                0,
+                buffer_loc,
             ));
             continue;
         }
         if is_builtin_constant_name(&buffer.name) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!(
                     "buffer name '{}' is reserved as a builtin constant",
                     buffer.name
                 ),
-                0,
-                0,
+                buffer_loc,
             ));
             continue;
         }
@@ -739,13 +749,12 @@ pub(crate) fn coerce_buffers(
                 let elem_ty = match spec.elem {
                     BufferElemType::Primitive(ty) => ty,
                     BufferElemType::Generic(ref param_ty) => {
-                        errors.push(Diagnostic::semantic(
+                        errors.push(Diagnostic::semantic_span(
                             format!(
                                 "buffer '{}' uses unresolved generic element type '{}'",
                                 buffer.name, param_ty
                             ),
-                            0,
-                            0,
+                            buffer_loc,
                         ));
                         PrimitiveType::F32
                     }
@@ -755,7 +764,9 @@ pub(crate) fn coerce_buffers(
                     BufferChannels::Dynamic => TypedBufferChannels::Dynamic,
                     BufferChannels::Static(expr) => {
                         let ctx = format!("buffer '{}' static channel count", buffer.name);
-                        let Some(ch) = eval_data_size_expr(expr, options, &ctx, errors) else {
+                        let Some(ch) = with_loc_diag_context(buffer_loc, |_diag| {
+                            eval_data_size_expr(expr, options, &ctx, errors)
+                        }) else {
                             continue;
                         };
                         TypedBufferChannels::Static(ch)

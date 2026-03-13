@@ -37,7 +37,7 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
     nested_fields: &HashMap<String, HashSet<String>>,
 ) {
     match expr {
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if let Some((base, field)) = split_simple_field_path(name) {
                 if let Some(fields) = nested_fields.get(base) {
                     if fields.contains(field) {
@@ -46,7 +46,7 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
                 }
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if let Some(fields) = nested_fields.get(root) {
                     if fields.contains(field) {
@@ -56,7 +56,9 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
             }
             rewrite_nested_field_paths_in_expr(index, nested_fields);
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if let Some(fields) = nested_fields.get(root) {
                     if fields.contains(field) {
@@ -71,7 +73,7 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
                 rewrite_nested_field_paths_in_expr(end, nested_fields);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_nested_field_paths_in_expr(&mut spec.size, nested_fields);
             if let Some(values) = init {
                 for value in values {
@@ -96,16 +98,16 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_nested_field_paths_in_expr(inner, nested_fields)
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_nested_field_paths_in_expr(value, nested_fields);
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
 
@@ -203,7 +205,7 @@ pub(super) fn rewrite_nested_field_paths_in_stmt(
 
 pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<String, String>) {
     match expr {
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if let Some((base, field)) = split_simple_field_path(name) {
                 if let Some(mapped) = remap.get(base) {
                     *name = format!("{mapped}.{field}");
@@ -212,7 +214,7 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
                 *name = mapped.clone();
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if let Some(mapped) = remap.get(root) {
                     *base = format!("{mapped}.{field}");
@@ -222,7 +224,9 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
             }
             remap_nested_symbols_in_expr(index, remap);
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if let Some(mapped) = remap.get(root) {
                     *base = format!("{mapped}.{field}");
@@ -237,7 +241,7 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
                 remap_nested_symbols_in_expr(end, remap);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             remap_nested_symbols_in_expr(&mut spec.size, remap);
             if let Some(values) = init {
                 for value in values {
@@ -273,14 +277,14 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => remap_nested_symbols_in_expr(inner, remap),
-        Expr::ArrayLiteral(values) => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => remap_nested_symbols_in_expr(inner, remap),
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 remap_nested_symbols_in_expr(value, remap);
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
 
@@ -375,14 +379,14 @@ pub(super) fn prefix_self_fields_in_expr(
     nested_field_names: &HashSet<String>,
 ) {
     match expr {
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if let Some((base, field)) = split_simple_field_path(name) {
                 if base == "self" && nested_field_names.contains(field) {
                     *name = format!("self.{}", nested_field_name(prefix, field));
                 }
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if root == "self" && nested_field_names.contains(field) {
                     *base = format!("self.{}", nested_field_name(prefix, field));
@@ -390,7 +394,9 @@ pub(super) fn prefix_self_fields_in_expr(
             }
             prefix_self_fields_in_expr(index, prefix, nested_field_names);
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             if let Some((root, field)) = split_simple_field_path(base) {
                 if root == "self" && nested_field_names.contains(field) {
                     *base = format!("self.{}", nested_field_name(prefix, field));
@@ -403,7 +409,7 @@ pub(super) fn prefix_self_fields_in_expr(
                 prefix_self_fields_in_expr(end, prefix, nested_field_names);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             prefix_self_fields_in_expr(&mut spec.size, prefix, nested_field_names);
             if let Some(values) = init {
                 for value in values {
@@ -428,16 +434,16 @@ pub(super) fn prefix_self_fields_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             prefix_self_fields_in_expr(inner, prefix, nested_field_names)
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 prefix_self_fields_in_expr(value, prefix, nested_field_names);
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
 

@@ -4,6 +4,56 @@ use super::namespaces::{
 };
 use super::*;
 
+fn rebase_expr_locs(expr: &mut Expr, loc: SourceLoc) {
+    expr.set_loc(loc);
+    match expr {
+        Expr::ArrayLiteral { values, .. } => {
+            for value in values {
+                rebase_expr_locs(value, loc);
+            }
+        }
+        Expr::Index { index, .. }
+        | Expr::Cast { expr: index, .. }
+        | Expr::UnaryNot { expr: index, .. }
+        | Expr::UnaryBitNot { expr: index, .. } => {
+            rebase_expr_locs(index, loc);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                rebase_expr_locs(start, loc);
+            }
+            if let Some(end) = end {
+                rebase_expr_locs(end, loc);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            rebase_expr_locs(&mut spec.size, loc);
+            if let Some(init) = init {
+                for value in init {
+                    rebase_expr_locs(value, loc);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            rebase_expr_locs(lhs, loc);
+            rebase_expr_locs(rhs, loc);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                rebase_expr_locs(arg, loc);
+            }
+        }
+        Expr::UserCall { args, .. } => {
+            for arg in args {
+                rebase_expr_locs(&mut arg.expr, loc);
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+}
+
 fn is_builtin_compile_time_const(name: &str) -> bool {
     matches!(
         name,
@@ -25,29 +75,54 @@ fn is_builtin_compile_time_const(name: &str) -> bool {
     )
 }
 
+fn resolve_namespace_symbol_name_at(
+    name: &str,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
+) -> Result<String, Vec<Diagnostic>> {
+    let loc = loc.into();
+    let span = loc.span();
+    resolve_namespace_symbol_name(name, current_ns, const_env, state, generated, span)
+}
+
+fn rewrite_named_type_ref_name_at(
+    name: &mut String,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
+) -> Result<(), Vec<Diagnostic>> {
+    let loc = loc.into();
+    rewrite_named_type_ref_name(name, current_ns, const_env, state, generated, Some(&loc))
+}
+
 pub(super) fn validate_compile_time_expr(
     expr: &Expr,
     known_consts: &HashMap<String, Expr>,
     context: &str,
 ) -> Result<(), Vec<Diagnostic>> {
+    let expr_span = expr.loc().span();
     match expr {
-        Expr::Number(_) | Expr::Bool(_) => Ok(()),
-        Expr::Int(_) => Ok(()),
-        Expr::Var(name) => {
+        Expr::Number { .. } | Expr::Bool { .. } => Ok(()),
+        Expr::Int { .. } => Ok(()),
+        Expr::Var { name, .. } => {
             if known_consts.contains_key(name) || is_builtin_compile_time_const(name) {
                 Ok(())
             } else {
-                Err(vec![Diagnostic::semantic(
+                Err(vec![Diagnostic::semantic_span(
                     format!(
                         "{context}: expression references non-compile-time symbol '{}'",
                         name
                     ),
-                    0,
-                    0,
+                    expr_span,
                 )])
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             validate_compile_time_expr(expr, known_consts, context)
         }
         Expr::Compare { lhs, rhs, .. }
@@ -61,10 +136,9 @@ pub(super) fn validate_compile_time_expr(
         | Expr::Index { .. }
         | Expr::Slice { .. }
         | Expr::ArrayCtor { .. }
-        | Expr::ArrayLiteral(_) => Err(vec![Diagnostic::semantic(
+        | Expr::ArrayLiteral { .. } => Err(vec![Diagnostic::semantic_span(
             format!("{context}: expression is not compile-time evaluable"),
-            0,
-            0,
+            expr_span,
         )]),
     }
 }
@@ -77,13 +151,12 @@ pub(super) fn finalize_const_decl_expr(
     generated: &mut Vec<Block>,
 ) -> Result<Expr, Vec<Diagnostic>> {
     if is_builtin_compile_time_const(&decl.name) {
-        return Err(vec![Diagnostic::semantic(
+        return Err(vec![Diagnostic::semantic_span(
             format!(
                 "constant name '{}' is reserved as a builtin compile-time constant",
                 decl.name
             ),
-            0,
-            0,
+            decl.loc.as_ref(),
         )]);
     }
 
@@ -93,6 +166,7 @@ pub(super) fn finalize_const_decl_expr(
     let expr = decl.expr.clone();
     Ok(if let Some(ty) = decl.ty {
         Expr::Cast {
+            loc: expr.loc().into(),
             to: ty,
             expr: Box::new(expr),
         }
@@ -103,21 +177,26 @@ pub(super) fn finalize_const_decl_expr(
 
 pub(super) fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, Expr>) -> Expr {
     match expr {
-        Expr::Var(name) => const_env
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| Expr::Var(name.clone())),
-        Expr::ArrayLiteral(values) => Expr::ArrayLiteral(
-            values
+        Expr::Var { name, .. } => const_env.get(name).cloned().unwrap_or_else(|| expr.clone()),
+        Expr::ArrayLiteral { loc, values } => Expr::ArrayLiteral {
+            loc: loc.clone(),
+            values: values
                 .iter()
                 .map(|v| substitute_expr_with_env(v, const_env))
                 .collect(),
-        ),
-        Expr::Index { base, index } => Expr::Index {
+        },
+        Expr::Index { loc, base, index } => Expr::Index {
+            loc: loc.clone(),
             base: base.clone(),
             index: Box::new(substitute_expr_with_env(index, const_env)),
         },
-        Expr::Slice { base, start, end } => Expr::Slice {
+        Expr::Slice {
+            loc,
+            base,
+            start,
+            end,
+        } => Expr::Slice {
+            loc: loc.clone(),
             base: base.clone(),
             start: start
                 .as_ref()
@@ -126,7 +205,8 @@ pub(super) fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, 
                 .as_ref()
                 .map(|expr| Box::new(substitute_expr_with_env(expr, const_env))),
         },
-        Expr::ArrayCtor { spec, init } => Expr::ArrayCtor {
+        Expr::ArrayCtor { loc, spec, init } => Expr::ArrayCtor {
+            loc: loc.clone(),
             spec: ArrayTypeSpec {
                 elem: spec.elem.clone(),
                 size: Box::new(substitute_expr_with_env(&spec.size, const_env)),
@@ -138,12 +218,14 @@ pub(super) fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, 
                     .collect()
             }),
         },
-        Expr::Compare { op, lhs, rhs } => Expr::Compare {
+        Expr::Compare { loc, op, lhs, rhs } => Expr::Compare {
+            loc: loc.clone(),
             op: *op,
             lhs: Box::new(substitute_expr_with_env(lhs, const_env)),
             rhs: Box::new(substitute_expr_with_env(rhs, const_env)),
         },
-        Expr::Call { func, args } => Expr::Call {
+        Expr::Call { loc, func, args } => Expr::Call {
+            loc: loc.clone(),
             func: *func,
             args: args
                 .iter()
@@ -151,10 +233,12 @@ pub(super) fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, 
                 .collect(),
         },
         Expr::UserCall {
+            loc,
             name,
             type_args,
             args,
         } => Expr::UserCall {
+            loc: loc.clone(),
             name: name.clone(),
             type_args: type_args.clone(),
             args: args
@@ -165,27 +249,32 @@ pub(super) fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, 
                 })
                 .collect(),
         },
-        Expr::Cast { to, expr } => Expr::Cast {
+        Expr::Cast { loc, to, expr } => Expr::Cast {
+            loc: loc.clone(),
             to: *to,
             expr: Box::new(substitute_expr_with_env(expr, const_env)),
         },
-        Expr::UnaryNot { expr } => Expr::UnaryNot {
+        Expr::UnaryNot { loc, expr } => Expr::UnaryNot {
+            loc: loc.clone(),
             expr: Box::new(substitute_expr_with_env(expr, const_env)),
         },
-        Expr::UnaryBitNot { expr } => Expr::UnaryBitNot {
+        Expr::UnaryBitNot { loc, expr } => Expr::UnaryBitNot {
+            loc: loc.clone(),
             expr: Box::new(substitute_expr_with_env(expr, const_env)),
         },
-        Expr::Logical { op, lhs, rhs } => Expr::Logical {
+        Expr::Logical { loc, op, lhs, rhs } => Expr::Logical {
+            loc: loc.clone(),
             op: *op,
             lhs: Box::new(substitute_expr_with_env(lhs, const_env)),
             rhs: Box::new(substitute_expr_with_env(rhs, const_env)),
         },
-        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+        Expr::Binary { loc, op, lhs, rhs } => Expr::Binary {
+            loc: loc.clone(),
             op: *op,
             lhs: Box::new(substitute_expr_with_env(lhs, const_env)),
             rhs: Box::new(substitute_expr_with_env(rhs, const_env)),
         },
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => expr.clone(),
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => expr.clone(),
     }
 }
 
@@ -202,10 +291,9 @@ pub(super) fn rewrite_blocks_namespace_refs(
     for mut block in std::mem::take(blocks) {
         if let Block::Const(decl) = &mut block {
             if !local_const_names.insert(decl.name.clone()) {
-                return Err(vec![Diagnostic::semantic(
+                return Err(vec![Diagnostic::semantic_span(
                     format!("duplicate top-level constant '{}'", decl.name),
-                    0,
-                    0,
+                    decl.loc.as_ref(),
                 )]);
             }
             let value = finalize_const_decl_expr(decl, "", &scope_consts, state, generated)?;
@@ -243,7 +331,14 @@ pub(super) fn rewrite_block_namespace_refs(
         Block::Buffers(decls) => {
             for decl in decls {
                 if let Some(ty) = &mut decl.ty {
-                    rewrite_buffer_type(ty, current_ns, const_env, state, generated)?;
+                    rewrite_buffer_type(
+                        ty,
+                        current_ns,
+                        const_env,
+                        state,
+                        generated,
+                        decl.ty_loc.as_ref().or(decl.loc.as_ref()),
+                    )?;
                 }
             }
         }
@@ -263,7 +358,14 @@ pub(super) fn rewrite_block_namespace_refs(
         }
         Block::Struct(s) => {
             for field in &mut s.fields {
-                rewrite_field_type(&mut field.ty, current_ns, const_env, state, generated)?;
+                rewrite_field_type(
+                    &mut field.ty,
+                    current_ns,
+                    const_env,
+                    state,
+                    generated,
+                    field.ty_loc.as_ref().or(field.loc.as_ref()),
+                )?;
                 if let Some(default) = &mut field.default {
                     rewrite_expr(default, current_ns, const_env, state, generated)?;
                 }
@@ -284,11 +386,25 @@ pub(super) fn rewrite_block_namespace_refs(
             }
             for decl in &mut p.buffers {
                 if let Some(ty) = &mut decl.ty {
-                    rewrite_buffer_type(ty, current_ns, const_env, state, generated)?;
+                    rewrite_buffer_type(
+                        ty,
+                        current_ns,
+                        const_env,
+                        state,
+                        generated,
+                        decl.ty_loc.as_ref().or(decl.loc.as_ref()),
+                    )?;
                 }
             }
             if let Some(default_ty) = &mut p.init.default_ty {
-                rewrite_decl_type(default_ty, current_ns, const_env, state, generated)?;
+                rewrite_decl_type(
+                    default_ty,
+                    current_ns,
+                    const_env,
+                    state,
+                    generated,
+                    p.init.default_ty_loc.as_ref().or(p.init.loc.as_ref()),
+                )?;
             }
             rewrite_stmts(&mut p.init.body, current_ns, const_env, state, generated)?;
             rewrite_stmts(&mut p.block_pre, current_ns, const_env, state, generated)?;
@@ -306,7 +422,14 @@ pub(super) fn rewrite_block_namespace_refs(
         }
         Block::Init(init) => {
             if let Some(default_ty) = &mut init.default_ty {
-                rewrite_decl_type(default_ty, current_ns, const_env, state, generated)?;
+                rewrite_decl_type(
+                    default_ty,
+                    current_ns,
+                    const_env,
+                    state,
+                    generated,
+                    init.default_ty_loc.as_ref().or(init.loc.as_ref()),
+                )?;
             }
             rewrite_stmts(&mut init.body, current_ns, const_env, state, generated)?;
         }
@@ -349,6 +472,7 @@ fn rewrite_port_decls(
             const_env,
             state,
             generated,
+            decl.ty_loc.as_ref().or(decl.loc.as_ref()),
         )?;
     }
     Ok(())
@@ -370,6 +494,7 @@ fn rewrite_param_decls(
             const_env,
             state,
             generated,
+            decl.ty_loc.as_ref().or(decl.loc.as_ref()),
         )?;
     }
     Ok(())
@@ -383,9 +508,11 @@ fn rewrite_decl_type_default_range(
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
 ) -> Result<(), Vec<Diagnostic>> {
+    let loc = loc.into();
     if let Some(ty) = ty {
-        rewrite_decl_type(ty, current_ns, const_env, state, generated)?;
+        rewrite_decl_type(ty, current_ns, const_env, state, generated, loc)?;
     }
     if let Some(default) = default {
         rewrite_expr(default, current_ns, const_env, state, generated)?;
@@ -429,7 +556,14 @@ fn rewrite_function_def(
 ) -> Result<(), Vec<Diagnostic>> {
     for param in &mut def.params {
         if let Some(ty) = &mut param.ty {
-            rewrite_fn_param_type(ty, current_ns, const_env, state, generated)?;
+            rewrite_fn_param_type(
+                ty,
+                current_ns,
+                const_env,
+                state,
+                generated,
+                param.ty_loc.as_ref().or(param.loc.as_ref()),
+            )?;
         }
         if let Some(default) = &mut param.default {
             rewrite_expr(default, current_ns, const_env, state, generated)?;
@@ -450,9 +584,17 @@ fn rewrite_event_def(
             EventParamType::Array { size, .. } => {
                 rewrite_expr(size, current_ns, const_env, state, generated)?;
             }
-            EventParamType::Scalar(_)
-            | EventParamType::Slice { .. }
-            | EventParamType::GenericSlice { .. } => {}
+            EventParamType::GenericSlice { elem } => {
+                rewrite_named_type_ref_name_at(
+                    elem,
+                    current_ns,
+                    const_env,
+                    state,
+                    generated,
+                    param.ty_loc.as_ref().or(param.loc.as_ref()),
+                )?;
+            }
+            EventParamType::Scalar(_) | EventParamType::Slice { .. } => {}
         }
     }
     rewrite_stmts(&mut event.body, current_ns, const_env, state, generated)
@@ -464,13 +606,15 @@ fn rewrite_decl_type(
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
 ) -> Result<(), Vec<Diagnostic>> {
+    let loc = loc.into();
     match ty {
         DeclType::Generic(name) => {
-            rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
+            rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
         }
         DeclType::ArrayGeneric { elem, size } => {
-            rewrite_named_type_ref_name(elem, current_ns, const_env, state, generated)?;
+            rewrite_named_type_ref_name_at(elem, current_ns, const_env, state, generated, loc)?;
             rewrite_expr(size, current_ns, const_env, state, generated)?;
         }
         DeclType::Array { size, .. } => {
@@ -487,14 +631,16 @@ fn rewrite_field_type(
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
 ) -> Result<(), Vec<Diagnostic>> {
+    let loc = loc.into();
     match ty {
         FieldType::Generic(name) => {
-            rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
+            rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
         }
         FieldType::Array(spec) => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
-                rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
+                rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
             }
             rewrite_expr(&mut spec.size, current_ns, const_env, state, generated)?;
         }
@@ -509,16 +655,18 @@ fn rewrite_fn_param_type(
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
 ) -> Result<(), Vec<Diagnostic>> {
+    let loc = loc.into();
     match ty {
         FnParamType::Struct(name) => {
-            rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
+            rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
         }
         FnParamType::ArrayGeneric(name) => {
-            rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
+            rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
         }
         FnParamType::Buffer(buffer_ty) => {
-            rewrite_buffer_type(buffer_ty, current_ns, const_env, state, generated)?;
+            rewrite_buffer_type(buffer_ty, current_ns, const_env, state, generated, loc)?;
         }
         FnParamType::Primitive(_) | FnParamType::Array(_) | FnParamType::BareBuffer => {}
     }
@@ -531,9 +679,11 @@ fn rewrite_buffer_type(
     const_env: &HashMap<String, Expr>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
 ) -> Result<(), Vec<Diagnostic>> {
+    let loc = loc.into();
     if let BufferElemType::Generic(name) = &mut ty.elem {
-        rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
+        rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
     }
     if let BufferChannels::Static(expr) = &mut ty.channels {
         rewrite_expr(expr, current_ns, const_env, state, generated)?;
@@ -554,10 +704,9 @@ fn rewrite_stmts(
     for mut stmt in std::mem::take(stmts) {
         if let Stmt::Const { decl, .. } = &mut stmt {
             if !local_const_names.insert(decl.name.clone()) {
-                return Err(vec![Diagnostic::semantic(
+                return Err(vec![Diagnostic::semantic_span(
                     format!("duplicate constant '{}' in scope", decl.name),
-                    0,
-                    0,
+                    decl.loc.as_ref(),
                 )]);
             }
             let value =
@@ -582,29 +731,34 @@ fn rewrite_stmt(
     match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign {
+            target_loc,
             target,
             generic_decl_ty,
+            typed_decl_ty_loc,
             expr,
             ..
         } => {
             match target {
                 AssignTarget::Var(name) => {
                     if const_env.contains_key(name) {
-                        return Err(vec![Diagnostic::semantic(
+                        return Err(vec![Diagnostic::semantic_span(
                             format!("cannot assign to constant '{}'", name),
-                            0,
-                            0,
+                            target_loc.as_ref(),
                         )]);
                     }
                     if looks_like_namespace_ref(name) {
-                        let resolved = resolve_namespace_symbol_name(
-                            name, current_ns, const_env, state, generated,
+                        let resolved = resolve_namespace_symbol_name_at(
+                            name,
+                            current_ns,
+                            const_env,
+                            state,
+                            generated,
+                            target_loc.as_ref(),
                         )?;
                         if state.namespace_const_values.contains_key(&resolved) {
-                            return Err(vec![Diagnostic::semantic(
+                            return Err(vec![Diagnostic::semantic_span(
                                 format!("cannot assign to constant '{}'", name),
-                                0,
-                                0,
+                                target_loc.as_ref(),
                             )]);
                         }
                         *name = resolved;
@@ -612,14 +766,18 @@ fn rewrite_stmt(
                 }
                 AssignTarget::Index { base, index } => {
                     if looks_like_namespace_ref(base) {
-                        let resolved = resolve_namespace_symbol_name(
-                            base, current_ns, const_env, state, generated,
+                        let resolved = resolve_namespace_symbol_name_at(
+                            base,
+                            current_ns,
+                            const_env,
+                            state,
+                            generated,
+                            target_loc.as_ref(),
                         )?;
                         if state.namespace_const_values.contains_key(&resolved) {
-                            return Err(vec![Diagnostic::semantic(
+                            return Err(vec![Diagnostic::semantic_span(
                                 format!("cannot assign to constant '{}'", base),
-                                0,
-                                0,
+                                target_loc.as_ref(),
                             )]);
                         }
                         *base = resolved;
@@ -628,14 +786,18 @@ fn rewrite_stmt(
                 }
                 AssignTarget::Slice { base, start, end } => {
                     if looks_like_namespace_ref(base) {
-                        let resolved = resolve_namespace_symbol_name(
-                            base, current_ns, const_env, state, generated,
+                        let resolved = resolve_namespace_symbol_name_at(
+                            base,
+                            current_ns,
+                            const_env,
+                            state,
+                            generated,
+                            target_loc.as_ref(),
                         )?;
                         if state.namespace_const_values.contains_key(&resolved) {
-                            return Err(vec![Diagnostic::semantic(
+                            return Err(vec![Diagnostic::semantic_span(
                                 format!("cannot assign to constant '{}'", base),
-                                0,
-                                0,
+                                target_loc.as_ref(),
                             )]);
                         }
                         *base = resolved;
@@ -650,8 +812,13 @@ fn rewrite_stmt(
             }
             if let Some(name) = generic_decl_ty {
                 if looks_like_namespace_ref(name) {
-                    *name = resolve_namespace_symbol_name(
-                        name, current_ns, const_env, state, generated,
+                    *name = resolve_namespace_symbol_name_at(
+                        name,
+                        current_ns,
+                        const_env,
+                        state,
+                        generated,
+                        typed_decl_ty_loc.as_ref().or(target_loc.as_ref()),
                     )?;
                 }
             }
@@ -700,46 +867,73 @@ fn rewrite_expr(
     state: &mut LoadState,
     generated: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
-    if let Expr::Var(name) = expr {
+    let use_site_loc = expr.loc();
+    if let Expr::Var { name, .. } = expr {
         if let Some(value) = const_env.get(name).cloned() {
+            let mut value = value;
+            rebase_expr_locs(&mut value, use_site_loc);
             *expr = value;
             return rewrite_expr(expr, current_ns, const_env, state, generated);
         }
     }
 
     match expr {
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
                 if let Some(value) = state.namespace_const_values.get(&qualified).cloned() {
+                    let mut value = value;
+                    rebase_expr_locs(&mut value, use_site_loc);
                     *expr = value;
                     return rewrite_expr(expr, current_ns, const_env, state, generated);
                 }
                 *name = qualified;
             } else if looks_like_namespace_ref(name) {
-                let resolved =
-                    resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
+                let resolved = resolve_namespace_symbol_name_at(
+                    name,
+                    current_ns,
+                    const_env,
+                    state,
+                    generated,
+                    use_site_loc,
+                )?;
                 if let Some(value) = state.namespace_const_values.get(&resolved).cloned() {
+                    let mut value = value;
+                    rebase_expr_locs(&mut value, use_site_loc);
                     *expr = value;
                     return rewrite_expr(expr, current_ns, const_env, state, generated);
                 }
                 *name = resolved;
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             if let Some(qualified) = qualify_local_namespace_member_name(base, current_ns, state) {
                 *base = qualified;
             } else if looks_like_namespace_ref(base) {
-                *base =
-                    resolve_namespace_symbol_name(base, current_ns, const_env, state, generated)?;
+                *base = resolve_namespace_symbol_name_at(
+                    base,
+                    current_ns,
+                    const_env,
+                    state,
+                    generated,
+                    use_site_loc,
+                )?;
             }
             rewrite_expr(index, current_ns, const_env, state, generated)?;
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             if let Some(qualified) = qualify_local_namespace_member_name(base, current_ns, state) {
                 *base = qualified;
             } else if looks_like_namespace_ref(base) {
-                *base =
-                    resolve_namespace_symbol_name(base, current_ns, const_env, state, generated)?;
+                *base = resolve_namespace_symbol_name_at(
+                    base,
+                    current_ns,
+                    const_env,
+                    state,
+                    generated,
+                    use_site_loc,
+                )?;
             }
             if let Some(start) = start {
                 rewrite_expr(start, current_ns, const_env, state, generated)?;
@@ -748,9 +942,16 @@ fn rewrite_expr(
                 rewrite_expr(end, current_ns, const_env, state, generated)?;
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { loc, spec, init } => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
-                rewrite_named_type_ref_name(name, current_ns, const_env, state, generated)?;
+                rewrite_named_type_ref_name(
+                    name,
+                    current_ns,
+                    const_env,
+                    state,
+                    generated,
+                    loc.as_ref(),
+                )?;
             }
             rewrite_expr(&mut spec.size, current_ns, const_env, state, generated)?;
             if let Some(values) = init {
@@ -774,24 +975,30 @@ fn rewrite_expr(
             if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
                 *name = qualified;
             } else if looks_like_namespace_ref(name) {
-                *name =
-                    resolve_namespace_symbol_name(name, current_ns, const_env, state, generated)?;
+                *name = resolve_namespace_symbol_name_at(
+                    name,
+                    current_ns,
+                    const_env,
+                    state,
+                    generated,
+                    use_site_loc,
+                )?;
             }
             for arg in args {
                 rewrite_expr(&mut arg.expr, current_ns, const_env, state, generated)?;
             }
         }
         Expr::Cast { expr: arg, .. }
-        | Expr::UnaryNot { expr: arg }
-        | Expr::UnaryBitNot { expr: arg } => {
+        | Expr::UnaryNot { expr: arg, .. }
+        | Expr::UnaryBitNot { expr: arg, .. } => {
             rewrite_expr(arg, current_ns, const_env, state, generated)?;
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_expr(value, current_ns, const_env, state, generated)?;
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
     Ok(())
 }

@@ -1,5 +1,9 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(super) fn coerce_const_default_to_typed(
     raw_default: f64,
     ty: PrimitiveType,
@@ -50,30 +54,27 @@ pub(super) fn eval_typed_const_expr(
     require_integral: bool,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<TypedConstValue> {
+    let expr_diag = DiagCtx::new(expr.loc());
     let raw = eval_const_expr_f64(expr, options, context, errors)?;
     if !allow_non_finite && !raw.is_finite() {
-        errors.push(Diagnostic::semantic(
-            format!("{context} must be finite"),
-            0,
-            0,
-        ));
+        push_semantic(expr_diag, errors, format!("{context} must be finite"));
         return None;
     }
     if require_integral && (!raw.is_finite() || raw.fract() != 0.0) {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            expr_diag,
+            errors,
             format!("{context} must be an integer constant"),
-            0,
-            0,
-        ));
+        );
         return None;
     }
     if let Some((min, max)) = int_bounds_for_type(ty) {
         if !raw.is_finite() || raw < min || raw > max {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                expr_diag,
+                errors,
                 format!("{context} is out of range for {}", primitive_type_label(ty)),
-                0,
-                0,
-            ));
+            );
             return None;
         }
     }
@@ -88,11 +89,11 @@ pub(super) fn eval_decl_range_for_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<TypedValueRange> {
     if ty == PrimitiveType::Bool {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context} range is not supported for bool"),
-            0,
-            0,
-        ));
+        );
         return None;
     }
     let require_integral = matches!(ty, PrimitiveType::I32 | PrimitiveType::I64);
@@ -119,11 +120,11 @@ pub(super) fn eval_decl_range_for_type(
         errors,
     )?;
     if min.to_f64() > max.to_f64() {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context} range minimum is greater than range maximum"),
-            0,
-            0,
-        ));
+        );
         return None;
     }
     Some(TypedValueRange { min, max })
@@ -172,11 +173,11 @@ pub(super) fn clamp_typed_const_to_range(
 
 pub(super) fn typed_const_expr(value: TypedConstValue) -> Expr {
     match value {
-        TypedConstValue::F32(v) => Expr::Number(v),
-        TypedConstValue::F64(v) => Expr::Number(v as f32),
-        TypedConstValue::I32(v) => Expr::Int(v as i64),
-        TypedConstValue::I64(v) => Expr::Int(v),
-        TypedConstValue::Bool(v) => Expr::Bool(v),
+        TypedConstValue::F32(v) => Expr::number(v),
+        TypedConstValue::F64(v) => Expr::number(v as f32),
+        TypedConstValue::I32(v) => Expr::int(v as i64),
+        TypedConstValue::I64(v) => Expr::int(v),
+        TypedConstValue::Bool(v) => Expr::bool(v),
     }
 }
 
@@ -184,9 +185,11 @@ pub(super) fn clamp_expr_to_range(expr: Expr, range: TypedValueRange) -> Expr {
     let min_expr = typed_const_expr(range.min);
     let max_expr = typed_const_expr(range.max);
     Expr::Call {
+        loc: Default::default(),
         func: BuiltinFn::Max,
         args: vec![
             Expr::Call {
+                loc: Default::default(),
                 func: BuiltinFn::Min,
                 args: vec![expr, max_expr],
             },
@@ -203,16 +206,16 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
     clamp_params: bool,
 ) {
     match expr {
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if clamp_inputs {
                 if let Some(alias) = input_aliases.get(name) {
-                    *expr = Expr::Var(alias.clone());
+                    *expr = Expr::var(alias.clone());
                     return;
                 }
             }
             if clamp_params {
                 if let Some(alias) = param_aliases.get(name) {
-                    *expr = Expr::Var(alias.clone());
+                    *expr = Expr::var(alias.clone());
                 }
             }
         }
@@ -245,7 +248,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 );
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_top_level_range_clamps_in_expr(
                 &mut spec.size,
                 input_aliases,
@@ -295,8 +298,8 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_top_level_range_clamps_in_expr(
                 inner,
                 input_aliases,
@@ -305,7 +308,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 clamp_params,
             );
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_top_level_range_clamps_in_expr(
                     value,
@@ -327,7 +330,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 );
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
 
@@ -468,12 +471,14 @@ pub(super) fn build_top_level_range_hoist_assign(
     range: TypedValueRange,
 ) -> Stmt {
     Stmt::Assign {
-        loc: None,
+        loc: Default::default(),
+        target_loc: Default::default(),
         target: AssignTarget::Var(alias_name),
         decl_ty: None,
         generic_decl_ty: None,
         is_typed_decl: false,
-        expr: clamp_expr_to_range(Expr::Var(source_name.to_owned()), range),
+        typed_decl_ty_loc: Default::default(),
+        expr: clamp_expr_to_range(Expr::var(source_name), range),
     }
 }
 
@@ -496,6 +501,7 @@ pub(super) fn expand_port_decls(
     let mut ranges = HashMap::new();
 
     for port in ports {
+        let port_loc = port.loc.as_ref();
         match port.ty.as_ref() {
             None | Some(DeclType::Scalar(_)) => {
                 let ty = match port.ty.as_ref() {
@@ -503,27 +509,31 @@ pub(super) fn expand_port_decls(
                     _ => PrimitiveType::F32,
                 };
                 let raw_default = match &port.default {
-                    Some(expr) => eval_typed_const_expr(
-                        expr,
-                        ty,
-                        options,
-                        &format!("{kind} '{}' default", port.name),
-                        is_float_type(ty),
-                        matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
-                        errors,
-                    )
+                    Some(expr) => with_loc_diag_context(port_loc, |_diag| {
+                        eval_typed_const_expr(
+                            expr,
+                            ty,
+                            options,
+                            &format!("{kind} '{}' default", port.name),
+                            is_float_type(ty),
+                            matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
+                            errors,
+                        )
+                    })
                     .unwrap_or_else(|| coerce_const_default_to_typed(0.0, ty)),
                     None => coerce_const_default_to_typed(0.0, ty),
                 };
                 let mut default = raw_default;
-                let range = port.range.as_ref().and_then(|r| {
-                    eval_decl_range_for_type(
-                        r,
-                        ty,
-                        options,
-                        &format!("{kind} '{}'", port.name),
-                        errors,
-                    )
+                let range = with_loc_diag_context(port_loc, |_diag| {
+                    port.range.as_ref().and_then(|r| {
+                        eval_decl_range_for_type(
+                            r,
+                            ty,
+                            options,
+                            &format!("{kind} '{}'", port.name),
+                            errors,
+                        )
+                    })
                 });
                 if let Some(r) = range {
                     default = clamp_typed_const_to_range(raw_default, r);
@@ -534,13 +544,12 @@ pub(super) fn expand_port_decls(
                 defaults.insert(port.name.clone(), default);
             }
             Some(DeclType::Generic(param)) => {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "{kind} '{}' uses unresolved generic type '{}'",
                         port.name, param
                     ),
-                    0,
-                    0,
+                    port_loc,
                 ));
                 flat.push(port.name.clone());
                 types.insert(port.name.clone(), PrimitiveType::F32);
@@ -551,35 +560,34 @@ pub(super) fn expand_port_decls(
             }
             Some(DeclType::ArrayGeneric { elem, size }) => {
                 if port.default.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "{kind} '{}' default is not supported for array declarations",
                             port.name
                         ),
-                        0,
-                        0,
+                        port_loc,
                     ));
                 }
                 if port.range.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "{kind} '{}' range is not supported for array declarations",
                             port.name
                         ),
-                        0,
-                        0,
+                        port_loc,
                     ));
                 }
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "{kind} '{}' uses unresolved generic array element type '{}'",
                         port.name, elem
                     ),
-                    0,
-                    0,
+                    port_loc,
                 ));
                 let size_context = format!("{kind} '{}' array size", port.name);
-                let Some(len) = eval_data_size_expr(size, options, &size_context, errors) else {
+                let Some(len) = with_loc_diag_context(port_loc, |_diag| {
+                    eval_data_size_expr(size, options, &size_context, errors)
+                }) else {
                     continue;
                 };
                 let offset = flat.len();
@@ -599,27 +607,27 @@ pub(super) fn expand_port_decls(
             }
             Some(DeclType::Array { elem, size }) => {
                 if port.default.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "{kind} '{}' default is not supported for array declarations",
                             port.name
                         ),
-                        0,
-                        0,
+                        port_loc,
                     ));
                 }
                 if port.range.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "{kind} '{}' range is not supported for array declarations",
                             port.name
                         ),
-                        0,
-                        0,
+                        port_loc,
                     ));
                 }
                 let size_context = format!("{kind} '{}' array size", port.name);
-                let Some(len) = eval_data_size_expr(size, options, &size_context, errors) else {
+                let Some(len) = with_loc_diag_context(port_loc, |_diag| {
+                    eval_data_size_expr(size, options, &size_context, errors)
+                }) else {
                     continue;
                 };
                 let offset = flat.len();

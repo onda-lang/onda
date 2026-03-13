@@ -1,19 +1,27 @@
 use crate::*;
 
+fn push_expr_error(errors: &mut Vec<Diagnostic>, expr: &Expr, message: impl Into<String>) {
+    errors.push(Diagnostic::semantic_span(message, expr.loc()));
+}
+
+fn push_loc_error(errors: &mut Vec<Diagnostic>, loc: SourceLoc, message: impl Into<String>) {
+    errors.push(Diagnostic::semantic_span(message, loc));
+}
+
 pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diagnostic>) {
     match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
-        Expr::ArrayLiteral(values) => {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 validate_expr(value, env, errors);
             }
-            errors.push(Diagnostic::semantic(
+            push_expr_error(
+                errors,
+                expr,
                 "array literals are only allowed in typed array declarations and parameter defaults",
-                0,
-                0,
-            ));
+            );
         }
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if is_builtin_constant_name(name) {
                 return;
             }
@@ -29,102 +37,102 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     })
                 {
                     let Some(_fields) = env.struct_defs.get(struct_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!("unknown struct type '{}'", struct_name),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let Some(field_decl) =
                         resolve_struct_field_decl(struct_name, field, env.struct_defs)
                     else {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!(
                                 "struct {} '{}' (type '{}') has no field '{}'",
                                 owner_kind, base, struct_name, field
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     if matches!(field_decl.ty, TypedFieldType::Array(_)) {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!("array field '{}.{}' must be indexed", base, field),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     return;
                 }
 
                 let flat = format!("{base}.{field}");
                 if env.array_vars.contains_key(&flat) {
-                    errors.push(Diagnostic::semantic(
+                    push_expr_error(
+                        errors,
+                        expr,
                         format!("array symbol '{flat}' must be indexed"),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 }
                 if !env.known_scalars.contains(&flat)
                     && !env.locals.contains(&flat)
                     && !env.outputs.contains(&flat)
                 {
-                    errors.push(Diagnostic::semantic(
+                    push_expr_error(
+                        errors,
+                        expr,
                         format!("unknown symbol '{flat}' in expression"),
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 return;
             }
 
             if env.param_structs.contains_key(name) {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!("struct parameter '{}' must be accessed via fields", name),
-                    0,
-                    0,
-                ));
+                );
                 return;
             }
             if env.struct_instances.contains_key(name) {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!("struct instance '{name}' must be accessed via fields"),
-                    0,
-                    0,
-                ));
+                );
                 return;
             }
             if env.array_vars.contains_key(name) {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!("array symbol '{name}' must be indexed"),
-                    0,
-                    0,
-                ));
+                );
                 return;
             }
             if has_declared_buffer_symbol_info(env.declared_symbols, name) {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!("buffer symbol '{name}' must be indexed"),
-                    0,
-                    0,
-                ));
+                );
                 return;
             }
             if !env.known_scalars.contains(name)
                 && !env.locals.contains(name)
                 && !env.outputs.contains(name)
             {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!("unknown symbol '{name}' in expression"),
-                    0,
-                    0,
-                ));
+                );
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             if let Some((root, field)) = split_field_path(base, errors) {
                 if let Some((struct_name, owner_kind)) = env
                     .param_structs
@@ -137,35 +145,35 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     })
                 {
                     let Some(_fields) = env.struct_defs.get(struct_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!("unknown struct type '{}'", struct_name),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let Some(field_decl) =
                         resolve_struct_field_decl(struct_name, field, env.struct_defs)
                     else {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!(
                                 "struct {} '{}' (type '{}') has no field '{}'",
                                 owner_kind, root, struct_name, field
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!(
                                 "field '{}.{}' is not array and cannot be indexed",
                                 root, field
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     validate_expr(index, env, errors);
                     return;
@@ -175,23 +183,25 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
             {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!("indexed expression '{base}[...]' is not a array/buffer symbol"),
-                    0,
-                    0,
-                ));
+                );
             } else if is_declared_multichannel_buffer_info(env.declared_symbols, base) {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!(
                         "indexed expression '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
             validate_expr(index, env, errors);
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             if let Some((root, field)) = split_field_path(base, errors) {
                 if let Some((struct_name, owner_kind)) = env
                     .param_structs
@@ -204,54 +214,54 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     })
                 {
                     let Some(_fields) = env.struct_defs.get(struct_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!("unknown struct type '{}'", struct_name),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let Some(field_decl) =
                         resolve_struct_field_decl(struct_name, field, env.struct_defs)
                     else {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!(
                                 "struct {} '{}' (type '{}') has no field '{}'",
                                 owner_kind, root, struct_name, field
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!(
                                 "field '{}.{}' is not array and cannot be sliced",
                                 root, field
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                 }
             } else if !env.array_vars.contains_key(base)
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
             {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!("slice expression '{base}[...]' is not an array/buffer symbol"),
-                    0,
-                    0,
-                ));
+                );
             } else if is_declared_multichannel_buffer_info(env.declared_symbols, base) {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!(
                         "slice expression '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
             if let Some(start) = start {
                 validate_expr(start, env, errors);
@@ -262,11 +272,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
         }
         Expr::ArrayCtor { init, .. } => {
             if !env.allow_array_ctor {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     "array[...] constructor is only allowed in init assignments",
-                    0,
-                    0,
-                ));
+                );
             }
             if let Some(values) = init {
                 for value in values {
@@ -274,7 +284,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 }
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             validate_expr(expr, env, errors);
         }
         Expr::Logical { lhs, rhs, .. } => {
@@ -285,34 +295,35 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             validate_expr(lhs, env, errors);
             validate_expr(rhs, env, errors);
         }
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             for arg in args {
                 validate_expr(arg, env, errors);
             }
             let expected = builtin_arity(*func);
             if args.len() != expected {
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!(
                         "builtin '{}' expects {expected} positional arguments, got {}",
                         builtin_name(*func),
                         args.len()
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
         }
         Expr::UserCall {
             name,
             type_args,
             args,
+            ..
         } => {
             if is_builtin_unsafe_data_fn(name) {
-                validate_unsafe_data_builtin_call(name, args, env, errors);
+                validate_unsafe_data_builtin_call(name, args, env, expr.loc(), errors);
                 return;
             }
             if is_internal_buffer_2d_fn(name) {
-                validate_internal_buffer_2d_call(name, args, env, errors);
+                validate_internal_buffer_2d_call(name, args, env, expr.loc(), errors);
                 return;
             }
             if name == PROC_INDEX_CALL_SENTINEL
@@ -324,23 +335,36 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     .map(|(base, _)| base == PROC_INDEX_CALL_SENTINEL)
                     .unwrap_or(false)
             {
-                validate_internal_proc_index_call(name, args, env, errors);
+                validate_internal_proc_index_call(name, args, env, expr.loc(), errors);
                 return;
             }
             if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
-                validate_internal_proc_index_buffer_select_call(name, args, env, errors);
+                validate_internal_proc_index_buffer_select_call(
+                    name,
+                    args,
+                    env,
+                    expr.loc(),
+                    errors,
+                );
                 return;
             }
             if !env.fn_signatures.contains_key(name) {
                 if let Some(base) = parse_array_len_instance_base(name) {
                     if is_builtin_len_receiver(base, env) {
-                        validate_data_len_builtin_call(name, base, args, env, errors);
+                        validate_data_len_builtin_call(name, base, args, env, expr.loc(), errors);
                         return;
                     }
                 }
                 if let Some(base) = parse_buffer_chans_instance_base(name) {
                     if is_builtin_buffer_receiver(base, env) {
-                        validate_buffer_chans_builtin_call(name, base, args, env, errors);
+                        validate_buffer_chans_builtin_call(
+                            name,
+                            base,
+                            args,
+                            env,
+                            expr.loc(),
+                            errors,
+                        );
                         return;
                     }
                 }
@@ -349,10 +373,16 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
                         method_args.push(CallArg {
                             name: None,
-                            expr: Expr::Var(base.to_owned()),
+                            expr: Expr::var(base.to_owned()),
                         });
                         method_args.extend(args.iter().cloned());
-                        validate_unsafe_data_builtin_call("unsafe_read", &method_args, env, errors);
+                        validate_unsafe_data_builtin_call(
+                            "unsafe_read",
+                            &method_args,
+                            env,
+                            expr.loc(),
+                            errors,
+                        );
                         return;
                     }
                 }
@@ -361,13 +391,14 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
                         method_args.push(CallArg {
                             name: None,
-                            expr: Expr::Var(base.to_owned()),
+                            expr: Expr::var(base.to_owned()),
                         });
                         method_args.extend(args.iter().cloned());
                         validate_unsafe_data_builtin_call(
                             "unsafe_write",
                             &method_args,
                             env,
+                            expr.loc(),
                             errors,
                         );
                         return;
@@ -377,36 +408,37 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             if let Some(sig) = env.fn_signatures.get(name) {
                 if sig.type_params.is_empty() {
                     if !type_args.is_empty() {
-                        errors.push(Diagnostic::semantic(
+                        push_expr_error(
+                            errors,
+                            expr,
                             format!(
                                 "function '{}' is not generic and cannot take type arguments",
                                 name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                 } else if !type_args.is_empty() && type_args.len() != sig.type_params.len() {
-                    errors.push(Diagnostic::semantic(
+                    push_expr_error(
+                        errors,
+                        expr,
                         format!(
                             "function '{}' expects {} type arguments, got {}",
                             name,
                             sig.type_params.len(),
                             type_args.len()
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
 
                 let forbid_self_named = sig.params.first().map(String::as_str) == Some("self");
-                let resolved = resolve_call_args(
+                let resolved = resolve_call_args_at(
                     args,
                     &sig.params,
                     &sig.defaults,
                     forbid_self_named,
                     false,
                     &format!("function '{name}' call"),
+                    expr.loc(),
                     errors,
                 );
                 for (idx, arg) in resolved.into_iter().enumerate() {
@@ -420,6 +452,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 buffer_ty,
                                 arg,
                                 env,
+                                expr.loc(),
                                 errors,
                             );
                             continue;
@@ -437,7 +470,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             continue;
                         }
                         if param_ty.is_none() {
-                            if let Expr::Var(v) = arg {
+                            if let Expr::Var { name: v, .. } = arg {
                                 if has_declared_buffer_symbol_info(env.declared_symbols, v) {
                                     continue;
                                 }
@@ -446,7 +479,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 }
                             }
                         }
-                        if let Expr::Var(v) = arg {
+                        if let Expr::Var { name: v, .. } = arg {
                             if env.struct_instances.contains_key(v)
                                 || env.param_structs.contains_key(v)
                             {
@@ -455,7 +488,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         }
                         if matches!(param_ty, Some(FnParamType::Struct(_)))
                             && is_internal_proc_helper_call(name)
-                            && matches!(arg, Expr::Index { .. } | Expr::Var(_))
+                            && matches!(arg, Expr::Index { .. } | Expr::Var { .. })
                         {
                             continue;
                         }
@@ -478,25 +511,25 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     ScopeKind::Sample => "sample",
                     ScopeKind::Def => "def",
                 };
-                errors.push(Diagnostic::semantic(
+                push_expr_error(
+                    errors,
+                    expr,
                     format!(
                         "struct constructors are only allowed as direct init assignments; found '{}' call in {scope_name}",
                         name
                     ),
-                    0,
-                    0,
-                ));
+                );
                 for arg in args {
                     validate_expr(&arg.expr, env, errors);
                 }
                 return;
             }
 
-            errors.push(Diagnostic::semantic(
+            push_expr_error(
+                errors,
+                expr,
                 format!("unknown function '{name}' in expression"),
-                0,
-                0,
-            ));
+            );
         }
         Expr::Binary { lhs, rhs, .. } => {
             validate_expr(lhs, env, errors);
@@ -581,26 +614,27 @@ fn validate_data_len_builtin_call(
     base: &str,
     args: &[CallArg],
     env: ExprEnv<'_>,
+    loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
     if !args.is_empty() {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!(
                 "builtin method '{}' expects 0 arguments, got {}",
                 name,
                 args.len()
             ),
-            0,
-            0,
-        ));
+        );
     }
     for arg in args {
         if arg.name.is_some() {
-            errors.push(Diagnostic::semantic(
+            push_loc_error(
+                errors,
+                loc,
                 format!("builtin method '{}' does not support named arguments", name),
-                0,
-                0,
-            ));
+            );
         }
     }
 
@@ -622,44 +656,44 @@ fn validate_data_len_builtin_call(
                 match field_decl.ty {
                     TypedFieldType::Array(_) => true,
                     TypedFieldType::Struct => {
-                        errors.push(Diagnostic::semantic(
+                        push_loc_error(
+                            errors,
+                            loc,
                             format!(
                                 "builtin method '{}' requires a array symbol, but '{}.{}' is a nested struct",
                                 name, root, field
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         false
                     }
                     TypedFieldType::Scalar(_) => {
-                        errors.push(Diagnostic::semantic(
+                        push_loc_error(
+                            errors,
+                            loc,
                             format!(
                                 "builtin method '{}' requires a array symbol, but '{}.{}' is scalar",
                                 name, root, field
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         false
                     }
                 }
             } else {
                 if env.struct_defs.contains_key(struct_name) {
-                    errors.push(Diagnostic::semantic(
+                    push_loc_error(
+                        errors,
+                        loc,
                         format!(
                             "struct instance '{}' (type '{}') has no field '{}'",
                             root, struct_name, field
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 } else {
-                    errors.push(Diagnostic::semantic(
+                    push_loc_error(
+                        errors,
+                        loc,
                         format!("unknown struct type '{}'", struct_name),
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 false
             }
@@ -671,14 +705,14 @@ fn validate_data_len_builtin_call(
     };
 
     if !is_data_symbol && errors.len() == before {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!(
                 "builtin method '{}' requires a array or buffer symbol receiver, got '{}'",
                 name, base
             ),
-            0,
-            0,
-        ));
+        );
     }
 }
 
@@ -687,37 +721,38 @@ fn validate_buffer_chans_builtin_call(
     base: &str,
     args: &[CallArg],
     env: ExprEnv<'_>,
+    loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
     if !args.is_empty() {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!(
                 "builtin method '{}' expects 0 arguments, got {}",
                 name,
                 args.len()
             ),
-            0,
-            0,
-        ));
+        );
     }
     for arg in args {
         if arg.name.is_some() {
-            errors.push(Diagnostic::semantic(
+            push_loc_error(
+                errors,
+                loc,
                 format!("builtin method '{}' does not support named arguments", name),
-                0,
-                0,
-            ));
+            );
         }
     }
     if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!(
                 "builtin method '{}' requires a buffer symbol receiver, got '{}'",
                 name, base
             ),
-            0,
-            0,
-        ));
+        );
     }
 }
 
@@ -728,6 +763,7 @@ fn validate_buffer_param_call_arg(
     expected: &BufferType,
     arg: &Expr,
     env: ExprEnv<'_>,
+    loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
     let context = if let Some(param_name) = param_names.get(param_idx) {
@@ -737,25 +773,32 @@ fn validate_buffer_param_call_arg(
     };
     if let Expr::UserCall { name, args, .. } = arg {
         if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
-            validate_internal_proc_index_buffer_select_call(name, args, env, errors);
+            validate_internal_proc_index_buffer_select_call(name, args, env, loc, errors);
             for slot_expr in args.iter().filter(|a| a.name.is_none()).map(|a| &a.expr) {
-                if let Expr::Var(symbol) = slot_expr {
-                    validate_buffer_symbol_for_param(&context, expected, symbol, env, errors);
+                if let Expr::Var { name: symbol, .. } = slot_expr {
+                    validate_buffer_symbol_for_param(
+                        &context,
+                        expected,
+                        symbol,
+                        env,
+                        slot_expr.loc(),
+                        errors,
+                    );
                 }
             }
             return;
         }
     }
-    let Expr::Var(symbol) = arg else {
-        errors.push(Diagnostic::semantic(
+    let Expr::Var { name: symbol, .. } = arg else {
+        push_loc_error(
+            errors,
+            arg.loc().or(loc),
             format!("{context} expects a buffer symbol argument"),
-            0,
-            0,
-        ));
+        );
         validate_expr(arg, env, errors);
         return;
     };
-    validate_buffer_symbol_for_param(&context, expected, symbol, env, errors);
+    validate_buffer_symbol_for_param(&context, expected, symbol, env, arg.loc().or(loc), errors);
 }
 
 fn validate_buffer_symbol_for_param(
@@ -763,51 +806,52 @@ fn validate_buffer_symbol_for_param(
     expected: &BufferType,
     symbol: &str,
     env: ExprEnv<'_>,
+    loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
     if !has_declared_buffer_symbol_info(env.declared_symbols, symbol) {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!("{context} expects a buffer symbol argument, got '{symbol}'"),
-            0,
-            0,
-        ));
+        );
         return;
     }
     let expected_elem = match expected.elem {
         BufferElemType::Primitive(ty) => ty,
         BufferElemType::Generic(ref param_ty) => {
-            errors.push(Diagnostic::semantic(
+            push_loc_error(
+                errors,
+                loc,
                 format!(
                     "{context} uses unresolved generic buffer element type '{}'",
                     param_ty
                 ),
-                0,
-                0,
-            ));
+            );
             PrimitiveType::F32
         }
     };
     if !has_declared_buffer_elem_type_info(env.declared_symbols, symbol, expected_elem) {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!(
                 "{context} expects element type {:?}, but buffer '{}' has a different element type",
                 expected_elem, symbol
             ),
-            0,
-            0,
-        ));
+        );
     }
     match &expected.channels {
         BufferChannels::Mono => {
             if is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    loc,
                     format!(
                         "{context} expects mono buffer, but '{}' is multichannel",
                         symbol
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
         }
         BufferChannels::Static(expr) => {
@@ -815,67 +859,67 @@ fn validate_buffer_symbol_for_param(
             if let Some(channels) = requested_channels {
                 if channels <= 1 {
                     if is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
-                        errors.push(Diagnostic::semantic(
+                        push_loc_error(
+                            errors,
+                            loc,
                             format!(
                                 "{context} expects mono/static-1 buffer, but '{}' is multichannel",
                                 symbol
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     return;
                 }
             }
             if !is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    loc,
                     format!(
                         "{context} expects multichannel buffer, but '{}' is mono",
                         symbol
                     ),
-                    0,
-                    0,
-                ));
+                );
                 return;
             }
             if let Some(channels) = requested_channels {
                 if has_declared_dynamic_buffer_channels_info(env.declared_symbols, symbol) {
-                    errors.push(Diagnostic::semantic(
+                    push_loc_error(
+                        errors,
+                        loc,
                         format!(
                             "{context} expects static {channels} channels, but '{}' is dynamic",
                             symbol
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 }
                 if let Some(actual) =
                     declared_static_buffer_channels_info(env.declared_symbols, symbol)
                 {
                     if actual != channels {
-                        errors.push(Diagnostic::semantic(
+                        push_loc_error(
+                            errors,
+                            loc,
                             format!(
                                 "{context} expects {channels} channels, but '{}' has {actual}",
                                 symbol
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                 }
             }
         }
         BufferChannels::Dynamic => {
             if !is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    loc,
                     format!(
                         "{context} expects multichannel dynamic buffer, but '{}' is mono",
                         symbol
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
         }
     }
@@ -883,8 +927,10 @@ fn validate_buffer_symbol_for_param(
 
 fn const_positive_usize(expr: &Expr) -> Option<usize> {
     match expr {
-        Expr::Int(v) if *v > 0 => usize::try_from(*v).ok(),
-        Expr::Number(v) if *v > 0.0 && v.fract() == 0.0 => usize::try_from(*v as i64).ok(),
+        Expr::Int { value: v, .. } if *v > 0 => usize::try_from(*v).ok(),
+        Expr::Number { value: v, .. } if *v > 0.0 && v.fract() == 0.0 => {
+            usize::try_from(*v as i64).ok()
+        }
         _ => None,
     }
 }
@@ -893,6 +939,7 @@ fn validate_internal_buffer_2d_call(
     name: &str,
     args: &[CallArg],
     env: ExprEnv<'_>,
+    loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
     let expected_arity = if name == INTERNAL_BUFFER_READ2_FN {
@@ -901,62 +948,62 @@ fn validate_internal_buffer_2d_call(
         4
     };
     if args.len() != expected_arity {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!(
                 "internal builtin '{}' expects {} positional arguments, got {}",
                 name,
                 expected_arity,
                 args.len()
             ),
-            0,
-            0,
-        ));
+        );
     }
     for arg in args {
         if arg.name.is_some() {
-            errors.push(Diagnostic::semantic(
+            push_loc_error(
+                errors,
+                loc,
                 format!(
                     "internal builtin '{}' does not support named arguments",
                     name
                 ),
-                0,
-                0,
-            ));
+            );
         }
     }
     if let Some(first) = args.first() {
         match &first.expr {
-            Expr::Var(base) => {
+            Expr::Var { name: base, .. } => {
                 if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
-                    errors.push(Diagnostic::semantic(
+                    push_loc_error(
+                        errors,
+                        first.expr.loc().or(loc),
                         format!(
                             "internal builtin '{}' first argument must be a declared buffer symbol, got '{}'",
                             name, base
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 } else if !is_declared_multichannel_buffer_info(env.declared_symbols, base) {
-                    errors.push(Diagnostic::semantic(
+                    push_loc_error(
+                        errors,
+                        first.expr.loc().or(loc),
                         format!(
                             "internal builtin '{}' requires multichannel buffer indexing form, but '{}' is mono",
                             name, base
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
             }
             other => {
                 validate_expr(other, env, errors);
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    other.loc().or(loc),
                     format!(
                         "internal builtin '{}' first argument must be a declared buffer symbol variable",
                         name
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
         }
     }
@@ -977,6 +1024,7 @@ fn validate_internal_proc_index_call(
     name: &str,
     args: &[CallArg],
     env: ExprEnv<'_>,
+    loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut base_expr = None::<&Expr>;
@@ -1006,28 +1054,28 @@ fn validate_internal_proc_index_call(
     }
 
     if base_expr.is_none() {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!("internal builtin '{name}' is missing processor array base argument"),
-            0,
-            0,
-        ));
+        );
     }
     if index_expr.is_none() {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!("internal builtin '{name}' is missing processor array index argument"),
-            0,
-            0,
-        ));
+        );
     }
 
     if let Some(base_expr) = base_expr {
-        if !matches!(base_expr, Expr::Var(_)) {
+        if !matches!(base_expr, Expr::Var { .. }) {
             validate_expr(base_expr, env, errors);
-            errors.push(Diagnostic::semantic(
+            push_loc_error(
+                errors,
+                base_expr.loc().or(loc),
                 format!("internal builtin '{name}' expects processor array base as an identifier"),
-                0,
-                0,
-            ));
+            );
         }
     }
     if let Some(index_expr) = index_expr {
@@ -1040,21 +1088,21 @@ fn validate_internal_proc_index_call(
         .unwrap_or(false);
     if expects_field {
         match field_expr {
-            Some(Expr::Var(_)) => {}
+            Some(Expr::Var { .. }) => {}
             Some(other) => {
                 validate_expr(other, env, errors);
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    other.loc().or(loc),
                     format!("internal builtin '{name}' expects field selector as identifier"),
-                    0,
-                    0,
-                ));
+                );
             }
             None => {
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    loc,
                     format!("internal builtin '{name}' is missing field selector argument"),
-                    0,
-                    0,
-                ));
+                );
             }
         }
     }
@@ -1076,6 +1124,7 @@ fn validate_internal_proc_index_buffer_select_call(
     name: &str,
     args: &[CallArg],
     env: ExprEnv<'_>,
+    loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut base_expr = None::<&Expr>;
@@ -1087,53 +1136,53 @@ fn validate_internal_proc_index_buffer_select_call(
             Some(PROC_INDEX_BASE_ARG) => base_expr = Some(&arg.expr),
             Some(PROC_INDEX_EXPR_ARG) => index_expr = Some(&arg.expr),
             Some(other) => {
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    arg.expr.loc().or(loc),
                     format!(
                         "internal builtin '{}' does not support named argument '{}'",
                         name, other
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
             None => slot_exprs.push(&arg.expr),
         }
     }
 
     if base_expr.is_none() {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!("internal builtin '{name}' is missing processor array base argument"),
-            0,
-            0,
-        ));
+        );
     }
     if index_expr.is_none() {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!("internal builtin '{name}' is missing processor array index argument"),
-            0,
-            0,
-        ));
+        );
     }
     if slot_exprs.is_empty() {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!("internal builtin '{name}' requires at least one slot buffer argument"),
-            0,
-            0,
-        ));
+        );
     }
 
     if let Some(base_expr) = base_expr {
         match base_expr {
-            Expr::Var(_) => {}
+            Expr::Var { .. } => {}
             other => {
                 validate_expr(other, env, errors);
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    other.loc().or(loc),
                     format!(
                         "internal builtin '{name}' expects processor array base as an identifier"
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
         }
     }
@@ -1143,28 +1192,28 @@ fn validate_internal_proc_index_buffer_select_call(
 
     for slot_expr in slot_exprs {
         match slot_expr {
-            Expr::Var(symbol) => {
+            Expr::Var { name: symbol, .. } => {
                 if !has_declared_buffer_symbol_info(env.declared_symbols, symbol) {
-                    errors.push(Diagnostic::semantic(
+                    push_loc_error(
+                        errors,
+                        slot_expr.loc().or(loc),
                         format!(
                             "internal builtin '{}' slot arguments must be declared buffer symbols, got '{}'",
                             name, symbol
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
             }
             other => {
                 validate_expr(other, env, errors);
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    other.loc().or(loc),
                     format!(
                         "internal builtin '{}' slot arguments must be buffer symbol variables",
                         name
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
         }
     }
@@ -1174,94 +1223,95 @@ fn validate_unsafe_data_builtin_call(
     name: &str,
     args: &[CallArg],
     env: ExprEnv<'_>,
+    loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
     let expected_arity = if name == "unsafe_read" { 2 } else { 3 };
     if args.len() != expected_arity {
-        errors.push(Diagnostic::semantic(
+        push_loc_error(
+            errors,
+            loc,
             format!(
                 "builtin '{}' expects {} positional arguments, got {}",
                 name,
                 expected_arity,
                 args.len()
             ),
-            0,
-            0,
-        ));
+        );
     }
 
     for arg in args {
         if arg.name.is_some() {
-            errors.push(Diagnostic::semantic(
+            push_loc_error(
+                errors,
+                arg.expr.loc().or(loc),
                 format!("builtin '{}' does not support named arguments", name),
-                0,
-                0,
-            ));
+            );
         }
     }
 
     if let Some(first_arg) = args.first() {
         match &first_arg.expr {
-            Expr::Var(base) => {
+            Expr::Var { name: base, .. } => {
                 let mut is_valid_primitive_data = false;
 
                 if let Some((root, field)) = split_field_path(base, errors) {
                     if let Some(struct_name) = env.param_structs.get(root) {
                         let Some(_fields) = env.struct_defs.get(struct_name) else {
-                            errors.push(Diagnostic::semantic(
+                            push_loc_error(
+                                errors,
+                                first_arg.expr.loc().or(loc),
                                 format!("unknown struct type '{}'", struct_name),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let Some(field_decl) =
                             resolve_struct_field_decl(struct_name, field, env.struct_defs)
                         else {
-                            errors.push(Diagnostic::semantic(
+                            push_loc_error(
+                                errors,
+                                first_arg.expr.loc().or(loc),
                                 format!(
                                     "struct parameter '{}' (type '{}') has no field '{}'",
                                     root, struct_name, field
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         match field_decl.ty {
                             TypedFieldType::Array(_) => {
                                 if field_decl.array_elem_struct.is_some() {
-                                    errors.push(Diagnostic::semantic(
+                                    push_loc_error(
+                                        errors,
+                                        first_arg.expr.loc().or(loc),
                                         format!(
                                             "builtin '{}' does not support array[Struct, N] symbol '{}'",
                                             name, base
                                         ),
-                                        0,
-                                        0,
-                                    ));
+                                    );
                                 } else {
                                     is_valid_primitive_data = true;
                                 }
                             }
                             TypedFieldType::Scalar(_) => {
-                                errors.push(Diagnostic::semantic(
+                                push_loc_error(
+                                    errors,
+                                    first_arg.expr.loc().or(loc),
                                     format!(
                                         "builtin '{}' expects a array symbol as first argument, but '{}.{}' is scalar",
                                         name, root, field
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                             }
                             TypedFieldType::Struct => {
-                                errors.push(Diagnostic::semantic(
+                                push_loc_error(
+                                    errors,
+                                    first_arg.expr.loc().or(loc),
                                     format!(
                                         "builtin '{}' expects a array symbol as first argument, but '{}.{}' is a nested struct",
                                         name, root, field
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                             }
                         }
                     } else if env.array_vars.contains_key(base) {
@@ -1274,26 +1324,26 @@ fn validate_unsafe_data_builtin_call(
                 }
 
                 if !is_valid_primitive_data {
-                    errors.push(Diagnostic::semantic(
+                    push_loc_error(
+                        errors,
+                        first_arg.expr.loc().or(loc),
                         format!(
                             "builtin '{}' expects a primitive array or buffer symbol as first argument, got '{}'",
                             name, base
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
             }
             other => {
                 validate_expr(other, env, errors);
-                errors.push(Diagnostic::semantic(
+                push_loc_error(
+                    errors,
+                    other.loc().or(loc),
                     format!(
                         "builtin '{}' first argument must be a array symbol variable",
                         name
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
         }
     }

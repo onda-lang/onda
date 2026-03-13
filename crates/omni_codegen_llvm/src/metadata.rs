@@ -693,7 +693,7 @@ fn collect_expr_buffer_write_usage(
     global_writes: &mut HashSet<String>,
 ) {
     match expr {
-        Expr::ArrayLiteral(items) => {
+        Expr::ArrayLiteral { values: items, .. } => {
             for item in items {
                 collect_expr_buffer_write_usage(
                     item,
@@ -749,7 +749,7 @@ fn collect_expr_buffer_write_usage(
                 );
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             collect_expr_buffer_write_usage(
                 &spec.size,
                 top_level_buffers,
@@ -845,7 +845,7 @@ fn collect_expr_buffer_write_usage(
                 );
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             collect_expr_buffer_write_usage(
                 expr,
                 top_level_buffers,
@@ -858,7 +858,7 @@ fn collect_expr_buffer_write_usage(
                 global_writes,
             );
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -876,7 +876,7 @@ fn apply_user_call_buffer_write_usage(
 ) {
     if name == "unsafe_write" || name == "__omni_buffer_write2" {
         if let Some(first_arg) = args.first() {
-            if let Expr::Var(base) = &first_arg.expr {
+            if let Expr::Var { name: base, .. } = &first_arg.expr {
                 mark_buffer_symbol_write(
                     base,
                     top_level_buffers,
@@ -915,7 +915,7 @@ fn apply_user_call_buffer_write_usage(
         let Some(Some(arg_expr)) = bound_args.get(*param_idx) else {
             continue;
         };
-        if let Expr::Var(base) = arg_expr {
+        if let Expr::Var { name: base, .. } = arg_expr {
             mark_buffer_symbol_write(
                 base,
                 top_level_buffers,

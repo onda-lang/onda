@@ -358,21 +358,23 @@ pub(super) fn infer_specialized_expr_return_type(
     registry: &mut UserFnRegistry,
 ) -> Result<Option<PrimitiveType>, Diagnostic> {
     Ok(match expr {
-        Expr::Number(_) => Some(PrimitiveType::F32),
-        Expr::Int(v) => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+        Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
             PrimitiveType::I32
         } else {
             PrimitiveType::I64
         }),
-        Expr::Bool(_) => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral(_) | Expr::ArrayCtor { .. } | Expr::Slice { .. } => None,
-        Expr::Var(name) => builtin_constant_symbol_type(name).or_else(|| locals.get(name).copied()),
+        Expr::Bool { .. } => Some(PrimitiveType::Bool),
+        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } | Expr::Slice { .. } => None,
+        Expr::Var { name, .. } => {
+            builtin_constant_symbol_type(name).or_else(|| locals.get(name).copied())
+        }
         Expr::Index { base, .. } => locals.get(base).copied().or(Some(PrimitiveType::F32)),
         Expr::Cast { to, .. } => Some(*to),
         Expr::UnaryNot { .. } | Expr::Compare { .. } | Expr::Logical { .. } => {
             Some(PrimitiveType::Bool)
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let inner = infer_specialized_expr_return_type(expr, locals, registry)?
                 .unwrap_or(PrimitiveType::F32);
             match inner {
@@ -380,7 +382,7 @@ pub(super) fn infer_specialized_expr_return_type(
                 _ => None,
             }
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let l = infer_specialized_expr_return_type(lhs, locals, registry)?
                 .unwrap_or(PrimitiveType::F32);
             let r = infer_specialized_expr_return_type(rhs, locals, registry)?
@@ -400,7 +402,7 @@ pub(super) fn infer_specialized_expr_return_type(
                 _ => merge_inferred_def_return_types(l, r),
             }
         }
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             let mut arg_tys = Vec::<PrimitiveType>::new();
             for arg in args {
                 arg_tys.push(
@@ -431,6 +433,7 @@ pub(super) fn infer_specialized_expr_return_type(
             name,
             type_args,
             args,
+            ..
         } => {
             if parse_array_len_instance_base(name).is_some()
                 || parse_buffer_chans_instance_base(name).is_some()
@@ -442,7 +445,7 @@ pub(super) fn infer_specialized_expr_return_type(
                 "__omni_buffer_read2" | "__omni_buffer_write2" | "unsafe_read" | "unsafe_write"
             ) {
                 if let Some(CallArg {
-                    expr: Expr::Var(base),
+                    expr: Expr::Var { name: base, .. },
                     ..
                 }) = args.first()
                 {
@@ -492,7 +495,7 @@ pub(super) fn infer_specialized_expr_return_type(
                     }
                     TypedFnParam::Array { elem_ty } => {
                         let resolved_arg = resolved.get(idx).copied().flatten();
-                        let arg_sig = if let Some(Expr::Var(base)) = resolved_arg {
+                        let arg_sig = if let Some(Expr::Var { name: base, .. }) = resolved_arg {
                             (locals.get(base.as_str()).copied().unwrap_or(*elem_ty), 1)
                         } else {
                             (*elem_ty, 1)

@@ -33,7 +33,7 @@ pub(super) unsafe fn lower_stmt(
                             let scalar_defaults = fields
                                 .iter()
                                 .filter(|f| matches!(f.ty, TypedFieldType::Scalar(_)))
-                                .map(|f| Some(f.default.clone().unwrap_or(Expr::Number(0.0))))
+                                .map(|f| Some(f.default.clone().unwrap_or(Expr::number(0.0))))
                                 .collect::<Vec<_>>();
                             let resolved_scalar_args = resolve_call_args_codegen(
                                 args,
@@ -150,7 +150,7 @@ pub(super) unsafe fn lower_stmt(
                     }
                 }
 
-                if let Expr::ArrayCtor { spec, init } = expr {
+                if let Expr::ArrayCtor { spec, init, .. } = expr {
                     if let Some(&expected_len) = ctx.array_len.get(name) {
                         // State array: verify size and write init values if present.
                         let actual_len =
@@ -178,7 +178,7 @@ pub(super) unsafe fn lower_stmt(
                                 let data = lower_data_element_ptr(
                                     ctx,
                                     name,
-                                    &Expr::Int(idx as i64),
+                                    &Expr::int(idx as i64),
                                     locals,
                                     local_aliases,
                                     local_array_aliases,
@@ -288,7 +288,7 @@ pub(super) unsafe fn lower_stmt(
                     }
                 }
 
-                if let Expr::ArrayLiteral(values) = expr {
+                if let Expr::ArrayLiteral { values, .. } = expr {
                     if ctx.array_struct_len.contains_key(name) {
                         return Err(Diagnostic::internal(format!(
                             "array[Struct] symbol '{name}' must be assigned via indexed field writes"
@@ -312,7 +312,7 @@ pub(super) unsafe fn lower_stmt(
                             let data = lower_data_element_ptr(
                                 ctx,
                                 name,
-                                &Expr::Int(idx as i64),
+                                &Expr::int(idx as i64),
                                 locals,
                                 local_aliases,
                                 local_array_aliases,
@@ -457,7 +457,7 @@ pub(super) unsafe fn lower_stmt(
                     && !ctx.array_struct_len.contains_key(name)
                     && !ctx.buffer_index.contains_key(name)
                 {
-                    if let Expr::Index { base, index } = expr {
+                    if let Expr::Index { base, index, .. } = expr {
                         if let Some(struct_name) = ctx.array_struct_roots.get(base).cloned() {
                             let root_len = *ctx.array_struct_len.get(base).ok_or_else(|| {
                                 Diagnostic::internal(format!(
@@ -849,6 +849,7 @@ unsafe fn lower_orc_slice_assign(
     local_array_aliases: &mut HashMap<String, LocalArrayAlias>,
 ) -> Result<(), Diagnostic> {
     let dst_expr = Expr::Slice {
+        loc: Default::default(),
         base: base.to_owned(),
         start: start.cloned().map(Box::new),
         end: end.cloned().map(Box::new),
@@ -863,7 +864,7 @@ unsafe fn lower_orc_slice_assign(
     )?;
     let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, dst_view.elem_ty);
 
-    if matches!(expr, Expr::Var(_) | Expr::Slice { .. }) {
+    if matches!(expr, Expr::Var { .. } | Expr::Slice { .. }) {
         let src_view = lower_orc_array_view(
             ctx,
             locals,

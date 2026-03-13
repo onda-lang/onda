@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use omni_frontend::{
-    inject_auto_std_math, with_diagnostic_location, ArrayElemType, ArrayTypeSpec, AssignTarget,
-    BinaryOp, Block, BlockExec, BlockKind, BufferChannels, BufferDecl, BufferElemType, BufferType,
-    BuiltinFn, CallArg, CallTypeArg, CmpOp, DeclRange, DeclType, Diagnostic, EventDef,
-    EventParamType, Expr, FieldType, FnParamType, FunctionDef, GraphBlock, GraphEndpoint,
-    GraphRate, InitBlock, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
+    inject_auto_std_math, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
+    BlockKind, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg,
+    CallTypeArg, CmpOp, DeclRange, DeclType, DiagCtx, Diagnostic, EventDef, EventParamType, Expr,
+    FieldType, FnParamType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate,
+    InitBlock, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc,
     Stmt, StructDef, StructField,
 };
 
@@ -325,11 +325,365 @@ enum ScopeKind {
     Def,
 }
 
-fn with_stmt_diag_context<T>(stmt: &Stmt, f: impl FnOnce() -> T) -> T {
-    with_diagnostic_location(stmt.loc(), f)
+fn with_stmt_diag_context<T>(stmt: &Stmt, f: impl FnOnce(DiagCtx) -> T) -> T {
+    let diag = DiagCtx::new(stmt.loc());
+    f(diag)
 }
 
-fn with_stmt_diag_context_mut<T>(stmt: &mut Stmt, f: impl FnOnce(&mut Stmt) -> T) -> T {
-    let loc = stmt.loc().cloned();
-    with_diagnostic_location(loc.as_ref(), || f(stmt))
+fn with_expr_diag_context<T>(expr: &Expr, f: impl FnOnce(DiagCtx) -> T) -> T {
+    let diag = DiagCtx::new(expr.loc());
+    f(diag)
+}
+
+fn with_expr_diag_context_mut<T>(expr: &mut Expr, f: impl FnOnce(DiagCtx, &mut Expr) -> T) -> T {
+    let loc = expr.loc();
+    let diag = DiagCtx::new(loc);
+    f(diag, expr)
+}
+
+fn with_loc_diag_context<T>(loc: impl Into<SourceLoc>, f: impl FnOnce(DiagCtx) -> T) -> T {
+    let loc = loc.into();
+    let diag = DiagCtx::new(loc);
+    f(diag)
+}
+
+fn with_graph_edge_diag_context<T>(edge: &GraphEdge, f: impl FnOnce(DiagCtx) -> T) -> T {
+    let diag = DiagCtx::new(edge.loc());
+    f(diag)
+}
+
+fn with_stmt_diag_context_mut<T>(stmt: &mut Stmt, f: impl FnOnce(DiagCtx, &mut Stmt) -> T) -> T {
+    let loc = stmt.loc();
+    let diag = DiagCtx::new(loc);
+    f(diag, stmt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use omni_frontend::parse_program;
+
+    #[test]
+    fn expression_diagnostics_use_identifier_spans() {
+        let src = "outs:\n  out1\nsample:\n  out1 = missing + 1.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("unknown symbol should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| diag.message.contains("unknown symbol 'missing'"))
+            .expect("missing unresolved symbol diagnostic");
+
+        assert_eq!((diag.line, diag.column), (4, 10));
+        assert_eq!(diag.end_line, 4);
+    }
+
+    #[test]
+    fn declaration_diagnostics_use_param_spans() {
+        let src = "outs:\n  out1\nparams:\n  gain = 0.5\n  gain = 1.0\nsample:\n  out1 = gain\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("duplicate param should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| diag.message.contains("duplicate param 'gain'"))
+            .expect("missing duplicate param diagnostic");
+
+        assert_eq!((diag.line, diag.column), (5, 3));
+    }
+
+    #[test]
+    fn overload_diagnostics_use_call_spans() {
+        let src = "outs:\n  out1\ndef foo(x: f32):\n  return x\ndef foo(x: f64):\n  return f32(x)\nsample:\n  out1 = foo(1)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("ambiguous overload should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("ambiguous overload for function 'foo'")
+            })
+            .expect("missing ambiguous overload diagnostic");
+
+        assert_eq!((diag.line, diag.column), (8, 10));
+        assert_eq!(diag.end_line, 8);
+    }
+
+    #[test]
+    fn def_body_assignment_diagnostics_use_rhs_spans() {
+        let src = "outs:\n  out1\ndef foo():\n  a = [0.0]\n  a[0] = false\n  return 0.0\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("def body type mismatch should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| diag.message.contains("array/buffer write type mismatch"))
+            .expect("missing def body assignment diagnostic");
+
+        assert_eq!((diag.line, diag.column), (5, 10));
+        assert_eq!(diag.end_line, 5);
+    }
+
+    #[test]
+    fn def_body_assignment_diagnostics_use_target_spans() {
+        let src = "outs:\n  out1\ndef foo():\n  PI = 1.0\n  return 0.0\nsample:\n  out1 = foo()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("builtin constant assignment should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("cannot assign to builtin constant 'PI'")
+            })
+            .expect("missing builtin constant assignment diagnostic");
+
+        assert_eq!((diag.line, diag.column), (4, 3));
+        assert_eq!(diag.end_line, 4);
+    }
+
+    #[test]
+    fn init_assignment_diagnostics_use_target_spans() {
+        let src = "outs:\n  out1\ninit:\n  PI = 1.0\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("init builtin constant assignment should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("cannot assign to builtin constant 'PI'")
+            })
+            .expect("missing init builtin constant assignment diagnostic");
+
+        assert_eq!((diag.line, diag.column), (4, 3));
+        assert_eq!(diag.end_line, 4);
+    }
+
+    #[test]
+    fn runtime_assignment_diagnostics_use_target_spans() {
+        let src = "outs:\n  out1\nsample:\n  PI = 1.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("sample builtin constant assignment should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("cannot assign to builtin constant 'PI'")
+            })
+            .expect("missing sample builtin constant assignment diagnostic");
+
+        assert_eq!((diag.line, diag.column), (4, 3));
+        assert_eq!(diag.end_line, 4);
+    }
+
+    #[test]
+    fn init_assignment_diagnostics_use_rhs_spans() {
+        let src = "outs:\n  out1\ninit:\n  a = [0.0]\n  a[0] = false\nsample:\n  out1 = a[0]\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("init array write type mismatch should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| diag.message.contains("array/buffer write type mismatch"))
+            .expect("missing init array write diagnostic");
+
+        assert_eq!((diag.line, diag.column), (5, 10));
+        assert_eq!(diag.end_line, 5);
+    }
+
+    #[test]
+    fn runtime_assignment_diagnostics_use_rhs_spans() {
+        let src = "outs:\n  out1\nsample:\n  a = [0.0]\n  a[0] = false\n  out1 = a[0]\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("sample array write type mismatch should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| diag.message.contains("array/buffer write type mismatch"))
+            .expect("missing sample array write diagnostic");
+
+        assert_eq!((diag.line, diag.column), (5, 10));
+        assert_eq!(diag.end_line, 5);
+    }
+
+    #[test]
+    fn runtime_slice_bound_diagnostics_use_bound_spans() {
+        let src = "outs:\n  out1\nsample:\n  a = [0.0, 0.0]\n  a[false:] = 0.5\n  out1 = a[0]\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("slice bound type mismatch should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("slice start bound requires numeric type")
+            })
+            .expect("missing slice bound diagnostic");
+
+        assert_eq!((diag.line, diag.column), (5, 5));
+        assert_eq!(diag.end_line, 5);
+    }
+
+    #[test]
+    fn runtime_slice_bound_diagnostics_use_const_use_site_spans() {
+        let src = "const BAD = false\nouts:\n  out1\nsample:\n  a = [0.0, 0.0]\n  a[BAD:] = 0.5\n  out1 = a[0]\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const-expanded slice bound should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("slice start bound requires numeric type")
+            })
+            .expect("missing slice bound diagnostic");
+
+        assert_eq!((diag.line, diag.column), (6, 5));
+        assert_eq!(diag.end_line, 6);
+    }
+
+    #[test]
+    fn init_array_literal_empty_diagnostics_use_expr_spans() {
+        let src = "outs:\n  out1\ninit:\n  a = []\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("empty init array literal should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("array initializer for symbol 'a' cannot be empty")
+            })
+            .expect("missing empty array initializer diagnostic");
+
+        assert_eq!((diag.line, diag.column), (4, 7));
+        assert_eq!(diag.end_line, 4);
+    }
+
+    #[test]
+    fn runtime_typed_array_size_diagnostics_use_size_spans() {
+        let src = "outs:\n  out1\nsample:\n  a: f32[1.5] = [1.0]\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("non-integer typed array size should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("typed array declaration size for symbol 'a' in sample must evaluate to an integer value")
+            })
+            .expect("missing typed array size diagnostic");
+
+        assert_eq!((diag.line, diag.column), (4, 10));
+        assert_eq!(diag.end_line, 4);
+    }
+
+    #[test]
+    fn def_array_literal_empty_diagnostics_use_expr_spans() {
+        let src = "outs:\n  out1\ndef foo():\n  a = []\n  return 0.0\nsample:\n  out1 = foo()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("empty def array literal should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("array initializer for symbol 'a' cannot be empty")
+            })
+            .expect("missing empty def array initializer diagnostic");
+
+        assert_eq!((diag.line, diag.column), (4, 7));
+        assert_eq!(diag.end_line, 4);
+    }
+
+    #[test]
+    fn def_typed_array_size_diagnostics_use_size_spans() {
+        let src =
+            "outs:\n  out1\ndef foo():\n  a: f32[1.5] = [1.0]\n  return 0.0\nsample:\n  out1 = foo()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("non-integer def typed array size should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("typed array declaration size for symbol 'a' in def must evaluate to an integer value")
+            })
+            .expect("missing def typed array size diagnostic");
+
+        assert_eq!((diag.line, diag.column), (4, 10));
+        assert_eq!(diag.end_line, 4);
+    }
+
+    #[test]
+    fn proc_array_size_diagnostics_use_size_spans() {
+        let src = "proc Voice:\n  outs:\n    out1\n  sample:\n    out1 = 0.0\nouts:\n  out1\ninit:\n  voices: Voice[1.5] = Voice()\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("non-integer proc array size should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message.contains(
+                    "top-level processor array 'voices' size must evaluate to an integer value",
+                )
+            })
+            .expect("missing proc array size diagnostic");
+
+        assert_eq!((diag.line, diag.column), (9, 17));
+        assert_eq!(diag.end_line, 9);
+    }
+
+    #[test]
+    fn proc_array_initializer_entry_diagnostics_use_entry_spans() {
+        let src = "proc Voice:\n  outs:\n    out1\n  sample:\n    out1 = 0.0\nproc Other:\n  outs:\n    out1\n  sample:\n    out1 = 0.0\nouts:\n  out1\ninit:\n  voices: Voice[2] = [Other(), Voice()]\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("mismatched proc array initializer should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message.contains(
+                    "top-level processor array 'voices' initializer entry 0 uses constructor 'Other' but 'Voice' is required",
+                )
+            })
+            .expect("missing proc array initializer entry diagnostic");
+
+        assert_eq!((diag.line, diag.column), (14, 23));
+        assert_eq!(diag.end_line, 14);
+    }
+
+    #[test]
+    fn duplicate_block_diagnostics_use_block_spans() {
+        let src =
+            "outs:\n  out1\nparams:\n  gain = 0.5\nparams:\n  mix = 0.25\nsample:\n  out1 = gain\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("duplicate params block should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| diag.message.contains("duplicate block 'params'"))
+            .expect("missing duplicate block diagnostic");
+
+        assert_eq!((diag.line, diag.column), (5, 1));
+    }
+
+    #[test]
+    fn missing_sample_diagnostic_uses_nearest_block_span() {
+        let src = "outs:\n  out1\nparams:\n  gain = 0.5\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("missing sample block should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| diag.message.contains("missing required 'sample' block"))
+            .expect("missing sample diagnostic");
+
+        assert_eq!((diag.line, diag.column), (3, 1));
+    }
+
+    #[test]
+    fn block_without_nested_sample_reports_only_block_specific_error() {
+        let src = "outs { out1 }\nblock { x = 0.0 }\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("block without nested sample should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("block section must include nested 'sample' block")),
+            "missing block-specific diagnostic"
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|diag| diag.message.contains("missing required 'sample' block")),
+            "unexpected duplicate missing-sample diagnostic"
+        );
+    }
 }

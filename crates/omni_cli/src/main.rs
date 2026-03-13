@@ -1018,9 +1018,13 @@ fn format_assign_target(target: &AssignTarget) -> String {
 
 fn format_graph_endpoint(endpoint: &omni_frontend::GraphEndpoint) -> String {
     match endpoint {
-        omni_frontend::GraphEndpoint::Symbol(name) => name.clone(),
-        omni_frontend::GraphEndpoint::ProcField { proc, field } => format!("{proc}.{field}"),
-        omni_frontend::GraphEndpoint::ProcIndexedField { proc, index, field } => {
+        omni_frontend::GraphEndpoint::Symbol { name, .. } => name.clone(),
+        omni_frontend::GraphEndpoint::ProcField { proc, field, .. } => {
+            format!("{proc}.{field}")
+        }
+        omni_frontend::GraphEndpoint::ProcIndexedField {
+            proc, index, field, ..
+        } => {
             format!("{proc}[{}].{field}", format_expr(index))
         }
     }
@@ -1048,10 +1052,10 @@ fn format_expr(expr: &Expr) -> String {
 fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
     let my_prec = expr_precedence(expr);
     match expr {
-        Expr::Number(value) => format_number(*value),
-        Expr::Int(value) => value.to_string(),
-        Expr::Bool(value) => value.to_string(),
-        Expr::ArrayLiteral(values) => format!(
+        Expr::Number { value, .. } => format_number(*value),
+        Expr::Int { value, .. } => value.to_string(),
+        Expr::Bool { value, .. } => value.to_string(),
+        Expr::ArrayLiteral { values, .. } => format!(
             "[{}]",
             values
                 .iter()
@@ -1059,9 +1063,11 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        Expr::Var(name) => name.clone(),
-        Expr::Index { base, index } => format!("{base}[{}]", format_expr(index)),
-        Expr::Slice { base, start, end } => format!(
+        Expr::Var { name, .. } => name.clone(),
+        Expr::Index { base, index, .. } => format!("{base}[{}]", format_expr(index)),
+        Expr::Slice {
+            base, start, end, ..
+        } => format!(
             "{base}[{}:{}]",
             start
                 .as_ref()
@@ -1071,7 +1077,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 .map(|expr| format_expr(expr))
                 .unwrap_or_default()
         ),
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             let mut text = format!("{}(", format_array_type_spec(spec));
             if let Some(init) = init {
                 text.push_str(&init.iter().map(format_expr).collect::<Vec<_>>().join(", "));
@@ -1079,7 +1085,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             text.push(')');
             text
         }
-        Expr::Compare { op, lhs, rhs } => wrap_if_needed(
+        Expr::Compare { op, lhs, rhs, .. } => wrap_if_needed(
             format!(
                 "{} {} {}",
                 format_expr_prec(lhs, my_prec),
@@ -1089,7 +1095,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             my_prec,
             parent_prec,
         ),
-        Expr::Call { func, args } => format!(
+        Expr::Call { func, args, .. } => format!(
             "{}({})",
             format_builtin_fn(*func),
             args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
@@ -1098,6 +1104,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             name,
             type_args,
             args,
+            ..
         } => {
             let mut text = name.clone();
             if !type_args.is_empty() {
@@ -1122,18 +1129,20 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             text.push(')');
             text
         }
-        Expr::Cast { to, expr } => format!("{}({})", primitive_type_name(*to), format_expr(expr)),
-        Expr::UnaryNot { expr } => wrap_if_needed(
+        Expr::Cast { to, expr, .. } => {
+            format!("{}({})", primitive_type_name(*to), format_expr(expr))
+        }
+        Expr::UnaryNot { expr, .. } => wrap_if_needed(
             format!("!{}", format_expr_prec(expr, my_prec)),
             my_prec,
             parent_prec,
         ),
-        Expr::UnaryBitNot { expr } => wrap_if_needed(
+        Expr::UnaryBitNot { expr, .. } => wrap_if_needed(
             format!("~{}", format_expr_prec(expr, my_prec)),
             my_prec,
             parent_prec,
         ),
-        Expr::Logical { op, lhs, rhs } => wrap_if_needed(
+        Expr::Logical { op, lhs, rhs, .. } => wrap_if_needed(
             format!(
                 "{} {} {}",
                 format_expr_prec(lhs, my_prec),
@@ -1143,7 +1152,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             my_prec,
             parent_prec,
         ),
-        Expr::Binary { op, lhs, rhs } => wrap_if_needed(
+        Expr::Binary { op, lhs, rhs, .. } => wrap_if_needed(
             format!(
                 "{} {} {}",
                 format_expr_prec(lhs, my_prec),
@@ -1448,11 +1457,13 @@ fn format_diag_snippet(diag: &Diagnostic) -> Option<String> {
     let source = fs::read_to_string(path).ok()?;
     let line_idx = diag.line.checked_sub(1)?;
     let line_text = source.lines().nth(line_idx)?;
-    let col = diag.column.max(1);
-    let caret_pad = " ".repeat(col.saturating_sub(1));
+    let start_col = diag.column.max(1);
+    let underline_len = 1;
+    let caret_pad = " ".repeat(start_col.saturating_sub(1));
+    let underline = "^".repeat(underline_len.max(1));
     Some(format!(
-        "  --> {file}:{}:{}\n   |\n{:>4} | {}\n   | {}^",
-        diag.line, col, diag.line, line_text, caret_pad
+        "  --> {file}:{}:{}\n   |\n{:>4} | {}\n   | {}{}",
+        diag.line, start_col, diag.line, line_text, caret_pad, underline
     ))
 }
 
@@ -1514,8 +1525,10 @@ fn f32_to_i16(sample: f32) -> i16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_expr, format_program, parse_args, Command};
-    use omni_frontend::{Block, CallArg, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program};
+    use super::{format_diag_snippet, format_expr, format_program, parse_args, Command};
+    use omni_frontend::{
+        Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
+    };
 
     #[test]
     fn parse_compile_accepts_dump_graph() {
@@ -1548,11 +1561,12 @@ mod tests {
     #[test]
     fn format_expr_prints_named_call_args_with_equals() {
         let expr = Expr::UserCall {
+            loc: Default::default(),
             name: "sat".to_owned(),
             type_args: Vec::new(),
             args: vec![CallArg {
                 name: Some("in1".to_owned()),
-                expr: Expr::Var("mix.out1".to_owned()),
+                expr: Expr::var("mix.out1"),
             }],
         };
         assert_eq!(format_expr(&expr), "sat(in1 = mix.out1)");
@@ -1562,13 +1576,19 @@ mod tests {
     fn format_program_prints_graph_fanout_destinations() {
         let program = Program {
             blocks: vec![Block::Graph(GraphBlock {
+                loc: Default::default(),
                 edges: vec![GraphEdge {
+                    loc: Default::default(),
                     rate: None,
-                    source: Expr::Var("src".to_owned()),
+                    source: Expr::var("src"),
                     delay: None,
                     dests: vec![
-                        GraphEndpoint::Symbol("out1".to_owned()),
+                        GraphEndpoint::Symbol {
+                            loc: Default::default(),
+                            name: "out1".to_owned(),
+                        },
                         GraphEndpoint::ProcField {
+                            loc: Default::default(),
                             proc: "mix".to_owned(),
                             field: "in1".to_owned(),
                         },
@@ -1581,5 +1601,28 @@ mod tests {
             format_program(&program),
             "graph:\n  src >> { out1, mix.in1 }\n\n"
         );
+    }
+
+    #[test]
+    fn format_diag_snippet_underlines_same_line_ranges() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("omni_cli_diag_range_test.omni");
+        std::fs::write(&path, "sample:\n  out1 = missing + 1.0\n").expect("write test source");
+
+        let diag = Diagnostic {
+            code: omni_frontend::DiagCode::Semantic,
+            message: "unknown symbol 'missing'".to_owned(),
+            line: 2,
+            column: 10,
+            end_line: 2,
+            file: Some(path.to_string_lossy().into_owned()),
+            trace: Vec::new(),
+        };
+
+        let snippet = format_diag_snippet(&diag).expect("snippet should render");
+        assert!(snippet.contains("  2 |   out1 = missing + 1.0"));
+        assert!(snippet.contains("   |          ^^^^^^^"));
+
+        let _ = std::fs::remove_file(path);
     }
 }

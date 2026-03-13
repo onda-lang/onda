@@ -8,6 +8,10 @@ struct ManagedDynamicProcArray {
     active_field: String,
 }
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 fn sanitize_runtime_symbol_component(name: &str) -> String {
     name.chars()
         .map(|ch| {
@@ -52,7 +56,7 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                     collect_guards_from_expr(end, managed_arrays, proc_api, used_arrays, guards);
                 }
             }
-            Expr::ArrayCtor { spec, init } => {
+            Expr::ArrayCtor { spec, init, .. } => {
                 collect_guards_from_expr(&spec.size, managed_arrays, proc_api, used_arrays, guards);
                 if let Some(values) = init {
                     for value in values {
@@ -81,6 +85,7 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                 name,
                 args,
                 type_args: _,
+                ..
             } => {
                 for arg in args {
                     collect_guards_from_expr(
@@ -114,13 +119,13 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                     return;
                 }
                 let Some(CallArg {
-                    expr: Expr::Index { base, index },
+                    expr: Expr::Index { base, index, .. },
                     ..
                 }) = args.first()
                 else {
                     return;
                 };
-                if matches!(index.as_ref(), Expr::Int(_)) {
+                if matches!(index.as_ref(), Expr::Int { .. }) {
                     return;
                 }
                 let array_base = base.as_str();
@@ -137,30 +142,35 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                 pre_args.push(CallArg {
                     name: None,
                     expr: Expr::Index {
+                        loc: Default::default(),
                         base: array_base.to_owned(),
                         index: Box::new(index.as_ref().clone()),
                     },
                 });
                 pre_args.extend(args.iter().skip(buffer_start).cloned());
                 guards.push(Stmt::If {
-                    loc: None,
+                    loc: Default::default(),
                     cond: Expr::UnaryNot {
+                        loc: Default::default(),
                         expr: Box::new(Expr::Index {
+                            loc: Default::default(),
                             base: format!("self.{}", managed.active_field),
                             index: Box::new(index.as_ref().clone()),
                         }),
                     },
                     then_branch: vec![
                         Stmt::Expr {
-                            loc: None,
+                            loc: Default::default(),
                             expr: Expr::UserCall {
+                                loc: Default::default(),
                                 name: format!("{proc_name}{PROC_BLOCK_PRE_FN_SUFFIX}"),
                                 type_args: Vec::new(),
                                 args: pre_args,
                             },
                         },
                         Stmt::Assign {
-                            loc: None,
+                            loc: Default::default(),
+                            target_loc: Default::default(),
                             target: AssignTarget::Index {
                                 base: format!("self.{}", managed.active_field),
                                 index: index.as_ref().clone(),
@@ -168,23 +178,24 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                             decl_ty: None,
                             generic_decl_ty: None,
                             is_typed_decl: false,
-                            expr: Expr::Bool(true),
+                            typed_decl_ty_loc: Default::default(),
+                            expr: Expr::bool(true),
                         },
                     ],
                     else_branch: Vec::new(),
                 });
             }
             Expr::Cast { expr: inner, .. }
-            | Expr::UnaryNot { expr: inner }
-            | Expr::UnaryBitNot { expr: inner } => {
+            | Expr::UnaryNot { expr: inner, .. }
+            | Expr::UnaryBitNot { expr: inner, .. } => {
                 collect_guards_from_expr(inner, managed_arrays, proc_api, used_arrays, guards);
             }
-            Expr::ArrayLiteral(values) => {
+            Expr::ArrayLiteral { values, .. } => {
                 for value in values {
                     collect_guards_from_expr(value, managed_arrays, proc_api, used_arrays, guards);
                 }
             }
-            Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
         }
     }
 
@@ -407,37 +418,39 @@ fn generate_nested_wrapper_defs(
         for stmt in &callee_proc.init {
             if let Stmt::Assign {
                 target: AssignTarget::Var(array_var),
-                expr: Expr::ArrayCtor { init, .. },
+                expr: expr @ Expr::ArrayCtor { init, .. },
                 ..
             } = stmt
             {
                 if let Some(slot_names) = callee_shape.nested_proc_array_slots.get(array_var) {
                     let Some(array_state) = callee_shape.state.nested_proc_arrays.get(array_var)
                     else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor '{}' processor-array '{}' is missing state metadata",
                                 callee_proc_name, array_var
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         continue;
                     };
 
                     if let Some(values) = init {
                         if values.len() != slot_names.len() && values.len() != 1 {
-                            errors.push(Diagnostic::semantic(
-                                format!(
-                                    "processor '{}.{}' initializer expects {} constructor entries (or a single broadcast constructor), got {}",
-                                    callee_proc_name,
-                                    array_var,
-                                    slot_names.len(),
-                                    values.len()
-                                ),
-                                0,
-                                0,
-                            ));
+                            with_expr_diag_context(expr, |expr_diag| {
+                                push_semantic(
+                                    expr_diag,
+                                    errors,
+                                    format!(
+                                        "processor '{}.{}' initializer expects {} constructor entries (or a single broadcast constructor), got {}",
+                                        callee_proc_name,
+                                        array_var,
+                                        slot_names.len(),
+                                        values.len()
+                                    ),
+                                );
+                            });
                         }
                     }
 
@@ -456,6 +469,7 @@ fn generate_nested_wrapper_defs(
                                     name: ctor_name,
                                     type_args,
                                     args,
+                                    ..
                                 } = value
                                 {
                                     let resolved_ctor = if ctor_name.contains("::") {
@@ -473,75 +487,83 @@ fn generate_nested_wrapper_defs(
                                     };
                                     if let Some(resolved_ctor) = resolved_ctor {
                                         if resolved_ctor != array_state.proc_name {
-                                            errors.push(Diagnostic::semantic(
-                                                format!(
-                                                    "processor '{}.{}' initializer entry {} uses constructor '{}' but '{}' is required",
-                                                    callee_proc_name,
-                                                    array_var,
-                                                    slot_idx,
-                                                    resolved_ctor,
-                                                    array_state.proc_name
-                                                ),
-                                                0,
-                                                0,
-                                            ));
+                                            with_expr_diag_context(value, |expr_diag| {
+                                                push_semantic(
+                                                    expr_diag,
+                                                    errors,
+                                                    format!(
+                                                        "processor '{}.{}' initializer entry {} uses constructor '{}' but '{}' is required",
+                                                        callee_proc_name,
+                                                        array_var,
+                                                        slot_idx,
+                                                        resolved_ctor,
+                                                        array_state.proc_name
+                                                    ),
+                                                );
+                                            });
                                         }
                                     } else {
-                                        errors.push(Diagnostic::semantic(
-                                            format!(
-                                                "processor '{}.{}' initializer entry {} references unknown processor constructor '{}'",
-                                                callee_proc_name, array_var, slot_idx, ctor_name
-                                            ),
-                                            0,
-                                            0,
-                                        ));
+                                        with_expr_diag_context(value, |expr_diag| {
+                                            push_semantic(
+                                                expr_diag,
+                                                errors,
+                                                format!(
+                                                    "processor '{}.{}' initializer entry {} references unknown processor constructor '{}'",
+                                                    callee_proc_name, array_var, slot_idx, ctor_name
+                                                ),
+                                            );
+                                        });
                                     }
                                     if !type_args.is_empty() {
-                                        errors.push(Diagnostic::semantic(
-                                            format!(
-                                                "processor '{}' is not generic and cannot take type arguments",
-                                                ctor_name
-                                            ),
-                                            0,
-                                            0,
-                                        ));
+                                        with_expr_diag_context(value, |expr_diag| {
+                                            push_semantic(
+                                                expr_diag,
+                                                errors,
+                                                format!(
+                                                    "processor '{}' is not generic and cannot take type arguments",
+                                                    ctor_name
+                                                ),
+                                            );
+                                        });
                                     }
                                     slot_ctor_args = args.clone();
                                 } else {
-                                    errors.push(Diagnostic::semantic(
-                                        format!(
-                                            "processor '{}.{}' initializer entry {} must be a processor constructor call",
-                                            callee_proc_name, array_var, slot_idx
-                                        ),
-                                        0,
-                                        0,
-                                    ));
+                                    with_expr_diag_context(value, |expr_diag| {
+                                        push_semantic(
+                                            expr_diag,
+                                            errors,
+                                            format!(
+                                                "processor '{}.{}' initializer entry {} must be a processor constructor call",
+                                                callee_proc_name, array_var, slot_idx
+                                            ),
+                                        );
+                                    });
                                 }
                             }
                         }
 
                         let Some(slot_state) = callee_shape.state.nested_procs.get(slot_name)
                         else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                DiagCtx::new(stmt.loc()),
+                                errors,
                                 format!(
                                     "processor '{}' processor-array slot '{}' is missing nested processor state",
                                     callee_proc_name, slot_name
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             continue;
                         };
                         let Some(nested_callee_shape) = lowering_shapes.get(&slot_state.proc_name)
                         else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                DiagCtx::new(stmt.loc()),
+                                errors,
                                 format!(
                                     "processor '{}' nested state '{}' references unknown processor '{}'",
                                     callee_proc_name, slot_name, slot_state.proc_name
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             continue;
                         };
                         let lowered_slot_ctor_args = slot_ctor_args
@@ -611,36 +633,36 @@ fn generate_nested_wrapper_defs(
             {
                 if let Some(nested_state) = callee_shape.state.nested_procs.get(var) {
                     if !type_args.is_empty() {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor '{}' is not generic and cannot take type arguments",
                                 ctor_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     if nested_state.proc_name != *ctor_name {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor state symbol '{}' has conflicting processor types '{}' and '{}'",
                                 var, nested_state.proc_name, ctor_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         continue;
                     }
                     let Some(nested_callee_shape) = lowering_shapes.get(&nested_state.proc_name)
                     else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor '{}' nested state '{}' references unknown processor '{}'",
                                 callee_proc_name, var, nested_state.proc_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         continue;
                     };
                     let lowered_ctor_args = args
@@ -696,14 +718,14 @@ fn generate_nested_wrapper_defs(
                 }
                 if let Some(state_struct) = callee_shape.state.struct_instances.get(var) {
                     if state_struct.struct_name != *ctor_name {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor state symbol '{}' has conflicting struct types '{}' and '{}'",
                                 var, state_struct.struct_name, ctor_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         continue;
                     }
                     let Some(struct_def) = resolve_proc_state_struct_def(
@@ -719,19 +741,20 @@ fn generate_nested_wrapper_defs(
                         let Some(resolved_type_args) = resolve_explicit_call_type_args(
                             type_args,
                             &format!("processor state constructor '{} = {}(...)'", var, ctor_name),
+                            DiagCtx::new(stmt.loc()),
                             errors,
                         ) else {
                             continue;
                         };
                         if resolved_type_args.as_slice() != state_struct.type_args.as_slice() {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                DiagCtx::new(stmt.loc()),
+                                errors,
                                 format!(
                                     "processor state constructor '{} = {}(...)' uses type arguments inconsistent with the declared state specialization",
                                     var, ctor_name
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                         }
                     }
                     let expanded = expand_nested_struct_ctor_assign(
@@ -799,11 +822,14 @@ fn generate_nested_wrapper_defs(
         }
 
         nested_defs.push(Block::Def(FunctionDef {
+            loc: Default::default(),
             type_params: Vec::new(),
             name: nested_init_fn_name(&proc.name, &nested_path),
             params: vec![omni_frontend::FnParamDecl {
+                loc: Default::default(),
                 name: "self".to_owned(),
                 ty: Some(FnParamType::Struct(proc.name.clone())),
+                ty_loc: Default::default(),
                 default: None,
             }],
             body: nested_init_body,
@@ -866,21 +892,27 @@ fn generate_nested_wrapper_defs(
         }
         let mut nested_step_params = Vec::<omni_frontend::FnParamDecl>::new();
         nested_step_params.push(omni_frontend::FnParamDecl {
+            loc: Default::default(),
             name: "self".to_owned(),
             ty: Some(FnParamType::Struct(proc.name.clone())),
+            ty_loc: Default::default(),
             default: None,
         });
         for in_name in &callee_shape.ins {
             nested_step_params.push(omni_frontend::FnParamDecl {
+                loc: Default::default(),
                 name: in_name.clone(),
                 ty: None,
+                ty_loc: Default::default(),
                 default: None,
             });
         }
         for buffer in &callee_shape.buffer_specs {
             nested_step_params.push(omni_frontend::FnParamDecl {
+                loc: Default::default(),
                 name: buffer.name.clone(),
                 ty: Some(proc_buffer_fn_param_type(buffer)),
+                ty_loc: Default::default(),
                 default: None,
             });
         }
@@ -1007,6 +1039,7 @@ fn generate_nested_wrapper_defs(
             callee_sample_oversample_factor.max(1),
         );
         nested_defs.push(Block::Def(FunctionDef {
+            loc: Default::default(),
             type_params: Vec::new(),
             name: nested_step_name.clone(),
             params: nested_step_params.clone(),
@@ -1016,20 +1049,22 @@ fn generate_nested_wrapper_defs(
         if let Some(callee_api) = callee_api {
             for event in &callee_proc.events {
                 let Some(event_spec) = callee_api.events.get(&event.name) else {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        DiagCtx::new(event.loc),
+                        errors,
                         format!(
                             "processor '{}' nested event '{}' is missing lowered metadata",
                             callee_proc_name, event.name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     continue;
                 };
                 let mut nested_event_params = Vec::<omni_frontend::FnParamDecl>::new();
                 nested_event_params.push(omni_frontend::FnParamDecl {
+                    loc: Default::default(),
                     name: "self".to_owned(),
                     ty: Some(FnParamType::Struct(proc.name.clone())),
+                    ty_loc: Default::default(),
                     default: None,
                 });
                 let mut callee_event_ins_names = callee_ins_names.clone();
@@ -1038,8 +1073,10 @@ fn generate_nested_wrapper_defs(
                     callee_event_ins_names.insert(param.name.clone());
                     if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty) {
                         nested_event_params.push(omni_frontend::FnParamDecl {
+                            loc: Default::default(),
                             name: param.name.clone(),
                             ty: Some(FnParamType::Array(Some(elem_ty))),
+                            ty_loc: Default::default(),
                             default: None,
                         });
                         continue;
@@ -1049,8 +1086,10 @@ fn generate_nested_wrapper_defs(
                         slot_names.push(slot.name.clone());
                         callee_event_ins_names.insert(slot.name.clone());
                         nested_event_params.push(omni_frontend::FnParamDecl {
+                            loc: Default::default(),
                             name: slot.name.clone(),
                             ty: Some(FnParamType::Primitive(slot.ty)),
+                            ty_loc: Default::default(),
                             default: None,
                         });
                     }
@@ -1079,6 +1118,7 @@ fn generate_nested_wrapper_defs(
                     })
                     .collect::<Vec<_>>();
                 nested_defs.push(Block::Def(FunctionDef {
+                    loc: Default::default(),
                     type_params: Vec::new(),
                     name: nested_event_fn_name(&proc.name, &nested_path, &event.name),
                     params: nested_event_params,
@@ -1094,14 +1134,18 @@ fn generate_nested_wrapper_defs(
         if callee_has_effective_block {
             let mut nested_block_params = Vec::<omni_frontend::FnParamDecl>::new();
             nested_block_params.push(omni_frontend::FnParamDecl {
+                loc: Default::default(),
                 name: "self".to_owned(),
                 ty: Some(FnParamType::Struct(proc.name.clone())),
+                ty_loc: Default::default(),
                 default: None,
             });
             for buffer in &callee_shape.buffer_specs {
                 nested_block_params.push(omni_frontend::FnParamDecl {
+                    loc: Default::default(),
                     name: buffer.name.clone(),
                     ty: Some(proc_buffer_fn_param_type(buffer)),
+                    ty_loc: Default::default(),
                     default: None,
                 });
             }
@@ -1148,15 +1192,17 @@ fn generate_nested_wrapper_defs(
                     .or_insert(managed.slots.len());
                 for slot_idx in 0..managed.slots.len() {
                     nested_block_pre_body.push(Stmt::Assign {
-                        loc: None,
+                        loc: Default::default(),
+                        target_loc: Default::default(),
                         target: AssignTarget::Index {
                             base: format!("self.{}", managed.active_field),
-                            index: Expr::Int(slot_idx as i64),
+                            index: Expr::int(slot_idx as i64),
                         },
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: false,
-                        expr: Expr::Bool(false),
+                        typed_decl_ty_loc: Default::default(),
+                        expr: Expr::bool(false),
                     });
                 }
             }
@@ -1175,14 +1221,15 @@ fn generate_nested_wrapper_defs(
                 }
                 let mut call_args = vec![CallArg {
                     name: None,
-                    expr: Expr::Var("self".to_owned()),
+                    expr: Expr::var("self"),
                 }];
                 call_args.extend(expand_proc_buffer_call_args(
                     instance, api, nested_var, errors,
                 ));
                 nested_block_pre_body.push(Stmt::Expr {
-                    loc: None,
+                    loc: Default::default(),
                     expr: Expr::UserCall {
+                        loc: Default::default(),
                         name: nested_block_pre_fn_name(
                             &proc.name,
                             &nested_field_name(&nested_path, nested_var),
@@ -1193,6 +1240,7 @@ fn generate_nested_wrapper_defs(
                 });
             }
             nested_defs.push(Block::Def(FunctionDef {
+                loc: Default::default(),
                 type_params: Vec::new(),
                 name: nested_block_pre_fn_name(&proc.name, &nested_path),
                 params: nested_block_params.clone(),
@@ -1215,14 +1263,15 @@ fn generate_nested_wrapper_defs(
                 }
                 let mut call_args = vec![CallArg {
                     name: None,
-                    expr: Expr::Var("self".to_owned()),
+                    expr: Expr::var("self"),
                 }];
                 call_args.extend(expand_proc_buffer_call_args(
                     instance, api, nested_var, errors,
                 ));
                 nested_block_post_body.push(Stmt::Expr {
-                    loc: None,
+                    loc: Default::default(),
                     expr: Expr::UserCall {
+                        loc: Default::default(),
                         name: nested_block_post_fn_name(
                             &proc.name,
                             &nested_field_name(&nested_path, nested_var),
@@ -1268,8 +1317,9 @@ fn generate_nested_wrapper_defs(
                     let mut call_args = vec![CallArg {
                         name: None,
                         expr: Expr::Index {
+                            loc: Default::default(),
                             base: array_base.clone(),
-                            index: Box::new(Expr::Int(slot_idx as i64)),
+                            index: Box::new(Expr::int(slot_idx as i64)),
                         },
                     }];
                     call_args.extend(expand_proc_buffer_call_args(
@@ -1279,14 +1329,16 @@ fn generate_nested_wrapper_defs(
                         errors,
                     ));
                     nested_block_post_body.push(Stmt::If {
-                        loc: None,
+                        loc: Default::default(),
                         cond: Expr::Index {
+                            loc: Default::default(),
                             base: format!("self.{}", managed.active_field),
-                            index: Box::new(Expr::Int(slot_idx as i64)),
+                            index: Box::new(Expr::int(slot_idx as i64)),
                         },
                         then_branch: vec![Stmt::Expr {
-                            loc: None,
+                            loc: Default::default(),
                             expr: Expr::UserCall {
+                                loc: Default::default(),
                                 name: nested_block_post_fn_name(&proc.name, slot_name),
                                 type_args: Vec::new(),
                                 args: call_args,
@@ -1297,6 +1349,7 @@ fn generate_nested_wrapper_defs(
                 }
             }
             nested_defs.push(Block::Def(FunctionDef {
+                loc: Default::default(),
                 type_params: Vec::new(),
                 name: nested_block_post_fn_name(&proc.name, &nested_path),
                 params: nested_block_params,
@@ -1307,36 +1360,38 @@ fn generate_nested_wrapper_defs(
         for (idx, out_name) in callee_shape.outs.iter().enumerate() {
             let mut call_args = vec![CallArg {
                 name: None,
-                expr: Expr::Var("self".to_owned()),
+                expr: Expr::var("self"),
             }];
             for in_name in &callee_shape.ins {
                 call_args.push(CallArg {
                     name: None,
-                    expr: Expr::Var(in_name.clone()),
+                    expr: Expr::var(in_name.clone()),
                 });
             }
             for buffer in &callee_shape.buffer_specs {
                 call_args.push(CallArg {
                     name: None,
-                    expr: Expr::Var(buffer.name.clone()),
+                    expr: Expr::var(buffer.name.clone()),
                 });
             }
             nested_defs.push(Block::Def(FunctionDef {
+                loc: Default::default(),
                 type_params: Vec::new(),
                 name: nested_call_out_fn_name(&proc.name, &nested_path, idx),
                 params: nested_step_params.clone(),
                 body: vec![
                     Stmt::Expr {
-                        loc: None,
+                        loc: Default::default(),
                         expr: Expr::UserCall {
+                            loc: Default::default(),
                             name: nested_step_name.clone(),
                             type_args: Vec::new(),
                             args: call_args,
                         },
                     },
                     Stmt::Return {
-                        loc: None,
-                        expr: Expr::Var(format!(
+                        loc: Default::default(),
+                        expr: Expr::var(format!(
                             "self.{}",
                             nested_field_name(&nested_path, out_name)
                         )),
@@ -1381,14 +1436,14 @@ pub(super) fn generate_lowered_proc_blocks(
                 continue;
             };
             if !lowering_shapes.contains_key(&nested_state.proc_name) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
                     format!(
                         "processor '{}' nested state '{}' references unknown processor '{}'",
                         proc.name, nested_var, nested_state.proc_name
                     ),
-                    0,
-                    0,
-                ));
+                );
                 continue;
             }
             nested_instances.insert(
@@ -1402,6 +1457,7 @@ pub(super) fn generate_lowered_proc_blocks(
 
         let struct_idx = generated_structs.len();
         generated_structs.push(Block::Struct(omni_frontend::StructDef {
+            loc: Default::default(),
             name: proc.name.clone(),
             type_params: Vec::new(),
             fields: shape.fields.clone(),
@@ -1494,36 +1550,38 @@ pub(super) fn generate_lowered_proc_blocks(
         for stmt in &proc.init {
             if let Stmt::Assign {
                 target: AssignTarget::Var(array_var),
-                expr: Expr::ArrayCtor { init, .. },
+                expr: expr @ Expr::ArrayCtor { init, .. },
                 ..
             } = stmt
             {
                 if let Some(slot_names) = shape.nested_proc_array_slots.get(array_var) {
                     let Some(array_state) = shape.state.nested_proc_arrays.get(array_var) else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor '{}' processor-array '{}' is missing state metadata",
                                 proc.name, array_var
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         continue;
                     };
 
                     if let Some(values) = init {
                         if values.len() != slot_names.len() && values.len() != 1 {
-                            errors.push(Diagnostic::semantic(
-                                format!(
-                                    "processor '{}.{}' initializer expects {} constructor entries (or a single broadcast constructor), got {}",
-                                    proc.name,
-                                    array_var,
-                                    slot_names.len(),
-                                    values.len()
-                                ),
-                                0,
-                                0,
-                            ));
+                            with_expr_diag_context(expr, |expr_diag| {
+                                push_semantic(
+                                    expr_diag,
+                                    errors,
+                                    format!(
+                                        "processor '{}.{}' initializer expects {} constructor entries (or a single broadcast constructor), got {}",
+                                        proc.name,
+                                        array_var,
+                                        slot_names.len(),
+                                        values.len()
+                                    ),
+                                );
+                            });
                         }
                     }
 
@@ -1542,6 +1600,7 @@ pub(super) fn generate_lowered_proc_blocks(
                                     name: ctor_name,
                                     type_args,
                                     args,
+                                    ..
                                 } = value
                                 {
                                     let resolved_ctor = if ctor_name.contains("::") {
@@ -1559,73 +1618,81 @@ pub(super) fn generate_lowered_proc_blocks(
                                     };
                                     if let Some(resolved_ctor) = resolved_ctor {
                                         if resolved_ctor != array_state.proc_name {
-                                            errors.push(Diagnostic::semantic(
-                                                format!(
-                                                    "processor '{}.{}' initializer entry {} uses constructor '{}' but '{}' is required",
-                                                    proc.name,
-                                                    array_var,
-                                                    slot_idx,
-                                                    resolved_ctor,
-                                                    array_state.proc_name
-                                                ),
-                                                0,
-                                                0,
-                                            ));
+                                            with_expr_diag_context(value, |expr_diag| {
+                                                push_semantic(
+                                                    expr_diag,
+                                                    errors,
+                                                    format!(
+                                                        "processor '{}.{}' initializer entry {} uses constructor '{}' but '{}' is required",
+                                                        proc.name,
+                                                        array_var,
+                                                        slot_idx,
+                                                        resolved_ctor,
+                                                        array_state.proc_name
+                                                    ),
+                                                );
+                                            });
                                         }
                                     } else {
-                                        errors.push(Diagnostic::semantic(
-                                            format!(
-                                                "processor '{}.{}' initializer entry {} references unknown processor constructor '{}'",
-                                                proc.name, array_var, slot_idx, ctor_name
-                                            ),
-                                            0,
-                                            0,
-                                        ));
+                                        with_expr_diag_context(value, |expr_diag| {
+                                            push_semantic(
+                                                expr_diag,
+                                                errors,
+                                                format!(
+                                                    "processor '{}.{}' initializer entry {} references unknown processor constructor '{}'",
+                                                    proc.name, array_var, slot_idx, ctor_name
+                                                ),
+                                            );
+                                        });
                                     }
                                     if !type_args.is_empty() {
-                                        errors.push(Diagnostic::semantic(
-                                            format!(
-                                                "processor '{}' is not generic and cannot take type arguments",
-                                                ctor_name
-                                            ),
-                                            0,
-                                            0,
-                                        ));
+                                        with_expr_diag_context(value, |expr_diag| {
+                                            push_semantic(
+                                                expr_diag,
+                                                errors,
+                                                format!(
+                                                    "processor '{}' is not generic and cannot take type arguments",
+                                                    ctor_name
+                                                ),
+                                            );
+                                        });
                                     }
                                     slot_ctor_args = args.clone();
                                 } else {
-                                    errors.push(Diagnostic::semantic(
-                                        format!(
-                                            "processor '{}.{}' initializer entry {} must be a processor constructor call",
-                                            proc.name, array_var, slot_idx
-                                        ),
-                                        0,
-                                        0,
-                                    ));
+                                    with_expr_diag_context(value, |expr_diag| {
+                                        push_semantic(
+                                            expr_diag,
+                                            errors,
+                                            format!(
+                                                "processor '{}.{}' initializer entry {} must be a processor constructor call",
+                                                proc.name, array_var, slot_idx
+                                            ),
+                                        );
+                                    });
                                 }
                             }
                         }
 
                         let Some(slot_state) = shape.state.nested_procs.get(slot_name) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                DiagCtx::new(stmt.loc()),
+                                errors,
                                 format!(
                                     "processor '{}' processor-array slot '{}' is missing nested processor state",
                                     proc.name, slot_name
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             continue;
                         };
                         let Some(callee_shape) = lowering_shapes.get(&slot_state.proc_name) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                DiagCtx::new(stmt.loc()),
+                                errors,
                                 format!(
                                     "processor '{}' nested state '{}' references unknown processor '{}'",
                                     proc.name, slot_name, slot_state.proc_name
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             continue;
                         };
                         let (expanded, bound_buffers) = expand_nested_proc_ctor_assign(
@@ -1689,14 +1756,16 @@ pub(super) fn generate_lowered_proc_blocks(
                     }
                     for (idx, value) in values.iter().cloned().enumerate() {
                         let write_stmt = Stmt::Assign {
-                            loc: None,
+                            loc: Default::default(),
+                            target_loc: Default::default(),
                             target: AssignTarget::Index {
                                 base: array_var.clone(),
-                                index: Expr::Int(idx as i64),
+                                index: Expr::int(idx as i64),
                             },
                             decl_ty: None,
                             generic_decl_ty: None,
                             is_typed_decl: false,
+                            typed_decl_ty_loc: Default::default(),
                             expr: value,
                         };
                         if let Some(rewritten) = rewrite_owner_proc_stmt(
@@ -1721,20 +1790,22 @@ pub(super) fn generate_lowered_proc_blocks(
             }
             if let Stmt::Assign {
                 target: AssignTarget::Var(array_var),
-                expr: Expr::ArrayLiteral(values),
+                expr: Expr::ArrayLiteral { values, .. },
                 ..
             } = stmt
             {
                 for (idx, value) in values.iter().cloned().enumerate() {
                     let write_stmt = Stmt::Assign {
-                        loc: None,
+                        loc: Default::default(),
+                        target_loc: Default::default(),
                         target: AssignTarget::Index {
                             base: array_var.clone(),
-                            index: Expr::Int(idx as i64),
+                            index: Expr::int(idx as i64),
                         },
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: false,
+                        typed_decl_ty_loc: Default::default(),
                         expr: value,
                     };
                     if let Some(rewritten) = rewrite_owner_proc_stmt(
@@ -1770,35 +1841,35 @@ pub(super) fn generate_lowered_proc_blocks(
             {
                 if let Some(nested_state) = shape.state.nested_procs.get(var) {
                     if !type_args.is_empty() {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor '{}' is not generic and cannot take type arguments",
                                 ctor_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     if nested_state.proc_name != *ctor_name {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor state symbol '{}' has conflicting processor types '{}' and '{}'",
                                 var, nested_state.proc_name, ctor_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         continue;
                     }
                     let Some(callee_shape) = lowering_shapes.get(&nested_state.proc_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor '{}' nested state '{}' references unknown processor '{}'",
                                 proc.name, var, nested_state.proc_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         continue;
                     };
                     let (expanded, bound_buffers) = expand_nested_proc_ctor_assign(
@@ -1836,14 +1907,14 @@ pub(super) fn generate_lowered_proc_blocks(
                 }
                 if let Some(state_struct) = shape.state.struct_instances.get(var) {
                     if state_struct.struct_name != *ctor_name {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            DiagCtx::new(stmt.loc()),
+                            errors,
                             format!(
                                 "processor state symbol '{}' has conflicting struct types '{}' and '{}'",
                                 var, state_struct.struct_name, ctor_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         continue;
                     }
                     let Some(struct_def) = resolve_proc_state_struct_def(
@@ -1859,19 +1930,20 @@ pub(super) fn generate_lowered_proc_blocks(
                         let Some(resolved_type_args) = resolve_explicit_call_type_args(
                             type_args,
                             &format!("processor state constructor '{} = {}(...)'", var, ctor_name),
+                            DiagCtx::new(stmt.loc()),
                             errors,
                         ) else {
                             continue;
                         };
                         if resolved_type_args.as_slice() != state_struct.type_args.as_slice() {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                DiagCtx::new(stmt.loc()),
+                                errors,
                                 format!(
                                     "processor state constructor '{} = {}(...)' uses type arguments inconsistent with the declared state specialization",
                                     var, ctor_name
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                         }
                     }
                     let expanded = expand_nested_struct_ctor_assign(
@@ -1922,11 +1994,14 @@ pub(super) fn generate_lowered_proc_blocks(
         }
 
         generated_defs.push(Block::Def(FunctionDef {
+            loc: Default::default(),
             type_params: Vec::new(),
             name: format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX),
             params: vec![omni_frontend::FnParamDecl {
+                loc: Default::default(),
                 name: "self".to_owned(),
                 ty: Some(FnParamType::Struct(proc.name.clone())),
+                ty_loc: Default::default(),
                 default: None,
             }],
             body: init_body,
@@ -1950,20 +2025,22 @@ pub(super) fn generate_lowered_proc_blocks(
         if let Some(owner_api) = proc_api.get(&proc.name) {
             for event in &proc.events {
                 let Some(event_spec) = owner_api.events.get(&event.name) else {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        DiagCtx::new(event.loc),
+                        errors,
                         format!(
                             "processor '{}' event '{}' is missing lowered event metadata",
                             proc.name, event.name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     continue;
                 };
                 let mut event_params = Vec::<omni_frontend::FnParamDecl>::new();
                 event_params.push(omni_frontend::FnParamDecl {
+                    loc: Default::default(),
                     name: "self".to_owned(),
                     ty: Some(FnParamType::Struct(proc.name.clone())),
+                    ty_loc: Default::default(),
                     default: None,
                 });
                 let mut event_ins_names = ins_names.clone();
@@ -1972,8 +2049,10 @@ pub(super) fn generate_lowered_proc_blocks(
                     event_ins_names.insert(param.name.clone());
                     if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty) {
                         event_params.push(omni_frontend::FnParamDecl {
+                            loc: Default::default(),
                             name: param.name.clone(),
                             ty: Some(FnParamType::Array(Some(elem_ty))),
+                            ty_loc: Default::default(),
                             default: None,
                         });
                         continue;
@@ -1983,8 +2062,10 @@ pub(super) fn generate_lowered_proc_blocks(
                         slot_names.push(slot.name.clone());
                         event_ins_names.insert(slot.name.clone());
                         event_params.push(omni_frontend::FnParamDecl {
+                            loc: Default::default(),
                             name: slot.name.clone(),
                             ty: Some(FnParamType::Primitive(slot.ty)),
+                            ty_loc: Default::default(),
                             default: None,
                         });
                     }
@@ -2013,6 +2094,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     })
                     .collect::<Vec<_>>();
                 generated_defs.push(Block::Def(FunctionDef {
+                    loc: Default::default(),
                     type_params: Vec::new(),
                     name: format!("{}{}{}", proc.name, PROC_EVENT_FN_PREFIX, event.name),
                     params: event_params,
@@ -2077,14 +2159,18 @@ pub(super) fn generate_lowered_proc_blocks(
         if proc_has_effective_block {
             let mut block_params = Vec::<omni_frontend::FnParamDecl>::new();
             block_params.push(omni_frontend::FnParamDecl {
+                loc: Default::default(),
                 name: "self".to_owned(),
                 ty: Some(FnParamType::Struct(proc.name.clone())),
+                ty_loc: Default::default(),
                 default: None,
             });
             for buffer in &shape.buffer_specs {
                 block_params.push(omni_frontend::FnParamDecl {
+                    loc: Default::default(),
                     name: buffer.name.clone(),
                     ty: Some(proc_buffer_fn_param_type(buffer)),
+                    ty_loc: Default::default(),
                     default: None,
                 });
             }
@@ -2127,15 +2213,17 @@ pub(super) fn generate_lowered_proc_blocks(
                 };
                 for slot_idx in 0..managed.slots.len() {
                     block_pre_body.push(Stmt::Assign {
-                        loc: None,
+                        loc: Default::default(),
+                        target_loc: Default::default(),
                         target: AssignTarget::Index {
                             base: format!("self.{}", managed.active_field),
-                            index: Expr::Int(slot_idx as i64),
+                            index: Expr::int(slot_idx as i64),
                         },
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: false,
-                        expr: Expr::Bool(false),
+                        typed_decl_ty_loc: Default::default(),
+                        expr: Expr::bool(false),
                     });
                 }
             }
@@ -2154,14 +2242,15 @@ pub(super) fn generate_lowered_proc_blocks(
                 }
                 let mut call_args = vec![CallArg {
                     name: None,
-                    expr: Expr::Var("self".to_owned()),
+                    expr: Expr::var("self"),
                 }];
                 call_args.extend(expand_proc_buffer_call_args(
                     instance, api, nested_var, errors,
                 ));
                 block_pre_body.push(Stmt::Expr {
-                    loc: None,
+                    loc: Default::default(),
                     expr: Expr::UserCall {
+                        loc: Default::default(),
                         name: nested_block_pre_fn_name(&proc.name, nested_var),
                         type_args: Vec::new(),
                         args: call_args,
@@ -2169,6 +2258,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 });
             }
             generated_defs.push(Block::Def(FunctionDef {
+                loc: Default::default(),
                 type_params: Vec::new(),
                 name: format!("{}{}", proc.name, PROC_BLOCK_PRE_FN_SUFFIX),
                 params: block_params.clone(),
@@ -2191,14 +2281,15 @@ pub(super) fn generate_lowered_proc_blocks(
                 }
                 let mut call_args = vec![CallArg {
                     name: None,
-                    expr: Expr::Var("self".to_owned()),
+                    expr: Expr::var("self"),
                 }];
                 call_args.extend(expand_proc_buffer_call_args(
                     instance, api, nested_var, errors,
                 ));
                 block_post_body.push(Stmt::Expr {
-                    loc: None,
+                    loc: Default::default(),
                     expr: Expr::UserCall {
+                        loc: Default::default(),
                         name: nested_block_post_fn_name(&proc.name, nested_var),
                         type_args: Vec::new(),
                         args: call_args,
@@ -2237,22 +2328,25 @@ pub(super) fn generate_lowered_proc_blocks(
                     let mut call_args = vec![CallArg {
                         name: None,
                         expr: Expr::Index {
+                            loc: Default::default(),
                             base: array_base.clone(),
-                            index: Box::new(Expr::Int(slot_idx as i64)),
+                            index: Box::new(Expr::int(slot_idx as i64)),
                         },
                     }];
                     call_args.extend(expand_proc_buffer_call_args(
                         instance, api, slot_name, errors,
                     ));
                     block_post_body.push(Stmt::If {
-                        loc: None,
+                        loc: Default::default(),
                         cond: Expr::Index {
+                            loc: Default::default(),
                             base: format!("self.{}", managed.active_field),
-                            index: Box::new(Expr::Int(slot_idx as i64)),
+                            index: Box::new(Expr::int(slot_idx as i64)),
                         },
                         then_branch: vec![Stmt::Expr {
-                            loc: None,
+                            loc: Default::default(),
                             expr: Expr::UserCall {
+                                loc: Default::default(),
                                 name: format!(
                                     "{}{}",
                                     instance.proc_name, PROC_BLOCK_POST_FN_SUFFIX
@@ -2266,6 +2360,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 }
             }
             generated_defs.push(Block::Def(FunctionDef {
+                loc: Default::default(),
                 type_params: Vec::new(),
                 name: format!("{}{}", proc.name, PROC_BLOCK_POST_FN_SUFFIX),
                 params: block_params,
@@ -2274,22 +2369,28 @@ pub(super) fn generate_lowered_proc_blocks(
         }
         let mut step_params = Vec::<omni_frontend::FnParamDecl>::new();
         step_params.push(omni_frontend::FnParamDecl {
+            loc: Default::default(),
             name: "self".to_owned(),
             ty: Some(FnParamType::Struct(proc.name.clone())),
+            ty_loc: Default::default(),
             default: None,
         });
         for in_name in &shape.ins {
             let in_ty = *shape.in_types.get(in_name).unwrap_or(&PrimitiveType::F32);
             step_params.push(omni_frontend::FnParamDecl {
+                loc: Default::default(),
                 name: in_name.clone(),
                 ty: Some(FnParamType::Primitive(in_ty)),
+                ty_loc: Default::default(),
                 default: None,
             });
         }
         for buffer in &shape.buffer_specs {
             step_params.push(omni_frontend::FnParamDecl {
+                loc: Default::default(),
                 name: buffer.name.clone(),
                 ty: Some(proc_buffer_fn_param_type(buffer)),
+                ty_loc: Default::default(),
                 default: None,
             });
         }
@@ -2359,6 +2460,7 @@ pub(super) fn generate_lowered_proc_blocks(
             );
         }
         generated_defs.push(Block::Def(FunctionDef {
+            loc: Default::default(),
             type_params: Vec::new(),
             name: step_fn_name.clone(),
             params: step_params.clone(),
@@ -2375,11 +2477,13 @@ pub(super) fn generate_lowered_proc_blocks(
                         continue;
                     }
                     def.fields.push(StructField {
+                        loc: Default::default(),
                         name: managed.active_field.clone(),
                         ty: FieldType::Array(omni_frontend::ArrayTypeSpec {
                             elem: ArrayElemType::Primitive(PrimitiveType::Bool),
-                            size: Box::new(Expr::Int(managed.slots.len() as i64)),
+                            size: Box::new(Expr::int(managed.slots.len() as i64)),
                         }),
+                        ty_loc: Default::default(),
                         default: None,
                     });
                 }
@@ -2388,11 +2492,13 @@ pub(super) fn generate_lowered_proc_blocks(
                         continue;
                     }
                     def.fields.push(StructField {
+                        loc: Default::default(),
                         name: field_name.clone(),
                         ty: FieldType::Array(omni_frontend::ArrayTypeSpec {
                             elem: ArrayElemType::Primitive(PrimitiveType::Bool),
-                            size: Box::new(Expr::Int(*len as i64)),
+                            size: Box::new(Expr::int(*len as i64)),
                         }),
+                        ty_loc: Default::default(),
                         default: None,
                     });
                 }
@@ -2402,36 +2508,38 @@ pub(super) fn generate_lowered_proc_blocks(
         for (idx, out_name) in shape.outs.iter().enumerate() {
             let mut call_args = vec![CallArg {
                 name: None,
-                expr: Expr::Var("self".to_owned()),
+                expr: Expr::var("self"),
             }];
             for in_name in &shape.ins {
                 call_args.push(CallArg {
                     name: None,
-                    expr: Expr::Var(in_name.clone()),
+                    expr: Expr::var(in_name.clone()),
                 });
             }
             for buffer in &shape.buffer_specs {
                 call_args.push(CallArg {
                     name: None,
-                    expr: Expr::Var(buffer.name.clone()),
+                    expr: Expr::var(buffer.name.clone()),
                 });
             }
             generated_defs.push(Block::Def(FunctionDef {
+                loc: Default::default(),
                 type_params: Vec::new(),
                 name: format!("{}{}{}", proc.name, PROC_CALL_OUT_FN_PREFIX, idx),
                 params: step_params.clone(),
                 body: vec![
                     Stmt::Expr {
-                        loc: None,
+                        loc: Default::default(),
                         expr: Expr::UserCall {
+                            loc: Default::default(),
                             name: step_fn_name.clone(),
                             type_args: Vec::new(),
                             args: call_args,
                         },
                     },
                     Stmt::Return {
-                        loc: None,
-                        expr: Expr::Var(format!("self.{out_name}")),
+                        loc: Default::default(),
+                        expr: Expr::var(format!("self.{out_name}")),
                     },
                 ],
             }));

@@ -5,6 +5,10 @@ use crate::*;
 mod proc_specialization;
 pub(crate) use proc_specialization::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(crate) fn primitive_sig_code_for_specialization(ty: PrimitiveType) -> &'static str {
     match ty {
         PrimitiveType::F32 => "f32",
@@ -30,6 +34,7 @@ pub(crate) fn specialized_struct_name(base: &str, type_args: &[PrimitiveType]) -
 pub(crate) fn resolve_explicit_call_type_args(
     type_args: &[CallTypeArg],
     context: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Vec<PrimitiveType>> {
     let mut resolved = Vec::<PrimitiveType>::with_capacity(type_args.len());
@@ -37,26 +42,26 @@ pub(crate) fn resolve_explicit_call_type_args(
         match arg {
             CallTypeArg::Primitive(ty) => {
                 if *ty == PrimitiveType::Bool {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        diag,
+                        errors,
                         format!(
                             "{context}: 'bool' is not allowed as a generic type argument; only numeric types (f32, f64, i32, i64) are supported"
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     return None;
                 }
                 resolved.push(*ty);
             }
             CallTypeArg::Generic(name) => {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    diag,
+                    errors,
                     format!(
                         "{context}: generic type argument '{}' is not allowed here; expected concrete primitive type",
                         name
                     ),
-                    0,
-                    0,
-                ));
+                );
                 return None;
             }
         }
@@ -70,6 +75,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let diag = DiagCtx::new(expr.loc());
     match expr {
         Expr::Index { index, .. } => {
             substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
@@ -82,7 +88,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
                 substitute_call_type_args_with_bindings_expr(end, bindings, context, errors);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             substitute_call_type_args_with_bindings_expr(&mut spec.size, bindings, context, errors);
             if let Some(values) = init {
                 for value in values {
@@ -102,11 +108,11 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             substitute_call_type_args_with_bindings_expr(inner, bindings, context, errors);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 substitute_call_type_args_with_bindings_expr(value, bindings, context, errors);
             }
@@ -115,6 +121,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
             name,
             type_args,
             args,
+            ..
         } => {
             for arg in args.iter_mut() {
                 substitute_call_type_args_with_bindings_expr(
@@ -127,14 +134,14 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
             for type_arg in type_args.iter_mut() {
                 if let CallTypeArg::Generic(param) = type_arg {
                     let Some(bound) = bindings.get(param).copied() else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            diag,
+                            errors,
                             format!(
                                 "{context}: unknown generic type argument '{}'; not declared in current generic owner",
                                 param
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         continue;
                     };
                     *type_arg = CallTypeArg::Primitive(bound);
@@ -144,13 +151,14 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
                 if let Some(bound) = bindings.get(name).copied() {
                     let arg_expr = args.remove(0).expr;
                     *expr = Expr::Cast {
+                        loc: Default::default(),
                         to: bound,
                         expr: Box::new(arg_expr),
                     };
                 }
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -160,7 +168,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
-    with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+    with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {
@@ -231,17 +239,18 @@ pub(crate) fn specialize_generic_struct_template(
     type_args: &[PrimitiveType],
     errors: &mut Vec<Diagnostic>,
 ) -> Option<StructDef> {
+    let diag = DiagCtx::new(template.loc);
     if type_args.len() != template.type_params.len() {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            diag,
+            errors,
             format!(
                 "struct '{}' expects {} type arguments, got {}",
                 template.name,
                 template.type_params.len(),
                 type_args.len()
             ),
-            0,
-            0,
-        ));
+        );
         return None;
     }
 
@@ -297,6 +306,7 @@ pub(crate) fn specialize_generic_struct_template(
                 param,
                 &type_bindings,
                 &format!("struct '{}.{}'", template.name, field.name),
+                DiagCtx::new(field.ty_loc.or(field.loc)),
                 errors,
             )?,
             FieldType::Array(spec) => {
@@ -312,6 +322,7 @@ pub(crate) fn specialize_generic_struct_template(
                                 elem,
                                 &type_bindings,
                                 &format!("struct '{}.{}' array element", template.name, field.name),
+                                DiagCtx::new(field.ty_loc.or(field.loc)),
                                 errors,
                             )? {
                                 FieldType::Scalar(bound) => ArrayElemType::Primitive(bound),
@@ -328,8 +339,10 @@ pub(crate) fn specialize_generic_struct_template(
             }
         };
         fields.push(StructField {
+            loc: field.loc.clone(),
             name: field.name.clone(),
             ty: specialized_ty,
+            ty_loc: field.ty_loc.clone(),
             default,
         });
     }
@@ -367,6 +380,7 @@ pub(crate) fn specialize_generic_struct_template(
     }
 
     Some(StructDef {
+        loc: template.loc.clone(),
         name: specialized_struct_name(&template.name, type_args),
         type_params: Vec::new(),
         fields,
@@ -591,6 +605,7 @@ fn specialize_named_type_ref(
     name: &str,
     type_bindings: &HashMap<String, PrimitiveType>,
     context: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<FieldType> {
     if let Some(bound) = type_bindings.get(name).copied() {
@@ -603,14 +618,14 @@ fn specialize_named_type_ref(
                 CallTypeArg::Primitive(ty) => resolved.push(ty),
                 CallTypeArg::Generic(param) => {
                     let Some(bound) = type_bindings.get(&param).copied() else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            diag,
+                            errors,
                             format!(
                                 "{context} references unknown generic type parameter '{}'",
                                 param
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return None;
                     };
                     resolved.push(bound);
@@ -631,6 +646,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
     errors: &mut Vec<Diagnostic>,
     locals: &mut GenericInferenceLocals,
 ) {
+    let diag = DiagCtx::new(expr.loc());
     match expr {
         Expr::Index { index, .. } => {
             rewrite_generic_struct_ctor_expr(index, templates, generated, errors, locals);
@@ -643,7 +659,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                 rewrite_generic_struct_ctor_expr(end, templates, generated, errors, locals);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             if let ArrayElemType::Struct(elem_name) = &mut spec.elem {
                 let elem_text = elem_name.clone();
                 let (template_lookup_name, explicit_type_args) =
@@ -657,21 +673,22 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                             let Some(resolved) = resolve_explicit_call_type_args(
                                 &type_args,
                                 &format!("array element type '{}'", elem_text),
+                                diag,
                                 errors,
                             ) else {
                                 return;
                             };
                             if resolved.len() != template.type_params.len() {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    diag,
+                                    errors,
                                     format!(
                                         "array element type '{}' expects {} type arguments, got {}",
                                         template_lookup_name.as_str(),
                                         template.type_params.len(),
                                         resolved.len()
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             }
                             resolved
@@ -709,11 +726,11 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_generic_struct_ctor_expr(inner, templates, generated, errors, locals);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_generic_struct_ctor_expr(value, templates, generated, errors, locals);
             }
@@ -722,6 +739,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
             name,
             type_args,
             args,
+            ..
         } => {
             for arg in args.iter_mut() {
                 rewrite_generic_struct_ctor_expr(
@@ -740,12 +758,14 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                         &locals.scalar_types,
                         &locals.array_elem_types,
                         locals.default_ctor_missing_type_params_to_f32,
+                        diag,
                         errors,
                     )
                 } else {
                     resolve_explicit_call_type_args(
                         type_args,
                         &format!("struct constructor '{}'", name),
+                        diag,
                         errors,
                     )
                 };
@@ -765,7 +785,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                 type_args.clear();
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -776,7 +796,7 @@ pub(crate) fn rewrite_generic_struct_ctor_stmt(
     errors: &mut Vec<Diagnostic>,
     locals: &mut GenericInferenceLocals,
 ) {
-    with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+    with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
@@ -900,7 +920,7 @@ pub(crate) fn infer_array_elem_type_for_generic_binding(
     array_elem_locals: &HashMap<String, PrimitiveType>,
 ) -> Option<PrimitiveType> {
     match expr {
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             let mut acc = None::<PrimitiveType>;
             for value in values {
                 let ty =
@@ -912,7 +932,7 @@ pub(crate) fn infer_array_elem_type_for_generic_binding(
             }
             acc
         }
-        Expr::Var(name) => array_elem_locals.get(name).copied(),
+        Expr::Var { name, .. } => array_elem_locals.get(name).copied(),
         Expr::ArrayCtor { spec, .. } => match &spec.elem {
             ArrayElemType::Primitive(ty) => Some(*ty),
             ArrayElemType::Struct(_) => None,
@@ -926,6 +946,7 @@ pub(crate) fn bind_inferred_generic_type(
     type_param: &str,
     inferred: PrimitiveType,
     context: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) {
     if let Some(existing) = bindings.get(type_param).copied() {
@@ -935,14 +956,14 @@ pub(crate) fn bind_inferred_generic_type(
         if let Some(merged) = merge_inferred_return_types(existing, inferred) {
             bindings.insert(type_param.to_owned(), merged);
         } else {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                diag,
+                errors,
                 format!(
                     "{context}: conflicting inferred types {:?} and {:?} for generic parameter '{}'",
                     existing, inferred, type_param
                 ),
-                0,
-                0,
-            ));
+            );
         }
     } else {
         bindings.insert(type_param.to_owned(), inferred);
@@ -955,6 +976,7 @@ pub(crate) fn finalize_inferred_generic_type_args(
     type_params: &[String],
     bindings: &HashMap<String, PrimitiveType>,
     default_missing_to_f32: bool,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Vec<PrimitiveType>> {
     let mut out = Vec::<PrimitiveType>::with_capacity(type_params.len());
@@ -964,14 +986,14 @@ pub(crate) fn finalize_inferred_generic_type_args(
         } else if default_missing_to_f32 {
             PrimitiveType::F32
         } else {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                diag,
+                errors,
                 format!(
                     "cannot infer generic type parameter '{}' for {} '{}' constructor; provide explicit type arguments",
                     param, owner_kind, owner_name
                 ),
-                0,
-                0,
-            ));
+            );
             return None;
         };
         out.push(bound);
@@ -985,6 +1007,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
     scalar_locals: &HashMap<String, PrimitiveType>,
     array_elem_locals: &HashMap<String, PrimitiveType>,
     default_missing_to_f32: bool,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Vec<PrimitiveType>> {
     let scalar_fields = template
@@ -998,7 +1021,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
         .collect::<Vec<_>>();
     let defaults = scalar_fields
         .iter()
-        .map(|f| f.default.clone().or(Some(Expr::Number(0.0))))
+        .map(|f| f.default.clone().or(Some(Expr::number(0.0))))
         .collect::<Vec<_>>();
     let resolved = resolve_call_args(
         args,
@@ -1028,6 +1051,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
                     type_param,
                     inferred,
                     &format!("struct constructor '{}'", template.name),
+                    diag,
                     errors,
                 );
             }
@@ -1039,6 +1063,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
         &template.type_params,
         &bindings,
         default_missing_to_f32,
+        diag,
         errors,
     )
 }
@@ -1049,6 +1074,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
     scalar_locals: &HashMap<String, PrimitiveType>,
     array_elem_locals: &HashMap<String, PrimitiveType>,
     default_missing_to_f32: bool,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Vec<PrimitiveType>> {
     let mut ctor_param_names = template
@@ -1096,6 +1122,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
                             type_param,
                             inferred,
                             &format!("processor constructor '{}'", template.name),
+                            diag,
                             errors,
                         );
                     }
@@ -1111,6 +1138,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
                             elem,
                             inferred,
                             &format!("processor constructor '{}'", template.name),
+                            diag,
                             errors,
                         );
                     }
@@ -1125,6 +1153,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
         &template.type_params,
         &bindings,
         default_missing_to_f32,
+        diag,
         errors,
     )
 }
@@ -1203,7 +1232,13 @@ pub(crate) fn rewrite_generic_struct_field_types(
     errors: &mut Vec<Diagnostic>,
 ) {
     for field in &mut def.fields {
-        rewrite_generic_struct_field_type(&mut field.ty, templates, generated, errors);
+        rewrite_generic_struct_field_type(
+            &mut field.ty,
+            templates,
+            generated,
+            DiagCtx::new(field.ty_loc.or(field.loc)),
+            errors,
+        );
     }
 }
 
@@ -1211,27 +1246,28 @@ fn rewrite_generic_struct_field_type(
     ty: &mut FieldType,
     templates: &HashMap<String, StructDef>,
     generated: &mut HashMap<String, StructDef>,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) {
     match ty {
         FieldType::Scalar(_) => {}
         FieldType::Generic(name) => {
             if let Some(specialized) =
-                specialize_explicit_struct_type_name(name, templates, generated, errors)
+                specialize_explicit_struct_type_name(name, templates, generated, diag, errors)
             {
                 *name = specialized;
             }
         }
         FieldType::Array(spec) => {
             if let Some(specialized) =
-                reinterpret_explicit_scalar_field_type(spec, templates, generated, errors)
+                reinterpret_explicit_scalar_field_type(spec, templates, generated, diag, errors)
             {
                 *ty = FieldType::Generic(specialized);
                 return;
             }
             if let ArrayElemType::Struct(name) = &mut spec.elem {
                 if let Some(specialized) =
-                    specialize_explicit_struct_type_name(name, templates, generated, errors)
+                    specialize_explicit_struct_type_name(name, templates, generated, diag, errors)
                 {
                     *name = specialized;
                 }
@@ -1284,6 +1320,7 @@ fn specialize_explicit_struct_type_name(
     name: &str,
     templates: &HashMap<String, StructDef>,
     generated: &mut HashMap<String, StructDef>,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<String> {
     let (base, explicit_type_args) = parse_array_struct_elem_with_type_args(name)?;
@@ -1291,6 +1328,7 @@ fn specialize_explicit_struct_type_name(
     let resolved = resolve_explicit_call_type_args(
         &explicit_type_args,
         &format!("struct field type '{name}'"),
+        diag,
         errors,
     )?;
     let specialized = specialized_struct_name(&base, &resolved);
@@ -1306,16 +1344,17 @@ fn reinterpret_explicit_scalar_field_type(
     spec: &omni_frontend::ArrayTypeSpec,
     templates: &HashMap<String, StructDef>,
     generated: &mut HashMap<String, StructDef>,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<String> {
     let ArrayElemType::Struct(base) = &spec.elem else {
         return None;
     };
-    let Expr::Var(type_arg) = spec.size.as_ref() else {
+    let Expr::Var { name: type_arg, .. } = spec.size.as_ref() else {
         return None;
     };
     let type_name = format!("{base}<{type_arg}>");
-    specialize_explicit_struct_type_name(&type_name, templates, generated, errors)
+    specialize_explicit_struct_type_name(&type_name, templates, generated, diag, errors)
 }
 
 fn reinterpret_specialized_scalar_field_type(
@@ -1326,7 +1365,7 @@ fn reinterpret_specialized_scalar_field_type(
     let ArrayElemType::Struct(base) = &spec.elem else {
         return Some(None);
     };
-    let Expr::Var(type_arg) = spec.size.as_ref() else {
+    let Expr::Var { name: type_arg, .. } = spec.size.as_ref() else {
         return Some(None);
     };
     if !type_bindings.contains_key(type_arg) && parse_primitive_type_arg_token(type_arg).is_none() {
@@ -1336,6 +1375,7 @@ fn reinterpret_specialized_scalar_field_type(
         &format!("{base}<{type_arg}>"),
         type_bindings,
         &format!("struct field type '{}<{}>'", base, type_arg),
+        DiagCtx::new(spec.size.loc()),
         errors,
     )
     .map(Some)

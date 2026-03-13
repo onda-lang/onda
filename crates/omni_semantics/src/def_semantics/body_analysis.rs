@@ -1,5 +1,9 @@
 use crate::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 fn infer_def_slice_alias_info(
     base: &str,
     start: Option<&Expr>,
@@ -60,7 +64,7 @@ pub(crate) fn analyze_def_stmt(
     loop_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
-    with_stmt_diag_context(stmt, || {
+    with_stmt_diag_context(stmt, |_stmt_diag| {
         let known_scalars = &mut st.known_scalars;
         let local_aliases = &mut st.local_aliases;
         let local_array_aliases = &mut st.local_array_aliases;
@@ -101,40 +105,40 @@ pub(crate) fn analyze_def_stmt(
                 scope,
             )
         };
-        let def_expr_env =
-            build_scope_expr_env(expr_inputs, known_scalars, &array_vars, ScopeKind::Def);
-
         match stmt {
             Stmt::Const { .. } => {}
             Stmt::Assign {
+                target_loc,
                 target,
                 decl_ty,
                 generic_decl_ty,
                 is_typed_decl,
                 expr,
                 ..
-            } => match target {
+            } => with_loc_diag_context(target_loc.as_ref(), |target_diag| match target {
                 AssignTarget::Var(name) => {
                     if !matches!(expr, Expr::Index { .. }) {
                         local_proc_aliases.remove(name);
                     }
                     let declared_ty = *decl_ty;
-                    if let Expr::ArrayCtor { spec, init } = expr {
+                    if let Expr::ArrayCtor { spec, init, .. } = expr {
                         if *is_typed_decl {
                             if declared_ty.is_some() {
-                                errors.push(Diagnostic::semantic(
-                                    "typed declaration cannot combine scalar type annotation with array constructor",
-                                    0,
-                                    0,
-                                ));
+                                with_expr_diag_context(expr, |expr_diag| {
+                                    push_semantic(
+                                        expr_diag,
+                                        errors,
+                                        "typed declaration cannot combine scalar type annotation with array constructor",
+                                    );
+                                });
                                 return;
                             }
                             if split_field_path(name, errors).is_some() {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    target_diag,
+                                    errors,
                                     "typed array declaration target must be a plain variable name",
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             }
                             if known_scalars.contains(name)
@@ -144,20 +148,20 @@ pub(crate) fn analyze_def_stmt(
                                 || param_names.contains(name)
                                 || state_scalars.contains_key(name)
                             {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    target_diag,
+                                    errors,
                                     format!(
                                         "typed array declaration for '{name}' conflicts with existing symbol"
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             }
                             let size_context =
                                 format!("typed array declaration size for symbol '{name}' in def");
-                            let Some(size_value) =
+                            let Some(size_value) = with_expr_diag_context(&spec.size, |_diag| {
                                 eval_data_size_expr(&spec.size, options, &size_context, errors)
-                            else {
+                            }) else {
                                 return;
                             };
                             match &spec.elem {
@@ -173,14 +177,16 @@ pub(crate) fn analyze_def_stmt(
                                     );
                                     if let Some(values) = init {
                                         if values.len() != size_value {
-                                            errors.push(Diagnostic::semantic(
-                                            format!(
-                                                "typed array declaration '{name}' initializer expects {size_value} elements, got {}",
-                                                values.len()
-                                            ),
-                                            0,
-                                            0,
-                                        ));
+                                            with_expr_diag_context(expr, |expr_diag| {
+                                                push_semantic(
+                                                    expr_diag,
+                                                    errors,
+                                                    format!(
+                                                        "typed array declaration '{name}' initializer expects {size_value} elements, got {}",
+                                                        values.len()
+                                                    ),
+                                                );
+                                            });
                                         }
                                         for (idx, value) in
                                             values.iter().take(size_value).enumerate()
@@ -217,54 +223,59 @@ pub(crate) fn analyze_def_stmt(
                                                     struct_defs,
                                                     errors,
                                                 );
-                                            require_assignable_type(
-                                            value_ty,
-                                            *elem_ty,
-                                            &format!(
-                                                "typed array initializer assignment to '{name}[{idx}]'"
-                                            ),
-                                            errors,
-                                        );
+                                            require_expr_assignable_type(
+                                                value,
+                                                value_ty,
+                                                *elem_ty,
+                                                &format!(
+                                                    "typed array initializer assignment to '{name}[{idx}]'"
+                                                ),
+                                                errors,
+                                            );
                                         }
                                     }
                                 }
                                 ArrayElemType::Struct(struct_name) => {
-                                    errors.push(Diagnostic::semantic(
-                                        format!(
-                                            "typed array declaration '{name}: {struct_name}[N]' is not yet supported in def blocks"
-                                        ),
-                                        0,
-                                        0,
-                                    ));
+                                    with_expr_diag_context(expr, |expr_diag| {
+                                        push_semantic(
+                                            expr_diag,
+                                            errors,
+                                            format!(
+                                                "typed array declaration '{name}: {struct_name}[N]' is not yet supported in def blocks"
+                                            ),
+                                        );
+                                    });
                                 }
                             }
                             return;
                         } else {
-                            errors.push(Diagnostic::semantic(
-                                "array[...] construction is only allowed in init or typed array declarations",
-                                0,
-                                0,
-                            ));
+                            with_expr_diag_context(expr, |expr_diag| {
+                                push_semantic(
+                                    expr_diag,
+                                    errors,
+                                    "array[...] construction is only allowed in init or typed array declarations",
+                                );
+                            });
                             return;
                         }
                     }
-                    if let Expr::ArrayLiteral(values) = expr {
+                    if let Expr::ArrayLiteral { values, .. } = expr {
                         if declared_ty.is_some() {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                     "typed declaration for '{name}' with array literals must use explicit array type syntax like '{name}: T[N] = [...]'"
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                         if split_field_path(name, errors).is_some() {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 "array declaration target must be a plain variable name",
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                         if known_scalars.contains(name)
@@ -275,25 +286,38 @@ pub(crate) fn analyze_def_stmt(
                             || param_names.contains(name)
                             || state_scalars.contains_key(name)
                         {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                     "array declaration for '{name}' conflicts with existing symbol"
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                         if values.is_empty() {
-                            errors.push(Diagnostic::semantic(
-                                format!("array initializer for symbol '{name}' cannot be empty"),
-                                0,
-                                0,
-                            ));
+                            with_expr_diag_context(expr, |expr_diag| {
+                                push_semantic(
+                                    expr_diag,
+                                    errors,
+                                    format!(
+                                        "array initializer for symbol '{name}' cannot be empty"
+                                    ),
+                                );
+                            });
                             return;
                         }
                         for value in values {
-                            validate_expr(value, def_expr_env, errors);
+                            validate_expr(
+                                value,
+                                build_scope_expr_env(
+                                    expr_inputs,
+                                    known_scalars,
+                                    &array_vars,
+                                    ScopeKind::Def,
+                                ),
+                                errors,
+                            );
                         }
                         let elem_ty = infer_expr_type_for_semantics_with_local_data(
                             &values[0],
@@ -327,7 +351,8 @@ pub(crate) fn analyze_def_stmt(
                                 struct_defs,
                                 errors,
                             );
-                            require_assignable_type(
+                            require_expr_assignable_type(
+                                value,
                                 value_ty,
                                 elem_ty,
                                 &format!("array initializer assignment to '{name}[{idx}]'"),
@@ -345,23 +370,26 @@ pub(crate) fn analyze_def_stmt(
                         );
                         return;
                     }
-                    if let Expr::Slice { base, start, end } = expr {
+                    if let Expr::Slice {
+                        base, start, end, ..
+                    } = expr
+                    {
                         if declared_ty.is_some() || *is_typed_decl {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                     "typed declaration for '{name}' is not supported for slice aliases"
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                         if split_field_path(name, errors).is_some() {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 "slice alias target must be a plain variable name",
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                         if known_scalars.contains(name)
@@ -372,16 +400,25 @@ pub(crate) fn analyze_def_stmt(
                             || param_names.contains(name)
                             || state_scalars.contains_key(name)
                         {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                     "slice alias declaration for '{name}' conflicts with existing symbol"
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
-                        validate_expr(expr, def_expr_env, errors);
+                        validate_expr(
+                            expr,
+                            build_scope_expr_env(
+                                expr_inputs,
+                                known_scalars,
+                                &array_vars,
+                                ScopeKind::Def,
+                            ),
+                            errors,
+                        );
                         if let Some(alias) = infer_def_slice_alias_info(
                             base,
                             start.as_deref(),
@@ -397,7 +434,16 @@ pub(crate) fn analyze_def_stmt(
                         return;
                     }
                     if local_aliases.contains_key(name) {
-                        validate_expr(expr, def_expr_env, errors);
+                        validate_expr(
+                            expr,
+                            build_scope_expr_env(
+                                expr_inputs,
+                                known_scalars,
+                                &array_vars,
+                                ScopeKind::Def,
+                            ),
+                            errors,
+                        );
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
@@ -413,7 +459,8 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_assignable_type(
+                        require_expr_assignable_type(
+                            expr,
                             expr_ty,
                             *local_aliases.get(name).unwrap_or(&PrimitiveType::F32),
                             &format!("alias assignment to '{name}'"),
@@ -423,50 +470,50 @@ pub(crate) fn analyze_def_stmt(
                         return;
                     }
                     if local_array_aliases.contains_key(name) {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            target_diag,
+                            errors,
                             format!(
                                 "array alias '{name}' must be written using '{name}[index] = value'"
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     }
                     if let Some((base, field)) = split_field_path(name, errors) {
                         if declared_ty.is_some() {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 "typed declaration is only supported for plain scalar variables",
-                                0,
-                                0,
-                            ));
+                            );
                         }
                         let Some(struct_name) = param_structs.get(base) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                     "invalid assignment target '{name}' in def block; only struct parameters can be assigned via fields"
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let Some(fields) = struct_defs.get(struct_name) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!("unknown struct type '{}'", struct_name),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                     "struct parameter '{}' (type '{}') has no field '{}'",
                                     base, struct_name, field
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let expr_for_validation =
@@ -474,7 +521,16 @@ pub(crate) fn analyze_def_stmt(
                         match field_decl.ty {
                             TypedFieldType::Scalar(prim) => {
                                 let expr_error_count_before = errors.len();
-                                validate_expr(&expr_for_validation, def_expr_env, errors);
+                                validate_expr(
+                                    &expr_for_validation,
+                                    build_scope_expr_env(
+                                        expr_inputs,
+                                        known_scalars,
+                                        &array_vars,
+                                        ScopeKind::Def,
+                                    ),
+                                    errors,
+                                );
                                 let expr_ty = infer_expr_type_for_semantics_with_local_data(
                                     &expr_for_validation,
                                     state_scalars,
@@ -502,7 +558,8 @@ pub(crate) fn analyze_def_stmt(
                                     && !had_expr_validation_error
                                     && !has_use_before_declaration_error(errors)
                                 {
-                                    require_assignable_type(
+                                    require_expr_assignable_type(
+                                        &expr_for_validation,
                                         expr_ty,
                                         prim,
                                         &format!("def assignment to '{}.{}'", base, field),
@@ -511,24 +568,24 @@ pub(crate) fn analyze_def_stmt(
                                 }
                             }
                             TypedFieldType::Array(_) => {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    target_diag,
+                                    errors,
                                     format!(
                                         "array field '{}.{}' must be assigned via index syntax",
                                         base, field
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                             }
                             TypedFieldType::Struct => {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    target_diag,
+                                    errors,
                                     format!(
                                         "nested struct field '{}.{}' must be assigned via subfields or constructor",
                                         base, field
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                             }
                         }
                         return;
@@ -541,7 +598,7 @@ pub(crate) fn analyze_def_stmt(
                         && !param_names.contains(name)
                         && !state_scalars.contains_key(name)
                     {
-                        if let Expr::Index { base, index } = expr {
+                        if let Expr::Index { base, index, .. } = expr {
                             if let Some(binding_kind) = classify_def_indexed_binding(
                                 base,
                                 local_array_aliases,
@@ -550,7 +607,16 @@ pub(crate) fn analyze_def_stmt(
                                 struct_defs,
                                 errors,
                             ) {
-                                validate_expr(index, def_expr_env, errors);
+                                validate_expr(
+                                    index,
+                                    build_scope_expr_env(
+                                        expr_inputs,
+                                        known_scalars,
+                                        &array_vars,
+                                        ScopeKind::Def,
+                                    ),
+                                    errors,
+                                );
                                 let idx_ty = infer_expr_type_for_semantics_with_local_data(
                                     index,
                                     state_scalars,
@@ -566,7 +632,12 @@ pub(crate) fn analyze_def_stmt(
                                     struct_defs,
                                     errors,
                                 );
-                                require_numeric_type(idx_ty, "array index expression", errors);
+                                require_expr_numeric_type(
+                                    index,
+                                    idx_ty,
+                                    "array index expression",
+                                    errors,
+                                );
                                 match binding_kind {
                                     IndexedBindingKind::ProcArrayAlias => {
                                         local_proc_aliases.insert(
@@ -603,53 +674,62 @@ pub(crate) fn analyze_def_stmt(
                         }
                     }
                     if known_scalars.contains(name) && declared_ty.is_some() {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            target_diag,
+                            errors,
                             format!(
                             "typed declaration for '{name}' is only allowed on first assignment"
                         ),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     if local_array_aliases.contains_key(name) {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            target_diag,
+                            errors,
                             format!(
                                 "array alias '{name}' must be written using '{name}[index] = value'"
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     }
                     if is_builtin_constant_name(name) {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            target_diag,
+                            errors,
                             format!("cannot assign to builtin constant '{name}'"),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     if locals.contains(name) {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            target_diag,
+                            errors,
                             format!("cannot assign to loop variable '{name}'"),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     if input_names.contains(name)
                         || output_names.contains(name)
                         || param_names.contains(name)
                         || state_scalars.contains_key(name)
                     {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            target_diag,
+                            errors,
                             format!("cannot assign to global symbol '{name}' inside def"),
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     let expr_error_count_before = errors.len();
                     let expr_for_validation =
                         rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-                    validate_expr(&expr_for_validation, def_expr_env, errors);
+                    validate_expr(
+                        &expr_for_validation,
+                        build_scope_expr_env(
+                            expr_inputs,
+                            known_scalars,
+                            &array_vars,
+                            ScopeKind::Def,
+                        ),
+                        errors,
+                    );
                     let had_expr_validation_error = errors.len() > expr_error_count_before;
                     let expr_ty = infer_expr_type_for_semantics_with_local_data(
                         &expr_for_validation,
@@ -683,7 +763,8 @@ pub(crate) fn analyze_def_stmt(
                         && !had_expr_validation_error
                         && !has_use_before_declaration_error(errors)
                     {
-                        require_assignable_type(
+                        require_expr_assignable_type(
+                            &expr_for_validation,
                             expr_ty,
                             target_ty,
                             &format!("def assignment to '{name}'"),
@@ -697,33 +778,51 @@ pub(crate) fn analyze_def_stmt(
                 }
                 AssignTarget::Index { base, index } => {
                     if decl_ty.is_some() || generic_decl_ty.is_some() || *is_typed_decl {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            target_diag,
+                            errors,
                             "typed declaration is only supported for plain scalar variables",
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     if let Some(alias) = local_array_aliases.get(base) {
                         if !alias.writable {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!("cannot assign to immutable array alias '{base}'"),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                         if alias.elem_struct.is_some() {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                     "indexed assignment target '{base}[...]' has struct elements; assign fields through an alias"
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
-                        validate_expr(index, def_expr_env, errors);
-                        validate_expr(expr, def_expr_env, errors);
+                        validate_expr(
+                            index,
+                            build_scope_expr_env(
+                                expr_inputs,
+                                known_scalars,
+                                &array_vars,
+                                ScopeKind::Def,
+                            ),
+                            errors,
+                        );
+                        validate_expr(
+                            expr,
+                            build_scope_expr_env(
+                                expr_inputs,
+                                known_scalars,
+                                &array_vars,
+                                ScopeKind::Def,
+                            ),
+                            errors,
+                        );
                         let index_ty = infer_expr_type_for_semantics_with_local_data(
                             index,
                             state_scalars,
@@ -739,7 +838,12 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(index_ty, "array index expression", errors);
+                        require_expr_numeric_type(
+                            index,
+                            index_ty,
+                            "array index expression",
+                            errors,
+                        );
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
@@ -755,7 +859,8 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_assignable_type(
+                        require_expr_assignable_type(
+                            expr,
                             expr_ty,
                             alias.elem_ty,
                             "array/buffer write",
@@ -765,16 +870,34 @@ pub(crate) fn analyze_def_stmt(
                     }
                     if has_declared_buffer_symbol_info(&declared_symbols, base) {
                         if is_declared_multichannel_buffer_info(&declared_symbols, base) {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                            target_diag,
+                            errors,
                             format!(
                                 "indexed assignment target '{base}[...]' uses mono form on a multichannel buffer; use '{base}[ch][sample]'"
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         }
-                        validate_expr(index, def_expr_env, errors);
-                        validate_expr(expr, def_expr_env, errors);
+                        validate_expr(
+                            index,
+                            build_scope_expr_env(
+                                expr_inputs,
+                                known_scalars,
+                                &array_vars,
+                                ScopeKind::Def,
+                            ),
+                            errors,
+                        );
+                        validate_expr(
+                            expr,
+                            build_scope_expr_env(
+                                expr_inputs,
+                                known_scalars,
+                                &array_vars,
+                                ScopeKind::Def,
+                            ),
+                            errors,
+                        );
                         let index_ty = infer_expr_type_for_semantics_with_local_data(
                             index,
                             state_scalars,
@@ -790,7 +913,12 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(index_ty, "array index expression", errors);
+                        require_expr_numeric_type(
+                            index,
+                            index_ty,
+                            "array index expression",
+                            errors,
+                        );
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
@@ -808,51 +936,75 @@ pub(crate) fn analyze_def_stmt(
                         );
                         let expected_ty = declared_symbol_scalar_type(&declared_symbols, base)
                             .unwrap_or(PrimitiveType::F32);
-                        require_assignable_type(expr_ty, expected_ty, "array/buffer write", errors);
+                        require_expr_assignable_type(
+                            expr,
+                            expr_ty,
+                            expected_ty,
+                            "array/buffer write",
+                            errors,
+                        );
                         return;
                     }
                     if let Some((root, field)) = split_field_path(base, errors) {
                         let Some(struct_name) = param_structs.get(root) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                 "indexed assignment target '{base}[...]' is invalid in def block"
                             ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let Some(fields) = struct_defs.get(struct_name) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!("unknown struct type '{}'", struct_name),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                     "struct parameter '{}' (type '{}') has no field '{}'",
                                     root, struct_name, field
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         };
                         if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                target_diag,
+                                errors,
                                 format!(
                                     "field '{}.{}' is not array and cannot be indexed",
                                     root, field
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                         }
-                        validate_expr(index, def_expr_env, errors);
-                        validate_expr(expr, def_expr_env, errors);
+                        validate_expr(
+                            index,
+                            build_scope_expr_env(
+                                expr_inputs,
+                                known_scalars,
+                                &array_vars,
+                                ScopeKind::Def,
+                            ),
+                            errors,
+                        );
+                        validate_expr(
+                            expr,
+                            build_scope_expr_env(
+                                expr_inputs,
+                                known_scalars,
+                                &array_vars,
+                                ScopeKind::Def,
+                            ),
+                            errors,
+                        );
                         let index_ty = infer_expr_type_for_semantics_with_local_data(
                             index,
                             state_scalars,
@@ -868,7 +1020,12 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(index_ty, "array index expression", errors);
+                        require_expr_numeric_type(
+                            index,
+                            index_ty,
+                            "array index expression",
+                            errors,
+                        );
                         let expr_ty = infer_expr_type_for_semantics_with_local_data(
                             expr,
                             state_scalars,
@@ -886,7 +1043,8 @@ pub(crate) fn analyze_def_stmt(
                         );
                         let expected_elem_ty =
                             field_decl.array_elem_ty.unwrap_or(PrimitiveType::F32);
-                        require_assignable_type(
+                        require_expr_assignable_type(
+                            expr,
                             expr_ty,
                             expected_elem_ty,
                             "array/buffer write",
@@ -894,19 +1052,19 @@ pub(crate) fn analyze_def_stmt(
                         );
                         return;
                     }
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        target_diag,
+                        errors,
                         "indexed assignments in def are only allowed for mutable array or buffer references (for example local arrays, array params, buffer params, or array fields on struct params such as 'tmp[i] = x', 'arr[i] = x', 'buf[i] = x', or 'self.buf[i] = x')",
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 AssignTarget::Slice { base, start, end } => {
                     if decl_ty.is_some() || generic_decl_ty.is_some() || *is_typed_decl {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            target_diag,
+                            errors,
                             "typed declaration is only supported for plain scalar variables",
-                            0,
-                            0,
-                        ));
+                        );
                     }
                     let Some(target_info) = infer_def_slice_alias_info(
                         base,
@@ -921,11 +1079,11 @@ pub(crate) fn analyze_def_stmt(
                         return;
                     };
                     if !target_info.writable {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            target_diag,
+                            errors,
                             format!("cannot assign to immutable array alias '{base}'"),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     }
                     let slice_env = build_scope_expr_env(
@@ -951,7 +1109,7 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(start_ty, "slice start bound", errors);
+                        require_expr_numeric_type(start, start_ty, "slice start bound", errors);
                     }
                     if let Some(end) = end {
                         validate_expr(end, slice_env, errors);
@@ -970,7 +1128,7 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_numeric_type(end_ty, "slice end bound", errors);
+                        require_expr_numeric_type(end, end_ty, "slice end bound", errors);
                     }
                     let stmt_env = build_scope_stmt_expr_env(
                         expr_inputs,
@@ -990,7 +1148,8 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         ) {
-                            require_assignable_type(
+                            require_expr_assignable_type(
+                                expr,
                                 Some(src_info.elem_ty),
                                 target_info.elem_ty,
                                 "slice copy assignment",
@@ -1014,7 +1173,8 @@ pub(crate) fn analyze_def_stmt(
                             struct_defs,
                             errors,
                         );
-                        require_assignable_type(
+                        require_expr_assignable_type(
+                            expr,
                             expr_ty,
                             target_info.elem_ty,
                             "slice fill assignment",
@@ -1022,7 +1182,7 @@ pub(crate) fn analyze_def_stmt(
                         );
                     }
                 }
-            },
+            }),
             Stmt::Expr { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                 analyze_stmt_expr(&expr, stmt_expr_env(ScopeKind::Def), errors);

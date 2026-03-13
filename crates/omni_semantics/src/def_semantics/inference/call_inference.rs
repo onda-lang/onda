@@ -1,5 +1,6 @@
 use super::*;
 use crate::{PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_EXPR_ARG};
+use omni_frontend::SourceLoc;
 
 pub(super) fn infer_stmt_calls(
     stmt: &Stmt,
@@ -11,7 +12,7 @@ pub(super) fn infer_stmt_calls(
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    with_stmt_diag_context(stmt, || match stmt {
+    with_stmt_diag_context(stmt, |_diag| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Index { index, .. } = target {
@@ -202,8 +203,12 @@ fn infer_expr_calls(
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::ArrayCtor { .. } | Expr::Var(_) => {}
-        Expr::ArrayLiteral(values) => {
+        Expr::Number { .. }
+        | Expr::Int { .. }
+        | Expr::Bool { .. }
+        | Expr::ArrayCtor { .. }
+        | Expr::Var { .. } => {}
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 infer_expr_calls(
                     value,
@@ -277,7 +282,7 @@ fn infer_expr_calls(
                 errors,
             );
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             infer_expr_calls(
                 expr,
                 struct_instances,
@@ -327,13 +332,14 @@ fn infer_expr_calls(
         }
         Expr::UserCall { name, args, .. } => {
             if let Some(sig) = fn_signatures.get(name) {
-                let resolved = resolve_call_args(
+                let resolved = resolve_call_args_at(
                     args,
                     &sig.params,
                     &sig.defaults,
                     false,
                     false,
                     &format!("function '{name}' call"),
+                    expr.loc(),
                     errors,
                 );
                 if let Some(param_kinds) = kinds.get_mut(name) {
@@ -341,7 +347,7 @@ fn infer_expr_calls(
                         if let Some(arg) = arg {
                             if let Some(slot) = param_kinds.get_mut(idx) {
                                 match arg {
-                                    Expr::Var(v) => {
+                                    Expr::Var { name: v, .. } => {
                                         if let Some(struct_name) = struct_instances.get(v) {
                                             slot.saw_structs.insert(struct_name.clone());
                                         } else if let Some(array_info) = array_bindings.get(v) {
@@ -405,7 +411,8 @@ fn infer_expr_calls(
                                             {
                                                 continue;
                                             }
-                                            let Expr::Var(v) = &selector_arg.expr else {
+                                            let Expr::Var { name: v, .. } = &selector_arg.expr
+                                            else {
                                                 saw_invalid_slot = true;
                                                 continue;
                                             };
@@ -451,7 +458,7 @@ fn infer_expr_calls(
 
 fn infer_array_binding_from_assignment(expr: &Expr) -> Option<InferredArrayParam> {
     match expr {
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             if values.is_empty() {
                 return None;
             }
@@ -475,15 +482,15 @@ fn infer_array_binding_from_assignment(expr: &Expr) -> Option<InferredArrayParam
 
 fn infer_array_literal_elem_ty(expr: &Expr) -> Option<PrimitiveType> {
     match expr {
-        Expr::Number(_) => Some(PrimitiveType::F32),
-        Expr::Int(v) => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+        Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
             PrimitiveType::I32
         } else {
             PrimitiveType::I64
         }),
-        Expr::Bool(_) => Some(PrimitiveType::Bool),
+        Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::Cast { to, .. } => Some(*to),
-        Expr::Var(name) => builtin_constant_type(name),
+        Expr::Var { name, .. } => builtin_constant_type(name),
         _ => None,
     }
 }
@@ -514,6 +521,28 @@ pub(crate) fn resolve_call_args<'a>(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Option<&'a Expr>> {
+    resolve_call_args_at(
+        args,
+        param_names,
+        param_defaults,
+        forbid_self_named,
+        named_only,
+        context,
+        SourceLoc::ZERO,
+        errors,
+    )
+}
+
+pub(crate) fn resolve_call_args_at<'a>(
+    args: &'a [CallArg],
+    param_names: &[String],
+    param_defaults: &[Option<Expr>],
+    forbid_self_named: bool,
+    named_only: bool,
+    context: &str,
+    loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<Option<&'a Expr>> {
     let mut resolved: Vec<Option<&Expr>> = vec![None; param_names.len()];
     let mut next_pos = 0usize;
     let mut seen_named = HashSet::new();
@@ -523,52 +552,46 @@ pub(crate) fn resolve_call_args<'a>(
         if let Some(name) = &arg.name {
             saw_named = true;
             if forbid_self_named && name == "self" {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!("{context}: 'self' cannot be passed as a named argument"),
-                    0,
-                    0,
+                    loc,
                 ));
                 continue;
             }
             if !seen_named.insert(name.clone()) {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!("{context}: duplicate named argument '{name}'"),
-                    0,
-                    0,
+                    loc,
                 ));
                 continue;
             }
             let Some(idx) = param_names.iter().position(|p| p == name) else {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!("{context}: unknown named argument '{name}'"),
-                    0,
-                    0,
+                    loc,
                 ));
                 continue;
             };
             if resolved[idx].is_some() {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!("{context}: argument '{name}' provided multiple times"),
-                    0,
-                    0,
+                    loc,
                 ));
                 continue;
             }
             resolved[idx] = Some(&arg.expr);
         } else {
             if named_only {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!("{context}: positional arguments are not allowed; use named arguments"),
-                    0,
-                    0,
+                    loc,
                 ));
                 continue;
             }
             if saw_named {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!("{context}: positional arguments must come before named arguments"),
-                    0,
-                    0,
+                    loc,
                 ));
                 continue;
             }
@@ -576,13 +599,12 @@ pub(crate) fn resolve_call_args<'a>(
                 next_pos += 1;
             }
             if next_pos >= resolved.len() {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "{context}: too many positional arguments (expected at most {})",
                         param_names.len()
                     ),
-                    0,
-                    0,
+                    loc,
                 ));
                 continue;
             }
@@ -594,13 +616,12 @@ pub(crate) fn resolve_call_args<'a>(
     for idx in 0..resolved.len() {
         let has_default = matches!(param_defaults.get(idx), Some(Some(_)));
         if resolved[idx].is_none() && !has_default {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!(
                     "{context}: missing required argument '{}'",
                     param_names[idx]
                 ),
-                0,
-                0,
+                loc,
             ));
         }
     }

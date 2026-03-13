@@ -11,11 +11,12 @@ use pest_derive::Parser;
 
 use crate::ast::{
     ArrayElemType, ArrayTypeSpec, AssertDecl, AssignTarget, BinaryOp, Block, BlockExec,
-    BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp,
-    ConstDecl, DeclRange, DeclType, EventDef, EventParamDecl, EventParamType, Expr, FieldType,
-    FnParamDecl, FnParamType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate,
-    InitBlock, LogicalOp, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
-    SourceLoc, Stmt, StructDef, StructField,
+    BufferBlock, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg,
+    CallTypeArg, CmpOp, ConstDecl, DeclRange, DeclType, EventBlock, EventDef, EventParamDecl,
+    EventParamType, Expr, FieldType, FnParamDecl, FnParamType, FunctionDef, GraphBlock, GraphEdge,
+    GraphEndpoint, GraphRate, InitBlock, LogicalOp, ParamBlock, ParamDecl, PortBlock, PortDecl,
+    PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef,
+    StructField,
 };
 use crate::diagnostics::Diagnostic;
 
@@ -54,11 +55,33 @@ mod block_parsing;
 use block_parsing::*;
 
 fn diag_from_pest_error(err: pest::error::Error<Rule>) -> Diagnostic {
-    let (line, column) = match err.line_col {
-        LineColLocation::Pos((line, col)) => (line, col),
-        LineColLocation::Span((line, col), _) => (line, col),
+    let (line, column, end_line) = match err.line_col {
+        LineColLocation::Pos((line, col)) => (line, col, line),
+        LineColLocation::Span((line, col), (end_line, _end_col)) => (line, col, end_line),
     };
-    Diagnostic::syntax(err.to_string(), line, column)
+    let mut diag = Diagnostic::syntax(err.to_string(), line, column);
+    diag.end_line = end_line;
+    diag
+}
+
+pub(super) fn syntax_at_pair(pair: &Pair<'_, Rule>, message: impl Into<String>) -> Diagnostic {
+    let message = message.into();
+    let loc: SourceLoc = stmt_loc_from_pair(pair).into();
+    if loc.is_zero() {
+        Diagnostic::syntax(message, 0, 0)
+    } else {
+        Diagnostic::syntax_at(message, &loc)
+    }
+}
+
+pub(super) fn syntax_at_loc(loc: impl Into<SourceLoc>, message: impl Into<String>) -> Diagnostic {
+    let message = message.into();
+    let loc = loc.into();
+    if loc.is_zero() {
+        Diagnostic::syntax(message, 0, 0)
+    } else {
+        Diagnostic::syntax_at(message, &loc)
+    }
 }
 
 #[cfg(test)]

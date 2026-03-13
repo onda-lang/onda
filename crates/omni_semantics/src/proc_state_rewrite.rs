@@ -1,5 +1,9 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(crate) const PROC_FIELD_SENTINEL_PREFIX: &str = "__omni_proc_field__";
 pub(crate) const PROC_FIELD_SENTINEL_ARG: &str = "__proc_field";
 pub(crate) const PROC_INDEX_CALL_SENTINEL: &str = "__omni_proc_index_call";
@@ -143,7 +147,7 @@ pub(crate) fn convert_init_state_to_proc_fields(st: &InitAnalysisState) -> ProcS
                 name.clone(),
                 omni_frontend::ArrayTypeSpec {
                     elem: ArrayElemType::Primitive(elem_ty),
-                    size: Box::new(Expr::Int(*size as i64)),
+                    size: Box::new(Expr::int(*size as i64)),
                 },
             );
         }
@@ -195,66 +199,69 @@ pub(crate) fn validate_proc_expr_decl_order(
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
     let mut ok = true;
+    let expr_diag = DiagCtx::new(expr.loc());
     match expr {
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
-        Expr::Var(name) => {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+        Expr::Var { name, .. } => {
             if is_builtin_constant_name(name) {
                 return true;
             }
             if let Some((base, _field)) = split_field_path(name, errors) {
                 if !is_declared_proc_symbol(base, reserved, locals, out) {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!("symbol '{base}' used before declaration"),
-                        0,
-                        0,
-                    ));
+                    );
                     ok = false;
                 }
             } else if !is_declared_proc_symbol(name, reserved, locals, out) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    expr_diag,
+                    errors,
                     format!("symbol '{name}' used before declaration"),
-                    0,
-                    0,
-                ));
+                );
                 ok = false;
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             if let Some((root, _field)) = split_field_path(base, errors) {
                 if !is_declared_proc_symbol(root, reserved, locals, out) {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!("symbol '{root}' used before declaration"),
-                        0,
-                        0,
-                    ));
+                    );
                     ok = false;
                 }
             } else if !is_declared_proc_symbol(base, reserved, locals, out) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    expr_diag,
+                    errors,
                     format!("symbol '{base}' used before declaration"),
-                    0,
-                    0,
-                ));
+                );
                 ok = false;
             }
             ok &= validate_proc_expr_decl_order(index, reserved, locals, out, errors);
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             if let Some((root, _field)) = split_field_path(base, errors) {
                 if !is_declared_proc_symbol(root, reserved, locals, out) {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!("symbol '{root}' used before declaration"),
-                        0,
-                        0,
-                    ));
+                    );
                     ok = false;
                 }
             } else if !is_declared_proc_symbol(base, reserved, locals, out) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    expr_diag,
+                    errors,
                     format!("symbol '{base}' used before declaration"),
-                    0,
-                    0,
-                ));
+                );
                 ok = false;
             }
             if let Some(start) = start {
@@ -264,7 +271,7 @@ pub(crate) fn validate_proc_expr_decl_order(
                 ok &= validate_proc_expr_decl_order(end, reserved, locals, out, errors);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             ok &= validate_proc_expr_decl_order(&spec.size, reserved, locals, out, errors);
             if let Some(values) = init {
                 for value in values {
@@ -289,11 +296,11 @@ pub(crate) fn validate_proc_expr_decl_order(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             ok &= validate_proc_expr_decl_order(inner, reserved, locals, out, errors);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 ok &= validate_proc_expr_decl_order(value, reserved, locals, out, errors);
             }
@@ -310,8 +317,9 @@ pub(crate) fn rewrite_proc_expr_symbols(
     in_array_slots: &HashMap<String, Vec<String>>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let expr_diag = DiagCtx::new(expr.loc());
     match expr {
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if field_names.contains(name) && is_plain_symbol(name) {
                 *name = format!("self.{name}");
             } else if let Some((base, field)) = split_field_path(name, errors) {
@@ -320,7 +328,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 }
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             rewrite_proc_expr_symbols(
                 index,
                 owner_proc,
@@ -331,11 +339,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
             );
             if let Some(slots) = field_array_slots.get(base.as_str()) {
                 if slots.is_empty() {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!("processor array field '{base}' has zero slots"),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 }
                 if let Some(raw_idx) = try_constant_index_i64(index) {
@@ -348,11 +356,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                         return;
                     };
                     if let Some(slot_name) = slots.get(slot_idx) {
-                        *expr = Expr::Var(format!("self.{slot_name}"));
+                        *expr = Expr::var(format!("self.{slot_name}"));
                     }
                 } else if slots.len() == 1 {
                     if let Some(slot_name) = slots.first() {
-                        *expr = Expr::Var(format!("self.{slot_name}"));
+                        *expr = Expr::var(format!("self.{slot_name}"));
                     }
                 } else {
                     let mut args = Vec::<CallArg>::new();
@@ -363,10 +371,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                     for slot in slots {
                         args.push(CallArg {
                             name: None,
-                            expr: Expr::Var(format!("self.{slot}")),
+                            expr: Expr::var(format!("self.{slot}")),
                         });
                     }
                     *expr = Expr::UserCall {
+                        loc: Default::default(),
                         name: proc_read_helper_name(owner_proc, slots.len(), false),
                         type_args: Vec::new(),
                         args,
@@ -376,11 +385,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
             }
             if let Some(slots) = in_array_slots.get(base.as_str()) {
                 if slots.is_empty() {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!("processor input array '{base}' has zero slots"),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 }
                 if let Some(raw_idx) = try_constant_index_i64(index) {
@@ -393,11 +402,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                         return;
                     };
                     if let Some(slot_name) = slots.get(slot_idx) {
-                        *expr = Expr::Var(slot_name.clone());
+                        *expr = Expr::var(slot_name.clone());
                     }
                 } else if slots.len() == 1 {
                     if let Some(slot_name) = slots.first() {
-                        *expr = Expr::Var(slot_name.clone());
+                        *expr = Expr::var(slot_name.clone());
                     }
                 } else {
                     let mut args = Vec::<CallArg>::new();
@@ -408,10 +417,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                     for slot in slots {
                         args.push(CallArg {
                             name: None,
-                            expr: Expr::Var(slot.clone()),
+                            expr: Expr::var(slot.clone()),
                         });
                     }
                     *expr = Expr::UserCall {
+                        loc: Default::default(),
                         name: proc_read_helper_name(owner_proc, slots.len(), false),
                         type_args: Vec::new(),
                         args,
@@ -427,7 +437,9 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 }
             }
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             if let Some(start) = start {
                 rewrite_proc_expr_symbols(
                     start,
@@ -456,7 +468,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 }
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_proc_expr_symbols(
                 &mut spec.size,
                 owner_proc,
@@ -560,7 +572,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                         let mut rewritten_args = Vec::<CallArg>::with_capacity(args.len() + 1);
                         rewritten_args.push(CallArg {
                             name: None,
-                            expr: Expr::Var(receiver),
+                            expr: Expr::var(receiver),
                         });
                         rewritten_args.extend(args.clone());
                         *name = "unsafe_read".to_owned();
@@ -588,7 +600,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                         let mut rewritten_args = Vec::<CallArg>::with_capacity(args.len() + 1);
                         rewritten_args.push(CallArg {
                             name: None,
-                            expr: Expr::Var(receiver),
+                            expr: Expr::var(receiver),
                         });
                         rewritten_args.extend(args.clone());
                         *name = "unsafe_write".to_owned();
@@ -596,14 +608,14 @@ pub(crate) fn rewrite_proc_expr_symbols(
                     }
                 }
                 if name == "unsafe_read" && args.len() == 2 {
-                    if let Expr::Var(base) = &args[0].expr {
+                    if let Expr::Var { name: base, .. } = &args[0].expr {
                         if let Some(slots) = field_array_slots.get(base.as_str()) {
                             if slots.is_empty() {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    expr_diag,
+                                    errors,
                                     format!("processor array field '{base}' has zero slots"),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             }
                             let idx_expr = args[1].expr.clone();
@@ -611,7 +623,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                                 if raw_idx >= 0 && raw_idx < slots.len() as i64 {
                                     let slot_idx = raw_idx as usize;
                                     if let Some(slot_name) = slots.get(slot_idx) {
-                                        *expr = Expr::Var(format!("self.{slot_name}"));
+                                        *expr = Expr::var(format!("self.{slot_name}"));
                                     }
                                 } else {
                                     let mut call_args = Vec::<CallArg>::new();
@@ -622,10 +634,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                                     for slot in slots {
                                         call_args.push(CallArg {
                                             name: None,
-                                            expr: Expr::Var(format!("self.{slot}")),
+                                            expr: Expr::var(format!("self.{slot}")),
                                         });
                                     }
                                     *expr = Expr::UserCall {
+                                        loc: Default::default(),
                                         name: proc_read_helper_name(owner_proc, slots.len(), true),
                                         type_args: Vec::new(),
                                         args: call_args,
@@ -633,7 +646,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                                 }
                             } else if slots.len() == 1 {
                                 if let Some(slot_name) = slots.first() {
-                                    *expr = Expr::Var(format!("self.{slot_name}"));
+                                    *expr = Expr::var(format!("self.{slot_name}"));
                                 }
                             } else {
                                 let mut call_args = Vec::<CallArg>::new();
@@ -644,10 +657,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                                 for slot in slots {
                                     call_args.push(CallArg {
                                         name: None,
-                                        expr: Expr::Var(format!("self.{slot}")),
+                                        expr: Expr::var(format!("self.{slot}")),
                                     });
                                 }
                                 *expr = Expr::UserCall {
+                                    loc: Default::default(),
                                     name: proc_read_helper_name(owner_proc, slots.len(), true),
                                     type_args: Vec::new(),
                                     args: call_args,
@@ -657,11 +671,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                         }
                         if let Some(slots) = in_array_slots.get(base.as_str()) {
                             if slots.is_empty() {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    expr_diag,
+                                    errors,
                                     format!("processor input array '{base}' has zero slots"),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             }
                             let idx_expr = args[1].expr.clone();
@@ -669,7 +683,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                                 if raw_idx >= 0 && raw_idx < slots.len() as i64 {
                                     let slot_idx = raw_idx as usize;
                                     if let Some(slot_name) = slots.get(slot_idx) {
-                                        *expr = Expr::Var(slot_name.clone());
+                                        *expr = Expr::var(slot_name.clone());
                                     }
                                 } else {
                                     let mut call_args = Vec::<CallArg>::new();
@@ -680,10 +694,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                                     for slot in slots {
                                         call_args.push(CallArg {
                                             name: None,
-                                            expr: Expr::Var(slot.clone()),
+                                            expr: Expr::var(slot.clone()),
                                         });
                                     }
                                     *expr = Expr::UserCall {
+                                        loc: Default::default(),
                                         name: proc_read_helper_name(owner_proc, slots.len(), true),
                                         type_args: Vec::new(),
                                         args: call_args,
@@ -691,7 +706,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                                 }
                             } else if slots.len() == 1 {
                                 if let Some(slot_name) = slots.first() {
-                                    *expr = Expr::Var(slot_name.clone());
+                                    *expr = Expr::var(slot_name.clone());
                                 }
                             } else {
                                 let mut call_args = Vec::<CallArg>::new();
@@ -702,10 +717,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                                 for slot in slots {
                                     call_args.push(CallArg {
                                         name: None,
-                                        expr: Expr::Var(slot.clone()),
+                                        expr: Expr::var(slot.clone()),
                                     });
                                 }
                                 *expr = Expr::UserCall {
+                                    loc: Default::default(),
                                     name: proc_read_helper_name(owner_proc, slots.len(), true),
                                     type_args: Vec::new(),
                                     args: call_args,
@@ -718,8 +734,8 @@ pub(crate) fn rewrite_proc_expr_symbols(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_proc_expr_symbols(
                 inner,
                 owner_proc,
@@ -729,7 +745,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 errors,
             );
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_proc_expr_symbols(
                     value,
@@ -741,7 +757,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 );
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
 
@@ -755,7 +771,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
     in_array_slots: &HashMap<String, Vec<String>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Stmt> {
-    with_stmt_diag_context(stmt, || {
+    with_stmt_diag_context(stmt, |diag| {
         let source_loc = stmt.loc().cloned();
         match stmt {
             Stmt::Const { .. } => None,
@@ -779,17 +795,19 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                 match target {
                     AssignTarget::Var(name) => {
                         if ins_names.contains(name) {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                diag,
+                                errors,
                                 format!("cannot assign to processor input '{name}'"),
-                                0,
-                                0,
-                            ));
+                            );
                             return Some(Stmt::Assign {
-                                loc: source_loc.clone(),
+                                loc: source_loc.clone().into(),
+                                target_loc: Default::default(),
                                 target: AssignTarget::Var(name.clone()),
                                 decl_ty: *decl_ty,
                                 generic_decl_ty: generic_decl_ty.clone(),
                                 is_typed_decl: *is_typed_decl,
+                                typed_decl_ty_loc: Default::default(),
                                 expr: expr_rewritten,
                             });
                         }
@@ -799,32 +817,38 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 return None;
                             }
                             return Some(Stmt::Assign {
-                                loc: source_loc.clone(),
+                                loc: source_loc.clone().into(),
+                                target_loc: Default::default(),
                                 target: AssignTarget::Var(format!("self.{name}")),
                                 decl_ty: None,
                                 generic_decl_ty: None,
                                 is_typed_decl: false,
+                                typed_decl_ty_loc: Default::default(),
                                 expr: expr_rewritten,
                             });
                         }
                         if let Some((base, field)) = split_field_path(name, errors) {
                             if field_names.contains(base) && is_plain_symbol(base) {
                                 return Some(Stmt::Assign {
-                                    loc: source_loc.clone(),
+                                    loc: source_loc.clone().into(),
+                                    target_loc: Default::default(),
                                     target: AssignTarget::Var(format!("self.{base}.{field}")),
                                     decl_ty: None,
                                     generic_decl_ty: None,
                                     is_typed_decl: false,
+                                    typed_decl_ty_loc: Default::default(),
                                     expr: expr_rewritten,
                                 });
                             }
                         }
                         Some(Stmt::Assign {
-                            loc: source_loc.clone(),
+                            loc: source_loc.clone().into(),
+                            target_loc: Default::default(),
                             target: AssignTarget::Var(name.clone()),
                             decl_ty: *decl_ty,
                             generic_decl_ty: generic_decl_ty.clone(),
                             is_typed_decl: *is_typed_decl,
+                            typed_decl_ty_loc: Default::default(),
                             expr: expr_rewritten,
                         })
                     }
@@ -839,11 +863,11 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             errors,
                         );
                         if let Some(slots) = in_array_slots.get(base) {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                diag,
+                                errors,
                                 format!("cannot assign to processor input '{base}'"),
-                                0,
-                                0,
-                            ));
+                            );
                             if let Some(raw_idx) = try_constant_index_i64(&idx_rewritten) {
                                 if let Some(slot_idx) = resolve_proc_constant_slot_index(
                                     raw_idx,
@@ -853,11 +877,13 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 ) {
                                     if let Some(slot_name) = slots.get(slot_idx) {
                                         return Some(Stmt::Assign {
-                                            loc: None,
+                                            loc: Default::default(),
+                                            target_loc: Default::default(),
                                             target: AssignTarget::Var(slot_name.clone()),
                                             decl_ty: *decl_ty,
                                             generic_decl_ty: generic_decl_ty.clone(),
                                             is_typed_decl: *is_typed_decl,
+                                            typed_decl_ty_loc: Default::default(),
                                             expr: expr_rewritten,
                                         });
                                     }
@@ -873,7 +899,8 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                     errors,
                                 ) else {
                                     return Some(Stmt::Assign {
-                                        loc: source_loc.clone(),
+                                        loc: source_loc.clone().into(),
+                                        target_loc: Default::default(),
                                         target: AssignTarget::Index {
                                             base: base.clone(),
                                             index: idx_rewritten,
@@ -881,29 +908,33 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                         decl_ty: *decl_ty,
                                         generic_decl_ty: generic_decl_ty.clone(),
                                         is_typed_decl: *is_typed_decl,
+                                        typed_decl_ty_loc: Default::default(),
                                         expr: expr_rewritten,
                                     });
                                 };
                                 if let Some(slot_name) = slots.get(slot_idx) {
                                     return Some(Stmt::Assign {
-                                        loc: source_loc.clone(),
+                                        loc: source_loc.clone().into(),
+                                        target_loc: Default::default(),
                                         target: AssignTarget::Var(format!("self.{slot_name}")),
                                         decl_ty: None,
                                         generic_decl_ty: None,
                                         is_typed_decl: false,
+                                        typed_decl_ty_loc: Default::default(),
                                         expr: expr_rewritten,
                                     });
                                 }
                             } else {
                                 return Some(Stmt::Expr {
-                                    loc: source_loc.clone(),
+                                    loc: source_loc.clone().into(),
                                     expr: Expr::UserCall {
+                                        loc: Default::default(),
                                         name: proc_write_helper_name(owner_proc, slots, false),
                                         type_args: Vec::new(),
                                         args: vec![
                                             CallArg {
                                                 name: None,
-                                                expr: Expr::Var("self".to_owned()),
+                                                expr: Expr::var("self"),
                                             },
                                             CallArg {
                                                 name: None,
@@ -930,7 +961,8 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             base.clone()
                         };
                         Some(Stmt::Assign {
-                            loc: source_loc.clone(),
+                            loc: source_loc.clone().into(),
+                            target_loc: Default::default(),
                             target: AssignTarget::Index {
                                 base: target_base,
                                 index: idx_rewritten,
@@ -938,6 +970,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             decl_ty: None,
                             generic_decl_ty: None,
                             is_typed_decl: false,
+                            typed_decl_ty_loc: Default::default(),
                             expr: expr_rewritten,
                         })
                     }
@@ -965,11 +998,11 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             );
                         }
                         if in_array_slots.contains_key(base) {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                diag,
+                                errors,
                                 format!("cannot assign to processor input '{base}'"),
-                                0,
-                                0,
-                            ));
+                            );
                         }
                         let target_base = if field_names.contains(base) && is_plain_symbol(base) {
                             format!("self.{base}")
@@ -983,7 +1016,8 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             base.clone()
                         };
                         Some(Stmt::Assign {
-                            loc: source_loc.clone(),
+                            loc: source_loc.clone().into(),
+                            target_loc: Default::default(),
                             target: AssignTarget::Slice {
                                 base: target_base,
                                 start: start_rewritten,
@@ -992,6 +1026,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             decl_ty: None,
                             generic_decl_ty: None,
                             is_typed_decl: false,
+                            typed_decl_ty_loc: Default::default(),
                             expr: expr_rewritten,
                         })
                     }
@@ -1009,23 +1044,25 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                 );
                 if let Expr::UserCall { name, args, .. } = &expr_rewritten {
                     if name == "unsafe_write" && args.len() == 3 {
-                        if let Expr::Var(base) = &args[0].expr {
+                        if let Expr::Var { name: base, .. } = &args[0].expr {
                             if let Some(slots) = in_array_slots.get(base) {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    diag,
+                                    errors,
                                     format!("cannot assign to processor input '{base}'"),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 if let Some(raw_idx) = try_constant_index_i64(&args[1].expr) {
                                     if raw_idx >= 0 && raw_idx < slots.len() as i64 {
                                         let slot_idx = raw_idx as usize;
                                         if let Some(slot_name) = slots.get(slot_idx) {
                                             return Some(Stmt::Assign {
-                                                loc: source_loc.clone(),
+                                                loc: source_loc.clone().into(),
+                                                target_loc: Default::default(),
                                                 target: AssignTarget::Var(slot_name.clone()),
                                                 decl_ty: None,
                                                 generic_decl_ty: None,
                                                 is_typed_decl: false,
+                                                typed_decl_ty_loc: Default::default(),
                                                 expr: args[2].expr.clone(),
                                             });
                                         }
@@ -1038,27 +1075,30 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                         let slot_idx = raw_idx as usize;
                                         if let Some(slot_name) = slots.get(slot_idx) {
                                             return Some(Stmt::Assign {
-                                                loc: source_loc.clone(),
+                                                loc: source_loc.clone().into(),
+                                                target_loc: Default::default(),
                                                 target: AssignTarget::Var(format!(
                                                     "self.{slot_name}"
                                                 )),
                                                 decl_ty: None,
                                                 generic_decl_ty: None,
                                                 is_typed_decl: false,
+                                                typed_decl_ty_loc: Default::default(),
                                                 expr: args[2].expr.clone(),
                                             });
                                         }
                                     }
                                 }
                                 return Some(Stmt::Expr {
-                                    loc: source_loc.clone(),
+                                    loc: source_loc.clone().into(),
                                     expr: Expr::UserCall {
+                                        loc: Default::default(),
                                         name: proc_write_helper_name(owner_proc, slots, true),
                                         type_args: Vec::new(),
                                         args: vec![
                                             CallArg {
                                                 name: None,
-                                                expr: Expr::Var("self".to_owned()),
+                                                expr: Expr::var("self"),
                                             },
                                             CallArg {
                                                 name: None,
@@ -1076,7 +1116,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     }
                 }
                 Some(Stmt::Expr {
-                    loc: source_loc.clone(),
+                    loc: source_loc.clone().into(),
                     expr: expr_rewritten,
                 })
             }
@@ -1091,7 +1131,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     errors,
                 );
                 Some(Stmt::Return {
-                    loc: source_loc.clone(),
+                    loc: source_loc.clone().into(),
                     expr: expr_rewritten,
                 })
             }
@@ -1141,7 +1181,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     })
                     .collect::<Vec<_>>();
                 Some(Stmt::If {
-                    loc: source_loc.clone(),
+                    loc: source_loc.clone().into(),
                     cond: cond_rewritten,
                     then_branch,
                     else_branch,
@@ -1202,7 +1242,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     })
                     .collect::<Vec<_>>();
                 Some(Stmt::For {
-                    loc: source_loc,
+                    loc: source_loc.into(),
                     var: var.clone(),
                     start: start_rewritten,
                     end: end_rewritten,
@@ -1242,13 +1282,17 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     })
                     .collect::<Vec<_>>();
                 Some(Stmt::While {
-                    loc: source_loc,
+                    loc: source_loc.into(),
                     cond: cond_rewritten,
                     body,
                 })
             }
-            Stmt::Break { .. } => Some(Stmt::Break { loc: source_loc }),
-            Stmt::Continue { .. } => Some(Stmt::Continue { loc: source_loc }),
+            Stmt::Break { .. } => Some(Stmt::Break {
+                loc: source_loc.into(),
+            }),
+            Stmt::Continue { .. } => Some(Stmt::Continue {
+                loc: source_loc.into(),
+            }),
         }
     })
 }

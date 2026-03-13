@@ -3,6 +3,7 @@ use super::*;
 #[derive(Default)]
 struct ParsedNamedDecl {
     ty: Option<DeclType>,
+    ty_loc: Span,
     default: Option<Expr>,
     range: Option<DeclRange>,
 }
@@ -13,7 +14,7 @@ fn parse_positive_count_literal(
 ) -> Result<usize, Vec<Diagnostic>> {
     let count_i = parse_int(pair.as_str())?;
     if count_i <= 0 {
-        return Err(vec![Diagnostic::syntax(non_positive_message, 0, 0)]);
+        return Err(vec![syntax_at_pair(&pair, non_positive_message)]);
     }
     Ok(count_i as usize)
 }
@@ -21,26 +22,29 @@ fn parse_positive_count_literal(
 fn parse_decl_type_item(
     pair: Pair<'_, Rule>,
     missing_type_message: &str,
-) -> Result<DeclType, Vec<Diagnostic>> {
+) -> Result<(DeclType, Span), Vec<Diagnostic>> {
     let actual = if pair.as_rule() == Rule::decl_type {
+        let loc = stmt_loc_from_pair(&pair);
         let mut decl_inner = pair.into_inner();
         decl_inner
             .next()
-            .ok_or_else(|| vec![Diagnostic::syntax(missing_type_message, 0, 0)])?
+            .ok_or_else(|| vec![syntax_at_loc(loc.as_ref(), missing_type_message)])?
     } else {
         pair
     };
-    parse_decl_type(actual)
+    let ty_loc = stmt_loc_from_pair(&actual);
+    Ok((parse_decl_type(actual)?, ty_loc))
 }
 
 fn parse_named_decl(
     pair: Pair<'_, Rule>,
     missing_name_message: &str,
     missing_type_message: &str,
-) -> Result<(String, ParsedNamedDecl), Vec<Diagnostic>> {
+) -> Result<(Span, String, ParsedNamedDecl), Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(name_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(missing_name_message, 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), missing_name_message)]);
     };
 
     let mut parsed = ParsedNamedDecl::default();
@@ -51,7 +55,9 @@ fn parse_named_decl(
             | Rule::array_type
             | Rule::namespace_ref
             | Rule::qualified_ident => {
-                parsed.ty = Some(parse_decl_type_item(item, missing_type_message)?);
+                let (ty, ty_loc) = parse_decl_type_item(item, missing_type_message)?;
+                parsed.ty = Some(ty);
+                parsed.ty_loc = ty_loc;
             }
             Rule::expr => parsed.default = Some(parse_expr_inner(item)),
             Rule::decl_range => parsed.range = Some(parse_decl_range_pair(item)?),
@@ -59,25 +65,25 @@ fn parse_named_decl(
         }
     }
 
-    Ok((name_pair.as_str().to_owned(), parsed))
+    Ok((loc, name_pair.as_str().to_owned(), parsed))
 }
 
 fn validate_decl_defaults_and_ranges(
     parsed: &ParsedNamedDecl,
     block_name: &str,
+    loc: impl Into<SourceLoc>,
 ) -> Result<(), Vec<Diagnostic>> {
+    let loc = loc.into();
     if parsed.default.is_some() {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc,
             format!("{block_name} declarations do not support default values"),
-            0,
-            0,
         )]);
     }
     if parsed.range.is_some() {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc,
             format!("{block_name} declarations do not support ranges"),
-            0,
-            0,
         )]);
     }
     Ok(())
@@ -87,24 +93,24 @@ fn validate_count_prefix_matches(
     block_name: &str,
     count_prefix: Option<usize>,
     actual_count: usize,
+    loc: impl Into<SourceLoc>,
 ) -> Result<(), Vec<Diagnostic>> {
+    let loc = loc.into();
     if let Some(n) = count_prefix {
         if n != actual_count {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                loc,
                 format!(
                     "{block_name} block count prefix ({n}) does not match explicit declaration count ({actual_count})"
                 ),
-                0,
-                0,
             )]);
         }
     }
     Ok(())
 }
 
-pub(super) fn parse_port_block(
-    block_pair: Pair<'_, Rule>,
-) -> Result<Vec<PortDecl>, Vec<Diagnostic>> {
+pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, Vec<Diagnostic>> {
+    let block_loc = stmt_loc_from_pair(&block_pair);
     let (block_name, prefix) = match block_pair.as_rule() {
         Rule::ins_block => ("ins", "in"),
         Rule::outs_block => ("outs", "out"),
@@ -124,10 +130,9 @@ pub(super) fn parse_port_block(
             }
             Rule::int_lit => {
                 if count_prefix.is_some() {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_pair(
+                        &child,
                         format!("{block_name} block count can only be specified once"),
-                        0,
-                        0,
                     )]);
                 }
                 count_prefix = Some(parse_positive_count_literal(
@@ -141,18 +146,20 @@ pub(super) fn parse_port_block(
                     if item.as_rule() != Rule::port_decl {
                         continue;
                     }
-                    let (name, parsed) = parse_named_decl(
+                    let (loc, name, parsed) = parse_named_decl(
                         item,
                         "missing port identifier",
                         "missing port declaration type",
                     )?;
                     if !allow_default_and_range {
-                        validate_decl_defaults_and_ranges(&parsed, block_name)?;
+                        validate_decl_defaults_and_ranges(&parsed, block_name, loc.as_ref())?;
                     }
                     let ty = parsed.ty.or_else(|| default_ty.clone());
                     ports.push(PortDecl {
+                        loc,
                         name,
                         ty,
+                        ty_loc: parsed.ty_loc,
                         default: parsed.default,
                         range: parsed.range,
                     });
@@ -163,24 +170,30 @@ pub(super) fn parse_port_block(
     }
 
     if has_list {
-        validate_count_prefix_matches(block_name, count_prefix, ports.len())?;
+        validate_count_prefix_matches(block_name, count_prefix, ports.len(), block_loc.as_ref())?;
     } else if let Some(n) = count_prefix {
         for idx in 1..=n {
             ports.push(PortDecl {
+                loc: block_loc.clone(),
                 name: format!("{prefix}{idx}"),
                 ty: default_ty.clone(),
+                ty_loc: Span::ZERO,
                 default: None,
                 range: None,
             });
         }
     }
 
-    Ok(ports)
+    Ok(PortBlock {
+        loc: block_loc,
+        decls: ports,
+    })
 }
 
 pub(super) fn parse_params_block(
     block_pair: Pair<'_, Rule>,
-) -> Result<Vec<ParamDecl>, Vec<Diagnostic>> {
+) -> Result<ParamBlock, Vec<Diagnostic>> {
+    let block_loc = stmt_loc_from_pair(&block_pair);
     let mut params = Vec::new();
     let mut has_list = false;
     let mut count_prefix: Option<usize> = None;
@@ -193,10 +206,9 @@ pub(super) fn parse_params_block(
             }
             Rule::int_lit => {
                 if count_prefix.is_some() {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_pair(
+                        &child,
                         "params block count can only be specified once",
-                        0,
-                        0,
                     )]);
                 }
                 count_prefix = Some(parse_positive_count_literal(
@@ -210,15 +222,17 @@ pub(super) fn parse_params_block(
                     if param_pair.as_rule() != Rule::param_decl {
                         continue;
                     }
-                    let (name, parsed) = parse_named_decl(
+                    let (loc, name, parsed) = parse_named_decl(
                         param_pair,
                         "missing param identifier",
                         "missing param declaration type",
                     )?;
                     let ty = parsed.ty.or_else(|| default_ty.clone());
                     params.push(ParamDecl {
+                        loc,
                         name,
                         ty,
+                        ty_loc: parsed.ty_loc,
                         default: parsed.default,
                         range: parsed.range,
                     });
@@ -229,24 +243,30 @@ pub(super) fn parse_params_block(
     }
 
     if has_list {
-        validate_count_prefix_matches("params", count_prefix, params.len())?;
+        validate_count_prefix_matches("params", count_prefix, params.len(), block_loc.as_ref())?;
     } else if let Some(n) = count_prefix {
         for idx in 1..=n {
             params.push(ParamDecl {
+                loc: block_loc.clone(),
                 name: format!("param{idx}"),
                 ty: default_ty.clone(),
+                ty_loc: Span::ZERO,
                 default: None,
                 range: None,
             });
         }
     }
 
-    Ok(params)
+    Ok(ParamBlock {
+        loc: block_loc,
+        decls: params,
+    })
 }
 
 pub(super) fn parse_buffers_block(
     block_pair: Pair<'_, Rule>,
-) -> Result<Vec<BufferDecl>, Vec<Diagnostic>> {
+) -> Result<BufferBlock, Vec<Diagnostic>> {
+    let block_loc = stmt_loc_from_pair(&block_pair);
     let mut out = Vec::<BufferDecl>::new();
     let mut seen = HashSet::<String>::new();
 
@@ -265,39 +285,48 @@ pub(super) fn parse_buffers_block(
                     if item.as_rule() != Rule::buffer_decl {
                         continue;
                     }
+                    let loc = stmt_loc_from_pair(&item);
                     let mut inner = item.into_inner();
                     let Some(name_pair) = inner.next() else {
-                        return Err(vec![Diagnostic::syntax("missing buffer identifier", 0, 0)]);
+                        return Err(vec![syntax_at_loc(
+                            loc.as_ref(),
+                            "missing buffer identifier",
+                        )]);
                     };
                     let name = name_pair.as_str().to_owned();
-                    let ty = match inner.next() {
-                        Some(ty_pair) => Some(parse_buffer_decl_type(ty_pair)?),
-                        None => default_ty.clone(),
+                    let (ty, ty_loc) = match inner.next() {
+                        Some(ty_pair) => (
+                            Some(parse_buffer_decl_type(ty_pair.clone())?),
+                            stmt_loc_from_pair(&ty_pair),
+                        ),
+                        None => (default_ty.clone(), Span::ZERO),
                     };
                     if !seen.insert(name.clone()) {
-                        return Err(vec![Diagnostic::syntax(
+                        return Err(vec![syntax_at_loc(
+                            loc.as_ref(),
                             format!("duplicate buffer declaration '{name}'"),
-                            0,
-                            0,
                         )]);
                     }
-                    out.push(BufferDecl { name, ty });
+                    out.push(BufferDecl {
+                        loc,
+                        name,
+                        ty,
+                        ty_loc,
+                    });
                 }
             }
             Rule::int_lit => {
                 if has_list {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_pair(
+                        &child,
                         "buffers block cannot mix explicit declarations and count shorthand",
-                        0,
-                        0,
                     )]);
                 }
                 let count_i = parse_int(child.as_str())?;
                 if count_i <= 0 {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_pair(
+                        &child,
                         "buffers count shorthand must be greater than zero",
-                        0,
-                        0,
                     )]);
                 }
                 count_shorthand = Some(count_i as usize);
@@ -309,18 +338,24 @@ pub(super) fn parse_buffers_block(
     if let Some(n) = count_shorthand {
         for idx in 1..=n {
             out.push(BufferDecl {
+                loc: block_loc.clone(),
                 name: format!("buf{idx}"),
                 ty: default_ty.clone(),
+                ty_loc: Span::ZERO,
             });
         }
     }
 
-    Ok(out)
+    Ok(BufferBlock {
+        loc: block_loc,
+        decls: out,
+    })
 }
 
 pub(super) fn parse_events_block(
     block_pair: Pair<'_, Rule>,
-) -> Result<Vec<EventDef>, Vec<Diagnostic>> {
+) -> Result<EventBlock, Vec<Diagnostic>> {
+    let block_loc = stmt_loc_from_pair(&block_pair);
     let mut events = Vec::<EventDef>::new();
     let mut seen = HashSet::<String>::new();
 
@@ -332,6 +367,7 @@ pub(super) fn parse_events_block(
             if item.as_rule() != Rule::event_decl {
                 continue;
             }
+            let event_loc = stmt_loc_from_pair(&item);
             let mut name: Option<String> = None;
             let mut params = Vec::<EventParamDecl>::new();
             let mut body = None;
@@ -347,24 +383,28 @@ pub(super) fn parse_events_block(
                             if event_param.as_rule() != Rule::event_param_decl {
                                 continue;
                             }
+                            let param_loc = stmt_loc_from_pair(&event_param);
                             let mut param_inner = event_param.into_inner();
                             let Some(param_name_pair) = param_inner.next() else {
-                                return Err(vec![Diagnostic::syntax(
+                                return Err(vec![syntax_at_loc(
+                                    param_loc.as_ref(),
                                     "missing event parameter name",
-                                    0,
-                                    0,
                                 )]);
                             };
                             let Some(param_ty_pair) = param_inner.next() else {
                                 params.push(EventParamDecl {
+                                    loc: param_loc,
                                     name: param_name_pair.as_str().to_owned(),
                                     ty: EventParamType::Scalar(PrimitiveType::F32),
+                                    ty_loc: Span::ZERO,
                                 });
                                 continue;
                             };
                             params.push(EventParamDecl {
+                                loc: param_loc,
                                 name: param_name_pair.as_str().to_owned(),
-                                ty: parse_event_param_type(param_ty_pair)?,
+                                ty: parse_event_param_type(param_ty_pair.clone())?,
+                                ty_loc: stmt_loc_from_pair(&param_ty_pair),
                             });
                         }
                     }
@@ -375,38 +415,47 @@ pub(super) fn parse_events_block(
                 }
             }
             let Some(name) = name else {
-                return Err(vec![Diagnostic::syntax("missing event name", 0, 0)]);
+                return Err(vec![syntax_at_loc(
+                    event_loc.as_ref(),
+                    "missing event name",
+                )]);
             };
             if !seen.insert(name.clone()) {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    event_loc.as_ref(),
                     format!("duplicate event declaration '{name}'"),
-                    0,
-                    0,
                 )]);
             }
             let Some(body) = body else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    event_loc.as_ref(),
                     format!("missing handler body for event '{name}'"),
-                    0,
-                    0,
                 )]);
             };
-            events.push(EventDef { name, params, body });
+            events.push(EventDef {
+                loc: event_loc,
+                name,
+                params,
+                body,
+            });
         }
     }
 
-    Ok(events)
+    Ok(EventBlock {
+        loc: block_loc,
+        events,
+    })
 }
 
 pub(super) fn parse_graph_block(block_pair: Pair<'_, Rule>) -> Result<GraphBlock, Vec<Diagnostic>> {
     if block_pair.as_rule() != Rule::graph_block {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &block_pair,
             "internal parser error: expected graph block",
-            0,
-            0,
         )]);
     }
 
+    let loc = stmt_loc_from_pair(&block_pair);
     let mut edges = Vec::<GraphEdge>::new();
     for child in block_pair.into_inner() {
         if child.as_rule() != Rule::graph_edge_list {
@@ -420,10 +469,11 @@ pub(super) fn parse_graph_block(block_pair: Pair<'_, Rule>) -> Result<GraphBlock
         }
     }
 
-    Ok(GraphBlock { edges })
+    Ok(GraphBlock { loc, edges })
 }
 
 fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&edge_pair);
     let mut rate = None::<GraphRate>;
     let mut source = None::<Expr>;
     let mut delay = None::<Expr>;
@@ -433,10 +483,9 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
         match child.as_rule() {
             Rule::graph_rate => {
                 if rate.is_some() {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
                         "graph edge rate can only be specified once",
-                        0,
-                        0,
                     )]);
                 }
                 rate = Some(parse_graph_rate(child)?);
@@ -444,22 +493,23 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
             Rule::graph_send_edge => {
                 let mut inner = child.into_inner();
                 let Some(source_pair) = inner.next() else {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
                         "missing graph edge source expression",
-                        0,
-                        0,
                     )]);
                 };
                 source = Some(parse_expr(source_pair)?);
                 let Some(arrow_pair) = inner.next() else {
-                    return Err(vec![Diagnostic::syntax("missing graph edge arrow", 0, 0)]);
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
+                        "missing graph edge arrow",
+                    )]);
                 };
                 delay = parse_graph_edge_delay(arrow_pair)?;
                 let Some(dest_pair) = inner.next() else {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
                         "missing graph edge destination endpoint",
-                        0,
-                        0,
                     )]);
                 };
                 dests = Some(parse_graph_edge_targets(dest_pair)?);
@@ -467,22 +517,23 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
             Rule::graph_recv_edge => {
                 let mut inner = child.into_inner();
                 let Some(dest_pair) = inner.next() else {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
                         "missing graph edge destination endpoint",
-                        0,
-                        0,
                     )]);
                 };
                 dests = Some(parse_graph_edge_targets(dest_pair)?);
                 let Some(arrow_pair) = inner.next() else {
-                    return Err(vec![Diagnostic::syntax("missing graph edge arrow", 0, 0)]);
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
+                        "missing graph edge arrow",
+                    )]);
                 };
                 delay = parse_graph_edge_delay(arrow_pair)?;
                 let Some(source_pair) = inner.next() else {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
                         "missing graph edge source expression",
-                        0,
-                        0,
                     )]);
                 };
                 source = Some(parse_expr(source_pair)?);
@@ -492,21 +543,20 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
     }
 
     let Some(source) = source else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing graph edge source expression",
-            0,
-            0,
         )]);
     };
     let Some(dests) = dests else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing graph edge destination endpoint",
-            0,
-            0,
         )]);
     };
 
     Ok(GraphEdge {
+        loc,
         rate,
         source,
         delay,
@@ -515,15 +565,15 @@ fn parse_graph_edge(edge_pair: Pair<'_, Rule>) -> Result<GraphEdge, Vec<Diagnost
 }
 
 fn parse_graph_edge_delay(arrow_pair: Pair<'_, Rule>) -> Result<Option<Expr>, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&arrow_pair);
     let mut delay = None::<Expr>;
     for part in arrow_pair.into_inner() {
         if part.as_rule() == Rule::graph_delay {
             let mut delay_inner = part.into_inner();
             let Some(expr_pair) = delay_inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing graph edge delay expression",
-                    0,
-                    0,
                 )]);
             };
             delay = Some(parse_expr(expr_pair)?);
@@ -536,21 +586,20 @@ fn parse_graph_rate(pair: Pair<'_, Rule>) -> Result<GraphRate, Vec<Diagnostic>> 
     match pair.as_str() {
         "@block" => Ok(GraphRate::Block),
         "@sample" => Ok(GraphRate::Sample),
-        _ => Err(vec![Diagnostic::syntax(
+        _ => Err(vec![syntax_at_pair(
+            &pair,
             "unknown graph edge rate annotation",
-            0,
-            0,
         )]),
     }
 }
 
 fn parse_graph_endpoint(pair: Pair<'_, Rule>) -> Result<GraphEndpoint, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(first) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing graph destination endpoint",
-            0,
-            0,
         )]);
     };
 
@@ -559,44 +608,52 @@ fn parse_graph_endpoint(pair: Pair<'_, Rule>) -> Result<GraphEndpoint, Vec<Diagn
             let path = first.as_str().to_owned();
             if let Some((proc, field)) = path.rsplit_once('.') {
                 Ok(GraphEndpoint::ProcField {
+                    loc,
                     proc: proc.to_owned(),
                     field: field.to_owned(),
                 })
             } else {
-                Ok(GraphEndpoint::Symbol(path))
+                Ok(GraphEndpoint::Symbol { loc, name: path })
             }
         }
         Rule::indexed_graph_endpoint => {
             let mut endpoint_inner = first.into_inner();
             let proc = endpoint_inner
                 .next()
-                .ok_or_else(|| vec![Diagnostic::syntax("missing graph proc endpoint base", 0, 0)])?
+                .ok_or_else(|| {
+                    vec![syntax_at_loc(
+                        loc.as_ref(),
+                        "missing graph proc endpoint base",
+                    )]
+                })?
                 .as_str()
                 .to_owned();
             let index = parse_expr(endpoint_inner.next().ok_or_else(|| {
-                vec![Diagnostic::syntax(
+                vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing graph proc endpoint index",
-                    0,
-                    0,
                 )]
             })?)?;
             let field = endpoint_inner
                 .next()
                 .ok_or_else(|| {
-                    vec![Diagnostic::syntax(
+                    vec![syntax_at_loc(
+                        loc.as_ref(),
                         "missing graph proc endpoint field",
-                        0,
-                        0,
                     )]
                 })?
                 .as_str()
                 .to_owned();
-            Ok(GraphEndpoint::ProcIndexedField { proc, index, field })
+            Ok(GraphEndpoint::ProcIndexedField {
+                loc,
+                proc,
+                index,
+                field,
+            })
         }
-        _ => Err(vec![Diagnostic::syntax(
+        _ => Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "invalid graph destination endpoint",
-            0,
-            0,
         )]),
     }
 }
@@ -604,12 +661,12 @@ fn parse_graph_endpoint(pair: Pair<'_, Rule>) -> Result<GraphEndpoint, Vec<Diagn
 fn parse_graph_edge_targets(pair: Pair<'_, Rule>) -> Result<Vec<GraphEndpoint>, Vec<Diagnostic>> {
     match pair.as_rule() {
         Rule::graph_edge_targets => {
+            let loc = stmt_loc_from_pair(&pair);
             let mut inner = pair.into_inner();
             let Some(targets) = inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing graph edge destination endpoint",
-                    0,
-                    0,
                 )]);
             };
             parse_graph_edge_targets(targets)
@@ -624,10 +681,9 @@ fn parse_graph_edge_targets(pair: Pair<'_, Rule>) -> Result<Vec<GraphEndpoint>, 
             Ok(out)
         }
         Rule::graph_endpoint => Ok(vec![parse_graph_endpoint(pair)?]),
-        _ => Err(vec![Diagnostic::syntax(
+        _ => Err(vec![syntax_at_pair(
+            &pair,
             "invalid graph destination endpoint list",
-            0,
-            0,
         )]),
     }
 }
@@ -635,6 +691,7 @@ fn parse_graph_edge_targets(pair: Pair<'_, Rule>) -> Result<Vec<GraphEndpoint>, 
 pub(super) fn parse_proc_block(
     block_pair: Pair<'_, Rule>,
 ) -> Result<ProcessorDef, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&block_pair);
     let mut name: Option<String> = None;
     let mut type_params = Vec::new();
     let mut ins = Vec::new();
@@ -664,75 +721,55 @@ pub(super) fn parse_proc_block(
             }
             Rule::ins_block => {
                 if !ins.is_empty() {
-                    return Err(vec![Diagnostic::syntax("duplicate proc ins block", 0, 0)]);
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc ins block")]);
                 }
-                ins = parse_port_block(child)?;
+                ins = parse_port_block(child)?.decls;
             }
             Rule::outs_block => {
                 if !outs.is_empty() {
-                    return Err(vec![Diagnostic::syntax("duplicate proc outs block", 0, 0)]);
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc outs block")]);
                 }
-                outs = parse_port_block(child)?;
+                outs = parse_port_block(child)?.decls;
             }
             Rule::params_block => {
                 if !params.is_empty() {
-                    return Err(vec![Diagnostic::syntax(
-                        "duplicate proc params block",
-                        0,
-                        0,
-                    )]);
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc params block")]);
                 }
-                params = parse_params_block(child)?;
+                params = parse_params_block(child)?.decls;
             }
             Rule::events_block => {
                 if events.is_some() {
-                    return Err(vec![Diagnostic::syntax(
-                        "duplicate proc events block",
-                        0,
-                        0,
-                    )]);
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc events block")]);
                 }
-                events = Some(parse_events_block(child)?);
+                events = Some(parse_events_block(child)?.events);
             }
             Rule::buffers_block => {
                 if !buffers.is_empty() {
-                    return Err(vec![Diagnostic::syntax(
-                        "duplicate proc buffers block",
-                        0,
-                        0,
-                    )]);
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc buffers block")]);
                 }
-                buffers = parse_buffers_block(child)?;
+                buffers = parse_buffers_block(child)?.decls;
             }
             Rule::init_block => {
                 if init.is_some() {
-                    return Err(vec![Diagnostic::syntax("duplicate proc init block", 0, 0)]);
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc init block")]);
                 }
                 init = Some(parse_exec_block(child)?);
             }
             Rule::block_exec_block => {
                 if block_exec.is_some() {
-                    return Err(vec![Diagnostic::syntax(
-                        "duplicate proc block section",
-                        0,
-                        0,
-                    )]);
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc block section")]);
                 }
                 block_exec = Some(parse_block_exec_block(child)?);
             }
             Rule::sample_block => {
                 if sample.is_some() {
-                    return Err(vec![Diagnostic::syntax(
-                        "duplicate proc sample block",
-                        0,
-                        0,
-                    )]);
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc sample block")]);
                 }
                 sample = Some(parse_sample_block(child)?);
             }
             Rule::graph_block => {
                 if graph.is_some() {
-                    return Err(vec![Diagnostic::syntax("duplicate proc graph block", 0, 0)]);
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc graph block")]);
                 }
                 graph = Some(parse_graph_block(child)?);
             }
@@ -744,7 +781,7 @@ pub(super) fn parse_proc_block(
     }
 
     let Some(name) = name else {
-        return Err(vec![Diagnostic::syntax("missing proc name", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing proc name")]);
     };
 
     let mut block_pre = Vec::new();
@@ -753,17 +790,15 @@ pub(super) fn parse_proc_block(
     if let Some(exec) = block_exec {
         has_block_block = true;
         if sample.is_some() {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
                 "proc sample block cannot be declared both directly and inside block section",
-                0,
-                0,
             )]);
         }
         let Some(nested_sample) = exec.sample else {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
                 "proc block section must include nested 'sample' block",
-                0,
-                0,
             )]);
         };
         block_pre = exec.pre;
@@ -772,10 +807,9 @@ pub(super) fn parse_proc_block(
     }
 
     if graph.is_some() && (sample.is_some() || has_block_block) {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "proc graph block cannot be declared with sample or block",
-            0,
-            0,
         )]);
     }
 
@@ -788,6 +822,7 @@ pub(super) fn parse_proc_block(
     };
 
     Ok(ProcessorDef {
+        loc,
         name,
         type_params,
         ins,
@@ -801,7 +836,9 @@ pub(super) fn parse_proc_block(
         has_graph_block,
         sample_oversample_factor,
         init: init.unwrap_or(InitBlock {
+            loc: Span::ZERO,
             default_ty: None,
+            default_ty_loc: Span::ZERO,
             body: Vec::new(),
         }),
         block_pre,
@@ -813,6 +850,7 @@ pub(super) fn parse_proc_block(
 }
 
 pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&block_pair);
     let mut name: Option<String> = None;
     let mut type_params = Vec::new();
     let mut fields = Vec::new();
@@ -837,15 +875,21 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                     if item.as_rule() != Rule::field_decl {
                         continue;
                     }
+                    let field_loc = stmt_loc_from_pair(&item);
                     let mut decl_inner = item.into_inner();
                     let Some(field_name) = decl_inner.next() else {
-                        return Err(vec![Diagnostic::syntax("missing struct field name", 0, 0)]);
+                        return Err(vec![syntax_at_loc(
+                            field_loc.as_ref(),
+                            "missing struct field name",
+                        )]);
                     };
                     let mut parsed_ty = None::<FieldType>;
+                    let mut ty_loc = Span::ZERO;
                     let mut default = None;
                     for part in decl_inner {
                         match part.as_rule() {
                             Rule::field_type => {
+                                ty_loc = stmt_loc_from_pair(&part);
                                 parsed_ty = Some(parse_field_type(part)?);
                             }
                             Rule::expr => {
@@ -862,8 +906,10 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                         FieldType::Scalar(PrimitiveType::F32)
                     };
                     fields.push(StructField {
+                        loc: field_loc,
                         name: field_name.as_str().to_owned(),
                         ty,
+                        ty_loc,
                         default,
                     });
                 }
@@ -881,9 +927,10 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
     }
 
     let Some(name) = name else {
-        return Err(vec![Diagnostic::syntax("missing struct name", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing struct name")]);
     };
     Ok(StructDef {
+        loc,
         name,
         type_params,
         fields,
@@ -897,18 +944,18 @@ pub(super) fn infer_struct_field_scalar_type_from_default(expr: &Expr) -> Primit
 
 pub(super) fn infer_expr_primitive_type(expr: &Expr) -> Option<PrimitiveType> {
     match expr {
-        Expr::Int(_) => Some(PrimitiveType::I32),
-        Expr::Number(_) => Some(PrimitiveType::F32),
-        Expr::Bool(_) => Some(PrimitiveType::Bool),
+        Expr::Int { .. } => Some(PrimitiveType::I32),
+        Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::Cast { to, .. } => Some(*to),
         Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
             Some(PrimitiveType::Bool)
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let inner = infer_expr_primitive_type(expr)?;
             merge_inferred_integer_type(inner, inner)
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let left = infer_expr_primitive_type(lhs)?;
             let right = infer_expr_primitive_type(rhs)?;
             match op {
@@ -951,6 +998,7 @@ pub(super) fn merge_inferred_integer_type(
 }
 
 pub(super) fn parse_def_block(block_pair: Pair<'_, Rule>) -> Result<FunctionDef, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&block_pair);
     let mut name: Option<String> = None;
     let mut params = Vec::new();
     let mut body = None;
@@ -977,13 +1025,14 @@ pub(super) fn parse_def_block(block_pair: Pair<'_, Rule>) -> Result<FunctionDef,
     }
 
     let Some(name) = name else {
-        return Err(vec![Diagnostic::syntax("missing function name", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing function name")]);
     };
     let Some(body) = body else {
-        return Err(vec![Diagnostic::syntax("missing function body", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing function body")]);
     };
 
     Ok(FunctionDef {
+        loc,
         name,
         type_params: Vec::new(),
         params,
@@ -995,20 +1044,22 @@ pub(super) fn parse_fn_param_decl(
     pair: Pair<'_, Rule>,
     context: &str,
 ) -> Result<FnParamDecl, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(name_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             format!("missing {context} parameter name"),
-            0,
-            0,
         )]);
     };
 
     let mut ty = None;
+    let mut ty_loc = Span::ZERO;
     let mut default = None;
     for item in inner {
         match item.as_rule() {
             Rule::fn_param_type => {
+                ty_loc = stmt_loc_from_pair(&item);
                 ty = Some(parse_fn_param_type(item)?);
             }
             Rule::expr => {
@@ -1019,8 +1070,10 @@ pub(super) fn parse_fn_param_decl(
     }
 
     Ok(FnParamDecl {
+        loc,
         name: name_pair.as_str().to_owned(),
         ty,
+        ty_loc,
         default,
     })
 }

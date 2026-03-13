@@ -63,6 +63,9 @@ pub(super) fn annotate_diagnostics_with_file(
             if diag.line > 0 {
                 diag.line += line_offset;
             }
+            if diag.end_line > 0 {
+                diag.end_line += line_offset;
+            }
             diag.file = Some(file.clone());
         }
     }

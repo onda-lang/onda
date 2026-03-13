@@ -1,5 +1,9 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(crate) fn merged_data_vars_for_runtime(
     state_arrays: &HashMap<String, usize>,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
@@ -44,11 +48,11 @@ pub(crate) fn infer_scope_slice_alias_info(
 ) -> Option<LocalArrayAliasInfo> {
     if let Some(alias) = local_array_aliases.get(base) {
         if alias.elem_struct.is_some() {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!("slice expression '{base}[...]' requires primitive elements"),
-                0,
-                0,
-            ));
+            );
             return None;
         }
         return Some(LocalArrayAliasInfo {
@@ -88,19 +92,19 @@ pub(crate) fn infer_scope_slice_alias_info(
         return None;
     };
     if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("field '{root}.{field}' is not array and cannot be sliced"),
-            0,
-            0,
-        ));
+        );
         return None;
     }
     if field_decl.array_elem_struct.is_some() {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("slice expression '{base}[...]' requires primitive elements"),
-            0,
-            0,
-        ));
+        );
         return None;
     }
 
@@ -129,7 +133,7 @@ pub(crate) fn infer_scope_data_like_info(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<LocalArrayAliasInfo> {
     match expr {
-        Expr::Var(base) => infer_scope_slice_alias_info(
+        Expr::Var { name: base, .. } => infer_scope_slice_alias_info(
             base,
             None,
             None,
@@ -140,7 +144,9 @@ pub(crate) fn infer_scope_data_like_info(
             struct_defs,
             errors,
         ),
-        Expr::Slice { base, start, end } => infer_scope_slice_alias_info(
+        Expr::Slice {
+            base, start, end, ..
+        } => infer_scope_slice_alias_info(
             base,
             start.as_deref(),
             end.as_deref(),

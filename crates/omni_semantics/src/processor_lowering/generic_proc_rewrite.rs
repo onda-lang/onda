@@ -1,5 +1,9 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(super) fn rewrite_and_materialize_generic_processors(
     program: &mut Program,
     errors: &mut Vec<Diagnostic>,
@@ -22,24 +26,24 @@ pub(super) fn rewrite_and_materialize_generic_processors(
             continue;
         }
         if generic_proc_templates.contains_key(&p.name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::new(p.loc),
+                errors,
                 format!("duplicate generic processor '{}'", p.name),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         let mut seen_tp = HashSet::<String>::new();
         for tp in &p.type_params {
             if !seen_tp.insert(tp.clone()) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::new(p.loc),
+                    errors,
                     format!(
                         "duplicate generic type parameter '{}' in processor '{}'",
                         tp, p.name
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
         }
         generic_proc_templates.insert(p.name.clone(), p.clone());

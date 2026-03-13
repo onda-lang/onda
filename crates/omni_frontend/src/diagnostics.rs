@@ -1,6 +1,4 @@
-use std::cell::RefCell;
-
-use crate::ast::SourceLoc;
+use crate::ast::{SourceLoc, Span};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DiagCode {
@@ -16,28 +14,71 @@ pub struct Diagnostic {
     pub message: String,
     pub line: usize,
     pub column: usize,
+    pub end_line: usize,
     pub file: Option<String>,
     pub trace: Vec<String>,
 }
 
-thread_local! {
-    static DIAGNOSTIC_LOC_STACK: RefCell<Vec<SourceLoc>> = const { RefCell::new(Vec::new()) };
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub struct DiagCtx {
+    loc: SourceLoc,
 }
 
-fn current_diagnostic_location() -> Option<SourceLoc> {
-    DIAGNOSTIC_LOC_STACK.with(|stack| stack.borrow().last().cloned())
+impl DiagCtx {
+    pub fn new(loc: impl Into<SourceLoc>) -> Self {
+        Self { loc: loc.into() }
+    }
+
+    pub fn loc(&self) -> SourceLoc {
+        self.loc
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.loc.is_zero()
+    }
+
+    pub fn semantic(&self, message: impl Into<String>, line: usize, column: usize) -> Diagnostic {
+        Diagnostic::semantic_ctx(message, line, column, *self)
+    }
+
+    pub fn semantic_span(&self, message: impl Into<String>, span: impl Into<Span>) -> Diagnostic {
+        Diagnostic::semantic_span_ctx(message, span, *self)
+    }
 }
 
-pub fn with_diagnostic_location<T>(loc: Option<&SourceLoc>, f: impl FnOnce() -> T) -> T {
-    if let Some(loc) = loc {
-        DIAGNOSTIC_LOC_STACK.with(|stack| stack.borrow_mut().push(loc.clone()));
-        let out = f();
-        DIAGNOSTIC_LOC_STACK.with(|stack| {
-            stack.borrow_mut().pop();
-        });
-        out
-    } else {
-        f()
+impl From<SourceLoc> for DiagCtx {
+    fn from(loc: SourceLoc) -> Self {
+        Self::new(loc)
+    }
+}
+
+impl From<&SourceLoc> for DiagCtx {
+    fn from(loc: &SourceLoc) -> Self {
+        Self::new(*loc)
+    }
+}
+
+impl From<Span> for DiagCtx {
+    fn from(span: Span) -> Self {
+        Self::new(span)
+    }
+}
+
+impl From<&Span> for DiagCtx {
+    fn from(span: &Span) -> Self {
+        Self::new(*span)
+    }
+}
+
+impl From<Option<&SourceLoc>> for DiagCtx {
+    fn from(loc: Option<&SourceLoc>) -> Self {
+        Self::new(loc)
+    }
+}
+
+impl From<Option<&Span>> for DiagCtx {
+    fn from(span: Option<&Span>) -> Self {
+        Self::new(span)
     }
 }
 
@@ -48,33 +89,94 @@ impl Diagnostic {
             message: message.into(),
             line,
             column,
+            end_line: line,
             file: None,
             trace: Vec::new(),
         }
     }
 
     pub fn semantic(message: impl Into<String>, line: usize, column: usize) -> Self {
+        Self::semantic_ctx(message, line, column, DiagCtx::default())
+    }
+
+    pub fn semantic_span(message: impl Into<String>, span: impl Into<Span>) -> Self {
+        Self::semantic_span_ctx(message, span, DiagCtx::default())
+    }
+
+    pub fn semantic_ctx(
+        message: impl Into<String>,
+        line: usize,
+        column: usize,
+        ctx: impl Into<DiagCtx>,
+    ) -> Self {
+        let ctx = ctx.into();
         let mut line = line;
         let mut column = column;
+        let mut end_line = line;
         let mut file = None;
         let mut trace = Vec::new();
-        if let Some(loc) = current_diagnostic_location() {
-            if line == 0 {
+        let loc = ctx.loc();
+        if !loc.is_zero() {
+            if line == 0 && column == 0 {
                 line = loc.line;
-            }
-            if column == 0 {
                 column = loc.column;
+                end_line = loc.end_line;
             }
-            file = loc.file;
-            trace = loc.trace;
+            file = loc.file();
+            trace = loc.trace();
         }
         Self {
             code: DiagCode::Semantic,
             message: message.into(),
             line,
             column,
+            end_line,
             file,
             trace,
+        }
+    }
+
+    pub fn semantic_span_ctx(
+        message: impl Into<String>,
+        span: impl Into<Span>,
+        ctx: impl Into<DiagCtx>,
+    ) -> Self {
+        let span = span.into();
+        if span.is_zero() {
+            return Self::semantic_ctx(message, 0, 0, ctx);
+        }
+
+        let ctx = ctx.into();
+        let mut file = span.file();
+        let mut trace = span.trace();
+        if file.is_none() && trace.is_empty() {
+            let loc = ctx.loc();
+            if !loc.is_zero() {
+                file = loc.file();
+                trace = loc.trace();
+            }
+        }
+
+        Self {
+            code: DiagCode::Semantic,
+            message: message.into(),
+            line: span.line as usize,
+            column: span.column as usize,
+            end_line: span.end_line() as usize,
+            file,
+            trace,
+        }
+    }
+
+    pub fn syntax_at(message: impl Into<String>, loc: &SourceLoc) -> Self {
+        Self {
+            code: DiagCode::Syntax,
+            message: message.into(),
+            line: loc.line,
+            column: loc.column,
+            end_line: loc.end_line,
+            file: loc.file(),
+            trace: loc.trace(),
         }
     }
 
@@ -84,8 +186,21 @@ impl Diagnostic {
             message: message.into(),
             line,
             column,
+            end_line: line,
             file: None,
             trace: Vec::new(),
+        }
+    }
+
+    pub fn runtime_at(message: impl Into<String>, loc: &SourceLoc) -> Self {
+        Self {
+            code: DiagCode::Runtime,
+            message: message.into(),
+            line: loc.line,
+            column: loc.column,
+            end_line: loc.end_line,
+            file: loc.file(),
+            trace: loc.trace(),
         }
     }
 
@@ -95,8 +210,43 @@ impl Diagnostic {
             message: message.into(),
             line: 0,
             column: 0,
+            end_line: 0,
             file: None,
             trace: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semantic_span_uses_span_metadata_without_ambient_context() {
+        let loc = SourceLoc::new(Some("<memory>".to_owned()), 1, 1, 1, Vec::new());
+        let diag = Diagnostic::semantic_span("bad thing", loc.span());
+
+        assert_eq!(diag.file.as_deref(), Some("<memory>"));
+        assert!(diag.trace.is_empty());
+    }
+
+    #[test]
+    fn semantic_span_falls_back_to_explicit_context_metadata() {
+        let loc = SourceLoc::new(
+            Some("test.omni".to_owned()),
+            10,
+            20,
+            12,
+            vec!["included from root.omni".to_owned()],
+        );
+
+        let diag =
+            Diagnostic::semantic_span_ctx("bad thing", Span::new(3, 4, 5), DiagCtx::from(loc));
+
+        assert_eq!(diag.code, DiagCode::Semantic);
+        assert_eq!(diag.message, "bad thing");
+        assert_eq!((diag.line, diag.column, diag.end_line), (3, 4, 5));
+        assert_eq!(diag.file.as_deref(), Some("test.omni"));
+        assert_eq!(diag.trace, vec!["included from root.omni"]);
     }
 }

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use omni_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType};
+use omni_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType, SourceLoc};
 
 use crate::builtins::{
     builtin_constant_type, builtin_name, is_builtin_unsafe_data_fn, is_float_type,
@@ -18,6 +18,7 @@ use crate::{
 };
 
 fn merge_integer_types_for_expr(
+    expr: &Expr,
     lhs: PrimitiveType,
     rhs: PrimitiveType,
     context: &str,
@@ -28,13 +29,12 @@ fn merge_integer_types_for_expr(
         (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
         (I32, I32) => Some(I32),
         _ => {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!(
                     "{context} requires integer operands (i32/i64), got {:?} and {:?}",
                     lhs, rhs
                 ),
-                0,
-                0,
+                expr.loc(),
             ));
             None
         }
@@ -86,15 +86,15 @@ pub(crate) fn infer_scalar_expr_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     match expr {
-        Expr::Number(_) => Some(PrimitiveType::F32),
-        Expr::Int(v) => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+        Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
             PrimitiveType::I32
         } else {
             PrimitiveType::I64
         }),
-        Expr::Bool(_) => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral(_) => None,
-        Expr::Var(name) => {
+        Expr::Bool { .. } => Some(PrimitiveType::Bool),
+        Expr::ArrayLiteral { .. } => None,
+        Expr::Var { name, .. } => {
             if let Some(ty) = builtin_constant_type(name) {
                 return Some(ty);
             }
@@ -183,7 +183,7 @@ pub(crate) fn infer_scalar_expr_type(
         }
         Expr::Slice { .. } => None,
         Expr::ArrayCtor { .. } => None,
-        Expr::Cast { to, expr } => {
+        Expr::Cast { to, expr, .. } => {
             let _ = infer_scalar_expr_type(
                 expr,
                 state_scalars,
@@ -203,7 +203,7 @@ pub(crate) fn infer_scalar_expr_type(
         Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
             Some(PrimitiveType::Bool)
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let inner = infer_scalar_expr_type(
                 expr,
                 state_scalars,
@@ -218,9 +218,9 @@ pub(crate) fn infer_scalar_expr_type(
                 struct_defs,
                 errors,
             )?;
-            merge_integer_types_for_expr(inner, inner, "bitwise not expression", errors)
+            merge_integer_types_for_expr(expr, inner, inner, "bitwise not expression", errors)
         }
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             let arg_types = args
                 .iter()
                 .map(|arg| {
@@ -249,10 +249,9 @@ pub(crate) fn infer_scalar_expr_type(
                 BuiltinFn::Abs => {
                     let ty = arg_types.first().copied().unwrap_or(PrimitiveType::F32);
                     if ty == PrimitiveType::Bool {
-                        errors.push(Diagnostic::semantic(
+                        errors.push(Diagnostic::semantic_span(
                             "builtin 'abs' requires numeric argument (bool is not supported)",
-                            0,
-                            0,
+                            expr.loc(),
                         ));
                         None
                     } else {
@@ -272,10 +271,9 @@ pub(crate) fn infer_scalar_expr_type(
                 BuiltinFn::Pow => {
                     for ty in &arg_types {
                         if *ty == PrimitiveType::Bool {
-                            errors.push(Diagnostic::semantic(
+                            errors.push(Diagnostic::semantic_span(
                                 "builtin 'pow' requires numeric arguments (bool is not supported)",
-                                0,
-                                0,
+                                expr.loc(),
                             ));
                             return None;
                         }
@@ -289,14 +287,13 @@ pub(crate) fn infer_scalar_expr_type(
                 _ => {
                     for ty in &arg_types {
                         if !is_float_type(*ty) {
-                            errors.push(Diagnostic::semantic(
+                            errors.push(Diagnostic::semantic_span(
                                 format!(
                                     "builtin '{}' requires float arguments (f32/f64), got {:?}",
                                     builtin_name(*func),
                                     ty
                                 ),
-                                0,
-                                0,
+                                expr.loc(),
                             ));
                             return None;
                         }
@@ -358,7 +355,7 @@ pub(crate) fn infer_scalar_expr_type(
             }
             if is_internal_buffer_2d_fn(name) {
                 if let Some(CallArg {
-                    expr: Expr::Var(base),
+                    expr: Expr::Var { name: base, .. },
                     ..
                 }) = args.first()
                 {
@@ -370,7 +367,7 @@ pub(crate) fn infer_scalar_expr_type(
             }
             if is_builtin_unsafe_data_fn(name) {
                 if let Some(CallArg {
-                    expr: Expr::Var(base),
+                    expr: Expr::Var { name: base, .. },
                     ..
                 }) = args.first()
                 {
@@ -383,7 +380,7 @@ pub(crate) fn infer_scalar_expr_type(
             }
             Some(PrimitiveType::F32)
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let l = infer_scalar_expr_type(
                 lhs,
                 state_scalars,
@@ -419,7 +416,7 @@ pub(crate) fn infer_scalar_expr_type(
                     | omni_frontend::BinaryOp::BitXor
                     | omni_frontend::BinaryOp::ShiftLeft
                     | omni_frontend::BinaryOp::ShiftRight => {
-                        merge_integer_types_for_expr(l, r, "bitwise expression", errors)
+                        merge_integer_types_for_expr(expr, l, r, "bitwise expression", errors)
                     }
                     _ => merge_numeric_types(l, r, "binary expression", errors),
                 }
@@ -525,19 +522,39 @@ pub(crate) fn require_assignable_type(
 ) {
     if let Some(src) = src {
         if src != dst && !can_implicitly_assign(src, dst) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!(
                     "{context} type mismatch: cannot assign {:?} to {:?}",
                     src, dst
                 ),
-                0,
-                0,
+                None::<SourceLoc>,
             ));
         }
     }
 }
 
-pub(crate) fn require_numeric_type(
+pub(crate) fn require_expr_assignable_type(
+    expr: &Expr,
+    src: Option<PrimitiveType>,
+    dst: PrimitiveType,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(src) = src {
+        if src != dst && !can_implicitly_assign(src, dst) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "{context} type mismatch: cannot assign {:?} to {:?}",
+                    src, dst
+                ),
+                expr.loc(),
+            ));
+        }
+    }
+}
+
+pub(crate) fn require_expr_numeric_type(
+    expr: &Expr,
     ty: Option<PrimitiveType>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
@@ -547,26 +564,25 @@ pub(crate) fn require_numeric_type(
             ty,
             PrimitiveType::F32 | PrimitiveType::F64 | PrimitiveType::I32 | PrimitiveType::I64
         ) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("{context} requires numeric type, got {:?}", ty),
-                0,
-                0,
+                expr.loc(),
             ));
         }
     }
 }
 
-pub(crate) fn require_bool_type(
+pub(crate) fn require_expr_bool_type(
+    expr: &Expr,
     ty: Option<PrimitiveType>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
     if let Some(ty) = ty {
         if ty != PrimitiveType::Bool {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("{context} requires bool type, got {:?}", ty),
-                0,
-                0,
+                expr.loc(),
             ));
         }
     }

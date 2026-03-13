@@ -340,7 +340,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
 ) -> Result<(), Diagnostic> {
-    if let Expr::Var(base) = arg_expr {
+    if let Expr::Var { name: base, .. } = arg_expr {
         if let Ok((ptr, frames, channels)) = load_orc_buffer_binding_tuple(ctx, base) {
             push_buffer_tuple(out_args, ptr, frames, channels);
             return Ok(());
@@ -383,7 +383,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
     let slot_buffer_indices = slot_exprs
         .iter()
         .map(|slot_expr| match slot_expr {
-            Expr::Var(base) => ctx.buffer_index.get(base).copied(),
+            Expr::Var { name: base, .. } => ctx.buffer_index.get(base).copied(),
             _ => None,
         })
         .collect::<Option<Vec<_>>>()
@@ -458,7 +458,7 @@ pub(in crate::orc_backend) fn infer_buffer_arg_signature_in_orc(
     arg_expr: &Expr,
     callee_name: &str,
 ) -> Result<(PrimitiveType, TypedBufferChannels), Diagnostic> {
-    if let Expr::Var(base) = arg_expr {
+    if let Expr::Var { name: base, .. } = arg_expr {
         if let (Some(elem_ty), Some(channels)) = (
             ctx.buffer_elem_types.get(base).copied(),
             ctx.buffer_channels.get(base).cloned(),
@@ -501,8 +501,8 @@ fn normalize_static_slice_bound_codegen(
         return if default_to_len { total_len } else { 0 };
     };
     let raw = match expr {
-        Expr::Int(v) => Some(*v),
-        Expr::Number(v) => {
+        Expr::Int { value: v, .. } => Some(*v),
+        Expr::Number { value: v, .. } => {
             let truncated = v.trunc();
             if (v - truncated).abs() <= 1e-6 {
                 Some(truncated as i64)
@@ -547,11 +547,13 @@ where
     FInferBase: FnMut(&str, &str) -> Result<CodegenArrayViewSig, Diagnostic>,
 {
     match arg_expr {
-        Expr::Var(base) => {
+        Expr::Var { name: base, .. } => {
             let sig = infer_base_signature(base, callee_name)?;
             Ok((sig.elem_ty, sig.len_hint))
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             let sig = infer_base_signature(base, callee_name)?;
             Ok((
                 sig.elem_ty,
@@ -684,8 +686,13 @@ where
     FLowerBound: FnMut(Option<&Expr>, LLVMValueRef, bool) -> Result<LLVMValueRef, Diagnostic>,
 {
     match arg_expr {
-        Expr::Var(base) => lower_base_view(base, callee_name),
-        Expr::Slice { base, start, end } => {
+        Expr::Var { name: base, .. } => lower_base_view(base, callee_name),
+        Expr::Slice {
+            base,
+            start,
+            end,
+            ..
+        } => {
             let base_view = lower_base_view(base, callee_name)?;
             let start_idx = lower_slice_bound(start.as_deref(), base_view.len_val, false)?;
             let end_idx = lower_slice_bound(end.as_deref(), base_view.len_val, true)?;
@@ -1041,7 +1048,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_def(
     arg_expr: &Expr,
     callee_name: &str,
 ) -> Result<(), Diagnostic> {
-    if let Expr::Var(base) = arg_expr {
+    if let Expr::Var { name: base, .. } = arg_expr {
         if let Some(info) = ctx.buffer_params.get(base) {
             push_buffer_tuple(out_args, info.ptr, info.frames, info.channels);
             return Ok(());
@@ -1061,7 +1068,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_def(
             "def lowering",
             |ptr_out| {
                 // Only push the pointer, not the length (buffer tuple has its own format)
-                let Expr::Var(b) = arg_expr else {
+                let Expr::Var { name: b, .. } = arg_expr else {
                     unreachable!()
                 };
                 if let Some(alias) = ctx.local_array_aliases.get(b) {
@@ -1157,7 +1164,7 @@ pub(in crate::orc_backend) fn infer_buffer_arg_signature_in_def(
     arg_expr: &Expr,
     callee_name: &str,
 ) -> Result<(PrimitiveType, TypedBufferChannels), Diagnostic> {
-    if let Expr::Var(base) = arg_expr {
+    if let Expr::Var { name: base, .. } = arg_expr {
         if let Some(info) = ctx.buffer_params.get(base) {
             return Ok((info.elem_ty, info.declared_channels.clone()));
         }

@@ -357,7 +357,7 @@ pub(in crate::orc_backend) unsafe fn lower_struct_call_args_in_orc(
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
 ) -> Result<(), Diagnostic> {
     match arg_expr {
-        Expr::Var(base) => {
+        Expr::Var { name: base, .. } => {
             lower_struct_call_args_for_base_common(
                 ctx.builder,
                 ctx.context,
@@ -393,7 +393,7 @@ pub(in crate::orc_backend) unsafe fn lower_struct_call_args_in_orc(
                 },
             )?;
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             let ctx_ptr: *mut LoweringCtx<'_> = ctx;
             let Some((resolved_base, clamped_index)) = resolve_indexed_struct_arg_common(
                 ctx.builder,

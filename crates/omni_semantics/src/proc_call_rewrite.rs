@@ -2,10 +2,14 @@ use super::*;
 
 type ProcArrayAliases = HashMap<String, ProcArrayAliasInfo>;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub(super) fn try_constant_index_i64(expr: &Expr) -> Option<i64> {
     match expr {
-        Expr::Int(v) => Some(*v),
-        Expr::Number(v) => {
+        Expr::Int { value: v, .. } => Some(*v),
+        Expr::Number { value: v, .. } => {
             let truncated = v.trunc();
             if (v - truncated).abs() <= 1e-6 {
                 Some(truncated as i64)
@@ -24,14 +28,14 @@ pub(super) fn resolve_proc_constant_slot_index(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<usize> {
     if idx < 0 || idx >= len as i64 {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!(
                 "{context}: index {idx} is out of range (expected 0..{})",
                 len.saturating_sub(1)
             ),
-            0,
-            0,
-        ));
+        );
         return None;
     }
     Some(idx as usize)
@@ -71,63 +75,76 @@ pub(super) fn build_proc_read_helper(
 ) -> FunctionDef {
     let mut params = Vec::<omni_frontend::FnParamDecl>::new();
     params.push(omni_frontend::FnParamDecl {
+        loc: Default::default(),
         name: "idx".to_owned(),
         ty: None,
+        ty_loc: Default::default(),
         default: None,
     });
     for i in 0..len {
         params.push(omni_frontend::FnParamDecl {
+            loc: Default::default(),
             name: format!("s{i}"),
             ty: None,
+            ty_loc: Default::default(),
             default: None,
         });
     }
 
     let mut body = Vec::<Stmt>::new();
     body.push(Stmt::Assign {
-        loc: None,
+        loc: Default::default(),
+        target_loc: Default::default(),
         target: AssignTarget::Var("i".to_owned()),
         decl_ty: Some(PrimitiveType::I32),
         generic_decl_ty: None,
         is_typed_decl: true,
+        typed_decl_ty_loc: Default::default(),
         expr: Expr::Cast {
+            loc: Default::default(),
             to: PrimitiveType::I32,
-            expr: Box::new(Expr::Var("idx".to_owned())),
+            expr: Box::new(Expr::var("idx")),
         },
     });
 
     if !unsafe_mode {
         body.push(Stmt::If {
-            loc: None,
+            loc: Default::default(),
             cond: Expr::Compare {
+                loc: Default::default(),
                 op: CmpOp::Lt,
-                lhs: Box::new(Expr::Var("i".to_owned())),
-                rhs: Box::new(Expr::Int(0)),
+                lhs: Box::new(Expr::var("i")),
+                rhs: Box::new(Expr::int(0)),
             },
             then_branch: vec![Stmt::Assign {
-                loc: None,
+                loc: Default::default(),
+                target_loc: Default::default(),
                 target: AssignTarget::Var("i".to_owned()),
                 decl_ty: None,
                 generic_decl_ty: None,
                 is_typed_decl: false,
-                expr: Expr::Int(0),
+                typed_decl_ty_loc: Default::default(),
+                expr: Expr::int(0),
             }],
             else_branch: Vec::new(),
         });
         body.push(Stmt::If {
-            loc: None,
+            loc: Default::default(),
             cond: Expr::Compare {
+                loc: Default::default(),
                 op: CmpOp::Ge,
-                lhs: Box::new(Expr::Var("i".to_owned())),
-                rhs: Box::new(Expr::Int(len as i64)),
+                lhs: Box::new(Expr::var("i")),
+                rhs: Box::new(Expr::int(len as i64)),
             },
             then_branch: vec![Stmt::Assign {
-                loc: None,
+                loc: Default::default(),
+                target_loc: Default::default(),
                 target: AssignTarget::Var("i".to_owned()),
                 decl_ty: None,
                 generic_decl_ty: None,
                 is_typed_decl: false,
-                expr: Expr::Int((len.saturating_sub(1)) as i64),
+                typed_decl_ty_loc: Default::default(),
+                expr: Expr::int((len.saturating_sub(1)) as i64),
             }],
             else_branch: Vec::new(),
         });
@@ -135,47 +152,50 @@ pub(super) fn build_proc_read_helper(
 
     if len == 1 {
         body.push(Stmt::Return {
-            loc: None,
-            expr: Expr::Var("s0".to_owned()),
+            loc: Default::default(),
+            expr: Expr::var("s0"),
         });
     } else {
         for i in 0..len {
             body.push(Stmt::If {
-                loc: None,
+                loc: Default::default(),
                 cond: Expr::Compare {
+                    loc: Default::default(),
                     op: CmpOp::Eq,
-                    lhs: Box::new(Expr::Var("i".to_owned())),
-                    rhs: Box::new(Expr::Int(i as i64)),
+                    lhs: Box::new(Expr::var("i")),
+                    rhs: Box::new(Expr::int(i as i64)),
                 },
                 then_branch: vec![Stmt::Return {
-                    loc: None,
-                    expr: Expr::Var(format!("s{i}")),
+                    loc: Default::default(),
+                    expr: Expr::var(format!("s{i}")),
                 }],
                 else_branch: Vec::new(),
             });
         }
         if unsafe_mode {
             body.push(Stmt::Expr {
-                loc: None,
+                loc: Default::default(),
                 expr: Expr::Binary {
+                    loc: Default::default(),
                     op: BinaryOp::Div,
-                    lhs: Box::new(Expr::Int(1)),
-                    rhs: Box::new(Expr::Int(0)),
+                    lhs: Box::new(Expr::int(1)),
+                    rhs: Box::new(Expr::int(0)),
                 },
             });
             body.push(Stmt::Return {
-                loc: None,
-                expr: Expr::Number(0.0),
+                loc: Default::default(),
+                expr: Expr::number(0.0),
             });
         } else {
             body.push(Stmt::Return {
-                loc: None,
-                expr: Expr::Var("s0".to_owned()),
+                loc: Default::default(),
+                expr: Expr::var("s0"),
             });
         }
     }
 
     FunctionDef {
+        loc: Default::default(),
         type_params: Vec::new(),
         name: proc_read_helper_name(owner_proc, len, unsafe_mode),
         params,
@@ -190,67 +210,82 @@ pub(super) fn build_proc_write_helper(
 ) -> FunctionDef {
     let mut params = Vec::<omni_frontend::FnParamDecl>::new();
     params.push(omni_frontend::FnParamDecl {
+        loc: Default::default(),
         name: "self".to_owned(),
         ty: Some(FnParamType::Struct(owner_proc.to_owned())),
+        ty_loc: Default::default(),
         default: None,
     });
     params.push(omni_frontend::FnParamDecl {
+        loc: Default::default(),
         name: "idx".to_owned(),
         ty: None,
+        ty_loc: Default::default(),
         default: None,
     });
     params.push(omni_frontend::FnParamDecl {
+        loc: Default::default(),
         name: "value".to_owned(),
         ty: None,
+        ty_loc: Default::default(),
         default: None,
     });
 
     let len = slots.len();
     let mut body = Vec::<Stmt>::new();
     body.push(Stmt::Assign {
-        loc: None,
+        loc: Default::default(),
+        target_loc: Default::default(),
         target: AssignTarget::Var("i".to_owned()),
         decl_ty: Some(PrimitiveType::I32),
         generic_decl_ty: None,
         is_typed_decl: true,
+        typed_decl_ty_loc: Default::default(),
         expr: Expr::Cast {
+            loc: Default::default(),
             to: PrimitiveType::I32,
-            expr: Box::new(Expr::Var("idx".to_owned())),
+            expr: Box::new(Expr::var("idx")),
         },
     });
 
     if !unsafe_mode {
         body.push(Stmt::If {
-            loc: None,
+            loc: Default::default(),
             cond: Expr::Compare {
+                loc: Default::default(),
                 op: CmpOp::Lt,
-                lhs: Box::new(Expr::Var("i".to_owned())),
-                rhs: Box::new(Expr::Int(0)),
+                lhs: Box::new(Expr::var("i")),
+                rhs: Box::new(Expr::int(0)),
             },
             then_branch: vec![Stmt::Assign {
-                loc: None,
+                loc: Default::default(),
+                target_loc: Default::default(),
                 target: AssignTarget::Var("i".to_owned()),
                 decl_ty: None,
                 generic_decl_ty: None,
                 is_typed_decl: false,
-                expr: Expr::Int(0),
+                typed_decl_ty_loc: Default::default(),
+                expr: Expr::int(0),
             }],
             else_branch: Vec::new(),
         });
         body.push(Stmt::If {
-            loc: None,
+            loc: Default::default(),
             cond: Expr::Compare {
+                loc: Default::default(),
                 op: CmpOp::Ge,
-                lhs: Box::new(Expr::Var("i".to_owned())),
-                rhs: Box::new(Expr::Int(len as i64)),
+                lhs: Box::new(Expr::var("i")),
+                rhs: Box::new(Expr::int(len as i64)),
             },
             then_branch: vec![Stmt::Assign {
-                loc: None,
+                loc: Default::default(),
+                target_loc: Default::default(),
                 target: AssignTarget::Var("i".to_owned()),
                 decl_ty: None,
                 generic_decl_ty: None,
                 is_typed_decl: false,
-                expr: Expr::Int((len.saturating_sub(1)) as i64),
+                typed_decl_ty_loc: Default::default(),
+                expr: Expr::int((len.saturating_sub(1)) as i64),
             }],
             else_branch: Vec::new(),
         });
@@ -258,35 +293,40 @@ pub(super) fn build_proc_write_helper(
 
     for (idx, slot) in slots.iter().enumerate() {
         body.push(Stmt::If {
-            loc: None,
+            loc: Default::default(),
             cond: Expr::Compare {
+                loc: Default::default(),
                 op: CmpOp::Eq,
-                lhs: Box::new(Expr::Var("i".to_owned())),
-                rhs: Box::new(Expr::Int(idx as i64)),
+                lhs: Box::new(Expr::var("i")),
+                rhs: Box::new(Expr::int(idx as i64)),
             },
             then_branch: vec![Stmt::Assign {
-                loc: None,
+                loc: Default::default(),
+                target_loc: Default::default(),
                 target: AssignTarget::Var(format!("self.{slot}")),
                 decl_ty: None,
                 generic_decl_ty: None,
                 is_typed_decl: false,
-                expr: Expr::Var("value".to_owned()),
+                typed_decl_ty_loc: Default::default(),
+                expr: Expr::var("value"),
             }],
             else_branch: Vec::new(),
         });
     }
     if unsafe_mode {
         body.push(Stmt::Expr {
-            loc: None,
+            loc: Default::default(),
             expr: Expr::Binary {
+                loc: Default::default(),
                 op: BinaryOp::Div,
-                lhs: Box::new(Expr::Int(1)),
-                rhs: Box::new(Expr::Int(0)),
+                lhs: Box::new(Expr::int(1)),
+                rhs: Box::new(Expr::int(0)),
             },
         });
     }
 
     FunctionDef {
+        loc: Default::default(),
         type_params: Vec::new(),
         name: proc_write_helper_name(owner_proc, slots, unsafe_mode),
         params,
@@ -331,19 +371,22 @@ pub(super) fn take_proc_index_base_and_expr_mut(
             let index_expr = args.remove(0).expr;
             (base_expr, index_expr)
         } else {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!("{context}: missing processor array base/index"),
-                0,
-                0,
-            ));
+            );
             return None;
         };
-    let Expr::Var(array_base) = base_expr else {
-        errors.push(Diagnostic::semantic(
+    let Expr::Var {
+        name: array_base, ..
+    } = base_expr
+    else {
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context}: processor array base must be a compile-time identifier"),
-            0,
-            0,
-        ));
+        );
         return None;
     };
     Some((array_base, index_expr))
@@ -357,11 +400,11 @@ pub(super) fn resolve_proc_index_target_mut(
 ) -> Option<ProcIndexResolution> {
     let (array_base, index_expr) = take_proc_index_base_and_expr_mut(args, context, errors)?;
     let Some(slots) = proc_array_slots.get(&array_base) else {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context}: unknown processor array '{array_base}'"),
-            0,
-            0,
-        ));
+        );
         return None;
     };
     if let Some(raw_idx) = try_constant_index_i64(&index_expr) {
@@ -371,11 +414,11 @@ pub(super) fn resolve_proc_index_target_mut(
             return None;
         };
         let Some(slot_name) = slots.get(slot_idx) else {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!("{context}: resolved processor array slot index is out of range"),
-                0,
-                0,
-            ));
+            );
             return None;
         };
         return Some(ProcIndexResolution::Slot(slot_name.clone()));
@@ -395,55 +438,55 @@ pub(super) fn resolve_proc_array_dispatch_context(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<(String, ProcApi, Vec<(String, ProcCallInstance)>)> {
     let Some(first_slot) = slots.first() else {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("{context}: processor array has no slots"),
-            0,
-            0,
-        ));
+        );
         return None;
     };
     let Some(first_instance) = proc_vars.get(first_slot) else {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!(
                 "{context}: processor array slot '{}' is not an instance",
                 first_slot
             ),
-            0,
-            0,
-        ));
+        );
         return None;
     };
     let proc_name = first_instance.proc_name.clone();
     let Some(api) = proc_api.get(&proc_name) else {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!("unknown processor type '{proc_name}'"),
-            0,
-            0,
-        ));
+        );
         return None;
     };
     let mut instances = Vec::<(String, ProcCallInstance)>::with_capacity(slots.len());
     for slot in slots {
         let Some(instance) = proc_vars.get(slot) else {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "{context}: processor array slot '{}' is not an instance",
                     slot
                 ),
-                0,
-                0,
-            ));
+            );
             return None;
         };
         if instance.proc_name != proc_name {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "{context}: processor array mixes processor types ('{}' vs '{}')",
                     proc_name, instance.proc_name
                 ),
-                0,
-                0,
-            ));
+            );
             return None;
         }
         instances.push((slot.clone(), instance.clone()));
@@ -501,7 +544,7 @@ fn can_resolve_proc_index_base(
             .filter(|arg| arg.name.is_none())
             .map(|arg| &arg.expr)
     });
-    let Some(Expr::Var(base)) = base_expr else {
+    let Some(Expr::Var { name: base, .. }) = base_expr else {
         return false;
     };
     resolve_proc_array_base_key(base, proc_array_slots).is_some()
@@ -513,11 +556,12 @@ pub(super) fn proc_instance_self_expr(
 ) -> Expr {
     if let Some((base, idx)) = find_proc_array_slot(instance_name, proc_array_slots) {
         Expr::Index {
+            loc: Default::default(),
             base,
-            index: Box::new(Expr::Int(idx as i64)),
+            index: Box::new(Expr::int(idx as i64)),
         }
     } else {
-        Expr::Var(instance_name.to_owned())
+        Expr::var(instance_name.to_owned())
     }
 }
 
@@ -541,7 +585,10 @@ fn extract_proc_index_slot(
             .map(|arg| &arg.expr)?;
         (base, index)
     };
-    let Expr::Var(array_base) = base_expr else {
+    let Expr::Var {
+        name: array_base, ..
+    } = base_expr
+    else {
         return None;
     };
     let slots = proc_array_slots.get(array_base)?;
@@ -573,35 +620,36 @@ pub(super) fn expand_expr_to_slots(
         return vec![expr.clone()];
     }
     match expr {
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             if values.len() != slot_count {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
                     format!(
                         "{context}: expected array argument with {slot_count} elements, got {}",
                         values.len()
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
             (0..slot_count)
-                .map(|i| values.get(i).cloned().unwrap_or(Expr::Number(0.0)))
+                .map(|i| values.get(i).cloned().unwrap_or(Expr::number(0.0)))
                 .collect()
         }
-        Expr::Var(base) => (0..slot_count)
+        Expr::Var { name: base, .. } => (0..slot_count)
             .map(|i| Expr::Index {
+                loc: Default::default(),
                 base: base.clone(),
-                index: Box::new(Expr::Int(i as i64)),
+                index: Box::new(Expr::int(i as i64)),
             })
             .collect(),
         _ => {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::default(),
+                errors,
                 format!(
                     "{context}: array argument requires an array literal or array symbol expression"
                 ),
-                0,
-                0,
-            ));
+            );
             vec![expr.clone(); slot_count]
         }
     }
@@ -619,26 +667,27 @@ pub(super) fn select_proc_array_initializer_expr_for_slot(
         return expr.clone();
     }
     match expr {
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             if values.len() != slot_count {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
                     format!(
                         "{context}: expected array argument with {slot_count} elements, got {}",
                         values.len()
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
             values
                 .get(slot_idx)
                 .cloned()
                 .or_else(|| values.last().cloned())
-                .unwrap_or(Expr::Number(0.0))
+                .unwrap_or(Expr::number(0.0))
         }
-        Expr::Var(base) if allow_symbol_index => Expr::Index {
+        Expr::Var { name: base, .. } if allow_symbol_index => Expr::Index {
+            loc: Default::default(),
             base: base.clone(),
-            index: Box::new(Expr::Int(slot_idx as i64)),
+            index: Box::new(Expr::int(slot_idx as i64)),
         },
         _ => expr.clone(),
     }
@@ -658,7 +707,7 @@ pub(super) fn expand_proc_call_args(
             if p.slots.len() == 1 {
                 p.defaults.first().cloned().flatten()
             } else if p.defaults.iter().all(|d| d.is_some()) {
-                Some(Expr::ArrayLiteral(
+                Some(Expr::array_literal(
                     p.defaults
                         .iter()
                         .filter_map(|d| d.clone())
@@ -723,15 +772,15 @@ pub(super) fn expand_proc_buffer_call_args(
         return Vec::new();
     }
     if instance.buffer_args.len() != api.buffers.len() {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::default(),
+            errors,
             format!(
                 "processor call '{call_display_name}(...)' is missing bound buffer arguments (expected {}, got {})",
                 api.buffers.len(),
                 instance.buffer_args.len()
             ),
-            0,
-            0,
-        ));
+        );
         return Vec::new();
     }
     instance
@@ -794,7 +843,7 @@ pub(super) fn dynamic_proc_array_buffer_call_args(
         let mut selector_args = Vec::<CallArg>::with_capacity(2 + expanded_per_slot.len());
         selector_args.push(CallArg {
             name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-            expr: Expr::Var(array_base.to_owned()),
+            expr: Expr::var(array_base.to_owned()),
         });
         selector_args.push(CallArg {
             name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
@@ -804,7 +853,7 @@ pub(super) fn dynamic_proc_array_buffer_call_args(
             let slot_expr = slot_args
                 .get(buf_idx)
                 .map(|arg| arg.expr.clone())
-                .unwrap_or(Expr::Number(0.0));
+                .unwrap_or(Expr::number(0.0));
             selector_args.push(CallArg {
                 name: None,
                 expr: slot_expr,
@@ -813,6 +862,7 @@ pub(super) fn dynamic_proc_array_buffer_call_args(
         out.push(CallArg {
             name: None,
             expr: Expr::UserCall {
+                loc: Default::default(),
                 name: PROC_INDEX_BUFFER_SELECT_SENTINEL.to_owned(),
                 type_args: Vec::new(),
                 args: selector_args,
@@ -838,6 +888,7 @@ pub(super) fn build_dynamic_proc_array_dispatch_args(
     rewritten.push(CallArg {
         name: None,
         expr: Expr::Index {
+            loc: Default::default(),
             base: array_base.to_owned(),
             index: Box::new(index_expr.clone()),
         },
@@ -851,6 +902,7 @@ pub(super) fn expand_proc_event_call_args(
     call_args: &[CallArg],
     event: &ProcEventSpec,
     call_display_name: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<CallArg> {
     let param_names = event
@@ -873,14 +925,14 @@ pub(super) fn expand_proc_event_call_args(
         let resolved_expr = match resolved.get(idx).and_then(|a| *a) {
             Some(arg_expr) => arg_expr,
             None => {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    diag,
+                    errors,
                     format!(
                         "processor event call '{call_display_name}(...)' is missing required argument '{}'",
                         param.name
                     ),
-                    0,
-                    0,
-                ));
+                );
                 continue;
             }
         };
@@ -1012,13 +1064,12 @@ pub(super) fn expand_proc_param_specs(
                 });
             }
             Some(DeclType::Generic(param_ty)) => {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "processor '{proc_name}' param '{}' uses unresolved generic type '{}'",
                         param.name, param_ty
                     ),
-                    0,
-                    0,
+                    param.ty_loc.or(param.loc),
                 ));
                 let raw_default = match &param.default {
                     Some(expr) => eval_typed_const_expr(
@@ -1057,46 +1108,48 @@ pub(super) fn expand_proc_param_specs(
             }
             Some(DeclType::ArrayGeneric { elem, size }) => {
                 if param.range.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "processor '{proc_name}' param '{}' range is not supported for array declarations",
                             param.name
                         ),
-                        0,
-                        0,
+                        param.loc.as_ref(),
                     ));
                 }
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "processor '{proc_name}' param '{}' uses unresolved generic array element type '{}'",
                         param.name, elem
                     ),
-                    0,
-                    0,
+                    param.loc.as_ref(),
                 ));
                 let size_context =
                     format!("processor '{proc_name}' param '{}' array size", param.name);
-                let Some(len) = eval_data_size_expr(size, options, &size_context, errors) else {
+                let Some(len) = with_expr_diag_context(size, |_diag| {
+                    eval_data_size_expr(size, options, &size_context, errors)
+                }) else {
                     continue;
                 };
                 let mut slot_defaults = Vec::<Option<Expr>>::with_capacity(len);
                 match &param.default {
                     None => {
                         for _ in 0..len {
-                            slot_defaults.push(Some(Expr::Number(0.0)));
+                            slot_defaults.push(Some(Expr::number(0.0)));
                         }
                     }
-                    Some(Expr::ArrayLiteral(values)) => {
+                    Some(default_expr @ Expr::ArrayLiteral { values, .. }) => {
                         if values.len() != len {
-                            errors.push(Diagnostic::semantic(
-                                format!(
-                                    "processor '{proc_name}' param '{}' default expects {len} elements, got {}",
-                                    param.name,
-                                    values.len()
-                                ),
-                                0,
-                                0,
-                            ));
+                            with_expr_diag_context(default_expr, |expr_diag| {
+                                push_semantic(
+                                    expr_diag,
+                                    errors,
+                                    format!(
+                                        "processor '{proc_name}' param '{}' default expects {len} elements, got {}",
+                                        param.name,
+                                        values.len()
+                                    ),
+                                );
+                            });
                         }
                         for idx in 0..len {
                             slot_defaults.push(values.get(idx).cloned());
@@ -1128,42 +1181,45 @@ pub(super) fn expand_proc_param_specs(
             }
             Some(DeclType::Array { elem, size }) => {
                 if param.range.is_some() {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "processor '{proc_name}' param '{}' range is not supported for array declarations",
                             param.name
                         ),
-                        0,
-                        0,
+                        param.loc.as_ref(),
                     ));
                 }
                 let size_context =
                     format!("processor '{proc_name}' param '{}' array size", param.name);
-                let Some(len) = eval_data_size_expr(size, options, &size_context, errors) else {
+                let Some(len) = with_expr_diag_context(size, |_diag| {
+                    eval_data_size_expr(size, options, &size_context, errors)
+                }) else {
                     continue;
                 };
                 let mut slot_defaults = Vec::<Option<Expr>>::with_capacity(len);
                 match &param.default {
                     None => {
                         for _ in 0..len {
-                            slot_defaults.push(Some(Expr::Number(0.0)));
+                            slot_defaults.push(Some(Expr::number(0.0)));
                         }
                     }
-                    Some(Expr::ArrayLiteral(values)) => {
+                    Some(default_expr @ Expr::ArrayLiteral { values, .. }) => {
                         if values.len() != len {
-                            errors.push(Diagnostic::semantic(
-                                format!(
-                                    "processor '{proc_name}' param '{}' default expects {len} elements, got {}",
-                                    param.name,
-                                    values.len()
-                                ),
-                                0,
-                                0,
-                            ));
+                            with_expr_diag_context(default_expr, |expr_diag| {
+                                push_semantic(
+                                    expr_diag,
+                                    errors,
+                                    format!(
+                                        "processor '{proc_name}' param '{}' default expects {len} elements, got {}",
+                                        param.name,
+                                        values.len()
+                                    ),
+                                );
+                            });
                         }
                         for idx in 0..len {
                             slot_defaults
-                                .push(values.get(idx).cloned().or(Some(Expr::Number(0.0))));
+                                .push(values.get(idx).cloned().or(Some(Expr::number(0.0))));
                         }
                     }
                     Some(expr) => {
@@ -1183,7 +1239,7 @@ pub(super) fn expand_proc_param_specs(
                         default: slot_defaults
                             .get(idx)
                             .cloned()
-                            .unwrap_or(Some(Expr::Number(0.0))),
+                            .unwrap_or(Some(Expr::number(0.0))),
                         range: None,
                     });
                 }
@@ -1203,7 +1259,7 @@ pub(super) fn proc_buffer_fn_param_type(spec: &ProcBufferSpec) -> FnParamType {
     let channels = match spec.channels {
         TypedBufferChannels::Mono => BufferChannels::Mono,
         TypedBufferChannels::Dynamic => BufferChannels::Dynamic,
-        TypedBufferChannels::Static(ch) => BufferChannels::Static(Expr::Int(ch as i64)),
+        TypedBufferChannels::Static(ch) => BufferChannels::Static(Expr::int(ch as i64)),
     };
     FnParamType::Buffer(omni_frontend::BufferType {
         elem: BufferElemType::Primitive(spec.elem_ty),
@@ -1218,12 +1274,15 @@ pub(super) fn rewrite_proc_calls_in_expr(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let expr_diag = DiagCtx::new(expr.loc());
     match expr {
-        Expr::Index { base, index } => {
+        Expr::Index { base, index, .. } => {
             rewrite_proc_calls_in_expr(index, proc_vars, proc_array_slots, proc_api, errors);
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             if let Some(start) = start {
                 rewrite_proc_calls_in_expr(start, proc_vars, proc_array_slots, proc_api, errors);
             }
@@ -1232,7 +1291,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_proc_calls_in_expr(
                 &mut spec.size,
                 proc_vars,
@@ -1264,11 +1323,11 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_proc_calls_in_expr(inner, proc_vars, proc_array_slots, proc_api, errors);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_proc_calls_in_expr(value, proc_vars, proc_array_slots, proc_api, errors);
             }
@@ -1317,16 +1376,16 @@ pub(super) fn rewrite_proc_calls_in_expr(
                             return;
                         };
                         if api.outs.len() != 1 {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                expr_diag,
+                                errors,
                                 format!(
                                     "processor call '{}[...]' has {} outputs; use '{}[...]().<endpoint>'/outN or call as statement then read fields",
                                     array_base,
                                     api.outs.len(),
                                     array_base
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                             return;
                         }
                         let rewritten = build_dynamic_proc_array_dispatch_args(
@@ -1379,20 +1438,23 @@ pub(super) fn rewrite_proc_calls_in_expr(
                         .unwrap_or(false)
                 });
                 let Some(field_pos) = field_pos else {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         "processor call field selection is missing endpoint name",
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 };
                 let field_arg = args.remove(field_pos);
-                let Expr::Var(field_name) = field_arg.expr else {
-                    errors.push(Diagnostic::semantic(
+                let Expr::Var {
+                    name: field_name, ..
+                } = field_arg.expr
+                else {
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         "processor call field selection must be a compile-time endpoint identifier",
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 };
 
@@ -1408,9 +1470,13 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     else {
                         return;
                     };
-                    let Some(out_idx) =
-                        resolve_proc_output_field_index(&api, &field_name, &array_base, errors)
-                    else {
+                    let Some(out_idx) = resolve_proc_output_field_index(
+                        &api,
+                        &field_name,
+                        &array_base,
+                        expr_diag,
+                        errors,
+                    ) else {
                         return;
                     };
                     let rewritten = build_dynamic_proc_array_dispatch_args(
@@ -1427,25 +1493,29 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 }
 
                 let Some(instance) = proc_vars.get(proc_var.as_str()) else {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!("processor call target '{}' is not an instance", proc_var),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 };
                 let proc_name = instance.proc_name.clone();
                 let Some(api) = proc_api.get(&proc_name) else {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!("unknown processor type '{proc_name}'"),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 };
-                let Some(out_idx) =
-                    resolve_proc_output_field_index(api, &field_name, proc_var.as_str(), errors)
-                else {
+                let Some(out_idx) = resolve_proc_output_field_index(
+                    api,
+                    &field_name,
+                    proc_var.as_str(),
+                    expr_diag,
+                    errors,
+                ) else {
                     return;
                 };
                 let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
@@ -1466,24 +1536,24 @@ pub(super) fn rewrite_proc_calls_in_expr(
             if let Some(instance) = proc_vars.get(name) {
                 let proc_name = instance.proc_name.clone();
                 let Some(api) = proc_api.get(&proc_name) else {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!("unknown processor type '{proc_name}'"),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 };
                 if api.outs.len() != 1 {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        expr_diag,
+                        errors,
                         format!(
                             "processor call '{}(...)' has {} outputs; use '{}(...).<endpoint>'/outN or call as statement then read fields",
                             name,
                             api.outs.len(),
                             name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                     return;
                 }
                 let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
@@ -1542,14 +1612,14 @@ pub(super) fn rewrite_proc_calls_in_expr(
                         return;
                     };
                     if api.events.contains_key(event_name) {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!(
                                 "processor event call '{}[...].{}(...)' is statement-only",
                                 array_base, event_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     }
                 }
@@ -1557,22 +1627,22 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 if let Some(instance) = proc_vars.get(base.as_str()) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!("unknown processor type '{proc_name}'"),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     if api.events.contains_key(event_name) {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!(
                                 "processor event call '{}.{}(...)' is statement-only",
                                 base, event_name
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     }
                 }
@@ -1592,28 +1662,30 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     let Some(event_spec) = api.events.get(event_name) else {
                         let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
                         known_events.sort();
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!(
                                 "unknown processor event '{}.{}'; expected one of [{}]",
                                 array_base,
                                 event_name,
                                 known_events.join(", ")
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let expanded = expand_proc_event_call_args(
                         args,
                         event_spec,
                         &format!("{array_base}[...].{event_name}"),
+                        expr_diag,
                         errors,
                     );
                     let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
                     rewritten.push(CallArg {
                         name: None,
                         expr: Expr::Index {
+                            loc: Default::default(),
                             base: array_base.clone(),
                             index: Box::new(index_expr.clone()),
                         },
@@ -1627,26 +1699,26 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 if let Some(instance) = proc_vars.get(base.as_str()) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!("unknown processor type '{proc_name}'"),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let Some(event_spec) = api.events.get(event_name) else {
                         let mut known_events = api.events.keys().cloned().collect::<Vec<_>>();
                         known_events.sort();
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            expr_diag,
+                            errors,
                             format!(
                                 "unknown processor event '{}.{}'; expected one of [{}]",
                                 base,
                                 event_name,
                                 known_events.join(", ")
                             ),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
@@ -1658,6 +1730,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
                         args,
                         event_spec,
                         &format!("{base}.{event_name}"),
+                        expr_diag,
                         errors,
                     );
                     rewritten.extend(expanded);
@@ -1667,10 +1740,10 @@ pub(super) fn rewrite_proc_calls_in_expr(
                 }
             }
         }
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             normalize_proc_output_alias_path(name, proc_vars, proc_api);
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
 
@@ -1690,6 +1763,7 @@ pub(super) fn resolve_proc_output_field_index(
     api: &ProcApi,
     field_name: &str,
     call_display_name: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<usize> {
     if let Some(idx) = api.outs.iter().position(|out| out == field_name) {
@@ -1699,27 +1773,27 @@ pub(super) fn resolve_proc_output_field_index(
         if idx < api.outs.len() {
             return Some(idx);
         }
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            diag,
+            errors,
             format!(
                 "processor output alias '{}' is out of range (outs: {})",
                 field_name,
                 api.outs.len()
             ),
-            0,
-            0,
-        ));
+        );
         return None;
     }
-    errors.push(Diagnostic::semantic(
+    push_semantic(
+        diag,
+        errors,
         format!(
             "unknown processor output '{}' for '{}'; expected one of [{}] or outN",
             field_name,
             call_display_name,
             api.outs.join(", ")
         ),
-        0,
-        0,
-    ));
+    );
     None
 }
 
@@ -1755,12 +1829,14 @@ pub(super) fn normalize_proc_output_aliases_in_expr(
     proc_api: &HashMap<String, ProcApi>,
 ) {
     match expr {
-        Expr::Var(name) => normalize_proc_output_alias_path(name, proc_vars, proc_api),
-        Expr::Index { base, index } => {
+        Expr::Var { name, .. } => normalize_proc_output_alias_path(name, proc_vars, proc_api),
+        Expr::Index { base, index, .. } => {
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
             normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
         }
-        Expr::Slice { base, start, end } => {
+        Expr::Slice {
+            base, start, end, ..
+        } => {
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
             if let Some(start) = start {
                 normalize_proc_output_aliases_in_expr(start, proc_vars, proc_api);
@@ -1769,7 +1845,7 @@ pub(super) fn normalize_proc_output_aliases_in_expr(
                 normalize_proc_output_aliases_in_expr(end, proc_vars, proc_api);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             normalize_proc_output_aliases_in_expr(&mut spec.size, proc_vars, proc_api);
             if let Some(values) = init {
                 for value in values {
@@ -1794,16 +1870,16 @@ pub(super) fn normalize_proc_output_aliases_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             normalize_proc_output_aliases_in_expr(inner, proc_vars, proc_api);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 normalize_proc_output_aliases_in_expr(value, proc_vars, proc_api);
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
 
@@ -1907,7 +1983,7 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
         return;
     };
     if let Some(range) = param_slot.range {
-        let original = std::mem::replace(expr, Expr::Number(0.0));
+        let original = std::mem::replace(expr, Expr::number(0.0));
         *expr = clamp_expr_to_range(original, range);
     }
 }
@@ -1920,11 +1996,11 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
     aliases: &mut ProcArrayAliases,
     errors: &mut Vec<Diagnostic>,
 ) {
-    with_stmt_diag_context_mut(stmt, |stmt| match stmt {
+    with_stmt_diag_context_mut(stmt, |diag, stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Var(name) = target {
-                if let Expr::Index { base, index } = expr {
+                if let Expr::Index { base, index, .. } = expr {
                     let resolved_base = resolve_proc_array_base_key(base, proc_array_slots)
                         .unwrap_or_else(|| base.clone());
                     aliases.insert(
@@ -2005,11 +2081,11 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                 if let Some(instance) = proc_vars.get(name) {
                     let proc_name = instance.proc_name.clone();
                     let Some(api) = proc_api.get(&proc_name) else {
-                        errors.push(Diagnostic::semantic(
+                        push_semantic(
+                            diag,
+                            errors,
                             format!("unknown processor type '{proc_name}'"),
-                            0,
-                            0,
-                        ));
+                        );
                         return;
                     };
                     let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
@@ -2072,28 +2148,30 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 let mut known_events =
                                     api.events.keys().cloned().collect::<Vec<_>>();
                                 known_events.sort();
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    diag,
+                                    errors,
                                     format!(
                                         "unknown processor event '{}.{}'; expected one of [{}]",
                                         array_base,
                                         event_name,
                                         known_events.join(", ")
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             };
                             let expanded = expand_proc_event_call_args(
                                 args,
                                 event_spec,
                                 &format!("{array_base}[...].{event_name}"),
+                                diag,
                                 errors,
                             );
                             let mut rewritten = Vec::<CallArg>::with_capacity(1 + expanded.len());
                             rewritten.push(CallArg {
                                 name: None,
                                 expr: Expr::Index {
+                                    loc: Default::default(),
                                     base: array_base.clone(),
                                     index: Box::new(index_expr.clone()),
                                 },
@@ -2105,27 +2183,27 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                         } else if let Some(instance) = proc_vars.get(base.as_str()) {
                             let proc_name = instance.proc_name.clone();
                             let Some(api) = proc_api.get(&proc_name) else {
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    diag,
+                                    errors,
                                     format!("unknown processor type '{proc_name}'"),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             };
                             let Some(event_spec) = api.events.get(event_name) else {
                                 let mut known_events =
                                     api.events.keys().cloned().collect::<Vec<_>>();
                                 known_events.sort();
-                                errors.push(Diagnostic::semantic(
+                                push_semantic(
+                                    diag,
+                                    errors,
                                     format!(
                                         "unknown processor event '{}.{}'; expected one of [{}]",
                                         base,
                                         event_name,
                                         known_events.join(", ")
                                     ),
-                                    0,
-                                    0,
-                                ));
+                                );
                                 return;
                             };
                             let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
@@ -2137,6 +2215,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 args,
                                 event_spec,
                                 &format!("{base}.{event_name}"),
+                                diag,
                                 errors,
                             );
                             rewritten.extend(expanded);
@@ -2294,7 +2373,7 @@ pub(super) fn collect_called_proc_instances_in_expr(
                 collect_called_proc_instances_in_expr(end, proc_vars, proc_array_slots, out);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             collect_called_proc_instances_in_expr(&spec.size, proc_vars, proc_array_slots, out);
             if let Some(values) = init {
                 for value in values {
@@ -2314,11 +2393,11 @@ pub(super) fn collect_called_proc_instances_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             collect_called_proc_instances_in_expr(inner, proc_vars, proc_array_slots, out);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 collect_called_proc_instances_in_expr(value, proc_vars, proc_array_slots, out);
             }
@@ -2339,7 +2418,7 @@ pub(super) fn collect_called_proc_instances_in_expr(
                 out.insert(name.clone());
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -2362,7 +2441,7 @@ fn collect_called_proc_instances_in_stmt(
                 out,
             );
             if let AssignTarget::Var(name) = target {
-                if let Expr::Index { base, index } = expr {
+                if let Expr::Index { base, index, .. } = expr {
                     let resolved_base = resolve_proc_array_base_key(base, proc_array_slots)
                         .unwrap_or_else(|| base.clone());
                     aliases.insert(
@@ -2522,7 +2601,7 @@ pub(super) fn desugar_expr_instance_method_calls(
         for arg in args {
             match arg.name.as_deref() {
                 Some(PROC_INDEX_BASE_ARG) => {
-                    if let Expr::Var(name) = &arg.expr {
+                    if let Expr::Var { name, .. } = &arg.expr {
                         base = Some(name.as_str());
                     }
                 }
@@ -2534,7 +2613,7 @@ pub(super) fn desugar_expr_instance_method_calls(
         }
         if base.is_none() || index.is_none() {
             if args.len() >= 2 {
-                if let Expr::Var(name) = &args[0].expr {
+                if let Expr::Var { name, .. } = &args[0].expr {
                     base = Some(name.as_str());
                     index = Some(args[1].expr.clone());
                 }
@@ -2571,7 +2650,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                 );
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             desugar_expr_instance_method_calls(
                 &mut spec.size,
                 struct_instances,
@@ -2621,15 +2700,15 @@ pub(super) fn desugar_expr_instance_method_calls(
             }
         }
         Expr::Cast { expr: arg, .. }
-        | Expr::UnaryNot { expr: arg }
-        | Expr::UnaryBitNot { expr: arg } => desugar_expr_instance_method_calls(
+        | Expr::UnaryNot { expr: arg, .. }
+        | Expr::UnaryBitNot { expr: arg, .. } => desugar_expr_instance_method_calls(
             arg,
             struct_instances,
             struct_array_roots,
             current_ns,
             callable_symbols,
         ),
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 desugar_expr_instance_method_calls(
                     value,
@@ -2668,6 +2747,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                                 CallArg {
                                     name: None,
                                     expr: Expr::Index {
+                                        loc: Default::default(),
                                         base,
                                         index: Box::new(index_expr),
                                     },
@@ -2687,7 +2767,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                         0,
                         CallArg {
                             name: None,
-                            expr: Expr::Var(base_name),
+                            expr: Expr::var(base_name),
                         },
                     );
                 } else if !base.contains("::")
@@ -2707,14 +2787,14 @@ pub(super) fn desugar_expr_instance_method_calls(
                             0,
                             CallArg {
                                 name: None,
-                                expr: Expr::Var(receiver),
+                                expr: Expr::var(receiver),
                             },
                         );
                     }
                 }
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -2733,6 +2813,7 @@ pub(super) fn desugar_init_instance_method_calls(
     match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
+            let expr_diag = DiagCtx::new(expr.loc());
             if let AssignTarget::Var(name) = target {
                 if let Expr::UserCall {
                     name: struct_name,
@@ -2753,6 +2834,7 @@ pub(super) fn desugar_init_instance_method_calls(
                         if resolve_explicit_call_type_args(
                             type_args,
                             &format!("proc init struct constructor '{}'", struct_name),
+                            expr_diag,
                             &mut local_errors,
                         )
                         .is_some()

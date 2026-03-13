@@ -24,7 +24,7 @@ fn collect_proc_slot_buffer_ref_signatures(
                     match arg.name.as_deref() {
                         Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG) => {}
                         None => {
-                            let Expr::Var(symbol) = &arg.expr else {
+                            let Expr::Var { name: symbol, .. } = &arg.expr else {
                                 signature.clear();
                                 break;
                             };
@@ -58,10 +58,10 @@ fn collect_proc_slot_buffer_ref_signatures(
                     visit_expr(arg, buffer_index, out);
                 }
             }
-            Expr::Cast { expr, .. } | Expr::UnaryNot { expr } => {
+            Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } => {
                 visit_expr(expr, buffer_index, out);
             }
-            Expr::ArrayLiteral(values) => {
+            Expr::ArrayLiteral { values, .. } => {
                 for value in values {
                     visit_expr(value, buffer_index, out);
                 }

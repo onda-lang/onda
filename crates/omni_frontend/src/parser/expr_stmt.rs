@@ -11,15 +11,20 @@ pub(super) fn parse_stmt_list_pair(
 }
 
 pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&block_pair);
     let mut default_ty = None;
+    let mut default_ty_loc = Span::ZERO;
     for child in block_pair.into_inner() {
         match child.as_rule() {
             Rule::section_default_decl_type => {
+                default_ty_loc = stmt_loc_from_pair(&child);
                 default_ty = Some(parse_init_default_decl_type(child)?);
             }
             Rule::stmt_list => {
                 return Ok(InitBlock {
+                    loc,
                     default_ty,
+                    default_ty_loc,
                     body: parse_stmt_list_pair(child)?,
                 });
             }
@@ -27,7 +32,9 @@ pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, 
         }
     }
     Ok(InitBlock {
+        loc,
         default_ty,
+        default_ty_loc,
         body: Vec::new(),
     })
 }
@@ -37,23 +44,22 @@ pub(super) fn parse_sample_block(
 ) -> Result<SampleBlock, Vec<Diagnostic>> {
     let rule = block_pair.as_rule();
     if rule != Rule::sample_block && rule != Rule::sample_nested_block {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &block_pair,
             "internal parser error: expected sample block",
-            0,
-            0,
         )]);
     }
 
+    let loc = stmt_loc_from_pair(&block_pair);
     let mut oversample_factor = None;
     let mut body = Vec::new();
     for child in block_pair.into_inner() {
         match child.as_rule() {
             Rule::sample_factor => {
                 if oversample_factor.is_some() {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_pair(
+                        &child,
                         "sample block oversampling factor can only be specified once",
-                        0,
-                        0,
                     )]);
                 }
                 oversample_factor = Some(parse_sample_factor(child)?);
@@ -69,6 +75,7 @@ pub(super) fn parse_sample_block(
     }
 
     Ok(SampleBlock {
+        loc,
         oversample_factor,
         body,
     })
@@ -76,18 +83,17 @@ pub(super) fn parse_sample_block(
 
 fn parse_sample_factor(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::sample_factor {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected sample factor",
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(expr_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing sample oversampling factor expression",
-            0,
-            0,
         )]);
     };
     parse_expr(expr_pair)
@@ -96,6 +102,7 @@ fn parse_sample_factor(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
 pub(super) fn parse_block_exec_block(
     block_pair: Pair<'_, Rule>,
 ) -> Result<BlockExec, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&block_pair);
     let mut pre = Vec::new();
     let mut post = Vec::new();
     let mut nested_sample: Option<SampleBlock> = None;
@@ -108,10 +115,9 @@ pub(super) fn parse_block_exec_block(
         for item in child.into_inner() {
             if item.as_rule() == Rule::sample_nested_block {
                 if nested_sample.is_some() {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_pair(
+                        &item,
                         "duplicate nested sample block in block section",
-                        0,
-                        0,
                     )]);
                 }
                 nested_sample = Some(parse_sample_block(item)?);
@@ -128,6 +134,7 @@ pub(super) fn parse_block_exec_block(
     }
 
     Ok(BlockExec {
+        loc,
         pre,
         sample: nested_sample,
         post,
@@ -137,11 +144,11 @@ pub(super) fn parse_block_exec_block(
 pub(super) fn parse_struct_method_decl(
     pair: Pair<'_, Rule>,
 ) -> Result<FunctionDef, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
     if pair.as_rule() != Rule::struct_method_decl {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected struct method declaration",
-            0,
-            0,
         )]);
     }
     let mut name: Option<String> = None;
@@ -169,12 +176,13 @@ pub(super) fn parse_struct_method_decl(
     }
 
     let Some(name) = name else {
-        return Err(vec![Diagnostic::syntax("missing method name", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing method name")]);
     };
     let Some(body) = body else {
-        return Err(vec![Diagnostic::syntax("missing method body", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing method body")]);
     };
     Ok(FunctionDef {
+        loc,
         name,
         type_params: Vec::new(),
         params,
@@ -194,30 +202,30 @@ pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> 
         Rule::break_stmt => parse_break_stmt(pair),
         Rule::continue_stmt => parse_continue_stmt(pair),
         Rule::call_stmt => parse_call_stmt(pair),
-        _ => Err(vec![Diagnostic::syntax(
+        _ => Err(vec![syntax_at_pair(
+            &pair,
             "unexpected statement kind in parser",
-            0,
-            0,
         )]),
     }
 }
 
 pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Diagnostic>> {
     let pair = if pair.as_rule() == Rule::const_block {
+        let loc = stmt_loc_from_pair(&pair);
         let mut inner = pair.into_inner();
         inner
             .next()
-            .ok_or_else(|| vec![Diagnostic::syntax("missing const declaration", 0, 0)])?
+            .ok_or_else(|| vec![syntax_at_loc(loc.as_ref(), "missing const declaration")])?
     } else {
         pair
     };
     if pair.as_rule() != Rule::const_decl {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected const declaration",
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let mut name = None::<String>;
     let mut ty = None::<PrimitiveType>;
     let mut expr = None::<Expr>;
@@ -238,16 +246,20 @@ pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Di
         }
     }
     let Some(name) = name else {
-        return Err(vec![Diagnostic::syntax("missing const name", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing const name")]);
     };
     let Some(expr) = expr else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             format!("missing initializer for const '{name}'"),
-            0,
-            0,
         )]);
     };
-    Ok(ConstDecl { name, ty, expr })
+    Ok(ConstDecl {
+        loc,
+        name,
+        ty,
+        expr,
+    })
 }
 
 fn parse_const_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
@@ -263,10 +275,9 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
     let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(kind_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing assignment statement",
-            0,
-            0,
         )]);
     };
 
@@ -274,49 +285,48 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
         Rule::typed_assign_stmt => {
             let mut typed_inner = kind_pair.into_inner();
             let Some(name_pair) = typed_inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing typed assignment target",
-                    0,
-                    0,
                 )]);
             };
             let Some(ty_pair) = typed_inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing typed assignment type",
-                    0,
-                    0,
                 )]);
             };
             let ty_pair = if ty_pair.as_rule() == Rule::typed_decl_type {
                 let mut inner = ty_pair.into_inner();
                 let Some(actual) = inner.next() else {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
                         "missing typed declaration type",
-                        0,
-                        0,
                     )]);
                 };
                 actual
             } else {
                 ty_pair
             };
+            let typed_decl_ty_loc = stmt_loc_from_pair(&ty_pair);
             let expr_pair = typed_inner.next();
             match ty_pair.as_rule() {
                 Rule::type_name => {
                     let Some(expr_pair) = expr_pair else {
-                        return Err(vec![Diagnostic::syntax(
+                        return Err(vec![syntax_at_loc(
+                            loc.as_ref(),
                             "missing typed assignment expression",
-                            0,
-                            0,
                         )]);
                     };
                     let decl_ty = parse_primitive_type(ty_pair.as_str()).map_err(|d| vec![d])?;
                     Ok(Stmt::Assign {
                         loc: loc.clone(),
+                        target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: Some(decl_ty),
                         generic_decl_ty: None,
                         is_typed_decl: true,
+                        typed_decl_ty_loc,
                         expr: parse_expr(expr_pair)?,
                     })
                 }
@@ -325,15 +335,14 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                     let init = if let Some(expr_pair) = expr_pair {
                         let init_expr = parse_expr(expr_pair)?;
                         match init_expr {
-                            Expr::ArrayLiteral(values) => Some(values),
+                            Expr::ArrayLiteral { values, .. } => Some(values),
                             other => {
                                 if matches!(spec.elem, ArrayElemType::Struct(_)) {
                                     Some(vec![other])
                                 } else {
-                                    return Err(vec![Diagnostic::syntax(
+                                    return Err(vec![syntax_at_loc(
+                                        loc.as_ref(),
                                         "array typed declaration initializer must be an array literal like [a, b, ...]",
-                                        0,
-                                        0,
                                     )]);
                                 }
                             }
@@ -343,11 +352,17 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                     };
                     Ok(Stmt::Assign {
                         loc: loc.clone(),
+                        target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: true,
-                        expr: Expr::ArrayCtor { spec, init },
+                        typed_decl_ty_loc,
+                        expr: Expr::ArrayCtor {
+                            loc: loc.clone(),
+                            spec,
+                            init,
+                        },
                     })
                 }
                 Rule::named_type => {
@@ -357,6 +372,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         parse_expr(expr_pair)?
                     } else {
                         Expr::UserCall {
+                            loc: loc.clone(),
                             name: decl_name.clone(),
                             type_args: Vec::new(),
                             args: Vec::new(),
@@ -370,56 +386,59 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                             *type_args = decl_type_args;
                             return Ok(Stmt::Assign {
                                 loc: loc.clone(),
+                                target_loc: stmt_loc_from_pair(&name_pair),
                                 target: AssignTarget::Var(name_pair.as_str().to_owned()),
                                 decl_ty: None,
                                 generic_decl_ty: None,
                                 is_typed_decl: missing_decl_type_args,
+                                typed_decl_ty_loc,
                                 expr,
                             });
                         }
                     }
                     Ok(Stmt::Assign {
                         loc: loc.clone(),
+                        target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: None,
                         generic_decl_ty: Some(decl_name),
                         is_typed_decl: true,
+                        typed_decl_ty_loc,
                         expr,
                     })
                 }
-                _ => Err(vec![Diagnostic::syntax(
+                _ => Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "unexpected typed declaration type",
-                    0,
-                    0,
                 )]),
             }
         }
         Rule::plain_assign_stmt => {
             let mut plain_inner = kind_pair.into_inner();
             let Some(target_pair) = plain_inner.next() else {
-                return Err(vec![Diagnostic::syntax("missing assignment target", 0, 0)]);
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing assignment target",
+                )]);
             };
             let Some(expr_pair) = plain_inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing assignment expression",
-                    0,
-                    0,
                 )]);
             };
             if target_pair.as_rule() == Rule::index_target {
                 let mut target_inner = target_pair.clone().into_inner();
                 let Some(base_pair) = target_inner.next() else {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
                         "missing indexed assignment base",
-                        0,
-                        0,
                     )]);
                 };
                 let Some(first_index_pair) = target_inner.next() else {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
                         "missing indexed assignment index",
-                        0,
-                        0,
                     )]);
                 };
                 if let Some(second_index_pair) = target_inner.next() {
@@ -427,12 +446,13 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                     return Ok(Stmt::Expr {
                         loc,
                         expr: Expr::UserCall {
+                            loc: Span::ZERO,
                             name: BUFFER_WRITE2_INTERNAL_FN.to_owned(),
                             type_args: Vec::new(),
                             args: vec![
                                 CallArg {
                                     name: None,
-                                    expr: Expr::Var(base_pair.as_str().to_owned()),
+                                    expr: Expr::var(base_pair.as_str().to_owned()),
                                 },
                                 CallArg {
                                     name: None,
@@ -453,17 +473,18 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
             }
             Ok(Stmt::Assign {
                 loc,
+                target_loc: stmt_loc_from_pair(&target_pair),
                 target: parse_assign_target(target_pair)?,
                 decl_ty: None,
                 generic_decl_ty: None,
                 is_typed_decl: false,
+                typed_decl_ty_loc: Span::ZERO,
                 expr: parse_expr(expr_pair)?,
             })
         }
-        _ => Err(vec![Diagnostic::syntax(
+        _ => Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "unexpected assignment statement kind",
-            0,
-            0,
         )]),
     }
 }
@@ -472,7 +493,10 @@ pub(super) fn parse_return_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
     let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(expr_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing return expression", 0, 0)]);
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "missing return expression",
+        )]);
     };
     let expr = parse_expr(expr_pair)?;
     Ok(Stmt::Return { loc, expr })
@@ -480,19 +504,19 @@ pub(super) fn parse_return_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
 
 pub(super) fn parse_if_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
     fn parse_if_cond_pair(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
+        let loc = stmt_loc_from_pair(&pair);
         match pair.as_rule() {
             Rule::if_cond => {
                 let mut inner = pair.into_inner();
                 let Some(expr_pair) = inner.next() else {
-                    return Err(vec![Diagnostic::syntax("missing if condition", 0, 0)]);
+                    return Err(vec![syntax_at_loc(loc.as_ref(), "missing if condition")]);
                 };
                 parse_expr(expr_pair)
             }
             Rule::expr => parse_expr(pair),
-            _ => Err(vec![Diagnostic::syntax(
+            _ => Err(vec![syntax_at_loc(
+                loc.as_ref(),
                 "internal parser error: expected if condition",
-                0,
-                0,
             )]),
         }
     }
@@ -500,16 +524,19 @@ pub(super) fn parse_if_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic
     let if_loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(cond_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing if condition", 0, 0)]);
+        return Err(vec![syntax_at_loc(if_loc.as_ref(), "missing if condition")]);
     };
     let cond = parse_if_cond_pair(cond_pair)?;
 
     let Some(then_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing if then block", 0, 0)]);
+        return Err(vec![syntax_at_loc(
+            if_loc.as_ref(),
+            "missing if then block",
+        )]);
     };
     let then_branch = parse_stmt_block(then_pair)?;
 
-    let mut elifs = Vec::<(Expr, Vec<Stmt>, Option<SourceLoc>)>::new();
+    let mut elifs = Vec::<(Expr, Vec<Stmt>, Span)>::new();
     let mut explicit_else: Option<Vec<Stmt>> = None;
     for item in inner {
         match item.as_rule() {
@@ -517,10 +544,13 @@ pub(super) fn parse_if_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic
                 let elif_loc = stmt_loc_from_pair(&item);
                 let mut elif_inner = item.into_inner();
                 let Some(elif_cond_pair) = elif_inner.next() else {
-                    return Err(vec![Diagnostic::syntax("missing elif condition", 0, 0)]);
+                    return Err(vec![syntax_at_loc(
+                        elif_loc.as_ref(),
+                        "missing elif condition",
+                    )]);
                 };
                 let Some(elif_then_pair) = elif_inner.next() else {
-                    return Err(vec![Diagnostic::syntax("missing elif block", 0, 0)]);
+                    return Err(vec![syntax_at_loc(elif_loc.as_ref(), "missing elif block")]);
                 };
                 elifs.push((
                     parse_if_cond_pair(elif_cond_pair)?,
@@ -530,19 +560,17 @@ pub(super) fn parse_if_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic
             }
             Rule::stmt_block => {
                 if explicit_else.is_some() {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_pair(
+                        &item,
                         "duplicate else block in if statement",
-                        0,
-                        0,
                     )]);
                 }
                 explicit_else = Some(parse_stmt_block(item)?);
             }
             _ => {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_pair(
+                    &item,
                     "unexpected token in if statement",
-                    0,
-                    0,
                 )]);
             }
         }
@@ -569,7 +597,7 @@ pub(super) fn parse_call_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnost
     let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(call_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing call expression", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing call expression")]);
     };
     let expr = parse_primary_expr(call_pair);
     Ok(Stmt::Expr { loc, expr })
@@ -579,35 +607,37 @@ pub(super) fn parse_for_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnosti
     let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(var_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing for loop variable", 0, 0)]);
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "missing for loop variable",
+        )]);
     };
     let Some(next_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing for loop start", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing for loop start")]);
     };
     let (step, start_pair) = if next_pair.as_rule() == Rule::for_step {
         let mut step_inner = next_pair.into_inner();
         let Some(step_expr_pair) = step_inner.next() else {
-            return Err(vec![Diagnostic::syntax("missing for loop step", 0, 0)]);
+            return Err(vec![syntax_at_loc(loc.as_ref(), "missing for loop step")]);
         };
         let Some(start_pair) = inner.next() else {
-            return Err(vec![Diagnostic::syntax("missing for loop start", 0, 0)]);
+            return Err(vec![syntax_at_loc(loc.as_ref(), "missing for loop start")]);
         };
         (Some(parse_expr(step_expr_pair)?), start_pair)
     } else {
         (None, next_pair)
     };
     let Some(op_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing for loop range operator",
-            0,
-            0,
         )]);
     };
     let Some(end_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing for loop end", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing for loop end")]);
     };
     let Some(body_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing for loop body", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing for loop body")]);
     };
 
     let end_inclusive = match op_pair.as_rule() {
@@ -615,18 +645,16 @@ pub(super) fn parse_for_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnosti
             ".." => false,
             "..=" => true,
             _ => {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_pair(
+                    &op_pair,
                     "invalid for loop range operator",
-                    0,
-                    0,
                 )]);
             }
         },
         _ => {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
                 "missing for loop range operator",
-                0,
-                0,
             )]);
         }
     };
@@ -649,10 +677,10 @@ pub(super) fn parse_loop_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnost
     let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(count_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing loop count", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing loop count")]);
     };
     let Some(body_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing loop body", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing loop body")]);
     };
 
     let count = parse_for_bound(count_pair)?;
@@ -661,7 +689,7 @@ pub(super) fn parse_loop_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnost
         loc,
         var: "_".to_owned(),
         step: None,
-        start: Expr::Int(0),
+        start: Expr::int(0),
         end: count,
         end_inclusive: false,
         body,
@@ -672,10 +700,10 @@ pub(super) fn parse_while_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnos
     let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(cond_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing while condition", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing while condition")]);
     };
     let Some(body_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing while loop body", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing while loop body")]);
     };
 
     let cond = parse_expr(cond_pair)?;
@@ -694,16 +722,18 @@ pub(super) fn parse_continue_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diag
 }
 
 pub(super) fn parse_for_bound(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
     match pair.as_rule() {
-        Rule::int_lit => Ok(Expr::Int(parse_int(pair.as_str())? as i64)),
-        Rule::path_ident | Rule::namespace_ref => Ok(Expr::Var(pair.as_str().to_owned())),
+        Rule::int_lit => Ok(Expr::int(parse_int(pair.as_str())? as i64).with_loc(loc)),
+        Rule::path_ident | Rule::namespace_ref => {
+            Ok(Expr::var(pair.as_str().to_owned()).with_loc(loc))
+        }
         Rule::for_bound => {
             let mut inner = pair.into_inner();
             let Some(inner_pair) = inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing for/loop bound expression",
-                    0,
-                    0,
                 )]);
             };
             match inner_pair.as_rule() {
@@ -712,20 +742,18 @@ pub(super) fn parse_for_bound(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnost
             }
         }
         Rule::expr => parse_expr(pair),
-        _ => Err(vec![Diagnostic::syntax(
+        _ => Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "for/loop bound must be an integer literal, variable path, or parenthesized expression",
-            0,
-            0,
         )]),
     }
 }
 
 pub(super) fn parse_stmt_block(pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::stmt_block {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected statement block",
-            0,
-            0,
         )]);
     }
 
@@ -743,10 +771,9 @@ pub(super) fn parse_stmt_block(pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, Vec<Di
 
 pub(super) fn parse_expr(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::expr && pair.as_rule() != Rule::graph_expr {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected expression pair",
-            0,
-            0,
         )]);
     }
     Ok(parse_expr_inner(pair))
@@ -767,140 +794,174 @@ pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
 
     pratt
         .map_primary(parse_primary_expr)
-        .map_prefix(|op, rhs| match op.as_str() {
-            "-" => Expr::Binary {
-                op: BinaryOp::Sub,
-                lhs: Box::new(Expr::Number(0.0)),
-                rhs: Box::new(rhs),
-            },
-            "!" => Expr::UnaryNot {
-                expr: Box::new(rhs),
-            },
-            "~" => Expr::UnaryBitNot {
-                expr: Box::new(rhs),
-            },
-            _ => unreachable!("unknown prefix operator"),
+        .map_prefix(|op, rhs| {
+            let op_loc = stmt_loc_from_pair(&op);
+            let loc = SourceLoc::spanning(op_loc.as_ref(), rhs.loc());
+            match op.as_str() {
+                "-" => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::Sub,
+                    lhs: Box::new(Expr::number(0.0)),
+                    rhs: Box::new(rhs),
+                },
+                "!" => Expr::UnaryNot {
+                    loc: loc.into(),
+                    expr: Box::new(rhs),
+                },
+                "~" => Expr::UnaryBitNot {
+                    loc: loc.into(),
+                    expr: Box::new(rhs),
+                },
+                _ => unreachable!("unknown prefix operator"),
+            }
         })
-        .map_infix(|lhs, op, rhs| match (op.as_rule(), op.as_str()) {
-            (Rule::or_op, "||") => Expr::Logical {
-                op: LogicalOp::Or,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::and_op, "&&") => Expr::Logical {
-                op: LogicalOp::And,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::bit_or_op, "|") => Expr::Binary {
-                op: BinaryOp::BitOr,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::bit_xor_op, "^") => Expr::Binary {
-                op: BinaryOp::BitXor,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::bit_and_op, "&") => Expr::Binary {
-                op: BinaryOp::BitAnd,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::cmp_op, "==") => Expr::Compare {
-                op: CmpOp::Eq,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::cmp_op, "!=") => Expr::Compare {
-                op: CmpOp::Ne,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::cmp_op, "<") => Expr::Compare {
-                op: CmpOp::Lt,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::cmp_op, "<=") => Expr::Compare {
-                op: CmpOp::Le,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::cmp_op, ">") => Expr::Compare {
-                op: CmpOp::Gt,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::cmp_op, ">=") => Expr::Compare {
-                op: CmpOp::Ge,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::shift_op, "<<") => Expr::Binary {
-                op: BinaryOp::ShiftLeft,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::shift_op, ">>") => Expr::Binary {
-                op: BinaryOp::ShiftRight,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::add_op, "+") => Expr::Binary {
-                op: BinaryOp::Add,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::add_op, "-") => Expr::Binary {
-                op: BinaryOp::Sub,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::mul_op, "*") => Expr::Binary {
-                op: BinaryOp::Mul,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::mul_op, "/") => Expr::Binary {
-                op: BinaryOp::Div,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            (Rule::mul_op, "%") => Expr::Binary {
-                op: BinaryOp::Mod,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            },
-            _ => unreachable!("unknown infix operator"),
+        .map_infix(|lhs, op, rhs| {
+            let loc = SourceLoc::spanning(lhs.loc(), rhs.loc());
+            match (op.as_rule(), op.as_str()) {
+                (Rule::or_op, "||") => Expr::Logical {
+                    loc: loc.into(),
+                    op: LogicalOp::Or,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::and_op, "&&") => Expr::Logical {
+                    loc: loc.into(),
+                    op: LogicalOp::And,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::bit_or_op, "|") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::BitOr,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::bit_xor_op, "^") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::BitXor,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::bit_and_op, "&") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::BitAnd,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::cmp_op, "==") => Expr::Compare {
+                    loc: loc.into(),
+                    op: CmpOp::Eq,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::cmp_op, "!=") => Expr::Compare {
+                    loc: loc.into(),
+                    op: CmpOp::Ne,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::cmp_op, "<") => Expr::Compare {
+                    loc: loc.into(),
+                    op: CmpOp::Lt,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::cmp_op, "<=") => Expr::Compare {
+                    loc: loc.into(),
+                    op: CmpOp::Le,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::cmp_op, ">") => Expr::Compare {
+                    loc: loc.into(),
+                    op: CmpOp::Gt,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::cmp_op, ">=") => Expr::Compare {
+                    loc: loc.into(),
+                    op: CmpOp::Ge,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::shift_op, "<<") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::ShiftLeft,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::shift_op, ">>") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::ShiftRight,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::add_op, "+") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::Add,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::add_op, "-") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::Sub,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::mul_op, "*") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::Mul,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::mul_op, "/") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::Div,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                (Rule::mul_op, "%") => Expr::Binary {
+                    loc: loc.into(),
+                    op: BinaryOp::Mod,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                _ => unreachable!("unknown infix operator"),
+            }
         })
         .parse(pair.into_inner())
 }
 
 pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
+    let loc = stmt_loc_from_pair(&pair);
     match pair.as_rule() {
         Rule::number => {
             let text = pair.as_str();
             if text.contains('.') {
-                Expr::Number(
+                Expr::number(
                     text.parse::<f32>()
                         .expect("pest number rule produced invalid float literal"),
                 )
+                .with_loc(loc)
             } else {
-                Expr::Int(
+                Expr::int(
                     text.parse::<i64>()
                         .expect("pest number rule produced invalid int literal"),
                 )
+                .with_loc(loc)
             }
         }
-        Rule::bool_lit => Expr::Bool(pair.as_str() == "true"),
-        Rule::array_lit => Expr::ArrayLiteral(
+        Rule::bool_lit => Expr::bool(pair.as_str() == "true").with_loc(loc),
+        Rule::array_lit => Expr::array_literal(
             pair.into_inner()
                 .filter(|p| p.as_rule() == Rule::expr || p.as_rule() == Rule::graph_expr)
                 .map(parse_expr_inner)
                 .collect(),
-        ),
-        Rule::ident | Rule::path_ident | Rule::namespace_ref => Expr::Var(pair.as_str().to_owned()),
+        )
+        .with_loc(loc),
+        Rule::ident | Rule::path_ident | Rule::namespace_ref => {
+            Expr::var(pair.as_str().to_owned()).with_loc(loc)
+        }
         Rule::indexed_member_expr => {
             let mut inner = pair.into_inner();
             let base = inner
@@ -915,12 +976,13 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 .next()
                 .expect("indexed_member_expr rule must include field identifier");
             Expr::UserCall {
+                loc,
                 name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
                 type_args: Vec::new(),
                 args: vec![
                     CallArg {
                         name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                        expr: Expr::Var(base),
+                        expr: Expr::var(base),
                     },
                     CallArg {
                         name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
@@ -928,7 +990,8 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                     },
                     CallArg {
                         name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
-                        expr: Expr::Var(field_pair.as_str().to_owned()),
+                        expr: Expr::var(field_pair.as_str().to_owned())
+                            .with_loc(stmt_loc_from_pair(&field_pair)),
                     },
                 ],
             }
@@ -950,12 +1013,13 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 .next()
                 .expect("graph_nested_indexed_member_expr rule must include field index");
             Expr::UserCall {
+                loc,
                 name: GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL.to_owned(),
                 type_args: Vec::new(),
                 args: vec![
                     CallArg {
                         name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                        expr: Expr::Var(base),
+                        expr: Expr::var(base),
                     },
                     CallArg {
                         name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
@@ -963,7 +1027,8 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                     },
                     CallArg {
                         name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
-                        expr: Expr::Var(field_pair.as_str().to_owned()),
+                        expr: Expr::var(field_pair.as_str().to_owned())
+                            .with_loc(stmt_loc_from_pair(&field_pair)),
                     },
                     CallArg {
                         name: Some(GRAPH_PROC_FIELD_INDEX_EXPR_ARG.to_owned()),
@@ -985,12 +1050,13 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
             let idx_first = parse_expr_inner(idx_pair);
             if let Some(idx_second_pair) = inner.next() {
                 Expr::UserCall {
+                    loc,
                     name: BUFFER_READ2_INTERNAL_FN.to_owned(),
                     type_args: Vec::new(),
                     args: vec![
                         CallArg {
                             name: None,
-                            expr: Expr::Var(base),
+                            expr: Expr::var(base),
                         },
                         CallArg {
                             name: None,
@@ -1004,6 +1070,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 }
             } else {
                 Expr::Index {
+                    loc,
                     base,
                     index: Box::new(idx_first),
                 }
@@ -1037,7 +1104,12 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                     _ => {}
                 }
             }
-            Expr::Slice { base, start, end }
+            Expr::Slice {
+                loc,
+                base,
+                start,
+                end,
+            }
         }
         Rule::call_field_expr => {
             let mut inner = pair.into_inner();
@@ -1050,9 +1122,11 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
             let (name, type_args, mut args) = parse_call_expr_parts(call_pair);
             args.push(CallArg {
                 name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
-                expr: Expr::Var(field_pair.as_str().to_owned()),
+                expr: Expr::var(field_pair.as_str().to_owned())
+                    .with_loc(stmt_loc_from_pair(&field_pair)),
             });
             Expr::UserCall {
+                loc,
                 name: format!("{PROC_FIELD_SENTINEL_PREFIX}{name}"),
                 type_args,
                 args,
@@ -1065,6 +1139,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 if let Ok(to_ty) = parse_primitive_type(&name) {
                     if to_ty != PrimitiveType::Bool && args.len() == 1 && args[0].name.is_none() {
                         return Expr::Cast {
+                            loc,
                             to: to_ty,
                             expr: Box::new(args.remove(0).expr),
                         };
@@ -1076,6 +1151,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 if let Some(func) = parse_builtin_fn(&name) {
                     if args.iter().all(|a| a.name.is_none()) {
                         return Expr::Call {
+                            loc,
                             func,
                             args: args.into_iter().map(|a| a.expr).collect(),
                         };
@@ -1084,6 +1160,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
             }
 
             Expr::UserCall {
+                loc,
                 name,
                 type_args,
                 args,
@@ -1231,7 +1308,7 @@ fn parse_namespace_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, V
         if name.is_some() {
             return (raw, Vec::new(), Vec::new());
         }
-        let Expr::Var(sym) = expr else {
+        let Expr::Var { name: sym, .. } = expr else {
             return (raw, Vec::new(), Vec::new());
         };
         if let Ok(prim) = parse_primitive_type(sym) {
@@ -1299,7 +1376,7 @@ fn parse_call_index_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>) {
         vec![
             CallArg {
                 name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                expr: Expr::Var(base),
+                expr: Expr::var(base),
             },
             CallArg {
                 name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
@@ -1327,7 +1404,7 @@ fn parse_call_index_member_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>
         vec![
             CallArg {
                 name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                expr: Expr::Var(base),
+                expr: Expr::var(base),
             },
             CallArg {
                 name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
@@ -1341,12 +1418,12 @@ fn parse_named_type_ref(
     pair: Pair<'_, Rule>,
 ) -> Result<(String, Vec<CallTypeArg>), Vec<Diagnostic>> {
     if pair.as_rule() != Rule::named_type {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected named type reference",
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let mut name = None::<String>;
     let mut type_args = Vec::<CallTypeArg>::new();
     for item in pair.into_inner() {
@@ -1396,10 +1473,9 @@ fn parse_named_type_ref(
         }
     }
     let Some(name) = name else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing named type reference",
-            0,
-            0,
         )]);
     };
     Ok((name, type_args))

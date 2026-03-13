@@ -1,9 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use omni_frontend::ast::*;
-use omni_frontend::Diagnostic;
+use omni_frontend::{DiagCtx, Diagnostic};
 
 pub(super) const PROC_LOCAL_DEF_FN_PREFIX: &str = ".__proc_local__";
+
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
 
 pub(super) fn proc_local_hidden_def_name(owner_proc: &str, local_name: &str) -> String {
     format!("{owner_proc}{PROC_LOCAL_DEF_FN_PREFIX}{local_name}")
@@ -43,6 +47,7 @@ pub(super) fn pre_desugar_proc_local_hidden_def(
     local_def: &FunctionDef,
 ) -> FunctionDef {
     FunctionDef {
+        loc: Default::default(),
         type_params: Vec::new(),
         name: proc_local_hidden_def_name(owner_proc, &local_def.name),
         params: local_def.params.clone(),
@@ -56,6 +61,7 @@ pub(super) fn owner_proc_local_hidden_def(
     body: Vec<Stmt>,
 ) -> FunctionDef {
     FunctionDef {
+        loc: Default::default(),
         type_params: Vec::new(),
         name: proc_local_hidden_def_name(owner_proc, &local_def.name),
         params: proc_local_hidden_def_params(owner_proc, local_def),
@@ -70,6 +76,7 @@ pub(super) fn nested_wrapper_proc_local_hidden_def(
     body: Vec<Stmt>,
 ) -> FunctionDef {
     FunctionDef {
+        loc: Default::default(),
         type_params: Vec::new(),
         name: nested_wrapper_local_def_name(owner_proc, nested_path, &local_def.name),
         params: proc_local_hidden_def_params(owner_proc, local_def),
@@ -80,8 +87,10 @@ pub(super) fn nested_wrapper_proc_local_hidden_def(
 fn proc_local_hidden_def_params(owner_proc: &str, local_def: &FunctionDef) -> Vec<FnParamDecl> {
     let mut params = Vec::<FnParamDecl>::with_capacity(local_def.params.len() + 1);
     params.push(FnParamDecl {
+        loc: Default::default(),
         name: "self".to_owned(),
         ty: Some(FnParamType::Struct(owner_proc.to_owned())),
+        ty_loc: Default::default(),
         default: None,
     });
     params.extend(local_def.params.clone());
@@ -89,7 +98,7 @@ fn proc_local_hidden_def_params(owner_proc: &str, local_def: &FunctionDef) -> Ve
 }
 
 pub(super) fn inject_owner_self_into_hidden_local_calls(stmt: &mut Stmt, owner_proc: &str) {
-    inject_hidden_local_call_receiver(stmt, owner_proc, &Expr::Var("self".to_owned()));
+    inject_hidden_local_call_receiver(stmt, owner_proc, &Expr::var("self"));
 }
 
 pub(super) fn inject_hidden_local_call_receiver(
@@ -117,29 +126,29 @@ pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<
     let mut def_map = HashMap::<String, FunctionDef>::new();
     for def in &proc.local_defs {
         if def_map.contains_key(&def.name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                DiagCtx::new(def.loc),
+                errors,
                 format!(
                     "processor '{}': duplicate proc-local def '{}'",
                     proc.name, def.name
                 ),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         def_map.insert(def.name.clone(), def.clone());
     }
 
     if let Some(cycle) = detect_cycles(&def_map) {
-        errors.push(Diagnostic::semantic(
+        push_semantic(
+            DiagCtx::new(proc.loc),
+            errors,
             format!(
                 "processor '{}': recursive proc-local def cycle: {}",
                 proc.name,
                 cycle.join(" -> ")
             ),
-            0,
-            0,
-        ));
+        );
     }
 
     let local_names = def_map.keys().cloned().collect::<HashSet<_>>();
@@ -296,7 +305,7 @@ fn collect_local_def_calls_in_expr(
                 collect_local_def_calls_in_expr(&arg.expr, def_map, calls);
             }
         }
-        Expr::Call { args, .. } | Expr::ArrayLiteral(args) => {
+        Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => {
             for arg in args {
                 collect_local_def_calls_in_expr(arg, def_map, calls);
             }
@@ -307,7 +316,7 @@ fn collect_local_def_calls_in_expr(
             collect_local_def_calls_in_expr(lhs, def_map, calls);
             collect_local_def_calls_in_expr(rhs, def_map, calls);
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             collect_local_def_calls_in_expr(expr, def_map, calls);
         }
         Expr::Index { index, .. } => collect_local_def_calls_in_expr(index, def_map, calls),
@@ -319,7 +328,7 @@ fn collect_local_def_calls_in_expr(
                 collect_local_def_calls_in_expr(end, def_map, calls);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             collect_local_def_calls_in_expr(&spec.size, def_map, calls);
             if let Some(init) = init {
                 for expr in init {
@@ -327,7 +336,7 @@ fn collect_local_def_calls_in_expr(
                 }
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -409,6 +418,7 @@ fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owne
             name,
             type_args: _,
             args,
+            ..
         } => {
             for arg in args.iter_mut() {
                 rewrite_expr_local_calls(&mut arg.expr, local_names, owner_proc);
@@ -417,7 +427,7 @@ fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owne
                 *name = proc_local_hidden_def_name(owner_proc, name);
             }
         }
-        Expr::Call { args, .. } | Expr::ArrayLiteral(args) => {
+        Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => {
             for arg in args {
                 rewrite_expr_local_calls(arg, local_names, owner_proc);
             }
@@ -428,7 +438,7 @@ fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owne
             rewrite_expr_local_calls(lhs, local_names, owner_proc);
             rewrite_expr_local_calls(rhs, local_names, owner_proc);
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             rewrite_expr_local_calls(expr, local_names, owner_proc);
         }
         Expr::Index { index, .. } => rewrite_expr_local_calls(index, local_names, owner_proc),
@@ -440,7 +450,7 @@ fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owne
                 rewrite_expr_local_calls(end, local_names, owner_proc);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_expr_local_calls(&mut spec.size, local_names, owner_proc);
             if let Some(init) = init {
                 for expr in init {
@@ -448,7 +458,7 @@ fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owne
                 }
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -551,7 +561,7 @@ fn inject_owner_self_into_hidden_local_calls_in_expr(
                 );
             }
         }
-        Expr::Call { args, .. } | Expr::ArrayLiteral(args) => {
+        Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => {
             for arg in args {
                 inject_owner_self_into_hidden_local_calls_in_expr(arg, owner_proc, receiver);
             }
@@ -562,7 +572,7 @@ fn inject_owner_self_into_hidden_local_calls_in_expr(
             inject_owner_self_into_hidden_local_calls_in_expr(lhs, owner_proc, receiver);
             inject_owner_self_into_hidden_local_calls_in_expr(rhs, owner_proc, receiver);
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             inject_owner_self_into_hidden_local_calls_in_expr(expr, owner_proc, receiver);
         }
         Expr::Index { index, .. } => {
@@ -576,7 +586,7 @@ fn inject_owner_self_into_hidden_local_calls_in_expr(
                 inject_owner_self_into_hidden_local_calls_in_expr(end, owner_proc, receiver);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             inject_owner_self_into_hidden_local_calls_in_expr(&mut spec.size, owner_proc, receiver);
             if let Some(init) = init {
                 for expr in init {
@@ -584,7 +594,7 @@ fn inject_owner_self_into_hidden_local_calls_in_expr(
                 }
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -727,12 +737,12 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                     0,
                     CallArg {
                         name: None,
-                        expr: Expr::Var("self".to_owned()),
+                        expr: Expr::var("self"),
                     },
                 );
             }
         }
-        Expr::Call { args, .. } | Expr::ArrayLiteral(args) => {
+        Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => {
             for arg in args {
                 rewrite_nested_wrapper_local_calls_in_expr(
                     arg,
@@ -748,7 +758,7 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
             rewrite_nested_wrapper_local_calls_in_expr(lhs, callee_proc, owner_proc, nested_path);
             rewrite_nested_wrapper_local_calls_in_expr(rhs, callee_proc, owner_proc, nested_path);
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr } | Expr::UnaryBitNot { expr } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             rewrite_nested_wrapper_local_calls_in_expr(expr, callee_proc, owner_proc, nested_path);
         }
         Expr::Index { index, .. } => {
@@ -772,7 +782,7 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                 );
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_nested_wrapper_local_calls_in_expr(
                 &mut spec.size,
                 callee_proc,
@@ -790,6 +800,6 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                 }
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }

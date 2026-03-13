@@ -7,6 +7,10 @@ use crate::processor_lowering::{
 };
 use crate::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     analyze_with_options(program, AnalysisOptions::default())
 }
@@ -38,7 +42,10 @@ pub fn lower_graphs_for_inspection_with_options(
         if let Some(passed) = eval_const_bool_expr(&assert_decl.expr, options, context, &mut errors)
         {
             if !passed {
-                errors.push(Diagnostic::semantic("assert failed", 0, 0));
+                errors.push(Diagnostic::semantic_span(
+                    "assert failed",
+                    assert_decl.expr.loc(),
+                ));
             }
         }
     }
@@ -69,6 +76,12 @@ pub fn analyze_with_options(
         )]);
     }
 
+    let original_last_block_loc = program
+        .blocks
+        .iter()
+        .rev()
+        .map(Block::loc)
+        .find(|loc| !loc.is_zero());
     let mut program = program;
     inject_auto_std_math(&mut program)?;
 
@@ -81,7 +94,10 @@ pub fn analyze_with_options(
         if let Some(passed) = eval_const_bool_expr(&assert_decl.expr, options, context, &mut errors)
         {
             if !passed {
-                errors.push(Diagnostic::semantic("assert failed", 0, 0));
+                errors.push(Diagnostic::semantic_span(
+                    "assert failed",
+                    assert_decl.expr.loc(),
+                ));
             }
         }
     }
@@ -103,32 +119,31 @@ pub fn analyze_with_options(
             continue;
         }
         if !seen_singleton.insert(kind) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("duplicate block '{:?}'", kind).to_lowercase(),
-                0,
-                0,
+                block.loc(),
             ));
         }
     }
 
     let raw_ins = match program.block(BlockKind::Ins) {
-        Some(Block::Ins(v)) => v.clone(),
+        Some(Block::Ins(v)) => v.decls.clone(),
         _ => Vec::new(),
     };
     let raw_outs = match program.block(BlockKind::Outs) {
-        Some(Block::Outs(v)) => v.clone(),
+        Some(Block::Outs(v)) => v.decls.clone(),
         _ => Vec::new(),
     };
     let params = match program.block(BlockKind::Params) {
-        Some(Block::Params(v)) => v.clone(),
+        Some(Block::Params(v)) => v.decls.clone(),
         _ => Vec::new(),
     };
     let mut events = match program.block(BlockKind::Events) {
-        Some(Block::Events(v)) => v.clone(),
+        Some(Block::Events(v)) => v.events.clone(),
         _ => Vec::new(),
     };
     let buffers = match program.block(BlockKind::Buffers) {
-        Some(Block::Buffers(v)) => v.clone(),
+        Some(Block::Buffers(v)) => v.decls.clone(),
         _ => Vec::new(),
     };
     let mut struct_defs_raw = program
@@ -159,10 +174,9 @@ pub fn analyze_with_options(
         block_post = exec.post.clone();
         nested_block_sample = exec.sample.clone();
         if nested_block_sample.is_none() {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 "block section must include nested 'sample' block",
-                0,
-                0,
+                exec.loc.as_ref(),
             ));
         }
     }
@@ -170,15 +184,23 @@ pub fn analyze_with_options(
         Some(Block::Sample(v)) => Some(v.clone()),
         _ => None,
     };
+    let sample_conflict_loc = top_sample
+        .as_ref()
+        .and_then(|sample| sample.loc.cloned())
+        .or_else(|| {
+            nested_block_sample
+                .as_ref()
+                .and_then(|sample| sample.loc.cloned())
+        });
 
     let sample_block = match (nested_block_sample, top_sample) {
         (Some(_), Some(_)) => {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 "sample block cannot be declared both at top-level and inside block",
-                0,
-                0,
+                sample_conflict_loc.as_ref(),
             ));
             SampleBlock {
+                loc: Default::default(),
                 oversample_factor: None,
                 body: Vec::new(),
             }
@@ -186,6 +208,7 @@ pub fn analyze_with_options(
         (Some(v), None) => v,
         (None, Some(v)) => v,
         (None, None) => SampleBlock {
+            loc: Default::default(),
             oversample_factor: None,
             body: Vec::new(),
         },
@@ -197,11 +220,11 @@ pub fn analyze_with_options(
     );
     let mut sample = sample_block.body;
 
-    if sample.is_empty() {
-        errors.push(Diagnostic::semantic(
+    let missing_sample_loc = original_last_block_loc.as_ref();
+    if sample.is_empty() && program.block(BlockKind::Block).is_none() {
+        errors.push(Diagnostic::semantic_span(
             "missing required 'sample' block",
-            0,
-            0,
+            missing_sample_loc,
         ));
     }
 
@@ -414,23 +437,21 @@ pub fn analyze_with_options(
                 continue;
             }
             if generic_templates.contains_key(&s.name) {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!("duplicate generic struct '{}'", s.name),
-                    0,
-                    0,
+                    s.loc,
                 ));
                 continue;
             }
             let mut seen = HashSet::new();
             for tp in &s.type_params {
                 if !seen.insert(tp.clone()) {
-                    errors.push(Diagnostic::semantic(
+                    errors.push(Diagnostic::semantic_span(
                         format!(
                             "duplicate generic type parameter '{}' in struct '{}'",
                             tp, s.name
                         ),
-                        0,
-                        0,
+                        s.loc,
                     ));
                 }
             }
@@ -662,26 +683,23 @@ pub fn analyze_with_options(
     }
     for s in &struct_defs_raw {
         if is_builtin_constant_name(&s.name) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("struct name '{}' is reserved as a builtin constant", s.name),
-                0,
-                0,
+                s.loc,
             ));
             continue;
         }
         if all_declared.contains(&s.name) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("struct name '{}' conflicts with existing symbol", s.name),
-                0,
-                0,
+                s.loc,
             ));
             continue;
         }
         if struct_defs.contains_key(&s.name) {
-            errors.push(Diagnostic::semantic(
+            errors.push(Diagnostic::semantic_span(
                 format!("duplicate struct '{}'", s.name),
-                0,
-                0,
+                s.loc,
             ));
             continue;
         }
@@ -702,13 +720,12 @@ pub fn analyze_with_options(
 
         for method in &s.methods {
             if method.params.first().map(|p| p.name.as_str()) != Some("self") {
-                errors.push(Diagnostic::semantic(
+                errors.push(Diagnostic::semantic_span(
                     format!(
                         "method '{}.{}' must declare 'self' as first parameter",
                         s.name, method.name
                     ),
-                    0,
-                    0,
+                    method.loc,
                 ));
             }
             let fq_name = format!("{}.{}", s.name, method.name);
@@ -739,6 +756,7 @@ pub fn analyze_with_options(
                 );
             }
             defs.push(FunctionDef {
+                loc: method.loc.clone(),
                 type_params: Vec::new(),
                 name: fq_name,
                 params: method.params.clone(),
@@ -991,52 +1009,53 @@ pub fn analyze_with_options(
             .get(&def.name)
             .cloned()
             .unwrap_or_else(|| def.name.clone());
+        let def_diag = DiagCtx::new(def.loc);
         if is_builtin_constant_name(&public_name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                def_diag,
+                &mut errors,
                 format!(
                     "function name '{}' is reserved as a builtin constant",
                     public_name
                 ),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         if is_builtin_function_name(&public_name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                def_diag,
+                &mut errors,
                 format!("cannot redefine builtin function '{}'", public_name),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         if struct_defs.contains_key(&public_name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                def_diag,
+                &mut errors,
                 format!("function name '{}' conflicts with struct name", public_name),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         if all_declared.contains(&public_name)
             && !seen_public_function_symbols.contains(&public_name)
         {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                def_diag,
+                &mut errors,
                 format!(
                     "function name '{}' conflicts with existing symbol",
                     public_name
                 ),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         if fn_signatures.contains_key(&def.name) {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                def_diag,
+                &mut errors,
                 format!("duplicate function '{}'", def.name),
-                0,
-                0,
-            ));
+            );
             continue;
         }
         fn_signatures.insert(
@@ -1053,36 +1072,37 @@ pub fn analyze_with_options(
         }
 
         if !def.type_params.is_empty() {
-            errors.push(Diagnostic::semantic(
+            push_semantic(
+                def_diag,
+                &mut errors,
                 format!(
                     "function '{}' does not support generic type parameters; use typed/untyped parameters and call-site monomorphization",
                     public_name
                 ),
-                0,
-                0,
-            ));
+            );
         }
         let mut local_params = HashSet::new();
         for p in &def.params {
+            let param_diag = DiagCtx::new(p.ty_loc.or(p.loc));
             if is_builtin_constant_name(&p.name) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    param_diag,
+                    &mut errors,
                     format!(
                         "function parameter '{}' in '{}' is reserved as a builtin constant",
                         p.name, def.name
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
             if !local_params.insert(p.name.clone()) {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    param_diag,
+                    &mut errors,
                     format!(
                         "duplicate function parameter '{}' in '{}'",
                         p.name, public_name
                     ),
-                    0,
-                    0,
-                ));
+                );
             }
             if let Some(default) = &p.default {
                 if matches!(
@@ -1092,14 +1112,14 @@ pub fn analyze_with_options(
                         | Some(FnParamType::ArrayGeneric(_))
                         | Some(FnParamType::BareBuffer)
                 ) {
-                    errors.push(Diagnostic::semantic(
+                    push_semantic(
+                        param_diag,
+                        &mut errors,
                         format!(
                             "function parameter '{}.{}' is a buffer and cannot have a default value",
                             public_name, p.name
                         ),
-                        0,
-                        0,
-                    ));
+                    );
                 }
                 validate_default_expr(
                     default,

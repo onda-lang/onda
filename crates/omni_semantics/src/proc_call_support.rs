@@ -35,7 +35,7 @@ fn prepend_proc_index_alias_args(args: &mut Vec<CallArg>, alias: &ProcArrayAlias
     let mut rewritten = Vec::<CallArg>::with_capacity(rest.len() + 2);
     rewritten.push(CallArg {
         name: None,
-        expr: Expr::Var(alias.array_base.clone()),
+        expr: Expr::var(alias.array_base.clone()),
     });
     rewritten.push(CallArg {
         name: None,
@@ -50,16 +50,17 @@ pub(crate) fn rewrite_proc_alias_calls_in_expr(
     aliases: &HashMap<String, ProcArrayAliasInfo>,
 ) {
     match expr {
-        Expr::Var(name) => {
+        Expr::Var { name, .. } => {
             if let Some((base, field)) = split_dot_path(name.as_str()) {
                 if let Some(alias) = aliases.get(base) {
                     *expr = Expr::UserCall {
+                        loc: Default::default(),
                         name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
                         type_args: Vec::new(),
                         args: vec![
                             CallArg {
                                 name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                                expr: Expr::Var(alias.array_base.clone()),
+                                expr: Expr::var(alias.array_base.clone()),
                             },
                             CallArg {
                                 name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
@@ -67,7 +68,7 @@ pub(crate) fn rewrite_proc_alias_calls_in_expr(
                             },
                             CallArg {
                                 name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
-                                expr: Expr::Var(field.to_owned()),
+                                expr: Expr::var(field.to_owned()),
                             },
                         ],
                     };
@@ -83,7 +84,7 @@ pub(crate) fn rewrite_proc_alias_calls_in_expr(
                 rewrite_proc_alias_calls_in_expr(end, aliases);
             }
         }
-        Expr::ArrayCtor { spec, init } => {
+        Expr::ArrayCtor { spec, init, .. } => {
             rewrite_proc_alias_calls_in_expr(&mut spec.size, aliases);
             if let Some(values) = init {
                 for value in values {
@@ -119,16 +120,16 @@ pub(crate) fn rewrite_proc_alias_calls_in_expr(
             }
         }
         Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner }
-        | Expr::UnaryBitNot { expr: inner } => {
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_proc_alias_calls_in_expr(inner, aliases);
         }
-        Expr::ArrayLiteral(values) => {
+        Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 rewrite_proc_alias_calls_in_expr(value, aliases);
             }
         }
-        Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) => {}
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
 

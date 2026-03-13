@@ -789,8 +789,8 @@ pub(super) unsafe fn clamp_data_index_dynamic(
 
 pub(super) fn try_constant_index_i64(expr: &Expr) -> Option<i64> {
     match expr {
-        Expr::Int(v) => Some(*v),
-        Expr::Number(v) => {
+        Expr::Int { value: v, .. } => Some(*v),
+        Expr::Number { value: v, .. } => {
             let truncated = v.trunc();
             if (v - truncated).abs() <= 1e-6 {
                 Some(truncated as i64)

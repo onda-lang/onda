@@ -1,5 +1,9 @@
 use super::*;
 
+fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
+    errors.push(diag.semantic(message, 0, 0));
+}
+
 #[derive(Debug, Clone)]
 struct RuntimeManagedProcArray {
     proc_name: String,
@@ -34,6 +38,7 @@ fn try_dynamic_proc_call_meta<'a>(
         name,
         args,
         type_args: _,
+        ..
     } = expr
     else {
         return None;
@@ -54,10 +59,10 @@ fn try_dynamic_proc_call_meta<'a>(
         return None;
     }
     let self_arg = args.first()?;
-    let Expr::Index { base, index } = &self_arg.expr else {
+    let Expr::Index { base, index, .. } = &self_arg.expr else {
         return None;
     };
-    if matches!(index.as_ref(), Expr::Int(_)) {
+    if matches!(index.as_ref(), Expr::Int { .. }) {
         return None;
     }
     Some((proc_name, args, base.as_str(), index.as_ref()))
@@ -104,7 +109,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     );
                 }
             }
-            Expr::ArrayCtor { spec, init } => {
+            Expr::ArrayCtor { spec, init, .. } => {
                 collect_guards_from_expr(
                     &spec.size,
                     proc_api,
@@ -157,6 +162,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                 name: _,
                 args,
                 type_args: _,
+                ..
             } => {
                 for arg in args {
                     collect_guards_from_expr(
@@ -192,30 +198,35 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                 pre_args.push(CallArg {
                     name: None,
                     expr: Expr::Index {
+                        loc: Default::default(),
                         base: array_base.to_owned(),
                         index: Box::new(index_expr.clone()),
                     },
                 });
                 pre_args.extend(args.iter().skip(buffer_start).cloned());
                 guards.push(Stmt::If {
-                    loc: None,
+                    loc: Default::default(),
                     cond: Expr::UnaryNot {
+                        loc: Default::default(),
                         expr: Box::new(Expr::Index {
+                            loc: Default::default(),
                             base: active_symbol.clone(),
                             index: Box::new(index_expr.clone()),
                         }),
                     },
                     then_branch: vec![
                         Stmt::Expr {
-                            loc: None,
+                            loc: Default::default(),
                             expr: Expr::UserCall {
+                                loc: Default::default(),
                                 name: format!("{proc_name}{PROC_BLOCK_PRE_FN_SUFFIX}"),
                                 type_args: Vec::new(),
                                 args: pre_args,
                             },
                         },
                         Stmt::Assign {
-                            loc: None,
+                            loc: Default::default(),
+                            target_loc: Default::default(),
                             target: AssignTarget::Index {
                                 base: active_symbol,
                                 index: index_expr.clone(),
@@ -223,15 +234,16 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                             decl_ty: None,
                             generic_decl_ty: None,
                             is_typed_decl: false,
-                            expr: Expr::Bool(true),
+                            typed_decl_ty_loc: Default::default(),
+                            expr: Expr::bool(true),
                         },
                     ],
                     else_branch: Vec::new(),
                 });
             }
             Expr::Cast { expr: inner, .. }
-            | Expr::UnaryNot { expr: inner }
-            | Expr::UnaryBitNot { expr: inner } => {
+            | Expr::UnaryNot { expr: inner, .. }
+            | Expr::UnaryBitNot { expr: inner, .. } => {
                 collect_guards_from_expr(
                     inner,
                     proc_api,
@@ -240,7 +252,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     guards,
                 );
             }
-            Expr::ArrayLiteral(values) => {
+            Expr::ArrayLiteral { values, .. } => {
                 for value in values {
                     collect_guards_from_expr(
                         value,
@@ -251,7 +263,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     );
                 }
             }
-            Expr::Number(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => {}
+            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
         }
     }
 
@@ -410,6 +422,7 @@ fn is_static_block_hook_for_managed_array(
                 name,
                 args,
                 type_args: _,
+                ..
             },
         ..
     } = stmt
@@ -424,7 +437,7 @@ fn is_static_block_hook_for_managed_array(
     };
     matches!(
         &self_arg.expr,
-        Expr::Index { base, index } if base == array_base && matches!(index.as_ref(), Expr::Int(_))
+        Expr::Index { base, index, .. } if base == array_base && matches!(index.as_ref(), Expr::Int { .. })
     )
 }
 
@@ -442,7 +455,7 @@ fn remap_proc_ctor_assign_for_array_slot(
         if let Some(field_path) = name.strip_prefix(&prefix) {
             *target = AssignTarget::Index {
                 base: format!("{array_base}.{field_path}"),
-                index: Expr::Int(slot_idx as i64),
+                index: Expr::int(slot_idx as i64),
             };
         }
     }
@@ -471,7 +484,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             let mut pending_stmts = vec![stmt];
             if let Some(Stmt::Assign {
                 target: AssignTarget::Var(array_var),
-                expr: Expr::ArrayCtor { spec, init },
+                expr: expr @ Expr::ArrayCtor { spec, init, .. },
                 ..
             }) = pending_stmts.first()
             {
@@ -492,23 +505,26 @@ pub(super) fn rewrite_top_level_proc_calls(
                 if let Some(proc_ctor) = resolved_proc_ctor {
                     let size_context =
                         format!("top-level processor array '{}' size", array_var.as_str());
-                    let Some(len) = eval_data_size_expr(&spec.size, options, &size_context, errors)
-                    else {
+                    let Some(len) = with_expr_diag_context(&spec.size, |_diag| {
+                        eval_data_size_expr(&spec.size, options, &size_context, errors)
+                    }) else {
                         pending_stmts.clear();
                         continue;
                     };
                     if let Some(values) = init {
                         if values.len() != len && values.len() != 1 {
-                            errors.push(Diagnostic::semantic(
-                                format!(
-                                    "top-level processor array '{}' initializer expects {} constructor entries (or a single broadcast constructor), got {}",
-                                    array_var,
-                                    len,
-                                    values.len()
-                                ),
-                                0,
-                                0,
-                            ));
+                            with_expr_diag_context(expr, |expr_diag| {
+                                push_semantic(
+                                    expr_diag,
+                                    errors,
+                                    format!(
+                                        "top-level processor array '{}' initializer expects {} constructor entries (or a single broadcast constructor), got {}",
+                                        array_var,
+                                        len,
+                                        values.len()
+                                    ),
+                                );
+                            });
                         }
                     }
                     let slot_names = (0..len)
@@ -542,6 +558,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     name: ctor_name,
                                     type_args,
                                     args: ctor_args,
+                                    ..
                                 } = value
                                 {
                                     let resolved_ctor = if ctor_name.contains("::") {
@@ -559,55 +576,66 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     };
                                     if let Some(resolved_ctor) = resolved_ctor {
                                         if resolved_ctor != proc_ctor {
-                                            errors.push(Diagnostic::semantic(
-                                                format!(
-                                                    "top-level processor array '{}' initializer entry {} uses constructor '{}' but '{}' is required",
-                                                    array_var, idx, resolved_ctor, proc_ctor
-                                                ),
-                                                0,
-                                                0,
-                                            ));
+                                            with_expr_diag_context(value, |expr_diag| {
+                                                push_semantic(
+                                                    expr_diag,
+                                                    errors,
+                                                    format!(
+                                                        "top-level processor array '{}' initializer entry {} uses constructor '{}' but '{}' is required",
+                                                        array_var, idx, resolved_ctor, proc_ctor
+                                                    ),
+                                                );
+                                            });
                                         }
                                     } else {
-                                        errors.push(Diagnostic::semantic(
-                                            format!(
-                                                "top-level processor array '{}' initializer entry {} references unknown processor constructor '{}'",
-                                                array_var, idx, ctor_name
-                                            ),
-                                            0,
-                                            0,
-                                        ));
+                                        with_expr_diag_context(value, |expr_diag| {
+                                            push_semantic(
+                                                expr_diag,
+                                                errors,
+                                                format!(
+                                                    "top-level processor array '{}' initializer entry {} references unknown processor constructor '{}'",
+                                                    array_var, idx, ctor_name
+                                                ),
+                                            );
+                                        });
                                     }
                                     if !type_args.is_empty() {
-                                        errors.push(Diagnostic::semantic(
-                                            format!(
-                                                "processor '{}' is not generic and cannot take type arguments",
-                                                ctor_name
-                                            ),
-                                            0,
-                                            0,
-                                        ));
+                                        with_expr_diag_context(value, |expr_diag| {
+                                            push_semantic(
+                                                expr_diag,
+                                                errors,
+                                                format!(
+                                                    "processor '{}' is not generic and cannot take type arguments",
+                                                    ctor_name
+                                                ),
+                                            );
+                                        });
                                     }
                                     args = ctor_args.clone();
                                 } else {
-                                    errors.push(Diagnostic::semantic(
-                                        format!(
-                                            "top-level processor array '{}' initializer entry {} must be a processor constructor call",
-                                            array_var, idx
-                                        ),
-                                        0,
-                                        0,
-                                    ));
+                                    with_expr_diag_context(value, |expr_diag| {
+                                        push_semantic(
+                                            expr_diag,
+                                            errors,
+                                            format!(
+                                                "top-level processor array '{}' initializer entry {} must be a processor constructor call",
+                                                array_var, idx
+                                            ),
+                                        );
+                                    });
                                 }
                             }
                         }
                         expanded.push(Stmt::Assign {
-                            loc: None,
+                            loc: Default::default(),
+                            target_loc: Default::default(),
                             target: AssignTarget::Var(slot_var),
                             decl_ty: None,
                             generic_decl_ty: None,
                             is_typed_decl: false,
+                            typed_decl_ty_loc: Default::default(),
                             expr: Expr::UserCall {
+                                loc: Default::default(),
                                 name: proc_ctor.clone(),
                                 type_args: Vec::new(),
                                 args,
@@ -629,14 +657,16 @@ pub(super) fn rewrite_top_level_proc_calls(
                     }
                     for (idx, value) in values.iter().cloned().enumerate() {
                         expanded.push(Stmt::Assign {
-                            loc: None,
+                            loc: Default::default(),
+                            target_loc: Default::default(),
                             target: AssignTarget::Index {
                                 base: array_var.clone(),
-                                index: Expr::Int(idx as i64),
+                                index: Expr::int(idx as i64),
                             },
                             decl_ty: None,
                             generic_decl_ty: None,
                             is_typed_decl: false,
+                            typed_decl_ty_loc: Default::default(),
                             expr: value,
                         });
                     }
@@ -665,14 +695,14 @@ pub(super) fn rewrite_top_level_proc_calls(
                 {
                     if proc_api.contains_key(ctor_name) {
                         if !ctor_type_args.is_empty() {
-                            errors.push(Diagnostic::semantic(
+                            push_semantic(
+                                DiagCtx::new(stmt.loc()),
+                                errors,
                                 format!(
                                     "processor '{}' is not generic and cannot take type arguments",
                                     ctor_name
                                 ),
-                                0,
-                                0,
-                            ));
+                            );
                         }
                         let array_slot = find_proc_array_slot(var, &global_proc_array_slots);
                         if array_slot.is_none() {
@@ -724,8 +754,9 @@ pub(super) fn rewrite_top_level_proc_calls(
                             }
                             rewritten_init.extend(ctor_assigns);
                             rewritten_init.push(Stmt::Expr {
-                                loc: None,
+                                loc: Default::default(),
                                 expr: Expr::UserCall {
+                                    loc: Default::default(),
                                     name: format!("{ctor_name}{PROC_INIT_FN_SUFFIX}"),
                                     type_args: Vec::new(),
                                     args: vec![CallArg {
@@ -739,8 +770,9 @@ pub(super) fn rewrite_top_level_proc_calls(
                             });
                         } else {
                             rewritten_init.push(Stmt::Expr {
-                                loc: None,
+                                loc: Default::default(),
                                 expr: Expr::UserCall {
+                                    loc: Default::default(),
                                     name: format!("{ctor_name}{PROC_INIT_FN_SUFFIX}"),
                                     type_args: Vec::new(),
                                     args: vec![CallArg {
@@ -801,11 +833,11 @@ pub(super) fn rewrite_top_level_proc_calls(
                 continue;
             };
             let Some(api) = proc_api.get(&instance.proc_name) else {
-                errors.push(Diagnostic::semantic(
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
                     format!("unknown processor type '{}'", instance.proc_name),
-                    0,
-                    0,
-                ));
+                );
                 continue;
             };
             if !api.has_block {
@@ -823,8 +855,9 @@ pub(super) fn rewrite_top_level_proc_calls(
                 errors,
             ));
             injected_block_pre.push(Stmt::Expr {
-                loc: None,
+                loc: Default::default(),
                 expr: Expr::UserCall {
+                    loc: Default::default(),
                     name: format!("{}{}", instance.proc_name, PROC_BLOCK_PRE_FN_SUFFIX),
                     type_args: Vec::new(),
                     args: pre_args,
@@ -843,8 +876,9 @@ pub(super) fn rewrite_top_level_proc_calls(
                 errors,
             ));
             injected_block_post.push(Stmt::Expr {
-                loc: None,
+                loc: Default::default(),
                 expr: Expr::UserCall {
+                    loc: Default::default(),
                     name: format!("{}{}", instance.proc_name, PROC_BLOCK_POST_FN_SUFFIX),
                     type_args: Vec::new(),
                     args: post_args,
@@ -872,6 +906,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 let sample_body = match program.blocks.remove(sample_idx) {
                     Block::Sample(stmts) => stmts,
                     _ => SampleBlock {
+                        loc: Default::default(),
                         oversample_factor: None,
                         body: Vec::new(),
                     },
@@ -879,6 +914,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 program.blocks.insert(
                     sample_idx,
                     Block::Block(BlockExec {
+                        loc: Default::default(),
                         pre: injected_block_pre,
                         sample: Some(sample_body),
                         post: injected_block_post,
@@ -1031,17 +1067,20 @@ pub(super) fn rewrite_top_level_proc_calls(
             for (_base, info) in managed {
                 let len = info.slots.len();
                 init.body.push(Stmt::Assign {
-                    loc: None,
+                    loc: Default::default(),
+                    target_loc: Default::default(),
                     target: AssignTarget::Var(info.active_symbol.clone()),
                     decl_ty: None,
                     generic_decl_ty: None,
                     is_typed_decl: true,
+                    typed_decl_ty_loc: Default::default(),
                     expr: Expr::ArrayCtor {
+                        loc: Default::default(),
                         spec: omni_frontend::ArrayTypeSpec {
                             elem: ArrayElemType::Primitive(PrimitiveType::Bool),
-                            size: Box::new(Expr::Int(len as i64)),
+                            size: Box::new(Expr::int(len as i64)),
                         },
-                        init: Some(vec![Expr::Bool(false); len]),
+                        init: Some(vec![Expr::bool(false); len]),
                     },
                 });
             }
@@ -1058,15 +1097,17 @@ pub(super) fn rewrite_top_level_proc_calls(
             for (_base, info) in &managed {
                 for slot_idx in 0..info.slots.len() {
                     reset_prefix.push(Stmt::Assign {
-                        loc: None,
+                        loc: Default::default(),
+                        target_loc: Default::default(),
                         target: AssignTarget::Index {
                             base: info.active_symbol.clone(),
-                            index: Expr::Int(slot_idx as i64),
+                            index: Expr::int(slot_idx as i64),
                         },
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: false,
-                        expr: Expr::Bool(false),
+                        typed_decl_ty_loc: Default::default(),
+                        expr: Expr::bool(false),
                     });
                 }
             }
@@ -1108,22 +1149,25 @@ pub(super) fn rewrite_top_level_proc_calls(
                     post_args.push(CallArg {
                         name: None,
                         expr: Expr::Index {
+                            loc: Default::default(),
                             base: (*base).clone(),
-                            index: Box::new(Expr::Int(slot_idx as i64)),
+                            index: Box::new(Expr::int(slot_idx as i64)),
                         },
                     });
                     post_args.extend(expand_proc_buffer_call_args(
                         instance, api, slot_name, errors,
                     ));
                     exec.post.push(Stmt::If {
-                        loc: None,
+                        loc: Default::default(),
                         cond: Expr::Index {
+                            loc: Default::default(),
                             base: info.active_symbol.clone(),
-                            index: Box::new(Expr::Int(slot_idx as i64)),
+                            index: Box::new(Expr::int(slot_idx as i64)),
                         },
                         then_branch: vec![Stmt::Expr {
-                            loc: None,
+                            loc: Default::default(),
                             expr: Expr::UserCall {
+                                loc: Default::default(),
                                 name: format!("{}{}", info.proc_name, PROC_BLOCK_POST_FN_SUFFIX),
                                 type_args: Vec::new(),
                                 args: post_args,

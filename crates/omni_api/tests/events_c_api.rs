@@ -9,6 +9,18 @@ fn diag_message(diag: &omni_diag_t) -> String {
     unsafe { CStr::from_ptr(diag.message).to_string_lossy().into_owned() }
 }
 
+fn empty_diag() -> omni_diag_t {
+    omni_diag_t {
+        code: 0,
+        line: 0,
+        column: 0,
+        end_line: 0,
+        message: std::ptr::null(),
+        file: std::ptr::null(),
+        trace: std::ptr::null(),
+    }
+}
+
 struct ProgramHandle(*mut omni_program);
 
 impl Drop for ProgramHandle {
@@ -36,14 +48,7 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
         sample_rate: 48_000.0,
         block_size: 512,
     };
-    let mut diag = omni_diag_t {
-        code: 0,
-        line: 0,
-        column: 0,
-        message: std::ptr::null(),
-        file: std::ptr::null(),
-        trace: std::ptr::null(),
-    };
+    let mut diag = empty_diag();
     let program = omni_compile(src_c.as_ptr(), &options, &mut diag);
     assert!(
         !program.is_null(),
@@ -51,6 +56,34 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
         diag_message(&diag)
     );
     ProgramHandle(program)
+}
+
+#[test]
+fn c_api_compile_reports_diagnostic_ranges() {
+    unsafe {
+        let src = CString::new(
+            r#"
+const BAD = false
+outs:
+  out1
+sample:
+  a = [0.0, 0.0]
+  a[BAD:] = 0.5
+  out1 = a[0]
+"#,
+        )
+        .expect("source contains no NUL bytes");
+        let options = omni_compile_options_t {
+            fast_math: 0,
+            sample_rate: 48_000.0,
+            block_size: 512,
+        };
+        let mut diag = empty_diag();
+        let program = omni_compile(src.as_ptr(), &options, &mut diag);
+        assert!(program.is_null(), "compile unexpectedly succeeded");
+        assert_eq!((diag.line, diag.column), (7, 5));
+        assert_eq!(diag.end_line, 7);
+    }
 }
 
 #[test]
@@ -108,14 +141,7 @@ sample { out1 = amp }
 "#,
         );
 
-        let mut diag = omni_diag_t {
-            code: 0,
-            line: 0,
-            column: 0,
-            message: std::ptr::null(),
-            file: std::ptr::null(),
-            trace: std::ptr::null(),
-        };
+        let mut diag = empty_diag();
         let instance = omni_instance_create(program.0, 0, 1, &mut diag);
         assert!(
             !instance.is_null(),
@@ -188,14 +214,7 @@ sample { out1 = gate }
         assert_eq!(event_idx, 0);
         assert_eq!(omni_event_payload_bytes(program.0, event_idx), -1);
 
-        let mut diag = omni_diag_t {
-            code: 0,
-            line: 0,
-            column: 0,
-            message: std::ptr::null(),
-            file: std::ptr::null(),
-            trace: std::ptr::null(),
-        };
+        let mut diag = empty_diag();
         let instance = omni_instance_create(program.0, 0, 1, &mut diag);
         assert!(
             !instance.is_null(),
@@ -263,14 +282,7 @@ sample { out1 = amp }
 "#,
         );
 
-        let mut diag = omni_diag_t {
-            code: 0,
-            line: 0,
-            column: 0,
-            message: std::ptr::null(),
-            file: std::ptr::null(),
-            trace: std::ptr::null(),
-        };
+        let mut diag = empty_diag();
         let instance = omni_instance_create(program.0, 0, 1, &mut diag);
         assert!(
             !instance.is_null(),
@@ -329,14 +341,7 @@ sample { out1 = 0.25 }
             sample_rate: 48_000.0,
             block_size: 128,
         };
-        let mut diag = omni_diag_t {
-            code: 0,
-            line: 0,
-            column: 0,
-            message: std::ptr::null(),
-            file: std::ptr::null(),
-            trace: std::ptr::null(),
-        };
+        let mut diag = empty_diag();
         let program = omni_compile(src.as_ptr(), &options, &mut diag);
         assert!(
             !program.is_null(),
@@ -388,14 +393,7 @@ sample { out1 = SAMPLE_RATE }
             sample_rate,
             block_size,
         };
-        let mut diag = omni_diag_t {
-            code: 0,
-            line: 0,
-            column: 0,
-            message: std::ptr::null(),
-            file: std::ptr::null(),
-            trace: std::ptr::null(),
-        };
+        let mut diag = empty_diag();
         let program = omni_compile(src.as_ptr(), &options, &mut diag);
         assert!(
             !program.is_null(),
@@ -634,14 +632,7 @@ sample {
 "#,
         );
 
-        let mut diag = omni_diag_t {
-            code: 0,
-            line: 0,
-            column: 0,
-            message: std::ptr::null(),
-            file: std::ptr::null(),
-            trace: std::ptr::null(),
-        };
+        let mut diag = empty_diag();
         let instance = omni_instance_create(program.0, 0, 2, &mut diag);
         assert!(
             !instance.is_null(),
@@ -697,14 +688,7 @@ sample {
 "#,
         );
 
-        let mut diag = omni_diag_t {
-            code: 0,
-            line: 0,
-            column: 0,
-            message: std::ptr::null(),
-            file: std::ptr::null(),
-            trace: std::ptr::null(),
-        };
+        let mut diag = empty_diag();
         let instance = omni_instance_create(program.0, 0, 1, &mut diag);
         assert!(
             !instance.is_null(),

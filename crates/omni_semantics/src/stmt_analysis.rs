@@ -192,7 +192,7 @@ pub(crate) fn analyze_stmt_expr(
 }
 
 fn is_bare_array_ref_expr(expr: &Expr, env: StmtExprAnalysisEnv<'_>) -> bool {
-    let Expr::Var(name) = expr else {
+    let Expr::Var { name, .. } = expr else {
         return false;
     };
     env.expr_env.array_vars.contains_key(name)
@@ -234,7 +234,7 @@ pub(crate) fn require_validated_bool_stmt_expr(
     errors: &mut Vec<Diagnostic>,
 ) {
     let expr_ty = validate_and_infer_stmt_expr_type(expr, env, errors);
-    require_bool_type(expr_ty, context, errors);
+    require_expr_bool_type(expr, expr_ty, context, errors);
 }
 
 pub(crate) fn require_validated_numeric_stmt_expr(
@@ -244,7 +244,7 @@ pub(crate) fn require_validated_numeric_stmt_expr(
     errors: &mut Vec<Diagnostic>,
 ) {
     let expr_ty = validate_and_infer_stmt_expr_type(expr, env, errors);
-    require_numeric_type(expr_ty, context, errors);
+    require_expr_numeric_type(expr, expr_ty, context, errors);
 }
 
 pub(crate) fn validate_for_loop_step_expr(
@@ -254,8 +254,13 @@ pub(crate) fn validate_for_loop_step_expr(
 ) {
     if let Some(step_expr) = step_expr {
         require_validated_numeric_stmt_expr(step_expr, "for loop step", env, errors);
-        if matches!(step_expr, Expr::Int(0)) || matches!(step_expr, Expr::Number(v) if *v == 0.0) {
-            errors.push(Diagnostic::semantic("for loop step cannot be zero", 0, 0));
+        if matches!(step_expr, Expr::Int { value: 0, .. })
+            || matches!(step_expr, Expr::Number { value: v, .. } if *v == 0.0)
+        {
+            errors.push(Diagnostic::semantic_span(
+                "for loop step cannot be zero",
+                step_expr.loc(),
+            ));
         }
     }
 }
@@ -289,8 +294,8 @@ fn normalize_static_slice_bound(
 
 fn const_slice_bound_i64(expr: &Expr) -> Option<i64> {
     match expr {
-        Expr::Int(v) => Some(*v),
-        Expr::Number(v) => {
+        Expr::Int { value: v, .. } => Some(*v),
+        Expr::Number { value: v, .. } => {
             let truncated = v.trunc();
             if (v - truncated).abs() <= 1e-6 {
                 Some(truncated as i64)
@@ -308,10 +313,9 @@ pub(crate) fn require_loop_control_context(
     errors: &mut Vec<Diagnostic>,
 ) {
     if loop_depth == 0 {
-        errors.push(Diagnostic::semantic(
+        errors.push(Diagnostic::semantic_span(
             format!("{keyword} is only allowed inside for/while/loop bodies"),
-            0,
-            0,
+            None::<SourceLoc>,
         ));
     }
 }

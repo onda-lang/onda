@@ -7,21 +7,21 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
     call_return_type_overrides: Option<&HashMap<String, PrimitiveType>>,
 ) -> Option<PrimitiveType> {
     match expr {
-        Expr::Number(_) => Some(PrimitiveType::F32),
-        Expr::Int(v) => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+        Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
             PrimitiveType::I32
         } else {
             PrimitiveType::I64
         }),
-        Expr::Bool(_) => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral(_) | Expr::ArrayCtor { .. } | Expr::Slice { .. } => None,
-        Expr::Var(name) => builtin_constant_type(name).or_else(|| locals.get(name).copied()),
+        Expr::Bool { .. } => Some(PrimitiveType::Bool),
+        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } | Expr::Slice { .. } => None,
+        Expr::Var { name, .. } => builtin_constant_type(name).or_else(|| locals.get(name).copied()),
         Expr::Index { base, .. } => locals.get(base).copied().or(Some(PrimitiveType::F32)),
         Expr::Cast { to, .. } => Some(*to),
         Expr::UnaryNot { .. } | Expr::Compare { .. } | Expr::Logical { .. } => {
             Some(PrimitiveType::Bool)
         }
-        Expr::UnaryBitNot { expr } => {
+        Expr::UnaryBitNot { expr, .. } => {
             let inner = infer_expr_type_for_def_return_inference_with_call_overrides(
                 expr,
                 locals,
@@ -33,7 +33,7 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
                 _ => None,
             }
         }
-        Expr::Binary { op, lhs, rhs } => {
+        Expr::Binary { op, lhs, rhs, .. } => {
             let l = infer_expr_type_for_def_return_inference_with_call_overrides(
                 lhs,
                 locals,
@@ -61,7 +61,7 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
                 _ => merge_inferred_return_types(l, r),
             }
         }
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             let arg_tys = args
                 .iter()
                 .filter_map(|arg| {
@@ -108,7 +108,7 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
             }
             if is_internal_buffer_2d_fn(name) {
                 if let Some(CallArg {
-                    expr: Expr::Var(base),
+                    expr: Expr::Var { name: base, .. },
                     ..
                 }) = args.first()
                 {

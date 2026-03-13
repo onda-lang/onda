@@ -7,18 +7,17 @@ pub(super) fn parse_section_default_decl_type(
     if pair.as_rule() != Rule::section_default_decl_type
         && pair.as_rule() != Rule::section_default_elem_type
     {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             format!("internal parser error: expected {block_name} section default type"),
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(actual) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             format!("missing {block_name} section default type"),
-            0,
-            0,
         )]);
     };
     parse_decl_type(actual)
@@ -27,13 +26,13 @@ pub(super) fn parse_section_default_decl_type(
 pub(super) fn parse_init_default_decl_type(
     pair: Pair<'_, Rule>,
 ) -> Result<DeclType, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
     let ty = parse_section_default_decl_type(pair, "init")?;
     match ty {
         DeclType::Scalar(_) | DeclType::Generic(_) => Ok(ty),
-        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => Err(vec![Diagnostic::syntax(
+        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "init section default type must be a scalar primitive or generic type",
-            0,
-            0,
         )]),
     }
 }
@@ -42,17 +41,17 @@ pub(super) fn parse_section_default_buffer_type(
     pair: Pair<'_, Rule>,
     block_name: &str,
 ) -> Result<BufferType, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
     let decl_ty = parse_section_default_decl_type(pair, block_name)?;
     let elem = match decl_ty {
         DeclType::Scalar(prim) => BufferElemType::Primitive(prim),
         DeclType::Generic(param) => BufferElemType::Generic(param),
         DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
                 format!(
                     "{block_name} section default type must be primitive or generic element type"
                 ),
-                0,
-                0,
             )])
         }
     };
@@ -64,27 +63,25 @@ pub(super) fn parse_section_default_buffer_type(
 
 pub(super) fn parse_decl_range_pair(pair: Pair<'_, Rule>) -> Result<DeclRange, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::decl_range {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected declaration range",
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(first_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing declaration range expression",
-            0,
-            0,
         )]);
     };
     let first = parse_expr_inner(first_pair);
     let second = inner.next().map(parse_expr_inner);
     if inner.next().is_some() {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "declaration range accepts at most two expressions",
-            0,
-            0,
         )]);
     }
     let (min, max) = match second {
@@ -128,12 +125,16 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
             Ok(DeclType::Generic(pair.as_str().trim().to_owned()))
         }
         Rule::array_type => {
+            let loc = stmt_loc_from_pair(&pair);
             let mut inner = pair.into_inner();
             let Some(elem_pair) = inner.next() else {
-                return Err(vec![Diagnostic::syntax("missing array element type", 0, 0)]);
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing array element type",
+                )]);
             };
             let Some(size_pair) = inner.next() else {
-                return Err(vec![Diagnostic::syntax("missing array size", 0, 0)]);
+                return Err(vec![syntax_at_loc(loc.as_ref(), "missing array size")]);
             };
             match elem_pair.as_rule() {
                 Rule::type_name => {
@@ -149,18 +150,13 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
                         size: parse_expr_inner(size_pair),
                     })
                 }
-                _ => Err(vec![Diagnostic::syntax(
+                _ => Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "array declarations for ports/params require primitive or generic element type",
-                    0,
-                    0,
                 )]),
             }
         }
-        _ => Err(vec![Diagnostic::syntax(
-            "unsupported declaration type",
-            0,
-            0,
-        )]),
+        _ => Err(vec![syntax_at_pair(&pair, "unsupported declaration type")]),
     }
 }
 
@@ -190,17 +186,16 @@ pub(super) fn parse_builtin_fn(name: &str) -> Option<BuiltinFn> {
 
 pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::fn_param_type {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected function parameter type",
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let Some(inner) = pair.into_inner().next() else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing function parameter type",
-            0,
-            0,
         )]);
     };
     let out = match inner.as_rule() {
@@ -215,10 +210,9 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
                     FnParamType::ArrayGeneric(inner_type.as_str().trim().to_owned())
                 }
                 _ => {
-                    return Err(vec![Diagnostic::syntax(
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
                         "unsupported typed array parameter element type",
-                        0,
-                        0,
                     )])
                 }
             }
@@ -233,10 +227,9 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
             FnParamType::Struct(inner.as_str().trim().to_owned())
         }
         _ => {
-            return Err(vec![Diagnostic::syntax(
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
                 "unsupported function parameter type",
-                0,
-                0,
             )])
         }
     };
@@ -247,17 +240,16 @@ pub(super) fn parse_event_param_type(
     pair: Pair<'_, Rule>,
 ) -> Result<EventParamType, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::event_param_type {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected event parameter type",
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let Some(inner) = pair.into_inner().next() else {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "missing event parameter type",
-            0,
-            0,
         )]);
     };
     match inner.as_rule() {
@@ -266,10 +258,9 @@ pub(super) fn parse_event_param_type(
         )),
         Rule::fn_typed_array_param => {
             let Some(elem_pair) = inner.into_inner().next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing event slice element type",
-                    0,
-                    0,
                 )]);
             };
             match elem_pair.as_rule() {
@@ -279,41 +270,40 @@ pub(super) fn parse_event_param_type(
                 Rule::qualified_ident | Rule::namespace_ref => Ok(EventParamType::GenericSlice {
                     elem: elem_pair.as_str().trim().to_owned(),
                 }),
-                _ => Err(vec![Diagnostic::syntax(
+                _ => Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "event slice parameters require primitive or generic primitive element type",
-                    0,
-                    0,
                 )]),
             }
         }
         Rule::array_type => {
             let mut array_inner = inner.into_inner();
             let Some(elem_pair) = array_inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing event array element type",
-                    0,
-                    0,
                 )]);
             };
             let Some(size_pair) = array_inner.next() else {
-                return Err(vec![Diagnostic::syntax("missing event array size", 0, 0)]);
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing event array size",
+                )]);
             };
             match elem_pair.as_rule() {
                 Rule::type_name => Ok(EventParamType::Array {
                     elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
                     size: parse_expr_inner(size_pair),
                 }),
-                _ => Err(vec![Diagnostic::syntax(
+                _ => Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "event array parameters require primitive element type",
-                    0,
-                    0,
                 )]),
             }
         }
-        _ => Err(vec![Diagnostic::syntax(
+        _ => Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "unsupported event parameter type",
-            0,
-            0,
         )]),
     }
 }
@@ -421,34 +411,41 @@ pub(super) fn parse_array_type_spec(
     pair: Pair<'_, Rule>,
 ) -> Result<ArrayTypeSpec, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::array_type {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected array type",
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(elem_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing array element type", 0, 0)]);
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "missing array element type",
+        )]);
     };
     let Some(size_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing array size", 0, 0)]);
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing array size")]);
     };
     let elem = match elem_pair.as_rule() {
         Rule::type_name => parse_array_elem_type(elem_pair.as_str()),
         Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
             ArrayElemType::Struct(elem_pair.as_str().trim().to_owned())
         }
-        _ => return Err(vec![Diagnostic::syntax("invalid array element type", 0, 0)]),
+        _ => {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                "invalid array element type",
+            )])
+        }
     };
     let size = parse_expr_inner(size_pair);
     if matches!(elem, ArrayElemType::Struct(_))
-        && matches!(&size, Expr::Var(name) if is_primitive_type_name(name))
+        && matches!(&size, Expr::Var { name, .. } if is_primitive_type_name(name))
     {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
             "generic type arguments must use '<...>'; bracket syntax is reserved for array sizes",
-            0,
-            0,
         )]);
     }
     Ok(ArrayTypeSpec {
@@ -494,12 +491,12 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
     match pair.as_rule() {
         Rule::path_ident => Ok(AssignTarget::Var(pair.as_str().to_owned())),
         Rule::slice_target => {
+            let loc = stmt_loc_from_pair(&pair);
             let mut inner = pair.into_inner();
             let Some(base_pair) = inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing sliced assignment base",
-                    0,
-                    0,
                 )]);
             };
             let mut start = None::<Expr>;
@@ -508,20 +505,18 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
                 match bound.as_rule() {
                     Rule::slice_start => {
                         let expr = bound.into_inner().next().ok_or_else(|| {
-                            vec![Diagnostic::syntax(
+                            vec![syntax_at_loc(
+                                loc.as_ref(),
                                 "missing sliced assignment start bound",
-                                0,
-                                0,
                             )]
                         })?;
                         start = Some(parse_expr(expr)?);
                     }
                     Rule::slice_end => {
                         let expr = bound.into_inner().next().ok_or_else(|| {
-                            vec![Diagnostic::syntax(
+                            vec![syntax_at_loc(
+                                loc.as_ref(),
                                 "missing sliced assignment end bound",
-                                0,
-                                0,
                             )]
                         })?;
                         end = Some(parse_expr(expr)?);
@@ -536,26 +531,24 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
             })
         }
         Rule::index_target => {
+            let loc = stmt_loc_from_pair(&pair);
             let mut inner = pair.into_inner();
             let Some(base_pair) = inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing indexed assignment base",
-                    0,
-                    0,
                 )]);
             };
             let Some(index_pair) = inner.next() else {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "missing indexed assignment index",
-                    0,
-                    0,
                 )]);
             };
             if inner.next().is_some() {
-                return Err(vec![Diagnostic::syntax(
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
                     "nested indexed assignment targets must use parser rewrite path",
-                    0,
-                    0,
                 )]);
             }
             Ok(AssignTarget::Index {
@@ -564,16 +557,16 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
             })
         }
         Rule::assign_target => {
+            let loc = stmt_loc_from_pair(&pair);
             let mut inner = pair.into_inner();
             let Some(inner_pair) = inner.next() else {
-                return Err(vec![Diagnostic::syntax("missing assignment target", 0, 0)]);
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing assignment target",
+                )]);
             };
             parse_assign_target(inner_pair)
         }
-        _ => Err(vec![Diagnostic::syntax(
-            "unexpected assignment target",
-            0,
-            0,
-        )]),
+        _ => Err(vec![syntax_at_pair(&pair, "unexpected assignment target")]),
     }
 }

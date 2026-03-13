@@ -52,17 +52,21 @@ fn block_decl_name(block: &Block) -> Option<&str> {
 
 fn parse_assert_decl(pair: Pair<'_, Rule>) -> Result<AssertDecl, Vec<Diagnostic>> {
     if pair.as_rule() != Rule::assert_block {
-        return Err(vec![Diagnostic::syntax(
+        return Err(vec![syntax_at_pair(
+            &pair,
             "internal parser error: expected assert block",
-            0,
-            0,
         )]);
     }
+    let loc = stmt_loc_from_pair(&pair);
     let mut inner = pair.into_inner();
     let Some(expr_pair) = inner.next() else {
-        return Err(vec![Diagnostic::syntax("missing assert expression", 0, 0)]);
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "missing assert expression",
+        )]);
     };
     Ok(AssertDecl {
+        loc,
         expr: parse_expr(expr_pair)?,
     })
 }
@@ -222,10 +226,9 @@ fn parse_program_preprocessed(
                 Rule::const_block => {
                     let mut decl = parse_const_decl(pair)?;
                     if !top_level_const_names.insert(decl.name.clone()) {
-                        return Err(vec![Diagnostic::semantic(
+                        return Err(vec![Diagnostic::semantic_span(
                             format!("duplicate top-level constant '{}'", decl.name),
-                            0,
-                            0,
+                            decl.loc.as_ref(),
                         )]);
                     }
                     let value = finalize_const_decl_expr(
@@ -427,13 +430,12 @@ fn load_program_blocks_from_file(
                     Block::Const(_) | Block::Struct(_) | Block::Def(_) | Block::Proc(_)
                 ) {
                     return Err(annotate_diagnostics_with_file(
-                        vec![Diagnostic::semantic(
+                        vec![Diagnostic::semantic_span(
                             format!(
                                 "imported file '{}' can only contain const/struct/def/proc declarations",
                                 display_path(&canonical)
                             ),
-                            0,
-                            0,
+                            block.loc(),
                         )],
                         &canonical,
                         0,
@@ -524,8 +526,8 @@ fn load_builtin_module_blocks(
                                 "built-in std module '{}' cannot include '{}'; use import std/... instead",
                                 module, path
                             ),
-                            0,
-                            0,
+                            1,
+                            1,
                         )],
                         &virtual_path,
                         0,
@@ -542,8 +544,8 @@ fn load_builtin_module_blocks(
                                     "built-in std module imports must use 'std/...'; got '{}'",
                                     imported_module
                                 ),
-                                0,
-                                0,
+                                line,
+                                1,
                             )],
                             &virtual_path,
                             0,
@@ -574,12 +576,11 @@ fn load_builtin_module_blocks(
                     Block::Const(_) | Block::Struct(_) | Block::Def(_) | Block::Proc(_)
                 ) {
                     return Err(annotate_diagnostics_with_file(
-                        vec![Diagnostic::semantic(
+                        vec![Diagnostic::semantic_span(
                             format!(
                                 "imported built-in std module '{module}' can only contain const/struct/def/proc declarations"
                             ),
-                            0,
-                            0,
+                            block.loc(),
                         )],
                         &virtual_path,
                         0,
@@ -608,6 +609,16 @@ fn with_parse_loc_context<T>(
     source_line_map: &[usize],
     f: impl FnOnce() -> T,
 ) -> T {
+    struct ParseLocContextGuard;
+
+    impl Drop for ParseLocContextGuard {
+        fn drop(&mut self) {
+            PARSE_LOC_CONTEXT_STACK.with(|stack| {
+                stack.borrow_mut().pop();
+            });
+        }
+    }
+
     let context = ParseLocContext {
         file: display_path(file_path),
         line_offset,
@@ -615,28 +626,55 @@ fn with_parse_loc_context<T>(
         source_line_map: source_line_map.to_vec(),
     };
     PARSE_LOC_CONTEXT_STACK.with(|stack| stack.borrow_mut().push(context));
-    let out = f();
-    PARSE_LOC_CONTEXT_STACK.with(|stack| {
-        stack.borrow_mut().pop();
-    });
-    out
+    let _guard = ParseLocContextGuard;
+    f()
 }
 
-pub(super) fn stmt_loc_from_pair(pair: &Pair<'_, Rule>) -> Option<SourceLoc> {
+pub(super) fn stmt_loc_from_pair(pair: &Pair<'_, Rule>) -> Span {
     PARSE_LOC_CONTEXT_STACK.with(|stack| {
         let context = stack.borrow();
-        let current = context.last()?;
-        let (line, column) = pair.as_span().start_pos().line_col();
+        let Some(current) = context.last() else {
+            return Span::ZERO;
+        };
+        let span = pair.as_span();
+        let (line, column) = span.start_pos().line_col();
+        let (end_line, _ignored_end_col) = span.end_pos().line_col();
         let mapped_line = current
             .source_line_map
             .get(line.saturating_sub(1))
             .copied()
             .unwrap_or_else(|| line.saturating_add(current.line_offset));
-        Some(SourceLoc {
-            file: Some(current.file.clone()),
-            line: mapped_line,
+        let mapped_end_line = current
+            .source_line_map
+            .get(end_line.saturating_sub(1))
+            .copied()
+            .unwrap_or_else(|| end_line.saturating_add(current.line_offset));
+        SourceLoc::new(
+            Some(current.file.clone()),
+            mapped_line,
             column,
-            trace: current.trace.clone(),
-        })
+            mapped_end_line,
+            current.trace.clone(),
+        )
+        .span()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn parse_loc_context_stack_is_cleared_after_panic() {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            with_parse_loc_context(Path::new("<memory>"), 0, &[], &[1], || panic!("boom"));
+        }));
+
+        PARSE_LOC_CONTEXT_STACK.with(|stack| {
+            assert!(stack.borrow().is_empty());
+        });
+    }
 }
