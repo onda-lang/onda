@@ -1,6 +1,8 @@
 use std::cell::UnsafeCell;
 use std::env;
 use std::fs;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -29,10 +31,13 @@ use omni_semantics::{
     analyze_with_options, lower_graphs_for_inspection_with_options, AnalysisOptions,
     TypedArrayInfo, TypedProgram,
 };
+use serde::Deserialize;
+use serde_json::{json, Value};
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_DUR_SECONDS: u32 = 5;
 const DEFAULT_BLOCK_FRAMES: usize = 512;
+const DEFAULT_PLAY_BLOCK_FRAMES: usize = 128;
 const DEFAULT_DAEMON_OUTPUT: &str = "./omni_daemon_out.wav";
 
 const USAGE: &str = r#"Usage:
@@ -40,7 +45,7 @@ const USAGE: &str = r#"Usage:
   omni render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
   omni lsp
   omni preview render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
-  omni preview play <input.omni> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
+  omni preview play <input.omni> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>] [--control-json]
   omni daemon diagnose <input.omni> [--sample-rate <hz>] [--block <frames>]
   omni daemon stdio
 
@@ -48,10 +53,11 @@ Options:
   --output, -o   Output wav path (default: ./omni_out.wav)
   --dur, -d      Render duration in seconds (default: 5)
   --sample-rate, --sr  Render/output sample rate in Hz (default: 48000)
-  --block, -b    Block size in frames (default: 512)
+  --block, -b    Block size in frames (default: 512; preview play: 128)
   --dump-graph   Print program after graph lowering, before proc desugaring/codegen
   --ir           Print optimized LLVM IR before compile/render
   --meta         Print declared ins/outs/params metadata
+  --control-json Emit preview control handshake on stdout and serve param control over localhost
   --fast-math    Enable LLVM fast-math flags for floating-point operations
   --help, -h     Show this help
 "#;
@@ -87,6 +93,7 @@ enum PreviewCommand {
         block_frames: usize,
         fast_math: bool,
         show_meta: bool,
+        control_json: bool,
         param_sets: Vec<(String, f64)>,
     },
     Render {
@@ -479,9 +486,10 @@ fn parse_preview_play_args(
 
     let mut dur_seconds = Some(DEFAULT_DUR_SECONDS);
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
-    let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut block_frames = DEFAULT_PLAY_BLOCK_FRAMES;
     let mut fast_math = false;
     let mut show_meta = false;
+    let mut control_json = false;
     let mut param_sets = Vec::new();
     let mut forever = false;
 
@@ -523,6 +531,7 @@ fn parse_preview_play_args(
             }
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
+            "--control-json" => control_json = true,
             "--help" | "-h" => return Err(USAGE.to_owned()),
             _ if arg.starts_with("--dur=") => {
                 if forever {
@@ -553,6 +562,7 @@ fn parse_preview_play_args(
         block_frames,
         fast_math,
         show_meta,
+        control_json,
         param_sets,
     })
 }
@@ -622,6 +632,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             block_frames,
             fast_math,
             show_meta,
+            control_json,
             param_sets,
         } => run_daemon_play(
             &input,
@@ -630,6 +641,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             block_frames,
             fast_math,
             show_meta,
+            control_json,
             &param_sets,
         ),
         PreviewCommand::Render {
@@ -771,6 +783,7 @@ fn run_daemon_play(
     block_frames: usize,
     fast_math: bool,
     show_meta: bool,
+    control_json: bool,
     param_sets: &[(String, f64)],
 ) -> Result<(), String> {
     play_preview_realtime(PlaybackLaunch {
@@ -780,6 +793,7 @@ fn run_daemon_play(
         block_frames,
         fast_math,
         show_meta,
+        control_json,
         param_sets: param_sets.to_vec(),
     })
 }
@@ -797,6 +811,7 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let mut config: cpal::StreamConfig = default_config.config();
     config.channels = default_config.channels();
     config.sample_rate = cpal::SampleRate(launch.sample_rate_hz);
+    config.buffer_size = cpal::BufferSize::Fixed(launch.block_frames as u32);
 
     let queue_capacity = (launch.block_frames * device_channels.max(2) * 16)
         .next_power_of_two()
@@ -806,6 +821,12 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let render_error = Arc::new(Mutex::new(None::<String>));
     let error_state = Arc::new(Mutex::new(None::<String>));
     let (startup_tx, startup_rx) = mpsc::channel();
+    let (control_tx, control_rx) = if launch.control_json {
+        let (tx, rx) = mpsc::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
 
     let render_thread = spawn_preview_render_thread(
         launch.clone(),
@@ -813,17 +834,51 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         Arc::clone(&stop_flag),
         Arc::clone(&render_error),
         startup_tx,
+        control_rx,
     );
     let startup = startup_rx
         .recv()
         .map_err(|_| "preview render thread exited before startup completed".to_owned())??;
 
+    let control_server = if launch.control_json {
+        let Some(control_tx) = control_tx else {
+            unreachable!("control channel should exist when control json is enabled");
+        };
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).map_err(|err| format!("failed to bind preview control socket: {err}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|err| format!("failed to query preview control socket: {err}"))?
+            .port();
+        let startup_message = json!({
+            "event": "ready",
+            "path": display_path(&startup.path),
+            "port": port,
+            "params": startup.params.iter().map(preview_param_json).collect::<Vec<_>>(),
+            "outputChannels": startup.output_channels,
+        });
+        write_json_line(&mut BufWriter::new(std::io::stdout().lock()), &startup_message)
+            .map_err(|err| format!("failed to write preview control startup event: {err}"))?;
+        Some(spawn_preview_control_server(
+            listener,
+            control_tx,
+            Arc::clone(&stop_flag),
+        ))
+    } else {
+        None
+    };
+
     if launch.show_meta && !startup.params.is_empty() {
-        println!("{}", format_preview_param_info(&startup.params));
+        if launch.control_json {
+            eprintln!("{}", format_preview_param_info(&startup.params));
+        } else {
+            println!("{}", format_preview_param_info(&startup.params));
+        }
     }
     if startup.output_channels == 0 {
         stop_flag.store(true, Ordering::Release);
         let _ = render_thread.join();
+        drop(control_server);
         return Err("daemon play requires at least one output channel".to_owned());
     }
 
@@ -871,29 +926,18 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     stream
         .play()
         .map_err(|err| format!("failed to start audio output stream: {err}"))?;
-    match launch.dur_seconds {
-        Some(dur_seconds) => {
-            println!(
-                "Playing {} for {} seconds on default output device",
-                display_path(&startup.path),
-                dur_seconds
-            );
-            thread::sleep(Duration::from_secs(u64::from(dur_seconds)));
-        }
-        None => {
-            println!(
-                "Playing {} until stopped on default output device",
-                display_path(&startup.path)
-            );
-            loop {
-                thread::sleep(Duration::from_secs(60));
-            }
-        }
+    if launch.control_json {
+        eprintln!("{}", playback_status_message(&startup.path, launch.dur_seconds));
+    } else {
+        println!("{}", playback_status_message(&startup.path, launch.dur_seconds));
     }
+
+    wait_for_playback_completion(launch.dur_seconds, &stop_flag, &render_error, &error_state)?;
 
     stop_flag.store(true, Ordering::Release);
     drop(stream);
     let _ = render_thread.join();
+    drop(control_server);
 
     if let Some(err) = error_state
         .lock()
@@ -908,6 +952,55 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         .clone()
     {
         return Err(err);
+    }
+    Ok(())
+}
+
+fn playback_status_message(path: &Path, dur_seconds: Option<u32>) -> String {
+    match dur_seconds {
+        Some(dur_seconds) => format!(
+            "Playing {} for {} seconds on default output device",
+            display_path(path),
+            dur_seconds
+        ),
+        None => format!(
+            "Playing {} until stopped on default output device",
+            display_path(path)
+        ),
+    }
+}
+
+fn wait_for_playback_completion(
+    dur_seconds: Option<u32>,
+    stop_flag: &Arc<AtomicBool>,
+    render_error: &Arc<Mutex<Option<String>>>,
+    error_state: &Arc<Mutex<Option<String>>>,
+) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    loop {
+        if stop_flag.load(Ordering::Acquire) {
+            break;
+        }
+        if let Some(limit) = dur_seconds {
+            if start.elapsed() >= Duration::from_secs(u64::from(limit)) {
+                break;
+            }
+        }
+        if let Some(err) = render_error
+            .lock()
+            .map_err(|_| "failed to read render thread error state".to_owned())?
+            .clone()
+        {
+            return Err(err);
+        }
+        if let Some(err) = error_state
+            .lock()
+            .map_err(|_| "failed to read audio stream error state".to_owned())?
+            .clone()
+        {
+            return Err(err);
+        }
+        thread::sleep(Duration::from_millis(50));
     }
     Ok(())
 }
@@ -1001,6 +1094,7 @@ struct PlaybackLaunch {
     block_frames: usize,
     fast_math: bool,
     show_meta: bool,
+    control_json: bool,
     param_sets: Vec<(String, f64)>,
 }
 
@@ -1010,14 +1104,37 @@ struct PlaybackStartup {
     params: Vec<PreviewParamInfo>,
 }
 
+enum PlaybackControlCommand {
+    GetParams {
+        reply: mpsc::Sender<Result<Vec<PreviewParamInfo>, String>>,
+    },
+    SetParam {
+        name: String,
+        value: f64,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaybackControlRequest {
+    id: Value,
+    command: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    value: Option<Value>,
+}
+
 fn spawn_preview_render_thread(
     launch: PlaybackLaunch,
     sample_queue: Arc<SpscSampleRing>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
     startup_tx: mpsc::Sender<Result<PlaybackStartup, String>>,
+    control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let control_rx = control_rx;
         let mut session = DaemonSession::new(DaemonConfig {
             analysis: AnalysisOptions {
                 sample_rate: launch.sample_rate_hz as f32,
@@ -1039,7 +1156,7 @@ fn spawn_preview_render_thread(
             let preview = session
                 .preview(&launch.input)
                 .expect("preview should be active after successful start");
-            let params = if launch.show_meta {
+            let params = if launch.show_meta || launch.control_json {
                 preview.param_info()
             } else {
                 Vec::new()
@@ -1075,6 +1192,31 @@ fn spawn_preview_render_thread(
         }
 
         while !stop_flag.load(Ordering::Acquire) {
+            if let Some(control_rx) = &control_rx {
+                while let Ok(command) = control_rx.try_recv() {
+                    match command {
+                        PlaybackControlCommand::GetParams { reply } => {
+                            let result = session
+                                .preview(&launch.input)
+                                .map(|preview| preview.param_info())
+                                .ok_or_else(|| "preview is not active".to_owned());
+                            let _ = reply.send(result);
+                        }
+                        PlaybackControlCommand::SetParam { name, value, reply } => {
+                            let result = session
+                                .preview_mut(&launch.input)
+                                .ok_or_else(|| "preview is not active".to_owned())
+                                .and_then(|preview| {
+                                    preview
+                                        .set_param_f64(&name, value)
+                                        .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))
+                                });
+                            let _ = reply.send(result);
+                        }
+                    }
+                }
+            }
+
             let block = match session.render_preview_block(&launch.input) {
                 Ok(block) => block,
                 Err(diag) => {
@@ -1130,6 +1272,161 @@ fn store_thread_error(slot: &Arc<Mutex<Option<String>>>, message: String) {
             *slot = Some(message);
         }
     }
+}
+
+fn preview_param_json(param: &PreviewParamInfo) -> Value {
+    json!({
+        "index": param.index,
+        "name": param.name,
+        "type": param.type_repr,
+        "default": param.default,
+        "rangeMin": param.range_min,
+        "rangeMax": param.range_max,
+        "scalar": param.scalar,
+    })
+}
+
+fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io::Error> {
+    serde_json::to_writer(&mut *writer, value)?;
+    writer.write_all(b"\n")?;
+    writer.flush()
+}
+
+fn spawn_preview_control_server(
+    listener: TcpListener,
+    control_tx: mpsc::Sender<PlaybackControlCommand>,
+    stop_flag: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        if listener.set_nonblocking(true).is_err() {
+            return;
+        }
+
+        while !stop_flag.load(Ordering::Acquire) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if let Err(err) =
+                        handle_preview_control_client(stream, &control_tx, &stop_flag)
+                    {
+                        eprintln!("preview control client error: {err}");
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(err) => {
+                    eprintln!("preview control accept error: {err}");
+                    break;
+                }
+            }
+        }
+    })
+}
+
+fn handle_preview_control_client(
+    stream: TcpStream,
+    control_tx: &mpsc::Sender<PlaybackControlCommand>,
+    stop_flag: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .map_err(|err| format!("failed to set control socket read timeout: {err}"))?;
+    let reader_stream = stream
+        .try_clone()
+        .map_err(|err| format!("failed to clone control socket: {err}"))?;
+    let mut reader = BufReader::new(reader_stream);
+    let mut writer = BufWriter::new(stream);
+
+    while !stop_flag.load(Ordering::Acquire) {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(err) => return Err(format!("failed to read control request: {err}")),
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let request: PlaybackControlRequest = serde_json::from_str(trimmed)
+            .map_err(|err| format!("invalid control request json: {err}"))?;
+        let response = match request.command.as_str() {
+            "getParams" => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::GetParams { reply: reply_tx })
+                    .map_err(|_| "preview control channel closed".to_owned())?;
+                match reply_rx.recv().map_err(|_| "preview control reply channel closed".to_owned())? {
+                    Ok(params) => json!({
+                        "id": request.id,
+                        "ok": true,
+                        "result": {
+                            "params": params.iter().map(preview_param_json).collect::<Vec<_>>(),
+                        }
+                    }),
+                    Err(err) => json!({
+                        "id": request.id,
+                        "ok": false,
+                        "error": err,
+                    }),
+                }
+            }
+            "setParam" => {
+                let name = request
+                    .name
+                    .ok_or_else(|| "setParam requires 'name'".to_owned())?;
+                let raw_value = request
+                    .value
+                    .ok_or_else(|| "setParam requires 'value'".to_owned())?;
+                let value = match raw_value {
+                    Value::Bool(value) => {
+                        if value { 1.0 } else { 0.0 }
+                    }
+                    Value::Number(value) => value
+                        .as_f64()
+                        .ok_or_else(|| "setParam value must be numeric".to_owned())?,
+                    _ => return Err("setParam value must be number or boolean".to_owned()),
+                };
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::SetParam {
+                        name,
+                        value,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| "preview control channel closed".to_owned())?;
+                match reply_rx.recv().map_err(|_| "preview control reply channel closed".to_owned())? {
+                    Ok(()) => json!({
+                        "id": request.id,
+                        "ok": true,
+                    }),
+                    Err(err) => json!({
+                        "id": request.id,
+                        "ok": false,
+                        "error": err,
+                    }),
+                }
+            }
+            other => json!({
+                "id": request.id,
+                "ok": false,
+                "error": format!("unknown command '{other}'"),
+            }),
+        };
+
+        write_json_line(&mut writer, &response)
+            .map_err(|err| format!("failed to write control response: {err}"))?;
+    }
+
+    Ok(())
 }
 
 struct SpscSampleRing {
@@ -2492,7 +2789,7 @@ fn f32_to_i16(sample: f32) -> i16 {
 mod tests {
     use super::{
         format_diag_snippet, format_expr, format_program, parse_args, Command, DaemonCommand,
-        PreviewCommand,
+        PreviewCommand, DEFAULT_PLAY_BLOCK_FRAMES,
     };
     use omni_frontend::{
         Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
@@ -2588,6 +2885,7 @@ mod tests {
                 "play",
                 "x.omni",
                 "--meta",
+                "--control-json",
                 "--set",
                 "gain=0.5",
                 "--fast-math",
@@ -2599,11 +2897,13 @@ mod tests {
         match cmd {
             Command::Preview(PreviewCommand::Play {
                 show_meta,
+                control_json,
                 fast_math,
                 param_sets,
                 ..
             }) => {
                 assert!(show_meta);
+                assert!(control_json);
                 assert!(fast_math);
                 assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
             }
@@ -2620,8 +2920,13 @@ mod tests {
         )
         .expect("preview play --forever should parse");
         match cmd {
-            Command::Preview(PreviewCommand::Play { dur_seconds, .. }) => {
+            Command::Preview(PreviewCommand::Play {
+                dur_seconds,
+                block_frames,
+                ..
+            }) => {
                 assert_eq!(dur_seconds, None);
+                assert_eq!(block_frames, DEFAULT_PLAY_BLOCK_FRAMES);
             }
             _ => panic!("expected preview play command"),
         }

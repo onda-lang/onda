@@ -1,7 +1,7 @@
 import std/osc
 
 params:
-  drive = 80.0
+  drive = 80.0 { 1, 200 }
 
 init:
   osc = std::osc::Sine(freq = 100.0)

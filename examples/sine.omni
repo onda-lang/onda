@@ -1,5 +1,5 @@
 params:
-  freq = 440.0
+  freq = 440.0 { 20, 1000 }
 
 init:
   phase = 0.0
