@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+hound = "3.5.1"
 omni_codegen_llvm = { path = "../omni_codegen_llvm" }
 omni_frontend = { path = "../omni_frontend" }
 omni_runtime = { path = "../omni_runtime" }

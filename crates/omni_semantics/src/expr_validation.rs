@@ -8,6 +8,12 @@ fn push_loc_error(errors: &mut Vec<Diagnostic>, loc: SourceLoc, message: impl In
     errors.push(Diagnostic::semantic_span(message, loc));
 }
 
+fn init_buffer_runtime_message(what: &str) -> String {
+    format!(
+        "{what} is not allowed in init; buffer bindings are runtime-only and must be used in block, sample, or def scopes"
+    )
+}
+
 pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diagnostic>) {
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
@@ -179,6 +185,15 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     return;
                 }
             }
+            if env.scope == ScopeKind::Init
+                && has_declared_buffer_symbol_info(env.declared_symbols, base)
+            {
+                push_expr_error(
+                    errors,
+                    expr,
+                    init_buffer_runtime_message(&format!("buffer indexing '{}[...]'", base)),
+                );
+            }
             if !env.array_vars.contains_key(base)
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
@@ -245,6 +260,14 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         );
                     }
                 }
+            } else if env.scope == ScopeKind::Init
+                && has_declared_buffer_symbol_info(env.declared_symbols, base)
+            {
+                push_expr_error(
+                    errors,
+                    expr,
+                    init_buffer_runtime_message(&format!("buffer slicing '{}[...]'", base)),
+                );
             } else if !env.array_vars.contains_key(base)
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
@@ -617,6 +640,13 @@ fn validate_data_len_builtin_call(
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if env.scope == ScopeKind::Init && has_declared_buffer_symbol_info(env.declared_symbols, base) {
+        push_loc_error(
+            errors,
+            loc,
+            init_buffer_runtime_message(&format!("buffer method '{}.len()'", base)),
+        );
+    }
     if !args.is_empty() {
         push_loc_error(
             errors,
@@ -724,6 +754,13 @@ fn validate_buffer_chans_builtin_call(
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if env.scope == ScopeKind::Init && has_declared_buffer_symbol_info(env.declared_symbols, base) {
+        push_loc_error(
+            errors,
+            loc,
+            init_buffer_runtime_message(&format!("buffer method '{}.chans()'", base)),
+        );
+    }
     if !args.is_empty() {
         push_loc_error(
             errors,
@@ -798,6 +835,16 @@ fn validate_buffer_param_call_arg(
         validate_expr(arg, env, errors);
         return;
     };
+    if env.scope == ScopeKind::Init {
+        push_loc_error(
+            errors,
+            arg.loc().or(loc),
+            init_buffer_runtime_message(&format!(
+                "buffer argument '{}' in {}",
+                symbol, context
+            )),
+        );
+    }
     validate_buffer_symbol_for_param(&context, expected, symbol, env, arg.loc().or(loc), errors);
 }
 
@@ -974,6 +1021,18 @@ fn validate_internal_buffer_2d_call(
     if let Some(first) = args.first() {
         match &first.expr {
             Expr::Var { name: base, .. } => {
+                if env.scope == ScopeKind::Init
+                    && has_declared_buffer_symbol_info(env.declared_symbols, base)
+                {
+                    push_loc_error(
+                        errors,
+                        first.expr.loc().or(loc),
+                        init_buffer_runtime_message(&format!(
+                            "buffer access '{}' in '{}'",
+                            base, name
+                        )),
+                    );
+                }
                 if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
                     push_loc_error(
                         errors,
@@ -1253,6 +1312,18 @@ fn validate_unsafe_data_builtin_call(
     if let Some(first_arg) = args.first() {
         match &first_arg.expr {
             Expr::Var { name: base, .. } => {
+                if env.scope == ScopeKind::Init
+                    && has_declared_buffer_symbol_info(env.declared_symbols, base)
+                {
+                    push_loc_error(
+                        errors,
+                        first_arg.expr.loc().or(loc),
+                        init_buffer_runtime_message(&format!(
+                            "buffer access '{}' in builtin '{}'",
+                            base, name
+                        )),
+                    );
+                }
                 let mut is_valid_primitive_data = false;
 
                 if let Some((root, field)) = split_field_path(base, errors) {

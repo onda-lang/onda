@@ -2,7 +2,10 @@ mod analysis_session;
 mod preview_session;
 
 pub use analysis_session::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
-pub use preview_session::{PreviewBuildError, PreviewOptions, PreviewParamInfo, PreviewSession};
+pub use preview_session::{
+    PreviewBufferChannels, PreviewBufferInfo, PreviewBuildError, PreviewOptions, PreviewParamInfo,
+    PreviewSession,
+};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -186,6 +189,20 @@ mod tests {
         fs::write(path, text).expect("write test file");
     }
 
+    fn write_wav(path: &Path, channels: u16, sample_rate: u32, samples: &[f32]) {
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).expect("create wav");
+        for sample in samples {
+            writer.write_sample(*sample).expect("write wav sample");
+        }
+        writer.finalize().expect("finalize wav");
+    }
+
     #[test]
     fn analyze_document_uses_entry_overlay_contents() {
         let dir = mk_temp_dir("entry_overlay");
@@ -298,6 +315,138 @@ mod tests {
             .render_preview_block(&main)
             .expect("second preview render should succeed");
         assert!(second[0].iter().all(|sample| (*sample - 0.5).abs() < 1e-6));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_binds_wav_file_to_f32_buffer() {
+        let dir = mk_temp_dir("preview_buffer");
+        let main = dir.join("main.omni");
+        let wav = dir.join("input.wav");
+        let wav_alt = dir.join("input_alt.wav");
+
+        write_file(
+            &main,
+            "buffers:\n  src: buffer[f32]\nouts:\n  out1\ninit:\n  idx = 0\nsample:\n  out1 = src[idx]\n  idx = idx + 1\n",
+        );
+        write_wav(&wav, 1, 48_000, &[0.1, 0.2, 0.3, 0.4]);
+        write_wav(&wav_alt, 1, 48_000, &[0.9, 0.8, 0.7, 0.6]);
+
+        let mut session = DaemonSession::default();
+        session
+            .start_preview(&main)
+            .expect("preview should compile and start");
+
+        let buffer_info = session.preview(&main).expect("active preview").buffer_info();
+        assert_eq!(buffer_info.len(), 1);
+        assert_eq!(buffer_info[0].name, "src");
+
+        session
+            .preview_mut(&main)
+            .expect("active preview")
+            .bind_buffer_wav_path("src", &wav)
+            .expect("wav buffer bind should succeed");
+
+        let rendered = session
+            .render_preview_block(&main)
+            .expect("preview render with bound wav should succeed");
+        assert!((rendered[0][0] - 0.1).abs() < 1e-6);
+        assert!((rendered[0][1] - 0.2).abs() < 1e-6);
+        assert!((rendered[0][2] - 0.3).abs() < 1e-6);
+        assert!((rendered[0][3] - 0.4).abs() < 1e-6);
+
+        session
+            .preview_mut(&main)
+            .expect("active preview")
+            .bind_buffer_wav_path("src", &wav_alt)
+            .expect("second wav buffer bind should succeed");
+        let rebound = session
+            .render_preview_block(&main)
+            .expect("preview render with rebound wav should succeed");
+        assert!((rebound[0][0] - 0.9).abs() < 1e-6);
+        assert!((rebound[0][1] - 0.8).abs() < 1e-6);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_binds_multichannel_wav_file_to_f32_buffer() {
+        let dir = mk_temp_dir("preview_buffer_stereo");
+        let main = dir.join("main.omni");
+        let wav = dir.join("stereo.wav");
+
+        write_file(
+            &main,
+            "buffers:\n  src: buffer[f32[2]]\nouts:\n  out1\n  out2\ninit:\n  idx = 0\nsample:\n  out1 = src[0][idx]\n  out2 = src[1][idx]\n  idx = idx + 1\n",
+        );
+        write_wav(&wav, 2, 48_000, &[0.1, 0.5, 0.2, 0.6, 0.3, 0.7, 0.4, 0.8]);
+
+        let mut session = DaemonSession::default();
+        session
+            .start_preview(&main)
+            .expect("preview should compile and start");
+
+        session
+            .preview_mut(&main)
+            .expect("active preview")
+            .bind_buffer_wav_path("src", &wav)
+            .expect("stereo wav buffer bind should succeed");
+
+        let rendered = session
+            .render_preview_block(&main)
+            .expect("preview render with bound stereo wav should succeed");
+        assert!((rendered[0][0] - 0.1).abs() < 1e-6);
+        assert!((rendered[1][0] - 0.5).abs() < 1e-6);
+        assert!((rendered[0][1] - 0.2).abs() < 1e-6);
+        assert!((rendered[1][1] - 0.6).abs() < 1e-6);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_rebuilds_instance_when_buffer_binding_changes() {
+        let dir = mk_temp_dir("preview_buffer_rebuild");
+        let main = dir.join("main.omni");
+        let wav_a = dir.join("a.wav");
+        let wav_b = dir.join("b.wav");
+
+        write_file(
+            &main,
+            "buffers:\n  src: buffer[f32]\nouts:\n  out1\ninit:\n  counter = 1\nsample:\n  out1 = f32(counter)\n  counter = counter + 1\n",
+        );
+        write_wav(&wav_a, 1, 48_000, &[0.1, 0.2, 0.3, 0.4]);
+        write_wav(&wav_b, 1, 48_000, &[0.8, 0.7, 0.6, 0.5]);
+
+        let mut session = DaemonSession::default();
+        session
+            .start_preview(&main)
+            .expect("preview should compile and start");
+
+        let initial = session
+            .render_preview_block(&main)
+            .expect("initial preview render should succeed");
+        assert!((initial[0][0] - 1.0).abs() < 1e-6);
+
+        session
+            .preview_mut(&main)
+            .expect("active preview")
+            .bind_buffer_wav_path("src", &wav_a)
+            .expect("first wav buffer bind should succeed");
+        let first = session
+            .render_preview_block(&main)
+            .expect("preview render with first buffer should succeed");
+        assert!((first[0][0] - 1.0).abs() < 1e-6);
+
+        session
+            .preview_mut(&main)
+            .expect("active preview")
+            .bind_buffer_wav_path("src", &wav_b)
+            .expect("second wav buffer bind should succeed");
+        let second = session
+            .render_preview_block(&main)
+            .expect("preview render with rebound buffer should succeed");
+        assert!((second[0][0] - 1.0).abs() < 1e-6);
 
         fs::remove_dir_all(&dir).ok();
     }

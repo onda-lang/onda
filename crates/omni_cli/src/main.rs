@@ -18,7 +18,8 @@ use omni_codegen_llvm::{
     lower_and_jit_with_options, lower_to_llvm_ir_with_options, CompileOptions, ExecutionBackend,
 };
 use omni_daemon::{
-    DaemonConfig, DaemonSession, PreviewBuildError, PreviewOptions, PreviewParamInfo,
+    DaemonConfig, DaemonSession, PreviewBufferChannels, PreviewBufferInfo, PreviewBuildError,
+    PreviewOptions, PreviewParamInfo,
 };
 use omni_frontend::{
     parse_program_file, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
@@ -855,6 +856,7 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             "path": display_path(&startup.path),
             "port": port,
             "params": startup.params.iter().map(preview_param_json).collect::<Vec<_>>(),
+            "buffers": startup.buffers.iter().map(preview_buffer_json).collect::<Vec<_>>(),
             "outputChannels": startup.output_channels,
         });
         write_json_line(&mut BufWriter::new(std::io::stdout().lock()), &startup_message)
@@ -1102,15 +1104,28 @@ struct PlaybackStartup {
     path: PathBuf,
     output_channels: usize,
     params: Vec<PreviewParamInfo>,
+    buffers: Vec<PreviewBufferInfo>,
 }
 
 enum PlaybackControlCommand {
     GetParams {
         reply: mpsc::Sender<Result<Vec<PreviewParamInfo>, String>>,
     },
+    GetBuffers {
+        reply: mpsc::Sender<Result<Vec<PreviewBufferInfo>, String>>,
+    },
     SetParam {
         name: String,
         value: f64,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    BindBufferWav {
+        name: String,
+        path: PathBuf,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    ClearBuffer {
+        name: String,
         reply: mpsc::Sender<Result<(), String>>,
     },
 }
@@ -1121,6 +1136,8 @@ struct PlaybackControlRequest {
     command: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
     #[serde(default)]
     value: Option<Value>,
 }
@@ -1161,6 +1178,11 @@ fn spawn_preview_render_thread(
             } else {
                 Vec::new()
             };
+            let buffers = if launch.control_json {
+                preview.buffer_info()
+            } else {
+                Vec::new()
+            };
             let output_channels = preview.output_channel_count();
             let path = preview.path().to_path_buf();
 
@@ -1176,6 +1198,7 @@ fn spawn_preview_render_thread(
                 path,
                 output_channels,
                 params,
+                buffers,
             })
         })();
 
@@ -1202,6 +1225,13 @@ fn spawn_preview_render_thread(
                                 .ok_or_else(|| "preview is not active".to_owned());
                             let _ = reply.send(result);
                         }
+                        PlaybackControlCommand::GetBuffers { reply } => {
+                            let result = session
+                                .preview(&launch.input)
+                                .map(|preview| preview.buffer_info())
+                                .ok_or_else(|| "preview is not active".to_owned());
+                            let _ = reply.send(result);
+                        }
                         PlaybackControlCommand::SetParam { name, value, reply } => {
                             let result = session
                                 .preview_mut(&launch.input)
@@ -1210,6 +1240,34 @@ fn spawn_preview_render_thread(
                                     preview
                                         .set_param_f64(&name, value)
                                         .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))
+                                });
+                            let _ = reply.send(result);
+                        }
+                        PlaybackControlCommand::BindBufferWav { name, path, reply } => {
+                            let result = session
+                                .preview_mut(&launch.input)
+                                .ok_or_else(|| "preview is not active".to_owned())
+                                .and_then(|preview| {
+                                    preview.bind_buffer_wav_path(&name, &path).map_err(|diag| {
+                                        format_single_diagnostic(
+                                            "daemon play bind buffer failed",
+                                            &diag,
+                                        )
+                                    })
+                                });
+                            let _ = reply.send(result);
+                        }
+                        PlaybackControlCommand::ClearBuffer { name, reply } => {
+                            let result = session
+                                .preview_mut(&launch.input)
+                                .ok_or_else(|| "preview is not active".to_owned())
+                                .and_then(|preview| {
+                                    preview.clear_buffer(&name).map_err(|diag| {
+                                        format_single_diagnostic(
+                                            "daemon play clear buffer failed",
+                                            &diag,
+                                        )
+                                    })
                                 });
                             let _ = reply.send(result);
                         }
@@ -1283,6 +1341,22 @@ fn preview_param_json(param: &PreviewParamInfo) -> Value {
         "rangeMin": param.range_min,
         "rangeMax": param.range_max,
         "scalar": param.scalar,
+    })
+}
+
+fn preview_buffer_json(buffer: &PreviewBufferInfo) -> Value {
+    let (channels_kind, channels_static) = match buffer.channels {
+        PreviewBufferChannels::Mono => ("mono", None),
+        PreviewBufferChannels::Static(channels) => ("static", Some(channels)),
+        PreviewBufferChannels::Dynamic => ("dynamic", None),
+    };
+    json!({
+        "index": buffer.index,
+        "name": buffer.name,
+        "type": buffer.type_repr,
+        "channelsKind": channels_kind,
+        "channelsStatic": channels_static,
+        "loadedPath": buffer.loaded_path,
     })
 }
 
@@ -1379,6 +1453,29 @@ fn handle_preview_control_client(
                     }),
                 }
             }
+            "getBuffers" => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::GetBuffers { reply: reply_tx })
+                    .map_err(|_| "preview control channel closed".to_owned())?;
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "preview control reply channel closed".to_owned())?
+                {
+                    Ok(buffers) => json!({
+                        "id": request.id,
+                        "ok": true,
+                        "result": {
+                            "buffers": buffers.iter().map(preview_buffer_json).collect::<Vec<_>>(),
+                        }
+                    }),
+                    Err(err) => json!({
+                        "id": request.id,
+                        "ok": false,
+                        "error": err,
+                    }),
+                }
+            }
             "setParam" => {
                 let name = request
                     .name
@@ -1404,6 +1501,62 @@ fn handle_preview_control_client(
                     })
                     .map_err(|_| "preview control channel closed".to_owned())?;
                 match reply_rx.recv().map_err(|_| "preview control reply channel closed".to_owned())? {
+                    Ok(()) => json!({
+                        "id": request.id,
+                        "ok": true,
+                    }),
+                    Err(err) => json!({
+                        "id": request.id,
+                        "ok": false,
+                        "error": err,
+                    }),
+                }
+            }
+            "bindBufferWav" => {
+                let name = request
+                    .name
+                    .ok_or_else(|| "bindBufferWav requires 'name'".to_owned())?;
+                let path = request
+                    .path
+                    .ok_or_else(|| "bindBufferWav requires 'path'".to_owned())?;
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::BindBufferWav {
+                        name,
+                        path: PathBuf::from(path),
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| "preview control channel closed".to_owned())?;
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "preview control reply channel closed".to_owned())?
+                {
+                    Ok(()) => json!({
+                        "id": request.id,
+                        "ok": true,
+                    }),
+                    Err(err) => json!({
+                        "id": request.id,
+                        "ok": false,
+                        "error": err,
+                    }),
+                }
+            }
+            "clearBuffer" => {
+                let name = request
+                    .name
+                    .ok_or_else(|| "clearBuffer requires 'name'".to_owned())?;
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::ClearBuffer {
+                        name,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| "preview control channel closed".to_owned())?;
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "preview control reply channel closed".to_owned())?
+                {
                     Ok(()) => json!({
                         "id": request.id,
                         "ok": true,

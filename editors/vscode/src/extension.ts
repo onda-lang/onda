@@ -26,11 +26,23 @@ interface PatchParamState extends PatchParamPayload {
   smoothingMs: number;
 }
 
+interface PatchBufferPayload {
+  index: number;
+  name: string;
+  type: string;
+  channelsKind: "mono" | "static" | "dynamic";
+  channelsStatic: number | null;
+  loadedPath: string | null;
+}
+
+interface PatchBufferState extends PatchBufferPayload {}
+
 interface PatchReadyEvent {
   event: "ready";
   path: string;
   port: number;
   params: PatchParamPayload[];
+  buffers: PatchBufferPayload[];
   outputChannels: number;
 }
 
@@ -40,6 +52,7 @@ interface PatchPanelState {
   path?: string;
   status: string;
   error?: string;
+  buffers: PatchBufferState[];
   params: PatchParamState[];
 }
 
@@ -61,6 +74,7 @@ let patchPath: string | undefined;
 let patchOutput: vscode.OutputChannel | undefined;
 let serverOutput: vscode.OutputChannel | undefined;
 let patchPanel: vscode.WebviewPanel | undefined;
+let patchPanelReady = false;
 let patchControlSocket: net.Socket | undefined;
 let patchControlBuffer = "";
 let patchStdoutBuffer = "";
@@ -72,6 +86,7 @@ let patchPanelState: PatchPanelState = {
   running: false,
   connected: false,
   status: "Stopped",
+  buffers: [],
   params: [],
 };
 
@@ -146,12 +161,13 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
     path: fsPath,
     status: `Starting ${path.basename(fsPath)}...`,
     error: undefined,
+    buffers: patchPanelState.path === fsPath ? patchPanelState.buffers : [],
     params: preservedParams,
   };
   postPatchPanelState();
 
   if (patchProcess && patchPath === fsPath && !options?.restart) {
-    patchPanel?.reveal(vscode.ViewColumn.Beside);
+    revealPatchPanel();
     return;
   }
 
@@ -171,7 +187,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
 
   patchOutput?.appendLine(`$ ${command} ${args.map(shellQuote).join(" ")}`);
   patchOutput?.show(true);
-  patchPanel?.reveal(vscode.ViewColumn.Beside);
+  revealPatchPanel();
 
   child.stdout.on("data", (chunk: Buffer) => {
     handlePatchStdout(chunk.toString());
@@ -193,6 +209,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
       error: error.message,
     };
     postPatchPanelState();
+    patchOutput?.show(true);
     void vscode.window.showErrorMessage(
       `Failed to start Omni patch${failedPath ? ` (${path.basename(failedPath)})` : ""}: ${error.message}`,
     );
@@ -222,6 +239,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
       return;
     }
     const reason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
+    patchOutput?.show(true);
     void vscode.window.showWarningMessage(
       `Omni patch stopped${finishedPath ? ` (${path.basename(finishedPath)})` : ""}: ${reason}`,
     );
@@ -356,6 +374,7 @@ function handlePatchStdoutLine(line: string): void {
         path: patchPath,
         status: "Running",
         error: undefined,
+        buffers: mergePatchBuffers(payload.buffers ?? [], patchPanelState.buffers),
         params: mergePatchParams(payload.params, patchPanelState.params),
       };
       postPatchPanelState();
@@ -395,6 +414,19 @@ function mergePatchParams(
     });
 }
 
+function mergePatchBuffers(
+  buffers: PatchBufferPayload[],
+  existing: PatchBufferState[],
+): PatchBufferState[] {
+  return buffers.map((buffer) => {
+    const previous = existing.find((item) => item.name === buffer.name);
+    return {
+      ...buffer,
+      loadedPath: previous?.loadedPath ?? buffer.loadedPath,
+    };
+  });
+}
+
 function initialParamValue(param: PatchParamPayload): PatchScalarValue {
   if (param.type === "bool") {
     if (param.default === null) {
@@ -431,7 +463,10 @@ function connectPatchControl(port: number): void {
       error: undefined,
     };
     postPatchPanelState();
-    void refreshPatchParams().then(() => reapplyCachedPatchParams());
+    void Promise.all([refreshPatchParams(), refreshPatchBuffers()]).then(() => {
+      reapplyCachedPatchParams();
+      reapplyCachedPatchBuffers();
+    });
   });
   socket.on("data", (chunk: string) => {
     patchControlBuffer += chunk;
@@ -525,6 +560,27 @@ async function refreshPatchParams(): Promise<void> {
   }
 }
 
+async function refreshPatchBuffers(): Promise<void> {
+  try {
+    const result = await sendPatchControlRequest<{ buffers: PatchBufferPayload[] }>("getBuffers");
+    if (!result || !Array.isArray(result.buffers)) {
+      return;
+    }
+    patchPanelState = {
+      ...patchPanelState,
+      buffers: mergePatchBuffers(result.buffers, patchPanelState.buffers),
+    };
+    postPatchPanelState();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    patchPanelState = {
+      ...patchPanelState,
+      error: message,
+    };
+    postPatchPanelState();
+  }
+}
+
 async function reapplyCachedPatchParams(): Promise<void> {
   for (const param of patchPanelState.params) {
     if (param.value === null) {
@@ -535,6 +591,15 @@ async function reapplyCachedPatchParams(): Promise<void> {
     dispatch.targetValue = undefined;
     stopPatchParamSmoothing(param.name);
     queuePatchParamSend(param.name, param.value);
+  }
+}
+
+function reapplyCachedPatchBuffers(): void {
+  for (const buffer of patchPanelState.buffers) {
+    if (!buffer.loadedPath) {
+      continue;
+    }
+    void bindPatchBufferFile(buffer.name, buffer.loadedPath, { silent: true });
   }
 }
 
@@ -628,6 +693,19 @@ function queuePatchParamSend(name: string, value: PatchScalarValue): void {
       };
       postPatchPanelState();
     });
+}
+
+function describePatchBufferChannels(buffer: PatchBufferPayload): string {
+  switch (buffer.channelsKind) {
+    case "mono":
+      return "mono";
+    case "static":
+      return `${buffer.channelsStatic ?? 0}-channel`;
+    case "dynamic":
+      return "dynamic channels";
+    default:
+      return "unknown";
+  }
 }
 
 function startPatchParamSmoothing(name: string, targetValue: number, smoothingMs: number): void {
@@ -730,10 +808,85 @@ function resetPatchParams(): void {
   }
 }
 
+async function bindPatchBufferFile(
+  name: string,
+  filePath: string,
+  options?: { silent?: boolean },
+): Promise<void> {
+  try {
+    await sendPatchControlRequest("bindBufferWav", { name, path: filePath });
+    patchPanelState = {
+      ...patchPanelState,
+      error: undefined,
+      buffers: patchPanelState.buffers.map((buffer) =>
+        buffer.name === name
+          ? {
+              ...buffer,
+              loadedPath: filePath,
+            }
+          : buffer,
+      ),
+    };
+    postPatchPanelState();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    patchPanelState = {
+      ...patchPanelState,
+      error: message,
+    };
+    postPatchPanelState();
+    if (!options?.silent) {
+      void vscode.window.showErrorMessage(`Failed to bind preview buffer '${name}': ${message}`);
+    }
+  }
+}
+
+async function clearPatchBuffer(name: string): Promise<void> {
+  try {
+    await sendPatchControlRequest("clearBuffer", { name });
+    patchPanelState = {
+      ...patchPanelState,
+      error: undefined,
+      buffers: patchPanelState.buffers.map((buffer) =>
+        buffer.name === name
+          ? {
+              ...buffer,
+              loadedPath: null,
+            }
+          : buffer,
+      ),
+    };
+    postPatchPanelState();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    patchPanelState = {
+      ...patchPanelState,
+      error: message,
+    };
+    postPatchPanelState();
+  }
+}
+
+async function choosePatchBufferFile(name: string): Promise<void> {
+  const picked = await vscode.window.showOpenDialog({
+    canSelectMany: false,
+    openLabel: `Bind '${name}' buffer`,
+    filters: {
+      "Wave Audio": ["wav"],
+    },
+  });
+  const filePath = picked?.[0]?.fsPath;
+  if (!filePath) {
+    return;
+  }
+  await bindPatchBufferFile(name, filePath);
+}
+
 function clearPatchPanelMemory(): void {
   clearPatchParamDispatch();
   patchPanelState = {
     ...patchPanelState,
+    buffers: [],
     params: [],
   };
 }
@@ -763,7 +916,6 @@ function sendPatchControlRequest<T>(command: string, payload?: Record<string, un
 
 function ensurePatchPanel(): void {
   if (patchPanel) {
-    patchPanel.reveal(vscode.ViewColumn.Beside);
     postPatchPanelState();
     return;
   }
@@ -777,9 +929,10 @@ function ensurePatchPanel(): void {
       retainContextWhenHidden: true,
     },
   );
-  patchPanel.webview.html = renderPatchPanelHtml(patchPanel.webview);
+  patchPanelReady = false;
   patchPanel.onDidDispose(() => {
     clearPatchPanelMemory();
+    patchPanelReady = false;
     patchPanel = undefined;
   });
   patchPanel.webview.onDidReceiveMessage(async (message: unknown) => {
@@ -789,8 +942,16 @@ function ensurePatchPanel(): void {
       name?: string;
       value?: PatchScalarValue;
       smoothingMs?: number;
+      filePath?: string;
     };
     switch (payload.type) {
+      case "webviewReady":
+        patchPanelReady = true;
+        postPatchPanelState();
+        if (patchPanelState.connected) {
+          void Promise.all([refreshPatchParams(), refreshPatchBuffers()]);
+        }
+        break;
       case "start":
         await runPatch(payload.path ?? patchPanelState.path);
         break;
@@ -810,14 +971,37 @@ function ensurePatchPanel(): void {
           setPatchParamSmoothing(payload.name, normalizeSmoothingMs(payload.smoothingMs));
         }
         break;
+      case "chooseBufferFile":
+        if (typeof payload.name === "string") {
+          await choosePatchBufferFile(payload.name);
+        }
+        break;
+      case "bindBufferFile":
+        if (typeof payload.name === "string" && typeof payload.filePath === "string") {
+          await bindPatchBufferFile(payload.name, payload.filePath);
+        }
+        break;
+      case "clearBuffer":
+        if (typeof payload.name === "string") {
+          await clearPatchBuffer(payload.name);
+        }
+        break;
       default:
         break;
     }
   });
+  patchPanel.webview.html = renderPatchPanelHtmlSafe(patchPanel.webview);
   postPatchPanelState();
   if (patchPanelState.connected) {
-    void refreshPatchParams();
+    void Promise.all([refreshPatchParams(), refreshPatchBuffers()]);
   }
+}
+
+function revealPatchPanel(): void {
+  if (!patchPanel) {
+    return;
+  }
+  patchPanel.reveal(patchPanel.viewColumn);
 }
 
 function postPatchPanelState(): void {
@@ -831,11 +1015,10 @@ function postPatchPanelState(): void {
 }
 
 function renderPatchPanelHtml(webview: vscode.Webview): string {
-  const nonce = String(Date.now());
   const csp = [
     "default-src 'none'",
     `style-src ${webview.cspSource} 'unsafe-inline'`,
-    `script-src 'nonce-${nonce}'`,
+    `script-src ${webview.cspSource} 'unsafe-inline'`,
   ].join("; ");
 
   return `<!DOCTYPE html>
@@ -873,7 +1056,7 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         gap: 16px;
       }
 
-      .header, .params {
+      .header, .buffers, .params {
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -941,6 +1124,46 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         align-items: baseline;
         gap: 12px;
         margin-bottom: 12px;
+      }
+
+      .buffers-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .buffer-card {
+        background: var(--panel-strong);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+      }
+
+      .buffer-drop {
+        margin-top: 10px;
+        border: 1px dashed var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        color: var(--muted);
+        text-align: center;
+        transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+      }
+
+      .buffer-drop.dragging {
+        border-color: var(--accent);
+        color: var(--text);
+        background: rgba(127, 209, 185, 0.08);
+      }
+
+      .buffer-path {
+        margin-top: 8px;
+        color: var(--text);
+        word-break: break-word;
+      }
+
+      .buffer-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 10px;
       }
 
       .params-title {
@@ -1041,6 +1264,13 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
           <button class="secondary" id="reset">Reset</button>
         </div>
       </section>
+      <section class="buffers">
+        <div class="params-header">
+          <div class="params-title">Buffers</div>
+          <div class="params-subtitle" id="buffers-summary"></div>
+        </div>
+        <div class="buffers-list" id="buffers"></div>
+      </section>
       <section class="params">
         <div class="params-header">
           <div class="params-title">Params</div>
@@ -1049,7 +1279,7 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         <div class="param-list" id="params"></div>
       </section>
     </div>
-    <script nonce="${nonce}">
+    <script>
       const vscode = acquireVsCodeApi();
       const state = {
         running: false,
@@ -1057,6 +1287,7 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         path: "",
         status: "Stopped",
         error: "",
+        buffers: [],
         params: [],
       };
 
@@ -1066,8 +1297,15 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
       const pathNode = document.getElementById("path");
       const statusNode = document.getElementById("status");
       const errorNode = document.getElementById("error");
+      const buffersSummaryNode = document.getElementById("buffers-summary");
+      const buffersNode = document.getElementById("buffers");
       const paramsSummaryNode = document.getElementById("params-summary");
       const paramsNode = document.getElementById("params");
+
+      vscode.postMessage({ type: "webviewReady" });
+      window.addEventListener("load", () => {
+        vscode.postMessage({ type: "webviewReady" });
+      });
 
       startButton.addEventListener("click", () => {
         vscode.postMessage({ type: "start", path: state.path || undefined });
@@ -1092,11 +1330,79 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         pathNode.textContent = state.path ? state.path : "No patch selected";
         statusNode.textContent = state.connected ? state.status : state.running ? state.status + " (connecting controls...)" : state.status;
         errorNode.textContent = state.error || "";
+        buffersSummaryNode.textContent = state.buffers.length === 0 ? "No preview buffers" : state.buffers.length + " buffer" + (state.buffers.length === 1 ? "" : "s");
         paramsSummaryNode.textContent = state.params.length === 0 ? "No scalar params" : state.params.length + " control" + (state.params.length === 1 ? "" : "s");
 
         startButton.disabled = !state.path || state.running;
         stopButton.disabled = !state.running;
         resetButton.disabled = state.params.length === 0;
+
+        buffersNode.replaceChildren();
+        if (state.buffers.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "This patch exposes no preview buffer bindings.";
+          buffersNode.appendChild(empty);
+        } else {
+          for (const buffer of state.buffers) {
+            const card = document.createElement("div");
+            card.className = "buffer-card";
+
+            const head = document.createElement("div");
+            head.className = "param-head";
+            head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
+            head.querySelector(".param-name").textContent = buffer.name;
+            head.querySelector(".param-type").textContent =
+              buffer.type + " · " + describePatchBufferChannels(buffer);
+            card.appendChild(head);
+
+            const drop = document.createElement("div");
+            drop.className = "buffer-drop";
+            drop.textContent = "Drop a .wav file here (channel count must match buffer type)";
+            drop.addEventListener("dragover", (event) => {
+              event.preventDefault();
+              drop.classList.add("dragging");
+            });
+            drop.addEventListener("dragleave", () => {
+              drop.classList.remove("dragging");
+            });
+            drop.addEventListener("drop", (event) => {
+              event.preventDefault();
+              drop.classList.remove("dragging");
+              const filePath = extractDroppedFilePath(event.dataTransfer);
+              if (!filePath) {
+                return;
+              }
+              vscode.postMessage({ type: "bindBufferFile", name: buffer.name, filePath });
+            });
+            card.appendChild(drop);
+
+            const loaded = document.createElement("div");
+            loaded.className = "buffer-path";
+            loaded.textContent = buffer.loadedPath ? buffer.loadedPath : "No file loaded";
+            card.appendChild(loaded);
+
+            const actions = document.createElement("div");
+            actions.className = "buffer-actions";
+            const choose = document.createElement("button");
+            choose.className = "secondary";
+            choose.textContent = "Choose File";
+            choose.addEventListener("click", () => {
+              vscode.postMessage({ type: "chooseBufferFile", name: buffer.name });
+            });
+            const clear = document.createElement("button");
+            clear.className = "secondary";
+            clear.textContent = "Clear";
+            clear.disabled = !buffer.loadedPath;
+            clear.addEventListener("click", () => {
+              vscode.postMessage({ type: "clearBuffer", name: buffer.name });
+            });
+            actions.append(choose, clear);
+            card.appendChild(actions);
+
+            buffersNode.appendChild(card);
+          }
+        }
 
         paramsNode.replaceChildren();
         if (state.params.length === 0) {
@@ -1217,6 +1523,674 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
           paramsNode.appendChild(card);
         }
       }
+
+      function extractDroppedFilePath(dataTransfer) {
+        if (!dataTransfer) {
+          return "";
+        }
+        const files = dataTransfer.files;
+        if (files && files.length > 0) {
+          const file = files[0];
+          if (typeof file.path === "string" && file.path.length > 0) {
+            return file.path;
+          }
+        }
+        const uriList = dataTransfer.getData("text/uri-list");
+        if (uriList) {
+          const line = uriList.split(/\r?\n/).find((entry) => entry && !entry.startsWith("#"));
+          if (line && line.startsWith("file:///")) {
+            try {
+              return decodeURIComponent(line.replace("file:///", "").split("/").join("\\\\"));
+            } catch {
+              return "";
+            }
+          }
+        }
+        return "";
+      }
+
+      function describePatchBufferChannels(buffer) {
+        switch (buffer.channelsKind) {
+          case "mono":
+            return "mono";
+          case "static":
+            return String(buffer.channelsStatic || 0) + "-channel";
+          case "dynamic":
+            return "dynamic channels";
+          default:
+            return "unknown";
+        }
+      }
+
+      render();
+    </script>
+  </body>
+</html>`;
+}
+
+function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
+  const csp = [
+    "default-src 'none'",
+    `style-src ${webview.cspSource} 'unsafe-inline'`,
+    `script-src ${webview.cspSource} 'unsafe-inline'`,
+  ].join("; ");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="${csp}" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Omni Patch</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #15171b;
+        --panel: #1f2329;
+        --panel-strong: #282d35;
+        --text: #f3f5f7;
+        --muted: #9ba6b2;
+        --accent: #7fd1b9;
+        --accent-strong: #57b89b;
+        --danger: #e07a7a;
+        --border: #353c46;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 18px;
+        background: linear-gradient(180deg, #121418 0%, #181c22 100%);
+        color: var(--text);
+        font: 13px/1.45 ui-sans-serif, system-ui, sans-serif;
+      }
+
+      .shell {
+        display: grid;
+        gap: 16px;
+      }
+
+      .header, .buffers, .params {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+      }
+
+      .title {
+        font-size: 16px;
+        font-weight: 700;
+      }
+
+      .meta {
+        margin-top: 6px;
+        color: var(--muted);
+        word-break: break-word;
+      }
+
+      .status {
+        margin-top: 6px;
+        color: var(--accent);
+      }
+
+      .error {
+        margin-top: 8px;
+        color: var(--danger);
+      }
+
+      .actions {
+        margin-top: 12px;
+        display: flex;
+        gap: 10px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 16px;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button.primary {
+        background: var(--accent);
+        color: #0b1713;
+      }
+
+      button.primary:hover {
+        background: var(--accent-strong);
+      }
+
+      button.secondary {
+        background: var(--panel-strong);
+        color: var(--text);
+      }
+
+      button:disabled {
+        cursor: default;
+        opacity: 0.5;
+      }
+
+      .params-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .buffers-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .buffer-card {
+        background: var(--panel-strong);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+      }
+
+      .buffer-drop {
+        margin-top: 10px;
+        border: 1px dashed var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .buffer-drop.dragging {
+        border-color: var(--accent);
+        color: var(--text);
+        background: rgba(127, 209, 185, 0.08);
+      }
+
+      .buffer-path {
+        margin-top: 8px;
+        color: var(--text);
+        word-break: break-word;
+      }
+
+      .buffer-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .params-title {
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .params-subtitle {
+        color: var(--muted);
+      }
+
+      .param-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .param {
+        background: var(--panel-strong);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+      }
+
+      .param-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .param-name {
+        font-weight: 700;
+      }
+
+      .param-type {
+        color: var(--muted);
+      }
+
+      .param-settings {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .param-setting {
+        display: grid;
+        gap: 6px;
+      }
+
+      .param-setting-label {
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+
+      .param-controls {
+        display: grid;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .param-range {
+        width: 100%;
+      }
+
+      .param-number {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #111418;
+        color: var(--text);
+        padding: 8px 10px;
+        font: inherit;
+      }
+
+      .param-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text);
+      }
+
+      .empty {
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="header">
+        <div class="title">Omni Patch</div>
+        <div class="meta" id="path"></div>
+        <div class="status" id="status"></div>
+        <div class="error" id="error"></div>
+        <div class="actions">
+          <button class="primary" id="start">Start</button>
+          <button class="secondary" id="stop">Stop</button>
+          <button class="secondary" id="reset">Reset</button>
+        </div>
+      </section>
+      <section class="buffers">
+        <div class="params-header">
+          <div class="params-title">Buffers</div>
+          <div class="params-subtitle" id="buffers-summary"></div>
+        </div>
+        <div class="buffers-list" id="buffers"></div>
+      </section>
+      <section class="params">
+        <div class="params-header">
+          <div class="params-title">Params</div>
+          <div class="params-subtitle" id="params-summary"></div>
+        </div>
+        <div class="param-list" id="params"></div>
+      </section>
+    </div>
+    <script>
+      var vscode = acquireVsCodeApi();
+      var state = {
+        running: false,
+        connected: false,
+        path: "",
+        status: "Stopped",
+        error: "",
+        buffers: [],
+        params: [],
+      };
+
+      var startButton = document.getElementById("start");
+      var stopButton = document.getElementById("stop");
+      var resetButton = document.getElementById("reset");
+      var pathNode = document.getElementById("path");
+      var statusNode = document.getElementById("status");
+      var errorNode = document.getElementById("error");
+      var buffersSummaryNode = document.getElementById("buffers-summary");
+      var buffersNode = document.getElementById("buffers");
+      var paramsSummaryNode = document.getElementById("params-summary");
+      var paramsNode = document.getElementById("params");
+
+      function post(message) {
+        vscode.postMessage(message);
+      }
+
+      function clearChildren(node) {
+        while (node.firstChild) {
+          node.removeChild(node.firstChild);
+        }
+      }
+
+      function describePatchBufferChannels(buffer) {
+        if (!buffer) {
+          return "unknown";
+        }
+        if (buffer.channelsKind === "mono") {
+          return "mono";
+        }
+        if (buffer.channelsKind === "static") {
+          return String(buffer.channelsStatic || 0) + "-channel";
+        }
+        if (buffer.channelsKind === "dynamic") {
+          return "dynamic channels";
+        }
+        return "unknown";
+      }
+
+      function extractDroppedFilePath(dataTransfer) {
+        if (!dataTransfer) {
+          return "";
+        }
+        var files = dataTransfer.files;
+        if (files && files.length > 0) {
+          var file = files[0];
+          if (file && typeof file.path === "string" && file.path.length > 0) {
+            return file.path;
+          }
+        }
+        var uriList = dataTransfer.getData("text/uri-list");
+        if (!uriList) {
+          return "";
+        }
+        var entries = uriList.split(/\\r?\\n/);
+        for (var i = 0; i < entries.length; i += 1) {
+          var line = entries[i];
+          if (!line || line.charAt(0) === "#") {
+            continue;
+          }
+          if (line.indexOf("file:///") === 0) {
+            try {
+              return decodeURIComponent(line.replace("file:///", "").split("/").join("\\\\"));
+            } catch (_error) {
+              return "";
+            }
+          }
+        }
+        return "";
+      }
+
+      function renderBuffers() {
+        clearChildren(buffersNode);
+        if (!state.buffers || state.buffers.length === 0) {
+          var empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "This patch exposes no preview buffer bindings.";
+          buffersNode.appendChild(empty);
+          return;
+        }
+
+        for (var i = 0; i < state.buffers.length; i += 1) {
+          var buffer = state.buffers[i];
+          var card = document.createElement("div");
+          card.className = "buffer-card";
+
+          var head = document.createElement("div");
+          head.className = "param-head";
+          var nameNode = document.createElement("div");
+          nameNode.className = "param-name";
+          nameNode.textContent = buffer.name;
+          var typeNode = document.createElement("div");
+          typeNode.className = "param-type";
+          typeNode.textContent = buffer.type + " - " + describePatchBufferChannels(buffer);
+          head.appendChild(nameNode);
+          head.appendChild(typeNode);
+          card.appendChild(head);
+
+          var drop = document.createElement("div");
+          drop.className = "buffer-drop";
+          drop.textContent = "Drop a .wav file here (channel count must match buffer type)";
+          drop.addEventListener("dragover", function(event) {
+            event.preventDefault();
+            drop.classList.add("dragging");
+          });
+          drop.addEventListener("dragleave", function() {
+            drop.classList.remove("dragging");
+          });
+          drop.addEventListener("drop", (function(bufferName, dropNode) {
+            return function(event) {
+              event.preventDefault();
+              dropNode.classList.remove("dragging");
+              var filePath = extractDroppedFilePath(event.dataTransfer);
+              if (!filePath) {
+                return;
+              }
+              post({ type: "bindBufferFile", name: bufferName, filePath: filePath });
+            };
+          })(buffer.name, drop));
+          card.appendChild(drop);
+
+          var loaded = document.createElement("div");
+          loaded.className = "buffer-path";
+          loaded.textContent = buffer.loadedPath ? buffer.loadedPath : "No file loaded";
+          card.appendChild(loaded);
+
+          var actions = document.createElement("div");
+          actions.className = "buffer-actions";
+
+          var choose = document.createElement("button");
+          choose.className = "secondary";
+          choose.textContent = "Choose File";
+          choose.addEventListener("click", (function(bufferName) {
+            return function() {
+              post({ type: "chooseBufferFile", name: bufferName });
+            };
+          })(buffer.name));
+
+          var clear = document.createElement("button");
+          clear.className = "secondary";
+          clear.textContent = "Clear";
+          clear.disabled = !buffer.loadedPath;
+          clear.addEventListener("click", (function(bufferName) {
+            return function() {
+              post({ type: "clearBuffer", name: bufferName });
+            };
+          })(buffer.name));
+
+          actions.appendChild(choose);
+          actions.appendChild(clear);
+          card.appendChild(actions);
+          buffersNode.appendChild(card);
+        }
+      }
+
+      function renderParams() {
+        clearChildren(paramsNode);
+        if (!state.params || state.params.length === 0) {
+          var empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "This patch exposes no scalar params.";
+          paramsNode.appendChild(empty);
+          return;
+        }
+
+        for (var i = 0; i < state.params.length; i += 1) {
+          var param = state.params[i];
+          var card = document.createElement("div");
+          card.className = "param";
+
+          var head = document.createElement("div");
+          head.className = "param-head";
+          var nameNode = document.createElement("div");
+          nameNode.className = "param-name";
+          nameNode.textContent = param.name;
+          var typeNode = document.createElement("div");
+          typeNode.className = "param-type";
+          typeNode.textContent = param.type;
+          head.appendChild(nameNode);
+          head.appendChild(typeNode);
+          card.appendChild(head);
+
+          var controls = document.createElement("div");
+          controls.className = "param-controls";
+          card.appendChild(controls);
+
+          if (param.type === "bool") {
+            var label = document.createElement("label");
+            label.className = "param-toggle";
+            var toggle = document.createElement("input");
+            toggle.type = "checkbox";
+            toggle.checked = Boolean(param.value);
+            toggle.disabled = !state.connected;
+            var toggleText = document.createElement("span");
+            toggleText.textContent = toggle.checked ? "On" : "Off";
+            toggle.addEventListener("change", (function(paramName, inputNode, textNode) {
+              return function() {
+                textNode.textContent = inputNode.checked ? "On" : "Off";
+                post({ type: "setParam", name: paramName, value: inputNode.checked });
+              };
+            })(param.name, toggle, toggleText));
+            label.appendChild(toggle);
+            label.appendChild(toggleText);
+            controls.appendChild(label);
+          } else {
+            var currentValue = typeof param.value === "number" ? param.value : 0;
+            var step = (param.type === "i32" || param.type === "i64") ? "1" : "0.001";
+            var hasRange =
+              typeof param.rangeMin === "number" &&
+              typeof param.rangeMax === "number" &&
+              isFinite(param.rangeMin) &&
+              isFinite(param.rangeMax);
+
+            if (hasRange) {
+              var range = document.createElement("input");
+              range.className = "param-range";
+              range.type = "range";
+              range.min = String(param.rangeMin);
+              range.max = String(param.rangeMax);
+              range.step = step;
+              range.value = String(currentValue);
+              range.disabled = !state.connected;
+
+              var number = document.createElement("input");
+              number.className = "param-number";
+              number.type = "number";
+              number.min = String(param.rangeMin);
+              number.max = String(param.rangeMax);
+              number.step = step;
+              number.value = String(currentValue);
+              number.disabled = !state.connected;
+
+              range.addEventListener("input", (function(paramName, rangeNode, numberNode) {
+                return function() {
+                  numberNode.value = rangeNode.value;
+                  post({ type: "setParam", name: paramName, value: Number(rangeNode.value) });
+                };
+              })(param.name, range, number));
+
+              number.addEventListener("change", (function(paramName, rangeNode, numberNode) {
+                return function() {
+                  rangeNode.value = numberNode.value;
+                  post({ type: "setParam", name: paramName, value: Number(numberNode.value) });
+                };
+              })(param.name, range, number));
+
+              controls.appendChild(range);
+              controls.appendChild(number);
+            } else {
+              var numberOnly = document.createElement("input");
+              numberOnly.className = "param-number";
+              numberOnly.type = "number";
+              numberOnly.step = step;
+              numberOnly.value = String(currentValue);
+              numberOnly.disabled = !state.connected;
+              numberOnly.addEventListener("change", (function(paramName, inputNode) {
+                return function() {
+                  post({ type: "setParam", name: paramName, value: Number(inputNode.value) });
+                };
+              })(param.name, numberOnly));
+              controls.appendChild(numberOnly);
+            }
+
+            var settings = document.createElement("div");
+            settings.className = "param-settings";
+            var smoothing = document.createElement("div");
+            smoothing.className = "param-setting";
+            var smoothingLabel = document.createElement("div");
+            smoothingLabel.className = "param-setting-label";
+            smoothingLabel.textContent = "Smoothing (ms)";
+            var smoothingInput = document.createElement("input");
+            smoothingInput.className = "param-number";
+            smoothingInput.type = "number";
+            smoothingInput.min = "0";
+            smoothingInput.step = "1";
+            smoothingInput.value = String(param.smoothingMs || 0);
+            smoothingInput.addEventListener("change", (function(paramName, inputNode) {
+              return function() {
+                var nextValue = Math.max(0, Math.round(Number(inputNode.value) || 0));
+                inputNode.value = String(nextValue);
+                post({ type: "setSmoothing", name: paramName, smoothingMs: nextValue });
+              };
+            })(param.name, smoothingInput));
+            smoothing.appendChild(smoothingLabel);
+            smoothing.appendChild(smoothingInput);
+            settings.appendChild(smoothing);
+            controls.appendChild(settings);
+          }
+
+          paramsNode.appendChild(card);
+        }
+      }
+
+      function render() {
+        pathNode.textContent = state.path ? state.path : "No patch selected";
+        if (state.connected) {
+          statusNode.textContent = state.status;
+        } else if (state.running) {
+          statusNode.textContent = state.status + " (connecting controls...)";
+        } else {
+          statusNode.textContent = state.status;
+        }
+        errorNode.textContent = state.error || "";
+        buffersSummaryNode.textContent =
+          state.buffers && state.buffers.length > 0
+            ? String(state.buffers.length) + (state.buffers.length === 1 ? " buffer" : " buffers")
+            : "No preview buffers";
+        paramsSummaryNode.textContent =
+          state.params && state.params.length > 0
+            ? String(state.params.length) + (state.params.length === 1 ? " control" : " controls")
+            : "No scalar params";
+
+        startButton.disabled = !state.path || state.running;
+        stopButton.disabled = !state.running;
+        resetButton.disabled = !state.params || state.params.length === 0;
+
+        renderBuffers();
+        renderParams();
+      }
+
+      startButton.addEventListener("click", function() {
+        post({ type: "start", path: state.path || undefined });
+      });
+      stopButton.addEventListener("click", function() {
+        post({ type: "stop" });
+      });
+      resetButton.addEventListener("click", function() {
+        post({ type: "reset" });
+      });
+
+      window.addEventListener("message", function(event) {
+        var message = event.data;
+        if (!message || message.type !== "state") {
+          return;
+        }
+        state.running = Boolean(message.state && message.state.running);
+        state.connected = Boolean(message.state && message.state.connected);
+        state.path = (message.state && message.state.path) || "";
+        state.status = (message.state && message.state.status) || "Stopped";
+        state.error = (message.state && message.state.error) || "";
+        state.buffers = (message.state && message.state.buffers) || [];
+        state.params = (message.state && message.state.params) || [];
+        render();
+      });
+
+      post({ type: "webviewReady" });
+      window.addEventListener("load", function() {
+        post({ type: "webviewReady" });
+      });
 
       render();
     </script>
