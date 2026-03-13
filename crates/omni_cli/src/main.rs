@@ -40,7 +40,7 @@ const USAGE: &str = r#"Usage:
   omni render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
   omni lsp
   omni preview render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
-  omni preview play <input.omni> [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
+  omni preview play <input.omni> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
   omni daemon diagnose <input.omni> [--sample-rate <hz>] [--block <frames>]
   omni daemon stdio
 
@@ -82,7 +82,7 @@ enum Command {
 enum PreviewCommand {
     Play {
         input: PathBuf,
-        dur_seconds: u32,
+        dur_seconds: Option<u32>,
         sample_rate_hz: u32,
         block_frames: usize,
         fast_math: bool,
@@ -176,12 +176,15 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     }
 }
 
-fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
-    match args.next() {
-        None => Ok(Command::Lsp),
-        Some(arg) if arg == "--help" || arg == "-h" => Err(USAGE.to_owned()),
-        Some(arg) => Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+fn parse_lsp_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
+    for arg in args {
+        match arg.as_str() {
+            "--stdio" => {}
+            "--help" | "-h" => return Err(USAGE.to_owned()),
+            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+        }
     }
+    Ok(Command::Lsp)
 }
 
 fn parse_preview_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -474,12 +477,13 @@ fn parse_preview_play_args(
         return Err(format!("preview play requires an input file\n\n{USAGE}"));
     };
 
-    let mut dur_seconds = DEFAULT_DUR_SECONDS;
+    let mut dur_seconds = Some(DEFAULT_DUR_SECONDS);
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
     let mut fast_math = false;
     let mut show_meta = false;
     let mut param_sets = Vec::new();
+    let mut forever = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -487,7 +491,10 @@ fn parse_preview_play_args(
                 let Some(value) = args.next() else {
                     return Err("--dur requires a positive integer value".to_owned());
                 };
-                dur_seconds = parse_dur_seconds(&value)?;
+                if forever {
+                    return Err("--dur cannot be combined with --forever".to_owned());
+                }
+                dur_seconds = Some(parse_dur_seconds(&value)?);
             }
             "--sample-rate" | "--sr" => {
                 let Some(value) = args.next() else {
@@ -507,11 +514,21 @@ fn parse_preview_play_args(
                 };
                 param_sets.push(parse_param_setting(&value)?);
             }
+            "--forever" => {
+                if dur_seconds != Some(DEFAULT_DUR_SECONDS) {
+                    return Err("--forever cannot be combined with --dur".to_owned());
+                }
+                forever = true;
+                dur_seconds = None;
+            }
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--help" | "-h" => return Err(USAGE.to_owned()),
             _ if arg.starts_with("--dur=") => {
-                dur_seconds = parse_dur_seconds(&arg["--dur=".len()..])?;
+                if forever {
+                    return Err("--dur cannot be combined with --forever".to_owned());
+                }
+                dur_seconds = Some(parse_dur_seconds(&arg["--dur=".len()..])?);
             }
             _ if arg.starts_with("--sample-rate=") => {
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sample-rate=".len()..])?;
@@ -749,7 +766,7 @@ fn run_daemon_preview(
 
 fn run_daemon_play(
     input: &Path,
-    dur_seconds: u32,
+    dur_seconds: Option<u32>,
     sample_rate_hz: u32,
     block_frames: usize,
     fast_math: bool,
@@ -854,12 +871,25 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     stream
         .play()
         .map_err(|err| format!("failed to start audio output stream: {err}"))?;
-    println!(
-        "Playing {} for {} seconds on default output device",
-        display_path(&startup.path),
-        launch.dur_seconds
-    );
-    thread::sleep(Duration::from_secs(u64::from(launch.dur_seconds)));
+    match launch.dur_seconds {
+        Some(dur_seconds) => {
+            println!(
+                "Playing {} for {} seconds on default output device",
+                display_path(&startup.path),
+                dur_seconds
+            );
+            thread::sleep(Duration::from_secs(u64::from(dur_seconds)));
+        }
+        None => {
+            println!(
+                "Playing {} until stopped on default output device",
+                display_path(&startup.path)
+            );
+            loop {
+                thread::sleep(Duration::from_secs(60));
+            }
+        }
+    }
 
     stop_flag.store(true, Ordering::Release);
     drop(stream);
@@ -966,7 +996,7 @@ fn display_path(path: &Path) -> String {
 #[derive(Clone)]
 struct PlaybackLaunch {
     input: PathBuf,
-    dur_seconds: u32,
+    dur_seconds: Option<u32>,
     sample_rate_hz: u32,
     block_frames: usize,
     fast_math: bool,
@@ -2540,6 +2570,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_lsp_command_accepts_stdio_flag() {
+        let cmd = parse_args(["omni", "lsp", "--stdio"].into_iter().map(str::to_owned))
+            .expect("lsp --stdio args should parse");
+        match cmd {
+            Command::Lsp => {}
+            _ => panic!("expected lsp command"),
+        }
+    }
+
+    #[test]
     fn parse_preview_play_accepts_meta_and_param_sets() {
         let cmd = parse_args(
             [
@@ -2566,6 +2606,22 @@ mod tests {
                 assert!(show_meta);
                 assert!(fast_math);
                 assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
+            }
+            _ => panic!("expected preview play command"),
+        }
+    }
+
+    #[test]
+    fn parse_preview_play_accepts_forever() {
+        let cmd = parse_args(
+            ["omni", "preview", "play", "x.omni", "--forever"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("preview play --forever should parse");
+        match cmd {
+            Command::Preview(PreviewCommand::Play { dur_seconds, .. }) => {
+                assert_eq!(dur_seconds, None);
             }
             _ => panic!("expected preview play command"),
         }

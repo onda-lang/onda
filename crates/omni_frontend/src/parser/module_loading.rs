@@ -704,6 +704,38 @@ pub(super) fn stmt_loc_from_pair(pair: &Pair<'_, Rule>) -> Span {
     })
 }
 
+pub(super) fn parse_loc_from_raw(
+    line: usize,
+    column: usize,
+    end_line: usize,
+    end_column: usize,
+) -> SourceLoc {
+    PARSE_LOC_CONTEXT_STACK.with(|stack| {
+        let context = stack.borrow();
+        let Some(current) = context.last() else {
+            return SourceLoc::new(None, line, column, end_line, end_column, Vec::new());
+        };
+        let mapped_line = current
+            .source_line_map
+            .get(line.saturating_sub(1))
+            .copied()
+            .unwrap_or_else(|| line.saturating_add(current.line_offset));
+        let mapped_end_line = current
+            .source_line_map
+            .get(end_line.saturating_sub(1))
+            .copied()
+            .unwrap_or_else(|| end_line.saturating_add(current.line_offset));
+        SourceLoc::new(
+            Some(current.file.clone()),
+            mapped_line,
+            column,
+            mapped_end_line,
+            end_column,
+            current.trace.clone(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};

@@ -221,7 +221,10 @@ pub fn analyze_with_options(
     let mut sample = sample_block.body;
 
     let missing_sample_loc = original_last_block_loc.as_ref();
-    if sample.is_empty() && program.block(BlockKind::Block).is_none() {
+    if sample.is_empty()
+        && program.block(BlockKind::Block).is_none()
+        && requires_entry_sample(&program)
+    {
         errors.push(Diagnostic::semantic_span(
             "missing required 'sample' block",
             missing_sample_loc,
@@ -1814,4 +1817,21 @@ pub fn analyze_with_options(
     } else {
         Err(errors)
     }
+}
+
+fn requires_entry_sample(program: &Program) -> bool {
+    program.blocks.iter().any(|block| {
+        matches!(
+            block.kind(),
+            BlockKind::Ins
+                | BlockKind::Outs
+                | BlockKind::Params
+                | BlockKind::Events
+                | BlockKind::Buffers
+                | BlockKind::Init
+                | BlockKind::Block
+                | BlockKind::Sample
+                | BlockKind::Graph
+        )
+    })
 }

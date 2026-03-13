@@ -671,6 +671,13 @@ mod tests {
     }
 
     #[test]
+    fn declaration_only_library_file_does_not_require_sample_block() {
+        let src = "proc Mix:\n  ins:\n    dry\n    fb\n  sample:\n    out1 = (dry + fb) * 0.5\n\ndef clip(x) {\n  return x\n}\nconst SCALE = 0.5\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("declaration-only library file should analyze");
+    }
+
+    #[test]
     fn block_without_nested_sample_reports_only_block_specific_error() {
         let src = "outs { out1 }\nblock { x = 0.0 }\n";
         let program = parse_program(src).expect("parse should succeed");

@@ -4,13 +4,21 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use omni_daemon::{DaemonSession, DocumentVersion};
-use omni_frontend::Diagnostic;
+use omni_frontend::{
+    parse_program, parse_program_with_path, AssignTarget, Block, Diagnostic, Expr, FunctionDef,
+    GraphBlock, GraphEndpoint, ParamDecl, PortDecl, ProcessorDef, Program, SourceLoc, Span, Stmt,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 const JSONRPC_VERSION: &str = "2.0";
+const INVALID_PARAMS: i64 = -32602;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INTERNAL_ERROR: i64 = -32603;
+const SEMANTIC_TOKEN_TYPE_ENUM_MEMBER: u32 = 0;
+const SEMANTIC_TOKEN_TYPE_VARIABLE: u32 = 1;
+const SEMANTIC_TOKEN_TYPE_PORT: u32 = 2;
+const SEMANTIC_TOKEN_TYPE_PARAMETER: u32 = 3;
 
 pub fn run_stdio_loop() -> Result<(), String> {
     let stdin = io::stdin();
@@ -54,8 +62,37 @@ impl LspServer {
         message: Value,
         writer: &mut impl Write,
     ) -> Result<LoopControl, String> {
-        let envelope: ClientMessage = serde_json::from_value(message)
-            .map_err(|err| format!("failed to decode lsp message: {err}"))?;
+        let envelope: ClientMessage = match serde_json::from_value(message) {
+            Ok(envelope) => envelope,
+            Err(err) => {
+                eprintln!("omni lsp: failed to decode lsp message: {err}");
+                return Ok(LoopControl::Continue);
+            }
+        };
+        let request_id = envelope.id.clone();
+        match self.handle_envelope(envelope, writer) {
+            Ok(control) => Ok(control),
+            Err(err) => {
+                if let Some(id) = request_id {
+                    let code = if err.starts_with("invalid params:") {
+                        INVALID_PARAMS
+                    } else {
+                        INTERNAL_ERROR
+                    };
+                    write_error(writer, id, code, err)?;
+                } else {
+                    eprintln!("omni lsp: {err}");
+                }
+                Ok(LoopControl::Continue)
+            }
+        }
+    }
+
+    fn handle_envelope(
+        &mut self,
+        envelope: ClientMessage,
+        writer: &mut impl Write,
+    ) -> Result<LoopControl, String> {
         if envelope.jsonrpc.as_deref() != Some(JSONRPC_VERSION) {
             if let Some(id) = envelope.id {
                 write_error(
@@ -92,38 +129,45 @@ impl LspServer {
             }
             "textDocument/didOpen" => {
                 let params = parse_params::<DidOpenTextDocumentParams>(envelope.params)?;
-                let path = file_uri_to_path(&params.text_document.uri)
-                    .map(|path| normalize_path(&path))
-                    .map_err(invalid_params)?;
+                let Some(path) = lsp_document_path(&params.text_document.uri)
+                    .map_err(invalid_params)?
+                else {
+                    return Ok(LoopControl::Continue);
+                };
                 let normalized = self.session.open_document(
                     &path,
                     DocumentVersion(params.text_document.version),
                     params.text_document.text,
                 );
                 self.document_uris
-                    .insert(normalized, params.text_document.uri);
+                    .insert(normalized.clone(), path_to_file_uri(&normalized));
+                self.publish_diagnostics_for_entry(&normalized, writer)?;
             }
             "textDocument/didChange" => {
                 let params = parse_params::<DidChangeTextDocumentParams>(envelope.params)?;
                 let Some(text) = latest_full_text(&params.content_changes) else {
                     return Ok(LoopControl::Continue);
                 };
-                let path = file_uri_to_path(&params.text_document.uri)
-                    .map(|path| normalize_path(&path))
-                    .map_err(invalid_params)?;
+                let Some(path) = lsp_document_path(&params.text_document.uri)
+                    .map_err(invalid_params)?
+                else {
+                    return Ok(LoopControl::Continue);
+                };
                 let normalized = self.session.update_document(
                     &path,
                     DocumentVersion(params.text_document.version),
                     text,
                 );
                 self.document_uris
-                    .insert(normalized, params.text_document.uri);
+                    .insert(normalized.clone(), path_to_file_uri(&normalized));
             }
             "textDocument/didSave" => {
                 let params = parse_params::<DidSaveTextDocumentParams>(envelope.params)?;
-                let path = file_uri_to_path(&params.text_document.uri)
-                    .map(|path| normalize_path(&path))
-                    .map_err(invalid_params)?;
+                let Some(path) = lsp_document_path(&params.text_document.uri)
+                    .map_err(invalid_params)?
+                else {
+                    return Ok(LoopControl::Continue);
+                };
                 if let Some(text) = params.text {
                     let version = self
                         .session
@@ -133,18 +177,25 @@ impl LspServer {
                         .unwrap_or(DocumentVersion(0));
                     let normalized = self.session.update_document(&path, version, text);
                     self.document_uris
-                        .insert(normalized, params.text_document.uri.clone());
+                        .insert(normalized.clone(), path_to_file_uri(&normalized));
                 }
-                self.publish_diagnostics_for_entry(&path, &params.text_document.uri, writer)?;
+                self.publish_diagnostics_for_entry(&path, writer)?;
             }
             "textDocument/didClose" => {
                 let params = parse_params::<DidCloseTextDocumentParams>(envelope.params)?;
-                let path = file_uri_to_path(&params.text_document.uri)
-                    .map(|path| normalize_path(&path))
-                    .map_err(invalid_params)?;
+                let Some(path) = lsp_document_path(&params.text_document.uri)
+                    .map_err(invalid_params)?
+                else {
+                    return Ok(LoopControl::Continue);
+                };
                 self.session.close_document(&path);
                 self.document_uris.remove(&path);
-                self.clear_entry_diagnostics(&path, &params.text_document.uri, writer)?;
+                self.clear_entry_diagnostics(&path, writer)?;
+            }
+            "textDocument/semanticTokens/full" => {
+                let params = parse_params::<SemanticTokensParams>(envelope.params)?;
+                let result = self.semantic_tokens_for_uri(&params.text_document.uri)?;
+                write_result(writer, envelope.id.unwrap_or(Value::Null), result)?;
             }
             _ => {
                 if let Some(id) = envelope.id {
@@ -161,10 +212,28 @@ impl LspServer {
         Ok(LoopControl::Continue)
     }
 
+    fn semantic_tokens_for_uri(&self, uri: &str) -> Result<Value, String> {
+        let Some(path) = lsp_document_path(uri).map_err(invalid_params)? else {
+            return Ok(json!({ "data": [] }));
+        };
+        let source = self.source_text_for_path(&path)?;
+        let tokens = semantic_tokens_for_document(&source, Some(&path));
+        Ok(json!({
+            "data": encode_semantic_tokens(&tokens),
+        }))
+    }
+
+    fn source_text_for_path(&self, path: &Path) -> Result<String, String> {
+        if let Some(document) = self.session.analysis().document(path) {
+            return Ok(document.text.clone());
+        }
+        fs::read_to_string(path)
+            .map_err(|err| format!("failed to read source '{}': {err}", path.display()))
+    }
+
     fn publish_diagnostics_for_entry(
         &mut self,
         entry_path: &Path,
-        entry_uri: &str,
         writer: &mut impl Write,
     ) -> Result<(), String> {
         let snapshot = self.session.analyze_document(entry_path);
@@ -173,7 +242,7 @@ impl LspServer {
             .document_uris
             .get(&entry_path)
             .cloned()
-            .unwrap_or_else(|| entry_uri.to_owned());
+            .unwrap_or_else(|| path_to_file_uri(&entry_path));
         let mut grouped: HashMap<String, Vec<Value>> = HashMap::new();
 
         for diagnostic in &snapshot.diagnostics {
@@ -232,7 +301,6 @@ impl LspServer {
     fn clear_entry_diagnostics(
         &mut self,
         entry_path: &Path,
-        entry_uri: &str,
         writer: &mut impl Write,
     ) -> Result<(), String> {
         let entry_path = normalize_path(entry_path);
@@ -240,7 +308,7 @@ impl LspServer {
             .published_by_entry
             .remove(&entry_path)
             .unwrap_or_default();
-        cleared.insert(entry_uri.to_owned());
+        cleared.insert(path_to_file_uri(&entry_path));
         for uri in cleared {
             write_notification(
                 writer,
@@ -326,6 +394,21 @@ struct TextDocumentIdentifier {
     uri: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SemanticTokensParams {
+    text_document: TextDocumentIdentifier,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SemanticToken {
+    line: u32,
+    start: u32,
+    length: u32,
+    token_type: u32,
+    token_modifiers: u32,
+}
+
 fn latest_full_text(changes: &[TextDocumentContentChangeEvent]) -> Option<String> {
     changes
         .iter()
@@ -352,7 +435,14 @@ fn initialize_result(process_id: Option<u32>) -> Value {
                 "save": {
                     "includeText": false,
                 },
-            }
+            },
+            "semanticTokensProvider": {
+                "full": true,
+                "legend": {
+                    "tokenTypes": ["enumMember", "variable", "port", "parameter"],
+                    "tokenModifiers": [],
+                }
+            },
         },
         "serverInfo": {
             "name": "omni",
@@ -421,6 +511,763 @@ fn diagnostic_message(diagnostic: &Diagnostic) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     )
+}
+
+fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<SemanticToken> {
+    let parsed = match path {
+        Some(path) => parse_program_with_path(source, path).or_else(|_| parse_program(source)),
+        None => parse_program(source),
+    };
+
+    match parsed {
+        Ok(program) => {
+            let mut tokens = semantic_tokens_from_program(source, path, &program);
+            tokens.extend(fallback_const_tokens(source));
+            tokens.sort_by_key(|token| (token.line, token.start, token.length, token.token_type, token.token_modifiers));
+            tokens.dedup_by(|lhs, rhs| {
+                lhs.line == rhs.line
+                    && lhs.start == rhs.start
+                    && lhs.length == rhs.length
+                    && lhs.token_type == rhs.token_type
+                    && lhs.token_modifiers == rhs.token_modifiers
+            });
+            tokens
+        }
+        Err(_) => fallback_const_tokens(source),
+    }
+}
+
+fn semantic_tokens_from_program(
+    source: &str,
+    path: Option<&Path>,
+    program: &Program,
+) -> Vec<SemanticToken> {
+    let current_path = path.map(normalize_path);
+    let mut tokens = Vec::new();
+    let top_level_scope = collect_top_level_scope(program, current_path.as_deref(), &mut tokens);
+
+    let mut runtime_scope = top_level_scope.clone();
+    for block in &program.blocks {
+        if !loc_matches_path(block.loc(), current_path.as_deref()) {
+            continue;
+        }
+        match block {
+            Block::Init(init) => {
+                collect_stmt_tokens(
+                    &init.body,
+                    &mut runtime_scope,
+                    current_path.as_deref(),
+                    source,
+                    &mut tokens,
+                    true,
+                );
+            }
+            Block::Block(exec) => {
+                let mut pre_scope = runtime_scope.clone();
+                collect_stmt_tokens(
+                    &exec.pre,
+                    &mut pre_scope,
+                    current_path.as_deref(),
+                    source,
+                    &mut tokens,
+                    false,
+                );
+                if let Some(sample) = &exec.sample {
+                    let mut sample_scope = runtime_scope.clone();
+                    collect_stmt_tokens(
+                        &sample.body,
+                        &mut sample_scope,
+                        current_path.as_deref(),
+                        source,
+                        &mut tokens,
+                        false,
+                    );
+                }
+                let mut post_scope = runtime_scope.clone();
+                collect_stmt_tokens(
+                    &exec.post,
+                    &mut post_scope,
+                    current_path.as_deref(),
+                    source,
+                    &mut tokens,
+                    false,
+                );
+            }
+            Block::Sample(sample) => {
+                let mut scope = runtime_scope.clone();
+                collect_stmt_tokens(
+                    &sample.body,
+                    &mut scope,
+                    current_path.as_deref(),
+                    source,
+                    &mut tokens,
+                    false,
+                );
+            }
+            Block::Graph(graph) => {
+                collect_graph_tokens(graph, &runtime_scope, current_path.as_deref(), source, &mut tokens);
+            }
+            Block::Def(def) => {
+                collect_function_tokens(def, &runtime_scope, current_path.as_deref(), source, &mut tokens);
+            }
+            Block::Proc(proc_def) => {
+                collect_proc_tokens(proc_def, &runtime_scope, current_path.as_deref(), source, &mut tokens);
+            }
+            _ => {}
+        }
+    }
+
+    tokens.sort_by_key(|token| (token.line, token.start, token.length, token.token_type, token.token_modifiers));
+    tokens.dedup_by(|lhs, rhs| {
+        lhs.line == rhs.line
+            && lhs.start == rhs.start
+            && lhs.length == rhs.length
+            && lhs.token_type == rhs.token_type
+            && lhs.token_modifiers == rhs.token_modifiers
+    });
+    tokens
+}
+
+fn fallback_const_tokens(source: &str) -> Vec<SemanticToken> {
+    let const_names = collect_const_names(source);
+    if const_names.is_empty() {
+        return Vec::new();
+    }
+
+    let mut tokens = Vec::new();
+    scan_identifiers(source, |name, line, start, length| {
+        if const_names.contains(name) {
+            tokens.push(SemanticToken {
+                line,
+                start,
+                length,
+                token_type: SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
+                token_modifiers: 0,
+            });
+        }
+    });
+    tokens
+}
+
+fn collect_const_names(source: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut expect_name = false;
+    scan_identifiers(source, |name, _, _, _| {
+        if expect_name {
+            names.insert(name.to_owned());
+            expect_name = false;
+        } else if name == "const" {
+            expect_name = true;
+        }
+    });
+    names
+}
+
+#[derive(Debug, Clone, Default)]
+struct SemanticScope {
+    consts: HashSet<String>,
+    variables: HashSet<String>,
+    ports: HashSet<String>,
+    parameters: HashSet<String>,
+}
+
+impl SemanticScope {
+    fn token_type_for(&self, name: &str) -> Option<u32> {
+        if self.consts.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
+        } else if self.parameters.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_PARAMETER)
+        } else if self.ports.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_PORT)
+        } else if is_implicit_port_name(name) {
+            Some(SEMANTIC_TOKEN_TYPE_PORT)
+        } else if self.variables.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_VARIABLE)
+        } else {
+            None
+        }
+    }
+}
+
+fn is_implicit_port_name(name: &str) -> bool {
+    implicit_port_index(name, "in").is_some() || implicit_port_index(name, "out").is_some()
+}
+
+fn implicit_port_index(name: &str, prefix: &str) -> Option<u32> {
+    let suffix = name.strip_prefix(prefix)?;
+    let value = suffix.parse::<u32>().ok()?;
+    if (1..=64).contains(&value) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn collect_top_level_scope(
+    program: &Program,
+    current_path: Option<&Path>,
+    tokens: &mut Vec<SemanticToken>,
+) -> SemanticScope {
+    let mut scope = SemanticScope::default();
+    for block in &program.blocks {
+        if !loc_matches_path(block.loc(), current_path) {
+            continue;
+        }
+        match block {
+            Block::Const(decl) => {
+                scope.consts.insert(decl.name.clone());
+                push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER);
+            }
+            Block::Ins(ports) | Block::Outs(ports) => {
+                for decl in &ports.decls {
+                    scope.ports.insert(decl.name.clone());
+                    push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PORT);
+                }
+            }
+            Block::Params(params) => {
+                for decl in &params.decls {
+                    scope.parameters.insert(decl.name.clone());
+                    push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PARAMETER);
+                }
+            }
+            Block::Buffers(buffers) => {
+                for decl in &buffers.decls {
+                    scope.ports.insert(decl.name.clone());
+                    push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PORT);
+                }
+            }
+            _ => {}
+        }
+    }
+    scope
+}
+
+fn collect_proc_tokens(
+    proc_def: &ProcessorDef,
+    parent_scope: &SemanticScope,
+    current_path: Option<&Path>,
+    source: &str,
+    tokens: &mut Vec<SemanticToken>,
+) {
+    if !loc_matches_path(proc_def.loc.into(), current_path) {
+        return;
+    }
+
+    let mut proc_scope = parent_scope.clone();
+    declare_port_tokens(&proc_def.ins, &mut proc_scope, tokens);
+    declare_port_tokens(&proc_def.outs, &mut proc_scope, tokens);
+    declare_param_tokens(&proc_def.params, &mut proc_scope, tokens);
+    for buffer in &proc_def.buffers {
+        proc_scope.ports.insert(buffer.name.clone());
+        push_name_token(tokens, buffer.loc.into(), &buffer.name, SEMANTIC_TOKEN_TYPE_PORT);
+    }
+
+    let mut runtime_scope = proc_scope.clone();
+    collect_stmt_tokens(
+        &proc_def.init.body,
+        &mut runtime_scope,
+        current_path,
+        source,
+        tokens,
+        true,
+    );
+
+    let mut sample_scope = runtime_scope.clone();
+    collect_stmt_tokens(
+        &proc_def.sample,
+        &mut sample_scope,
+        current_path,
+        source,
+        tokens,
+        false,
+    );
+
+    let mut pre_scope = runtime_scope.clone();
+    collect_stmt_tokens(
+        &proc_def.block_pre,
+        &mut pre_scope,
+        current_path,
+        source,
+        tokens,
+        false,
+    );
+
+    let mut post_scope = runtime_scope.clone();
+    collect_stmt_tokens(
+        &proc_def.block_post,
+        &mut post_scope,
+        current_path,
+        source,
+        tokens,
+        false,
+    );
+
+    if let Some(graph) = &proc_def.graph {
+        collect_graph_tokens(graph, &runtime_scope, current_path, source, tokens);
+    }
+
+    for def in &proc_def.local_defs {
+        collect_function_tokens(def, &runtime_scope, current_path, source, tokens);
+    }
+}
+
+fn declare_port_tokens(decls: &[PortDecl], scope: &mut SemanticScope, tokens: &mut Vec<SemanticToken>) {
+    for decl in decls {
+        scope.ports.insert(decl.name.clone());
+        push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PORT);
+    }
+}
+
+fn declare_param_tokens(decls: &[ParamDecl], scope: &mut SemanticScope, tokens: &mut Vec<SemanticToken>) {
+    for decl in decls {
+        scope.parameters.insert(decl.name.clone());
+        push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PARAMETER);
+    }
+}
+
+fn collect_function_tokens(
+    def: &FunctionDef,
+    parent_scope: &SemanticScope,
+    current_path: Option<&Path>,
+    source: &str,
+    tokens: &mut Vec<SemanticToken>,
+) {
+    if !loc_matches_path(def.loc.into(), current_path) {
+        return;
+    }
+
+    let mut scope = parent_scope.clone();
+    for param in &def.params {
+        scope.parameters.insert(param.name.clone());
+        push_name_token(tokens, param.loc.into(), &param.name, SEMANTIC_TOKEN_TYPE_PARAMETER);
+    }
+    collect_stmt_tokens(&def.body, &mut scope, current_path, source, tokens, false);
+}
+
+fn collect_stmt_tokens(
+    stmts: &[Stmt],
+    scope: &mut SemanticScope,
+    current_path: Option<&Path>,
+    source: &str,
+    tokens: &mut Vec<SemanticToken>,
+    allow_local_variables: bool,
+) {
+    for stmt in stmts {
+        if !loc_matches_path(stmt.loc(), current_path) {
+            continue;
+        }
+        match stmt {
+            Stmt::Const { decl, .. } => {
+                push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER);
+                collect_expr_tokens(&decl.expr, scope, current_path, source, tokens);
+                scope.consts.insert(decl.name.clone());
+            }
+            Stmt::Assign {
+                target,
+                target_loc,
+                expr,
+                ..
+            } => {
+                collect_assign_target_tokens(
+                    target,
+                    *target_loc,
+                    scope,
+                    current_path,
+                    source,
+                    tokens,
+                    allow_local_variables,
+                );
+                collect_expr_tokens(expr, scope, current_path, source, tokens);
+            }
+            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                collect_expr_tokens(expr, scope, current_path, source, tokens);
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_expr_tokens(cond, scope, current_path, source, tokens);
+                let mut then_scope = scope.clone();
+                collect_stmt_tokens(
+                    then_branch,
+                    &mut then_scope,
+                    current_path,
+                    source,
+                    tokens,
+                    allow_local_variables,
+                );
+                let mut else_scope = scope.clone();
+                collect_stmt_tokens(
+                    else_branch,
+                    &mut else_scope,
+                    current_path,
+                    source,
+                    tokens,
+                    allow_local_variables,
+                );
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                var,
+                body,
+                ..
+            } => {
+                collect_expr_tokens(start, scope, current_path, source, tokens);
+                collect_expr_tokens(end, scope, current_path, source, tokens);
+                if let Some(step) = step {
+                    collect_expr_tokens(step, scope, current_path, source, tokens);
+                }
+                let mut loop_scope = scope.clone();
+                if allow_local_variables {
+                    loop_scope.variables.insert(var.clone());
+                }
+                collect_stmt_tokens(
+                    body,
+                    &mut loop_scope,
+                    current_path,
+                    source,
+                    tokens,
+                    allow_local_variables,
+                );
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_expr_tokens(cond, scope, current_path, source, tokens);
+                let mut loop_scope = scope.clone();
+                collect_stmt_tokens(
+                    body,
+                    &mut loop_scope,
+                    current_path,
+                    source,
+                    tokens,
+                    allow_local_variables,
+                );
+            }
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+    }
+}
+
+fn collect_assign_target_tokens(
+    target: &AssignTarget,
+    target_loc: Span,
+    scope: &mut SemanticScope,
+    current_path: Option<&Path>,
+    source: &str,
+    tokens: &mut Vec<SemanticToken>,
+    allow_local_variables: bool,
+) {
+    if !loc_matches_path(target_loc.into(), current_path) {
+        return;
+    }
+    match target {
+        AssignTarget::Var(name) => {
+            let Some(token_type) = scope
+                .token_type_for(name)
+                .or_else(|| allow_local_variables.then_some(SEMANTIC_TOKEN_TYPE_VARIABLE))
+            else {
+                return;
+            };
+            push_name_token(tokens, target_loc.into(), name, token_type);
+            if allow_local_variables && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
+                scope.variables.insert(name.clone());
+            }
+        }
+        AssignTarget::Index { base, index } => {
+            if let Some(token_type) = scope.token_type_for(base) {
+                push_name_token(tokens, target_loc.into(), base, token_type);
+            }
+            collect_expr_tokens(index, scope, current_path, source, tokens);
+        }
+        AssignTarget::Slice { base, start, end } => {
+            if let Some(token_type) = scope.token_type_for(base) {
+                push_name_token(tokens, target_loc.into(), base, token_type);
+            }
+            if let Some(start) = start {
+                collect_expr_tokens(start, scope, current_path, source, tokens);
+            }
+            if let Some(end) = end {
+                collect_expr_tokens(end, scope, current_path, source, tokens);
+            }
+        }
+    }
+}
+
+fn collect_expr_tokens(
+    expr: &Expr,
+    scope: &SemanticScope,
+    current_path: Option<&Path>,
+    source: &str,
+    tokens: &mut Vec<SemanticToken>,
+) {
+    if !loc_matches_path(expr.loc(), current_path) {
+        return;
+    }
+    match expr {
+        Expr::Var { loc, name } => {
+            collect_named_ref_tokens(*loc, name, scope, source, tokens);
+        }
+        Expr::Index { loc, base, index } => {
+            if let Some(token_type) = scope.token_type_for(base) {
+                push_name_token(tokens, (*loc).into(), base, token_type);
+            }
+            collect_expr_tokens(index, scope, current_path, source, tokens);
+        }
+        Expr::Slice { loc, base, start, end } => {
+            if let Some(token_type) = scope.token_type_for(base) {
+                push_name_token(tokens, (*loc).into(), base, token_type);
+            }
+            if let Some(start) = start {
+                collect_expr_tokens(start, scope, current_path, source, tokens);
+            }
+            if let Some(end) = end {
+                collect_expr_tokens(end, scope, current_path, source, tokens);
+            }
+        }
+        Expr::ArrayLiteral { values, .. } => {
+            for value in values {
+                collect_expr_tokens(value, scope, current_path, source, tokens);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            collect_expr_tokens(&spec.size, scope, current_path, source, tokens);
+            if let Some(init) = init {
+                for value in init {
+                    collect_expr_tokens(value, scope, current_path, source, tokens);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            collect_expr_tokens(lhs, scope, current_path, source, tokens);
+            collect_expr_tokens(rhs, scope, current_path, source, tokens);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_expr_tokens(arg, scope, current_path, source, tokens);
+            }
+        }
+        Expr::UserCall { args, .. } => {
+            for arg in args {
+                collect_expr_tokens(&arg.expr, scope, current_path, source, tokens);
+            }
+        }
+        Expr::Cast { expr, .. }
+        | Expr::UnaryNot { expr, .. }
+        | Expr::UnaryBitNot { expr, .. } => {
+            collect_expr_tokens(expr, scope, current_path, source, tokens);
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+    }
+}
+
+fn collect_graph_tokens(
+    graph: &GraphBlock,
+    scope: &SemanticScope,
+    current_path: Option<&Path>,
+    source: &str,
+    tokens: &mut Vec<SemanticToken>,
+) {
+    if !loc_matches_path(graph.loc.into(), current_path) {
+        return;
+    }
+    for edge in &graph.edges {
+        collect_expr_tokens(&edge.source, scope, current_path, source, tokens);
+        if let Some(delay) = &edge.delay {
+            collect_expr_tokens(delay, scope, current_path, source, tokens);
+        }
+        for dest in &edge.dests {
+            match dest {
+                GraphEndpoint::Symbol { loc, name } => {
+                    collect_named_ref_tokens(*loc, name, scope, source, tokens);
+                }
+                GraphEndpoint::ProcField { loc, proc, field } => {
+                    if let Some(token_type) = scope.token_type_for(proc) {
+                        push_name_token(tokens, (*loc).into(), proc, token_type);
+                    }
+                    push_offset_token(tokens, (*loc).into(), proc.encode_utf16().count() as u32 + 1, field, SEMANTIC_TOKEN_TYPE_PORT);
+                }
+                GraphEndpoint::ProcIndexedField { loc, proc, index, .. } => {
+                    if let Some(token_type) = scope.token_type_for(proc) {
+                        push_name_token(tokens, (*loc).into(), proc, token_type);
+                    }
+                    collect_expr_tokens(index, scope, current_path, source, tokens);
+                }
+            }
+        }
+    }
+}
+
+fn collect_named_ref_tokens(
+    loc: Span,
+    name: &str,
+    scope: &SemanticScope,
+    _source: &str,
+    tokens: &mut Vec<SemanticToken>,
+) {
+    if let Some((base, field)) = name.split_once('.') {
+        if let Some(token_type) = scope.token_type_for(base) {
+            push_name_token(tokens, loc.into(), base, token_type);
+        }
+        push_offset_token(
+            tokens,
+            loc.into(),
+            base.encode_utf16().count() as u32 + 1,
+            field,
+            SEMANTIC_TOKEN_TYPE_PORT,
+        );
+        return;
+    }
+
+    if let Some(token_type) = scope.token_type_for(name) {
+        push_name_token(tokens, loc.into(), name, token_type);
+    }
+}
+
+fn push_name_token(tokens: &mut Vec<SemanticToken>, loc: SourceLoc, name: &str, token_type: u32) {
+    if loc.line == 0 || name.is_empty() {
+        return;
+    }
+    tokens.push(SemanticToken {
+        line: (loc.line.saturating_sub(1)) as u32,
+        start: (loc.column.saturating_sub(1)) as u32,
+        length: name.encode_utf16().count() as u32,
+        token_type,
+        token_modifiers: 0,
+    });
+}
+
+fn push_offset_token(
+    tokens: &mut Vec<SemanticToken>,
+    loc: SourceLoc,
+    offset: u32,
+    name: &str,
+    token_type: u32,
+) {
+    if loc.line == 0 || name.is_empty() {
+        return;
+    }
+    tokens.push(SemanticToken {
+        line: (loc.line.saturating_sub(1)) as u32,
+        start: (loc.column.saturating_sub(1)) as u32 + offset,
+        length: name.encode_utf16().count() as u32,
+        token_type,
+        token_modifiers: 0,
+    });
+}
+
+fn loc_matches_path(loc: SourceLoc, current_path: Option<&Path>) -> bool {
+    match current_path {
+        Some(current_path) => loc
+            .file()
+            .map(|file| normalize_path(Path::new(&file)) == current_path)
+            .unwrap_or(false),
+        None => true,
+    }
+}
+
+fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32)) {
+    let chars = source.chars().collect::<Vec<_>>();
+    let mut index = 0;
+    let mut line = 0_u32;
+    let mut column = 0_u32;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '#' {
+            while index < chars.len() && chars[index] != '\n' {
+                advance_position(chars[index], &mut line, &mut column);
+                index += 1;
+            }
+            continue;
+        }
+        if ch == '"' {
+            advance_position(ch, &mut line, &mut column);
+            index += 1;
+            let mut escaped = false;
+            while index < chars.len() {
+                let ch = chars[index];
+                advance_position(ch, &mut line, &mut column);
+                index += 1;
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if is_identifier_start(ch) {
+            let start_line = line;
+            let start_column = column;
+            let mut name = String::new();
+            while index < chars.len() && is_identifier_continue(chars[index]) {
+                let ch = chars[index];
+                name.push(ch);
+                advance_position(ch, &mut line, &mut column);
+                index += 1;
+            }
+            let length = name.encode_utf16().count() as u32;
+            f(&name, start_line, start_column, length);
+            continue;
+        }
+
+        advance_position(ch, &mut line, &mut column);
+        index += 1;
+    }
+}
+
+fn is_identifier_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_identifier_continue(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn advance_position(ch: char, line: &mut u32, column: &mut u32) {
+    match ch {
+        '\n' => {
+            *line += 1;
+            *column = 0;
+        }
+        '\r' => {}
+        _ => {
+            *column += ch.len_utf16() as u32;
+        }
+    }
+}
+
+fn encode_semantic_tokens(tokens: &[SemanticToken]) -> Vec<u32> {
+    let mut data = Vec::with_capacity(tokens.len() * 5);
+    let mut prev_line = 0_u32;
+    let mut prev_start = 0_u32;
+
+    for token in tokens {
+        let delta_line = token.line.saturating_sub(prev_line);
+        let delta_start = if delta_line == 0 {
+            token.start.saturating_sub(prev_start)
+        } else {
+            token.start
+        };
+        data.push(delta_line);
+        data.push(delta_start);
+        data.push(token.length);
+        data.push(token.token_type);
+        data.push(token.token_modifiers);
+        prev_line = token.line;
+        prev_start = token.start;
+    }
+
+    data
 }
 
 fn read_lsp_message(reader: &mut impl BufRead) -> Result<Option<Value>, String> {
@@ -518,6 +1365,15 @@ fn write_lsp_message(writer: &mut impl Write, message: &Value) -> Result<(), Str
         .flush()
         .map_err(|err| format!("failed to flush lsp message: {err}"))?;
     Ok(())
+}
+
+fn lsp_document_path(uri: &str) -> Result<Option<PathBuf>, String> {
+    match uri.split_once(':') {
+        Some(("file", _)) => file_uri_to_path(uri).map(|path| Some(normalize_path(&path))),
+        Some(("untitled", _)) => Ok(None),
+        Some((scheme, _)) => Err(format!("unsupported uri scheme '{scheme}'")),
+        None => Err(format!("invalid uri '{uri}'")),
+    }
 }
 
 fn file_uri_to_path(uri: &str) -> Result<PathBuf, String> {
@@ -627,11 +1483,44 @@ fn invalid_params(message: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        diagnostic_message, file_uri_to_path, latest_full_text, path_to_file_uri,
-        TextDocumentContentChangeEvent,
+        collect_const_names, diagnostic_message, file_uri_to_path, latest_full_text,
+        lsp_document_path, path_to_file_uri, semantic_tokens_for_document, LspServer,
+        TextDocumentContentChangeEvent, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
+        SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT, SEMANTIC_TOKEN_TYPE_VARIABLE,
     };
     use omni_frontend::{DiagCode, Diagnostic};
     use serde_json::json;
+    use std::fs;
+    use std::io::Cursor;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn mk_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("omni_lsp_{prefix}_{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp test dir");
+        dir
+    }
+
+    fn write_file(path: &Path, text: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent");
+        }
+        fs::write(path, text).expect("write test file");
+    }
+
+    fn decode_lsp_messages(bytes: Vec<u8>) -> Vec<serde_json::Value> {
+        let mut cursor = Cursor::new(bytes);
+        let mut messages = Vec::new();
+        while let Some(message) = super::read_lsp_message(&mut cursor).expect("decode lsp message")
+        {
+            messages.push(message);
+        }
+        messages
+    }
 
     #[test]
     fn latest_full_text_prefers_last_full_document_change() {
@@ -677,5 +1566,219 @@ mod tests {
         let uri = path_to_file_uri(&path);
         let decoded = file_uri_to_path(&uri).expect("file uri should decode");
         assert_eq!(decoded, path);
+    }
+
+    #[test]
+    fn untitled_uri_is_accepted_without_disk_path() {
+        assert_eq!(
+            lsp_document_path("untitled:Scratch-1").expect("untitled uri should be accepted"),
+            None
+        );
+    }
+
+    #[test]
+    fn collect_const_names_finds_declarations() {
+        let source = "const GAIN = 0.5\nsample:\n  const MIX = GAIN\n";
+        let names = collect_const_names(source);
+        assert!(names.contains("GAIN"));
+        assert!(names.contains("MIX"));
+        assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn semantic_tokens_mark_const_declarations_and_uses() {
+        let source = "const GAIN = 0.5\nsample:\n  out1 = GAIN\n";
+        let tokens = semantic_tokens_for_document(source, None);
+        assert!(
+            tokens.iter().any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_PORT),
+            "tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_proc_ports_and_local_variables() {
+        let source = "proc Mix:\n  ins:\n    dry\n    fb\n\n  sample:\n    out1 = (dry + fb) * 0.5\n\ninit:\n  mix = Mix()\n\ngraph:\n  in1 >> mix.dry\n";
+        let tokens = semantic_tokens_for_document(source, None);
+
+        assert!(tokens.iter().any(|token| {
+                token.line == 2
+                && token.start == 4
+                && token.length == 3
+                && token.token_type == SEMANTIC_TOKEN_TYPE_PORT
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.line == 3
+                && token.start == 4
+                && token.length == 2
+                && token.token_type == SEMANTIC_TOKEN_TYPE_PORT
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.line == 6
+                && token.start == 12
+                && token.length == 3
+                && token.token_type == SEMANTIC_TOKEN_TYPE_PORT
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.line == 6
+                && token.start == 18
+                && token.length == 2
+                && token.token_type == SEMANTIC_TOKEN_TYPE_PORT
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.line == 9
+                && token.start == 2
+                && token.length == 3
+                && token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.line == 12
+                && token.start == 9
+                && token.length == 3
+                && token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+        }), "tokens: {tokens:?}");
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_mark_local_variable_uses_in_sample_blocks() {
+        let source = "proc Saturate:\n  sample:\n    x = in1\n    out1 = x - (x * x * x) * 0.1\n";
+        let tokens = semantic_tokens_for_document(source, None);
+
+        assert!(
+            !tokens.iter().any(|token| {
+                token.length == 1 && token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+            }),
+            "tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_omni_params_as_parameters() {
+        let source = "params:\n  gain = 0.5\nsample:\n  out1 = gain\n";
+        let tokens = semantic_tokens_for_document(source, None);
+
+        assert!(tokens.iter().any(|token| {
+            token.line == 1
+                && token.start == 2
+                && token.length == 4
+                && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
+        }), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|token| {
+            token.line == 3
+                && token.start == 9
+                && token.length == 4
+                && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
+        }), "tokens: {tokens:?}");
+    }
+
+    #[test]
+    fn publish_diagnostics_does_not_immediately_clear_entry_uri() {
+        let dir = mk_temp_dir("publish_diagnostics");
+        let main = dir.join("main.omni");
+        write_file(
+            &main,
+            "proc Saturate:\n  sample:\n    x = in1\n    out1 = x\n\ninit:\n  sat = Saturat()\n",
+        );
+
+        let mut server = LspServer::default();
+        let normalized = server.session.open_document(
+            &main,
+            omni_daemon::DocumentVersion(1),
+            fs::read_to_string(&main).expect("read test file"),
+        );
+        let uri = path_to_file_uri(&normalized);
+        server.document_uris.insert(normalized, uri.clone());
+
+        let mut writer = Vec::new();
+        server
+            .publish_diagnostics_for_entry(&main, &mut writer)
+            .expect("publish diagnostics");
+
+        let notifications = decode_lsp_messages(writer)
+            .into_iter()
+            .filter(|message| {
+                message["method"]
+                    .as_str()
+                    .map(|method| method == "textDocument/publishDiagnostics")
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+
+        let entry_notifications = notifications
+            .iter()
+            .filter(|message| {
+                message["params"]["uri"]
+                    .as_str()
+                    .map(|value| value == uri)
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            entry_notifications.len(),
+            1,
+            "unexpected publish sequence: {notifications:?}"
+        );
+        assert!(
+            entry_notifications[0]["params"]["diagnostics"]
+                .as_array()
+                .map(|diagnostics| !diagnostics.is_empty())
+                .unwrap_or(false),
+            "expected non-empty diagnostics for entry uri: {entry_notifications:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn did_open_publishes_diagnostics_immediately() {
+        let dir = mk_temp_dir("did_open_publish");
+        let main = dir.join("main.omni");
+        let source = "init:\n  sat = Saturat()\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let uri = path_to_file_uri(&main);
+        let mut writer = Vec::new();
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "version": 1,
+                    "text": source,
+                }
+            }
+        });
+
+        server
+            .handle_message(message, &mut writer)
+            .expect("didOpen should succeed");
+
+        let notifications = decode_lsp_messages(writer)
+            .into_iter()
+            .filter(|message| {
+                message["method"]
+                    .as_str()
+                    .map(|method| method == "textDocument/publishDiagnostics")
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            notifications.iter().any(|message| {
+                message["params"]["diagnostics"]
+                    .as_array()
+                    .map(|diagnostics| !diagnostics.is_empty())
+                    .unwrap_or(false)
+            }),
+            "expected didOpen to publish diagnostics: {notifications:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 }

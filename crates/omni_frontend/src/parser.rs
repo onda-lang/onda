@@ -40,7 +40,7 @@ mod loading_support;
 mod module_loading;
 mod preprocess;
 
-use module_loading::stmt_loc_from_pair;
+use module_loading::{parse_loc_from_raw, stmt_loc_from_pair};
 
 mod type_helpers;
 pub use module_loading::{
@@ -60,14 +60,8 @@ fn diag_from_pest_error(err: pest::error::Error<Rule>) -> Diagnostic {
         LineColLocation::Pos((line, col)) => (line, col, line, col.saturating_add(1)),
         LineColLocation::Span((line, col), (end_line, end_col)) => (line, col, end_line, end_col),
     };
-    let mut diag = Diagnostic::syntax(err.to_string(), line, column);
-    diag.end_line = end_line;
-    diag.end_column = if end_line == line {
-        end_column.max(column.saturating_add(1))
-    } else {
-        end_column.max(1)
-    };
-    diag
+    let loc = parse_loc_from_raw(line, column, end_line, end_column);
+    Diagnostic::syntax_at(err.to_string(), &loc)
 }
 
 pub(super) fn syntax_at_pair(pair: &Pair<'_, Rule>, message: impl Into<String>) -> Diagnostic {

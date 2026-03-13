@@ -1,0 +1,119 @@
+{
+  "name": "omni-vscode",
+  "displayName": "Omni",
+  "description": "VSCode support for the Omni audio DSL",
+  "version": "0.0.1",
+  "publisher": "omni",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:omni",
+    "onCommand:omni.restartLanguageServer",
+    "onCommand:omni.runPatch",
+    "onCommand:omni.stopPatch"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "omni",
+        "aliases": [
+          "Omni",
+          "omni"
+        ],
+        "extensions": [
+          ".omni"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "omni",
+        "scopeName": "source.omni",
+        "path": "./syntaxes/omni.tmLanguage.json"
+      }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "port",
+        "superType": "parameter",
+        "description": "Omni audio input, output, or buffer symbol"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "omni",
+        "scopes": {
+          "enumMember": [
+            "variable.other.constant.omni",
+            "variable.other.constant"
+          ],
+          "variable": [
+            "variable.other.readwrite.omni",
+            "variable.other.readwrite"
+          ],
+          "port": [
+            "variable.parameter.omni",
+            "variable.parameter",
+            "entity.name.variable.parameter"
+          ],
+          "parameter": [
+            "variable.parameter.omni",
+            "variable.parameter",
+            "entity.name.variable.parameter"
+          ]
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "omni.runPatch",
+        "title": "Omni: Run Patch"
+      },
+      {
+        "command": "omni.stopPatch",
+        "title": "Omni: Stop Patch"
+      },
+      {
+        "command": "omni.restartLanguageServer",
+        "title": "Omni: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Omni",
+      "properties": {
+        "omni.server.path": {
+          "type": "string",
+          "default": "omni",
+          "description": "Executable used to start the Omni language server."
+        },
+        "omni.server.args": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional arguments passed before the built-in 'lsp' subcommand."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

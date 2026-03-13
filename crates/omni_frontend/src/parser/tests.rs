@@ -3524,6 +3524,41 @@ sample { out1 = twice(SCALE) }
 }
 
 #[test]
+fn pest_parse_errors_map_back_to_original_indentation_lines() {
+    let src = r#"proc Mix:
+  ins:
+    dry
+    fb
+
+  sample:
+    out1 = (dry + fb) * 0.5
+
+proc Saturate:
+  sample:
+    x = in1
+    out1 = x - (x * x * x) * 0.1
+
+init:
+  mix = ()
+  sat = Saturate()
+
+graph:
+  in1 >> mix.dry
+  sat.out1 >>[1] mix.fb
+  mix.out1 >> sat.in1
+  mix.out1 >> out1
+"#;
+
+    let errors = parse_program(src).expect_err("expected parse error");
+    let diag = errors
+        .iter()
+        .find(|diag| diag.message.contains("expected expr"))
+        .expect("missing expected expr diagnostic");
+
+    assert_eq!((diag.line, diag.column), (15, 10));
+}
+
+#[test]
 fn parse_program_file_includes_top_level_consts() {
     let dir = mk_temp_dir("include_top_level_consts");
     let main = dir.join("main.omni");
