@@ -166,7 +166,20 @@ pub fn parse_program(source: &str) -> Result<Program, Vec<Diagnostic>> {
     Ok(Program { blocks })
 }
 
+pub fn parse_program_with_path(source: &str, path: &Path) -> Result<Program, Vec<Diagnostic>> {
+    let mut overlays = HashMap::new();
+    overlays.insert(path.to_path_buf(), source.to_owned());
+    parse_program_file_with_overlays(path, &overlays)
+}
+
 pub fn parse_program_file(path: &Path) -> Result<Program, Vec<Diagnostic>> {
+    parse_program_file_with_overlays(path, &HashMap::new())
+}
+
+pub fn parse_program_file_with_overlays(
+    path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> Result<Program, Vec<Diagnostic>> {
     let canonical = fs::canonicalize(path).map_err(|err| {
         vec![Diagnostic::syntax(
             format!("failed to resolve '{}': {err}", path.display()),
@@ -174,11 +187,13 @@ pub fn parse_program_file(path: &Path) -> Result<Program, Vec<Diagnostic>> {
             0,
         )]
     })?;
+    let normalized_overlays = normalize_overlay_paths(path, &canonical, overlays);
     let mut state = LoadState::default();
     state
         .file_modes
         .insert(canonical.clone(), FileLoadMode::Entry);
-    let blocks = load_program_blocks_from_file(&canonical, false, &mut state, &[])?;
+    let blocks =
+        load_program_blocks_from_file(&canonical, false, &mut state, &[], &normalized_overlays)?;
     Ok(Program { blocks })
 }
 
@@ -275,6 +290,7 @@ fn load_program_blocks_from_file(
     import_module_mode: bool,
     state: &mut LoadState,
     trace: &[String],
+    overlays: &HashMap<PathBuf, String>,
 ) -> Result<Vec<Block>, Vec<Diagnostic>> {
     let canonical = fs::canonicalize(file_path).map_err(|err| {
         annotate_diagnostics_with_file(
@@ -306,17 +322,21 @@ fn load_program_blocks_from_file(
     state.stack.push(canonical.clone());
 
     let result = (|| {
-        let source = fs::read_to_string(&canonical).map_err(|err| {
-            annotate_diagnostics_with_file(
-                vec![Diagnostic::syntax(
-                    format!("failed to read '{}': {err}", display_path(&canonical)),
+        let source = if let Some(source) = overlays.get(&canonical) {
+            source.clone()
+        } else {
+            fs::read_to_string(&canonical).map_err(|err| {
+                annotate_diagnostics_with_file(
+                    vec![Diagnostic::syntax(
+                        format!("failed to read '{}': {err}", display_path(&canonical)),
+                        0,
+                        0,
+                    )],
+                    &canonical,
                     0,
-                    0,
-                )],
-                &canonical,
-                0,
-            )
-        })?;
+                )
+            })?
+        };
         let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(&source)
             .map_err(|diags| annotate_diagnostics_with_file(diags, &canonical, 0))?;
         let items = split_top_level_items(&preprocessed, &preprocessed_line_map, &canonical)?;
@@ -373,6 +393,7 @@ fn load_program_blocks_from_file(
                         import_module_mode,
                         state,
                         &nested_trace,
+                        overlays,
                     )
                     .map_err(|diags| append_diagnostics_trace(diags, trace_entry))?;
                     blocks.append(&mut included);
@@ -415,9 +436,14 @@ fn load_program_blocks_from_file(
                         format!("import '{module}' at {}:{line}", display_path(&canonical));
                     let mut nested_trace = trace.to_vec();
                     nested_trace.push(trace_entry.clone());
-                    let mut imported =
-                        load_program_blocks_from_file(&import_path, true, state, &nested_trace)
-                            .map_err(|diags| append_diagnostics_trace(diags, trace_entry))?;
+                    let mut imported = load_program_blocks_from_file(
+                        &import_path,
+                        true,
+                        state,
+                        &nested_trace,
+                        overlays,
+                    )
+                    .map_err(|diags| append_diagnostics_trace(diags, trace_entry))?;
                     blocks.append(&mut imported);
                 }
             }
@@ -449,6 +475,23 @@ fn load_program_blocks_from_file(
 
     state.stack.pop();
     result
+}
+
+fn normalize_overlay_paths(
+    requested_path: &Path,
+    canonical_requested_path: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> HashMap<PathBuf, String> {
+    let mut normalized = HashMap::with_capacity(overlays.len());
+    for (path, source) in overlays {
+        let key = if path == requested_path {
+            canonical_requested_path.to_path_buf()
+        } else {
+            fs::canonicalize(path).unwrap_or_else(|_| path.clone())
+        };
+        normalized.insert(key, source.clone());
+    }
+    normalized
 }
 
 fn load_builtin_module_blocks(
@@ -638,7 +681,7 @@ pub(super) fn stmt_loc_from_pair(pair: &Pair<'_, Rule>) -> Span {
         };
         let span = pair.as_span();
         let (line, column) = span.start_pos().line_col();
-        let (end_line, _ignored_end_col) = span.end_pos().line_col();
+        let (end_line, end_column) = span.end_pos().line_col();
         let mapped_line = current
             .source_line_map
             .get(line.saturating_sub(1))
@@ -654,6 +697,7 @@ pub(super) fn stmt_loc_from_pair(pair: &Pair<'_, Rule>) -> Span {
             mapped_line,
             column,
             mapped_end_line,
+            end_column,
             current.trace.clone(),
         )
         .span()

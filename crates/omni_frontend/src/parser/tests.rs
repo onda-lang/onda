@@ -8,9 +8,10 @@ use crate::ast::{
 };
 
 use super::{
-    parse_program, parse_program_file, GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL,
-    GRAPH_PROC_FIELD_INDEX_EXPR_ARG, PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX,
-    PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
+    parse_program, parse_program_file, parse_program_file_with_overlays, parse_program_with_path,
+    GRAPH_PROC_ARRAY_FIELD_INDEX_SENTINEL, GRAPH_PROC_FIELD_INDEX_EXPR_ARG,
+    PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX, PROC_INDEX_BASE_ARG,
+    PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
 
 fn mk_temp_dir(prefix: &str) -> PathBuf {
@@ -3327,6 +3328,103 @@ sample {
 }
 
 #[test]
+fn parse_program_with_path_uses_entry_overlay_for_relative_imports() {
+    let dir = mk_temp_dir("entry_overlay_import");
+    let main = dir.join("main.omni");
+    let filter = dir.join("filter.omni");
+    let shared = dir.join("shared.omni");
+
+    write_file(&main, "outs { out1 }\nsample { out1 = 0.0 }\n");
+    write_file(
+        &shared,
+        r#"
+def shared_gain(x) {
+  return x * 0.5
+}
+"#,
+    );
+    write_file(
+        &filter,
+        r#"
+include "./shared.omni"
+namespace DSP:
+  struct OnePole:
+    z: f32
+  def process(x):
+    return shared_gain(x)
+"#,
+    );
+
+    let overlay = r#"
+import filter
+outs { out1 }
+sample {
+  s = DSP::OnePole()
+  out1 = DSP::process(2.0) + s.z
+}
+"#;
+
+    let program = parse_program_with_path(overlay, &main).expect("overlay parse should succeed");
+    assert!(program.blocks.iter().any(|b| matches!(b, Block::Struct(_))));
+    assert!(program.blocks.iter().any(|b| matches!(b, Block::Def(_))));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn parse_program_file_with_overlays_uses_dependency_overlay_contents() {
+    let dir = mk_temp_dir("dependency_overlay_import");
+    let main = dir.join("main.omni");
+    let lib = dir.join("lib.omni");
+
+    write_file(
+        &main,
+        r#"
+import lib
+outs { out1 }
+sample { out1 = twice(SCALE) }
+"#,
+    );
+    write_file(
+        &lib,
+        r#"
+const SCALE = invalid
+"#,
+    );
+
+    let mut overlays = std::collections::HashMap::new();
+    overlays.insert(
+        dir.join(".").join("lib.omni"),
+        r#"
+const SCALE = 0.25
+def twice(x) { return x + x }
+"#
+        .to_owned(),
+    );
+
+    let program =
+        parse_program_file_with_overlays(&main, &overlays).expect("overlay parse should succeed");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign { expr, .. } = &sample[0] else {
+        panic!("expected sample assignment");
+    };
+    let Expr::UserCall { args, .. } = expr else {
+        panic!("expected rewritten user call");
+    };
+    assert!(matches!(
+        args[0].expr,
+        Expr::Number { value: n, .. } if (n - 0.25).abs() < 1e-9
+    ));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn parse_program_file_rejects_import_module_with_runtime_blocks() {
     let dir = mk_temp_dir("import_runtime_reject");
     let main = dir.join("main.omni");
@@ -5178,6 +5276,7 @@ fn stmt_locations_capture_single_line_end_positions() {
     assert_eq!(loc.line, 2);
     assert_eq!(loc.column, 3);
     assert_eq!(loc.end_line, 2);
+    assert_eq!(loc.end_column, 19);
 }
 
 #[test]
@@ -5198,6 +5297,7 @@ fn stmt_locations_capture_multiline_end_positions() {
     assert_eq!(loc.line, 2);
     assert_eq!(loc.column, 3);
     assert_eq!(loc.end_line, 6);
+    assert_eq!(loc.end_column, 4);
 }
 
 #[test]
@@ -5218,6 +5318,7 @@ fn declaration_locations_capture_param_ranges() {
     assert_eq!(loc.line, 2);
     assert_eq!(loc.column, 3);
     assert_eq!(loc.end_line(), 2);
+    assert_eq!(loc.end_column, 13);
 }
 
 #[test]
@@ -5238,12 +5339,14 @@ fn graph_locations_capture_edge_and_endpoint_ranges() {
     assert_eq!(edge_loc.line, 4);
     assert_eq!(edge_loc.column, 3);
     assert_eq!(edge_loc.end_line, 4);
+    assert_eq!(edge_loc.end_column, 14);
 
     let dest_loc = graph.edges[0].dests[0].loc();
     assert_eq!(dest_loc.file().as_deref(), Some("<memory>"));
     assert_eq!(dest_loc.line, 4);
     assert_eq!(dest_loc.column, 10);
     assert_eq!(dest_loc.end_line, 4);
+    assert_eq!(dest_loc.end_column, 14);
 }
 
 #[test]
@@ -5260,6 +5363,7 @@ fn syntax_diagnostics_report_count_shorthand_span() {
 
     assert_eq!((diag.line, diag.column), (1, 6));
     assert_eq!(diag.end_line, 1);
+    assert_eq!(diag.end_column, 7);
 }
 
 #[test]
@@ -5276,6 +5380,7 @@ fn const_validation_diagnostics_report_expr_span() {
 
     assert_eq!((diag.line, diag.column), (1, 11));
     assert_eq!(diag.end_line, 1);
+    assert_eq!(diag.end_column, 14);
 }
 
 #[test]

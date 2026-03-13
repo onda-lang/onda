@@ -376,6 +376,7 @@ mod tests {
 
         assert_eq!((diag.line, diag.column), (4, 10));
         assert_eq!(diag.end_line, 4);
+        assert_eq!(diag.end_column, 17);
     }
 
     #[test]
@@ -437,6 +438,7 @@ mod tests {
 
         assert_eq!((diag.line, diag.column), (4, 3));
         assert_eq!(diag.end_line, 4);
+        assert_eq!(diag.end_column, 5);
     }
 
     #[test]
@@ -533,6 +535,7 @@ mod tests {
 
         assert_eq!((diag.line, diag.column), (6, 5));
         assert_eq!(diag.end_line, 6);
+        assert_eq!(diag.end_column, 8);
     }
 
     #[test]

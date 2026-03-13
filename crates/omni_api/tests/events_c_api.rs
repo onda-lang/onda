@@ -15,6 +15,7 @@ fn empty_diag() -> omni_diag_t {
         line: 0,
         column: 0,
         end_line: 0,
+        end_column: 0,
         message: std::ptr::null(),
         file: std::ptr::null(),
         trace: std::ptr::null(),
@@ -83,6 +84,7 @@ sample:
         assert!(program.is_null(), "compile unexpectedly succeeded");
         assert_eq!((diag.line, diag.column), (7, 5));
         assert_eq!(diag.end_line, 7);
+        assert_eq!(diag.end_column, 8);
     }
 }
 

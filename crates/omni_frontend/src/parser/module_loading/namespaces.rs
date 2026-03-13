@@ -69,12 +69,16 @@ fn rebase_relative_loc_to_use_site(loc: &mut SourceLoc, use_site_span: Span) {
     let base_column = use_site_span.column as usize;
     let relative_line = loc.line;
     let relative_end_line = loc.end_line;
+    let relative_end_column = loc.end_column;
 
     loc.line = base_line + relative_line.saturating_sub(1);
     if relative_line == 1 {
         loc.column = base_column + loc.column.saturating_sub(1);
     }
     loc.end_line = base_line + relative_end_line.saturating_sub(1);
+    if relative_end_line == 1 {
+        loc.end_column = base_column + relative_end_column.saturating_sub(1);
+    }
 }
 
 fn rebase_namespace_expr_locs(expr: &mut Expr, use_site_span: Span) {

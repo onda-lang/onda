@@ -45,6 +45,7 @@ use module_loading::stmt_loc_from_pair;
 mod type_helpers;
 pub use module_loading::{
     inject_auto_std_math, inject_auto_std_prelude, parse_program, parse_program_file,
+    parse_program_file_with_overlays, parse_program_with_path,
 };
 use type_helpers::*;
 
@@ -55,12 +56,17 @@ mod block_parsing;
 use block_parsing::*;
 
 fn diag_from_pest_error(err: pest::error::Error<Rule>) -> Diagnostic {
-    let (line, column, end_line) = match err.line_col {
-        LineColLocation::Pos((line, col)) => (line, col, line),
-        LineColLocation::Span((line, col), (end_line, _end_col)) => (line, col, end_line),
+    let (line, column, end_line, end_column) = match err.line_col {
+        LineColLocation::Pos((line, col)) => (line, col, line, col.saturating_add(1)),
+        LineColLocation::Span((line, col), (end_line, end_col)) => (line, col, end_line, end_col),
     };
     let mut diag = Diagnostic::syntax(err.to_string(), line, column);
     diag.end_line = end_line;
+    diag.end_column = if end_line == line {
+        end_column.max(column.saturating_add(1))
+    } else {
+        end_column.max(1)
+    };
     diag
 }
 

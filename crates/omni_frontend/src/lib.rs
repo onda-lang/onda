@@ -13,4 +13,5 @@ pub use ast::{
 pub use diagnostics::{DiagCode, DiagCtx, Diagnostic};
 pub use parser::{
     inject_auto_std_math, inject_auto_std_prelude, parse_program, parse_program_file,
+    parse_program_file_with_overlays, parse_program_with_path,
 };

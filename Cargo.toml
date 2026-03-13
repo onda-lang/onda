@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/omni_cli",
+  "crates/omni_daemon",
   "crates/omni_frontend",
   "crates/omni_semantics",
   "crates/omni_codegen_llvm",

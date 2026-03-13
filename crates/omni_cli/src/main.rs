@@ -1,10 +1,22 @@
+use std::cell::UnsafeCell;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
+mod daemon_stdio;
+mod lsp_stdio;
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use omni_codegen_llvm::{
     lower_and_jit_with_options, lower_to_llvm_ir_with_options, CompileOptions, ExecutionBackend,
+};
+use omni_daemon::{
+    DaemonConfig, DaemonSession, PreviewBuildError, PreviewOptions, PreviewParamInfo,
 };
 use omni_frontend::{
     parse_program_file, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
@@ -21,10 +33,16 @@ use omni_semantics::{
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_DUR_SECONDS: u32 = 5;
 const DEFAULT_BLOCK_FRAMES: usize = 512;
+const DEFAULT_DAEMON_OUTPUT: &str = "./omni_daemon_out.wav";
 
 const USAGE: &str = r#"Usage:
   omni compile <input.omni> [--dump-graph] [--ir] [--meta] [--fast-math]
   omni render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
+  omni lsp
+  omni preview render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
+  omni preview play <input.omni> [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
+  omni daemon diagnose <input.omni> [--sample-rate <hz>] [--block <frames>]
+  omni daemon stdio
 
 Options:
   --output, -o   Output wav path (default: ./omni_out.wav)
@@ -55,6 +73,40 @@ enum Command {
         dump_graph: bool,
         dump_ir: bool,
         fast_math: bool,
+    },
+    Lsp,
+    Preview(PreviewCommand),
+    Daemon(DaemonCommand),
+}
+
+enum PreviewCommand {
+    Play {
+        input: PathBuf,
+        dur_seconds: u32,
+        sample_rate_hz: u32,
+        block_frames: usize,
+        fast_math: bool,
+        show_meta: bool,
+        param_sets: Vec<(String, f64)>,
+    },
+    Render {
+        input: PathBuf,
+        output: PathBuf,
+        dur_seconds: u32,
+        sample_rate_hz: u32,
+        block_frames: usize,
+        fast_math: bool,
+        show_meta: bool,
+        param_sets: Vec<(String, f64)>,
+    },
+}
+
+enum DaemonCommand {
+    Stdio,
+    Diagnose {
+        input: PathBuf,
+        sample_rate_hz: u32,
+        block_frames: usize,
     },
 }
 
@@ -94,6 +146,9 @@ fn main() {
             dump_ir,
             fast_math,
         ),
+        Command::Lsp => lsp_stdio::run_stdio_loop(),
+        Command::Preview(cmd) => run_preview(cmd),
+        Command::Daemon(cmd) => run_daemon(cmd),
     };
 
     if let Err(err) = result {
@@ -114,8 +169,61 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     match cmd.as_str() {
         "compile" => parse_compile_args(args),
         "render" => parse_render_args(args),
+        "lsp" => parse_lsp_args(args),
+        "preview" => parse_preview_args(args),
+        "daemon" => parse_daemon_args(args),
         _ => Err(format!("unknown command '{cmd}'\n\n{USAGE}")),
     }
+}
+
+fn parse_lsp_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    match args.next() {
+        None => Ok(Command::Lsp),
+        Some(arg) if arg == "--help" || arg == "-h" => Err(USAGE.to_owned()),
+        Some(arg) => Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+    }
+}
+
+fn parse_preview_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let Some(subcommand) = args.next() else {
+        return Err(format!("preview requires a subcommand\n\n{USAGE}"));
+    };
+    let preview = match subcommand.as_str() {
+        "play" => parse_preview_play_args(args)?,
+        "render" => parse_preview_render_args(args)?,
+        _ => {
+            return Err(format!(
+                "unknown preview subcommand '{subcommand}'\n\n{USAGE}"
+            ))
+        }
+    };
+    Ok(Command::Preview(preview))
+}
+
+fn parse_daemon_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let Some(subcommand) = args.next() else {
+        return Err(format!("daemon requires a subcommand\n\n{USAGE}"));
+    };
+    let daemon = match subcommand.as_str() {
+        "stdio" => DaemonCommand::Stdio,
+        "diagnose" => parse_daemon_diagnose_args(args)?,
+        "play" => {
+            return Err(format!(
+                "daemon play was renamed to 'omni preview play'\n\n{USAGE}"
+            ))
+        }
+        "preview" => {
+            return Err(format!(
+                "daemon preview was renamed to 'omni preview render'\n\n{USAGE}"
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "unknown daemon subcommand '{subcommand}'\n\n{USAGE}"
+            ))
+        }
+    };
+    Ok(Command::Daemon(daemon))
 }
 
 fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -233,6 +341,205 @@ fn parse_render_args(mut args: impl Iterator<Item = String>) -> Result<Command, 
     })
 }
 
+fn parse_daemon_diagnose_args(
+    mut args: impl Iterator<Item = String>,
+) -> Result<DaemonCommand, String> {
+    let Some(input) = args.next() else {
+        return Err(format!("daemon diagnose requires an input file\n\n{USAGE}"));
+    };
+    let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
+    let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--sample-rate" | "--sr" => {
+                let Some(value) = args.next() else {
+                    return Err("--sample-rate/--sr requires a positive integer value".to_owned());
+                };
+                sample_rate_hz = parse_sample_rate_hz(&value)?;
+            }
+            "--block" | "-b" => {
+                let Some(value) = args.next() else {
+                    return Err("--block requires a positive integer value".to_owned());
+                };
+                block_frames = parse_block_frames(&value)?;
+            }
+            "--help" | "-h" => return Err(USAGE.to_owned()),
+            _ if arg.starts_with("--sample-rate=") => {
+                sample_rate_hz = parse_sample_rate_hz(&arg["--sample-rate=".len()..])?;
+            }
+            _ if arg.starts_with("--sr=") => {
+                sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
+            }
+            _ if arg.starts_with("--block=") => {
+                block_frames = parse_block_frames(&arg["--block=".len()..])?;
+            }
+            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+        }
+    }
+    Ok(DaemonCommand::Diagnose {
+        input: PathBuf::from(input),
+        sample_rate_hz,
+        block_frames,
+    })
+}
+
+fn parse_preview_render_args(
+    mut args: impl Iterator<Item = String>,
+) -> Result<PreviewCommand, String> {
+    let Some(input) = args.next() else {
+        return Err(format!("preview render requires an input file\n\n{USAGE}"));
+    };
+
+    let mut output = PathBuf::from(DEFAULT_DAEMON_OUTPUT);
+    let mut dur_seconds = DEFAULT_DUR_SECONDS;
+    let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
+    let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut fast_math = false;
+    let mut show_meta = false;
+    let mut param_sets = Vec::new();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--output" | "-o" => {
+                let Some(value) = args.next() else {
+                    return Err("--output requires a file path".to_owned());
+                };
+                output = PathBuf::from(value);
+            }
+            "--dur" | "-d" => {
+                let Some(value) = args.next() else {
+                    return Err("--dur requires a positive integer value".to_owned());
+                };
+                dur_seconds = parse_dur_seconds(&value)?;
+            }
+            "--sample-rate" | "--sr" => {
+                let Some(value) = args.next() else {
+                    return Err("--sample-rate/--sr requires a positive integer value".to_owned());
+                };
+                sample_rate_hz = parse_sample_rate_hz(&value)?;
+            }
+            "--block" | "-b" => {
+                let Some(value) = args.next() else {
+                    return Err("--block requires a positive integer value".to_owned());
+                };
+                block_frames = parse_block_frames(&value)?;
+            }
+            "--set" => {
+                let Some(value) = args.next() else {
+                    return Err("--set requires a name=value pair".to_owned());
+                };
+                param_sets.push(parse_param_setting(&value)?);
+            }
+            "--fast-math" => fast_math = true,
+            "--meta" => show_meta = true,
+            "--help" | "-h" => return Err(USAGE.to_owned()),
+            _ if arg.starts_with("--output=") => {
+                output = PathBuf::from(&arg["--output=".len()..]);
+            }
+            _ if arg.starts_with("--dur=") => {
+                dur_seconds = parse_dur_seconds(&arg["--dur=".len()..])?;
+            }
+            _ if arg.starts_with("--sample-rate=") => {
+                sample_rate_hz = parse_sample_rate_hz(&arg["--sample-rate=".len()..])?;
+            }
+            _ if arg.starts_with("--sr=") => {
+                sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
+            }
+            _ if arg.starts_with("--block=") => {
+                block_frames = parse_block_frames(&arg["--block=".len()..])?;
+            }
+            _ if arg.starts_with("--set=") => {
+                param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
+            }
+            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+        }
+    }
+
+    Ok(PreviewCommand::Render {
+        input: PathBuf::from(input),
+        output,
+        dur_seconds,
+        sample_rate_hz,
+        block_frames,
+        fast_math,
+        show_meta,
+        param_sets,
+    })
+}
+
+fn parse_preview_play_args(
+    mut args: impl Iterator<Item = String>,
+) -> Result<PreviewCommand, String> {
+    let Some(input) = args.next() else {
+        return Err(format!("preview play requires an input file\n\n{USAGE}"));
+    };
+
+    let mut dur_seconds = DEFAULT_DUR_SECONDS;
+    let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
+    let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut fast_math = false;
+    let mut show_meta = false;
+    let mut param_sets = Vec::new();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dur" | "-d" => {
+                let Some(value) = args.next() else {
+                    return Err("--dur requires a positive integer value".to_owned());
+                };
+                dur_seconds = parse_dur_seconds(&value)?;
+            }
+            "--sample-rate" | "--sr" => {
+                let Some(value) = args.next() else {
+                    return Err("--sample-rate/--sr requires a positive integer value".to_owned());
+                };
+                sample_rate_hz = parse_sample_rate_hz(&value)?;
+            }
+            "--block" | "-b" => {
+                let Some(value) = args.next() else {
+                    return Err("--block requires a positive integer value".to_owned());
+                };
+                block_frames = parse_block_frames(&value)?;
+            }
+            "--set" => {
+                let Some(value) = args.next() else {
+                    return Err("--set requires a name=value pair".to_owned());
+                };
+                param_sets.push(parse_param_setting(&value)?);
+            }
+            "--fast-math" => fast_math = true,
+            "--meta" => show_meta = true,
+            "--help" | "-h" => return Err(USAGE.to_owned()),
+            _ if arg.starts_with("--dur=") => {
+                dur_seconds = parse_dur_seconds(&arg["--dur=".len()..])?;
+            }
+            _ if arg.starts_with("--sample-rate=") => {
+                sample_rate_hz = parse_sample_rate_hz(&arg["--sample-rate=".len()..])?;
+            }
+            _ if arg.starts_with("--sr=") => {
+                sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
+            }
+            _ if arg.starts_with("--block=") => {
+                block_frames = parse_block_frames(&arg["--block=".len()..])?;
+            }
+            _ if arg.starts_with("--set=") => {
+                param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
+            }
+            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+        }
+    }
+
+    Ok(PreviewCommand::Play {
+        input: PathBuf::from(input),
+        dur_seconds,
+        sample_rate_hz,
+        block_frames,
+        fast_math,
+        show_meta,
+        param_sets,
+    })
+}
+
 fn parse_dur_seconds(value: &str) -> Result<u32, String> {
     let parsed = value
         .parse::<u32>()
@@ -261,6 +568,630 @@ fn parse_block_frames(value: &str) -> Result<usize, String> {
         return Err("block size must be greater than zero".to_owned());
     }
     Ok(parsed)
+}
+
+fn parse_param_setting(value: &str) -> Result<(String, f64), String> {
+    let Some((name, raw_value)) = value.split_once('=') else {
+        return Err(format!(
+            "invalid parameter setting '{value}', expected name=value"
+        ));
+    };
+    if name.is_empty() {
+        return Err("parameter setting requires a non-empty name".to_owned());
+    }
+    let parsed = raw_value.parse::<f64>().map_err(|_| {
+        format!("invalid parameter value '{raw_value}' for '{name}', expected number")
+    })?;
+    Ok((name.to_owned(), parsed))
+}
+
+fn run_daemon(cmd: DaemonCommand) -> Result<(), String> {
+    match cmd {
+        DaemonCommand::Stdio => daemon_stdio::run_stdio_loop(),
+        DaemonCommand::Diagnose {
+            input,
+            sample_rate_hz,
+            block_frames,
+        } => run_daemon_diagnose(&input, sample_rate_hz, block_frames),
+    }
+}
+
+fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
+    match cmd {
+        PreviewCommand::Play {
+            input,
+            dur_seconds,
+            sample_rate_hz,
+            block_frames,
+            fast_math,
+            show_meta,
+            param_sets,
+        } => run_daemon_play(
+            &input,
+            dur_seconds,
+            sample_rate_hz,
+            block_frames,
+            fast_math,
+            show_meta,
+            &param_sets,
+        ),
+        PreviewCommand::Render {
+            input,
+            output,
+            dur_seconds,
+            sample_rate_hz,
+            block_frames,
+            fast_math,
+            show_meta,
+            param_sets,
+        } => run_daemon_preview(
+            &input,
+            &output,
+            dur_seconds,
+            sample_rate_hz,
+            block_frames,
+            fast_math,
+            show_meta,
+            &param_sets,
+        ),
+    }
+}
+
+fn run_daemon_diagnose(
+    input: &Path,
+    sample_rate_hz: u32,
+    block_frames: usize,
+) -> Result<(), String> {
+    let session = DaemonSession::new(DaemonConfig {
+        analysis: AnalysisOptions {
+            sample_rate: sample_rate_hz as f32,
+            block_size: block_frames,
+        },
+        preview: PreviewOptions {
+            sample_rate: sample_rate_hz as f32,
+            block_size: block_frames,
+            ..PreviewOptions::default()
+        },
+    });
+    let snapshot = session.analyze_document(input);
+    if snapshot.diagnostics.is_empty() {
+        println!("ok");
+        return Ok(());
+    }
+    Err(format_diagnostics(
+        "daemon diagnostics",
+        &snapshot.diagnostics,
+    ))
+}
+
+fn run_daemon_preview(
+    input: &Path,
+    output: &Path,
+    dur_seconds: u32,
+    sample_rate_hz: u32,
+    block_frames: usize,
+    fast_math: bool,
+    show_meta: bool,
+    param_sets: &[(String, f64)],
+) -> Result<(), String> {
+    let mut session = DaemonSession::new(DaemonConfig {
+        analysis: AnalysisOptions {
+            sample_rate: sample_rate_hz as f32,
+            block_size: block_frames,
+        },
+        preview: PreviewOptions {
+            sample_rate: sample_rate_hz as f32,
+            block_size: block_frames,
+            fast_math,
+            ..PreviewOptions::default()
+        },
+    });
+
+    session
+        .start_preview(input)
+        .map_err(|err| format_preview_build_error("daemon preview start failed", &err))?;
+
+    if show_meta {
+        let info = session
+            .preview(input)
+            .expect("preview should be active after successful start")
+            .param_info();
+        if !info.is_empty() {
+            println!("{}", format_preview_param_info(&info));
+        }
+    }
+
+    for (name, value) in param_sets {
+        session
+            .preview_mut(input)
+            .expect("preview should be active while applying params")
+            .set_param_f64(name, *value)
+            .map_err(|diag| format_single_diagnostic("daemon preview param failed", &diag))?;
+    }
+
+    let total_frames = sample_rate_hz as usize * dur_seconds as usize;
+    let full_blocks = total_frames / block_frames;
+    let tail_frames = total_frames % block_frames;
+    let mut rendered = Vec::<f32>::new();
+
+    for _ in 0..full_blocks {
+        let block = session
+            .render_preview_block(input)
+            .map_err(|diag| format_single_diagnostic("daemon preview render failed", &diag))?;
+        append_interleaved_block(&mut rendered, &block);
+    }
+    if tail_frames > 0 {
+        let block = session
+            .render_preview_block(input)
+            .map_err(|diag| format_single_diagnostic("daemon preview render failed", &diag))?;
+        let mut interleaved = Vec::<f32>::new();
+        append_interleaved_block(&mut interleaved, &block);
+        let channels = block.len().max(1);
+        rendered.extend_from_slice(&interleaved[..tail_frames * channels]);
+    }
+
+    let out_channels = session
+        .preview(input)
+        .expect("preview should remain active through render")
+        .output_channel_count();
+    if out_channels == 0 {
+        return Err("daemon preview requires at least one output channel".to_owned());
+    }
+
+    write_wav_interleaved_i16(output, out_channels, sample_rate_hz, &rendered)?;
+    println!(
+        "Wrote {} seconds of daemon-preview audio to {}",
+        dur_seconds,
+        output.display()
+    );
+    Ok(())
+}
+
+fn run_daemon_play(
+    input: &Path,
+    dur_seconds: u32,
+    sample_rate_hz: u32,
+    block_frames: usize,
+    fast_math: bool,
+    show_meta: bool,
+    param_sets: &[(String, f64)],
+) -> Result<(), String> {
+    play_preview_realtime(PlaybackLaunch {
+        input: input.to_path_buf(),
+        dur_seconds,
+        sample_rate_hz,
+        block_frames,
+        fast_math,
+        show_meta,
+        param_sets: param_sets.to_vec(),
+    })
+}
+
+fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| "no default output audio device available".to_owned())?;
+    let default_config = device
+        .default_output_config()
+        .map_err(|err| format!("failed to query default output config: {err}"))?;
+
+    let device_channels = usize::from(default_config.channels());
+    let mut config: cpal::StreamConfig = default_config.config();
+    config.channels = default_config.channels();
+    config.sample_rate = cpal::SampleRate(launch.sample_rate_hz);
+
+    let queue_capacity = (launch.block_frames * device_channels.max(2) * 16)
+        .next_power_of_two()
+        .max(1024);
+    let sample_queue = Arc::new(SpscSampleRing::new(queue_capacity));
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let render_error = Arc::new(Mutex::new(None::<String>));
+    let error_state = Arc::new(Mutex::new(None::<String>));
+    let (startup_tx, startup_rx) = mpsc::channel();
+
+    let render_thread = spawn_preview_render_thread(
+        launch.clone(),
+        Arc::clone(&sample_queue),
+        Arc::clone(&stop_flag),
+        Arc::clone(&render_error),
+        startup_tx,
+    );
+    let startup = startup_rx
+        .recv()
+        .map_err(|_| "preview render thread exited before startup completed".to_owned())??;
+
+    if launch.show_meta && !startup.params.is_empty() {
+        println!("{}", format_preview_param_info(&startup.params));
+    }
+    if startup.output_channels == 0 {
+        stop_flag.store(true, Ordering::Release);
+        let _ = render_thread.join();
+        return Err("daemon play requires at least one output channel".to_owned());
+    }
+
+    wait_for_prefill(
+        &sample_queue,
+        startup.output_channels * launch.block_frames,
+        &stop_flag,
+        &render_error,
+    )?;
+
+    let stream = match default_config.sample_format() {
+        cpal::SampleFormat::F32 => build_output_stream::<f32>(
+            &device,
+            &config,
+            device_channels,
+            startup.output_channels,
+            Arc::clone(&sample_queue),
+            make_stream_error_handler(Arc::clone(&error_state)),
+        )?,
+        cpal::SampleFormat::I16 => build_output_stream::<i16>(
+            &device,
+            &config,
+            device_channels,
+            startup.output_channels,
+            Arc::clone(&sample_queue),
+            make_stream_error_handler(Arc::clone(&error_state)),
+        )?,
+        cpal::SampleFormat::U16 => build_output_stream::<u16>(
+            &device,
+            &config,
+            device_channels,
+            startup.output_channels,
+            Arc::clone(&sample_queue),
+            make_stream_error_handler(Arc::clone(&error_state)),
+        )?,
+        other => {
+            stop_flag.store(true, Ordering::Release);
+            let _ = render_thread.join();
+            return Err(format!(
+                "unsupported output sample format from audio device: {other:?}"
+            ));
+        }
+    };
+
+    stream
+        .play()
+        .map_err(|err| format!("failed to start audio output stream: {err}"))?;
+    println!(
+        "Playing {} for {} seconds on default output device",
+        display_path(&startup.path),
+        launch.dur_seconds
+    );
+    thread::sleep(Duration::from_secs(u64::from(launch.dur_seconds)));
+
+    stop_flag.store(true, Ordering::Release);
+    drop(stream);
+    let _ = render_thread.join();
+
+    if let Some(err) = error_state
+        .lock()
+        .map_err(|_| "failed to read audio stream error state".to_owned())?
+        .clone()
+    {
+        return Err(err);
+    }
+    if let Some(err) = render_error
+        .lock()
+        .map_err(|_| "failed to read render thread error state".to_owned())?
+        .clone()
+    {
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn build_output_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    device_channels: usize,
+    source_channels: usize,
+    sample_queue: Arc<SpscSampleRing>,
+    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> Result<cpal::Stream, String>
+where
+    T: cpal::SizedSample + cpal::FromSample<f32>,
+{
+    device
+        .build_output_stream(
+            config,
+            move |data: &mut [T], _| {
+                write_output_data::<T>(data, device_channels, source_channels, &sample_queue)
+            },
+            err_fn,
+            None,
+        )
+        .map_err(|err| format!("failed to build audio output stream: {err}"))
+}
+
+fn make_stream_error_handler(
+    error_state: Arc<Mutex<Option<String>>>,
+) -> impl FnMut(cpal::StreamError) + Send + 'static {
+    move |err| {
+        if let Ok(mut slot) = error_state.lock() {
+            *slot = Some(format!("audio output stream error: {err}"));
+        }
+    }
+}
+
+fn write_output_data<T>(
+    data: &mut [T],
+    device_channels: usize,
+    source_channels: usize,
+    sample_queue: &Arc<SpscSampleRing>,
+) where
+    T: cpal::SizedSample + cpal::FromSample<f32>,
+{
+    for frame in data.chunks_mut(device_channels) {
+        if source_channels == 1 {
+            let sample = sample_queue.pop_one().unwrap_or(0.0);
+            for out in frame.iter_mut() {
+                *out = T::from_sample(sample);
+            }
+            continue;
+        }
+
+        for (channel_index, sample) in frame.iter_mut().enumerate() {
+            let value = if channel_index < source_channels {
+                sample_queue.pop_one().unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            *sample = T::from_sample(value);
+        }
+        for _ in device_channels..source_channels {
+            let _ = sample_queue.pop_one();
+        }
+    }
+}
+
+fn append_interleaved_block(rendered: &mut Vec<f32>, block: &[Vec<f32>]) {
+    if block.is_empty() {
+        return;
+    }
+    let frames = block[0].len();
+    for frame in 0..frames {
+        for channel in block {
+            rendered.push(channel[frame]);
+        }
+    }
+}
+
+fn display_path(path: &Path) -> String {
+    let raw = path.display().to_string();
+    raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_owned()
+}
+
+#[derive(Clone)]
+struct PlaybackLaunch {
+    input: PathBuf,
+    dur_seconds: u32,
+    sample_rate_hz: u32,
+    block_frames: usize,
+    fast_math: bool,
+    show_meta: bool,
+    param_sets: Vec<(String, f64)>,
+}
+
+struct PlaybackStartup {
+    path: PathBuf,
+    output_channels: usize,
+    params: Vec<PreviewParamInfo>,
+}
+
+fn spawn_preview_render_thread(
+    launch: PlaybackLaunch,
+    sample_queue: Arc<SpscSampleRing>,
+    stop_flag: Arc<AtomicBool>,
+    render_error: Arc<Mutex<Option<String>>>,
+    startup_tx: mpsc::Sender<Result<PlaybackStartup, String>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut session = DaemonSession::new(DaemonConfig {
+            analysis: AnalysisOptions {
+                sample_rate: launch.sample_rate_hz as f32,
+                block_size: launch.block_frames,
+            },
+            preview: PreviewOptions {
+                sample_rate: launch.sample_rate_hz as f32,
+                block_size: launch.block_frames,
+                fast_math: launch.fast_math,
+                ..PreviewOptions::default()
+            },
+        });
+
+        let startup = (|| -> Result<PlaybackStartup, String> {
+            session
+                .start_preview(&launch.input)
+                .map_err(|err| format_preview_build_error("daemon play start failed", &err))?;
+
+            let preview = session
+                .preview(&launch.input)
+                .expect("preview should be active after successful start");
+            let params = if launch.show_meta {
+                preview.param_info()
+            } else {
+                Vec::new()
+            };
+            let output_channels = preview.output_channel_count();
+            let path = preview.path().to_path_buf();
+
+            for (name, value) in &launch.param_sets {
+                session
+                    .preview_mut(&launch.input)
+                    .expect("preview should be active while applying params")
+                    .set_param_f64(name, *value)
+                    .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
+            }
+
+            Ok(PlaybackStartup {
+                path,
+                output_channels,
+                params,
+            })
+        })();
+
+        match startup {
+            Ok(startup) => {
+                if startup_tx.send(Ok(startup)).is_err() {
+                    return;
+                }
+            }
+            Err(err) => {
+                let _ = startup_tx.send(Err(err));
+                return;
+            }
+        }
+
+        while !stop_flag.load(Ordering::Acquire) {
+            let block = match session.render_preview_block(&launch.input) {
+                Ok(block) => block,
+                Err(diag) => {
+                    store_thread_error(
+                        &render_error,
+                        format_single_diagnostic("daemon play render failed", &diag),
+                    );
+                    stop_flag.store(true, Ordering::Release);
+                    break;
+                }
+            };
+
+            let mut interleaved = Vec::with_capacity(
+                block.len() * block.first().map(Vec::len).unwrap_or(launch.block_frames),
+            );
+            append_interleaved_block(&mut interleaved, &block);
+
+            let mut offset = 0;
+            while offset < interleaved.len() && !stop_flag.load(Ordering::Acquire) {
+                let written = sample_queue.push_slice(&interleaved[offset..]);
+                if written == 0 {
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                offset += written;
+            }
+        }
+    })
+}
+
+fn wait_for_prefill(
+    sample_queue: &Arc<SpscSampleRing>,
+    min_samples: usize,
+    stop_flag: &Arc<AtomicBool>,
+    render_error: &Arc<Mutex<Option<String>>>,
+) -> Result<(), String> {
+    while sample_queue.len() < min_samples && !stop_flag.load(Ordering::Acquire) {
+        if let Some(err) = render_error
+            .lock()
+            .map_err(|_| "failed to read render thread error state".to_owned())?
+            .clone()
+        {
+            return Err(err);
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+fn store_thread_error(slot: &Arc<Mutex<Option<String>>>, message: String) {
+    if let Ok(mut slot) = slot.lock() {
+        if slot.is_none() {
+            *slot = Some(message);
+        }
+    }
+}
+
+struct SpscSampleRing {
+    capacity: usize,
+    mask: usize,
+    slots: Box<[UnsafeCell<f32>]>,
+    read_index: AtomicUsize,
+    write_index: AtomicUsize,
+}
+
+unsafe impl Send for SpscSampleRing {}
+unsafe impl Sync for SpscSampleRing {}
+
+impl SpscSampleRing {
+    fn new(capacity: usize) -> Self {
+        let capacity = capacity.max(2).next_power_of_two();
+        let slots = std::iter::repeat_with(|| UnsafeCell::new(0.0))
+            .take(capacity)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self {
+            capacity,
+            mask: capacity - 1,
+            slots,
+            read_index: AtomicUsize::new(0),
+            write_index: AtomicUsize::new(0),
+        }
+    }
+
+    fn len(&self) -> usize {
+        let write = self.write_index.load(Ordering::Acquire);
+        let read = self.read_index.load(Ordering::Acquire);
+        write.saturating_sub(read)
+    }
+
+    fn push_slice(&self, input: &[f32]) -> usize {
+        let write = self.write_index.load(Ordering::Relaxed);
+        let read = self.read_index.load(Ordering::Acquire);
+        let available = self.capacity.saturating_sub(write.saturating_sub(read));
+        let count = input.len().min(available);
+        for (offset, sample) in input.iter().copied().take(count).enumerate() {
+            let index = (write + offset) & self.mask;
+            // SAFETY: producer is single-writer and only writes slots not yet published via write_index.
+            unsafe { *self.slots[index].get() = sample };
+        }
+        if count != 0 {
+            self.write_index.store(write + count, Ordering::Release);
+        }
+        count
+    }
+
+    fn pop_one(&self) -> Option<f32> {
+        let read = self.read_index.load(Ordering::Relaxed);
+        let write = self.write_index.load(Ordering::Acquire);
+        if read == write {
+            return None;
+        }
+        let index = read & self.mask;
+        // SAFETY: consumer is single-reader and only reads slots published via write_index.
+        let sample = unsafe { *self.slots[index].get() };
+        self.read_index.store(read + 1, Ordering::Release);
+        Some(sample)
+    }
+}
+
+fn format_preview_build_error(context: &str, err: &PreviewBuildError) -> String {
+    match err {
+        PreviewBuildError::Diagnostics(diags) => format_diagnostics(context, diags),
+        PreviewBuildError::Runtime(diag) => format_single_diagnostic(context, diag),
+    }
+}
+
+fn format_preview_param_info(params: &[PreviewParamInfo]) -> String {
+    let mut lines = Vec::with_capacity(params.len() + 1);
+    lines.push("Preview params:".to_owned());
+    for param in params {
+        let range = match (param.range_min, param.range_max) {
+            (Some(min), Some(max)) => format!(" [{min}, {max}]"),
+            (None, Some(max)) => format!(" [.., {max}]"),
+            _ => String::new(),
+        };
+        let default = param
+            .default
+            .map(|value| format!(" = {value}"))
+            .unwrap_or_default();
+        let scalar = if param.scalar { "" } else { " (non-scalar)" };
+        lines.push(format!(
+            "  {}: {}{}{}{}",
+            param.name, param.type_repr, default, range, scalar
+        ));
+    }
+    lines.join("\n")
 }
 
 fn run_compile(
@@ -1458,7 +2389,11 @@ fn format_diag_snippet(diag: &Diagnostic) -> Option<String> {
     let line_idx = diag.line.checked_sub(1)?;
     let line_text = source.lines().nth(line_idx)?;
     let start_col = diag.column.max(1);
-    let underline_len = 1;
+    let underline_len = if diag.end_line == diag.line && diag.end_column > start_col {
+        diag.end_column.saturating_sub(start_col)
+    } else {
+        1
+    };
     let caret_pad = " ".repeat(start_col.saturating_sub(1));
     let underline = "^".repeat(underline_len.max(1));
     Some(format!(
@@ -1525,7 +2460,10 @@ fn f32_to_i16(sample: f32) -> i16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_diag_snippet, format_expr, format_program, parse_args, Command};
+    use super::{
+        format_diag_snippet, format_expr, format_program, parse_args, Command, DaemonCommand,
+        PreviewCommand,
+    };
     use omni_frontend::{
         Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
     };
@@ -1556,6 +2494,126 @@ mod tests {
             Command::Render { dump_graph, .. } => assert!(dump_graph),
             _ => panic!("expected render command"),
         }
+    }
+
+    #[test]
+    fn parse_daemon_diagnose_accepts_block_and_sample_rate() {
+        let cmd = parse_args(
+            [
+                "omni", "daemon", "diagnose", "x.omni", "--block", "256", "--sr", "44100",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("daemon diagnose args should parse");
+        match cmd {
+            Command::Daemon(DaemonCommand::Diagnose {
+                block_frames,
+                sample_rate_hz,
+                ..
+            }) => {
+                assert_eq!(block_frames, 256);
+                assert_eq!(sample_rate_hz, 44_100);
+            }
+            _ => panic!("expected daemon diagnose command"),
+        }
+    }
+
+    #[test]
+    fn parse_daemon_stdio_command() {
+        let cmd = parse_args(["omni", "daemon", "stdio"].into_iter().map(str::to_owned))
+            .expect("daemon stdio args should parse");
+        match cmd {
+            Command::Daemon(DaemonCommand::Stdio) => {}
+            _ => panic!("expected daemon stdio command"),
+        }
+    }
+
+    #[test]
+    fn parse_lsp_command() {
+        let cmd = parse_args(["omni", "lsp"].into_iter().map(str::to_owned))
+            .expect("lsp args should parse");
+        match cmd {
+            Command::Lsp => {}
+            _ => panic!("expected lsp command"),
+        }
+    }
+
+    #[test]
+    fn parse_preview_play_accepts_meta_and_param_sets() {
+        let cmd = parse_args(
+            [
+                "omni",
+                "preview",
+                "play",
+                "x.omni",
+                "--meta",
+                "--set",
+                "gain=0.5",
+                "--fast-math",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("preview play args should parse");
+        match cmd {
+            Command::Preview(PreviewCommand::Play {
+                show_meta,
+                fast_math,
+                param_sets,
+                ..
+            }) => {
+                assert!(show_meta);
+                assert!(fast_math);
+                assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
+            }
+            _ => panic!("expected preview play command"),
+        }
+    }
+
+    #[test]
+    fn parse_preview_render_accepts_meta_and_param_sets() {
+        let cmd = parse_args(
+            [
+                "omni",
+                "preview",
+                "render",
+                "x.omni",
+                "--meta",
+                "--set",
+                "gain=0.5",
+                "--fast-math",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("preview render args should parse");
+        match cmd {
+            Command::Preview(PreviewCommand::Render {
+                show_meta,
+                fast_math,
+                param_sets,
+                ..
+            }) => {
+                assert!(show_meta);
+                assert!(fast_math);
+                assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
+            }
+            _ => panic!("expected preview render command"),
+        }
+    }
+
+    #[test]
+    fn parse_daemon_play_reports_rename() {
+        let err = match parse_args(
+            ["omni", "daemon", "play", "x.omni"]
+                .into_iter()
+                .map(str::to_owned),
+        ) {
+            Ok(_) => panic!("daemon play should report rename"),
+            Err(err) => err,
+        };
+        assert!(err.contains("omni preview play"));
     }
 
     #[test]
@@ -1615,6 +2673,7 @@ mod tests {
             line: 2,
             column: 10,
             end_line: 2,
+            end_column: 17,
             file: Some(path.to_string_lossy().into_owned()),
             trace: Vec::new(),
         };

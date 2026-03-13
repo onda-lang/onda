@@ -30,6 +30,7 @@ typedef struct {
   int line;
   int column;
   int end_line;
+  int end_column;
   const char* message;
   const char* file;
   const char* trace;

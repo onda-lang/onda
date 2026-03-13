@@ -18,6 +18,7 @@ pub struct omni_diag_t {
     pub line: i32,
     pub column: i32,
     pub end_line: i32,
+    pub end_column: i32,
     pub message: *const c_char,
     pub file: *const c_char,
     pub trace: *const c_char,
@@ -88,6 +89,7 @@ fn diag_to_c(diag: &Diagnostic) -> omni_diag_t {
         line: saturating_usize_to_i32(diag.line),
         column: saturating_usize_to_i32(diag.column),
         end_line: saturating_usize_to_i32(diag.end_line),
+        end_column: saturating_usize_to_i32(diag.end_column),
         message: msg_ptr,
         file: file_ptr,
         trace: trace_ptr,
@@ -151,6 +153,7 @@ unsafe fn omni_compile_impl(
                 line: 0,
                 column: 0,
                 end_line: 0,
+                end_column: 0,
                 message: STATIC_ERR_NULL_ARG.as_ptr().cast::<c_char>(),
                 file: ptr::null(),
                 trace: ptr::null(),
@@ -168,6 +171,7 @@ unsafe fn omni_compile_impl(
                 line: 0,
                 column: 0,
                 end_line: 0,
+                end_column: 0,
                 message: b"compile options require finite sample_rate > 0\0"
                     .as_ptr()
                     .cast::<c_char>(),
@@ -185,6 +189,7 @@ unsafe fn omni_compile_impl(
                 line: 0,
                 column: 0,
                 end_line: 0,
+                end_column: 0,
                 message: b"compile options require block_size > 0\0"
                     .as_ptr()
                     .cast::<c_char>(),
@@ -206,6 +211,7 @@ unsafe fn omni_compile_impl(
                     line: 0,
                     column: 0,
                     end_line: 0,
+                    end_column: 0,
                     message: STATIC_ERR_INVALID_UTF8.as_ptr().cast::<c_char>(),
                     file: ptr::null(),
                     trace: ptr::null(),
@@ -407,6 +413,7 @@ pub unsafe extern "C" fn omni_instance_create(
                 line: 0,
                 column: 0,
                 end_line: 0,
+                end_column: 0,
                 message: STATIC_ERR_NULL_ARG.as_ptr().cast::<c_char>(),
                 file: ptr::null(),
                 trace: ptr::null(),
@@ -423,6 +430,7 @@ pub unsafe extern "C" fn omni_instance_create(
                 line: 0,
                 column: 0,
                 end_line: 0,
+                end_column: 0,
                 message: b"invalid instance configuration\0"
                     .as_ptr()
                     .cast::<c_char>(),

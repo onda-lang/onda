@@ -15,6 +15,7 @@ pub struct Diagnostic {
     pub line: usize,
     pub column: usize,
     pub end_line: usize,
+    pub end_column: usize,
     pub file: Option<String>,
     pub trace: Vec<String>,
 }
@@ -83,6 +84,14 @@ impl From<Option<&Span>> for DiagCtx {
 }
 
 impl Diagnostic {
+    fn point_end_column(column: usize) -> usize {
+        if column == 0 {
+            0
+        } else {
+            column.saturating_add(1)
+        }
+    }
+
     pub fn syntax(message: impl Into<String>, line: usize, column: usize) -> Self {
         Self {
             code: DiagCode::Syntax,
@@ -90,6 +99,7 @@ impl Diagnostic {
             line,
             column,
             end_line: line,
+            end_column: Self::point_end_column(column),
             file: None,
             trace: Vec::new(),
         }
@@ -113,6 +123,7 @@ impl Diagnostic {
         let mut line = line;
         let mut column = column;
         let mut end_line = line;
+        let mut end_column = Self::point_end_column(column);
         let mut file = None;
         let mut trace = Vec::new();
         let loc = ctx.loc();
@@ -121,6 +132,7 @@ impl Diagnostic {
                 line = loc.line;
                 column = loc.column;
                 end_line = loc.end_line;
+                end_column = loc.end_column;
             }
             file = loc.file();
             trace = loc.trace();
@@ -131,6 +143,7 @@ impl Diagnostic {
             line,
             column,
             end_line,
+            end_column,
             file,
             trace,
         }
@@ -163,6 +176,7 @@ impl Diagnostic {
             line: span.line as usize,
             column: span.column as usize,
             end_line: span.end_line() as usize,
+            end_column: span.end_column as usize,
             file,
             trace,
         }
@@ -175,6 +189,7 @@ impl Diagnostic {
             line: loc.line,
             column: loc.column,
             end_line: loc.end_line,
+            end_column: loc.end_column,
             file: loc.file(),
             trace: loc.trace(),
         }
@@ -187,6 +202,7 @@ impl Diagnostic {
             line,
             column,
             end_line: line,
+            end_column: Self::point_end_column(column),
             file: None,
             trace: Vec::new(),
         }
@@ -199,6 +215,7 @@ impl Diagnostic {
             line: loc.line,
             column: loc.column,
             end_line: loc.end_line,
+            end_column: loc.end_column,
             file: loc.file(),
             trace: loc.trace(),
         }
@@ -211,6 +228,7 @@ impl Diagnostic {
             line: 0,
             column: 0,
             end_line: 0,
+            end_column: 0,
             file: None,
             trace: Vec::new(),
         }
@@ -223,11 +241,12 @@ mod tests {
 
     #[test]
     fn semantic_span_uses_span_metadata_without_ambient_context() {
-        let loc = SourceLoc::new(Some("<memory>".to_owned()), 1, 1, 1, Vec::new());
+        let loc = SourceLoc::new(Some("<memory>".to_owned()), 1, 1, 1, 4, Vec::new());
         let diag = Diagnostic::semantic_span("bad thing", loc.span());
 
         assert_eq!(diag.file.as_deref(), Some("<memory>"));
         assert!(diag.trace.is_empty());
+        assert_eq!(diag.end_column, 4);
     }
 
     #[test]
@@ -237,15 +256,19 @@ mod tests {
             10,
             20,
             12,
+            7,
             vec!["included from root.omni".to_owned()],
         );
 
         let diag =
-            Diagnostic::semantic_span_ctx("bad thing", Span::new(3, 4, 5), DiagCtx::from(loc));
+            Diagnostic::semantic_span_ctx("bad thing", Span::new(3, 4, 5, 9), DiagCtx::from(loc));
 
         assert_eq!(diag.code, DiagCode::Semantic);
         assert_eq!(diag.message, "bad thing");
-        assert_eq!((diag.line, diag.column, diag.end_line), (3, 4, 5));
+        assert_eq!(
+            (diag.line, diag.column, diag.end_line, diag.end_column),
+            (3, 4, 5, 9)
+        );
         assert_eq!(diag.file.as_deref(), Some("test.omni"));
         assert_eq!(diag.trace, vec!["included from root.omni"]);
     }

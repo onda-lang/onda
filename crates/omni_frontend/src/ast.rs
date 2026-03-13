@@ -573,6 +573,7 @@ pub struct Span {
     pub line: u32,
     pub column: u16,
     pub end_line_delta: u16,
+    pub end_column: u16,
     file_id: u16,
     trace_id: u16,
 }
@@ -582,27 +583,40 @@ impl Span {
         line: 0,
         column: 0,
         end_line_delta: 0,
+        end_column: 0,
         file_id: 0,
         trace_id: 0,
     };
 
-    pub fn new(line: usize, column: usize, end_line: usize) -> Self {
-        Self::new_with_context(line, column, end_line, 0, 0)
+    pub fn new(line: usize, column: usize, end_line: usize, end_column: usize) -> Self {
+        Self::new_with_context(line, column, end_line, end_column, 0, 0)
     }
 
     fn new_with_context(
         line: usize,
         column: usize,
         end_line: usize,
+        end_column: usize,
         file_id: u16,
         trace_id: u16,
     ) -> Self {
         let line32 = line.min(u32::MAX as usize) as u32;
         let delta = (end_line as u32).saturating_sub(line32);
+        let column16 = column.min(u16::MAX as usize) as u16;
+        let end_column16 = if line == 0 {
+            0
+        } else if end_line <= line {
+            end_column
+                .max(column.saturating_add(1))
+                .min(u16::MAX as usize) as u16
+        } else {
+            end_column.max(1).min(u16::MAX as usize) as u16
+        };
         Self {
             line: line32,
-            column: column.min(u16::MAX as usize) as u16,
+            column: column16,
             end_line_delta: delta.min(u16::MAX as u32) as u16,
+            end_column: end_column16,
             file_id,
             trace_id,
         }
@@ -665,10 +679,18 @@ impl Span {
             return a;
         }
         let end = b.end_line().max(a.end_line());
+        let end_column = if b.end_line() > a.end_line() {
+            b.end_column
+        } else if a.end_line() > b.end_line() {
+            a.end_column
+        } else {
+            a.end_column.max(b.end_column)
+        };
         Span::new_with_context(
             a.line as usize,
             a.column as usize,
             end as usize,
+            end_column as usize,
             if a.file_id != 0 { a.file_id } else { b.file_id },
             if a.trace_id != 0 {
                 a.trace_id
@@ -685,6 +707,7 @@ impl From<&SourceLoc> for Span {
             loc.line,
             loc.column,
             loc.end_line,
+            loc.end_column,
             loc.file_id,
             loc.trace_id,
         )
@@ -730,6 +753,7 @@ impl From<Span> for SourceLoc {
             line: span.line as usize,
             column: span.column as usize,
             end_line: span.end_line() as usize,
+            end_column: span.end_column as usize,
             file_id: span.file_id,
             trace_id: span.trace_id,
         }
@@ -841,6 +865,7 @@ pub struct SourceLoc {
     pub line: usize,
     pub column: usize,
     pub end_line: usize,
+    pub end_column: usize,
     file_id: u16,
     trace_id: u16,
 }
@@ -850,6 +875,7 @@ impl SourceLoc {
         line: 0,
         column: 0,
         end_line: 0,
+        end_column: 0,
         file_id: 0,
         trace_id: 0,
     };
@@ -859,6 +885,7 @@ impl SourceLoc {
         line: usize,
         column: usize,
         end_line: usize,
+        end_column: usize,
         trace: Vec<String>,
     ) -> Self {
         let (file_id, trace_id) = SOURCE_CONTEXT_INTERNER.with(|interner| {
@@ -868,10 +895,18 @@ impl SourceLoc {
                 interner.intern_trace(&trace),
             )
         });
+        let end_column = if line == 0 {
+            0
+        } else if end_line <= line {
+            end_column.max(column.saturating_add(1))
+        } else {
+            end_column.max(1)
+        };
         Self {
             line,
             column,
             end_line,
+            end_column,
             file_id,
             trace_id,
         }
@@ -919,6 +954,7 @@ impl SourceLoc {
             self.line,
             self.column,
             self.end_line,
+            self.end_column,
             self.file_id,
             self.trace_id,
         )
@@ -945,6 +981,7 @@ impl SourceLoc {
             line: start.line,
             column: start.column,
             end_line: end.end_line,
+            end_column: end.end_column,
             file_id: if start.file_id != 0 {
                 start.file_id
             } else {
