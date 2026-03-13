@@ -153,9 +153,8 @@ impl PreviewSession {
             .map_err(PreviewBuildError::Runtime)?;
         }
 
-        let buffer_bindings =
-            bind_placeholder_buffers(&jit, &mut instance, options.block_size)
-                .map_err(PreviewBuildError::Runtime)?;
+        let buffer_bindings = bind_placeholder_buffers(&jit, &mut instance, options.block_size)
+            .map_err(PreviewBuildError::Runtime)?;
 
         Ok(Self {
             path,
@@ -334,19 +333,23 @@ impl PreviewSession {
         }
         if channels == 0 || samples.is_empty() || samples.len() % channels != 0 {
             return Err(Diagnostic::runtime(
-                format!("buffer '{}' data is not a valid interleaved f32 audio buffer", name),
+                format!(
+                    "buffer '{}' data is not a valid interleaved f32 audio buffer",
+                    name
+                ),
                 0,
                 0,
             ));
         }
         let frames = samples.len() / channels;
         if self.buffer_bindings.len() <= index {
-            self.buffer_bindings.resize_with(index + 1, || PreviewBufferBinding {
-                _samples: Vec::new(),
-                frames: 0,
-                channels: 0,
-                loaded_path: None,
-            });
+            self.buffer_bindings
+                .resize_with(index + 1, || PreviewBufferBinding {
+                    _samples: Vec::new(),
+                    frames: 0,
+                    channels: 0,
+                    loaded_path: None,
+                });
         }
         self.buffer_bindings[index] = PreviewBufferBinding {
             _samples: samples,

@@ -2,6 +2,20 @@
 
 ## Next Features
 
+- Editor / daemon follow-ups
+  - Expand `omni lsp` beyond diagnostics + semantic tokens:
+    add hover, go-to-definition, document symbols, completion, and cancellation-aware analysis scheduling.
+  - Improve diagnostic cadence:
+    evaluate publish-on-change/debounced diagnostics in addition to the current open/save flow.
+  - Stabilize daemon/editor transport boundaries:
+    decide which preview-control pieces stay private versus becoming a documented protocol.
+  - Keep VSCode syntax highlighting and semantic tokens aligned as the language grows.
+  - Add an extension smoke-test path or automation for:
+    `omni lsp`, `Omni: Run Patch`, semantic tokens, and preview webview controls.
+  - Improve preview panel UX:
+    better knob/slider affordances, richer status/errors, and explicit device/runtime state display.
+  - Broaden preview buffer ingestion beyond current WAV-only `hound` path if warranted.
+
 - Polymorph defs follow-ups
   - Improve overload diagnostics to show per-candidate ranking details.
   - Evaluate extending overloads from top-level `def` and struct methods to proc-local defs.

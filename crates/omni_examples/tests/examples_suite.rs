@@ -744,6 +744,18 @@ sample {
 }
 "#;
 
+const BUFFER_DYNAMIC_LEN_EXAMPLE: &str = r#"
+buffers {
+  buf1: buffer[f32[]]
+}
+outs {
+  out1
+}
+sample {
+  out1 = f32(buf1.len())
+}
+"#;
+
 const DEF_BUFFER_MONO_PARAM_EXAMPLE: &str = r#"
 buffers {
   buf1: buffer[f32]
@@ -779,6 +791,21 @@ init {
 sample {
   out1 = read_r(buf1, idx)
   idx = idx + 1
+}
+"#;
+
+const DEF_BUFFER_DYNAMIC_LEN_EXAMPLE: &str = r#"
+buffers {
+  buf1: buffer[f32[]]
+}
+outs {
+  out1
+}
+def frames_of(b: buffer[f32[]]) {
+  return f32(b.len())
+}
+sample {
+  out1 = frames_of(buf1)
 }
 "#;
 
@@ -9488,6 +9515,38 @@ fn buffer_dynamic_chans_returns_runtime_channel_count() {
 }
 
 #[test]
+fn buffer_dynamic_len_returns_runtime_frame_count() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_DYNAMIC_LEN_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0,
+    ];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        3,
+        2,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    for sample in out {
+        assert_near(sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
 fn def_can_take_mono_buffer_typed_param() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -9513,6 +9572,36 @@ fn def_can_take_mono_buffer_typed_param() {
     let expected = [10.0_f32, 20.0, 20.0, 20.0];
     for (sample, target) in out.iter().zip(expected) {
         assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn def_dynamic_buffer_len_returns_runtime_frame_count() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_BUFFER_DYNAMIC_LEN_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0,
+    ];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        3,
+        2,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 3.0, 1e-6);
     }
 }
 

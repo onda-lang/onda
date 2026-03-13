@@ -266,7 +266,42 @@
   - `unsafe_read` / `unsafe_write` for unchecked access (UB on OOB), via both
     `unsafe_read(buf, i)` / `unsafe_write(buf, i, v)` and method-style
     `buf.unsafe_read(i)` / `buf.unsafe_write(i, v)`.
+- Semantics:
+  - `buf.len()` is frame count, not interleaved scalar count.
+  - `buf.chans()` is the runtime channel count for dynamic buffers and the declared channel count for static buffers.
+  - There is currently no public `total_len` / flattened-length method on arrays or buffers.
 - Runtime binding validates element type and channel constraints.
+
+### Editor, daemon, and preview integration
+- `crates/omni_daemon` provides the shared long-lived engine for:
+  - document overlays and analysis sessions
+  - daemon-backed preview sessions
+  - scalar param metadata and runtime updates
+  - preview buffer metadata and WAV binding
+- `omni lsp` is a stdio LSP adapter layered on top of the daemon analysis session.
+  - Current MVP surface:
+    - `initialize`, `shutdown`, `exit`
+    - `textDocument/didOpen`
+    - `textDocument/didChange` (full-text sync)
+    - `textDocument/didSave`
+    - `textDocument/didClose`
+    - semantic tokens (`full`)
+  - Diagnostics are currently published on open and save.
+- `omni preview play` is the real-time preview transport on top of the daemon preview session.
+  - Audio stays in-process via `cpal`.
+  - Preview control uses a localhost control socket when `--control-json` is enabled.
+  - Control surface includes:
+    - param metadata/query
+    - scalar param updates
+    - preview buffer listing
+    - WAV buffer binding / clearing
+- `omni daemon stdio` remains available as a JSON-over-stdio daemon transport for non-LSP clients.
+- The VSCode extension in `editors/vscode` currently provides:
+  - language registration and syntax highlighting
+  - `omni lsp` client wiring
+  - semantic-token-backed highlighting for constants/params/ports/init vars
+  - `Omni: Run Patch` / `Stop Patch` / `Restart Language Server`
+  - embedded preview panel with param controls and preview buffer drop zones
 
 ## Runtime and codegen
 - ORC JIT backend only (`Auto` routes to ORC).
@@ -294,7 +329,14 @@
 - CLI (`omni`) supports:
   - `compile <file> [--dump-graph] [--ir] [--meta]`
   - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--dump-graph] [--ir]`
+  - `lsp [--stdio]`
+  - `preview render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value]`
+  - `preview play <file> [--dur | --forever] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value] [--control-json]`
+  - `daemon diagnose <file> [--sr|--sample-rate] [--block]`
+  - `daemon stdio`
   - `--dump-graph` prints the program immediately after graph lowering, before proc desugaring/codegen.
+  - `preview play` defaults to a `128`-frame render/device block size.
+  - `preview render` keeps the offline render default block size (`512`).
   - Useful graph examples: `examples/proc_gain_graph.omni`, `examples/proc_split_graph.omni`, `examples/proc_array_stereo_sine_graph.omni`, `examples/std_one_pole_graph.omni`, `examples/stdlib_f32_graph.omni`, `examples/feedback_saturator_graph.omni`, `examples/reverb_graph.omni`.
 
 ## LLVM dependency strategy

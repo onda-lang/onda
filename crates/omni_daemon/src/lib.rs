@@ -338,7 +338,10 @@ mod tests {
             .start_preview(&main)
             .expect("preview should compile and start");
 
-        let buffer_info = session.preview(&main).expect("active preview").buffer_info();
+        let buffer_info = session
+            .preview(&main)
+            .expect("active preview")
+            .buffer_info();
         assert_eq!(buffer_info.len(), 1);
         assert_eq!(buffer_info[0].name, "src");
 

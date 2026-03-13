@@ -54,6 +54,11 @@ Buffer declaration types:
 - `buffer[T[2]]` (static channel count)
 - `buffer[T[]]` (dynamic channel count)
 
+Buffer method semantics:
+- `buf.len()` returns frame count
+- `buf.chans()` returns channel count
+- there is no public flattened-length/`totalLen` method
+
 ## 3 Ports, params, buffers
 
 Basic declarations:
@@ -994,6 +999,7 @@ sample:
 Useful examples in `examples/`:
 - Basic oscillator: `sine.omni`, `std_sine.omni`
 - Block/sample structure: `block_counter.omni`, `saw_blep.omni`
+- Buffer preview/lookup example: `buffer_looper_readl.omni`
 - Struct + methods: `cross_fm.omni`
 - Processor usage and output forms: `proc_gain.omni`, `proc_gain_graph.omni`, `proc_split.omni`, `proc_split_graph.omni`, `proc_array_stereo_sine.omni`, `proc_array_stereo_sine_graph.omni`, `std_one_pole.omni`, `std_one_pole_graph.omni`, `reverb.omni`, `reverb_sample.omni`, `reverb_graph.omni`
 - Graph feedback systems: `feedback_saturator_graph.omni`, `inspect_feedback_mix_graph.omni`, `stdlib_f32.omni`, `stdlib_f32_graph.omni`

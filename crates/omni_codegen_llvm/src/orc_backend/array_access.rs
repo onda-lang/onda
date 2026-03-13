@@ -234,7 +234,7 @@ pub(super) unsafe fn lower_output_array_element_ptr(
     })
 }
 
-pub(super) unsafe fn load_orc_buffer_total_len_i32(
+pub(super) unsafe fn load_orc_buffer_frames_i32(
     ctx: &mut LoweringCtx<'_>,
     base: &str,
 ) -> Result<LLVMValueRef, Diagnostic> {
@@ -251,6 +251,29 @@ pub(super) unsafe fn load_orc_buffer_total_len_i32(
         idx,
         b"buf_frames_ptr\0",
     );
+    let frames = LLVMBuildLoad2(
+        ctx.builder,
+        ctx.i32_ty,
+        frames_ptr,
+        b"buf_frames\0".as_ptr().cast(),
+    );
+    Ok(frames)
+}
+
+pub(super) unsafe fn load_orc_buffer_total_len_i32(
+    ctx: &mut LoweringCtx<'_>,
+    base: &str,
+) -> Result<LLVMValueRef, Diagnostic> {
+    let frames = load_orc_buffer_frames_i32(ctx, base)?;
+    if ctx.buffer_mono.contains(base) {
+        return Ok(frames);
+    }
+    let Some(buf_idx) = ctx.buffer_index.get(base).copied() else {
+        return Err(Diagnostic::internal(format!(
+            "unknown buffer symbol '{base}' in ORC lowering"
+        )));
+    };
+    let idx = LLVMConstInt(ctx.i32_ty, buf_idx as u64, 0);
     let channels_ptr = build_ptr_offset(
         ctx.builder,
         ctx.i32_ty,
@@ -258,15 +281,6 @@ pub(super) unsafe fn load_orc_buffer_total_len_i32(
         idx,
         b"buf_channels_ptr\0",
     );
-    let frames = LLVMBuildLoad2(
-        ctx.builder,
-        ctx.i32_ty,
-        frames_ptr,
-        b"buf_frames\0".as_ptr().cast(),
-    );
-    if ctx.buffer_mono.contains(base) {
-        return Ok(frames);
-    }
     let channels = LLVMBuildLoad2(
         ctx.builder,
         ctx.i32_ty,

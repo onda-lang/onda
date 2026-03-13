@@ -129,8 +129,8 @@ impl LspServer {
             }
             "textDocument/didOpen" => {
                 let params = parse_params::<DidOpenTextDocumentParams>(envelope.params)?;
-                let Some(path) = lsp_document_path(&params.text_document.uri)
-                    .map_err(invalid_params)?
+                let Some(path) =
+                    lsp_document_path(&params.text_document.uri).map_err(invalid_params)?
                 else {
                     return Ok(LoopControl::Continue);
                 };
@@ -148,8 +148,8 @@ impl LspServer {
                 let Some(text) = latest_full_text(&params.content_changes) else {
                     return Ok(LoopControl::Continue);
                 };
-                let Some(path) = lsp_document_path(&params.text_document.uri)
-                    .map_err(invalid_params)?
+                let Some(path) =
+                    lsp_document_path(&params.text_document.uri).map_err(invalid_params)?
                 else {
                     return Ok(LoopControl::Continue);
                 };
@@ -163,8 +163,8 @@ impl LspServer {
             }
             "textDocument/didSave" => {
                 let params = parse_params::<DidSaveTextDocumentParams>(envelope.params)?;
-                let Some(path) = lsp_document_path(&params.text_document.uri)
-                    .map_err(invalid_params)?
+                let Some(path) =
+                    lsp_document_path(&params.text_document.uri).map_err(invalid_params)?
                 else {
                     return Ok(LoopControl::Continue);
                 };
@@ -183,8 +183,8 @@ impl LspServer {
             }
             "textDocument/didClose" => {
                 let params = parse_params::<DidCloseTextDocumentParams>(envelope.params)?;
-                let Some(path) = lsp_document_path(&params.text_document.uri)
-                    .map_err(invalid_params)?
+                let Some(path) =
+                    lsp_document_path(&params.text_document.uri).map_err(invalid_params)?
                 else {
                     return Ok(LoopControl::Continue);
                 };
@@ -523,7 +523,15 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
         Ok(program) => {
             let mut tokens = semantic_tokens_from_program(source, path, &program);
             tokens.extend(fallback_const_tokens(source));
-            tokens.sort_by_key(|token| (token.line, token.start, token.length, token.token_type, token.token_modifiers));
+            tokens.sort_by_key(|token| {
+                (
+                    token.line,
+                    token.start,
+                    token.length,
+                    token.token_type,
+                    token.token_modifiers,
+                )
+            });
             tokens.dedup_by(|lhs, rhs| {
                 lhs.line == rhs.line
                     && lhs.start == rhs.start
@@ -605,19 +613,45 @@ fn semantic_tokens_from_program(
                 );
             }
             Block::Graph(graph) => {
-                collect_graph_tokens(graph, &runtime_scope, current_path.as_deref(), source, &mut tokens);
+                collect_graph_tokens(
+                    graph,
+                    &runtime_scope,
+                    current_path.as_deref(),
+                    source,
+                    &mut tokens,
+                );
             }
             Block::Def(def) => {
-                collect_function_tokens(def, &runtime_scope, current_path.as_deref(), source, &mut tokens);
+                collect_function_tokens(
+                    def,
+                    &runtime_scope,
+                    current_path.as_deref(),
+                    source,
+                    &mut tokens,
+                );
             }
             Block::Proc(proc_def) => {
-                collect_proc_tokens(proc_def, &runtime_scope, current_path.as_deref(), source, &mut tokens);
+                collect_proc_tokens(
+                    proc_def,
+                    &runtime_scope,
+                    current_path.as_deref(),
+                    source,
+                    &mut tokens,
+                );
             }
             _ => {}
         }
     }
 
-    tokens.sort_by_key(|token| (token.line, token.start, token.length, token.token_type, token.token_modifiers));
+    tokens.sort_by_key(|token| {
+        (
+            token.line,
+            token.start,
+            token.length,
+            token.token_type,
+            token.token_modifiers,
+        )
+    });
     tokens.dedup_by(|lhs, rhs| {
         lhs.line == rhs.line
             && lhs.start == rhs.start
@@ -716,24 +750,44 @@ fn collect_top_level_scope(
         match block {
             Block::Const(decl) => {
                 scope.consts.insert(decl.name.clone());
-                push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER);
+                push_name_token(
+                    tokens,
+                    decl.loc.into(),
+                    &decl.name,
+                    SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
+                );
             }
             Block::Ins(ports) | Block::Outs(ports) => {
                 for decl in &ports.decls {
                     scope.ports.insert(decl.name.clone());
-                    push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PORT);
+                    push_name_token(
+                        tokens,
+                        decl.loc.into(),
+                        &decl.name,
+                        SEMANTIC_TOKEN_TYPE_PORT,
+                    );
                 }
             }
             Block::Params(params) => {
                 for decl in &params.decls {
                     scope.parameters.insert(decl.name.clone());
-                    push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PARAMETER);
+                    push_name_token(
+                        tokens,
+                        decl.loc.into(),
+                        &decl.name,
+                        SEMANTIC_TOKEN_TYPE_PARAMETER,
+                    );
                 }
             }
             Block::Buffers(buffers) => {
                 for decl in &buffers.decls {
                     scope.ports.insert(decl.name.clone());
-                    push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PORT);
+                    push_name_token(
+                        tokens,
+                        decl.loc.into(),
+                        &decl.name,
+                        SEMANTIC_TOKEN_TYPE_PORT,
+                    );
                 }
             }
             _ => {}
@@ -759,7 +813,12 @@ fn collect_proc_tokens(
     declare_param_tokens(&proc_def.params, &mut proc_scope, tokens);
     for buffer in &proc_def.buffers {
         proc_scope.ports.insert(buffer.name.clone());
-        push_name_token(tokens, buffer.loc.into(), &buffer.name, SEMANTIC_TOKEN_TYPE_PORT);
+        push_name_token(
+            tokens,
+            buffer.loc.into(),
+            &buffer.name,
+            SEMANTIC_TOKEN_TYPE_PORT,
+        );
     }
 
     let mut runtime_scope = proc_scope.clone();
@@ -811,17 +870,35 @@ fn collect_proc_tokens(
     }
 }
 
-fn declare_port_tokens(decls: &[PortDecl], scope: &mut SemanticScope, tokens: &mut Vec<SemanticToken>) {
+fn declare_port_tokens(
+    decls: &[PortDecl],
+    scope: &mut SemanticScope,
+    tokens: &mut Vec<SemanticToken>,
+) {
     for decl in decls {
         scope.ports.insert(decl.name.clone());
-        push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PORT);
+        push_name_token(
+            tokens,
+            decl.loc.into(),
+            &decl.name,
+            SEMANTIC_TOKEN_TYPE_PORT,
+        );
     }
 }
 
-fn declare_param_tokens(decls: &[ParamDecl], scope: &mut SemanticScope, tokens: &mut Vec<SemanticToken>) {
+fn declare_param_tokens(
+    decls: &[ParamDecl],
+    scope: &mut SemanticScope,
+    tokens: &mut Vec<SemanticToken>,
+) {
     for decl in decls {
         scope.parameters.insert(decl.name.clone());
-        push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_PARAMETER);
+        push_name_token(
+            tokens,
+            decl.loc.into(),
+            &decl.name,
+            SEMANTIC_TOKEN_TYPE_PARAMETER,
+        );
     }
 }
 
@@ -839,7 +916,12 @@ fn collect_function_tokens(
     let mut scope = parent_scope.clone();
     for param in &def.params {
         scope.parameters.insert(param.name.clone());
-        push_name_token(tokens, param.loc.into(), &param.name, SEMANTIC_TOKEN_TYPE_PARAMETER);
+        push_name_token(
+            tokens,
+            param.loc.into(),
+            &param.name,
+            SEMANTIC_TOKEN_TYPE_PARAMETER,
+        );
     }
     collect_stmt_tokens(&def.body, &mut scope, current_path, source, tokens, false);
 }
@@ -858,7 +940,12 @@ fn collect_stmt_tokens(
         }
         match stmt {
             Stmt::Const { decl, .. } => {
-                push_name_token(tokens, decl.loc.into(), &decl.name, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER);
+                push_name_token(
+                    tokens,
+                    decl.loc.into(),
+                    &decl.name,
+                    SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
+                );
                 collect_expr_tokens(&decl.expr, scope, current_path, source, tokens);
                 scope.consts.insert(decl.name.clone());
             }
@@ -1016,7 +1103,12 @@ fn collect_expr_tokens(
             }
             collect_expr_tokens(index, scope, current_path, source, tokens);
         }
-        Expr::Slice { loc, base, start, end } => {
+        Expr::Slice {
+            loc,
+            base,
+            start,
+            end,
+        } => {
             if let Some(token_type) = scope.token_type_for(base) {
                 push_name_token(tokens, (*loc).into(), base, token_type);
             }
@@ -1056,9 +1148,7 @@ fn collect_expr_tokens(
                 collect_expr_tokens(&arg.expr, scope, current_path, source, tokens);
             }
         }
-        Expr::Cast { expr, .. }
-        | Expr::UnaryNot { expr, .. }
-        | Expr::UnaryBitNot { expr, .. } => {
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             collect_expr_tokens(expr, scope, current_path, source, tokens);
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
@@ -1089,9 +1179,17 @@ fn collect_graph_tokens(
                     if let Some(token_type) = scope.token_type_for(proc) {
                         push_name_token(tokens, (*loc).into(), proc, token_type);
                     }
-                    push_offset_token(tokens, (*loc).into(), proc.encode_utf16().count() as u32 + 1, field, SEMANTIC_TOKEN_TYPE_PORT);
+                    push_offset_token(
+                        tokens,
+                        (*loc).into(),
+                        proc.encode_utf16().count() as u32 + 1,
+                        field,
+                        SEMANTIC_TOKEN_TYPE_PORT,
+                    );
                 }
-                GraphEndpoint::ProcIndexedField { loc, proc, index, .. } => {
+                GraphEndpoint::ProcIndexedField {
+                    loc, proc, index, ..
+                } => {
                     if let Some(token_type) = scope.token_type_for(proc) {
                         push_name_token(tokens, (*loc).into(), proc, token_type);
                     }
@@ -1590,11 +1688,15 @@ mod tests {
         let source = "const GAIN = 0.5\nsample:\n  out1 = GAIN\n";
         let tokens = semantic_tokens_for_document(source, None);
         assert!(
-            tokens.iter().any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+            tokens
+                .iter()
+                .any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
             "tokens: {tokens:?}"
         );
         assert!(
-            tokens.iter().any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_PORT),
+            tokens
+                .iter()
+                .any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_PORT),
             "tokens: {tokens:?}"
         );
     }
@@ -1605,7 +1707,7 @@ mod tests {
         let tokens = semantic_tokens_for_document(source, None);
 
         assert!(tokens.iter().any(|token| {
-                token.line == 2
+            token.line == 2
                 && token.start == 4
                 && token.length == 3
                 && token.token_type == SEMANTIC_TOKEN_TYPE_PORT
@@ -1634,12 +1736,15 @@ mod tests {
                 && token.length == 3
                 && token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
         }));
-        assert!(tokens.iter().any(|token| {
-            token.line == 12
-                && token.start == 9
-                && token.length == 3
-                && token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
-        }), "tokens: {tokens:?}");
+        assert!(
+            tokens.iter().any(|token| {
+                token.line == 12
+                    && token.start == 9
+                    && token.length == 3
+                    && token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+            }),
+            "tokens: {tokens:?}"
+        );
     }
 
     #[test]
@@ -1660,18 +1765,24 @@ mod tests {
         let source = "params:\n  gain = 0.5\nsample:\n  out1 = gain\n";
         let tokens = semantic_tokens_for_document(source, None);
 
-        assert!(tokens.iter().any(|token| {
-            token.line == 1
-                && token.start == 2
-                && token.length == 4
-                && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
-        }), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|token| {
-            token.line == 3
-                && token.start == 9
-                && token.length == 4
-                && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
-        }), "tokens: {tokens:?}");
+        assert!(
+            tokens.iter().any(|token| {
+                token.line == 1
+                    && token.start == 2
+                    && token.length == 4
+                    && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
+            }),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|token| {
+                token.line == 3
+                    && token.start == 9
+                    && token.length == 4
+                    && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
+            }),
+            "tokens: {tokens:?}"
+        );
     }
 
     #[test]

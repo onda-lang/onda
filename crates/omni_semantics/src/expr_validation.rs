@@ -839,10 +839,7 @@ fn validate_buffer_param_call_arg(
         push_loc_error(
             errors,
             arg.loc().or(loc),
-            init_buffer_runtime_message(&format!(
-                "buffer argument '{}' in {}",
-                symbol, context
-            )),
+            init_buffer_runtime_message(&format!("buffer argument '{}' in {}", symbol, context)),
         );
     }
     validate_buffer_symbol_for_param(&context, expected, symbol, env, arg.loc().or(loc), errors);

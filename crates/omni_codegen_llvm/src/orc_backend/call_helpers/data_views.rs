@@ -932,7 +932,7 @@ unsafe fn lower_orc_array_base_view(
         );
         return Ok(CodegenArrayView {
             base_ptr: typed_ptr,
-            len_val: load_orc_buffer_total_len_i32(ctx, base)?,
+            len_val: load_orc_buffer_frames_i32(ctx, base)?,
             elem_ty,
             len_hint: 1,
         });
@@ -1252,7 +1252,7 @@ unsafe fn lower_def_array_base_view(
         );
         return Ok(CodegenArrayView {
             base_ptr: typed_ptr,
-            len_val: load_def_buffer_total_len_i32(ctx, base, &info)?,
+            len_val: load_def_buffer_frames_i32(ctx, base, &info)?,
             elem_ty: info.elem_ty,
             len_hint: 1,
         });

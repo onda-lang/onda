@@ -845,8 +845,8 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         let Some(control_tx) = control_tx else {
             unreachable!("control channel should exist when control json is enabled");
         };
-        let listener =
-            TcpListener::bind(("127.0.0.1", 0)).map_err(|err| format!("failed to bind preview control socket: {err}"))?;
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|err| format!("failed to bind preview control socket: {err}"))?;
         let port = listener
             .local_addr()
             .map_err(|err| format!("failed to query preview control socket: {err}"))?
@@ -859,8 +859,11 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             "buffers": startup.buffers.iter().map(preview_buffer_json).collect::<Vec<_>>(),
             "outputChannels": startup.output_channels,
         });
-        write_json_line(&mut BufWriter::new(std::io::stdout().lock()), &startup_message)
-            .map_err(|err| format!("failed to write preview control startup event: {err}"))?;
+        write_json_line(
+            &mut BufWriter::new(std::io::stdout().lock()),
+            &startup_message,
+        )
+        .map_err(|err| format!("failed to write preview control startup event: {err}"))?;
         Some(spawn_preview_control_server(
             listener,
             control_tx,
@@ -929,9 +932,15 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         .play()
         .map_err(|err| format!("failed to start audio output stream: {err}"))?;
     if launch.control_json {
-        eprintln!("{}", playback_status_message(&startup.path, launch.dur_seconds));
+        eprintln!(
+            "{}",
+            playback_status_message(&startup.path, launch.dur_seconds)
+        );
     } else {
-        println!("{}", playback_status_message(&startup.path, launch.dur_seconds));
+        println!(
+            "{}",
+            playback_status_message(&startup.path, launch.dur_seconds)
+        );
     }
 
     wait_for_playback_completion(launch.dur_seconds, &stop_flag, &render_error, &error_state)?;
@@ -1237,9 +1246,9 @@ fn spawn_preview_render_thread(
                                 .preview_mut(&launch.input)
                                 .ok_or_else(|| "preview is not active".to_owned())
                                 .and_then(|preview| {
-                                    preview
-                                        .set_param_f64(&name, value)
-                                        .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))
+                                    preview.set_param_f64(&name, value).map_err(|diag| {
+                                        format_single_diagnostic("daemon play param failed", &diag)
+                                    })
                                 });
                             let _ = reply.send(result);
                         }
@@ -1379,8 +1388,7 @@ fn spawn_preview_control_server(
         while !stop_flag.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if let Err(err) =
-                        handle_preview_control_client(stream, &control_tx, &stop_flag)
+                    if let Err(err) = handle_preview_control_client(stream, &control_tx, &stop_flag)
                     {
                         eprintln!("preview control client error: {err}");
                     }
@@ -1438,7 +1446,10 @@ fn handle_preview_control_client(
                 control_tx
                     .send(PlaybackControlCommand::GetParams { reply: reply_tx })
                     .map_err(|_| "preview control channel closed".to_owned())?;
-                match reply_rx.recv().map_err(|_| "preview control reply channel closed".to_owned())? {
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "preview control reply channel closed".to_owned())?
+                {
                     Ok(params) => json!({
                         "id": request.id,
                         "ok": true,
@@ -1485,7 +1496,11 @@ fn handle_preview_control_client(
                     .ok_or_else(|| "setParam requires 'value'".to_owned())?;
                 let value = match raw_value {
                     Value::Bool(value) => {
-                        if value { 1.0 } else { 0.0 }
+                        if value {
+                            1.0
+                        } else {
+                            0.0
+                        }
                     }
                     Value::Number(value) => value
                         .as_f64()
@@ -1500,7 +1515,10 @@ fn handle_preview_control_client(
                         reply: reply_tx,
                     })
                     .map_err(|_| "preview control channel closed".to_owned())?;
-                match reply_rx.recv().map_err(|_| "preview control reply channel closed".to_owned())? {
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "preview control reply channel closed".to_owned())?
+                {
                     Ok(()) => json!({
                         "id": request.id,
                         "ok": true,

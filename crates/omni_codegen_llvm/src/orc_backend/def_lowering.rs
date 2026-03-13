@@ -324,6 +324,14 @@ pub(super) unsafe fn load_def_buffer_total_len_i32(
     }
 }
 
+pub(super) unsafe fn load_def_buffer_frames_i32(
+    _ctx: &mut DefLoweringCtx<'_>,
+    _base: &str,
+    info: &DefBufferParamInfo,
+) -> Result<LLVMValueRef, Diagnostic> {
+    Ok(info.frames)
+}
+
 pub(super) unsafe fn lower_def_buffer_chans_call(
     method_name: &str,
     base: &str,

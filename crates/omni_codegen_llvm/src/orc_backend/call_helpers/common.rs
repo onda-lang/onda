@@ -342,7 +342,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_data_len_call(
     }
     if ctx.buffer_index.contains_key(base) {
         return Ok(OrcValue {
-            value: load_orc_buffer_total_len_i32(ctx, base)?,
+            value: load_orc_buffer_frames_i32(ctx, base)?,
             ty: PrimitiveType::I32,
         });
     }
@@ -396,7 +396,7 @@ pub(in crate::orc_backend) unsafe fn lower_def_data_len_call(
     }
     if let Some(info) = ctx.buffer_params.get(base).cloned() {
         return Ok(OrcValue {
-            value: load_def_buffer_total_len_i32(ctx, base, &info)?,
+            value: load_def_buffer_frames_i32(ctx, base, &info)?,
             ty: PrimitiveType::I32,
         });
     }
