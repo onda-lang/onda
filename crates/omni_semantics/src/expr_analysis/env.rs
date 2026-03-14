@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::stmt_analysis::PortIndexInfo;
 use crate::*;
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,9 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
     pub(crate) allow_array_ctor: bool,
     pub(crate) scope: ScopeKind,
+    pub(crate) port_index_ins: Option<PortIndexInfo>,
+    pub(crate) port_index_outs: Option<PortIndexInfo>,
+    pub(crate) port_index_params: Option<PortIndexInfo>,
 }
 
 #[derive(Clone, Copy)]
@@ -38,6 +42,9 @@ pub(crate) struct ScopeExprInputs<'a> {
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
     pub(crate) expr_outputs: &'a HashSet<String>,
+    pub(crate) port_index_ins: Option<PortIndexInfo>,
+    pub(crate) port_index_outs: Option<PortIndexInfo>,
+    pub(crate) port_index_params: Option<PortIndexInfo>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -65,6 +72,9 @@ pub(crate) fn build_expr_env<'a>(
         fn_signatures,
         allow_array_ctor: false,
         scope,
+        port_index_ins: None,
+        port_index_outs: None,
+        port_index_params: None,
     }
 }
 
@@ -74,7 +84,7 @@ pub(crate) fn build_scope_expr_env<'a>(
     array_vars: &'a HashMap<String, usize>,
     scope: ScopeKind,
 ) -> ExprEnv<'a> {
-    build_expr_env(
+    let mut env = build_expr_env(
         known_scalars,
         inputs.locals,
         inputs.expr_outputs,
@@ -85,5 +95,9 @@ pub(crate) fn build_scope_expr_env<'a>(
         inputs.struct_defs,
         inputs.fn_signatures,
         scope,
-    )
+    );
+    env.port_index_ins = inputs.port_index_ins;
+    env.port_index_outs = inputs.port_index_outs;
+    env.port_index_params = inputs.port_index_params;
+    env
 }

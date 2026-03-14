@@ -576,6 +576,26 @@ pub(super) unsafe fn lower_stmt(
                 )))
             }
             AssignTarget::Index { base, index } => {
+                if base == "outs" {
+                    if let (Some(meta), Some(arr)) = (ctx.port_index_outs, ctx.out_slot_ptr_array) {
+                        let typed_val = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
+                        let idx = lower_array_index_i32(ctx, index, meta.count, locals, local_aliases, local_array_aliases, true)?;
+                        let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, meta.elem_ty);
+                        let slot_ptr_ty = LLVMPointerType(elem_llvm_ty, 0);
+                        let gep = LLVMBuildGEP2(
+                            ctx.builder,
+                            slot_ptr_ty,
+                            arr,
+                            [idx].as_mut_ptr(),
+                            1,
+                            b"outs_w_slot_gep\0".as_ptr().cast(),
+                        );
+                        let slot_ptr = LLVMBuildLoad2(ctx.builder, slot_ptr_ty, gep, b"outs_w_slot_ptr\0".as_ptr().cast());
+                        let casted = cast_orc_value_to(ctx, typed_val, meta.elem_ty, b"outs_store_cast\0");
+                        LLVMBuildStore(ctx.builder, casted, slot_ptr);
+                        return Ok(());
+                    }
+                }
                 let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
                 if ctx.input_arrays.contains_key(base) || ctx.param_arrays.contains_key(base) {
                     return Err(Diagnostic::internal(format!(

@@ -185,6 +185,34 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     return;
                 }
             }
+            if let Some(port_info) = match base.as_str() {
+                "ins" => env.port_index_ins,
+                "outs" => env.port_index_outs,
+                "params" => env.port_index_params,
+                _ => None,
+            } {
+                if env.scope == ScopeKind::Init {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!("'{base}[...]' is not allowed in init scope"),
+                    );
+                }
+                let _ = port_info;
+                validate_expr(index, env, errors);
+                return;
+            }
+            if matches!(base.as_str(), "ins" | "outs" | "params") {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!(
+                        "'{base}[i]' requires an explicit '{base}' block declaration with uniform types"
+                    ),
+                );
+                validate_expr(index, env, errors);
+                return;
+            }
             if env.scope == ScopeKind::Init
                 && has_declared_buffer_symbol_info(env.declared_symbols, base)
             {

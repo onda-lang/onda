@@ -76,6 +76,25 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
         let zero_i32 = LLVMConstInt(i32_ty, 0, 0);
         let one_i32 = LLVMConstInt(i32_ty, 1, 0);
 
+        let port_index_ins = if typed.ins_explicit && !typed.ins.is_empty() {
+            let first_ty = *typed.in_types.values().next().unwrap_or(&PrimitiveType::F32);
+            if typed.in_types.values().all(|t| *t == first_ty) {
+                Some(PortIndexMeta { count: typed.ins.len(), elem_ty: first_ty })
+            } else { None }
+        } else { None };
+        let port_index_outs = if typed.outs_explicit && !typed.outs.is_empty() {
+            let first_ty = *typed.out_types.values().next().unwrap_or(&PrimitiveType::F32);
+            if typed.out_types.values().all(|t| *t == first_ty) {
+                Some(PortIndexMeta { count: typed.outs.len(), elem_ty: first_ty })
+            } else { None }
+        } else { None };
+        let port_index_params = if typed.params_explicit && !typed.params.is_empty() {
+            let first_ty = typed.params[0].ty;
+            if typed.params.iter().all(|p| p.ty == first_ty) {
+                Some(PortIndexMeta { count: typed.params.len(), elem_ty: first_ty })
+            } else { None }
+        } else { None };
+
         let frame_idx_name =
             CString::new("frame_idx").map_err(|_| Diagnostic::internal("invalid local name"))?;
         let frame_idx = LLVMBuildAlloca(builder, i32_ty, frame_idx_name.as_ptr());
@@ -216,6 +235,28 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 },
             );
         }
+        // Build an array of pointers to out_slots for dynamic outs[i] indexing.
+        let out_slot_ptr_array = if port_index_outs.is_some() && !typed.outs.is_empty() {
+            let ptr_ty = LLVMPointerType(float_ty, 0);
+            let arr = build_local_array_slot(builder, ptr_ty, typed.outs.len(), "out_slot_ptrs")?;
+            for (idx, name) in typed.outs.iter().enumerate() {
+                if let Some(slot) = out_slots.get(name) {
+                    let gep = LLVMBuildGEP2(
+                        builder,
+                        ptr_ty,
+                        arr,
+                        [LLVMConstInt(i32_ty, idx as u64, 0)].as_mut_ptr(),
+                        1,
+                        b"out_slot_ptr_gep\0".as_ptr().cast(),
+                    );
+                    LLVMBuildStore(builder, slot.ptr, gep);
+                }
+            }
+            Some(arr)
+        } else {
+            None
+        };
+
         let sample_oversample_factor = typed.sample_oversample_factor.max(1);
         let oversampled_sample_rate = sample_rate * sample_oversample_factor as f32;
         let word_ty = LLVMInt64TypeInContext(context);
@@ -351,6 +392,11 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 user_registry: user_fns as *const UserFnRegistry,
                 oversample_input_cache: None,
                 loop_stack: Vec::new(),
+                port_index_ins,
+                port_index_outs,
+                port_index_params,
+                out_ptrs,
+                out_slot_ptr_array,
             };
             let mut block_locals = HashMap::new();
             let mut block_aliases = HashMap::new();
@@ -434,6 +480,11 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 user_registry: user_fns as *const UserFnRegistry,
                 oversample_input_cache: None,
                 loop_stack: Vec::new(),
+                port_index_ins,
+                port_index_outs,
+                port_index_params,
+                out_ptrs,
+                out_slot_ptr_array,
             };
 
             let mut locals = HashMap::new();
@@ -688,6 +739,11 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 oversample_input_cache,
                 array_len_values: HashMap::new(),
                 loop_stack: Vec::new(),
+                port_index_ins,
+                port_index_outs,
+                port_index_params,
+                out_ptrs,
+                out_slot_ptr_array,
             };
             let mut locals = HashMap::new();
             let mut local_aliases = HashMap::new();
@@ -866,6 +922,11 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             user_registry: user_fns as *const UserFnRegistry,
             oversample_input_cache: None,
             loop_stack: Vec::new(),
+            port_index_ins,
+            port_index_outs,
+            port_index_params,
+            out_ptrs,
+            out_slot_ptr_array: None,
         };
 
         for (ch, name) in typed.outs.iter().enumerate() {
@@ -977,6 +1038,11 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 user_registry: user_fns as *const UserFnRegistry,
                 oversample_input_cache: None,
                 loop_stack: Vec::new(),
+                port_index_ins,
+                port_index_outs,
+                port_index_params,
+                out_ptrs,
+                out_slot_ptr_array,
             };
             let mut block_locals = HashMap::new();
             let mut block_aliases = HashMap::new();

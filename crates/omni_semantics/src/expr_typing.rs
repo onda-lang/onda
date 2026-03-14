@@ -147,7 +147,26 @@ pub(crate) fn infer_scalar_expr_type(
                 None
             }
         }
-        Expr::Index { base, .. } => {
+        Expr::Index { base, index, .. } => {
+            // Port index access: ins[i], outs[i], params[i]
+            // These are validated upstream; here we just return the uniform type.
+            // The fallback at the end of this arm returns F32 which covers the common case,
+            // but for completeness we check input/output/param types explicitly.
+            if base == "ins" {
+                let ty = input_names.iter().find_map(|n| {
+                    declared_symbol_scalar_type(declared_symbols, n)
+                }).unwrap_or(PrimitiveType::F32);
+                return Some(ty);
+            }
+            if base == "outs" {
+                return Some(PrimitiveType::F32);
+            }
+            if base == "params" {
+                let ty = param_names.iter().find_map(|n| {
+                    declared_symbol_scalar_type(declared_symbols, n)
+                }).unwrap_or(PrimitiveType::F32);
+                return Some(ty);
+            }
             if let Some(alias) = local_array_aliases.get(base) {
                 if alias.elem_struct.is_none() {
                     return Some(alias.elem_ty);

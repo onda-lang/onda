@@ -83,6 +83,9 @@ pub struct TypedProgram {
     pub state_types: Vec<PrimitiveType>,
     pub array_vars: Vec<TypedArrayVar>,
     pub array_struct_roots: Vec<TypedArrayStructRoot>,
+    pub ins_explicit: bool,
+    pub outs_explicit: bool,
+    pub params_explicit: bool,
 }
 
 #[derive(Debug, Clone)]

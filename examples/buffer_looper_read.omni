@@ -12,13 +12,13 @@ init:
 block:
   frames = src.len()
   chans = src.chans()
-  speed = rate * src.samplerate() / SAMPLERATE
+  speed = rate * src.samplerate() / samplerate
 
   sample:
     if chans > 0:
-      out1 = std::lookup::readL(src, 0, pos)
+      out1 = src.readL(0, pos)
     if chans > 1:
-      out2 = std::lookup::readL(src, 1, pos)
+      out2 = src.readL(1, pos)
 
     pos = pos + speed
     if pos >= frames:

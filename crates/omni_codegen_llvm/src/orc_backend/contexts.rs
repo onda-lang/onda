@@ -114,6 +114,17 @@ pub(super) struct LoweringCtx<'a> {
     pub(super) user_registry: *const UserFnRegistry,
     pub(super) oversample_input_cache: Option<LLVMValueRef>,
     pub(super) loop_stack: Vec<LoopControl>,
+    pub(super) port_index_ins: Option<PortIndexMeta>,
+    pub(super) port_index_outs: Option<PortIndexMeta>,
+    pub(super) port_index_params: Option<PortIndexMeta>,
+    pub(super) out_ptrs: LLVMValueRef,
+    pub(super) out_slot_ptr_array: Option<LLVMValueRef>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PortIndexMeta {
+    pub(super) count: usize,
+    pub(super) elem_ty: PrimitiveType,
 }
 
 pub(super) struct UserFnRegistry {

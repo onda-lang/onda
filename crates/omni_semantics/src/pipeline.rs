@@ -126,14 +126,17 @@ pub fn analyze_with_options(
         }
     }
 
+    let ins_explicit = program.block(BlockKind::Ins).is_some();
     let raw_ins = match program.block(BlockKind::Ins) {
         Some(Block::Ins(v)) => v.decls.clone(),
         _ => Vec::new(),
     };
+    let outs_explicit = program.block(BlockKind::Outs).is_some();
     let raw_outs = match program.block(BlockKind::Outs) {
         Some(Block::Outs(v)) => v.decls.clone(),
         _ => Vec::new(),
     };
+    let params_explicit = program.block(BlockKind::Params).is_some();
     let params = match program.block(BlockKind::Params) {
         Some(Block::Params(v)) => v.decls.clone(),
         _ => Vec::new(),
@@ -1379,6 +1382,9 @@ pub fn analyze_with_options(
             struct_defs: &struct_defs,
             fn_signatures: &fn_signatures,
             options,
+            port_index_ins: None,
+            port_index_outs: None,
+            port_index_params: None,
         },
         init_default_ty,
         proc_resolution: None,
@@ -1424,6 +1430,31 @@ pub fn analyze_with_options(
     let init_writable_roots = collect_runtime_state_roots(&state_scalars, &state_arrays);
     let empty_nested_proc_instances = HashMap::<String, ProcNestedState>::new();
 
+    let port_index_ins = if ins_explicit && !ins.is_empty() {
+        uniform_port_type(&ins, &in_types).map(|ty| PortIndexInfo {
+            count: ins.len(),
+            elem_ty: ty,
+        })
+    } else {
+        None
+    };
+    let port_index_outs = if outs_explicit && !outs.is_empty() {
+        uniform_port_type(&outs, &out_types).map(|ty| PortIndexInfo {
+            count: outs.len(),
+            elem_ty: ty,
+        })
+    } else {
+        None
+    };
+    let port_index_params = if params_explicit && !typed_params.is_empty() {
+        uniform_port_type_from_params(&typed_params).map(|ty| PortIndexInfo {
+            count: typed_params.len(),
+            elem_ty: ty,
+        })
+    } else {
+        None
+    };
+
     let block_known_scalars = build_known_scalars_from_state(&param_names, &state_scalars);
     let block_locals = HashSet::new();
     let mut block_local_data_aliases = HashMap::new();
@@ -1443,6 +1474,9 @@ pub fn analyze_with_options(
             struct_defs: &struct_defs,
             fn_signatures: &fn_signatures,
             options,
+            port_index_ins,
+            port_index_outs,
+            port_index_params,
         },
         RuntimeRegistrationMode::Block,
         &mut state_scalars,
@@ -1482,6 +1516,9 @@ pub fn analyze_with_options(
             struct_defs: &struct_defs,
             fn_signatures: &fn_signatures,
             options,
+            port_index_ins,
+            port_index_outs,
+            port_index_params,
         },
         RuntimeRegistrationMode::Sample,
         &mut state_scalars,
@@ -1535,6 +1572,9 @@ pub fn analyze_with_options(
             struct_defs: &struct_defs,
             fn_signatures: &fn_signatures,
             options,
+            port_index_ins: None,
+            port_index_outs: None,
+            port_index_params: None,
         },
         &mut errors,
     );
@@ -1703,6 +1743,9 @@ pub fn analyze_with_options(
                 struct_defs: &def_struct_defs,
                 fn_signatures: &fn_signatures,
                 options,
+                port_index_ins: None,
+                port_index_outs: None,
+                port_index_params: None,
             },
             locals: &fn_locals,
             declared_symbols: &def_declared_symbols,
@@ -1813,9 +1856,37 @@ pub fn analyze_with_options(
             state_types,
             array_vars: typed_data,
             array_struct_roots: typed_data_roots,
+            ins_explicit,
+            outs_explicit,
+            params_explicit,
         })
     } else {
         Err(errors)
+    }
+}
+
+fn uniform_port_type(
+    names: &[String],
+    types: &HashMap<String, PrimitiveType>,
+) -> Option<PrimitiveType> {
+    let mut it = names.iter().filter_map(|n| types.get(n).copied());
+    let first = it.next().unwrap_or(PrimitiveType::F32);
+    if it.all(|t| t == first) {
+        Some(first)
+    } else {
+        None
+    }
+}
+
+fn uniform_port_type_from_params(params: &[TypedParam]) -> Option<PrimitiveType> {
+    if params.is_empty() {
+        return None;
+    }
+    let first = params[0].ty;
+    if params.iter().all(|p| p.ty == first) {
+        Some(first)
+    } else {
+        None
     }
 }
 

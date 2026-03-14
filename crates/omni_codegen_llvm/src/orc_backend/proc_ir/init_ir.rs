@@ -110,6 +110,11 @@ pub(in crate::orc_backend) unsafe fn build_init_ir(
             user_registry: user_fns as *const UserFnRegistry,
             oversample_input_cache: None,
             loop_stack: Vec::new(),
+            port_index_ins: None,
+            port_index_outs: None,
+            port_index_params: None,
+            out_ptrs: LLVMConstPointerNull(float_ptr_ptr_ty),
+            out_slot_ptr_array: None,
         };
 
         let mut locals = HashMap::new();

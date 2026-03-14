@@ -5937,6 +5937,53 @@ sample {
 }
 "#;
 
+const PORT_INDEX_OUTS_WRITE: &str = r#"
+ins 2
+outs 2
+sample {
+  outs[0] = ins[0] * 2.0
+  outs[1] = ins[1] * 3.0
+}
+"#;
+
+const PORT_INDEX_INS_READ: &str = r#"
+ins 4
+outs 1
+params {
+  idx = 0.0
+}
+sample {
+  out1 = ins[idx]
+}
+"#;
+
+const PORT_INDEX_PARAMS_READ: &str = r#"
+outs 1
+params {
+  a = 1.0
+  b = 2.0
+  c = 3.0
+  d = 4.0
+}
+init {
+  sel = 0.0
+}
+sample {
+  out1 = params[sel]
+  sel = sel + 1.0
+}
+"#;
+
+const PORT_INDEX_OUTS_LOOP: &str = r#"
+ins 4
+outs 4
+sample {
+  for i in 0..4 {
+    outs[i] = ins[i] * 0.5
+  }
+}
+"#;
+
 fn compile_instance(src: &str, frames: usize) -> (omni_runtime::Instance, usize, usize) {
     compile_instance_with_options(
         src,
@@ -16742,4 +16789,144 @@ fn slice_in_event_handler() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     // total = 10+20+30+40 = 100.0
     assert_near(output[0], 100.0, 1e-6);
+}
+
+#[test]
+fn port_index_outs_write_and_ins_read() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(PORT_INDEX_OUTS_WRITE, frames);
+    assert_eq!(in_channels, 2);
+    assert_eq!(out_channels, 2);
+
+    let mut input = vec![0.0_f32; frames * 2];
+    for f in 0..frames {
+        input[f * 2] = (f + 1) as f32;      // ch0
+        input[f * 2 + 1] = (f + 10) as f32; // ch1
+    }
+    let mut output = vec![0.0_f32; frames * 2];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for f in 0..frames {
+        assert_near(output[f * 2], (f + 1) as f32 * 2.0, 1e-6);
+        assert_near(output[f * 2 + 1], (f + 10) as f32 * 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn port_index_ins_dynamic_read() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(PORT_INDEX_INS_READ, frames);
+    assert_eq!(in_channels, 4);
+    assert_eq!(out_channels, 1);
+
+    // Set idx param to 2.0 to select channel 2
+    set_param_f32(&mut instance, "idx", 2.0);
+    let mut input = vec![0.0_f32; frames * 4];
+    for f in 0..frames {
+        input[f * 4 + 0] = 10.0; // ch0
+        input[f * 4 + 1] = 20.0; // ch1
+        input[f * 4 + 2] = 30.0; // ch2
+        input[f * 4 + 3] = 40.0; // ch3
+    }
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for f in 0..frames {
+        assert_near(output[f], 30.0, 1e-6); // should read ch2
+    }
+}
+
+#[test]
+fn port_index_params_dynamic_read() {
+    let frames = 4;
+    let (mut instance, _in_channels, out_channels) =
+        compile_instance(PORT_INDEX_PARAMS_READ, frames);
+    assert_eq!(out_channels, 1);
+
+    set_param_f32(&mut instance, "a", 10.0);
+    set_param_f32(&mut instance, "b", 20.0);
+    set_param_f32(&mut instance, "c", 30.0);
+    set_param_f32(&mut instance, "d", 40.0);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+
+    // Frame 0: sel=0 → params[0]=a=10.0, then sel=1
+    // Frame 1: sel=1 → params[1]=b=20.0, then sel=2
+    // Frame 2: sel=2 → params[2]=c=30.0, then sel=3
+    // Frame 3: sel=3 → params[3]=d=40.0, then sel=4 (clamped to 3 next time)
+    assert_near(output[0], 10.0, 1e-6);
+    assert_near(output[1], 20.0, 1e-6);
+    assert_near(output[2], 30.0, 1e-6);
+    assert_near(output[3], 40.0, 1e-6);
+}
+
+#[test]
+fn port_index_outs_loop_passthrough() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(PORT_INDEX_OUTS_LOOP, frames);
+    assert_eq!(in_channels, 4);
+    assert_eq!(out_channels, 4);
+
+    let mut input = vec![0.0_f32; frames * 4];
+    for f in 0..frames {
+        for ch in 0..4 {
+            input[f * 4 + ch] = ((ch + 1) * 10 + f) as f32;
+        }
+    }
+    let mut output = vec![0.0_f32; frames * 4];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for f in 0..frames {
+        for ch in 0..4 {
+            let expected = ((ch + 1) * 10 + f) as f32 * 0.5;
+            assert_near(output[f * 4 + ch], expected, 1e-6);
+        }
+    }
+}
+
+#[test]
+fn port_index_ins_clamping() {
+    // Verify that out-of-range indices are clamped
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(PORT_INDEX_INS_READ, frames);
+    assert_eq!(in_channels, 4);
+    assert_eq!(out_channels, 1);
+
+    // Set idx to 100 (way out of range, should clamp to 3)
+    set_param_f32(&mut instance, "idx", 100.0);
+    let input = vec![10.0, 20.0, 30.0, 40.0_f32]; // one frame, 4 channels
+    let mut output = vec![0.0_f32; 1];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 40.0, 1e-6); // clamped to last channel
+
+    // Set idx to -5 (should clamp to 0)
+    set_param_f32(&mut instance, "idx", -5.0);
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 10.0, 1e-6); // clamped to first channel
+}
+
+#[test]
+fn port_index_rejects_inferred_ports() {
+    // ins/outs without explicit block declaration should fail
+    let src = r#"
+sample {
+  out1 = ins[0]
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(result.is_err(), "should reject ins[i] without explicit ins block");
+    let errors = result.unwrap_err();
+    assert!(
+        errors.iter().any(|d| d.message.contains("ins[i]") && d.message.contains("explicit")),
+        "error should mention explicit block requirement: {:?}",
+        errors
+    );
 }

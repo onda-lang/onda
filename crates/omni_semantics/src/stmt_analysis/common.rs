@@ -20,6 +20,12 @@ impl ScopePolicy {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct PortIndexInfo {
+    pub(crate) count: usize,
+    pub(crate) elem_ty: PrimitiveType,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct ScopeAnalysisCtx<'a> {
     pub(crate) policy: ScopePolicy,
     pub(crate) input_names: &'a HashSet<String>,
@@ -28,6 +34,9 @@ pub(crate) struct ScopeAnalysisCtx<'a> {
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
     pub(crate) options: AnalysisOptions,
+    pub(crate) port_index_ins: Option<PortIndexInfo>,
+    pub(crate) port_index_outs: Option<PortIndexInfo>,
+    pub(crate) port_index_params: Option<PortIndexInfo>,
 }
 
 impl<'a> ScopeAnalysisCtx<'a> {
@@ -57,5 +66,8 @@ pub(crate) fn build_scope_analysis_expr_inputs<'a>(
         struct_defs: common.struct_defs,
         fn_signatures: common.fn_signatures,
         expr_outputs,
+        port_index_ins: common.port_index_ins,
+        port_index_outs: common.port_index_outs,
+        port_index_params: common.port_index_params,
     }
 }

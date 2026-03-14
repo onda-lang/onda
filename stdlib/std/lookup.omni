@@ -12,24 +12,33 @@ namespace std::lookup:
 
   def write(buf, ch: i32, i: i32, value):
     buf[ch][i] = value
+    
+  # def calcIdx(pos):
+  #   pos_floor = floor(pos)
+  #   idx = i32(pos_floor)
+  #   t = pos - pos_floor
+  #   return (idx, t)
 
   def readL(buf, pos):
-    i0: i32 = i32(floor(pos))
-    t = pos - floor(pos)
+    pos_floor = floor(pos)
+    i0 = i32(pos_floor)
+    t = pos - pos_floor
     a = read(buf, i0)
     c = read(buf, i0 + 1)
     return a + (c - a) * t
 
   def readL(buf, ch: i32, pos):
-    i0: i32 = i32(floor(pos))
-    t = pos - floor(pos)
+    pos_floor = floor(pos)
+    i0 = i32(pos_floor)
+    t = pos - pos_floor
     a = read(buf, ch, i0)
     c = read(buf, ch, i0 + 1)
     return a + (c - a) * t
 
   def readC(buf, pos):
-    i1: i32 = i32(floor(pos))
-    t = pos - floor(pos)
+    pos_floor = floor(pos)
+    i1 = i32(pos_floor)
+    t = pos - pos_floor
     y0 = read(buf, i1 - 1)
     y1 = read(buf, i1)
     y2 = read(buf, i1 + 1)
@@ -37,8 +46,9 @@ namespace std::lookup:
     return std::math::cubic_interp(y0, y1, y2, y3, t)
 
   def readC(buf, ch: i32, pos):
-    i1: i32 = i32(floor(pos))
-    t = pos - floor(pos)
+    pos_floor = floor(pos)
+    i1 = i32(pos_floor)
+    t = pos - pos_floor
     y0 = read(buf, ch, i1 - 1)
     y1 = read(buf, ch, i1)
     y2 = read(buf, ch, i1 + 1)

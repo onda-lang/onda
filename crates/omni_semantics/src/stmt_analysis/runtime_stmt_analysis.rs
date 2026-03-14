@@ -439,6 +439,9 @@ pub(crate) fn analyze_runtime_events(
             struct_defs: common.struct_defs,
             fn_signatures: common.fn_signatures,
             options: common.options,
+            port_index_ins: None,
+            port_index_outs: None,
+            port_index_params: None,
         };
         let event_policy = EventStmtPolicy {
             init_writable_roots,
@@ -611,6 +614,9 @@ fn analyze_runtime_stmt_inner(
                     struct_defs,
                     fn_signatures,
                     options,
+                    common.port_index_ins,
+                    common.port_index_outs,
+                    common.port_index_params,
                     errors,
                 );
             }
@@ -739,6 +745,7 @@ fn analyze_runtime_stmt_inner(
         }
     });
 }
+#[allow(clippy::too_many_arguments)]
 fn analyze_assign_sample(
     target_loc: SourceLoc,
     target: &AssignTarget,
@@ -765,6 +772,9 @@ fn analyze_assign_sample(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     fn_signatures: &HashMap<String, FnSignature>,
     options: AnalysisOptions,
+    port_index_ins: Option<PortIndexInfo>,
+    port_index_outs: Option<PortIndexInfo>,
+    port_index_params: Option<PortIndexInfo>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
@@ -781,6 +791,9 @@ fn analyze_assign_sample(
         struct_defs,
         fn_signatures,
         expr_outputs: output_names,
+        port_index_ins,
+        port_index_outs,
+        port_index_params,
     };
     let stmt_expr_env = |scope| {
         build_scope_stmt_expr_env(
@@ -826,6 +839,30 @@ fn analyze_assign_sample(
                     );
                     return;
                 }
+            }
+            if base == "outs" {
+                if scope_expr_env.port_index_outs.is_none() {
+                    target_error!(
+                        "outs[i] requires an explicit 'outs' block declaration with uniform types",
+                    );
+                }
+                validate_expr(index, scope_expr_env, errors);
+                validate_expr(
+                    &rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases),
+                    scope_expr_env,
+                    errors,
+                );
+                return;
+            }
+            if matches!(base.as_str(), "ins" | "params") {
+                target_error!(format!("cannot assign to immutable '{base}[i]'"),);
+                validate_expr(index, scope_expr_env, errors);
+                validate_expr(
+                    &rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases),
+                    scope_expr_env,
+                    errors,
+                );
+                return;
             }
             if !state_arrays.contains_key(base)
                 && !local_array_aliases.contains_key(base)

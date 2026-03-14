@@ -162,6 +162,21 @@ pub(super) unsafe fn lower_expr(
             )))
         }
         Expr::Index { base, index, .. } => {
+            if base == "ins" {
+                if let Some(meta) = ctx.port_index_ins {
+                    return lower_port_index_ins_read(ctx, meta, index, locals, local_aliases, local_array_aliases);
+                }
+            }
+            if base == "outs" {
+                if let Some(meta) = ctx.port_index_outs {
+                    return lower_port_index_outs_read(ctx, meta, index, locals, local_aliases, local_array_aliases);
+                }
+            }
+            if base == "params" {
+                if let Some(meta) = ctx.port_index_params {
+                    return lower_port_index_params_read(ctx, meta, index, locals, local_aliases, local_array_aliases);
+                }
+            }
             if ctx.buffer_index.contains_key(base) {
                 let data = lower_buffer_element_ptr(
                     ctx,
@@ -573,4 +588,92 @@ pub(super) unsafe fn lower_expr(
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => unreachable!(),
     }
+}
+
+/// Read `ins[i]`: load from `in_ptrs[clamped_i]` at `frame_idx`.
+unsafe fn lower_port_index_ins_read(
+    ctx: &mut LoweringCtx<'_>,
+    meta: PortIndexMeta,
+    index_expr: &Expr,
+    locals: &HashMap<String, OrcValue>,
+    local_aliases: &HashMap<String, AliasSlot>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+) -> Result<OrcValue, Diagnostic> {
+    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, true)?;
+    let in_ptr_ptr = build_ptr_offset(ctx.builder, ctx.float_ptr_ty, ctx.in_ptrs, idx, b"ins_ch_ptr_ptr\0");
+    let in_ch_ptr = LLVMBuildLoad2(ctx.builder, ctx.float_ptr_ty, in_ptr_ptr, b"ins_ch_ptr\0".as_ptr().cast());
+    let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, meta.elem_ty);
+    let in_ch_ptr_typed = LLVMBuildBitCast(
+        ctx.builder,
+        in_ch_ptr,
+        LLVMPointerType(elem_llvm_ty, 0),
+        b"ins_ch_ptr_typed\0".as_ptr().cast(),
+    );
+    let ptr = build_f32_ptr_offset(ctx.builder, elem_llvm_ty, in_ch_ptr_typed, ctx.frame_idx, b"ins_ptr\0");
+    let value = LLVMBuildLoad2(ctx.builder, elem_llvm_ty, ptr, b"ins_load\0".as_ptr().cast());
+    Ok(OrcValue { value, ty: meta.elem_ty })
+}
+
+/// Read `outs[i]`: load from `out_slots` via `out_ptrs[clamped_i]` at `frame_idx`.
+/// We read back from the output buffer pointer (same as the write-back loop).
+unsafe fn lower_port_index_outs_read(
+    ctx: &mut LoweringCtx<'_>,
+    meta: PortIndexMeta,
+    index_expr: &Expr,
+    locals: &HashMap<String, OrcValue>,
+    local_aliases: &HashMap<String, AliasSlot>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+) -> Result<OrcValue, Diagnostic> {
+    let arr = ctx.out_slot_ptr_array.ok_or_else(|| {
+        Diagnostic::internal("outs[i] read requires out_slot_ptr_array")
+    })?;
+    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, true)?;
+    let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, meta.elem_ty);
+    let slot_ptr_ty = LLVMPointerType(elem_llvm_ty, 0);
+    let gep = LLVMBuildGEP2(
+        ctx.builder,
+        slot_ptr_ty,
+        arr,
+        [idx].as_mut_ptr(),
+        1,
+        b"outs_r_slot_gep\0".as_ptr().cast(),
+    );
+    let slot_ptr = LLVMBuildLoad2(ctx.builder, slot_ptr_ty, gep, b"outs_r_slot_ptr\0".as_ptr().cast());
+    let value = LLVMBuildLoad2(ctx.builder, elem_llvm_ty, slot_ptr, b"outs_load\0".as_ptr().cast());
+    Ok(OrcValue { value, ty: meta.elem_ty })
+}
+
+/// Read `params[i]`: load from `params_ptr` at byte offset `i * sizeof(type)`.
+unsafe fn lower_port_index_params_read(
+    ctx: &mut LoweringCtx<'_>,
+    meta: PortIndexMeta,
+    index_expr: &Expr,
+    locals: &HashMap<String, OrcValue>,
+    local_aliases: &HashMap<String, AliasSlot>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+) -> Result<OrcValue, Diagnostic> {
+    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, true)?;
+    let elem_bytes = primitive_type_bytes(meta.elem_ty) as u64;
+    let byte_offset = LLVMBuildMul(
+        ctx.builder,
+        idx,
+        LLVMConstInt(ctx.i32_ty, elem_bytes, 0),
+        b"param_byte_offset\0".as_ptr().cast(),
+    );
+    let ptr = build_typed_ptr_from_byte_offset(
+        ctx.builder,
+        ctx.context,
+        ctx.params_ptr,
+        byte_offset,
+        meta.elem_ty,
+        b"param_dyn_ptr_i8\0",
+        b"param_dyn_ptr\0",
+    );
+    let value = LLVMBuildLoad2(
+        ctx.builder,
+        llvm_ty_for_primitive(ctx.context, meta.elem_ty),
+        ptr,
+        b"params_load\0".as_ptr().cast(),
+    );
+    Ok(OrcValue { value, ty: meta.elem_ty })
 }
