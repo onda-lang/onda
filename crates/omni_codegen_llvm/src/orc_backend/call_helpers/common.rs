@@ -74,6 +74,14 @@ pub(in crate::orc_backend) fn parse_buffer_chans_instance_base(name: &str) -> Op
     Some(base)
 }
 
+pub(in crate::orc_backend) fn parse_buffer_samplerate_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = name.rsplit_once('.')?;
+    if base.is_empty() || method != "samplerate" {
+        return None;
+    }
+    Some(base)
+}
+
 pub(in crate::orc_backend) fn parse_unsafe_read_instance_base(name: &str) -> Option<&str> {
     let (base, method) = name.rsplit_once('.')?;
     if base.is_empty() || method != "unsafe_read" {
@@ -374,6 +382,24 @@ pub(in crate::orc_backend) unsafe fn lower_orc_buffer_chans_call(
     )))
 }
 
+pub(in crate::orc_backend) unsafe fn lower_orc_buffer_samplerate_call(
+    method_name: &str,
+    base: &str,
+    args: &[CallArg],
+    ctx: &mut LoweringCtx<'_>,
+) -> Result<OrcValue, Diagnostic> {
+    ensure_builtin_instance_call_no_args(method_name, args, "ORC expression lowering")?;
+    if ctx.buffer_index.contains_key(base) {
+        return Ok(OrcValue {
+            value: load_orc_buffer_samplerate_f32(ctx, base)?,
+            ty: PrimitiveType::F32,
+        });
+    }
+    Err(Diagnostic::internal(format!(
+        "builtin method '{method_name}' requires a buffer symbol receiver in ORC expression lowering, got '{base}'"
+    )))
+}
+
 pub(in crate::orc_backend) unsafe fn lower_def_data_len_call(
     method_name: &str,
     base: &str,
@@ -402,6 +428,24 @@ pub(in crate::orc_backend) unsafe fn lower_def_data_len_call(
     }
     Err(Diagnostic::internal(format!(
         "builtin method '{method_name}' requires a array or buffer symbol receiver in def lowering, got '{base}'"
+    )))
+}
+
+pub(in crate::orc_backend) unsafe fn lower_def_buffer_samplerate_call(
+    method_name: &str,
+    base: &str,
+    args: &[CallArg],
+    ctx: &mut DefLoweringCtx<'_>,
+) -> Result<OrcValue, Diagnostic> {
+    ensure_builtin_instance_call_no_args(method_name, args, "def lowering")?;
+    if let Some(info) = ctx.buffer_params.get(base).cloned() {
+        return Ok(OrcValue {
+            value: load_def_buffer_samplerate_f32(ctx, base, &info)?,
+            ty: PrimitiveType::F32,
+        });
+    }
+    Err(Diagnostic::internal(format!(
+        "builtin method '{method_name}' requires a buffer symbol receiver in def lowering, got '{base}'"
     )))
 }
 

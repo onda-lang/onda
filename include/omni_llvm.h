@@ -121,6 +121,7 @@ int omni_bind_buffer(
   void* ptr,
   int frames,
   int channels,
+  float sample_rate,
   int elem_type
 );
 

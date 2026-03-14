@@ -1,13 +1,13 @@
 params:
-  freq_a = 220.0
-  freq_b = 330.0
-  fm_ab = 120.0
-  fm_ba = 80.0
+  freq_a = 220.0 { 20, 5000 }
+  freq_b = 330.0 { 20, 5000 }
+  fm_ab = 120.0  { 0, 1000 }
+  fm_ba = 80.0   { 0, 1000 }
 
 struct Voice:
-  phase: f32
-  sig: f32
-  inst: f32
+  phase
+  sig
+  inst
 
   def process(self, phase_offset = 0.0):
     self.sig = sin(self.phase + phase_offset)

@@ -550,6 +550,14 @@ pub(crate) fn rewrite_proc_expr_symbols(
                             *name = format!("self.{root}.{field}.chans");
                         }
                     }
+                } else if let Some(base) = parse_buffer_samplerate_instance_base(name) {
+                    if field_names.contains(base) && is_plain_symbol(base) {
+                        *name = format!("self.{base}.samplerate");
+                    } else if let Some((root, field)) = split_field_path(base, errors) {
+                        if field_names.contains(root) && is_plain_symbol(root) {
+                            *name = format!("self.{root}.{field}.samplerate");
+                        }
+                    }
                 }
                 let method_name = name.clone();
                 if let Some(base) = parse_unsafe_read_instance_base(&method_name) {

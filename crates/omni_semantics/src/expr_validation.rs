@@ -391,6 +391,19 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         return;
                     }
                 }
+                if let Some(base) = parse_buffer_samplerate_instance_base(name) {
+                    if is_builtin_buffer_receiver(base, env) {
+                        validate_buffer_samplerate_builtin_call(
+                            name,
+                            base,
+                            args,
+                            env,
+                            expr.loc(),
+                            errors,
+                        );
+                        return;
+                    }
+                }
                 if let Some(base) = parse_unsafe_read_instance_base(name) {
                     if is_builtin_unsafe_data_receiver(base, env) {
                         let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
@@ -759,6 +772,53 @@ fn validate_buffer_chans_builtin_call(
             errors,
             loc,
             init_buffer_runtime_message(&format!("buffer method '{}.chans()'", base)),
+        );
+    }
+    if !args.is_empty() {
+        push_loc_error(
+            errors,
+            loc,
+            format!(
+                "builtin method '{}' expects 0 arguments, got {}",
+                name,
+                args.len()
+            ),
+        );
+    }
+    for arg in args {
+        if arg.name.is_some() {
+            push_loc_error(
+                errors,
+                loc,
+                format!("builtin method '{}' does not support named arguments", name),
+            );
+        }
+    }
+    if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
+        push_loc_error(
+            errors,
+            loc,
+            format!(
+                "builtin method '{}' requires a buffer symbol receiver, got '{}'",
+                name, base
+            ),
+        );
+    }
+}
+
+fn validate_buffer_samplerate_builtin_call(
+    name: &str,
+    base: &str,
+    args: &[CallArg],
+    env: ExprEnv<'_>,
+    loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if env.scope == ScopeKind::Init && has_declared_buffer_symbol_info(env.declared_symbols, base) {
+        push_loc_error(
+            errors,
+            loc,
+            init_buffer_runtime_message(&format!("buffer method '{}.samplerate()'", base)),
         );
     }
     if !args.is_empty() {

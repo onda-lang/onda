@@ -378,6 +378,11 @@ pub(super) unsafe fn lower_expr(
                     return lower_orc_buffer_chans_call(name, base, args, ctx);
                 }
             }
+            if let Some(base) = parse_buffer_samplerate_instance_base(name) {
+                if is_orc_builtin_buffer_chans_receiver(ctx, base) {
+                    return lower_orc_buffer_samplerate_call(name, base, args, ctx);
+                }
+            }
             if let Some(base) = parse_unsafe_read_instance_base(name) {
                 if is_orc_builtin_unsafe_data_receiver(ctx, base, local_array_aliases) {
                     let mut method_args = Vec::with_capacity(args.len().saturating_add(1));

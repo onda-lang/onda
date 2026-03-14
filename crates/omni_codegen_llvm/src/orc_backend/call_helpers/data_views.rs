@@ -276,7 +276,7 @@ pub(in crate::orc_backend) unsafe fn lower_def_unsafe_data_write_call(
 pub(in crate::orc_backend) unsafe fn load_orc_buffer_binding_tuple(
     ctx: &mut LoweringCtx<'_>,
     base: &str,
-) -> Result<(LLVMValueRef, LLVMValueRef, LLVMValueRef), Diagnostic> {
+) -> Result<(LLVMValueRef, LLVMValueRef, LLVMValueRef, LLVMValueRef), Diagnostic> {
     let Some(buf_idx) = ctx.buffer_index.get(base).copied() else {
         return Err(Diagnostic::internal(format!(
             "unknown buffer symbol '{base}' in ORC buffer call argument lowering"
@@ -328,7 +328,20 @@ pub(in crate::orc_backend) unsafe fn load_orc_buffer_binding_tuple(
             b"call_buf_channels\0".as_ptr().cast(),
         )
     };
-    Ok((ptr, frames, channels))
+    let samplerate_ptr = build_ptr_offset(
+        ctx.builder,
+        ctx.float_ty,
+        ctx.buffer_samplerates_ptr,
+        idx,
+        b"call_buf_samplerate_ptr\0",
+    );
+    let sample_rate = LLVMBuildLoad2(
+        ctx.builder,
+        ctx.float_ty,
+        samplerate_ptr,
+        b"call_buf_samplerate\0".as_ptr().cast(),
+    );
+    Ok((ptr, frames, channels, sample_rate))
 }
 
 pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
@@ -341,8 +354,8 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
     local_aliases: &HashMap<String, AliasSlot>,
 ) -> Result<(), Diagnostic> {
     if let Expr::Var { name: base, .. } = arg_expr {
-        if let Ok((ptr, frames, channels)) = load_orc_buffer_binding_tuple(ctx, base) {
-            push_buffer_tuple(out_args, ptr, frames, channels);
+        if let Ok((ptr, frames, channels, sample_rate)) = load_orc_buffer_binding_tuple(ctx, base) {
+            push_buffer_tuple(out_args, ptr, frames, channels, sample_rate);
             return Ok(());
         }
 
@@ -353,6 +366,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
         return lower_array_as_mono_buffer_tuple(
             out_args,
             ctx.i32_ty,
+            ctx.float_ty,
             base,
             len,
             "ORC expression lowering",
@@ -448,7 +462,20 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
         channels_ptr,
         b"proc_buf_ref_chans\0".as_ptr().cast(),
     );
-    push_buffer_tuple(out_args, ptr, frames, channels);
+    let samplerate_ptr = build_ptr_offset(
+        ctx.builder,
+        ctx.float_ty,
+        proc_slot_refs.samplerates_base,
+        clamped_idx,
+        b"proc_buf_ref_sr_ptr\0",
+    );
+    let sample_rate = LLVMBuildLoad2(
+        ctx.builder,
+        ctx.float_ty,
+        samplerate_ptr,
+        b"proc_buf_ref_sr\0".as_ptr().cast(),
+    );
+    push_buffer_tuple(out_args, ptr, frames, channels, sample_rate);
     Ok(())
 }
 
@@ -1050,7 +1077,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_def(
 ) -> Result<(), Diagnostic> {
     if let Expr::Var { name: base, .. } = arg_expr {
         if let Some(info) = ctx.buffer_params.get(base) {
-            push_buffer_tuple(out_args, info.ptr, info.frames, info.channels);
+            push_buffer_tuple(out_args, info.ptr, info.frames, info.channels, info.sample_rate);
             return Ok(());
         }
 
@@ -1062,6 +1089,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_def(
         return lower_array_as_mono_buffer_tuple_ext(
             out_args,
             ctx.i32_ty,
+            ctx.float_ty,
             base,
             len,
             runtime_len,
@@ -1103,16 +1131,16 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_def(
         b"def_proc_buf_sel_idx\0",
     );
     let clamped_idx = clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, slot_exprs.len())?;
-    let mut slot_tuples = Vec::<(LLVMValueRef, LLVMValueRef, LLVMValueRef)>::new();
+    let mut slot_tuples = Vec::<(LLVMValueRef, LLVMValueRef, LLVMValueRef, LLVMValueRef)>::new();
     for slot_expr in slot_exprs.iter() {
         let mut tuple_args = Vec::<LLVMValueRef>::new();
         lower_buffer_call_args_in_def(ctx, &mut tuple_args, slot_expr, callee_name)?;
-        if tuple_args.len() != 3 {
+        if tuple_args.len() != 4 {
             return Err(Diagnostic::internal(format!(
                 "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' produced invalid buffer tuple width in def lowering"
             )));
         }
-        slot_tuples.push((tuple_args[0], tuple_args[1], tuple_args[2]));
+        slot_tuples.push((tuple_args[0], tuple_args[1], tuple_args[2], tuple_args[3]));
     }
     let Some(first_tuple) = slot_tuples.first().copied() else {
         return Err(Diagnostic::internal(format!(
@@ -1122,10 +1150,12 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_def(
     let ptr_ty = LLVMTypeOf(first_tuple.0);
     let frames_ty = LLVMTypeOf(first_tuple.1);
     let channels_ty = LLVMTypeOf(first_tuple.2);
+    let sr_ty = LLVMTypeOf(first_tuple.3);
     if slot_tuples.iter().any(|tuple| {
         LLVMTypeOf(tuple.0) != ptr_ty
             || LLVMTypeOf(tuple.1) != frames_ty
             || LLVMTypeOf(tuple.2) != channels_ty
+            || LLVMTypeOf(tuple.3) != sr_ty
     }) {
         return Err(Diagnostic::internal(format!(
             "internal builtin '{PROC_INDEX_BUFFER_SELECT_SENTINEL}' mixes incompatible slot buffer tuple LLVM types in def lowering"
@@ -1134,6 +1164,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_def(
     let ptr_candidates = slot_tuples.iter().map(|t| t.0).collect::<Vec<_>>();
     let frames_candidates = slot_tuples.iter().map(|t| t.1).collect::<Vec<_>>();
     let channels_candidates = slot_tuples.iter().map(|t| t.2).collect::<Vec<_>>();
+    let sr_candidates = slot_tuples.iter().map(|t| t.3).collect::<Vec<_>>();
     let ptr = select_def_value_by_slot_index(
         ctx,
         clamped_idx,
@@ -1155,7 +1186,14 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_def(
         b"def_proc_buf_sel_chans\0",
         "def buffer tuple selector channels dispatch",
     )?;
-    push_buffer_tuple(out_args, ptr, frames, channels);
+    let sample_rate = select_def_value_by_slot_index(
+        ctx,
+        clamped_idx,
+        &sr_candidates,
+        b"def_proc_buf_sel_sr\0",
+        "def buffer tuple selector sample-rate dispatch",
+    )?;
+    push_buffer_tuple(out_args, ptr, frames, channels, sample_rate);
     Ok(())
 }
 
@@ -1357,15 +1395,18 @@ fn push_buffer_tuple(
     ptr: LLVMValueRef,
     frames: LLVMValueRef,
     channels: LLVMValueRef,
+    sample_rate: LLVMValueRef,
 ) {
     out_args.push(ptr);
     out_args.push(frames);
     out_args.push(channels);
+    out_args.push(sample_rate);
 }
 
 unsafe fn lower_array_as_mono_buffer_tuple(
     out_args: &mut Vec<LLVMValueRef>,
     i32_ty: LLVMTypeRef,
+    float_ty: LLVMTypeRef,
     base: &str,
     len: usize,
     context: &str,
@@ -1374,6 +1415,7 @@ unsafe fn lower_array_as_mono_buffer_tuple(
     lower_array_as_mono_buffer_tuple_ext(
         out_args,
         i32_ty,
+        float_ty,
         base,
         len,
         None,
@@ -1385,6 +1427,7 @@ unsafe fn lower_array_as_mono_buffer_tuple(
 unsafe fn lower_array_as_mono_buffer_tuple_ext(
     out_args: &mut Vec<LLVMValueRef>,
     i32_ty: LLVMTypeRef,
+    float_ty: LLVMTypeRef,
     base: &str,
     len: usize,
     runtime_len: Option<LLVMValueRef>,
@@ -1407,6 +1450,12 @@ unsafe fn lower_array_as_mono_buffer_tuple_ext(
         ))
     })?;
     let frames = runtime_len.unwrap_or_else(|| LLVMConstInt(i32_ty, len as u64, 0));
-    push_buffer_tuple(out_args, ptr, frames, LLVMConstInt(i32_ty, 1, 0));
+    push_buffer_tuple(
+        out_args,
+        ptr,
+        frames,
+        LLVMConstInt(i32_ty, 1, 0),
+        LLVMConstReal(float_ty, 0.0),
+    );
     Ok(())
 }

@@ -5,7 +5,8 @@ use omni_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType, SourceL
 use crate::builtins::{
     builtin_constant_type, builtin_name, is_builtin_unsafe_data_fn, is_float_type,
     is_internal_buffer_2d_fn, parse_array_len_instance_base, parse_buffer_chans_instance_base,
-    parse_unsafe_read_instance_base, parse_unsafe_write_instance_base,
+    parse_buffer_samplerate_instance_base, parse_unsafe_read_instance_base,
+    parse_unsafe_write_instance_base,
 };
 use crate::decl_symbols::{
     declared_buffer_info, declared_symbol_scalar_type, has_declared_buffer_symbol_info,
@@ -325,6 +326,11 @@ pub(crate) fn infer_scalar_expr_type(
             if let Some(base) = parse_buffer_chans_instance_base(name) {
                 if is_buffer_receiver_symbol_for_builtin(base, declared_symbols) {
                     return Some(PrimitiveType::I32);
+                }
+            }
+            if let Some(base) = parse_buffer_samplerate_instance_base(name) {
+                if is_buffer_receiver_symbol_for_builtin(base, declared_symbols) {
+                    return Some(PrimitiveType::F32);
                 }
             }
             if let Some(base) = parse_unsafe_read_instance_base(name)

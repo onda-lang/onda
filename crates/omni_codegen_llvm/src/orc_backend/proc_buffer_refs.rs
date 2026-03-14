@@ -6,6 +6,7 @@ pub(crate) struct ProcSlotBufferRefLayout {
     pub(super) ptr_offset: usize,
     pub(super) frames_offset: usize,
     pub(super) channels_offset: usize,
+    pub(super) samplerate_offset: usize,
 }
 
 fn collect_proc_slot_buffer_ref_signatures(
@@ -211,11 +212,21 @@ pub(super) fn compute_proc_slot_buffer_ref_layouts(
             .checked_add(i32_bytes)
             .ok_or_else(|| Diagnostic::internal("proc buffer-ref channels layout overflow"))?;
 
+        offset = align_up(offset, align_of::<f32>());
+        let samplerate_offset = offset;
+        let f32_bytes = slots_len
+            .checked_mul(size_of::<f32>())
+            .ok_or_else(|| Diagnostic::internal("proc buffer-ref f32 array byte size overflow"))?;
+        offset = offset
+            .checked_add(f32_bytes)
+            .ok_or_else(|| Diagnostic::internal("proc buffer-ref samplerate layout overflow"))?;
+
         layouts.push(ProcSlotBufferRefLayout {
             slot_buffer_indices: signature,
             ptr_offset,
             frames_offset,
             channels_offset,
+            samplerate_offset,
         });
     }
 

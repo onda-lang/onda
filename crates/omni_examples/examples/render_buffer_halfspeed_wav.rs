@@ -78,6 +78,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         in_interleaved.as_mut_ptr().cast::<u8>(),
         input_frames,
         in_channels,
+        sample_rate_hz as f32,
         omni_frontend::PrimitiveType::F32,
     )
     .map_err(|d| format!("bind buffer failed: {d:?}"))?;

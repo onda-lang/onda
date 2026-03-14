@@ -332,6 +332,14 @@ pub(super) unsafe fn load_def_buffer_frames_i32(
     Ok(info.frames)
 }
 
+pub(super) unsafe fn load_def_buffer_samplerate_f32(
+    _ctx: &mut DefLoweringCtx<'_>,
+    _base: &str,
+    info: &DefBufferParamInfo,
+) -> Result<LLVMValueRef, Diagnostic> {
+    Ok(info.sample_rate)
+}
+
 pub(super) unsafe fn lower_def_buffer_chans_call(
     method_name: &str,
     base: &str,

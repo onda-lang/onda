@@ -292,6 +292,7 @@ impl JitProgram {
         buffer_ptrs: &[*mut u8],
         buffer_frames: &[i32],
         buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
@@ -305,6 +306,7 @@ impl JitProgram {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
         }
         #[cfg(not(feature = "llvm-orc"))]
@@ -318,6 +320,7 @@ impl JitProgram {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
@@ -331,6 +334,7 @@ impl JitProgram {
         buffer_ptrs: &[*mut u8],
         buffer_frames: &[i32],
         buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
@@ -340,11 +344,18 @@ impl JitProgram {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = (state, buffer_ptrs, buffer_frames, buffer_channels);
+            let _ = (
+                state,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+            );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
@@ -361,6 +372,7 @@ impl JitProgram {
         buffer_ptrs: &[*mut u8],
         buffer_frames: &[i32],
         buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
@@ -374,6 +386,7 @@ impl JitProgram {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
             return Ok(());
         }
@@ -388,6 +401,7 @@ impl JitProgram {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
@@ -404,6 +418,7 @@ impl JitProgram {
         buffer_ptrs: &[*mut u8],
         buffer_frames: &[i32],
         buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
         let Some(desc) = self.event_descriptor(event_index) else {
             return Ok(());
@@ -420,6 +435,7 @@ impl JitProgram {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
         }
         #[cfg(not(feature = "llvm-orc"))]
@@ -432,6 +448,7 @@ impl JitProgram {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
@@ -448,6 +465,7 @@ impl JitProgram {
         buffer_ptrs: &[*mut u8],
         buffer_frames: &[i32],
         buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
         if self.event_descriptor(event_index).is_none() {
             return Ok(());
@@ -463,6 +481,7 @@ impl JitProgram {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
             return Ok(());
         }
@@ -476,6 +495,7 @@ impl JitProgram {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
@@ -495,17 +515,20 @@ fn validate_buffer_metadata_counts(
     buffer_ptrs: &[*mut u8],
     buffer_frames: &[i32],
     buffer_channels: &[i32],
+    buffer_sample_rates: &[f32],
 ) -> Result<(), Diagnostic> {
     if buffer_ptrs.len() != compiled.buffer_count()
         || buffer_frames.len() != compiled.buffer_count()
         || buffer_channels.len() != compiled.buffer_count()
+        || buffer_sample_rates.len() != compiled.buffer_count()
     {
         return Err(Diagnostic::runtime(
             format!(
-                "runtime buffer metadata count mismatch: ptrs={}, frames={}, chans={}, expected={}",
+                "runtime buffer metadata count mismatch: ptrs={}, frames={}, chans={}, samplerates={}, expected={}",
                 buffer_ptrs.len(),
                 buffer_frames.len(),
                 buffer_channels.len(),
+                buffer_sample_rates.len(),
                 compiled.buffer_count()
             ),
             0,
@@ -567,6 +590,7 @@ fn process_bound_orc(
     buffer_ptrs: &[*mut u8],
     buffer_frames: &[i32],
     buffer_channels: &[i32],
+    buffer_sample_rates: &[f32],
 ) -> Result<(), Diagnostic> {
     let frames = u32::try_from(frames).map_err(|_| {
         Diagnostic::runtime(
@@ -597,7 +621,13 @@ fn process_bound_orc(
             0,
         ));
     }
-    validate_buffer_metadata_counts(compiled, buffer_ptrs, buffer_frames, buffer_channels)?;
+    validate_buffer_metadata_counts(
+        compiled,
+        buffer_ptrs,
+        buffer_frames,
+        buffer_channels,
+        buffer_sample_rates,
+    )?;
     validate_runtime_state(compiled, state)?;
     validate_param_bytes(compiled, params)?;
 
@@ -610,8 +640,8 @@ fn process_bound_orc(
         buffer_ptrs.as_ptr(),
         buffer_frames.as_ptr(),
         buffer_channels.as_ptr(),
+        buffer_sample_rates.as_ptr(),
     );
-
     Ok(())
 }
 
@@ -622,14 +652,22 @@ fn sync_proc_buffer_refs_for_process_bound_orc(
     buffer_ptrs: &[*mut u8],
     buffer_frames: &[i32],
     buffer_channels: &[i32],
+    buffer_sample_rates: &[f32],
 ) -> Result<(), Diagnostic> {
-    validate_buffer_metadata_counts(compiled, buffer_ptrs, buffer_frames, buffer_channels)?;
+    validate_buffer_metadata_counts(
+        compiled,
+        buffer_ptrs,
+        buffer_frames,
+        buffer_channels,
+        buffer_sample_rates,
+    )?;
     validate_runtime_state(compiled, state)?;
     compiled.sync_proc_buffer_refs(
         state.state_words.as_mut_ptr().cast::<u8>(),
         buffer_ptrs,
         buffer_frames,
         buffer_channels,
+        buffer_sample_rates,
     )?;
     Ok(())
 }
@@ -645,6 +683,7 @@ unsafe fn process_bound_orc_unchecked(
     buffer_ptrs: &[*mut u8],
     buffer_frames: &[i32],
     buffer_channels: &[i32],
+    buffer_sample_rates: &[f32],
 ) {
     compiled.run(
         in_ptrs.as_ptr(),
@@ -655,6 +694,7 @@ unsafe fn process_bound_orc_unchecked(
         buffer_ptrs.as_ptr(),
         buffer_frames.as_ptr(),
         buffer_channels.as_ptr(),
+        buffer_sample_rates.as_ptr(),
     );
 }
 
@@ -668,8 +708,15 @@ fn trigger_event_orc(
     buffer_ptrs: &[*mut u8],
     buffer_frames: &[i32],
     buffer_channels: &[i32],
+    buffer_sample_rates: &[f32],
 ) -> Result<(), Diagnostic> {
-    validate_buffer_metadata_counts(compiled, buffer_ptrs, buffer_frames, buffer_channels)?;
+    validate_buffer_metadata_counts(
+        compiled,
+        buffer_ptrs,
+        buffer_frames,
+        buffer_channels,
+        buffer_sample_rates,
+    )?;
     validate_runtime_state(compiled, state)?;
     validate_param_bytes(compiled, params)?;
 
@@ -688,6 +735,7 @@ fn trigger_event_orc(
         buffer_ptrs.as_ptr(),
         buffer_frames.as_ptr(),
         buffer_channels.as_ptr(),
+        buffer_sample_rates.as_ptr(),
     );
     Ok(())
 }
@@ -702,6 +750,7 @@ unsafe fn trigger_event_orc_unchecked(
     buffer_ptrs: &[*mut u8],
     buffer_frames: &[i32],
     buffer_channels: &[i32],
+    buffer_sample_rates: &[f32],
 ) {
     if let Ok(event_index_u32) = u32::try_from(event_index) {
         compiled.run_event(
@@ -712,6 +761,7 @@ unsafe fn trigger_event_orc_unchecked(
             buffer_ptrs.as_ptr(),
             buffer_frames.as_ptr(),
             buffer_channels.as_ptr(),
+            buffer_sample_rates.as_ptr(),
         );
     }
 }

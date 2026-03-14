@@ -22,6 +22,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
     let float_ptr_ptr_ty = i8_ptr_ptr_ty;
     let fast_math_flags = fast_math_flags(fast_math);
 
+    let float_ptr_ty_param = LLVMPointerType(float_ty, 0);
     let mut arg_types = [
         float_ptr_ptr_ty,
         float_ptr_ptr_ty,
@@ -31,6 +32,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
         i8_ptr_ptr_ty,
         i32_ptr_ty,
         i32_ptr_ty,
+        float_ptr_ty_param,
     ];
 
     let fn_name = CString::new("omni_process")
@@ -69,6 +71,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
         let buffer_ptrs = LLVMGetParam(fn_ref, 5);
         let buffer_frames_ptr = LLVMGetParam(fn_ref, 6);
         let buffer_channels_ptr = LLVMGetParam(fn_ref, 7);
+        let buffer_samplerates_ptr = LLVMGetParam(fn_ref, 8);
 
         let zero_i32 = LLVMConstInt(i32_ty, 0, 0);
         let one_i32 = LLVMConstInt(i32_ty, 1, 0);
@@ -130,12 +133,22 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 b"proc_buf_ref_chans_gep\0",
                 b"proc_buf_ref_chans_cast\0",
             );
+            let samplerates_base = build_state_ptr_with_elem_ty(
+                builder,
+                context,
+                state_ptr,
+                layout.samplerate_offset,
+                float_ty,
+                b"proc_buf_ref_sr_gep\0",
+                b"proc_buf_ref_sr_cast\0",
+            );
             proc_slot_buffer_refs.insert(
                 signature,
                 ProcSlotBufferRefArrays {
                     ptrs_base,
                     frames_base,
                     channels_base,
+                    samplerates_base,
                     len: layout.slot_buffer_indices.len(),
                 },
             );
@@ -306,6 +319,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 buffer_ptrs,
                 buffer_frames_ptr,
                 buffer_channels_ptr,
+                buffer_samplerates_ptr,
                 frame_idx: LLVMConstInt(i32_ty, 0, 0),
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,
@@ -388,6 +402,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 buffer_ptrs,
                 buffer_frames_ptr,
                 buffer_channels_ptr,
+                buffer_samplerates_ptr,
                 frame_idx: frame_in_body,
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,
@@ -641,6 +656,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 buffer_ptrs,
                 buffer_frames_ptr,
                 buffer_channels_ptr,
+                buffer_samplerates_ptr,
                 frame_idx: frame_in_body,
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,
@@ -818,6 +834,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             buffer_ptrs,
             buffer_frames_ptr,
             buffer_channels_ptr,
+            buffer_samplerates_ptr,
             frame_idx: frame_in_body,
             state_slots: &storage.state_slots,
             array_base_ptrs: &storage.array_base_ptrs,
@@ -928,6 +945,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 buffer_ptrs,
                 buffer_frames_ptr,
                 buffer_channels_ptr,
+                buffer_samplerates_ptr,
                 frame_idx: LLVMConstInt(i32_ty, 0, 0),
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,

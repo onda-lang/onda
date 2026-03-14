@@ -78,6 +78,7 @@ pub(in crate::orc_backend) unsafe fn build_init_ir(
             buffer_ptrs: LLVMConstPointerNull(LLVMPointerType(i8_ptr_ty, 0)),
             buffer_frames_ptr: LLVMConstPointerNull(LLVMPointerType(i32_ty, 0)),
             buffer_channels_ptr: LLVMConstPointerNull(LLVMPointerType(i32_ty, 0)),
+            buffer_samplerates_ptr: LLVMConstPointerNull(LLVMPointerType(float_ty, 0)),
             frame_idx: LLVMConstInt(i32_ty, 0, 0),
             state_slots: &storage.state_slots,
             array_base_ptrs: &storage.array_base_ptrs,

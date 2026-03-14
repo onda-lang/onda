@@ -14,6 +14,7 @@ pub(crate) use call_inference::{resolve_call_args, resolve_call_args_at};
 use crate::builtins::{
     builtin_constant_type, eval_data_size_expr, is_builtin_constant_name, is_internal_buffer_2d_fn,
     parse_array_len_instance_base, parse_buffer_chans_instance_base,
+    parse_buffer_samplerate_instance_base,
 };
 use crate::{
     resolve_struct_field_decl, with_expr_diag_context, with_stmt_diag_context, AnalysisOptions,

@@ -95,6 +95,15 @@ pub(crate) fn parse_buffer_chans_instance_base(name: &str) -> Option<&str> {
     }
 }
 
+pub(crate) fn parse_buffer_samplerate_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = split_instance_method_path(name)?;
+    if method == "samplerate" {
+        Some(base)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn parse_unsafe_read_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
     if method == "unsafe_read" {

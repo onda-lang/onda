@@ -440,6 +440,9 @@ pub(super) fn infer_specialized_expr_return_type(
             {
                 return Ok(Some(PrimitiveType::I32));
             }
+            if parse_buffer_samplerate_instance_base(name).is_some() {
+                return Ok(Some(PrimitiveType::F32));
+            }
             if matches!(
                 name.as_str(),
                 "__omni_buffer_read2" | "__omni_buffer_write2" | "unsafe_read" | "unsafe_write"

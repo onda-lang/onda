@@ -90,6 +90,7 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                     arg_tys.push(i8_ptr_ty);
                     arg_tys.push(i32_ty);
                     arg_tys.push(i32_ty);
+                    arg_tys.push(LLVMFloatTypeInContext(context));
                 }
             }
         }
@@ -303,6 +304,7 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                 arg_tys.push(i8_ptr_ty);
                 arg_tys.push(i32_ty);
                 arg_tys.push(i32_ty);
+                arg_tys.push(LLVMFloatTypeInContext(context));
             }
         }
     }

@@ -266,7 +266,12 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                     let ptr_val = LLVMGetParam(fn_ref, llvm_param_idx);
                     let frames_val = LLVMGetParam(fn_ref, llvm_param_idx + 1);
                     let channels_val = LLVMGetParam(fn_ref, llvm_param_idx + 2);
-                    if ptr_val.is_null() || frames_val.is_null() || channels_val.is_null() {
+                    let sample_rate_val = LLVMGetParam(fn_ref, llvm_param_idx + 3);
+                    if ptr_val.is_null()
+                        || frames_val.is_null()
+                        || channels_val.is_null()
+                        || sample_rate_val.is_null()
+                    {
                         return Err(Diagnostic::internal(format!(
                             "missing LLVM buffer param tuple at {} for function '{}'",
                             llvm_param_idx, def.name
@@ -278,11 +283,12 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                             ptr: ptr_val,
                             frames: frames_val,
                             channels: channels_val,
+                            sample_rate: sample_rate_val,
                             elem_ty,
                             declared_channels: channels,
                         },
                     );
-                    llvm_param_idx += 3;
+                    llvm_param_idx += 4;
                 }
             }
         }

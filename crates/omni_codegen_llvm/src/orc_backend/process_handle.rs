@@ -9,10 +9,19 @@ pub(super) type OrcProcessFn = unsafe extern "C" fn(
     *const *mut u8,
     *const i32,
     *const i32,
+    *const f32,
 );
 pub(super) type OrcInitFn = unsafe extern "C" fn(*const u8, *mut u8);
 pub(super) type OrcEventFn =
-    unsafe extern "C" fn(*const u8, *const u8, *mut u8, *const *mut u8, *const i32, *const i32);
+    unsafe extern "C" fn(
+        *const u8,
+        *const u8,
+        *mut u8,
+        *const *mut u8,
+        *const i32,
+        *const i32,
+        *const f32,
+    );
 
 pub(super) fn is_proc_glue_function_name(name: &str) -> bool {
     name.contains(".__proc_")
@@ -89,6 +98,7 @@ impl OrcProcess {
         buffer_ptrs: *const *mut u8,
         buffer_frames: *const i32,
         buffer_channels: *const i32,
+        buffer_sample_rates: *const f32,
     ) {
         unsafe {
             (self.process_fn)(
@@ -100,6 +110,7 @@ impl OrcProcess {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
         }
     }
@@ -119,6 +130,7 @@ impl OrcProcess {
         buffer_ptrs: *const *mut u8,
         buffer_frames: *const i32,
         buffer_channels: *const i32,
+        buffer_sample_rates: *const f32,
     ) {
         let Some(fn_ref) = self.event_fns.get(event_index as usize).copied() else {
             return;
@@ -131,6 +143,7 @@ impl OrcProcess {
                 buffer_ptrs,
                 buffer_frames,
                 buffer_channels,
+                buffer_sample_rates,
             );
         }
     }
@@ -141,6 +154,7 @@ impl OrcProcess {
         buffer_ptrs: &[*mut u8],
         buffer_frames: &[i32],
         buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
         if self.proc_slot_buffer_ref_layouts.is_empty() {
             return Ok(());
@@ -170,6 +184,11 @@ impl OrcProcess {
                         "proc buffer-ref sync mapping references out-of-range buffer channels index",
                     ));
                 };
+                let Some(sample_rate_value) = buffer_sample_rates.get(*buffer_idx).copied() else {
+                    return Err(Diagnostic::internal(
+                        "proc buffer-ref sync mapping references out-of-range buffer sample-rate index",
+                    ));
+                };
 
                 let ptr_byte_off = layout
                     .ptr_offset
@@ -180,6 +199,9 @@ impl OrcProcess {
                 let channels_byte_off = layout
                     .channels_offset
                     .saturating_add(slot_idx.saturating_mul(size_of::<i32>()));
+                let samplerate_byte_off = layout
+                    .samplerate_offset
+                    .saturating_add(slot_idx.saturating_mul(size_of::<f32>()));
 
                 unsafe {
                     std::ptr::write_unaligned(
@@ -193,6 +215,10 @@ impl OrcProcess {
                     std::ptr::write_unaligned(
                         state.add(channels_byte_off).cast::<i32>(),
                         channels_value,
+                    );
+                    std::ptr::write_unaligned(
+                        state.add(samplerate_byte_off).cast::<f32>(),
+                        sample_rate_value,
                     );
                 }
             }

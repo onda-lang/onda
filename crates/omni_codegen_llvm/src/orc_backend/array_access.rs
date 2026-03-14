@@ -383,6 +383,31 @@ pub(super) unsafe fn load_orc_buffer_channels_i32(
     ))
 }
 
+pub(super) unsafe fn load_orc_buffer_samplerate_f32(
+    ctx: &mut LoweringCtx<'_>,
+    base: &str,
+) -> Result<LLVMValueRef, Diagnostic> {
+    let Some(buf_idx) = ctx.buffer_index.get(base).copied() else {
+        return Err(Diagnostic::internal(format!(
+            "unknown buffer symbol '{base}' in ORC lowering"
+        )));
+    };
+    let idx = LLVMConstInt(ctx.i32_ty, buf_idx as u64, 0);
+    let samplerates_ptr = build_ptr_offset(
+        ctx.builder,
+        ctx.float_ty,
+        ctx.buffer_samplerates_ptr,
+        idx,
+        b"buf_samplerates_ptr\0",
+    );
+    Ok(LLVMBuildLoad2(
+        ctx.builder,
+        ctx.float_ty,
+        samplerates_ptr,
+        b"buf_samplerate\0".as_ptr().cast(),
+    ))
+}
+
 pub(super) unsafe fn lower_buffer_element_ptr_2d(
     ctx: &mut LoweringCtx<'_>,
     base: &str,

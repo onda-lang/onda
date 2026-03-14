@@ -103,6 +103,7 @@ struct PreviewBufferBinding {
     _samples: Vec<f32>,
     frames: usize,
     channels: usize,
+    sample_rate_hz: f32,
     loaded_path: Option<PathBuf>,
 }
 
@@ -153,8 +154,9 @@ impl PreviewSession {
             .map_err(PreviewBuildError::Runtime)?;
         }
 
-        let buffer_bindings = bind_placeholder_buffers(&jit, &mut instance, options.block_size)
-            .map_err(PreviewBuildError::Runtime)?;
+        let buffer_bindings =
+            bind_placeholder_buffers(&jit, &mut instance, options.block_size, options.sample_rate)
+                .map_err(PreviewBuildError::Runtime)?;
 
         Ok(Self {
             path,
@@ -278,8 +280,8 @@ impl PreviewSession {
         path: impl AsRef<Path>,
     ) -> Result<(), Diagnostic> {
         let path = path.as_ref();
-        let (samples, channels, _sample_rate_hz) = read_wav_interleaved_f32(path)?;
-        self.bind_buffer_samples(name, samples, channels, Some(path.to_path_buf()))
+        let (samples, channels, sample_rate_hz) = read_wav_interleaved_f32(path)?;
+        self.bind_buffer_samples(name, samples, channels, sample_rate_hz as f32, Some(path.to_path_buf()))
     }
 
     pub fn clear_buffer(&mut self, name: &str) -> Result<(), Diagnostic> {
@@ -298,7 +300,7 @@ impl PreviewSession {
         let channels = default_preview_buffer_channels(desc.channels());
         let frames = self.options.block_size.max(1);
         let samples = vec![0.0_f32; frames.saturating_mul(channels)];
-        self.bind_buffer_samples(name, samples, channels, None)
+        self.bind_buffer_samples(name, samples, channels, self.options.sample_rate, None)
     }
 
     fn bind_buffer_samples(
@@ -306,6 +308,7 @@ impl PreviewSession {
         name: &str,
         samples: Vec<f32>,
         channels: usize,
+        sample_rate_hz: f32,
         loaded_path: Option<PathBuf>,
     ) -> Result<(), Diagnostic> {
         let Some(index) = self.jit.buffer_index(name) else {
@@ -348,6 +351,7 @@ impl PreviewSession {
                     _samples: Vec::new(),
                     frames: 0,
                     channels: 0,
+                    sample_rate_hz: self.options.sample_rate,
                     loaded_path: None,
                 });
         }
@@ -355,6 +359,7 @@ impl PreviewSession {
             _samples: samples,
             frames,
             channels,
+            sample_rate_hz,
             loaded_path,
         };
         self.rebuild_instance()?;
@@ -393,6 +398,7 @@ impl PreviewSession {
                 binding._samples.as_mut_ptr().cast::<u8>(),
                 binding.frames,
                 binding.channels,
+                binding.sample_rate_hz,
                 PrimitiveType::F32,
             )?;
         }
@@ -415,6 +421,7 @@ fn bind_placeholder_buffers(
     jit: &JitProgram,
     instance: &mut Instance,
     block_size: usize,
+    sample_rate: f32,
 ) -> Result<Vec<PreviewBufferBinding>, Diagnostic> {
     let mut bindings = Vec::with_capacity(jit.buffer_count());
     for (index, desc) in jit.buffers().iter().enumerate() {
@@ -438,12 +445,14 @@ fn bind_placeholder_buffers(
             samples.as_mut_ptr().cast::<u8>(),
             frames,
             channels,
+            sample_rate,
             PrimitiveType::F32,
         )?;
         bindings.push(PreviewBufferBinding {
             _samples: samples,
             frames,
             channels,
+            sample_rate_hz: sample_rate,
             loaded_path: None,
         });
     }

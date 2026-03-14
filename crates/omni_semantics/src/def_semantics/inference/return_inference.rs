@@ -106,6 +106,11 @@ fn infer_expr_type_for_def_return_inference_with_call_overrides(
                     return Some(PrimitiveType::I32);
                 }
             }
+            if let Some(base) = parse_buffer_samplerate_instance_base(name) {
+                if is_builtin_receiver_for_return_inference(base, locals) {
+                    return Some(PrimitiveType::F32);
+                }
+            }
             if is_internal_buffer_2d_fn(name) {
                 if let Some(CallArg {
                     expr: Expr::Var { name: base, .. },

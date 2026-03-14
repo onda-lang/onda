@@ -56,6 +56,7 @@ pub(super) struct ProcSlotBufferRefArrays {
     pub(super) ptrs_base: LLVMValueRef,
     pub(super) frames_base: LLVMValueRef,
     pub(super) channels_base: LLVMValueRef,
+    pub(super) samplerates_base: LLVMValueRef,
     pub(super) len: usize,
 }
 
@@ -81,6 +82,7 @@ pub(super) struct LoweringCtx<'a> {
     pub(super) buffer_ptrs: LLVMValueRef,
     pub(super) buffer_frames_ptr: LLVMValueRef,
     pub(super) buffer_channels_ptr: LLVMValueRef,
+    pub(super) buffer_samplerates_ptr: LLVMValueRef,
     pub(super) frame_idx: LLVMValueRef,
     pub(super) state_slots: &'a HashMap<String, StateSlot>,
     pub(super) array_base_ptrs: &'a HashMap<String, LLVMValueRef>,
@@ -166,6 +168,7 @@ pub(super) struct DefBufferParamInfo {
     pub(super) ptr: LLVMValueRef,
     pub(super) frames: LLVMValueRef,
     pub(super) channels: LLVMValueRef,
+    pub(super) sample_rate: LLVMValueRef,
     pub(super) elem_ty: PrimitiveType,
     pub(super) declared_channels: TypedBufferChannels,
 }

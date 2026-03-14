@@ -28,6 +28,7 @@ pub(in crate::orc_backend) unsafe fn build_event_ir(
     let buffer_meta = build_buffer_binding_metadata(typed);
 
     for (event_idx, event) in typed.events.iter().enumerate() {
+        let float_ptr_ty_param = LLVMPointerType(float_ty, 0);
         let mut arg_types = [
             i8_ptr_ty,
             i8_ptr_ty,
@@ -35,6 +36,7 @@ pub(in crate::orc_backend) unsafe fn build_event_ir(
             i8_ptr_ptr_ty,
             i32_ptr_ty,
             i32_ptr_ty,
+            float_ptr_ty_param,
         ];
         let fn_name = CString::new(format!("omni_event_{event_idx}"))
             .map_err(|_| Diagnostic::internal("invalid event function name"))?;
@@ -58,6 +60,7 @@ pub(in crate::orc_backend) unsafe fn build_event_ir(
             let buffer_ptrs = LLVMGetParam(fn_ref, 3);
             let buffer_frames_ptr = LLVMGetParam(fn_ref, 4);
             let buffer_channels_ptr = LLVMGetParam(fn_ref, 5);
+            let buffer_samplerates_ptr = LLVMGetParam(fn_ref, 6);
 
             let storage = build_state_array_storage(
                 builder,
@@ -93,6 +96,7 @@ pub(in crate::orc_backend) unsafe fn build_event_ir(
                 buffer_ptrs,
                 buffer_frames_ptr,
                 buffer_channels_ptr,
+                buffer_samplerates_ptr,
                 frame_idx: LLVMConstInt(i32_ty, 0, 0),
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,

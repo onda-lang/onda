@@ -9128,6 +9128,7 @@ fn buffer_mono_read_uses_clamped_index_path() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9158,6 +9159,7 @@ fn buffer_i32_mono_read_uses_clamped_index_path() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::I32,
     )
     .expect("bind buffer");
@@ -9186,6 +9188,7 @@ fn buffer_i64_mono_read_uses_clamped_index_path() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::I64,
     )
     .expect("bind buffer");
@@ -9214,6 +9217,7 @@ fn buffer_bool_mono_read_uses_clamped_index_path() {
         buf.as_mut_ptr(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::Bool,
     )
     .expect("bind buffer");
@@ -9241,6 +9245,7 @@ fn unsafe_builtins_support_mono_buffers() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9270,6 +9275,7 @@ fn validate_bindings_and_process_unchecked_work() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9304,6 +9310,7 @@ fn validate_bindings_rejects_missing_required_bindings() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9330,6 +9337,7 @@ fn validate_domains_allow_partial_revalidation() {
         buf_a.as_mut_ptr().cast::<u8>(),
         buf_a.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer A");
@@ -9355,6 +9363,7 @@ fn validate_domains_allow_partial_revalidation() {
         buf_b.as_mut_ptr().cast::<u8>(),
         buf_b.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer B");
@@ -9390,6 +9399,7 @@ fn buffer_stereo_two_dim_read_and_clamp_work() {
         buf.as_mut_ptr().cast::<u8>(),
         4,
         2,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9424,6 +9434,7 @@ fn buffer_stereo_two_dim_write_works() {
         buf.as_mut_ptr().cast::<u8>(),
         4,
         2,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9468,6 +9479,7 @@ fn buffer_static_chans_returns_declared_channel_count() {
         buf.as_mut_ptr().cast::<u8>(),
         4,
         2,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9501,6 +9513,7 @@ fn buffer_dynamic_chans_returns_runtime_channel_count() {
         buf.as_mut_ptr().cast::<u8>(),
         4,
         3,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9533,6 +9546,7 @@ fn buffer_dynamic_len_returns_runtime_frame_count() {
         buf.as_mut_ptr().cast::<u8>(),
         3,
         2,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9561,6 +9575,7 @@ fn def_can_take_mono_buffer_typed_param() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9594,6 +9609,7 @@ fn def_dynamic_buffer_len_returns_runtime_frame_count() {
         buf.as_mut_ptr().cast::<u8>(),
         3,
         2,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9625,6 +9641,7 @@ fn def_can_take_stereo_buffer_typed_param() {
         buf.as_mut_ptr().cast::<u8>(),
         4,
         2,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9950,6 +9967,7 @@ fn stdlib_buffer_read_mono_compiles_and_runs() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -9985,6 +10003,7 @@ fn stdlib_buffer_read_linear_and_cubic_with_channel_compiles_and_runs() {
         buf.as_mut_ptr().cast::<u8>(),
         4,
         2,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -10015,6 +10034,7 @@ fn stdlib_buffer_is_auto_imported_for_arrays_and_buffers() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -10045,6 +10065,7 @@ fn stdlib_lookup_write_array_and_buffer_compiles_and_runs() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -11025,6 +11046,7 @@ fn def_can_infer_duck_typed_mono_buffer_param() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -11054,6 +11076,7 @@ fn def_duck_typed_buffer_inference_propagates_through_def_calls() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -11084,6 +11107,7 @@ fn def_duck_typed_buffer_param_allows_mixed_element_types() {
         a.as_mut_ptr().cast::<u8>(),
         a.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind f32 buffer");
@@ -11095,6 +11119,7 @@ fn def_duck_typed_buffer_param_allows_mixed_element_types() {
         b.as_mut_ptr().cast::<u8>(),
         b.len(),
         1,
+        48_000.0,
         PrimitiveType::F64,
     )
     .expect("bind f64 buffer");
@@ -11124,6 +11149,7 @@ fn def_indexable_param_accepts_array_and_buffer_call_sites() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -11158,6 +11184,7 @@ fn def_indexable_param_supports_two_dimensional_buffer_indexing() {
         buf.as_mut_ptr().cast::<u8>(),
         4,
         2,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -11503,6 +11530,7 @@ fn proc_can_bind_and_read_top_level_buffer() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -12135,6 +12163,7 @@ fn proc_instance_array_indexed_call_dynamic_index_selects_slot_buffer_binding() 
         buf1.as_mut_ptr().cast::<u8>(),
         buf1.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buf1");
@@ -12144,6 +12173,7 @@ fn proc_instance_array_indexed_call_dynamic_index_selects_slot_buffer_binding() 
         buf2.as_mut_ptr().cast::<u8>(),
         buf2.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buf2");
@@ -12242,6 +12272,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process
         buf1.as_mut_ptr().cast::<u8>(),
         buf1.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buf1");
@@ -12251,6 +12282,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process
         buf2_old.as_mut_ptr().cast::<u8>(),
         buf2_old.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buf2 old");
@@ -12271,6 +12303,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process
         buf2_new.as_mut_ptr().cast::<u8>(),
         buf2_new.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buf2 new");
@@ -12304,6 +12337,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_
         buf1.as_mut_ptr().cast::<u8>(),
         buf1.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buf1");
@@ -12313,6 +12347,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_
         buf2_old.as_mut_ptr().cast::<u8>(),
         buf2_old.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buf2 old");
@@ -12333,6 +12368,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_
         buf2_new.as_mut_ptr().cast::<u8>(),
         buf2_new.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buf2 new");
@@ -12580,6 +12616,7 @@ fn proc_deep_nested_buffer_binding_compiles_and_runs() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");
@@ -13486,6 +13523,7 @@ fn def_typed_buffer_param_baseline() {
         buf_data.as_ptr() as *mut u8,
         frames,
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind");
@@ -14401,6 +14439,7 @@ fn buffer_param_mutation_compile_and_run() {
         buf_data.as_mut_ptr() as *mut u8,
         frames,
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind");
@@ -15989,6 +16028,7 @@ fn proc_local_def_owner_generic_buffer_param() {
         buf.as_mut_ptr().cast::<u8>(),
         buf.len(),
         1,
+        48_000.0,
         PrimitiveType::F32,
     )
     .expect("bind buffer");

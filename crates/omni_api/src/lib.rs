@@ -560,6 +560,7 @@ pub unsafe extern "C" fn omni_bind_buffer(
     ptr: *mut c_void,
     frames: i32,
     channels: i32,
+    sample_rate: f32,
     elem_type: i32,
 ) -> i32 {
     if instance.is_null() || index < 0 || frames < 0 || channels < 0 {
@@ -574,6 +575,7 @@ pub unsafe extern "C" fn omni_bind_buffer(
         ptr.cast::<u8>(),
         frames as usize,
         channels as usize,
+        sample_rate,
         elem_ty,
     ) {
         Ok(_) => 0,

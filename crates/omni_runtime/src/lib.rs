@@ -25,6 +25,7 @@ pub struct Instance {
     pub(crate) buffer_ptrs: Vec<*mut u8>,
     pub(crate) buffer_frames: Vec<i32>,
     pub(crate) buffer_channels: Vec<i32>,
+    pub(crate) buffer_sample_rates: Vec<f32>,
     pub(crate) inputs_validated: bool,
     pub(crate) outputs_validated: bool,
     pub(crate) buffers_validated: bool,
@@ -47,6 +48,7 @@ pub struct BoundBuffer {
     ptr: *mut u8,
     frames_i32: i32,
     channels_i32: i32,
+    sample_rate_hz: f32,
     elem_ty: PrimitiveType,
 }
 
@@ -229,6 +231,7 @@ pub fn create_instance(
         buffer_ptrs: vec![std::ptr::null_mut(); buffer_count],
         buffer_frames: vec![0_i32; buffer_count],
         buffer_channels: vec![0_i32; buffer_count],
+        buffer_sample_rates: vec![0.0_f32; buffer_count],
         inputs_validated: required_in_channels == 0,
         outputs_validated: required_out_channels == 0,
         buffers_validated: buffer_count == 0,
@@ -377,6 +380,7 @@ pub fn bind_buffer(
     ptr: *mut u8,
     frames: usize,
     channels: usize,
+    sample_rate_hz: f32,
     elem_ty: PrimitiveType,
 ) -> Result<(), Diagnostic> {
     let Some(desc) = instance.program.buffers().get(index) else {
@@ -403,6 +407,17 @@ pub fn bind_buffer(
             format!(
                 "buffer '{}' requires frames > 0 and channels > 0",
                 desc.name()
+            ),
+            0,
+            0,
+        ));
+    }
+    if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 {
+        return Err(Diagnostic::runtime(
+            format!(
+                "buffer '{}' requires finite sample_rate > 0, got {}",
+                desc.name(),
+                sample_rate_hz
             ),
             0,
             0,
@@ -476,6 +491,7 @@ pub fn bind_buffer(
         ptr,
         frames_i32,
         channels_i32,
+        sample_rate_hz,
         elem_ty,
     });
     instance.buffers_validated = false;
@@ -578,6 +594,7 @@ pub fn process_bound(instance: &mut Instance, frames: usize) -> Result<(), Diagn
         &instance.buffer_ptrs,
         &instance.buffer_frames,
         &instance.buffer_channels,
+        &instance.buffer_sample_rates,
     )?;
     instance.program.process_bound(
         &mut instance.state,
@@ -588,6 +605,7 @@ pub fn process_bound(instance: &mut Instance, frames: usize) -> Result<(), Diagn
         &instance.buffer_ptrs,
         &instance.buffer_frames,
         &instance.buffer_channels,
+        &instance.buffer_sample_rates,
     )?;
     Ok(())
 }
@@ -608,6 +626,7 @@ pub fn trigger_event_by_index(
         &instance.buffer_ptrs,
         &instance.buffer_frames,
         &instance.buffer_channels,
+        &instance.buffer_sample_rates,
     )
 }
 
@@ -628,6 +647,7 @@ pub unsafe fn trigger_event_by_index_unchecked(
         &instance.buffer_ptrs,
         &instance.buffer_frames,
         &instance.buffer_channels,
+        &instance.buffer_sample_rates,
     )
 }
 
@@ -645,6 +665,7 @@ pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<(), Diagnosti
         &instance.buffer_ptrs,
         &instance.buffer_frames,
         &instance.buffer_channels,
+        &instance.buffer_sample_rates,
     )?;
     Ok(())
 }
@@ -661,6 +682,7 @@ fn prepare_buffer_ptrs_from_bindings(instance: &mut Instance) -> Result<(), Diag
         instance.buffer_ptrs[idx] = bound.ptr;
         instance.buffer_frames[idx] = bound.frames_i32;
         instance.buffer_channels[idx] = bound.channels_i32;
+        instance.buffer_sample_rates[idx] = bound.sample_rate_hz;
         let _ = bound.elem_ty;
     }
     Ok(())
