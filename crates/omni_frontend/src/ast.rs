@@ -92,6 +92,9 @@ pub enum BlockKind {
 pub struct PortBlock {
     pub loc: Span,
     pub decls: Vec<PortDecl>,
+    pub deferred_count: Option<Expr>,
+    pub deferred_default_ty: Option<DeclType>,
+    pub deferred_prefix: String,
 }
 
 impl Deref for PortBlock {
@@ -130,6 +133,8 @@ impl<'a> IntoIterator for &'a mut PortBlock {
 pub struct ParamBlock {
     pub loc: Span,
     pub decls: Vec<ParamDecl>,
+    pub deferred_count: Option<Expr>,
+    pub deferred_default_ty: Option<DeclType>,
 }
 
 impl Deref for ParamBlock {
@@ -412,8 +417,14 @@ pub struct ProcessorDef {
     pub name: String,
     pub type_params: Vec<String>,
     pub ins: Vec<PortDecl>,
+    pub ins_deferred_count: Option<Expr>,
+    pub ins_deferred_default_ty: Option<DeclType>,
     pub outs: Vec<PortDecl>,
+    pub outs_deferred_count: Option<Expr>,
+    pub outs_deferred_default_ty: Option<DeclType>,
     pub params: Vec<ParamDecl>,
+    pub params_deferred_count: Option<Expr>,
+    pub params_deferred_default_ty: Option<DeclType>,
     pub events: Vec<EventDef>,
     pub buffers: Vec<BufferDecl>,
     pub has_init_block: bool,

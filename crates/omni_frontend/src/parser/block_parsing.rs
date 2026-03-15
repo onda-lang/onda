@@ -8,17 +8,6 @@ struct ParsedNamedDecl {
     range: Option<DeclRange>,
 }
 
-fn parse_positive_count_literal(
-    pair: Pair<'_, Rule>,
-    non_positive_message: &str,
-) -> Result<usize, Vec<Diagnostic>> {
-    let count_i = parse_int(pair.as_str())?;
-    if count_i <= 0 {
-        return Err(vec![syntax_at_pair(&pair, non_positive_message)]);
-    }
-    Ok(count_i as usize)
-}
-
 fn parse_decl_type_item(
     pair: Pair<'_, Rule>,
     missing_type_message: &str,
@@ -109,6 +98,44 @@ fn validate_count_prefix_matches(
     Ok(())
 }
 
+enum SectionCount {
+    Literal(usize),
+    Deferred(Expr),
+}
+
+fn parse_section_count_inner(pair: Pair<'_, Rule>) -> Result<SectionCount, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
+    match pair.as_rule() {
+        Rule::int_lit => {
+            let n = parse_int(pair.as_str())?;
+            Ok(SectionCount::Literal(n as usize))
+        }
+        Rule::path_ident | Rule::namespace_ref => {
+            Ok(SectionCount::Deferred(
+                Expr::var(pair.as_str().to_owned()).with_loc(loc),
+            ))
+        }
+        Rule::section_count => {
+            let mut inner = pair.into_inner();
+            let Some(inner_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing section count expression",
+                )]);
+            };
+            match inner_pair.as_rule() {
+                Rule::expr => Ok(SectionCount::Deferred(parse_expr(inner_pair)?)),
+                _ => parse_section_count_inner(inner_pair),
+            }
+        }
+        Rule::expr => Ok(SectionCount::Deferred(parse_expr(pair)?)),
+        _ => Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "section count must be an integer literal, constant name, or parenthesized expression",
+        )]),
+    }
+}
+
 pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, Vec<Diagnostic>> {
     let block_loc = stmt_loc_from_pair(&block_pair);
     let (block_name, prefix) = match block_pair.as_rule() {
@@ -121,6 +148,7 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
     let mut ports = Vec::new();
     let mut has_list = false;
     let mut count_prefix: Option<usize> = None;
+    let mut deferred_count: Option<Expr> = None;
     let mut default_ty: Option<DeclType> = None;
 
     for child in block_pair.into_inner() {
@@ -128,17 +156,30 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
             Rule::section_default_decl_type => {
                 default_ty = Some(parse_section_default_decl_type(child, block_name)?);
             }
-            Rule::int_lit => {
-                if count_prefix.is_some() {
+            Rule::section_count => {
+                let count_loc = stmt_loc_from_pair(&child);
+                if count_prefix.is_some() || deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(
                         &child,
                         format!("{block_name} block count can only be specified once"),
                     )]);
                 }
-                count_prefix = Some(parse_positive_count_literal(
-                    child,
-                    &format!("{block_name} count shorthand must be greater than zero"),
-                )?);
+                match parse_section_count_inner(child)? {
+                    SectionCount::Literal(n) => {
+                        if n == 0 {
+                            return Err(vec![syntax_at_loc(
+                                count_loc.as_ref(),
+                                format!(
+                                    "{block_name} count shorthand must be greater than zero"
+                                ),
+                            )]);
+                        }
+                        count_prefix = Some(n);
+                    }
+                    SectionCount::Deferred(expr) => {
+                        deferred_count = Some(expr);
+                    }
+                }
             }
             Rule::port_list => {
                 has_list = true;
@@ -170,7 +211,18 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
     }
 
     if has_list {
-        validate_count_prefix_matches(block_name, count_prefix, ports.len(), block_loc.as_ref())?;
+        if deferred_count.is_some() {
+            // Deferred count + explicit list: can't validate at parse time, defer to rewrite
+        } else {
+            validate_count_prefix_matches(
+                block_name,
+                count_prefix,
+                ports.len(),
+                block_loc.as_ref(),
+            )?;
+        }
+    } else if deferred_count.is_some() {
+        // Deferred count without explicit list: expansion happens in rewrite pass
     } else if let Some(n) = count_prefix {
         for idx in 1..=n {
             ports.push(PortDecl {
@@ -184,9 +236,18 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
         }
     }
 
+    let deferred_default_ty = if deferred_count.is_some() {
+        default_ty
+    } else {
+        None
+    };
+
     Ok(PortBlock {
         loc: block_loc,
         decls: ports,
+        deferred_count,
+        deferred_default_ty,
+        deferred_prefix: prefix.to_owned(),
     })
 }
 
@@ -197,6 +258,7 @@ pub(super) fn parse_params_block(
     let mut params = Vec::new();
     let mut has_list = false;
     let mut count_prefix: Option<usize> = None;
+    let mut deferred_count: Option<Expr> = None;
     let mut default_ty: Option<DeclType> = None;
 
     for child in block_pair.into_inner() {
@@ -204,17 +266,28 @@ pub(super) fn parse_params_block(
             Rule::section_default_decl_type => {
                 default_ty = Some(parse_section_default_decl_type(child, "params")?);
             }
-            Rule::int_lit => {
-                if count_prefix.is_some() {
+            Rule::section_count => {
+                let count_loc = stmt_loc_from_pair(&child);
+                if count_prefix.is_some() || deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(
                         &child,
                         "params block count can only be specified once",
                     )]);
                 }
-                count_prefix = Some(parse_positive_count_literal(
-                    child,
-                    "params count shorthand must be greater than zero",
-                )?);
+                match parse_section_count_inner(child)? {
+                    SectionCount::Literal(n) => {
+                        if n == 0 {
+                            return Err(vec![syntax_at_loc(
+                                count_loc.as_ref(),
+                                "params count shorthand must be greater than zero",
+                            )]);
+                        }
+                        count_prefix = Some(n);
+                    }
+                    SectionCount::Deferred(expr) => {
+                        deferred_count = Some(expr);
+                    }
+                }
             }
             Rule::param_list => {
                 has_list = true;
@@ -243,7 +316,16 @@ pub(super) fn parse_params_block(
     }
 
     if has_list {
-        validate_count_prefix_matches("params", count_prefix, params.len(), block_loc.as_ref())?;
+        if deferred_count.is_none() {
+            validate_count_prefix_matches(
+                "params",
+                count_prefix,
+                params.len(),
+                block_loc.as_ref(),
+            )?;
+        }
+    } else if deferred_count.is_some() {
+        // Expansion happens in rewrite pass
     } else if let Some(n) = count_prefix {
         for idx in 1..=n {
             params.push(ParamDecl {
@@ -257,9 +339,17 @@ pub(super) fn parse_params_block(
         }
     }
 
+    let deferred_default_ty = if deferred_count.is_some() {
+        default_ty
+    } else {
+        None
+    };
+
     Ok(ParamBlock {
         loc: block_loc,
         decls: params,
+        deferred_count,
+        deferred_default_ty,
     })
 }
 
@@ -695,8 +785,14 @@ pub(super) fn parse_proc_block(
     let mut name: Option<String> = None;
     let mut type_params = Vec::new();
     let mut ins = Vec::new();
+    let mut ins_deferred_count: Option<Expr> = None;
+    let mut ins_deferred_default_ty: Option<DeclType> = None;
     let mut outs = Vec::new();
+    let mut outs_deferred_count: Option<Expr> = None;
+    let mut outs_deferred_default_ty: Option<DeclType> = None;
     let mut params = Vec::new();
+    let mut params_deferred_count: Option<Expr> = None;
+    let mut params_deferred_default_ty: Option<DeclType> = None;
     let mut events: Option<Vec<EventDef>> = None;
     let mut buffers = Vec::new();
     let mut init: Option<InitBlock> = None;
@@ -720,22 +816,31 @@ pub(super) fn parse_proc_block(
                 }
             }
             Rule::ins_block => {
-                if !ins.is_empty() {
+                if !ins.is_empty() || ins_deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(&child, "duplicate proc ins block")]);
                 }
-                ins = parse_port_block(child)?.decls;
+                let pb = parse_port_block(child)?;
+                ins = pb.decls;
+                ins_deferred_count = pb.deferred_count;
+                ins_deferred_default_ty = pb.deferred_default_ty;
             }
             Rule::outs_block => {
-                if !outs.is_empty() {
+                if !outs.is_empty() || outs_deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(&child, "duplicate proc outs block")]);
                 }
-                outs = parse_port_block(child)?.decls;
+                let pb = parse_port_block(child)?;
+                outs = pb.decls;
+                outs_deferred_count = pb.deferred_count;
+                outs_deferred_default_ty = pb.deferred_default_ty;
             }
             Rule::params_block => {
-                if !params.is_empty() {
+                if !params.is_empty() || params_deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(&child, "duplicate proc params block")]);
                 }
-                params = parse_params_block(child)?.decls;
+                let pb = parse_params_block(child)?;
+                params = pb.decls;
+                params_deferred_count = pb.deferred_count;
+                params_deferred_default_ty = pb.deferred_default_ty;
             }
             Rule::events_block => {
                 if events.is_some() {
@@ -826,8 +931,14 @@ pub(super) fn parse_proc_block(
         name,
         type_params,
         ins,
+        ins_deferred_count,
+        ins_deferred_default_ty,
         outs,
+        outs_deferred_count,
+        outs_deferred_default_ty,
         params,
+        params_deferred_count,
+        params_deferred_default_ty,
         events: events.unwrap_or_default(),
         buffers,
         has_init_block: init.is_some(),

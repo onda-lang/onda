@@ -18,22 +18,23 @@ namespace_ref_segment = { ident ~ namespace_call_arg_list? }
 namespace_call_arg_list = { "<" ~ namespace_call_arg ~ ("," ~ namespace_call_arg)* ~ ">" }
 namespace_call_arg = { (ident ~ "=")? ~ expr }
 
+section_count = { int_lit | namespace_ref | path_ident | "(" ~ expr ~ ")" }
 ins_block = {
   ins_kw ~ section_default_decl_type? ~ (
-    (int_lit? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ port_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
-    | (int_lit ~ NEWLINE*)
+    (section_count? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ port_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
+    | (section_count ~ NEWLINE*)
   )
 }
 outs_block = {
   outs_kw ~ section_default_decl_type? ~ (
-    (int_lit? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ port_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
-    | (int_lit ~ NEWLINE*)
+    (section_count? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ port_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
+    | (section_count ~ NEWLINE*)
   )
 }
 params_block = {
   "params" ~ section_default_decl_type? ~ (
-    (int_lit? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ param_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
-    | (int_lit ~ NEWLINE*)
+    (section_count? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ param_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
+    | (section_count ~ NEWLINE*)
   )
 }
 buffers_block = {

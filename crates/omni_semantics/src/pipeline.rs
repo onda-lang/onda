@@ -1865,7 +1865,7 @@ pub fn analyze_with_options(
     }
 }
 
-fn uniform_port_type(
+pub(crate) fn uniform_port_type(
     names: &[String],
     types: &HashMap<String, PrimitiveType>,
 ) -> Option<PrimitiveType> {

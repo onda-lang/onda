@@ -16930,3 +16930,297 @@ sample {
         errors
     );
 }
+
+#[test]
+fn section_count_const_outs_compiles_and_runs() {
+    let src = r#"
+const N = 2
+ins N
+outs N
+sample {
+  out1 = in1 * 2.0
+  out2 = in2 * 3.0
+}
+"#;
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 2);
+    assert_eq!(out_channels, 2);
+
+    let input = vec![1.0_f32, 10.0, 2.0, 20.0];
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 2.0, 1e-6);
+    assert_near(output[1], 30.0, 1e-6);
+    assert_near(output[2], 4.0, 1e-6);
+    assert_near(output[3], 60.0, 1e-6);
+}
+
+#[test]
+fn section_count_const_params_compiles_and_runs() {
+    let src = r#"
+const NUM_PARAMS = 2
+outs 1
+params NUM_PARAMS
+sample {
+  out1 = param1 + param2
+}
+"#;
+    let frames = 2;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 1);
+
+    set_param_f32(&mut instance, "param1", 3.0);
+    set_param_f32(&mut instance, "param2", 7.0);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 10.0, 1e-6);
+}
+
+#[test]
+fn section_count_expr_outs_compiles_and_runs() {
+    let src = r#"
+const N = 1
+outs (N + 1)
+sample {
+  out1 = 5.0
+  out2 = 10.0
+}
+"#;
+    let frames = 2;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 5.0, 1e-6);
+    assert_near(output[1], 10.0, 1e-6);
+}
+
+#[test]
+fn section_count_namespace_generic_proc_outs_compiles_and_runs() {
+    let src = r#"
+namespace Synth<Num = 2>:
+  proc Voice:
+    ins Num
+    outs Num
+    sample:
+      for i in 0..Num:
+        outs[i] = ins[i] * 2.0
+
+outs 2
+init:
+  v = Synth<2>::Voice()
+sample:
+  out1 = v(1.0, 10.0).out1
+  out2 = v.out2
+"#;
+    let frames = 2;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 2.0, 1e-6);
+    assert_near(output[1], 20.0, 1e-6);
+}
+
+#[test]
+fn section_count_namespace_generic_proc_default_param_compiles_and_runs() {
+    let src = r#"
+namespace FX<N = 4>:
+  proc Mixer:
+    ins N
+    outs 1
+    sample:
+      sum = 0.0
+      for i in 0..N:
+        sum = sum + ins[i]
+      out1 = sum
+
+outs 1
+init:
+  m = FX<3>::Mixer()
+sample:
+  out1 = m(1.0, 2.0, 3.0).out1
+"#;
+    let frames = 2;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 6.0, 1e-6);
+}
+
+#[test]
+fn section_count_const_with_default_type_compiles_and_runs() {
+    let src = r#"
+const N = 2
+ins N
+outs<f64> N
+sample {
+  for i in 0..N:
+    outs[i] = ins[i] * 2.0
+}
+"#;
+    let frames = 1;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+
+    let input = vec![1.5_f32, 2.5];
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 3.0, 1e-6);
+    assert_near(output[1], 5.0, 1e-6);
+}
+
+#[test]
+fn proc_port_index_outs_i_in_sample_compiles_and_runs() {
+    let src = r#"
+proc Voice:
+  ins 2
+  outs 2
+  sample:
+    for i in 0..2:
+      outs[i] = ins[i] * 2.0
+
+outs 2
+init:
+  v = Voice()
+sample:
+  out1 = v(1.0, 10.0).out1
+  out2 = v.out2
+"#;
+    let frames = 2;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 2.0, 1e-6);
+    assert_near(output[1], 20.0, 1e-6);
+}
+
+#[test]
+fn proc_port_index_params_i_in_sample_compiles_and_runs() {
+    let src = r#"
+proc Gain:
+  ins 2
+  outs 2
+  params 2
+  sample:
+    for i in 0..2:
+      outs[i] = ins[i] * params[i]
+
+outs 2
+init:
+  g = Gain()
+  g.param1 = 3.0
+  g.param2 = 5.0
+sample:
+  out1 = g(1.0, 10.0).out1
+  out2 = g.out2
+"#;
+    let frames = 2;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 3.0, 1e-6);
+    assert_near(output[1], 50.0, 1e-6);
+}
+
+#[test]
+fn section_count_namespace_generic_proc_params_i_compiles_and_runs() {
+    let src = r#"
+namespace FX<N = 2>:
+  proc WeightedSum:
+    ins N
+    outs 1
+    params N
+    sample:
+      sum = 0.0
+      for i in 0..N:
+        sum = sum + ins[i] * params[i]
+      out1 = sum
+
+outs 1
+init:
+  w = FX<3>::WeightedSum()
+  w.param1 = 1.0
+  w.param2 = 2.0
+  w.param3 = 3.0
+sample:
+  out1 = w(10.0, 20.0, 30.0).out1
+"#;
+    let frames = 2;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    // 10*1 + 20*2 + 30*3 = 10 + 40 + 90 = 140
+    assert_near(output[0], 140.0, 1e-6);
+}
+
+#[test]
+fn section_count_const_top_level_dynamic_ins_outs_compiles_and_runs() {
+    let src = r#"
+const N = 3
+ins N
+outs N
+sample:
+  for i in 0..N:
+    outs[i] = ins[i] + 1.0
+"#;
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 3);
+    assert_eq!(out_channels, 3);
+
+    let input = vec![10.0_f32, 20.0, 30.0];
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 11.0, 1e-6);
+    assert_near(output[1], 21.0, 1e-6);
+    assert_near(output[2], 31.0, 1e-6);
+}
+
+#[test]
+fn section_count_const_top_level_dynamic_params_compiles_and_runs() {
+    let src = r#"
+const N = 3
+outs 1
+params N
+sample:
+  sum = 0.0
+  for i in 0..N:
+    sum = sum + params[i]
+  out1 = sum
+"#;
+    let frames = 1;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 1);
+
+    set_param_f32(&mut instance, "param1", 5.0);
+    set_param_f32(&mut instance, "param2", 15.0);
+    set_param_f32(&mut instance, "param3", 25.0);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 45.0, 1e-6);
+}

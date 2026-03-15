@@ -313,6 +313,219 @@ pub(super) fn rewrite_blocks_namespace_refs(
     Ok(())
 }
 
+fn try_eval_const_count_i64(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Int { value, .. } => Some(*value),
+        Expr::Number { value, .. } => {
+            let v = *value;
+            if v == (v as i64 as f32) {
+                Some(v as i64)
+            } else {
+                None
+            }
+        }
+        Expr::Cast { expr, .. } => try_eval_const_count_i64(expr),
+        Expr::Binary { op, lhs, rhs, .. } => {
+            let l = try_eval_const_count_i64(lhs)?;
+            let r = try_eval_const_count_i64(rhs)?;
+            match op {
+                BinaryOp::Add => Some(l + r),
+                BinaryOp::Sub => Some(l - r),
+                BinaryOp::Mul => Some(l * r),
+                BinaryOp::Div if r != 0 => Some(l / r),
+                BinaryOp::Mod if r != 0 => Some(l % r),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn try_eval_const_count_expr(expr: &Expr) -> Option<usize> {
+    let v = try_eval_const_count_i64(expr)?;
+    if v > 0 {
+        Some(v as usize)
+    } else {
+        None
+    }
+}
+
+fn expand_deferred_port_count(
+    port_block: &mut PortBlock,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    let Some(mut count_expr) = port_block.deferred_count.take() else {
+        return Ok(());
+    };
+    rewrite_expr(&mut count_expr, current_ns, const_env, state, generated)?;
+    let Some(count) = try_eval_const_count_expr(&count_expr) else {
+        return Err(vec![Diagnostic::semantic_span(
+            format!(
+                "{} count expression must evaluate to a positive integer constant",
+                port_block.deferred_prefix
+            ),
+            count_expr.loc().span(),
+        )]);
+    };
+    let prefix = &port_block.deferred_prefix;
+    let default_ty = port_block.deferred_default_ty.take();
+    if port_block.decls.is_empty() {
+        for idx in 1..=count {
+            port_block.decls.push(PortDecl {
+                loc: port_block.loc.clone(),
+                name: format!("{prefix}{idx}"),
+                ty: default_ty.clone(),
+                ty_loc: Span::ZERO,
+                default: None,
+                range: None,
+            });
+        }
+    } else if port_block.decls.len() != count {
+        return Err(vec![Diagnostic::semantic_span(
+            format!(
+                "{} block count ({count}) does not match explicit declaration count ({})",
+                prefix,
+                port_block.decls.len()
+            ),
+            port_block.loc.as_ref(),
+        )]);
+    }
+    Ok(())
+}
+
+fn expand_deferred_param_count(
+    param_block: &mut ParamBlock,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    let Some(mut count_expr) = param_block.deferred_count.take() else {
+        return Ok(());
+    };
+    rewrite_expr(&mut count_expr, current_ns, const_env, state, generated)?;
+    let Some(count) = try_eval_const_count_expr(&count_expr) else {
+        return Err(vec![Diagnostic::semantic_span(
+            "params count expression must evaluate to a positive integer constant",
+            count_expr.loc().span(),
+        )]);
+    };
+    let default_ty = param_block.deferred_default_ty.take();
+    if param_block.decls.is_empty() {
+        for idx in 1..=count {
+            param_block.decls.push(ParamDecl {
+                loc: param_block.loc.clone(),
+                name: format!("param{idx}"),
+                ty: default_ty.clone(),
+                ty_loc: Span::ZERO,
+                default: None,
+                range: None,
+            });
+        }
+    } else if param_block.decls.len() != count {
+        return Err(vec![Diagnostic::semantic_span(
+            format!(
+                "params block count ({count}) does not match explicit declaration count ({})",
+                param_block.decls.len()
+            ),
+            param_block.loc.as_ref(),
+        )]);
+    }
+    Ok(())
+}
+
+fn expand_deferred_proc_port_count(
+    decls: &mut Vec<PortDecl>,
+    deferred_count: &mut Option<Expr>,
+    deferred_default_ty: &mut Option<DeclType>,
+    prefix: &str,
+    loc: &Span,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    let Some(mut count_expr) = deferred_count.take() else {
+        return Ok(());
+    };
+    rewrite_expr(&mut count_expr, current_ns, const_env, state, generated)?;
+    let Some(count) = try_eval_const_count_expr(&count_expr) else {
+        return Err(vec![Diagnostic::semantic_span(
+            format!("{prefix} count expression must evaluate to a positive integer constant"),
+            count_expr.loc().span(),
+        )]);
+    };
+    let default_ty = deferred_default_ty.take();
+    if decls.is_empty() {
+        for idx in 1..=count {
+            decls.push(PortDecl {
+                loc: loc.clone(),
+                name: format!("{prefix}{idx}"),
+                ty: default_ty.clone(),
+                ty_loc: Span::ZERO,
+                default: None,
+                range: None,
+            });
+        }
+    } else if decls.len() != count {
+        return Err(vec![Diagnostic::semantic_span(
+            format!(
+                "{prefix} block count ({count}) does not match explicit declaration count ({})",
+                decls.len()
+            ),
+            loc.as_ref(),
+        )]);
+    }
+    Ok(())
+}
+
+fn expand_deferred_proc_param_count(
+    decls: &mut Vec<ParamDecl>,
+    deferred_count: &mut Option<Expr>,
+    deferred_default_ty: &mut Option<DeclType>,
+    loc: &Span,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    let Some(mut count_expr) = deferred_count.take() else {
+        return Ok(());
+    };
+    rewrite_expr(&mut count_expr, current_ns, const_env, state, generated)?;
+    let Some(count) = try_eval_const_count_expr(&count_expr) else {
+        return Err(vec![Diagnostic::semantic_span(
+            "params count expression must evaluate to a positive integer constant",
+            count_expr.loc().span(),
+        )]);
+    };
+    let default_ty = deferred_default_ty.take();
+    if decls.is_empty() {
+        for idx in 1..=count {
+            decls.push(ParamDecl {
+                loc: loc.clone(),
+                name: format!("param{idx}"),
+                ty: default_ty.clone(),
+                ty_loc: Span::ZERO,
+                default: None,
+                range: None,
+            });
+        }
+    } else if decls.len() != count {
+        return Err(vec![Diagnostic::semantic_span(
+            format!(
+                "params block count ({count}) does not match explicit declaration count ({})",
+                decls.len()
+            ),
+            loc.as_ref(),
+        )]);
+    }
+    Ok(())
+}
+
 pub(super) fn rewrite_block_namespace_refs(
     block: &mut Block,
     current_ns: &str,
@@ -321,11 +534,13 @@ pub(super) fn rewrite_block_namespace_refs(
     generated: &mut Vec<Block>,
 ) -> Result<(), Vec<Diagnostic>> {
     match block {
-        Block::Ins(decls) | Block::Outs(decls) => {
-            rewrite_port_decls(decls, current_ns, const_env, state, generated)?;
+        Block::Ins(port_block) | Block::Outs(port_block) => {
+            expand_deferred_port_count(port_block, current_ns, const_env, state, generated)?;
+            rewrite_port_decls(port_block, current_ns, const_env, state, generated)?;
         }
-        Block::Params(decls) => {
-            rewrite_param_decls(decls, current_ns, const_env, state, generated)?;
+        Block::Params(param_block) => {
+            expand_deferred_param_count(param_block, current_ns, const_env, state, generated)?;
+            rewrite_param_decls(param_block, current_ns, const_env, state, generated)?;
         }
         Block::Const(_) => {}
         Block::Buffers(decls) => {
@@ -378,6 +593,38 @@ pub(super) fn rewrite_block_namespace_refs(
             rewrite_function_def(d, current_ns, const_env, state, generated)?;
         }
         Block::Proc(p) => {
+            expand_deferred_proc_port_count(
+                &mut p.ins,
+                &mut p.ins_deferred_count,
+                &mut p.ins_deferred_default_ty,
+                "in",
+                &p.loc,
+                current_ns,
+                const_env,
+                state,
+                generated,
+            )?;
+            expand_deferred_proc_port_count(
+                &mut p.outs,
+                &mut p.outs_deferred_count,
+                &mut p.outs_deferred_default_ty,
+                "out",
+                &p.loc,
+                current_ns,
+                const_env,
+                state,
+                generated,
+            )?;
+            expand_deferred_proc_param_count(
+                &mut p.params,
+                &mut p.params_deferred_count,
+                &mut p.params_deferred_default_ty,
+                &p.loc,
+                current_ns,
+                const_env,
+                state,
+                generated,
+            )?;
             rewrite_port_decls(&mut p.ins, current_ns, const_env, state, generated)?;
             rewrite_port_decls(&mut p.outs, current_ns, const_env, state, generated)?;
             rewrite_param_decls(&mut p.params, current_ns, const_env, state, generated)?;

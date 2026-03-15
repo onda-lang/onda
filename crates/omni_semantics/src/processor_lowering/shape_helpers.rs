@@ -151,7 +151,7 @@ pub(super) fn compute_proc_shape(
     let inferred_io = infer_numbered_io_from_sample(&proc.sample);
     let ins_ports = normalize_numbered_port_decls(&proc.ins, "in", inferred_io.max_in);
     let out_ports = normalize_numbered_port_decls(&proc.outs, "out", inferred_io.max_out);
-    let (ins, in_types, in_ports, in_array_slots) =
+    let (ins, in_types, in_ports, mut in_array_slots) =
         expand_proc_port_specs(&proc.name, &ins_ports, "input", options, errors);
     let (outs, out_types, _out_ports, out_array_slots) =
         expand_proc_port_specs(&proc.name, &out_ports, "output", options, errors);
@@ -167,6 +167,42 @@ pub(super) fn compute_proc_shape(
         .collect::<Vec<_>>();
     for (name, slots) in out_array_slots {
         field_array_slots.insert(name, slots);
+    }
+
+    // Add synthetic "ins"/"outs"/"params" array-slot entries for uniform scalar ports
+    // so that dynamic indexing (e.g. outs[i], ins[i], params[i]) can be rewritten to
+    // helper function calls during proc lowering.
+    if ins.len() > 1
+        && !in_array_slots.contains_key("ins")
+        && crate::pipeline::uniform_port_type(&ins, &in_types).is_some()
+    {
+        in_array_slots.insert("ins".to_owned(), ins.clone());
+    }
+    if outs.len() > 1
+        && !field_array_slots.contains_key("outs")
+        && crate::pipeline::uniform_port_type(&outs, &out_types).is_some()
+    {
+        field_array_slots.insert("outs".to_owned(), outs.clone());
+    }
+    if param_specs.len() > 1 && !field_array_slots.contains_key("params") {
+        let all_scalar_slots: Vec<String> = param_specs
+            .iter()
+            .flat_map(|s| s.slots.iter().map(|slot| slot.name.clone()))
+            .collect();
+        if all_scalar_slots.len() > 1 {
+            let first_ty = param_specs[0]
+                .slots
+                .first()
+                .map(|s| s.ty)
+                .unwrap_or(PrimitiveType::F32);
+            if param_specs
+                .iter()
+                .flat_map(|s| &s.slots)
+                .all(|s| s.ty == first_ty)
+            {
+                field_array_slots.insert("params".to_owned(), all_scalar_slots);
+            }
+        }
     }
 
     let mut typed_struct_defs = struct_defs_for_scalar_expr_inference(struct_defs);
@@ -533,6 +569,43 @@ pub(super) fn compute_proc_shape(
     let init_scalar_keys: HashSet<String> = proc_state_scalars.keys().cloned().collect();
     let init_writable_roots = collect_runtime_state_roots(&proc_state_scalars, &proc_state_arrays);
 
+    // Compute port index info for proc scopes (procs always have explicit port blocks)
+    let port_index_ins = if !ins.is_empty() {
+        crate::pipeline::uniform_port_type(&ins, &in_types)
+            .map(|ty| PortIndexInfo { count: ins.len(), elem_ty: ty })
+    } else {
+        None
+    };
+    let port_index_outs = if !outs.is_empty() {
+        crate::pipeline::uniform_port_type(&outs, &out_types)
+            .map(|ty| PortIndexInfo { count: outs.len(), elem_ty: ty })
+    } else {
+        None
+    };
+    let port_index_params = {
+        if !param_specs.is_empty() {
+            let first_ty = param_specs[0]
+                .slots
+                .first()
+                .map(|s| s.ty)
+                .unwrap_or(PrimitiveType::F32);
+            if param_specs
+                .iter()
+                .flat_map(|s| &s.slots)
+                .all(|s| s.ty == first_ty)
+            {
+                Some(PortIndexInfo {
+                    count: param_specs.iter().map(|s| s.slots.len()).sum(),
+                    elem_ty: first_ty,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
     // Register + analyze block scope state
     let mut block_known_scalars = reserved.clone();
     extend_known_scalars(&mut block_known_scalars, proc_struct_instances_typed.keys());
@@ -552,9 +625,9 @@ pub(super) fn compute_proc_shape(
             struct_defs: &typed_struct_defs,
             fn_signatures: &proc_fn_signatures,
             options,
-            port_index_ins: None,
-            port_index_outs: None,
-            port_index_params: None,
+            port_index_ins,
+            port_index_outs,
+            port_index_params,
         },
         RuntimeRegistrationMode::Block,
         &mut proc_state_scalars,
@@ -595,9 +668,9 @@ pub(super) fn compute_proc_shape(
             struct_defs: &typed_struct_defs,
             fn_signatures: &proc_fn_signatures,
             options,
-            port_index_ins: None,
-            port_index_outs: None,
-            port_index_params: None,
+            port_index_ins,
+            port_index_outs,
+            port_index_params,
         },
         RuntimeRegistrationMode::Sample,
         &mut proc_state_scalars,
@@ -658,9 +731,9 @@ pub(super) fn compute_proc_shape(
             struct_defs: &typed_struct_defs,
             fn_signatures: &proc_fn_signatures,
             options,
-            port_index_ins: None,
-            port_index_outs: None,
-            port_index_params: None,
+            port_index_ins,
+            port_index_outs,
+            port_index_params,
         },
         errors,
     );

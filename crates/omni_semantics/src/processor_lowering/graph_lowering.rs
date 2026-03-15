@@ -197,6 +197,9 @@ fn upsert_top_level_port_block(blocks: &mut Vec<Block>, kind: BlockKind, ports: 
                 *existing = PortBlock {
                     loc: existing.loc.clone(),
                     decls: ports,
+                    deferred_count: None,
+                    deferred_default_ty: None,
+                    deferred_prefix: String::new(),
                 }
             }
             _ => {}
@@ -207,10 +210,16 @@ fn upsert_top_level_port_block(blocks: &mut Vec<Block>, kind: BlockKind, ports: 
         BlockKind::Ins => blocks.push(Block::Ins(PortBlock {
             loc: Default::default(),
             decls: ports,
+            deferred_count: None,
+            deferred_default_ty: None,
+            deferred_prefix: String::new(),
         })),
         BlockKind::Outs => blocks.push(Block::Outs(PortBlock {
             loc: Default::default(),
             decls: ports,
+            deferred_count: None,
+            deferred_default_ty: None,
+            deferred_prefix: String::new(),
         })),
         _ => {}
     }
