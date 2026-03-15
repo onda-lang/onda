@@ -300,7 +300,7 @@ pub(crate) fn validate_proc_expr_decl_order(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             ok &= validate_proc_expr_decl_order(inner, reserved, locals, out, errors);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 ok &= validate_proc_expr_decl_order(value, reserved, locals, out, errors);
             }
@@ -753,7 +753,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                 errors,
             );
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_proc_expr_symbols(
                     value,
@@ -1034,6 +1034,18 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             decl_ty: None,
                             generic_decl_ty: None,
                             is_typed_decl: false,
+                            typed_decl_ty_loc: Default::default(),
+                            expr: expr_rewritten,
+                        })
+                    }
+                    AssignTarget::Tuple(_) => {
+                        Some(Stmt::Assign {
+                            loc: source_loc.clone().into(),
+                            target_loc: Default::default(),
+                            target: target.clone(),
+                            decl_ty: *decl_ty,
+                            generic_decl_ty: generic_decl_ty.clone(),
+                            is_typed_decl: *is_typed_decl,
                             typed_decl_ty_loc: Default::default(),
                             expr: expr_rewritten,
                         })

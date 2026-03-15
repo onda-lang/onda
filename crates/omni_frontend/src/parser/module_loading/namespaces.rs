@@ -129,6 +129,11 @@ fn rebase_namespace_expr_locs(expr: &mut Expr, use_site_span: Span) {
                 rebase_namespace_expr_locs(&mut arg.expr, use_site_span);
             }
         }
+        Expr::Tuple { values, .. } => {
+            for value in values {
+                rebase_namespace_expr_locs(value, use_site_span);
+            }
+        }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
@@ -678,6 +683,10 @@ fn expr_key(expr: &Expr) -> String {
         Expr::Binary { op, lhs, rhs, .. } => {
             format!("bin({op:?},{},{})", expr_key(lhs), expr_key(rhs))
         }
+        Expr::Tuple { values, .. } => format!(
+            "tuple({})",
+            values.iter().map(expr_key).collect::<Vec<_>>().join(",")
+        ),
     }
 }
 

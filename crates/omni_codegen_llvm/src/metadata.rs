@@ -858,6 +858,21 @@ fn collect_expr_buffer_write_usage(
                 global_writes,
             );
         }
+        Expr::Tuple { values, .. } => {
+            for v in values {
+                collect_expr_buffer_write_usage(
+                    v,
+                    top_level_buffers,
+                    def_index_by_name,
+                    typed,
+                    def_buffer_param_positions,
+                    param_slot_by_name,
+                    summaries,
+                    param_writes,
+                    global_writes,
+                );
+            }
+        }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }

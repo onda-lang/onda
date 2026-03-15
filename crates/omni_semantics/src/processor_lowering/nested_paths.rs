@@ -102,7 +102,7 @@ pub(super) fn rewrite_nested_field_paths_in_expr(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_nested_field_paths_in_expr(inner, nested_fields)
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_nested_field_paths_in_expr(value, nested_fields);
             }
@@ -157,6 +157,7 @@ pub(super) fn rewrite_nested_field_paths_in_stmt(
                         rewrite_nested_field_paths_in_expr(end, nested_fields);
                     }
                 }
+                AssignTarget::Tuple(_) => {}
             }
             rewrite_nested_field_paths_in_expr(expr, nested_fields);
         }
@@ -279,7 +280,7 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
         Expr::Cast { expr: inner, .. }
         | Expr::UnaryNot { expr: inner, .. }
         | Expr::UnaryBitNot { expr: inner, .. } => remap_nested_symbols_in_expr(inner, remap),
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 remap_nested_symbols_in_expr(value, remap);
             }
@@ -327,6 +328,7 @@ pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<Stri
                         remap_nested_symbols_in_expr(end, remap);
                     }
                 }
+                AssignTarget::Tuple(_) => {}
             }
             remap_nested_symbols_in_expr(expr, remap);
         }
@@ -438,7 +440,7 @@ pub(super) fn prefix_self_fields_in_expr(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             prefix_self_fields_in_expr(inner, prefix, nested_field_names)
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 prefix_self_fields_in_expr(value, prefix, nested_field_names);
             }
@@ -484,6 +486,7 @@ pub(super) fn prefix_self_fields_in_stmt(
                         prefix_self_fields_in_expr(end, prefix, nested_field_names);
                     }
                 }
+                AssignTarget::Tuple(_) => {}
             }
             prefix_self_fields_in_expr(expr, prefix, nested_field_names);
         }

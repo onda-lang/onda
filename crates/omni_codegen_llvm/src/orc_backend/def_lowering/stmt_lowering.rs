@@ -18,9 +18,48 @@ pub(super) unsafe fn lower_def_stmt(
             Ok(false)
         }
         Stmt::Return { expr, .. } => {
-            let value = lower_def_expr(expr, ctx)?;
-            let ret_v = cast_def_value_to(ctx, value, ctx.return_ty, b"def_ret_cast\0");
-            LLVMBuildStore(ctx.builder, ret_v, ctx.return_slot);
+            let return_ty = ctx.return_ty.clone();
+            match &return_ty {
+                ReturnType::Scalar(scalar_ty) => {
+                    let value = lower_def_expr(expr, ctx)?;
+                    let ret_v =
+                        cast_def_value_to(ctx, value, *scalar_ty, b"def_ret_cast\0");
+                    LLVMBuildStore(ctx.builder, ret_v, ctx.return_slot);
+                }
+                ReturnType::Tuple(elem_tys) => {
+                    let Expr::Tuple { values, .. } = expr else {
+                        return Err(Diagnostic::internal(
+                            "tuple-returning def must return a tuple expression",
+                        ));
+                    };
+                    if values.len() != elem_tys.len() {
+                        return Err(Diagnostic::internal(format!(
+                            "tuple return arity mismatch: expected {}, got {}",
+                            elem_tys.len(),
+                            values.len()
+                        )));
+                    }
+                    let return_llvm_ty =
+                        llvm_ty_for_return_type(ctx.context, &return_ty);
+                    let mut agg = LLVMGetUndef(return_llvm_ty);
+                    for (i, (val_expr, elem_ty)) in
+                        values.iter().zip(elem_tys.iter()).enumerate()
+                    {
+                        let elem_ty = *elem_ty;
+                        let val = lower_def_expr(val_expr, ctx)?;
+                        let cast_v =
+                            cast_def_value_to(ctx, val, elem_ty, b"tup_elem_cast\0");
+                        agg = LLVMBuildInsertValue(
+                            ctx.builder,
+                            agg,
+                            cast_v,
+                            i as u32,
+                            b"tup_ins\0".as_ptr().cast(),
+                        );
+                    }
+                    LLVMBuildStore(ctx.builder, agg, ctx.return_slot);
+                }
+            }
             LLVMBuildBr(ctx.builder, ctx.return_block);
             Ok(true)
         }
@@ -76,6 +115,190 @@ unsafe fn lower_def_assign_stmt(
         AssignTarget::Slice { base, start, end } => {
             lower_def_slice_assign(base, start.as_ref(), end.as_ref(), expr, ctx)
         }
+        AssignTarget::Tuple(targets) => {
+            lower_def_tuple_destructure(targets, expr, ctx)
+        }
+    }
+}
+
+/// Lower a tuple literal expression. Returns the LLVM struct value and element types.
+unsafe fn lower_def_tuple_literal(
+    values: &[Expr],
+    ctx: &mut DefLoweringCtx<'_>,
+) -> Result<(LLVMValueRef, Vec<PrimitiveType>), Diagnostic> {
+    let mut elem_tys = Vec::new();
+    let mut elem_vals = Vec::new();
+    for val_expr in values {
+        let val = lower_def_expr(val_expr, ctx)?;
+        elem_tys.push(val.ty);
+        elem_vals.push(val.value);
+    }
+    let mut llvm_elem_tys: Vec<LLVMTypeRef> = elem_tys
+        .iter()
+        .map(|t| llvm_ty_for_primitive(ctx.context, *t))
+        .collect();
+    let struct_ty = LLVMStructTypeInContext(
+        ctx.context,
+        llvm_elem_tys.as_mut_ptr(),
+        llvm_elem_tys.len() as u32,
+        0,
+    );
+    let mut agg = LLVMGetUndef(struct_ty);
+    for (i, val) in elem_vals.into_iter().enumerate() {
+        agg = LLVMBuildInsertValue(
+            ctx.builder,
+            agg,
+            val,
+            i as u32,
+            b"tup_ins\0".as_ptr().cast(),
+        );
+    }
+    Ok((agg, elem_tys))
+}
+
+/// Lower a tuple-returning user call. Reuses the same call infrastructure as
+/// regular def-level UserCall lowering.
+unsafe fn lower_def_tuple_call(
+    name: &str,
+    type_args: &[CallTypeArg],
+    args: &[CallArg],
+    ctx: &mut DefLoweringCtx<'_>,
+) -> Result<(LLVMValueRef, Vec<PrimitiveType>), Diagnostic> {
+    let module = ctx.module;
+    let context = ctx.context;
+    let float_ty = ctx.float_ty;
+    let sample_rate = ctx.sample_rate;
+    let block_size = ctx.block_size;
+    let fast_math = ctx.fast_math_flags != LLVMFastMathNone;
+    let struct_fields = ctx.struct_fields;
+    let user_fn_param_names = ctx.user_fn_param_names;
+    let user_fn_param_defaults = ctx.user_fn_param_defaults;
+    let user_fn_param_kinds = ctx.user_fn_param_kinds;
+    let user_fn_param_by_ref = ctx.user_fn_param_by_ref;
+    let user_registry = ctx.user_registry as *mut UserFnRegistry;
+    let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
+    let mut lower_scalar_expr =
+        |arg_expr: &Expr| unsafe { lower_def_expr(arg_expr, &mut *ctx_ptr) };
+    let mut infer_buffer_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
+        infer_buffer_arg_signature_in_def(&*ctx_ptr, arg_expr, callee_name)
+    };
+    let mut infer_array_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
+        infer_array_arg_signature_in_def(&*ctx_ptr, arg_expr, callee_name)
+    };
+    let prepared = prepare_user_call_common(
+        name,
+        type_args,
+        args,
+        module,
+        context,
+        float_ty,
+        sample_rate,
+        block_size,
+        fast_math,
+        struct_fields,
+        user_fn_param_names,
+        user_fn_param_defaults,
+        user_fn_param_kinds,
+        user_fn_param_by_ref,
+        user_registry,
+        &mut lower_scalar_expr,
+        &mut infer_buffer_arg_signature,
+        &mut infer_array_arg_signature,
+        "def tuple call",
+    )?;
+    let ReturnType::Tuple(elem_tys) = &prepared.ret_ty else {
+        return Err(Diagnostic::internal(
+            "expected tuple return from user call in tuple assignment",
+        ));
+    };
+    let elem_tys = elem_tys.clone();
+
+    let mut arg_values = Vec::new();
+    let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
+    let mut cast_scalar_arg =
+        |value: OrcValue, target_ty: PrimitiveType, arg_name: &[u8]| unsafe {
+            cast_def_value_to(&*ctx_ptr, value, target_ty, arg_name)
+        };
+    let mut lower_struct_arg = |arg_values: &mut Vec<LLVMValueRef>,
+                                arg_expr: &Expr,
+                                struct_name: &str,
+                                by_ref: bool| unsafe {
+        lower_struct_call_args_in_def(
+            &mut *ctx_ptr,
+            arg_values,
+            arg_expr,
+            struct_name,
+            name,
+            by_ref,
+        )
+    };
+    let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+        lower_array_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, name)
+    };
+    let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+        lower_buffer_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, name)
+    };
+    materialize_user_call_args_common(
+        name,
+        &prepared,
+        &mut arg_values,
+        b"tup_call_arg\0",
+        "def tuple call",
+        &mut cast_scalar_arg,
+        &mut lower_struct_arg,
+        &mut lower_array_arg,
+        &mut lower_buffer_arg,
+    )?;
+    let call = LLVMBuildCall2(
+        ctx.builder,
+        prepared.fn_ty,
+        prepared.fn_ref,
+        arg_values.as_mut_ptr(),
+        arg_values.len() as u32,
+        b"tup_call\0".as_ptr().cast(),
+    );
+    Ok((call, elem_tys))
+}
+
+/// Lower a tuple-valued expression (literal, call, or variable reference).
+/// Returns the LLVM struct value and element types.
+unsafe fn lower_def_tuple_value(
+    expr: &Expr,
+    ctx: &mut DefLoweringCtx<'_>,
+) -> Result<(LLVMValueRef, Vec<PrimitiveType>), Diagnostic> {
+    match expr {
+        Expr::Tuple { values, .. } => lower_def_tuple_literal(values, ctx),
+        Expr::UserCall {
+            name, type_args, args, ..
+        } => lower_def_tuple_call(name, type_args, args, ctx),
+        Expr::Var { name, .. } => {
+            let slot = ctx.tuple_slots.get(name).ok_or_else(|| {
+                Diagnostic::internal(format!(
+                    "unknown tuple variable '{name}' in tuple value lowering"
+                ))
+            })?.clone();
+            let mut llvm_elem_tys: Vec<LLVMTypeRef> = slot
+                .elem_tys
+                .iter()
+                .map(|t| llvm_ty_for_primitive(ctx.context, *t))
+                .collect();
+            let struct_ty = LLVMStructTypeInContext(
+                ctx.context,
+                llvm_elem_tys.as_mut_ptr(),
+                llvm_elem_tys.len() as u32,
+                0,
+            );
+            let loaded = LLVMBuildLoad2(
+                ctx.builder,
+                struct_ty,
+                slot.ptr,
+                b"tup_load\0".as_ptr().cast(),
+            );
+            Ok((loaded, slot.elem_tys))
+        }
+        _ => Err(Diagnostic::internal(
+            "expected tuple expression, tuple-returning call, or tuple variable",
+        )),
     }
 }
 
@@ -90,6 +313,41 @@ unsafe fn lower_def_var_assign(
         return Ok(false);
     }
     if try_lower_def_untyped_array_decl(target_name, expr, ctx)? {
+        return Ok(false);
+    }
+
+    // Check for tuple expression or tuple-returning call assignment
+    if matches!(expr, Expr::Tuple { .. }) || is_tuple_returning_user_call(expr, ctx) {
+        let (tuple_val, elem_tys) = lower_def_tuple_value(expr, ctx)?;
+        if let Some(existing) = ctx.tuple_slots.get(target_name) {
+            // Re-assign to existing tuple slot
+            LLVMBuildStore(ctx.builder, tuple_val, existing.ptr);
+        } else {
+            // Create new tuple slot
+            let mut llvm_elem_tys: Vec<LLVMTypeRef> = elem_tys
+                .iter()
+                .map(|t| llvm_ty_for_primitive(ctx.context, *t))
+                .collect();
+            let struct_ty = LLVMStructTypeInContext(
+                ctx.context,
+                llvm_elem_tys.as_mut_ptr(),
+                llvm_elem_tys.len() as u32,
+                0,
+            );
+            let slot = build_local_slot(
+                ctx.builder,
+                struct_ty,
+                &format!("v_{target_name}"),
+            )?;
+            LLVMBuildStore(ctx.builder, tuple_val, slot);
+            ctx.tuple_slots.insert(
+                target_name.to_owned(),
+                DefTupleSlot {
+                    ptr: slot,
+                    elem_tys,
+                },
+            );
+        }
         return Ok(false);
     }
     if matches!(expr, Expr::Slice { .. }) {
@@ -653,5 +911,95 @@ unsafe fn lower_def_while_stmt(
             Ok(())
         },
     )?;
+    Ok(false)
+}
+
+/// Check if an expression is a UserCall that returns a tuple.
+unsafe fn is_tuple_returning_user_call(expr: &Expr, ctx: &DefLoweringCtx<'_>) -> bool {
+    let Expr::UserCall { name, .. } = expr else {
+        return false;
+    };
+    let registry = &*(ctx.user_registry);
+    if let Some(ret_ty) = registry.base_return_tys.get(name) {
+        return matches!(ret_ty, ReturnType::Tuple(_));
+    }
+    false
+}
+
+/// Lower tuple destructuring assignment: `(a, b) = expr`
+unsafe fn lower_def_tuple_destructure(
+    targets: &[String],
+    expr: &Expr,
+    ctx: &mut DefLoweringCtx<'_>,
+) -> Result<bool, Diagnostic> {
+    // Get the tuple value (from a variable, literal, or call)
+    let (tuple_val, elem_tys) = if let Expr::Var { name, .. } = expr {
+        // Load from an existing tuple variable
+        let slot = ctx.tuple_slots.get(name).ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "unknown tuple variable '{name}' in destructuring assignment"
+            ))
+        })?;
+        let slot_clone = slot.clone();
+        let mut llvm_elem_tys: Vec<LLVMTypeRef> = slot_clone
+            .elem_tys
+            .iter()
+            .map(|t| llvm_ty_for_primitive(ctx.context, *t))
+            .collect();
+        let struct_ty = LLVMStructTypeInContext(
+            ctx.context,
+            llvm_elem_tys.as_mut_ptr(),
+            llvm_elem_tys.len() as u32,
+            0,
+        );
+        let loaded = LLVMBuildLoad2(
+            ctx.builder,
+            struct_ty,
+            slot_clone.ptr,
+            b"tup_load\0".as_ptr().cast(),
+        );
+        (loaded, slot_clone.elem_tys)
+    } else {
+        lower_def_tuple_value(expr, ctx)?
+    };
+
+    if targets.len() != elem_tys.len() {
+        return Err(Diagnostic::internal(format!(
+            "tuple destructuring arity mismatch: {} targets, {} elements",
+            targets.len(),
+            elem_tys.len()
+        )));
+    }
+
+    for (i, (target_name, elem_ty)) in targets.iter().zip(elem_tys.iter()).enumerate() {
+        let elem_val = LLVMBuildExtractValue(
+            ctx.builder,
+            tuple_val,
+            i as u32,
+            b"tup_elem\0".as_ptr().cast(),
+        );
+        let elem_orc = OrcValue {
+            value: elem_val,
+            ty: *elem_ty,
+        };
+        if let Some(local) = ctx.local_slots.get(target_name).copied() {
+            let casted = cast_def_value_to(ctx, elem_orc, local.ty, b"tup_destr_cast\0");
+            LLVMBuildStore(ctx.builder, casted, local.ptr);
+        } else {
+            let slot = build_local_slot(
+                ctx.builder,
+                llvm_ty_for_primitive(ctx.context, *elem_ty),
+                &format!("v_{target_name}"),
+            )?;
+            LLVMBuildStore(ctx.builder, elem_val, slot);
+            ctx.local_slots.insert(
+                target_name.to_owned(),
+                DefLocalSlot {
+                    ptr: slot,
+                    ty: *elem_ty,
+                },
+            );
+        }
+    }
     Ok(false)
 }

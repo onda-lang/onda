@@ -8,8 +8,8 @@ pub(super) unsafe fn lower_def_expr(
         return Ok(literal);
     }
     match expr {
-        Expr::ArrayLiteral { .. } => Err(Diagnostic::internal(
-            "array literal is not a scalar expression in def lowering",
+        Expr::ArrayLiteral { .. } | Expr::Tuple { .. } => Err(Diagnostic::internal(
+            "array/tuple literal is not a scalar expression in def lowering",
         )),
         Expr::Var { name, .. } => {
             if let Some((ty, value)) =
@@ -261,13 +261,70 @@ pub(super) unsafe fn lower_def_expr(
                 arg_values.len() as u32,
                 b"def_call\0".as_ptr().cast(),
             );
-            set_fast_math_for_primitive(call, prepared.ret_ty, ctx.fast_math_flags);
-            Ok(OrcValue {
-                value: call,
-                ty: prepared.ret_ty,
-            })
+            match &prepared.ret_ty {
+                ReturnType::Scalar(scalar_ty) => {
+                    set_fast_math_for_primitive(call, *scalar_ty, ctx.fast_math_flags);
+                    Ok(OrcValue {
+                        value: call,
+                        ty: *scalar_ty,
+                    })
+                }
+                ReturnType::Tuple(_) => {
+                    // Tuple-returning calls are not scalar expressions.
+                    // They must be consumed by destructuring assignment or
+                    // tuple variable binding, handled in stmt_lowering.
+                    Err(Diagnostic::internal(
+                        "tuple-returning call is not a scalar expression in def lowering",
+                    ))
+                }
+            }
         }
         Expr::Index { base, index, .. } => {
+            // Check if base is a tuple variable — use extractvalue
+            if let Some(tuple_slot) = ctx.tuple_slots.get(base).cloned() {
+                let const_idx = match index.as_ref() {
+                    Expr::Int { value, .. } => *value as usize,
+                    _ => {
+                        return Err(Diagnostic::internal(
+                            "tuple element access requires a compile-time constant index",
+                        ));
+                    }
+                };
+                if const_idx >= tuple_slot.elem_tys.len() {
+                    return Err(Diagnostic::internal(format!(
+                        "tuple index {} out of bounds for tuple of length {}",
+                        const_idx,
+                        tuple_slot.elem_tys.len()
+                    )));
+                }
+                let mut llvm_elem_tys: Vec<LLVMTypeRef> = tuple_slot
+                    .elem_tys
+                    .iter()
+                    .map(|t| llvm_ty_for_primitive(ctx.context, *t))
+                    .collect();
+                let struct_ty = LLVMStructTypeInContext(
+                    ctx.context,
+                    llvm_elem_tys.as_mut_ptr(),
+                    llvm_elem_tys.len() as u32,
+                    0,
+                );
+                let loaded = LLVMBuildLoad2(
+                    ctx.builder,
+                    struct_ty,
+                    tuple_slot.ptr,
+                    b"tup_load\0".as_ptr().cast(),
+                );
+                let elem_val = LLVMBuildExtractValue(
+                    ctx.builder,
+                    loaded,
+                    const_idx as u32,
+                    b"tup_idx\0".as_ptr().cast(),
+                );
+                return Ok(OrcValue {
+                    value: elem_val,
+                    ty: tuple_slot.elem_tys[const_idx],
+                });
+            }
             let data = lower_def_data_element_ptr(ctx, base, index, true)?;
             Ok(OrcValue {
                 value: LLVMBuildLoad2(

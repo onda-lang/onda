@@ -11,8 +11,8 @@ pub(super) unsafe fn lower_expr(
         return Ok(literal);
     }
     match expr {
-        Expr::ArrayLiteral { .. } => Err(Diagnostic::internal(
-            "array literal is not a scalar expression in ORC lowering",
+        Expr::ArrayLiteral { .. } | Expr::Tuple { .. } => Err(Diagnostic::internal(
+            "array/tuple literal is not a scalar expression in ORC lowering",
         )),
         Expr::Var { name, .. } => {
             if let Some((ty, value)) =
@@ -580,11 +580,18 @@ pub(super) unsafe fn lower_expr(
                 arg_values.len() as u32,
                 b"call\0".as_ptr().cast(),
             );
-            set_fast_math_for_primitive(call, prepared.ret_ty, ctx.fast_math_flags);
-            Ok(OrcValue {
-                value: call,
-                ty: prepared.ret_ty,
-            })
+            match &prepared.ret_ty {
+                ReturnType::Scalar(scalar_ty) => {
+                    set_fast_math_for_primitive(call, *scalar_ty, ctx.fast_math_flags);
+                    Ok(OrcValue {
+                        value: call,
+                        ty: *scalar_ty,
+                    })
+                }
+                ReturnType::Tuple(_) => Err(Diagnostic::internal(
+                    "tuple-returning call is not a scalar expression in orc expr/stmt lowering",
+                )),
+            }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => unreachable!(),
     }

@@ -199,7 +199,7 @@ pub(super) struct PreparedUserCall<'a> {
     pub(super) scalar_types: Vec<PrimitiveType>,
     pub(super) fn_ref: LLVMValueRef,
     pub(super) fn_ty: LLVMTypeRef,
-    pub(super) ret_ty: PrimitiveType,
+    pub(super) ret_ty: ReturnType,
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -132,6 +132,7 @@ fn validate_event_assign_target_restrictions(
         AssignTarget::Var(name) => (name.as_str(), false),
         AssignTarget::Index { base, .. } => (base.as_str(), true),
         AssignTarget::Slice { base, .. } => (base.as_str(), true),
+        AssignTarget::Tuple(_) => return,
     };
     let root = runtime_symbol_root(base);
 
@@ -1566,6 +1567,17 @@ fn analyze_assign_sample(
 
             if output_names.contains(name) || can_track_local {
                 known_scalars.insert(name.clone());
+            }
+        }
+        AssignTarget::Tuple(targets) => {
+            let expr_for_validation =
+                rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+            validate_expr(&expr_for_validation, scope_expr_env, errors);
+            for target_name in targets {
+                known_scalars.insert(target_name.clone());
+                local_aliases
+                    .entry(target_name.clone())
+                    .or_insert(PrimitiveType::F32);
             }
         }
     }

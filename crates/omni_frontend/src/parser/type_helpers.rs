@@ -30,10 +30,12 @@ pub(super) fn parse_init_default_decl_type(
     let ty = parse_section_default_decl_type(pair, "init")?;
     match ty {
         DeclType::Scalar(_) | DeclType::Generic(_) => Ok(ty),
-        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => Err(vec![syntax_at_loc(
-            loc.as_ref(),
-            "init section default type must be a scalar primitive or generic type",
-        )]),
+        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
+            Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                "init section default type must be a scalar primitive or generic type",
+            )])
+        }
     }
 }
 
@@ -46,7 +48,7 @@ pub(super) fn parse_section_default_buffer_type(
     let elem = match decl_ty {
         DeclType::Scalar(prim) => BufferElemType::Primitive(prim),
         DeclType::Generic(param) => BufferElemType::Generic(param),
-        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => {
+        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
             return Err(vec![syntax_at_loc(
                 loc.as_ref(),
                 format!(
@@ -155,6 +157,14 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
                     "array declarations for ports/params require primitive or generic element type",
                 )]),
             }
+        }
+        Rule::tuple_type => {
+            let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::type_name)
+                .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                .collect();
+            Ok(DeclType::Tuple(elems?))
         }
         _ => Err(vec![syntax_at_pair(&pair, "unsupported declaration type")]),
     }
@@ -555,6 +565,14 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
                 base: base_pair.as_str().to_owned(),
                 index: parse_expr(index_pair)?,
             })
+        }
+        Rule::tuple_target => {
+            let targets: Vec<String> = pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::ident)
+                .map(|p| p.as_str().to_owned())
+                .collect();
+            Ok(AssignTarget::Tuple(targets))
         }
         Rule::assign_target => {
             let loc = stmt_loc_from_pair(&pair);

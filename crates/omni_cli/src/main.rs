@@ -2442,6 +2442,7 @@ fn format_assign_target(target: &AssignTarget) -> String {
                 .map(|expr| format_expr(expr))
                 .unwrap_or_default()
         ),
+        AssignTarget::Tuple(names) => format!("({})", names.join(", ")),
     }
 }
 
@@ -2591,6 +2592,14 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             my_prec,
             parent_prec,
         ),
+        Expr::Tuple { values, .. } => format!(
+            "({})",
+            values
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -2662,6 +2671,14 @@ fn format_decl_type(ty: &DeclType) -> String {
         DeclType::Array { elem, size } => {
             format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
         }
+        DeclType::Tuple(elems) => format!(
+            "({})",
+            elems
+                .iter()
+                .map(|t| primitive_type_name(*t).to_owned())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 

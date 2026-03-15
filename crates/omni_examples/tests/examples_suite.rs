@@ -9059,6 +9059,133 @@ fn std_one_pole_graph_example_matches_sample_version() {
     }
 }
 
+// ─── Tuple tests ──────────────────────────────────────────────────
+
+const TUPLE_RETURN_BASIC: &str = r#"
+outs { out1, out2 }
+
+def calcPair(x):
+  return (x * 2.0, x + 1.0)
+
+sample {
+  (a, b) = calcPair(3.0)
+  out1 = a
+  out2 = b
+}
+"#;
+
+#[test]
+fn tuple_return_and_destructure_compiles_and_runs() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TUPLE_RETURN_BASIC, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 6.0, 1e-6); // 3.0 * 2.0
+    assert_near(output[1], 4.0, 1e-6); // 3.0 + 1.0
+}
+
+const TUPLE_ELEMENT_ACCESS: &str = r#"
+outs { out1 }
+
+def makePair(x):
+  return (x, x * 10.0)
+
+def readSecond(x):
+  p = makePair(x)
+  return p[1]
+
+sample {
+  out1 = readSecond(5.0)
+}
+"#;
+
+#[test]
+fn tuple_element_access_compiles_and_runs() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TUPLE_ELEMENT_ACCESS, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 50.0, 1e-6); // 5.0 * 10.0
+}
+
+const TUPLE_LITERAL_ASSIGN: &str = r#"
+outs { out1, out2 }
+
+def addPair():
+  p = (10.0, 20.0)
+  return p[0] + p[1]
+
+sample {
+  out1 = addPair()
+  (x, y) = (1.0, 2.0)
+  out2 = x + y
+}
+"#;
+
+#[test]
+fn tuple_literal_assign_compiles_and_runs() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TUPLE_LITERAL_ASSIGN, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 30.0, 1e-6); // 10.0 + 20.0
+    assert_near(output[1], 3.0, 1e-6);  // 1.0 + 2.0
+}
+
+const TUPLE_MIXED_TYPES: &str = r#"
+outs { out1, out2 }
+
+def calcIdx(pos):
+  pos_floor = floor(pos)
+  idx = i32(pos_floor)
+  t = pos - pos_floor
+  return (idx, t)
+
+sample {
+  (idx, t) = calcIdx(3.7)
+  out1 = f32(idx)
+  out2 = t
+}
+"#;
+
+#[test]
+fn tuple_mixed_types_compiles_and_runs() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TUPLE_MIXED_TYPES, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 3.0, 1e-6);  // floor(3.7) = 3
+    assert_near(output[1], 0.7, 1e-5);  // 3.7 - 3.0 = 0.7
+}
+
 #[test]
 fn stdlib_f32_graph_example_matches_sample_version() {
     let frames = 256;
@@ -10430,7 +10557,7 @@ fn def_return_type_is_inferred_from_return_expression() {
         .iter()
         .find(|d| d.name == "mydef")
         .expect("mydef should be present");
-    assert_eq!(mydef.return_ty, PrimitiveType::F64);
+    assert_eq!(mydef.return_ty, omni_semantics::ReturnType::Scalar(PrimitiveType::F64));
 }
 
 #[test]

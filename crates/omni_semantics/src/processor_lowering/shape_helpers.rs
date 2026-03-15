@@ -110,9 +110,10 @@ pub(super) fn infer_primary_output_type_from_processor(proc: &ProcessorDef) -> P
     match first_out.ty.as_ref() {
         Some(DeclType::Scalar(ty)) => *ty,
         Some(DeclType::Array { elem, .. }) => *elem,
-        Some(DeclType::Generic(_)) | Some(DeclType::ArrayGeneric { .. }) | None => {
-            PrimitiveType::F32
-        }
+        Some(DeclType::Tuple(_))
+        | Some(DeclType::Generic(_))
+        | Some(DeclType::ArrayGeneric { .. })
+        | None => PrimitiveType::F32,
     }
 }
 
@@ -142,7 +143,7 @@ pub(super) fn compute_proc_shape(
     proc_symbols: &HashSet<String>,
     struct_defs: &HashMap<String, omni_frontend::StructDef>,
     ctor_symbols: &HashSet<String>,
-    fn_return_types: &HashMap<String, PrimitiveType>,
+    fn_return_types: &HashMap<String, ReturnType>,
     fn_signatures_full: &HashMap<String, FnSignature>,
     proc_defs_by_name: &HashMap<String, omni_frontend::ProcessorDef>,
     errors: &mut Vec<Diagnostic>,
@@ -295,13 +296,15 @@ pub(super) fn compute_proc_shape(
         &param_slot_types,
         DeclaredScalarSymbolKind::Param,
     );
-    for (fn_name, fn_ty) in fn_return_types {
-        insert_declared_symbol(
-            &mut state_type_hints,
-            &mut declared_symbols,
-            fn_name.clone(),
-            DeclaredSymbolInfo::FunctionReturn { ty: *fn_ty },
-        );
+    for (fn_name, ret_ty) in fn_return_types {
+        if let ReturnType::Scalar(scalar_ty) = ret_ty {
+            insert_declared_symbol(
+                &mut state_type_hints,
+                &mut declared_symbols,
+                fn_name.clone(),
+                DeclaredSymbolInfo::FunctionReturn { ty: *scalar_ty },
+            );
+        }
     }
 
     let proc_ns = namespace_of_symbol(&proc.name);

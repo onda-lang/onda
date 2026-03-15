@@ -621,6 +621,16 @@ pub(crate) fn coerce_params(
                     });
                 }
             }
+            Some(DeclType::Tuple(_)) => {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "param '{}.{}' uses unsupported tuple type",
+                        "<top-level>", param.name
+                    ),
+                    param_loc,
+                ));
+                continue;
+            }
             Some(DeclType::Array { elem, size }) => {
                 if param.range.is_some() {
                     errors.push(Diagnostic::semantic_span(

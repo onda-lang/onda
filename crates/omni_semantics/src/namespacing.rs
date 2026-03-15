@@ -313,6 +313,20 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 );
             }
         }
+        Expr::Tuple { values, .. } => {
+            for value in values {
+                qualify_expr_namespaced_symbols(
+                    value,
+                    current_ns,
+                    callable_symbols,
+                    callable_namespaces,
+                    struct_symbols,
+                    struct_namespaces,
+                    errors,
+                    context,
+                );
+            }
+        }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
@@ -369,7 +383,7 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                         );
                     }
                 }
-                AssignTarget::Var(_) => {}
+                AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
             }
             qualify_expr_namespaced_symbols(
                 expr,

@@ -10,14 +10,14 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
     block_size: usize,
     fast_math: bool,
     fn_ref: LLVMValueRef,
-    return_ty: PrimitiveType,
+    return_ty: ReturnType,
     scalar_param_types: &[PrimitiveType],
     array_param_types: &[(PrimitiveType, usize)],
     buffer_param_types: &[(PrimitiveType, TypedBufferChannels)],
 ) -> Result<(), Diagnostic> {
     let float_ty = LLVMFloatTypeInContext(context);
     let i32_ty = LLVMInt32TypeInContext(context);
-    let return_llvm_ty = llvm_ty_for_primitive(context, return_ty);
+    let return_llvm_ty = llvm_ty_for_return_type(context, &return_ty);
 
     let entry_name =
         CString::new("entry").map_err(|_| Diagnostic::internal("invalid block name"))?;
@@ -30,7 +30,7 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
 
     let result = (|| -> Result<(), Diagnostic> {
         LLVMPositionBuilderAtEnd(builder, entry);
-        let zero_ret = llvm_zero_for_primitive(context, return_ty);
+        let zero_ret = llvm_zero_for_return_type(context, &return_ty);
 
         let ret_name =
             CString::new("ret").map_err(|_| Diagnostic::internal("invalid local variable name"))?;
@@ -51,6 +51,7 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
             return_slot,
             return_block: ret_block,
             local_slots: HashMap::new(),
+            tuple_slots: HashMap::new(),
             local_array_aliases: HashMap::new(),
             buffer_params: HashMap::new(),
             array_ptrs: HashMap::new(),

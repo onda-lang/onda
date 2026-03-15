@@ -155,7 +155,7 @@ fn infer_scalar_expr_type_for_overload(
                 _ => merge_numeric_types_no_diag(lhs_ty, rhs_ty),
             }
         }
-        Expr::ArrayCtor { .. } | Expr::ArrayLiteral { .. } => None,
+        Expr::ArrayCtor { .. } | Expr::ArrayLiteral { .. } | Expr::Tuple { .. } => None,
     }
 }
 
@@ -562,7 +562,7 @@ pub(crate) fn rewrite_overloaded_calls_in_expr(
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             rewrite_overloaded_calls_in_expr(expr, env, overloads, errors);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_overloaded_calls_in_expr(value, env, overloads, errors);
             }

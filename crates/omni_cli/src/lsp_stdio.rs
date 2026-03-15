@@ -1080,6 +1080,19 @@ fn collect_assign_target_tokens(
                 collect_expr_tokens(end, scope, current_path, source, tokens);
             }
         }
+        AssignTarget::Tuple(names) => {
+            for name in names {
+                if let Some(token_type) = scope
+                    .token_type_for(name)
+                    .or_else(|| allow_local_variables.then_some(SEMANTIC_TOKEN_TYPE_VARIABLE))
+                {
+                    push_name_token(tokens, target_loc.into(), name, token_type);
+                    if allow_local_variables && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
+                        scope.variables.insert(name.clone());
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1150,6 +1163,11 @@ fn collect_expr_tokens(
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             collect_expr_tokens(expr, scope, current_path, source, tokens);
+        }
+        Expr::Tuple { values, .. } => {
+            for value in values {
+                collect_expr_tokens(value, scope, current_path, source, tokens);
+            }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }

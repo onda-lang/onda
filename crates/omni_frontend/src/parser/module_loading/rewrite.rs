@@ -50,6 +50,11 @@ fn rebase_expr_locs(expr: &mut Expr, loc: SourceLoc) {
                 rebase_expr_locs(&mut arg.expr, loc);
             }
         }
+        Expr::Tuple { values, .. } => {
+            for value in values {
+                rebase_expr_locs(value, loc);
+            }
+        }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
@@ -136,7 +141,8 @@ pub(super) fn validate_compile_time_expr(
         | Expr::Index { .. }
         | Expr::Slice { .. }
         | Expr::ArrayCtor { .. }
-        | Expr::ArrayLiteral { .. } => Err(vec![Diagnostic::semantic_span(
+        | Expr::ArrayLiteral { .. }
+        | Expr::Tuple { .. } => Err(vec![Diagnostic::semantic_span(
             format!("{context}: expression is not compile-time evaluable"),
             expr_span,
         )]),
@@ -273,6 +279,13 @@ pub(super) fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, 
             op: *op,
             lhs: Box::new(substitute_expr_with_env(lhs, const_env)),
             rhs: Box::new(substitute_expr_with_env(rhs, const_env)),
+        },
+        Expr::Tuple { loc, values } => Expr::Tuple {
+            loc: loc.clone(),
+            values: values
+                .iter()
+                .map(|v| substitute_expr_with_env(v, const_env))
+                .collect(),
         },
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => expr.clone(),
     }
@@ -867,7 +880,7 @@ fn rewrite_decl_type(
         DeclType::Array { size, .. } => {
             rewrite_expr(size, current_ns, const_env, state, generated)?;
         }
-        DeclType::Scalar(_) => {}
+        DeclType::Scalar(_) | DeclType::Tuple(_) => {}
     }
     Ok(())
 }
@@ -1056,6 +1069,7 @@ fn rewrite_stmt(
                         rewrite_expr(end, current_ns, const_env, state, generated)?;
                     }
                 }
+                AssignTarget::Tuple(_) => {}
             }
             if let Some(name) = generic_decl_ty {
                 if looks_like_namespace_ref(name) {
@@ -1241,6 +1255,11 @@ fn rewrite_expr(
             rewrite_expr(arg, current_ns, const_env, state, generated)?;
         }
         Expr::ArrayLiteral { values, .. } => {
+            for value in values {
+                rewrite_expr(value, current_ns, const_env, state, generated)?;
+            }
+        }
+        Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_expr(value, current_ns, const_env, state, generated)?;
             }

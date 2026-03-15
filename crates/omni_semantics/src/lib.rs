@@ -173,6 +173,30 @@ pub enum TypedFieldType {
     Array(usize),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReturnType {
+    Scalar(PrimitiveType),
+    Tuple(Vec<PrimitiveType>),
+}
+
+impl ReturnType {
+    /// Returns the scalar type, panicking if this is a tuple.
+    pub fn as_scalar(&self) -> PrimitiveType {
+        match self {
+            ReturnType::Scalar(ty) => *ty,
+            ReturnType::Tuple(_) => panic!("expected scalar return type, got tuple"),
+        }
+    }
+
+    /// Returns the scalar type if this is a scalar return.
+    pub fn scalar(&self) -> Option<PrimitiveType> {
+        match self {
+            ReturnType::Scalar(ty) => Some(*ty),
+            ReturnType::Tuple(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TypedFunction {
     pub name: String,
@@ -181,7 +205,7 @@ pub struct TypedFunction {
     pub params: Vec<String>,
     pub param_defaults: Vec<Option<Expr>>,
     pub param_kinds: Vec<TypedFnParam>,
-    pub return_ty: PrimitiveType,
+    pub return_ty: ReturnType,
     pub body: Vec<Stmt>,
 }
 

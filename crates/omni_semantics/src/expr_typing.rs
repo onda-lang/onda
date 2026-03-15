@@ -95,6 +95,7 @@ pub(crate) fn infer_scalar_expr_type(
         }),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::ArrayLiteral { .. } => None,
+        Expr::Tuple { .. } => None,
         Expr::Var { name, .. } => {
             if let Some(ty) = builtin_constant_type(name) {
                 return Some(ty);

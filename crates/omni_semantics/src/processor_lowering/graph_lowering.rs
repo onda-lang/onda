@@ -331,7 +331,7 @@ fn infer_graph_input_expr(
                 infer_graph_input_expr(arg, param_names, inferred);
             }
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 infer_graph_input_expr(value, param_names, inferred);
             }
@@ -580,6 +580,7 @@ fn value_type_from_decl_type(
                 len,
             })
         }
+        Some(DeclType::Tuple(_)) => Some(GraphValueType::Scalar(PrimitiveType::F32)),
         Some(DeclType::ArrayGeneric { .. }) => {
             let Some((size_expr, context)) = size_context else {
                 return None;
@@ -2078,7 +2079,7 @@ fn validate_graph_source_expr(
 ) {
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 validate_graph_source_expr(
                     value,
@@ -2790,6 +2791,7 @@ fn infer_graph_source_value_type(
             }
         }
         Expr::ArrayCtor { .. } => None,
+        Expr::Tuple { .. } => None,
     }
 }
 
@@ -3646,7 +3648,7 @@ fn rewrite_graph_source_expr(
                     .collect()
             }),
         },
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => expr.clone(),
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Tuple { .. } => expr.clone(),
     }
 }
 

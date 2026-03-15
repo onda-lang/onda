@@ -637,7 +637,7 @@ fn collect_expr_indexable_param_usage(
         | Expr::Bool { .. }
         | Expr::Var { .. }
         | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 collect_expr_indexable_param_usage(value, param_index, kinds);
             }
@@ -885,7 +885,7 @@ fn propagate_expr_callee_buffer_requirements_to_params(
         | Expr::Bool { .. }
         | Expr::Var { .. }
         | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 propagate_expr_callee_buffer_requirements_to_params(
                     value,
@@ -1266,6 +1266,23 @@ fn collect_stmt_field_usage(
                         );
                     }
                 }
+                AssignTarget::Tuple(names) => {
+                    for name in names {
+                        if let Some((base, field)) = split_simple_field_path(name) {
+                            if let Some(param_idx) = param_index.get(base).copied() {
+                                mark_param_field_usage(
+                                    usage,
+                                    param_idx,
+                                    field,
+                                    StructFieldUsage::Scalar,
+                                    fn_name,
+                                    base,
+                                    errors,
+                                );
+                            }
+                        }
+                    }
+                }
             }
             collect_expr_field_usage(
                 expr,
@@ -1411,7 +1428,7 @@ fn collect_expr_field_usage(
 ) {
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 collect_expr_field_usage(
                     value,

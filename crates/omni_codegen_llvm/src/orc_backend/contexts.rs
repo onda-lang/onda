@@ -33,6 +33,12 @@ pub(super) struct DefLocalSlot {
     pub(super) ty: PrimitiveType,
 }
 
+#[derive(Clone)]
+pub(super) struct DefTupleSlot {
+    pub(super) ptr: LLVMValueRef,
+    pub(super) elem_tys: Vec<PrimitiveType>,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct StateSlot {
     pub(super) ptr: LLVMValueRef,
@@ -132,10 +138,10 @@ pub(super) struct UserFnRegistry {
     pub(super) sample_oversample_factors: HashMap<String, usize>,
     pub(super) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub(super) refs: HashMap<String, LLVMValueRef>,
-    pub(super) base_return_tys: HashMap<String, PrimitiveType>,
+    pub(super) base_return_tys: HashMap<String, ReturnType>,
     pub(super) mono_refs: HashMap<String, LLVMValueRef>,
     pub(super) mono_tys: HashMap<String, LLVMTypeRef>,
-    pub(super) mono_return_tys: HashMap<String, PrimitiveType>,
+    pub(super) mono_return_tys: HashMap<String, ReturnType>,
     pub(super) param_names: HashMap<String, Vec<String>>,
     pub(super) param_defaults: HashMap<String, Vec<Option<Expr>>>,
     pub(super) param_kinds: HashMap<String, Vec<TypedFnParam>>,
@@ -154,10 +160,11 @@ pub(super) struct DefLoweringCtx<'a> {
     pub(super) fast_math_flags: LLVMFastMathFlags,
     pub(super) sample_rate: f32,
     pub(super) block_size: f32,
-    pub(super) return_ty: PrimitiveType,
+    pub(super) return_ty: ReturnType,
     pub(super) return_slot: LLVMValueRef,
     pub(super) return_block: LLVMBasicBlockRef,
     pub(super) local_slots: HashMap<String, DefLocalSlot>,
+    pub(super) tuple_slots: HashMap<String, DefTupleSlot>,
     pub(super) local_array_aliases: HashMap<String, LocalArrayAlias>,
     pub(super) buffer_params: HashMap<String, DefBufferParamInfo>,
     pub(super) array_ptrs: HashMap<String, LLVMValueRef>,

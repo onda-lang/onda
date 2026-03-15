@@ -27,6 +27,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 "array literals are only allowed in typed array declarations and parameter defaults",
             );
         }
+        Expr::Tuple { values, .. } => {
+            for value in values {
+                validate_expr(value, env, errors);
+            }
+        }
         Expr::Var { name, .. } => {
             if is_builtin_constant_name(name) {
                 return;
@@ -225,6 +230,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             if !env.array_vars.contains_key(base)
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
+                && !env.tuple_vars.contains(base)
             {
                 push_expr_error(
                     errors,

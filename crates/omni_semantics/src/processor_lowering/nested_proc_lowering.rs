@@ -98,7 +98,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 );
             }
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_nested_proc_calls_in_expr(
                     value,

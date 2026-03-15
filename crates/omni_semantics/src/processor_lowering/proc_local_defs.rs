@@ -278,7 +278,7 @@ fn collect_local_def_calls_in_target(
     calls: &mut Vec<String>,
 ) {
     match target {
-        AssignTarget::Var(_) => {}
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
         AssignTarget::Index { index, .. } => collect_local_def_calls_in_expr(index, def_map, calls),
         AssignTarget::Slice { start, end, .. } => {
             if let Some(start) = start {
@@ -334,6 +334,11 @@ fn collect_local_def_calls_in_expr(
                 for expr in init {
                     collect_local_def_calls_in_expr(expr, def_map, calls);
                 }
+            }
+        }
+        Expr::Tuple { values, .. } => {
+            for v in values {
+                collect_local_def_calls_in_expr(v, def_map, calls);
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
@@ -397,7 +402,7 @@ fn rewrite_target_local_calls(
     owner_proc: &str,
 ) {
     match target {
-        AssignTarget::Var(_) => {}
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
         AssignTarget::Index { index, .. } => {
             rewrite_expr_local_calls(index, local_names, owner_proc)
         }
@@ -456,6 +461,11 @@ fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owne
                 for expr in init {
                     rewrite_expr_local_calls(expr, local_names, owner_proc);
                 }
+            }
+        }
+        Expr::Tuple { values, .. } => {
+            for v in values {
+                rewrite_expr_local_calls(v, local_names, owner_proc);
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
@@ -521,7 +531,7 @@ fn inject_owner_self_into_hidden_local_calls_in_target(
     receiver: &Expr,
 ) {
     match target {
-        AssignTarget::Var(_) => {}
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
         AssignTarget::Index { index, .. } => {
             inject_owner_self_into_hidden_local_calls_in_expr(index, owner_proc, receiver);
         }
@@ -592,6 +602,11 @@ fn inject_owner_self_into_hidden_local_calls_in_expr(
                 for expr in init {
                     inject_owner_self_into_hidden_local_calls_in_expr(expr, owner_proc, receiver);
                 }
+            }
+        }
+        Expr::Tuple { values, .. } => {
+            for v in values {
+                inject_owner_self_into_hidden_local_calls_in_expr(v, owner_proc, receiver);
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
@@ -689,7 +704,7 @@ fn rewrite_nested_wrapper_local_calls_in_target(
     nested_path: &str,
 ) {
     match target {
-        AssignTarget::Var(_) => {}
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
         AssignTarget::Index { index, .. } => {
             rewrite_nested_wrapper_local_calls_in_expr(index, callee_proc, owner_proc, nested_path);
         }
@@ -798,6 +813,11 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                         nested_path,
                     );
                 }
+            }
+        }
+        Expr::Tuple { values, .. } => {
+            for v in values {
+                rewrite_nested_wrapper_local_calls_in_expr(v, callee_proc, owner_proc, nested_path);
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}

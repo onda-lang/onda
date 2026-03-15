@@ -1334,12 +1334,14 @@ pub fn analyze_with_options(
         DeclaredScalarSymbolKind::Param,
     );
     for (fn_name, ret_ty) in &def_return_types {
-        insert_declared_symbol(
-            &mut state_scalars,
-            &mut declared_symbols,
-            fn_name.clone(),
-            DeclaredSymbolInfo::FunctionReturn { ty: *ret_ty },
-        );
+        if let ReturnType::Scalar(scalar_ty) = ret_ty {
+            insert_declared_symbol(
+                &mut state_scalars,
+                &mut declared_symbols,
+                fn_name.clone(),
+                DeclaredSymbolInfo::FunctionReturn { ty: *scalar_ty },
+            );
+        }
     }
     for buffer in &typed_buffers {
         let channels = match buffer.channels {
@@ -1751,6 +1753,7 @@ pub fn analyze_with_options(
             declared_symbols: &def_declared_symbols,
             param_structs: &param_structs,
             state_scalars: &def_state_scalars,
+            def_return_types: &def_return_types,
         };
         let mut def_state = DefStmtAnalysisState::from_parts(
             fn_known,
@@ -1820,8 +1823,8 @@ pub fn analyze_with_options(
                     param_kinds,
                     return_ty: def_return_types
                         .get(&d.name)
-                        .copied()
-                        .unwrap_or(PrimitiveType::F32),
+                        .cloned()
+                        .unwrap_or(ReturnType::Scalar(PrimitiveType::F32)),
                     name: d.name,
                     params: d.params.into_iter().map(|p| p.name).collect(),
                     body: d.body,

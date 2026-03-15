@@ -407,6 +407,30 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         expr,
                     })
                 }
+                Rule::tuple_type => {
+                    let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = ty_pair
+                        .into_inner()
+                        .filter(|p| p.as_rule() == Rule::type_name)
+                        .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                        .collect();
+                    let _tuple_ty = DeclType::Tuple(elems?);
+                    let Some(expr_pair) = expr_pair else {
+                        return Err(vec![syntax_at_loc(
+                            loc.as_ref(),
+                            "missing tuple typed assignment expression",
+                        )]);
+                    };
+                    Ok(Stmt::Assign {
+                        loc: loc.clone(),
+                        target_loc: stmt_loc_from_pair(&name_pair),
+                        target: AssignTarget::Var(name_pair.as_str().to_owned()),
+                        decl_ty: None,
+                        generic_decl_ty: None,
+                        is_typed_decl: true,
+                        typed_decl_ty_loc,
+                        expr: parse_expr(expr_pair)?,
+                    })
+                }
                 _ => Err(vec![syntax_at_loc(
                     loc.as_ref(),
                     "unexpected typed declaration type",
@@ -1165,6 +1189,14 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 type_args,
                 args,
             }
+        }
+        Rule::tuple_expr => {
+            let values: Vec<Expr> = pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::expr)
+                .map(parse_expr_inner)
+                .collect();
+            Expr::Tuple { loc, values }
         }
         Rule::expr | Rule::graph_expr => parse_expr_inner(pair),
         _ => unreachable!("unexpected primary expression token"),

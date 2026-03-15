@@ -4888,6 +4888,9 @@ fn expr_contains_var_with_suffix(expr: &Expr, suffix: &str) -> bool {
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             expr_contains_var_with_suffix(expr, suffix)
         }
+        Expr::Tuple { values, .. } => values
+            .iter()
+            .any(|v| expr_contains_var_with_suffix(v, suffix)),
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => false,
     }
 }

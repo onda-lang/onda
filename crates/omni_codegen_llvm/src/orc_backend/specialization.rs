@@ -365,7 +365,7 @@ pub(super) fn infer_specialized_expr_return_type(
             PrimitiveType::I64
         }),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } | Expr::Slice { .. } => None,
+        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } | Expr::Slice { .. } | Expr::Tuple { .. } => None,
         Expr::Var { name, .. } => {
             builtin_constant_symbol_type(name).or_else(|| locals.get(name).copied())
         }
@@ -523,14 +523,17 @@ pub(super) fn infer_specialized_expr_return_type(
                 &mut scalar_types,
                 "return type inference",
             )?;
-            Some(infer_specialized_def_return_type(
+            match infer_specialized_def_return_type(
                 name,
                 &scalar_types,
                 &array_types,
                 &buffer_types,
                 &explicit_type_args,
                 registry,
-            )?)
+            )? {
+                ReturnType::Scalar(ty) => Some(ty),
+                ReturnType::Tuple(_) => None, // tuple returns are not scalar
+            }
         }
     })
 }
@@ -539,7 +542,7 @@ pub(super) fn infer_specialized_stmt_returns(
     stmts: &[Stmt],
     locals: &mut HashMap<String, PrimitiveType>,
     registry: &mut UserFnRegistry,
-    out: &mut Vec<PrimitiveType>,
+    out: &mut Vec<ReturnType>,
 ) -> Result<(), Diagnostic> {
     for stmt in stmts {
         match stmt {
@@ -568,11 +571,26 @@ pub(super) fn infer_specialized_stmt_returns(
                 target: AssignTarget::Slice { .. },
                 ..
             }
+            | Stmt::Assign {
+                target: AssignTarget::Tuple(_),
+                ..
+            }
             | Stmt::Expr { .. } => {}
             Stmt::Return { expr, .. } => {
-                let ty = infer_specialized_expr_return_type(expr, locals, registry)?
-                    .unwrap_or(PrimitiveType::F32);
-                out.push(ty);
+                if let Expr::Tuple { values, .. } = expr {
+                    let elem_tys: Result<Vec<PrimitiveType>, Diagnostic> = values
+                        .iter()
+                        .map(|v| {
+                            Ok(infer_specialized_expr_return_type(v, locals, registry)?
+                                .unwrap_or(PrimitiveType::F32))
+                        })
+                        .collect();
+                    out.push(ReturnType::Tuple(elem_tys?));
+                } else {
+                    let ty = infer_specialized_expr_return_type(expr, locals, registry)?
+                        .unwrap_or(PrimitiveType::F32);
+                    out.push(ReturnType::Scalar(ty));
+                }
             }
             Stmt::If {
                 then_branch,
@@ -608,6 +626,23 @@ pub(super) fn infer_specialized_stmt_returns(
     Ok(())
 }
 
+fn merge_specialized_return_types(a: ReturnType, b: ReturnType) -> Option<ReturnType> {
+    match (&a, &b) {
+        (ReturnType::Scalar(s1), ReturnType::Scalar(s2)) => {
+            merge_inferred_def_return_types(*s1, *s2).map(ReturnType::Scalar)
+        }
+        (ReturnType::Tuple(t1), ReturnType::Tuple(t2)) if t1.len() == t2.len() => {
+            let merged: Option<Vec<PrimitiveType>> = t1
+                .iter()
+                .zip(t2.iter())
+                .map(|(a, b)| merge_inferred_def_return_types(*a, *b))
+                .collect();
+            merged.map(ReturnType::Tuple)
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn infer_specialized_def_return_type(
     name: &str,
     scalar_types: &[PrimitiveType],
@@ -615,7 +650,7 @@ pub(super) fn infer_specialized_def_return_type(
     buffer_types: &[(PrimitiveType, TypedBufferChannels)],
     generic_type_args: &[PrimitiveType],
     registry: &mut UserFnRegistry,
-) -> Result<PrimitiveType, Diagnostic> {
+) -> Result<ReturnType, Diagnostic> {
     let key = user_fn_mono_key(
         name,
         scalar_types,
@@ -623,18 +658,18 @@ pub(super) fn infer_specialized_def_return_type(
         buffer_types,
         generic_type_args,
     );
-    if let Some(ret_ty) = registry.mono_return_tys.get(&key).copied() {
+    if let Some(ret_ty) = registry.mono_return_tys.get(&key).cloned() {
         return Ok(ret_ty);
     }
     if !registry.return_in_progress.insert(key.clone()) {
         return Ok(registry
             .base_return_tys
             .get(name)
-            .copied()
-            .unwrap_or(PrimitiveType::F32));
+            .cloned()
+            .unwrap_or(ReturnType::Scalar(PrimitiveType::F32)));
     }
 
-    let out = (|| -> Result<PrimitiveType, Diagnostic> {
+    let out = (|| -> Result<ReturnType, Diagnostic> {
         let def = registry
             .defs
             .get(name)
@@ -670,19 +705,19 @@ pub(super) fn infer_specialized_def_return_type(
             }
         }
 
-        let mut returns = Vec::<PrimitiveType>::new();
+        let mut returns = Vec::<ReturnType>::new();
         infer_specialized_stmt_returns(&def.body, &mut locals, registry, &mut returns)?;
         let mut it = returns.into_iter();
         let Some(mut ret_ty) = it.next() else {
             return Ok(registry
                 .base_return_tys
                 .get(name)
-                .copied()
-                .unwrap_or(PrimitiveType::F32));
+                .cloned()
+                .unwrap_or(ReturnType::Scalar(PrimitiveType::F32)));
         };
         for ty in it {
-            let Some(merged) = merge_inferred_def_return_types(ret_ty, ty) else {
-                return Ok(PrimitiveType::F32);
+            let Some(merged) = merge_specialized_return_types(ret_ty, ty) else {
+                return Ok(ReturnType::Scalar(PrimitiveType::F32));
             };
             ret_ty = merged;
         }
@@ -691,6 +726,6 @@ pub(super) fn infer_specialized_def_return_type(
 
     registry.return_in_progress.remove(&key);
     let ret_ty = out?;
-    registry.mono_return_tys.insert(key, ret_ty);
+    registry.mono_return_tys.insert(key, ret_ty.clone());
     Ok(ret_ty)
 }

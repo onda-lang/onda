@@ -88,6 +88,7 @@ pub(crate) fn specialize_generic_proc_decl_type(
             elem: *elem,
             size: size.clone(),
         },
+        DeclType::Tuple(elems) => DeclType::Tuple(elems.clone()),
     }
 }
 
@@ -186,7 +187,7 @@ pub(crate) fn rewrite_generic_array_ctor_expr_types(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_generic_array_ctor_expr_types(inner, type_bindings, errors);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_generic_array_ctor_expr_types(value, type_bindings, errors);
             }
@@ -609,7 +610,7 @@ pub(crate) fn specialize_generic_proc_template(
             DeclType::Scalar(_) | DeclType::Generic(_) => {
                 init.default_ty = Some(specialized);
             }
-            DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => {
+            DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
                 push_semantic(
                     DiagCtx::new(init.default_ty_loc.or(init.loc)),
                     errors,
@@ -857,7 +858,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_generic_proc_ctor_expr(inner, templates, generated, errors, locals, current_ns);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_generic_proc_ctor_expr(
                     value, templates, generated, errors, locals, current_ns,

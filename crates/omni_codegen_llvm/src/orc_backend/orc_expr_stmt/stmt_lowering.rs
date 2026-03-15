@@ -646,6 +646,16 @@ pub(super) unsafe fn lower_stmt(
                 local_aliases,
                 local_array_aliases,
             ),
+            AssignTarget::Tuple(targets) => {
+                lower_orc_tuple_destructure(
+                    targets,
+                    expr,
+                    ctx,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                )
+            }
         },
         Stmt::Expr { expr, .. } => {
             let _ = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
@@ -969,4 +979,234 @@ unsafe fn lower_orc_slice_assign(
         fill_elem,
     )?;
     Ok(())
+}
+
+/// Lower tuple destructuring assignment `(a, b) = expr` in ORC (sample/block) scope.
+unsafe fn lower_orc_tuple_destructure(
+    targets: &[String],
+    expr: &Expr,
+    ctx: &mut LoweringCtx<'_>,
+    locals: &HashMap<String, OrcValue>,
+    local_aliases: &mut HashMap<String, AliasSlot>,
+    local_array_aliases: &HashMap<String, LocalArrayAlias>,
+) -> Result<(), Diagnostic> {
+    match expr {
+        Expr::Tuple { values, .. } => {
+            if targets.len() != values.len() {
+                return Err(Diagnostic::internal(format!(
+                    "tuple destructuring arity mismatch: {} targets, {} elements",
+                    targets.len(),
+                    values.len()
+                )));
+            }
+            for (target_name, val_expr) in targets.iter().zip(values.iter()) {
+                let typed = lower_expr(val_expr, ctx, locals, local_aliases, local_array_aliases)?;
+                if let Some(slot) = local_aliases.get(target_name) {
+                    let casted =
+                        cast_orc_value_to(ctx, typed, slot.ty, b"tup_destr_cast\0");
+                    LLVMBuildStore(ctx.builder, casted, slot.ptr);
+                } else {
+                    let slot = build_local_slot(
+                        ctx.builder,
+                        llvm_ty_for_primitive(ctx.context, typed.ty),
+                        &format!("v_{target_name}"),
+                    )?;
+                    LLVMBuildStore(ctx.builder, typed.value, slot);
+                    local_aliases.insert(
+                        target_name.clone(),
+                        AliasSlot {
+                            ptr: slot,
+                            ty: typed.ty,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        }
+        Expr::UserCall {
+            name,
+            type_args,
+            args,
+            ..
+        } => {
+            let module = ctx.module;
+            let context = ctx.context;
+            let float_ty = ctx.float_ty;
+            let sample_rate = ctx.sample_rate;
+            let block_size = ctx.block_size;
+            let fast_math = ctx.fast_math_flags != LLVMFastMathNone;
+            let struct_fields = ctx.struct_fields;
+            let user_fn_param_names = ctx.user_fn_param_names;
+            let user_fn_param_defaults = ctx.user_fn_param_defaults;
+            let user_fn_param_kinds = ctx.user_fn_param_kinds;
+            let user_fn_param_by_ref = ctx.user_fn_param_by_ref;
+            let user_registry = ctx.user_registry as *mut UserFnRegistry;
+            let ctx_ptr: *mut LoweringCtx<'_> = ctx;
+            let mut lower_scalar_expr = |arg_expr: &Expr| unsafe {
+                lower_expr(
+                    arg_expr,
+                    &mut *ctx_ptr,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                )
+            };
+            let mut infer_buffer_arg_signature =
+                |arg_expr: &Expr, callee_name: &str| unsafe {
+                    infer_buffer_arg_signature_in_orc(
+                        &*ctx_ptr,
+                        local_array_aliases,
+                        arg_expr,
+                        callee_name,
+                    )
+                };
+            let mut infer_array_arg_signature =
+                |arg_expr: &Expr, callee_name: &str| unsafe {
+                    infer_array_arg_signature_in_orc(
+                        &*ctx_ptr,
+                        local_array_aliases,
+                        arg_expr,
+                        callee_name,
+                    )
+                };
+            let prepared = prepare_user_call_common(
+                name,
+                type_args,
+                args,
+                module,
+                context,
+                float_ty,
+                sample_rate,
+                block_size,
+                fast_math,
+                struct_fields,
+                user_fn_param_names,
+                user_fn_param_defaults,
+                user_fn_param_kinds,
+                user_fn_param_by_ref,
+                user_registry,
+                &mut lower_scalar_expr,
+                &mut infer_buffer_arg_signature,
+                &mut infer_array_arg_signature,
+                "ORC tuple destructure",
+            )?;
+            let ReturnType::Tuple(elem_tys) = &prepared.ret_ty else {
+                return Err(Diagnostic::internal(
+                    "expected tuple return from user call in ORC destructure",
+                ));
+            };
+            let elem_tys = elem_tys.clone();
+            if targets.len() != elem_tys.len() {
+                return Err(Diagnostic::internal(format!(
+                    "tuple destructuring arity mismatch: {} targets, {} elements",
+                    targets.len(),
+                    elem_tys.len()
+                )));
+            }
+            let mut arg_values = Vec::new();
+            let ctx_ptr: *mut LoweringCtx<'_> = ctx;
+            let mut cast_scalar_arg =
+                |value: OrcValue, target_ty: PrimitiveType, arg_name: &[u8]| unsafe {
+                    cast_orc_value_to(&*ctx_ptr, value, target_ty, arg_name)
+                };
+            let mut lower_struct_arg = |arg_values: &mut Vec<LLVMValueRef>,
+                                        arg_expr: &Expr,
+                                        struct_name: &str,
+                                        by_ref: bool| {
+                unsafe {
+                    lower_struct_call_args_in_orc(
+                        &mut *ctx_ptr,
+                        arg_values,
+                        arg_expr,
+                        struct_name,
+                        name,
+                        by_ref,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                    )
+                }
+            };
+            let mut lower_array_arg =
+                |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+                    lower_array_call_args_in_orc(
+                        &mut *ctx_ptr,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        arg_values,
+                        arg_expr,
+                        name,
+                    )
+                };
+            let mut lower_buffer_arg =
+                |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+                    lower_buffer_call_args_in_orc(
+                        &mut *ctx_ptr,
+                        local_array_aliases,
+                        arg_values,
+                        arg_expr,
+                        name,
+                        locals,
+                        local_aliases,
+                    )
+                };
+            materialize_user_call_args_common(
+                name,
+                &prepared,
+                &mut arg_values,
+                b"tup_call_arg\0",
+                "ORC tuple destructure",
+                &mut cast_scalar_arg,
+                &mut lower_struct_arg,
+                &mut lower_array_arg,
+                &mut lower_buffer_arg,
+            )?;
+            let call = LLVMBuildCall2(
+                ctx.builder,
+                prepared.fn_ty,
+                prepared.fn_ref,
+                arg_values.as_mut_ptr(),
+                arg_values.len() as u32,
+                b"tup_call\0".as_ptr().cast(),
+            );
+            for (i, (target_name, elem_ty)) in
+                targets.iter().zip(elem_tys.iter()).enumerate()
+            {
+                let elem_val = LLVMBuildExtractValue(
+                    ctx.builder,
+                    call,
+                    i as u32,
+                    b"tup_elem\0".as_ptr().cast(),
+                );
+                let elem_orc = OrcValue {
+                    value: elem_val,
+                    ty: *elem_ty,
+                };
+                if let Some(slot) = local_aliases.get(target_name) {
+                    let casted =
+                        cast_orc_value_to(ctx, elem_orc, slot.ty, b"tup_destr_cast\0");
+                    LLVMBuildStore(ctx.builder, casted, slot.ptr);
+                } else {
+                    let slot = build_local_slot(
+                        ctx.builder,
+                        llvm_ty_for_primitive(ctx.context, *elem_ty),
+                        &format!("v_{target_name}"),
+                    )?;
+                    LLVMBuildStore(ctx.builder, elem_val, slot);
+                    local_aliases.insert(
+                        target_name.clone(),
+                        AliasSlot {
+                            ptr: slot,
+                            ty: *elem_ty,
+                        },
+                    );
+                }
+            }
+            Ok(())
+        }
+        _ => Err(Diagnostic::internal(
+            "tuple destructuring requires a tuple literal or tuple-returning call",
+        )),
+    }
 }

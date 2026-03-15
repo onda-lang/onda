@@ -1705,6 +1705,7 @@ fn analyze_assign_init(
             st.state_scalars.insert(name.clone(), target_ty);
             st.known_scalars.insert(name.clone());
         }
+        AssignTarget::Tuple(_) => {}
     }
 }
 #[allow(clippy::too_many_arguments)]

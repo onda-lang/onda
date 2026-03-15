@@ -252,7 +252,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                     guards,
                 );
             }
-            Expr::ArrayLiteral { values, .. } => {
+            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
                 for value in values {
                     collect_guards_from_expr(
                         value,
