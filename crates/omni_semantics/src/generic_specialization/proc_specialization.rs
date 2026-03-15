@@ -724,6 +724,7 @@ pub(crate) fn specialize_generic_proc_template(
                         None => FnParamType::ArrayGeneric(name.clone()),
                     },
                     FnParamType::BareBuffer => FnParamType::BareBuffer,
+                    FnParamType::Tuple(elems) => FnParamType::Tuple(elems.clone()),
                 };
             }
             if let Some(default) = &mut param.default {

@@ -66,6 +66,7 @@ pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
     pub forbidden_assign_names: &'a HashSet<String>,
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub event_policy: Option<EventStmtPolicy<'a>>,
+    pub state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
 }
 
 #[derive(Clone, Copy)]
@@ -213,6 +214,7 @@ fn build_runtime_stmt_analysis_ctx<'a>(
     registration_param_names: &'a HashSet<String>,
     forbidden_assign_names: &'a HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
+    state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
 ) -> RuntimeStmtAnalysisCtx<'a> {
     RuntimeStmtAnalysisCtx {
         common,
@@ -228,6 +230,7 @@ fn build_runtime_stmt_analysis_ctx<'a>(
         registration_param_names,
         forbidden_assign_names,
         event_policy,
+        state_tuples,
     }
 }
 
@@ -273,6 +276,7 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
     struct_instances: &HashMap<String, String>,
     forbidden_assign_names: &HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
+    state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut state_scalars = state_scalars.clone();
@@ -290,6 +294,7 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
         common.param_names,
         forbidden_assign_names,
         event_policy,
+        state_tuples,
     );
     let mut state =
         build_runtime_stmt_analysis_state(known_scalars, local_aliases, local_array_aliases);
@@ -332,6 +337,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
     runtime_local_aliases: LocalAliasTypes,
     runtime_local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     runtime_forbidden_assign_names: &HashSet<String>,
+    state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let ctx = build_runtime_stmt_analysis_ctx(
@@ -348,6 +354,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         registration_param_names,
         runtime_forbidden_assign_names,
         None,
+        state_tuples,
     );
     let mut state = build_runtime_stmt_analysis_state(
         runtime_known_scalars,
@@ -473,6 +480,7 @@ pub(crate) fn analyze_runtime_events(
             struct_instances,
             validation_output_names,
             Some(event_policy),
+            &HashMap::new(),
             errors,
         );
     }
@@ -523,6 +531,8 @@ fn analyze_runtime_scope<'a>(
         ctx.registration_mode,
     );
     state.known_scalars.extend(state_scalars.keys().cloned());
+    // Seed tuple_vars so expression validation allows pair[0] indexing
+    state.tuple_vars.extend(ctx.state_tuples.keys().cloned());
     for stmt in stmts {
         analyze_runtime_stmt_inner(stmt, locals, state_scalars, ctx, state, loop_depth, errors);
     }
@@ -618,6 +628,7 @@ fn analyze_runtime_stmt_inner(
                     common.port_index_ins,
                     common.port_index_outs,
                     common.port_index_params,
+                    ctx.state_tuples,
                     errors,
                 );
             }
@@ -776,6 +787,7 @@ fn analyze_assign_sample(
     port_index_ins: Option<PortIndexInfo>,
     port_index_outs: Option<PortIndexInfo>,
     port_index_params: Option<PortIndexInfo>,
+    state_tuples: &HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
@@ -806,7 +818,9 @@ fn analyze_assign_sample(
             scope,
         )
     };
-    let scope_expr_env = build_scope_expr_env(expr_inputs, known_scalars, &array_vars, scope);
+    let tuple_var_names: HashSet<String> = state_tuples.keys().cloned().collect();
+    let mut scope_expr_env = build_scope_expr_env(expr_inputs, known_scalars, &array_vars, scope);
+    scope_expr_env.tuple_vars = &tuple_var_names;
     macro_rules! target_error {
         ($message:expr $(,)?) => {
             errors.push(Diagnostic::semantic_span($message, target_loc))
@@ -858,6 +872,31 @@ fn analyze_assign_sample(
             if matches!(base.as_str(), "ins" | "params") {
                 target_error!(format!("cannot assign to immutable '{base}[i]'"),);
                 validate_expr(index, scope_expr_env, errors);
+                validate_expr(
+                    &rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases),
+                    scope_expr_env,
+                    errors,
+                );
+                return;
+            }
+            if let Some(elem_tys) = state_tuples.get(base) {
+                // Tuple state element write: pair[0] = value
+                match index {
+                    Expr::Int { value, .. } => {
+                        let idx = *value as usize;
+                        if idx >= elem_tys.len() {
+                            target_error!(format!(
+                                "tuple element index {idx} is out of bounds for tuple '{base}' with {} elements",
+                                elem_tys.len()
+                            ),);
+                        }
+                    }
+                    _ => {
+                        target_error!(format!(
+                            "tuple element index must be a compile-time integer constant"
+                        ),);
+                    }
+                }
                 validate_expr(
                     &rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases),
                     scope_expr_env,

@@ -314,6 +314,15 @@ pub(crate) fn infer_def_param_kinds(
                 || inferred_kind.saw_call_buffer
                 || (inferred_kind.saw_seeded_buffer && !has_struct_usage);
 
+            // Handle explicitly typed tuple params (e.g. `(f32, i32)`)
+            if let Some(FnParamType::Tuple(elem_tys)) =
+                def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                typed.push(TypedFnParam::Tuple {
+                    elem_tys: elem_tys.clone(),
+                });
+                continue;
+            }
             // Handle explicitly typed array params (e.g. `f32[]`)
             if let Some(FnParamType::Array(Some(prim))) =
                 def.params.get(idx).and_then(|p| p.ty.as_ref())

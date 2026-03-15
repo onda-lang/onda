@@ -81,6 +81,7 @@ pub struct TypedProgram {
     pub block_post: Vec<Stmt>,
     pub state_vars: Vec<String>,
     pub state_types: Vec<PrimitiveType>,
+    pub state_tuples: HashMap<String, Vec<PrimitiveType>>,
     pub array_vars: Vec<TypedArrayVar>,
     pub array_struct_roots: Vec<TypedArrayStructRoot>,
     pub ins_explicit: bool,
@@ -223,6 +224,9 @@ pub enum TypedFnParam {
     Buffer {
         elem_ty: PrimitiveType,
         channels: TypedBufferChannels,
+    },
+    Tuple {
+        elem_tys: Vec<PrimitiveType>,
     },
 }
 

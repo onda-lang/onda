@@ -291,6 +291,51 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                     );
                     llvm_param_idx += 4;
                 }
+                TypedFnParam::Tuple { elem_tys } => {
+                    // Tuple params are expanded to N individual LLVM params.
+                    // Allocate a tuple slot (LLVM struct alloca) and store each element.
+                    let mut llvm_elem_tys: Vec<LLVMTypeRef> = elem_tys
+                        .iter()
+                        .map(|t| llvm_ty_for_primitive(ctx.context, *t))
+                        .collect();
+                    let struct_ty = LLVMStructTypeInContext(
+                        ctx.context,
+                        llvm_elem_tys.as_mut_ptr(),
+                        llvm_elem_tys.len() as u32,
+                        0,
+                    );
+                    let slot = build_local_slot(
+                        ctx.builder,
+                        struct_ty,
+                        &format!("p_{param_name}"),
+                    )?;
+                    // Store each expanded param into the struct slot
+                    for (i, ty) in elem_tys.iter().enumerate() {
+                        let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                        if param_val.is_null() {
+                            return Err(Diagnostic::internal(format!(
+                                "missing LLVM tuple param {} for function '{}'",
+                                llvm_param_idx, def.name
+                            )));
+                        }
+                        let gep = LLVMBuildStructGEP2(
+                            ctx.builder,
+                            struct_ty,
+                            slot,
+                            i as u32,
+                            b"tup_p_gep\0".as_ptr().cast(),
+                        );
+                        LLVMBuildStore(ctx.builder, param_val, gep);
+                        llvm_param_idx += 1;
+                    }
+                    ctx.tuple_slots.insert(
+                        param_name.clone(),
+                        DefTupleSlot {
+                            ptr: slot,
+                            elem_tys: elem_tys.clone(),
+                        },
+                    );
+                }
             }
         }
 

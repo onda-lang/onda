@@ -2707,6 +2707,10 @@ fn format_fn_param_type(ty: &omni_frontend::FnParamType) -> String {
         omni_frontend::FnParamType::Array(None) => "[]".to_owned(),
         omni_frontend::FnParamType::ArrayGeneric(name) => format!("{name}[]"),
         omni_frontend::FnParamType::BareBuffer => "buffer".to_owned(),
+        omni_frontend::FnParamType::Tuple(elems) => {
+            let inner = elems.iter().map(|p| primitive_type_name(*p)).collect::<Vec<_>>().join(", ");
+            format!("({inner})")
+        }
     }
 }
 

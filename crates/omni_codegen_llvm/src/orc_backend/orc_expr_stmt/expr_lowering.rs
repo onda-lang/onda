@@ -177,6 +177,29 @@ pub(super) unsafe fn lower_expr(
                     return lower_port_index_params_read(ctx, meta, index, locals, local_aliases, local_array_aliases);
                 }
             }
+            // Tuple state element read: pair[0] → state_slots["pair.__0"]
+            if ctx.state_slots.contains_key(&format!("{base}.__0")) {
+                if let Expr::Int { value, .. } = index.as_ref() {
+                    let flat_name = format!("{base}.__{value}");
+                    if let Some(slot) = ctx.state_slots.get(&flat_name) {
+                        return Ok(OrcValue {
+                            value: LLVMBuildLoad2(
+                                ctx.builder,
+                                llvm_ty_for_primitive(ctx.context, slot.ty),
+                                slot.ptr,
+                                b"tuple_state_load\0".as_ptr().cast(),
+                            ),
+                            ty: slot.ty,
+                        });
+                    }
+                    return Err(Diagnostic::internal(format!(
+                        "tuple state element '{flat_name}' not found in state slots"
+                    )));
+                }
+                return Err(Diagnostic::internal(
+                    "tuple element index must be a compile-time integer constant in ORC lowering",
+                ));
+            }
             if ctx.buffer_index.contains_key(base) {
                 let data = lower_buffer_element_ptr(
                     ctx,

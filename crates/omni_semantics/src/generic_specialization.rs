@@ -285,6 +285,7 @@ pub(crate) fn specialize_generic_struct_template(
                 None => FnParamType::ArrayGeneric(name.clone()),
             },
             FnParamType::BareBuffer => FnParamType::BareBuffer,
+            FnParamType::Tuple(elems) => FnParamType::Tuple(elems.clone()),
         }
     };
 

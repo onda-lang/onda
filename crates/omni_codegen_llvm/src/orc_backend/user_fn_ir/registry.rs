@@ -92,6 +92,11 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                     arg_tys.push(i32_ty);
                     arg_tys.push(LLVMFloatTypeInContext(context));
                 }
+                TypedFnParam::Tuple { elem_tys } => {
+                    for ty in elem_tys {
+                        arg_tys.push(llvm_ty_for_primitive(context, *ty));
+                    }
+                }
             }
         }
         let ret_llvm_ty = llvm_ty_for_return_type(context, &def.return_ty);
@@ -305,6 +310,11 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                 arg_tys.push(i32_ty);
                 arg_tys.push(i32_ty);
                 arg_tys.push(LLVMFloatTypeInContext(context));
+            }
+            TypedFnParam::Tuple { elem_tys } => {
+                for ty in elem_tys {
+                    arg_tys.push(llvm_ty_for_primitive(context, *ty));
+                }
             }
         }
     }

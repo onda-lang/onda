@@ -330,6 +330,10 @@ fn score_overload_param_match(
             OverloadArgShape::Unknown => Some(2),
             _ => None,
         },
+        Some(FnParamType::Tuple(_)) => match arg_shape {
+            OverloadArgShape::Unknown => Some(2),
+            _ => None,
+        },
         None => Some(3),
     }
 }
@@ -343,6 +347,10 @@ fn format_fn_param_for_overload(name: &str, ty: Option<&FnParamType>, has_defaul
         Some(FnParamType::ArrayGeneric(param)) => format!("{name}: {param}[]"),
         Some(FnParamType::Array(None)) => format!("{name}: []"),
         Some(FnParamType::BareBuffer) => format!("{name}: buffer"),
+        Some(FnParamType::Tuple(elems)) => {
+            let inner = elems.iter().map(|p| format!("{p:?}").to_lowercase()).collect::<Vec<_>>().join(", ");
+            format!("{name}: ({inner})")
+        }
         None => name.to_owned(),
     };
     if has_default {

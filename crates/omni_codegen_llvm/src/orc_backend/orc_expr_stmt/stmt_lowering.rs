@@ -383,6 +383,32 @@ pub(super) unsafe fn lower_stmt(
                     );
                     return Ok(());
                 }
+                // Tuple literal in init: pair = (1.0, 2.0) → store to pair.__0, pair.__1
+                if let Expr::Tuple { values, .. } = expr {
+                    if ctx.state_slots.contains_key(&format!("{name}.__0")) {
+                        for (idx, value_expr) in values.iter().enumerate() {
+                            let flat_name = format!("{name}.__{idx}");
+                            let slot = ctx.state_slots.get(&flat_name).ok_or_else(|| {
+                                Diagnostic::internal(format!(
+                                    "missing state slot for tuple element '{flat_name}' in ORC init lowering"
+                                ))
+                            })?;
+                            let typed = lower_expr(
+                                value_expr,
+                                ctx,
+                                locals,
+                                local_aliases,
+                                local_array_aliases,
+                            )?;
+                            let casted = cast_orc_value_to(ctx, typed, slot.ty, b"tuple_init_cast\0");
+                            LLVMBuildStore(ctx.builder, casted, slot.ptr);
+                        }
+                        return Ok(());
+                    }
+                    return Err(Diagnostic::internal(format!(
+                        "tuple literal assigned to non-tuple symbol '{name}' in ORC lowering"
+                    )));
+                }
                 if matches!(expr, Expr::Slice { .. }) {
                     if local_array_aliases.contains_key(name) {
                         return Err(Diagnostic::internal(format!(
@@ -595,6 +621,24 @@ pub(super) unsafe fn lower_stmt(
                         LLVMBuildStore(ctx.builder, casted, slot_ptr);
                         return Ok(());
                     }
+                }
+                // Tuple state element write: pair[0] = value → state_slots["pair.__0"]
+                if ctx.state_slots.contains_key(&format!("{base}.__0")) {
+                    let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
+                    if let Expr::Int { value, .. } = index {
+                        let flat_name = format!("{base}.__{value}");
+                        let slot = ctx.state_slots.get(&flat_name).ok_or_else(|| {
+                            Diagnostic::internal(format!(
+                                "tuple state element '{flat_name}' not found in state slots"
+                            ))
+                        })?;
+                        let casted = cast_orc_value_to(ctx, typed, slot.ty, b"tuple_state_store_cast\0");
+                        LLVMBuildStore(ctx.builder, casted, slot.ptr);
+                        return Ok(());
+                    }
+                    return Err(Diagnostic::internal(
+                        "tuple element index must be a compile-time integer constant in ORC lowering",
+                    ));
                 }
                 let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
                 if ctx.input_arrays.contains_key(base) || ctx.param_arrays.contains_key(base) {

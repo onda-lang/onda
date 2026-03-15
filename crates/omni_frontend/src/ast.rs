@@ -466,6 +466,7 @@ pub enum FnParamType {
     Array(Option<PrimitiveType>),
     ArrayGeneric(String),
     BareBuffer,
+    Tuple(Vec<PrimitiveType>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

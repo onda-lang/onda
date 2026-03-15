@@ -337,6 +337,9 @@ fn infer_def_return_type(
             Some(FnParamType::ArrayGeneric(_)) => {
                 locals.insert(param.clone(), PrimitiveType::F32);
             }
+            Some(FnParamType::Tuple(_)) => {
+                // Tuple params don't contribute a single scalar type to locals
+            }
             Some(FnParamType::Array(None)) | None => {
                 locals.insert(param.clone(), PrimitiveType::F32);
             }

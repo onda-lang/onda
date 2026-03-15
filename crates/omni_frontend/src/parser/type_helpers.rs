@@ -229,6 +229,14 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
         }
         Rule::fn_untyped_array_param => FnParamType::Array(None),
         Rule::fn_bare_buffer => FnParamType::BareBuffer,
+        Rule::fn_tuple_param => {
+            let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = inner
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::type_name)
+                .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                .collect();
+            FnParamType::Tuple(elems?)
+        }
         Rule::buffer_type => FnParamType::Buffer(parse_buffer_type(inner)?),
         Rule::type_name => {
             FnParamType::Primitive(parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?)

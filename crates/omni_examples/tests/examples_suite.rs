@@ -9186,6 +9186,169 @@ fn tuple_mixed_types_compiles_and_runs() {
     assert_near(output[1], 0.7, 1e-5);  // 3.7 - 3.0 = 0.7
 }
 
+const TUPLE_PARAM_BASIC: &str = r#"
+outs { out1, out2 }
+
+def sumPair(p: (f32, f32)):
+  return p[0] + p[1]
+
+def swapPair(p: (f32, f32)):
+  return (p[1], p[0])
+
+sample {
+  out1 = sumPair((3.0, 7.0))
+  (a, b) = swapPair((10.0, 20.0))
+  out2 = a - b
+}
+"#;
+
+#[test]
+fn tuple_param_basic_compiles_and_runs() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TUPLE_PARAM_BASIC, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 10.0, 1e-6); // 3.0 + 7.0
+    assert_near(output[1], 10.0, 1e-6); // 20.0 - 10.0
+}
+
+const TUPLE_PARAM_MIXED_TYPES: &str = r#"
+outs { out1, out2 }
+
+def extractPair(p: (i32, f32)):
+  return (f32(p[0]) * 2.0, p[1] + 1.0)
+
+sample {
+  (a, b) = extractPair((3, 7.5))
+  out1 = a
+  out2 = b
+}
+"#;
+
+#[test]
+fn tuple_param_mixed_types_compiles_and_runs() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TUPLE_PARAM_MIXED_TYPES, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 6.0, 1e-6);  // i32(3) * 2.0
+    assert_near(output[1], 8.5, 1e-6);  // 7.5 + 1.0
+}
+
+const TUPLE_STATE_BASIC: &str = r#"
+outs { out1, out2 }
+
+init:
+  pair = (10.0, 20.0)
+
+sample {
+  out1 = pair[0]
+  out2 = pair[1]
+}
+"#;
+
+#[test]
+fn tuple_state_basic_compiles_and_runs() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TUPLE_STATE_BASIC, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 10.0, 1e-6);
+    assert_near(output[1], 20.0, 1e-6);
+}
+
+const TUPLE_STATE_WRITE: &str = r#"
+ins { in1 }
+outs { out1, out2 }
+
+init:
+  pair = (0.0, 0.0)
+
+sample {
+  pair[0] = in1
+  pair[1] = in1 * 2.0
+  out1 = pair[0]
+  out2 = pair[1]
+}
+"#;
+
+#[test]
+fn tuple_state_write_compiles_and_runs() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TUPLE_STATE_WRITE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 2);
+
+    let input = vec![5.0_f32];
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 5.0, 1e-6);
+    assert_near(output[1], 10.0, 1e-6);
+}
+
+const TUPLE_STATE_PERSISTENCE: &str = r#"
+ins { in1 }
+outs { out1, out2 }
+
+init:
+  pair = (0.0, 0.0)
+
+sample {
+  out1 = pair[0]
+  out2 = pair[1]
+  pair[0] = pair[0] + in1
+  pair[1] = pair[1] + 1.0
+}
+"#;
+
+#[test]
+fn tuple_state_persistence_compiles_and_runs() {
+    let frames = 3;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TUPLE_STATE_PERSISTENCE, frames);
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 2);
+
+    let input = vec![1.0_f32, 2.0, 3.0];
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    // Frame 0: out1=0, out2=0, then pair=(0+1, 0+1) = (1, 1)
+    assert_near(output[0], 0.0, 1e-6);
+    assert_near(output[1], 0.0, 1e-6);
+    // Frame 1: out1=1, out2=1, then pair=(1+2, 1+1) = (3, 2)
+    assert_near(output[2], 1.0, 1e-6);
+    assert_near(output[3], 1.0, 1e-6);
+    // Frame 2: out1=3, out2=2, then pair=(3+3, 2+1) = (6, 3)
+    assert_near(output[4], 3.0, 1e-6);
+    assert_near(output[5], 2.0, 1e-6);
+}
+
 #[test]
 fn stdlib_f32_graph_example_matches_sample_version() {
     let frames = 256;

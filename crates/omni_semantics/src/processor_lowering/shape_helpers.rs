@@ -360,6 +360,7 @@ pub(super) fn compute_proc_shape(
         struct_instance_type_args: HashMap::new(),
         nested_procs: HashMap::new(),
         nested_proc_arrays: HashMap::new(),
+        state_tuples: HashMap::new(),
     };
     // Seed known_scalars with reserved names so they're visible for decl-order checks
     init_st.known_scalars.extend(reserved.iter().cloned());
@@ -648,6 +649,7 @@ pub(super) fn compute_proc_shape(
         LocalAliasTypes::new(),
         HashMap::new(),
         &block_forbidden,
+        &HashMap::new(),
         errors,
     );
 
@@ -691,6 +693,7 @@ pub(super) fn compute_proc_shape(
         LocalAliasTypes::new(),
         HashMap::new(),
         &sample_forbidden,
+        &HashMap::new(),
         errors,
     );
 

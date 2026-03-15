@@ -104,6 +104,7 @@ pub(super) fn default_scalar_signature(def: &TypedFunction) -> Vec<PrimitiveType
             TypedFnParam::Struct { .. } => None,
             TypedFnParam::Array { .. } => None,
             TypedFnParam::Buffer { .. } => None,
+            TypedFnParam::Tuple { .. } => None,
         })
         .collect::<Vec<_>>()
 }
@@ -124,7 +125,7 @@ pub(super) fn count_param_kinds(param_kinds: &[TypedFnParam]) -> (usize, usize, 
             TypedFnParam::Scalar { .. } => scalar += 1,
             TypedFnParam::Array { .. } => array += 1,
             TypedFnParam::Buffer { .. } => buffer += 1,
-            TypedFnParam::Struct { .. } => {}
+            TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
         }
     }
     (scalar, array, buffer)
@@ -508,7 +509,7 @@ pub(super) fn infer_specialized_expr_return_type(
                     TypedFnParam::Buffer { elem_ty, channels } => {
                         buffer_types.push((*elem_ty, channels.clone()));
                     }
-                    TypedFnParam::Struct { .. } => {}
+                    TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
                 }
             }
             let explicit_type_args = resolve_explicit_call_type_args_for_codegen(
@@ -701,7 +702,7 @@ pub(super) fn infer_specialized_def_return_type(
                     array_idx += 1;
                     locals.insert(param_name.clone(), param_ty);
                 }
-                TypedFnParam::Struct { .. } | TypedFnParam::Buffer { .. } => {}
+                TypedFnParam::Struct { .. } | TypedFnParam::Buffer { .. } | TypedFnParam::Tuple { .. } => {}
             }
         }
 

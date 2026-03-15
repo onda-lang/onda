@@ -987,7 +987,7 @@ pub fn analyze_with_options(
                 Some(FnParamType::Array(Some(prim))) => {
                     def_env.array_elem_types.insert(param.name.clone(), *prim);
                 }
-                Some(FnParamType::ArrayGeneric(_)) => {}
+                Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::Tuple(_)) => {}
                 Some(FnParamType::Array(None)) | Some(FnParamType::BareBuffer) | None => {}
             }
             if let Some(default_expr) = &mut param.default {
@@ -1400,6 +1400,7 @@ pub fn analyze_with_options(
         state_arrays,
         state_array_struct_roots,
         struct_instances,
+        state_tuples: HashMap::new(),
         state_array_specs: HashMap::new(),
         struct_instance_type_args: HashMap::new(),
         nested_procs: HashMap::new(),
@@ -1427,6 +1428,7 @@ pub fn analyze_with_options(
         state_array_struct_roots,
         struct_instances,
         nested_proc_arrays,
+        state_tuples,
         ..
     } = init_st;
     let init_writable_roots = collect_runtime_state_roots(&state_scalars, &state_arrays);
@@ -1496,6 +1498,7 @@ pub fn analyze_with_options(
         LocalAliasTypes::new(),
         block_local_data_aliases,
         &block_forbidden_assigns,
+        &state_tuples,
         &mut errors,
     );
 
@@ -1538,6 +1541,7 @@ pub fn analyze_with_options(
         LocalAliasTypes::new(),
         sample_local_data_aliases,
         &sample_forbidden_assigns,
+        &state_tuples,
         &mut errors,
     );
 
@@ -1680,7 +1684,8 @@ pub fn analyze_with_options(
                     | FnParamType::Buffer(_)
                     | FnParamType::Array(_)
                     | FnParamType::ArrayGeneric(_)
-                    | FnParamType::BareBuffer => None,
+                    | FnParamType::BareBuffer
+                    | FnParamType::Tuple(_) => None,
                 });
             if let Some(param_ty) = explicit_prim {
                 def_state_scalars.insert(param.name.clone(), param_ty);
@@ -1761,6 +1766,14 @@ pub fn analyze_with_options(
             fn_local_data_aliases,
             fn_local_proc_aliases,
         );
+        // Register tuple params as tuple_vars for indexing validation
+        if let Some(kinds) = inferred_def_params.get(&def.name) {
+            for (param, kind) in def.params.iter().zip(kinds.iter()) {
+                if matches!(kind, TypedFnParam::Tuple { .. }) {
+                    def_state.tuple_vars.insert(param.name.clone());
+                }
+            }
+        }
         for stmt in &def.body {
             analyze_def_stmt(stmt, def_ctx, &mut def_state, 0, &mut errors);
         }
@@ -1857,6 +1870,7 @@ pub fn analyze_with_options(
             block_post,
             state_vars: sorted_state,
             state_types,
+            state_tuples,
             array_vars: typed_data,
             array_struct_roots: typed_data_roots,
             ins_explicit,
