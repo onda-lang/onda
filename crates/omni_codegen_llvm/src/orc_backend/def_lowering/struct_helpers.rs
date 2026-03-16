@@ -329,6 +329,44 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                             }
                         }
                         TypedFieldType::Struct => {}
+                        TypedFieldType::Tuple(ref elem_tys) => {
+                            for (idx, prim) in elem_tys.iter().enumerate() {
+                                let mut slot_ptrs =
+                                    Vec::<LLVMValueRef>::with_capacity(slot_indices.len());
+                                for slot_idx in &slot_indices {
+                                    let slot_name = format!(
+                                        "{base}[{slot_idx}].{}.__{idx}",
+                                        field.name
+                                    );
+                                    let slot =
+                                        find_def_local_slot(ctx, &slot_name).ok_or_else(|| {
+                                            Diagnostic::internal(format!(
+                                                "missing flattened slot state '{}' while lowering struct tuple argument for '{}'",
+                                                slot_name, callee_name
+                                            ))
+                                        })?;
+                                    slot_ptrs.push(slot.ptr);
+                                }
+                                let ptr = select_def_value_by_slot_index(
+                                    ctx,
+                                    clamped_index,
+                                    &slot_ptrs,
+                                    b"def_struct_idx_tuple_ptr_sel\0",
+                                    "def struct tuple slot dispatch",
+                                )?;
+                                if by_ref {
+                                    out_args.push(ptr);
+                                } else {
+                                    let loaded = LLVMBuildLoad2(
+                                        ctx.builder,
+                                        llvm_ty_for_primitive(ctx.context, *prim),
+                                        ptr,
+                                        b"def_struct_idx_tuple_load\0".as_ptr().cast(),
+                                    );
+                                    out_args.push(loaded);
+                                }
+                            }
+                        }
                         TypedFieldType::Array(_) => {
                             return Err(Diagnostic::internal(format!(
                                 "function '{callee_name}' indexed struct argument '{base}[...]' requires struct-array root metadata for array field '{}'",
@@ -425,6 +463,30 @@ pub(super) unsafe fn bind_struct_data_element_aliases_in_def(
                 );
             }
             TypedFieldType::Struct => {}
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    let elem_flat = format!("{array_field_base}.__{idx}");
+                    let array_base_ptr = *ctx.array_ptrs.get(&elem_flat).ok_or_else(|| {
+                        Diagnostic::internal(format!(
+                            "missing def array pointer for symbol '{elem_flat}' while creating alias '{alias_name}'"
+                        ))
+                    })?;
+                    let elem_ptr = build_f32_ptr_offset(
+                        ctx.builder,
+                        llvm_ty_for_primitive(ctx.context, *prim),
+                        array_base_ptr,
+                        global_index,
+                        b"def_struct_tuple_elem_ptr\0",
+                    );
+                    ctx.local_slots.insert(
+                        format!("{alias_name}.{}.__{idx}", field.name),
+                        DefLocalSlot {
+                            ptr: elem_ptr,
+                            ty: *prim,
+                        },
+                    );
+                }
+            }
             TypedFieldType::Array(field_len) => {
                 let start_idx = build_data_segment_start_index(
                     ctx.builder,

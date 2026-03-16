@@ -2687,6 +2687,10 @@ fn format_field_type(ty: &FieldType) -> String {
         FieldType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
         FieldType::Generic(name) => name.clone(),
         FieldType::Array(spec) => format_array_type_spec(spec),
+        FieldType::Tuple(elem_tys) => {
+            let elems: Vec<String> = elem_tys.iter().map(|ty| primitive_type_name(*ty).to_owned()).collect();
+            format!("({})", elems.join(", "))
+        }
     }
 }
 

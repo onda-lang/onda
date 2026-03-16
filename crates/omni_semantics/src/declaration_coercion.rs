@@ -131,6 +131,24 @@ pub(crate) fn coerce_struct_fields(
                 }
                 continue;
             }
+            FieldType::Tuple(elem_tys) => {
+                if let Some(expr) = &field.default {
+                    with_loc_diag_context(field_loc, |_diag| {
+                        validate_default_expr(
+                            expr,
+                            errors,
+                            &format!("struct field '{}.{}'", struct_name, field.name),
+                        );
+                    });
+                }
+                (
+                    TypedFieldType::Tuple(elem_tys.clone()),
+                    field.default.clone(),
+                    None,
+                    None,
+                    None,
+                )
+            }
             FieldType::Array(spec) => {
                 if let Some(nested_struct_name) =
                     reinterpret_scalar_specialized_struct_field(spec, &type_param_set)
@@ -317,18 +335,17 @@ pub(crate) fn register_struct_instance_roots(
         return;
     };
     for field in fields {
-        if field.ty != TypedFieldType::Struct {
-            continue;
+        if field.ty == TypedFieldType::Struct {
+            let Some(nested_struct_name) = &field.struct_name else {
+                continue;
+            };
+            register_struct_instance_roots(
+                &format!("{base}.{}", field.name),
+                nested_struct_name,
+                struct_defs,
+                struct_instances,
+            );
         }
-        let Some(nested_struct_name) = &field.struct_name else {
-            continue;
-        };
-        register_struct_instance_roots(
-            &format!("{base}.{}", field.name),
-            nested_struct_name,
-            struct_defs,
-            struct_instances,
-        );
     }
 }
 
@@ -364,7 +381,7 @@ pub(crate) fn register_struct_array_roots(
                     );
                 }
             }
-            TypedFieldType::Scalar(_) => {}
+            TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => {}
         }
     }
 }
@@ -405,7 +422,7 @@ pub(crate) fn register_struct_instance_and_array_roots(
                     struct_array_roots,
                 );
             }
-            TypedFieldType::Scalar(_) => {}
+            TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => {}
         }
     }
 }

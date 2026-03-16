@@ -167,11 +167,12 @@ pub struct TypedStructField {
     pub array_elem_struct: Option<String>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TypedFieldType {
     Scalar(PrimitiveType),
     Struct,
     Array(usize),
+    Tuple(Vec<PrimitiveType>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

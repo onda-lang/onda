@@ -113,6 +113,14 @@ fn collect_data_struct_layout_inner(
                     },
                 });
             }
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    layout.push(StructArrayLayoutField {
+                        name: format!("{}.__{idx}", field.name),
+                        kind: StructArrayLayoutKind::Scalar(*prim),
+                    });
+                }
+            }
         }
     }
     stack.pop();
@@ -216,6 +224,18 @@ fn register_data_struct_root_inner(
                 state_arrays.entry(flat).or_insert(len);
             }
             TypedFieldType::Struct => {}
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    let elem_flat = format!("{flat}.__{idx}");
+                    insert_declared_symbol(
+                        state_scalars,
+                        declared_symbols,
+                        elem_flat.clone(),
+                        DeclaredSymbolInfo::DataArray { elem_ty: *prim },
+                    );
+                    state_arrays.entry(elem_flat).or_insert(len);
+                }
+            }
             TypedFieldType::Array(field_len) => {
                 let nested_len = len.saturating_mul(field_len);
                 if let Some(elem_struct) = &field.array_elem_struct {

@@ -59,6 +59,15 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                                 }
                             }
                             TypedFieldType::Struct => {}
+                            TypedFieldType::Tuple(ref elem_tys) => {
+                                for (_, prim) in elem_tys.iter().enumerate() {
+                                    if by_ref_flags[idx] {
+                                        arg_tys.push(float_ptr_ty);
+                                    } else {
+                                        arg_tys.push(llvm_ty_for_primitive(context, *prim));
+                                    }
+                                }
+                            }
                             TypedFieldType::Array(len) => {
                                 if let Some(elem_struct) = &field.array_elem_struct {
                                     let mut roots = Vec::new();
@@ -271,6 +280,15 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                             }
                         }
                         TypedFieldType::Struct => {}
+                        TypedFieldType::Tuple(ref elem_tys) => {
+                            for (_, prim) in elem_tys.iter().enumerate() {
+                                if by_ref_flags[param_idx] {
+                                    arg_tys.push(float_ptr_ty);
+                                } else {
+                                    arg_tys.push(llvm_ty_for_primitive(context, *prim));
+                                }
+                            }
+                        }
                         TypedFieldType::Array(len) => {
                             if let Some(elem_struct) = &field.array_elem_struct {
                                 let mut roots = Vec::new();

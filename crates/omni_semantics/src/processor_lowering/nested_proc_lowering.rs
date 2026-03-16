@@ -1162,6 +1162,20 @@ pub(super) fn expand_nested_struct_ctor_assign(
                     });
                 }
             }
+            FieldType::Tuple(_) => {
+                if let Some(default) = &field.default {
+                    out.push(Stmt::Assign {
+                        loc: Default::default(),
+                        target_loc: Default::default(),
+                        target: AssignTarget::Var(field_path),
+                        decl_ty: None,
+                        generic_decl_ty: None,
+                        is_typed_decl: false,
+                        typed_decl_ty_loc: Default::default(),
+                        expr: default.clone(),
+                    });
+                }
+            }
             FieldType::Generic(param) => {
                 if let Some(nested_struct_def) = struct_defs.get(param) {
                     out.extend(expand_nested_struct_ctor_assign(

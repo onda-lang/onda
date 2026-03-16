@@ -494,6 +494,14 @@ pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Di
             Rule::array_type => {
                 return Ok(FieldType::Array(parse_array_type_spec(child)?));
             }
+            Rule::tuple_type => {
+                let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = child
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::type_name)
+                    .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                    .collect();
+                return Ok(FieldType::Tuple(elems?));
+            }
             _ => {}
         }
     }

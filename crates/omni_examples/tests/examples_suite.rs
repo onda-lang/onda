@@ -17514,3 +17514,75 @@ sample:
         .expect("process should succeed");
     assert_near(output[0], 45.0, 1e-6);
 }
+
+#[test]
+fn struct_tuple_field_basic() {
+    let src = r#"
+outs { out1 }
+struct Foo { pair: (f32, f32) = (0.25, 0.75) }
+init {
+  foo = Foo()
+}
+sample {
+  out1 = foo.pair[0] + foo.pair[1]
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn struct_tuple_field_write() {
+    let src = r#"
+outs { out1 }
+struct Foo { pair: (f32, f32) = (0.0, 0.0) }
+init {
+  foo = Foo()
+}
+sample {
+  foo.pair[0] = foo.pair[0] + 1.0
+  out1 = foo.pair[0]
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 1.0, 1e-6);
+    assert_near(output[1], 2.0, 1e-6);
+    assert_near(output[2], 3.0, 1e-6);
+    assert_near(output[3], 4.0, 1e-6);
+}
+
+#[test]
+fn struct_tuple_field_mixed_types() {
+    let src = r#"
+outs { out1 }
+struct Foo { pair: (f32, i32) = (0.5, 3) }
+init {
+  foo = Foo()
+}
+sample {
+  out1 = foo.pair[0] + f32(foo.pair[1])
+}
+"#;
+    let frames = 1;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 3.5, 1e-6);
+}

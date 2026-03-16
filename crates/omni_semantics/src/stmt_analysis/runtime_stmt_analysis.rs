@@ -1417,6 +1417,11 @@ fn analyze_assign_sample(
                                 )
                             );
                         }
+                        TypedFieldType::Tuple(_) => {
+                            target_error!(format!(
+                                "tuple field '{flat}' must be accessed with index syntax"
+                            ));
+                        }
                     }
                     return;
                 }

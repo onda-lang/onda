@@ -328,7 +328,7 @@ pub(crate) fn specialize_generic_struct_template(
                             )? {
                                 FieldType::Scalar(bound) => ArrayElemType::Primitive(bound),
                                 FieldType::Generic(name) => ArrayElemType::Struct(name),
-                                FieldType::Array(_) => unreachable!(),
+                                FieldType::Array(_) | FieldType::Tuple(_) => unreachable!(),
                             }
                         }
                     };
@@ -338,6 +338,7 @@ pub(crate) fn specialize_generic_struct_template(
                     })
                 }
             }
+            FieldType::Tuple(elem_tys) => FieldType::Tuple(elem_tys.clone()),
         };
         fields.push(StructField {
             loc: field.loc.clone(),
@@ -1186,7 +1187,7 @@ pub(crate) fn finalize_generated_generic_struct_specializations(
                             nested_specializations.push(name.clone());
                         }
                     }
-                    FieldType::Scalar(_) => {}
+                    FieldType::Scalar(_) | FieldType::Tuple(_) => {}
                 }
             }
             for nested_name in nested_specializations {
@@ -1252,7 +1253,7 @@ fn rewrite_generic_struct_field_type(
     errors: &mut Vec<Diagnostic>,
 ) {
     match ty {
-        FieldType::Scalar(_) => {}
+        FieldType::Scalar(_) | FieldType::Tuple(_) => {}
         FieldType::Generic(name) => {
             if let Some(specialized) =
                 specialize_explicit_struct_type_name(name, templates, generated, diag, errors)

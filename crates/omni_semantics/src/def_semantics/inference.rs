@@ -1687,10 +1687,10 @@ fn build_structural_param_fields(
 
             let (candidate, candidate_data_elem_ty, candidate_data_elem_struct) = match (
                 required_kind,
-                found.ty,
+                &found.ty,
             ) {
                 (StructFieldUsage::Scalar, TypedFieldType::Scalar(prim)) => {
-                    (TypedFieldType::Scalar(prim), None, None)
+                    (TypedFieldType::Scalar(*prim), None, None)
                 }
                 (StructFieldUsage::Scalar, TypedFieldType::Array(_)) => {
                     push_semantic(
@@ -1704,7 +1704,7 @@ fn build_structural_param_fields(
                     continue;
                 }
                 (StructFieldUsage::Array, TypedFieldType::Array(len)) => (
-                    TypedFieldType::Array(len),
+                    TypedFieldType::Array(*len),
                     found.array_elem_ty,
                     found.array_elem_struct.clone(),
                 ),
@@ -1730,12 +1730,23 @@ fn build_structural_param_fields(
                     );
                     continue;
                 }
+                (_, TypedFieldType::Tuple(_)) => {
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' uses '{}.{}' directly but struct '{}' defines it as tuple",
+                            fn_name, param_name, param_name, field_name, struct_name
+                        ),
+                    );
+                    continue;
+                }
             };
 
-            if let Some(existing) = resolved_ty {
+            if let Some(existing) = &resolved_ty {
                 let existing_data_elem_ty = resolved_data_elem_ty.flatten();
                 let existing_data_elem_struct = resolved_data_elem_struct.clone().unwrap_or(None);
-                if existing != candidate
+                if *existing != candidate
                     || existing_data_elem_ty != candidate_data_elem_ty
                     || existing_data_elem_struct != candidate_data_elem_struct
                 {
@@ -1931,6 +1942,11 @@ fn infer_untyped_array_from_observations(
 pub(crate) fn validate_default_expr(expr: &Expr, errors: &mut Vec<Diagnostic>, context: &str) {
     with_expr_diag_context(expr, |expr_diag| match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+        Expr::Tuple { values, .. } => {
+            for value in values {
+                validate_default_expr(value, errors, context);
+            }
+        }
         Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 validate_default_expr(value, errors, context);

@@ -114,7 +114,7 @@ pub(crate) fn infer_scalar_expr_type(
                     {
                         return Some(match field_decl.ty {
                             TypedFieldType::Scalar(prim) => prim,
-                            TypedFieldType::Struct => return None,
+                            TypedFieldType::Struct | TypedFieldType::Tuple(_) => return None,
                             TypedFieldType::Array(_) => PrimitiveType::F32,
                         });
                     }

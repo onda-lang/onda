@@ -104,7 +104,7 @@ field_decl = {
   | (ident ~ "=" ~ expr)
   | (ident ~ &field_sep)
 }
-field_type = { array_type | type_name | named_type }
+field_type = { array_type | tuple_type | type_name | named_type }
 array_type = { (type_name | named_type) ~ "[" ~ expr ~ "]" }
 type_name = { "f32" | "f64" | "i32" | "i64" | "bool" }
 generic_param_list = { "<" ~ ident ~ ("," ~ ident)* ~ ">" }

@@ -904,7 +904,7 @@ fn rewrite_field_type(
             }
             rewrite_expr(&mut spec.size, current_ns, const_env, state, generated)?;
         }
-        FieldType::Scalar(_) => {}
+        FieldType::Scalar(_) | FieldType::Tuple(_) => {}
     }
     Ok(())
 }

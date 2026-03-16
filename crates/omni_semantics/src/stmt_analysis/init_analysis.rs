@@ -1342,6 +1342,7 @@ fn analyze_assign_init(
                             &mut st.state_arrays,
                             &mut st.state_array_struct_roots,
                             &mut st.struct_instances,
+                            &mut st.state_tuples,
                             output_names,
                             struct_defs,
                             fn_signatures,
@@ -1766,6 +1767,7 @@ fn analyze_struct_ctor_init_assign(
     state_arrays: &mut HashMap<String, usize>,
     state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     struct_instances: &mut HashMap<String, String>,
+    state_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
     outputs: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -1864,6 +1866,14 @@ fn analyze_struct_ctor_init_assign(
                 }
                 scalar_idx += 1;
                 state_scalars.insert(flat.clone(), prim);
+                known_scalars.insert(flat);
+            }
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    let elem_flat = format!("{flat}.__{idx}");
+                    state_scalars.insert(elem_flat, *prim);
+                }
+                state_tuples.insert(flat.clone(), elem_tys.clone());
                 known_scalars.insert(flat);
             }
             TypedFieldType::Struct => {}
@@ -1993,6 +2003,15 @@ fn analyze_struct_field_init_assign(
             );
             state_scalars.insert(flat.clone(), prim);
             known_scalars.insert(flat);
+        }
+        TypedFieldType::Tuple(ref elem_tys) => {
+            push_semantic(
+                diag,
+                errors,
+                format!(
+                    "tuple field '{flat}' must be initialized via struct constructor, not direct assignment"
+                ),
+            );
         }
         TypedFieldType::Struct => {
             push_semantic(

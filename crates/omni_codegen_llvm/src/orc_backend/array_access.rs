@@ -682,6 +682,25 @@ pub(super) unsafe fn bind_struct_data_element_aliases(
                 );
             }
             TypedFieldType::Struct => {}
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    let elem_flat = format!("{array_field_base}.__{idx}");
+                    let array_ptr = load_data_ptr_at_index(
+                        ctx,
+                        &elem_flat,
+                        *prim,
+                        global_index,
+                        b"struct_tuple_elem_ptr\0",
+                    )?;
+                    local_aliases.insert(
+                        format!("{alias_name}.{}.__{idx}", field.name),
+                        AliasSlot {
+                            ptr: array_ptr,
+                            ty: *prim,
+                        },
+                    );
+                }
+            }
             TypedFieldType::Array(field_len) => {
                 let start_idx = build_data_segment_start_index(
                     ctx.builder,

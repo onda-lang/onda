@@ -176,17 +176,46 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         );
                         return;
                     };
-                    if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
+                    if !matches!(
+                        field_decl.ty,
+                        TypedFieldType::Array(_) | TypedFieldType::Tuple(_)
+                    ) {
                         push_expr_error(
                             errors,
                             expr,
                             format!(
-                                "field '{}.{}' is not array and cannot be indexed",
+                                "field '{}.{}' is not array or tuple and cannot be indexed",
                                 root, field
                             ),
                         );
                     }
-                    validate_expr(index, env, errors);
+                    if let TypedFieldType::Tuple(ref elem_tys) = field_decl.ty {
+                        // Validate const index for tuple field
+                        match index.as_ref() {
+                            Expr::Int { value, .. } => {
+                                let idx = *value as usize;
+                                if idx >= elem_tys.len() {
+                                    push_expr_error(
+                                        errors,
+                                        expr,
+                                        format!(
+                                            "tuple field '{}.{}' index {idx} out of bounds (has {} elements)",
+                                            root, field, elem_tys.len()
+                                        ),
+                                    );
+                                }
+                            }
+                            _ => {
+                                push_expr_error(
+                                    errors,
+                                    expr,
+                                    "tuple element index must be a compile-time integer constant",
+                                );
+                            }
+                        }
+                    } else {
+                        validate_expr(index, env, errors);
+                    }
                     return;
                 }
             }
@@ -743,7 +772,7 @@ fn validate_data_len_builtin_call(
                         );
                         false
                     }
-                    TypedFieldType::Scalar(_) => {
+                    TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => {
                         push_loc_error(
                             errors,
                             loc,
@@ -1471,6 +1500,16 @@ fn validate_unsafe_data_builtin_call(
                                     first_arg.expr.loc().or(loc),
                                     format!(
                                         "builtin '{}' expects a array symbol as first argument, but '{}.{}' is a nested struct",
+                                        name, root, field
+                                    ),
+                                );
+                            }
+                            TypedFieldType::Tuple(_) => {
+                                push_loc_error(
+                                    errors,
+                                    first_arg.expr.loc().or(loc),
+                                    format!(
+                                        "builtin '{}' expects a array symbol as first argument, but '{}.{}' is a tuple",
                                         name, root, field
                                     ),
                                 );

@@ -299,6 +299,11 @@ pub(super) fn collect_array_struct_bindings(
         match field.ty {
             TypedFieldType::Scalar(prim) => leaves.push((flat, len, prim)),
             TypedFieldType::Struct => {}
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    leaves.push((format!("{flat}.__{idx}"), len, *prim));
+                }
+            }
             TypedFieldType::Array(field_len) => {
                 let nested_len = len.saturating_mul(field_len);
                 if let Some(elem_struct) = &field.array_elem_struct {

@@ -385,6 +385,7 @@ pub(super) fn compute_proc_shape(
     let proc_state_array_struct_roots = init_st.state_array_struct_roots;
     let proc_struct_instances = init_st.struct_instances;
     let init_st_type_args = init_st.struct_instance_type_args;
+    let mut proc_state_tuples = init_st.state_tuples;
     let mut proc_struct_instances_typed = proc_struct_instances.clone();
 
     // Add buffer prefix entries so has_declared_buffer_symbol / validate_buffer_param_call_arg work
@@ -459,6 +460,14 @@ pub(super) fn compute_proc_shape(
                         ) {
                             proc_state_arrays.entry(flat).or_insert(size_val);
                         }
+                    }
+                    FieldType::Tuple(elem_tys) => {
+                        for (idx, prim) in elem_tys.iter().enumerate() {
+                            let elem_flat = format!("{flat}.__{idx}");
+                            proc_state_scalars.entry(elem_flat).or_insert(*prim);
+                        }
+                        proc_state_tuples
+                            .insert(flat, elem_tys.clone());
                     }
                     FieldType::Generic(_) => {}
                 }
@@ -649,7 +658,7 @@ pub(super) fn compute_proc_shape(
         LocalAliasTypes::new(),
         HashMap::new(),
         &block_forbidden,
-        &HashMap::new(),
+        &proc_state_tuples,
         errors,
     );
 
@@ -693,7 +702,7 @@ pub(super) fn compute_proc_shape(
         LocalAliasTypes::new(),
         HashMap::new(),
         &sample_forbidden,
-        &HashMap::new(),
+        &proc_state_tuples,
         errors,
     );
 

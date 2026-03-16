@@ -553,6 +553,7 @@ pub enum FieldType {
     Scalar(PrimitiveType),
     Generic(String),
     Array(ArrayTypeSpec),
+    Tuple(Vec<PrimitiveType>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

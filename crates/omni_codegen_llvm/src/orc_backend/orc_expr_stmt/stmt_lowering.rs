@@ -124,6 +124,50 @@ pub(super) unsafe fn lower_stmt(
                                         LLVMBuildStore(ctx.builder, value_typed, slot.ptr);
                                     }
                                     TypedFieldType::Struct => {}
+                                    TypedFieldType::Tuple(ref elem_tys) => {
+                                        // Store defaults for each tuple element
+                                        let default_values: Vec<Expr> =
+                                            if let Some(Expr::Tuple { values, .. }) =
+                                                &field.default
+                                            {
+                                                values.clone()
+                                            } else {
+                                                elem_tys
+                                                    .iter()
+                                                    .map(|_| Expr::number(0.0))
+                                                    .collect()
+                                            };
+                                        for (idx, prim) in elem_tys.iter().enumerate() {
+                                            let elem_flat =
+                                                format!("{flat_target}.__{idx}");
+                                            let slot = ctx
+                                                .state_slots
+                                                .get(&elem_flat)
+                                                .ok_or_else(|| {
+                                                    Diagnostic::internal(format!(
+                                                        "missing state slot for struct tuple field '{elem_flat}' in ORC lowering"
+                                                    ))
+                                                })?;
+                                            let default_expr = default_values
+                                                .get(idx)
+                                                .cloned()
+                                                .unwrap_or(Expr::number(0.0));
+                                            let typed = lower_expr(
+                                                &default_expr,
+                                                ctx,
+                                                locals,
+                                                local_aliases,
+                                                local_array_aliases,
+                                            )?;
+                                            let casted = cast_orc_value_to(
+                                                ctx,
+                                                typed,
+                                                slot.ty,
+                                                b"ctor_tuple_elem\0",
+                                            );
+                                            LLVMBuildStore(ctx.builder, casted, slot.ptr);
+                                        }
+                                    }
                                     TypedFieldType::Array(_) => {
                                         if !ctx.array_base_ptrs.contains_key(&flat_target)
                                             && !ctx.array_struct_len.contains_key(&flat_target)

@@ -168,6 +168,42 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                                 llvm_param_idx += 1;
                             }
                             TypedFieldType::Struct => {}
+                            TypedFieldType::Tuple(ref elem_tys) => {
+                                for (idx, prim) in elem_tys.iter().enumerate() {
+                                    let elem_flat = format!("{flat}.__{idx}");
+                                    let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                                    if param_val.is_null() {
+                                        return Err(Diagnostic::internal(format!(
+                                            "missing LLVM param {} for function '{}'",
+                                            llvm_param_idx, def.name
+                                        )));
+                                    }
+                                    if by_ref_flags[param_idx] {
+                                        ctx.local_slots.insert(
+                                            elem_flat,
+                                            DefLocalSlot {
+                                                ptr: param_val,
+                                                ty: *prim,
+                                            },
+                                        );
+                                    } else {
+                                        let slot = build_local_slot(
+                                            ctx.builder,
+                                            llvm_ty_for_primitive(ctx.context, *prim),
+                                            &format!("p_{elem_flat}"),
+                                        )?;
+                                        LLVMBuildStore(ctx.builder, param_val, slot);
+                                        ctx.local_slots.insert(
+                                            elem_flat,
+                                            DefLocalSlot {
+                                                ptr: slot,
+                                                ty: *prim,
+                                            },
+                                        );
+                                    }
+                                    llvm_param_idx += 1;
+                                }
+                            }
                             TypedFieldType::Array(len) => {
                                 let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
                                 if param_val.is_null() {

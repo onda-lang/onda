@@ -592,6 +592,16 @@ pub(crate) fn analyze_def_stmt(
                                     ),
                                 );
                             }
+                            TypedFieldType::Tuple(_) => {
+                                push_semantic(
+                                    target_diag,
+                                    errors,
+                                    format!(
+                                        "tuple field '{}.{}' must be assigned via index syntax",
+                                        base, field
+                                    ),
+                                );
+                            }
                         }
                         return;
                     }
@@ -988,12 +998,15 @@ pub(crate) fn analyze_def_stmt(
                             );
                             return;
                         };
-                        if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
+                        if !matches!(
+                            field_decl.ty,
+                            TypedFieldType::Array(_) | TypedFieldType::Tuple(_)
+                        ) {
                             push_semantic(
                                 target_diag,
                                 errors,
                                 format!(
-                                    "field '{}.{}' is not array and cannot be indexed",
+                                    "field '{}.{}' is not array or tuple and cannot be indexed",
                                     root, field
                                 ),
                             );

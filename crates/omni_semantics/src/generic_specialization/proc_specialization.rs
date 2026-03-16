@@ -155,7 +155,7 @@ pub(crate) fn rewrite_generic_array_ctor_expr_types(
                     match specialized {
                         FieldType::Scalar(bound) => spec.elem = ArrayElemType::Primitive(bound),
                         FieldType::Generic(name) => spec.elem = ArrayElemType::Struct(name),
-                        FieldType::Array(_) => {}
+                        FieldType::Array(_) | FieldType::Tuple(_) => {}
                     }
                 }
             }
