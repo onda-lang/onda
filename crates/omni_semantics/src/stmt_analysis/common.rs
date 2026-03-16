@@ -33,6 +33,7 @@ pub(crate) struct ScopeAnalysisCtx<'a> {
     pub(crate) param_names: &'a HashSet<String>,
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
+    pub(crate) fn_return_types: &'a HashMap<String, ReturnType>,
     pub(crate) options: AnalysisOptions,
     pub(crate) port_index_ins: Option<PortIndexInfo>,
     pub(crate) port_index_outs: Option<PortIndexInfo>,

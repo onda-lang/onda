@@ -273,9 +273,10 @@ pub(super) unsafe fn lower_def_expr(
                     // Tuple-returning calls are not scalar expressions.
                     // They must be consumed by destructuring assignment or
                     // tuple variable binding, handled in stmt_lowering.
-                    Err(Diagnostic::internal(
-                        "tuple-returning call is not a scalar expression in def lowering",
-                    ))
+                    Err(Diagnostic::internal(format!(
+                        "tuple-returning call to '{}' is not a scalar expression in def lowering",
+                        name
+                    )))
                 }
             }
         }

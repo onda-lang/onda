@@ -1220,6 +1220,30 @@ pub(crate) fn analyze_def_stmt(
                     );
                     tuple_env.expr_env.tuple_vars = tuple_vars;
                     analyze_stmt_expr(expr, tuple_env, errors);
+                    // Validate destructuring arity against the RHS tuple length
+                    let rhs_arity = match expr {
+                        Expr::Tuple { values, .. } => Some(values.len()),
+                        Expr::UserCall { name, .. } => {
+                            match def_return_types.get(name.as_str()) {
+                                Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(expected) = rhs_arity {
+                        if targets.len() != expected {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "tuple destructuring has {} targets but the right-hand side has {} elements",
+                                    targets.len(),
+                                    expected,
+                                ),
+                                0,
+                                0,
+                            ));
+                        }
+                    }
                     // Register each destructured target as a known scalar
                     for target_name in targets {
                         known_scalars.insert(target_name.clone());

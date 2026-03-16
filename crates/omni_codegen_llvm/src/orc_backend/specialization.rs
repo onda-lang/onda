@@ -544,6 +544,89 @@ pub(super) fn infer_specialized_expr_return_type(
     })
 }
 
+/// Infer the full ReturnType for a user call (may be scalar or tuple).
+fn infer_user_call_return_type(
+    name: &str,
+    type_args: &[CallTypeArg],
+    args: &[CallArg],
+    locals: &HashMap<String, PrimitiveType>,
+    registry: &mut UserFnRegistry,
+) -> Result<ReturnType, Diagnostic> {
+    let Some(param_names) = registry.param_names.get(name).cloned() else {
+        return Ok(ReturnType::Scalar(PrimitiveType::F32));
+    };
+    let Some(param_defaults) = registry.param_defaults.get(name).cloned() else {
+        return Ok(ReturnType::Scalar(PrimitiveType::F32));
+    };
+    let Some(param_kinds) = registry.param_kinds.get(name).cloned() else {
+        return Ok(ReturnType::Scalar(PrimitiveType::F32));
+    };
+    let forbid_self_named = param_names.first().map(String::as_str) == Some("self");
+    let resolved = resolve_call_args_codegen(
+        args,
+        &param_names,
+        &param_defaults,
+        forbid_self_named,
+        &format!("function '{name}' call in return type inference"),
+    )
+    .unwrap_or_else(|_| vec![None; param_names.len()]);
+    let mut scalar_types = Vec::<PrimitiveType>::new();
+    let mut array_types = Vec::<(PrimitiveType, usize)>::new();
+    let mut buffer_types = Vec::<(PrimitiveType, TypedBufferChannels)>::new();
+    for (idx, kind) in param_kinds.iter().enumerate() {
+        match kind {
+            TypedFnParam::Scalar { ty: explicit_ty } => {
+                let resolved_arg = resolved.get(idx).copied().flatten();
+                let fallback_ty = if let Some(arg_expr) = resolved_arg {
+                    infer_specialized_expr_return_type(arg_expr, locals, registry)?
+                        .unwrap_or(PrimitiveType::F32)
+                } else if let Some(default_expr) =
+                    param_defaults.get(idx).and_then(|d| d.as_ref())
+                {
+                    infer_specialized_expr_return_type(default_expr, locals, registry)?
+                        .unwrap_or(PrimitiveType::F32)
+                } else {
+                    PrimitiveType::F32
+                };
+                scalar_types.push(resolve_scalar_param_type(*explicit_ty, fallback_ty));
+            }
+            TypedFnParam::Array { elem_ty } => {
+                let resolved_arg = resolved.get(idx).copied().flatten();
+                let arg_sig = if let Some(Expr::Var { name: base, .. }) = resolved_arg {
+                    (locals.get(base.as_str()).copied().unwrap_or(*elem_ty), 1)
+                } else {
+                    (*elem_ty, 1)
+                };
+                array_types.push(arg_sig);
+            }
+            TypedFnParam::Buffer { elem_ty, channels } => {
+                buffer_types.push((*elem_ty, channels.clone()));
+            }
+            TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
+        }
+    }
+    let explicit_type_args = resolve_explicit_call_type_args_for_codegen(
+        name,
+        "return type inference",
+        type_args,
+    )?;
+    apply_explicit_generic_type_args_for_call(
+        registry,
+        name,
+        &explicit_type_args,
+        &mut scalar_types,
+        "return type inference",
+    )?;
+    infer_specialized_def_return_type(
+        name,
+        &scalar_types,
+        &array_types,
+        &buffer_types,
+        &explicit_type_args,
+        registry,
+    )
+}
+
 pub(super) fn infer_specialized_stmt_returns(
     stmts: &[Stmt],
     locals: &mut HashMap<String, PrimitiveType>,
@@ -592,6 +675,16 @@ pub(super) fn infer_specialized_stmt_returns(
                         })
                         .collect();
                     out.push(ReturnType::Tuple(elem_tys?));
+                } else if let Expr::UserCall { name, type_args, args, .. } = expr {
+                    // Check if the call returns a tuple
+                    let ret_ty = infer_user_call_return_type(name, type_args, args, locals, registry)?;
+                    out.push(ret_ty);
+                } else if let Expr::Var { name, .. } = expr {
+                    // Check if variable is a known tuple (from tuple_locals tracking)
+                    // Fall back to scalar inference
+                    let ty = infer_specialized_expr_return_type(expr, locals, registry)?
+                        .unwrap_or(PrimitiveType::F32);
+                    out.push(ReturnType::Scalar(ty));
                 } else {
                     let ty = infer_specialized_expr_return_type(expr, locals, registry)?
                         .unwrap_or(PrimitiveType::F32);

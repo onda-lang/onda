@@ -446,6 +446,7 @@ pub(crate) fn analyze_runtime_events(
             param_names: &event_param_immutable,
             struct_defs: common.struct_defs,
             fn_signatures: common.fn_signatures,
+            fn_return_types: common.fn_return_types,
             options: common.options,
             port_index_ins: None,
             port_index_outs: None,
@@ -624,6 +625,7 @@ fn analyze_runtime_stmt_inner(
                     param_names,
                     struct_defs,
                     fn_signatures,
+                    common.fn_return_types,
                     options,
                     common.port_index_ins,
                     common.port_index_outs,
@@ -783,6 +785,7 @@ fn analyze_assign_sample(
     param_names: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     fn_signatures: &HashMap<String, FnSignature>,
+    fn_return_types: &HashMap<String, ReturnType>,
     options: AnalysisOptions,
     port_index_ins: Option<PortIndexInfo>,
     port_index_outs: Option<PortIndexInfo>,
@@ -1617,6 +1620,28 @@ fn analyze_assign_sample(
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             validate_expr(&expr_for_validation, scope_expr_env, errors);
+            // Validate destructuring arity against the RHS tuple length
+            let rhs_arity = match expr {
+                Expr::Tuple { values, .. } => Some(values.len()),
+                Expr::UserCall { name, .. } => match fn_return_types.get(name.as_str()) {
+                    Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(expected) = rhs_arity {
+                if targets.len() != expected {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "tuple destructuring has {} targets but the right-hand side has {} elements",
+                            targets.len(),
+                            expected,
+                        ),
+                        0,
+                        0,
+                    ));
+                }
+            }
             for target_name in targets {
                 known_scalars.insert(target_name.clone());
                 local_aliases

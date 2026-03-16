@@ -27,37 +27,38 @@ pub(super) unsafe fn lower_def_stmt(
                     LLVMBuildStore(ctx.builder, ret_v, ctx.return_slot);
                 }
                 ReturnType::Tuple(elem_tys) => {
-                    let Expr::Tuple { values, .. } = expr else {
-                        return Err(Diagnostic::internal(
-                            "tuple-returning def must return a tuple expression",
-                        ));
-                    };
-                    if values.len() != elem_tys.len() {
-                        return Err(Diagnostic::internal(format!(
-                            "tuple return arity mismatch: expected {}, got {}",
-                            elem_tys.len(),
-                            values.len()
-                        )));
+                    if let Expr::Tuple { values, .. } = expr {
+                        if values.len() != elem_tys.len() {
+                            return Err(Diagnostic::internal(format!(
+                                "tuple return arity mismatch: expected {}, got {}",
+                                elem_tys.len(),
+                                values.len()
+                            )));
+                        }
+                        let return_llvm_ty =
+                            llvm_ty_for_return_type(ctx.context, &return_ty);
+                        let mut agg = LLVMGetUndef(return_llvm_ty);
+                        for (i, (val_expr, elem_ty)) in
+                            values.iter().zip(elem_tys.iter()).enumerate()
+                        {
+                            let elem_ty = *elem_ty;
+                            let val = lower_def_expr(val_expr, ctx)?;
+                            let cast_v =
+                                cast_def_value_to(ctx, val, elem_ty, b"tup_elem_cast\0");
+                            agg = LLVMBuildInsertValue(
+                                ctx.builder,
+                                agg,
+                                cast_v,
+                                i as u32,
+                                b"tup_ins\0".as_ptr().cast(),
+                            );
+                        }
+                        LLVMBuildStore(ctx.builder, agg, ctx.return_slot);
+                    } else {
+                        // Handle returning a tuple-returning call or tuple variable
+                        let (tuple_val, _) = lower_def_tuple_value(expr, ctx)?;
+                        LLVMBuildStore(ctx.builder, tuple_val, ctx.return_slot);
                     }
-                    let return_llvm_ty =
-                        llvm_ty_for_return_type(ctx.context, &return_ty);
-                    let mut agg = LLVMGetUndef(return_llvm_ty);
-                    for (i, (val_expr, elem_ty)) in
-                        values.iter().zip(elem_tys.iter()).enumerate()
-                    {
-                        let elem_ty = *elem_ty;
-                        let val = lower_def_expr(val_expr, ctx)?;
-                        let cast_v =
-                            cast_def_value_to(ctx, val, elem_ty, b"tup_elem_cast\0");
-                        agg = LLVMBuildInsertValue(
-                            ctx.builder,
-                            agg,
-                            cast_v,
-                            i as u32,
-                            b"tup_ins\0".as_ptr().cast(),
-                        );
-                    }
-                    LLVMBuildStore(ctx.builder, agg, ctx.return_slot);
                 }
             }
             LLVMBuildBr(ctx.builder, ctx.return_block);

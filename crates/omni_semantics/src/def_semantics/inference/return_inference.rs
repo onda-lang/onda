@@ -173,6 +173,7 @@ fn infer_stmt_returns_for_def_return_inference(
     stmts: &[Stmt],
     locals: &mut HashMap<String, PrimitiveType>,
     fn_return_types: &HashMap<String, PrimitiveType>,
+    full_return_types: &HashMap<String, ReturnType>,
     out: &mut Vec<ReturnType>,
 ) {
     for stmt in stmts {
@@ -229,6 +230,16 @@ fn infer_stmt_returns_for_def_return_inference(
                         })
                         .collect();
                     out.push(ReturnType::Tuple(elem_tys));
+                } else if let Expr::UserCall { name, .. } = expr {
+                    // Check if the called function returns a tuple
+                    if let Some(ret_ty) = full_return_types.get(name.as_str()) {
+                        out.push(ret_ty.clone());
+                    } else {
+                        let ty =
+                            infer_expr_type_for_def_return_inference(expr, locals, fn_return_types)
+                                .unwrap_or(PrimitiveType::F32);
+                        out.push(ReturnType::Scalar(ty));
+                    }
                 } else {
                     let ty =
                         infer_expr_type_for_def_return_inference(expr, locals, fn_return_types)
@@ -247,12 +258,14 @@ fn infer_stmt_returns_for_def_return_inference(
                     then_branch,
                     &mut then_locals,
                     fn_return_types,
+                    full_return_types,
                     out,
                 );
                 infer_stmt_returns_for_def_return_inference(
                     else_branch,
                     &mut else_locals,
                     fn_return_types,
+                    full_return_types,
                     out,
                 );
                 let mut merged = locals.clone();
@@ -272,6 +285,7 @@ fn infer_stmt_returns_for_def_return_inference(
                     body,
                     &mut loop_locals,
                     fn_return_types,
+                    full_return_types,
                     out,
                 );
             }
@@ -281,6 +295,7 @@ fn infer_stmt_returns_for_def_return_inference(
                     body,
                     &mut loop_locals,
                     fn_return_types,
+                    full_return_types,
                     out,
                 );
             }
@@ -310,6 +325,7 @@ fn infer_def_return_type(
     def: &FunctionDef,
     sig: &FnSignature,
     fn_return_types: &HashMap<String, PrimitiveType>,
+    full_return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> ReturnType {
     let mut locals = HashMap::<String, PrimitiveType>::new();
@@ -351,6 +367,7 @@ fn infer_def_return_type(
         &def.body,
         &mut locals,
         fn_return_types,
+        full_return_types,
         &mut returns,
     );
     let mut it = returns.into_iter();
@@ -387,7 +404,7 @@ pub(crate) fn infer_def_return_types(
             let Some(sig) = fn_signatures.get(&def.name) else {
                 continue;
             };
-            let inferred = infer_def_return_type(def, sig, &scalar_out, struct_defs);
+            let inferred = infer_def_return_type(def, sig, &scalar_out, &out, struct_defs);
             if out.get(&def.name) != Some(&inferred) {
                 // Update scalar map for expression inference
                 if let ReturnType::Scalar(s) = &inferred {

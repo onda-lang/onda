@@ -346,9 +346,24 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                             elem_vals.push(val);
                         }
                     }
+                    Expr::Var { name: var_name, loc } => {
+                        // Tuple variable — extract each element via synthetic index exprs
+                        for i in 0..elem_tys.len() {
+                            let index_expr = Expr::Index {
+                                base: var_name.clone(),
+                                index: Box::new(Expr::Int {
+                                    value: i as i64,
+                                    loc: *loc,
+                                }),
+                                loc: *loc,
+                            };
+                            let val = lower_scalar_expr(&index_expr)?;
+                            elem_vals.push(val);
+                        }
+                    }
                     _ => {
                         return Err(Diagnostic::internal(format!(
-                            "tuple parameter '{}' requires a tuple literal argument in {call_context}",
+                            "tuple parameter '{}' requires a tuple literal or variable in {call_context}",
                             param_names[idx]
                         )));
                     }
