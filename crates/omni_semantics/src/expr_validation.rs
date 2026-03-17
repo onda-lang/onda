@@ -259,13 +259,30 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             if !env.array_vars.contains_key(base)
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
-                && !env.tuple_vars.contains(base)
+                && !env.tuple_vars.contains_key(base)
             {
                 push_expr_error(
                     errors,
                     expr,
                     format!("indexed expression '{base}[...]' is not a array/buffer symbol"),
                 );
+            } else if let Some(&arity) = env.tuple_vars.get(base) {
+                match index.as_ref() {
+                    Expr::Int { value, .. } => {
+                        let idx = *value as usize;
+                        if idx >= arity {
+                            push_expr_error(errors, expr, format!(
+                                "tuple index {idx} is out of bounds for '{base}' with {arity} elements"
+                            ));
+                        }
+                    }
+                    _ => {
+                        push_expr_error(errors, expr,
+                            "tuple element index must be a compile-time integer constant"
+                        );
+                    }
+                }
+                return;
             } else if is_declared_multichannel_buffer_info(env.declared_symbols, base) {
                 push_expr_error(
                     errors,

@@ -166,8 +166,9 @@ pub(super) unsafe fn lower_orc_logical_expr(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    let lhs_value = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases)?;
+    let lhs_value = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
     let lhs_bool = {
         let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
             cast_orc_value_to(ctx, value, to, name)
@@ -188,7 +189,7 @@ pub(super) unsafe fn lower_orc_logical_expr(
         b"logical_phi\0",
         "ORC logical expression",
         || {
-            let rhs_value = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases)?;
+            let rhs_value = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
                 cast_orc_value_to(ctx, value, to, name)
             };

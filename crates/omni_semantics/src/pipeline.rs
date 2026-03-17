@@ -1160,7 +1160,13 @@ pub fn analyze_with_options(
             })
             .collect();
 
-        if !mono_eligible.is_empty() {
+        // Also run mono pass when any def has untyped params that could be
+        // inferred as tuple from call-site tuple literal args.
+        let has_untyped_params = fn_signatures.values().any(|sig| {
+            sig.param_types.iter().any(|pt| pt.is_none())
+        });
+
+        if !mono_eligible.is_empty() || has_untyped_params {
             let mut generated_defs = Vec::<FunctionDef>::new();
             let mut generated_sigs = HashMap::<String, FnSignature>::new();
             let mut mono_cache =
@@ -1774,8 +1780,8 @@ pub fn analyze_with_options(
         // Register tuple params as tuple_vars for indexing validation
         if let Some(kinds) = inferred_def_params.get(&def.name) {
             for (param, kind) in def.params.iter().zip(kinds.iter()) {
-                if matches!(kind, TypedFnParam::Tuple { .. }) {
-                    def_state.tuple_vars.insert(param.name.clone());
+                if let TypedFnParam::Tuple { elem_tys } = kind {
+                    def_state.tuple_vars.insert(param.name.clone(), elem_tys.len());
                 }
             }
         }

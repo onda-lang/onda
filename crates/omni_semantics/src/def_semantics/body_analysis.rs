@@ -788,11 +788,21 @@ pub(crate) fn analyze_def_stmt(
                     }
                     // Track tuple variables (assigned from tuple literal or
                     // tuple-returning call) for indexing validation
-                    let is_tuple_expr = matches!(expr, Expr::Tuple { .. })
-                        || matches!(expr, Expr::UserCall { name: fn_name, .. }
-                            if matches!(def_return_types.get(fn_name), Some(ReturnType::Tuple(_))));
-                    if is_tuple_expr {
-                        tuple_vars.insert(name.clone());
+                    let tuple_arity = match expr {
+                        Expr::Tuple { values, .. } => Some(values.len()),
+                        Expr::UserCall { name: fn_name, .. } => {
+                            match def_return_types.get(fn_name) {
+                                Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
+                                _ => None,
+                            }
+                        }
+                        Expr::Var { name: var_name, .. } => {
+                            tuple_vars.get(var_name).copied()
+                        }
+                        _ => None,
+                    };
+                    if let Some(arity) = tuple_arity {
+                        tuple_vars.insert(name.clone(), arity);
                     }
                     if can_track_local {
                         local_aliases.entry(name.clone()).or_insert(target_ty);

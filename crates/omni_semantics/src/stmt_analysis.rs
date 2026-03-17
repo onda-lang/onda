@@ -31,7 +31,7 @@ pub(crate) struct ScopeFlowState {
     pub(crate) local_aliases: LocalAliasTypes,
     pub(crate) local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     pub(crate) local_proc_aliases: HashMap<String, ProcArrayAliasInfo>,
-    pub(crate) tuple_vars: HashSet<String>,
+    pub(crate) tuple_vars: HashMap<String, usize>,
 }
 
 impl ScopeFlowState {
@@ -46,7 +46,7 @@ impl ScopeFlowState {
             local_aliases,
             local_array_aliases,
             local_proc_aliases,
-            tuple_vars: HashSet::new(),
+            tuple_vars: HashMap::new(),
         }
     }
 
@@ -83,7 +83,7 @@ pub(crate) fn fork_scope_flow_state_with_tuples(
     local_aliases: &LocalAliasTypes,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
-    tuple_vars: &HashSet<String>,
+    tuple_vars: &HashMap<String, usize>,
 ) -> ScopeFlowState {
     let mut st = ScopeFlowState::from_parts(
         known_scalars.clone(),

@@ -390,6 +390,7 @@ pub(in crate::orc_backend) unsafe fn lower_struct_call_args_in_orc(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<(), Diagnostic> {
     match arg_expr {
         Expr::Var { name: base, .. } => {
@@ -448,6 +449,7 @@ pub(in crate::orc_backend) unsafe fn lower_struct_call_args_in_orc(
                         locals,
                         local_aliases,
                         local_array_aliases,
+                        local_tuples,
                     )
                 },
             )?

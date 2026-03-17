@@ -11,6 +11,8 @@ pub(crate) enum MonoParamKey {
     ResolvedArray(PrimitiveType),
     /// Resolved buffer element type + channels.
     ResolvedBuffer(PrimitiveType, TypedBufferChannels),
+    /// Resolved tuple element types (inferred from tuple literal arg).
+    ResolvedTuple(Vec<PrimitiveType>),
 }
 
 fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
@@ -35,6 +37,13 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
                         suffix.push_str(&format!("_{n}ch"));
                     }
                     TypedBufferChannels::Dynamic => suffix.push_str("_dyn"),
+                }
+            }
+            MonoParamKey::ResolvedTuple(elem_tys) => {
+                suffix.push_str("__tup");
+                for ty in elem_tys {
+                    suffix.push('_');
+                    suffix.push_str(&format!("{ty:?}").to_lowercase());
                 }
             }
         }
@@ -92,7 +101,34 @@ fn infer_mono_arg_key(
                 TypedBufferChannels::Mono,
             ))
         }
-        _ => Some(MonoParamKey::Passthrough),
+        _ => {
+            // For untyped params, check if the arg is a tuple literal — if so,
+            // monomorphize with the inferred tuple element types.
+            if let Expr::Tuple { values, .. } = arg_expr {
+                let elem_tys: Vec<PrimitiveType> = values
+                    .iter()
+                    .map(|v| infer_tuple_elem_type(v, env))
+                    .collect();
+                return Some(MonoParamKey::ResolvedTuple(elem_tys));
+            }
+            Some(MonoParamKey::Passthrough)
+        }
+    }
+}
+
+/// Infer the primitive type of a tuple element expression for monomorphization.
+fn infer_tuple_elem_type(expr: &Expr, env: &OverloadRewriteEnv) -> PrimitiveType {
+    match expr {
+        Expr::Int { .. } => PrimitiveType::I32,
+        Expr::Bool { .. } => PrimitiveType::Bool,
+        Expr::Number { .. } => PrimitiveType::F32,
+        Expr::Cast { to, .. } => *to,
+        Expr::Var { name, .. } => env
+            .scalar_types
+            .get(name)
+            .copied()
+            .unwrap_or(PrimitiveType::F32),
+        _ => PrimitiveType::F32,
     }
 }
 
@@ -142,6 +178,14 @@ fn generate_mono_def(
                 }
                 if let Some(pt) = new_sig.param_types.get_mut(idx) {
                     *pt = Some(FnParamType::Buffer(buf_ty));
+                }
+            }
+            MonoParamKey::ResolvedTuple(elem_tys) => {
+                if let Some(param) = new_def.params.get_mut(idx) {
+                    param.ty = Some(FnParamType::Tuple(elem_tys.clone()));
+                }
+                if let Some(pt) = new_sig.param_types.get_mut(idx) {
+                    *pt = Some(FnParamType::Tuple(elem_tys.clone()));
                 }
             }
         }
@@ -329,7 +373,11 @@ fn monomorphize_calls_in_expr(
             }
 
             if !mono_eligible.contains(name.as_str()) {
-                return;
+                // Also allow mono for calls with tuple literal args to untyped-param defs
+                let has_tuple_arg = args.iter().any(|a| matches!(a.expr, Expr::Tuple { .. }));
+                if !has_tuple_arg {
+                    return;
+                }
             }
 
             let Some(sig) = fn_signatures.get(name.as_str()) else {
@@ -457,7 +505,7 @@ fn monomorphize_calls_in_expr(
                 mono_cache,
             );
         }
-        Expr::ArrayLiteral { values: elems, .. } => {
+        Expr::ArrayLiteral { values: elems, .. } | Expr::Tuple { values: elems, .. } => {
             for elem in elems.iter_mut() {
                 monomorphize_calls_in_expr(
                     elem,

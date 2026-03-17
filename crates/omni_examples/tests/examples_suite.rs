@@ -17935,3 +17935,220 @@ sample {
         "tuple destructuring arity mismatch should be rejected"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4: Local tuple variables in sample/block/init scopes
+// ---------------------------------------------------------------------------
+
+const TUPLE_LOCAL_SAMPLE_LITERAL: &str = r#"
+outs { out1, out2 }
+sample {
+  a = (3.0, 7.0)
+  out1 = a[0]
+  out2 = a[1]
+}
+"#;
+
+#[test]
+fn tuple_local_sample_literal() {
+    let frames = 1;
+    let (mut instance, _, out_channels) =
+        compile_instance(TUPLE_LOCAL_SAMPLE_LITERAL, frames);
+    assert_eq!(out_channels, 2);
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 3.0, 1e-6);
+    assert_near(output[1], 7.0, 1e-6);
+}
+
+const TUPLE_LOCAL_SAMPLE_COPY: &str = r#"
+outs { out1, out2 }
+sample {
+  a = (10.0, 20.0)
+  b = a
+  out1 = b[0]
+  out2 = b[1]
+}
+"#;
+
+#[test]
+fn tuple_local_sample_copy() {
+    let frames = 1;
+    let (mut instance, _, out_channels) =
+        compile_instance(TUPLE_LOCAL_SAMPLE_COPY, frames);
+    assert_eq!(out_channels, 2);
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 10.0, 1e-6);
+    assert_near(output[1], 20.0, 1e-6);
+}
+
+const TUPLE_LOCAL_SAMPLE_FROM_CALL: &str = r#"
+outs { out1, out2 }
+def makePair(x):
+  return (x, x * 2.0)
+sample {
+  p = makePair(5.0)
+  out1 = p[0]
+  out2 = p[1]
+}
+"#;
+
+#[test]
+fn tuple_local_sample_from_call() {
+    let frames = 1;
+    let (mut instance, _, out_channels) =
+        compile_instance(TUPLE_LOCAL_SAMPLE_FROM_CALL, frames);
+    assert_eq!(out_channels, 2);
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 5.0, 1e-6);
+    assert_near(output[1], 10.0, 1e-6);
+}
+
+const TUPLE_LOCAL_SAMPLE_DESTRUCTURE: &str = r#"
+outs { out1, out2, out3 }
+sample {
+  a = (1.0, 2.0, 3.0)
+  (x, y, z) = a
+  out1 = x
+  out2 = y
+  out3 = z
+}
+"#;
+
+#[test]
+fn tuple_local_sample_destructure() {
+    let frames = 1;
+    let (mut instance, _, out_channels) =
+        compile_instance(TUPLE_LOCAL_SAMPLE_DESTRUCTURE, frames);
+    assert_eq!(out_channels, 3);
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 1.0, 1e-6);
+    assert_near(output[1], 2.0, 1e-6);
+    assert_near(output[2], 3.0, 1e-6);
+}
+
+const TUPLE_LOCAL_BLOCK: &str = r#"
+outs { out1, out2 }
+block {
+  sample {
+    pair = (100.0, 200.0)
+    out1 = pair[0]
+    out2 = pair[1]
+  }
+}
+"#;
+
+#[test]
+fn tuple_local_block() {
+    let frames = 1;
+    let (mut instance, _, out_channels) =
+        compile_instance(TUPLE_LOCAL_BLOCK, frames);
+    assert_eq!(out_channels, 2);
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 100.0, 1e-6);
+    assert_near(output[1], 200.0, 1e-6);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: Inferred (untyped) tuple parameters via monomorphization
+// ---------------------------------------------------------------------------
+
+const TUPLE_INFERRED_PARAM: &str = r#"
+outs { out1, out2 }
+def swapPair(p):
+  return (p[1], p[0])
+sample {
+  (a, b) = swapPair((3.0, 7.0))
+  out1 = a
+  out2 = b
+}
+"#;
+
+#[test]
+fn tuple_inferred_param() {
+    let frames = 1;
+    let (mut instance, _, out_channels) =
+        compile_instance(TUPLE_INFERRED_PARAM, frames);
+    assert_eq!(out_channels, 2);
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 7.0, 1e-6);
+    assert_near(output[1], 3.0, 1e-6);
+}
+
+const TUPLE_INFERRED_PARAM_SUM: &str = r#"
+outs { out1 }
+def sumPair(p):
+  return p[0] + p[1]
+sample {
+  out1 = sumPair((10.0, 25.0))
+}
+"#;
+
+#[test]
+fn tuple_inferred_param_sum() {
+    let frames = 1;
+    let (mut instance, _, out_channels) =
+        compile_instance(TUPLE_INFERRED_PARAM_SUM, frames);
+    assert_eq!(out_channels, 1);
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+    assert_near(output[0], 35.0, 1e-6);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: Tuple index validation for local vars
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tuple_local_dynamic_index_rejected() {
+    let src = r#"
+outs { out1 }
+sample {
+  a = (1.0, 2.0)
+  i = 0
+  out1 = a[i]
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "dynamic index on local tuple should be rejected"
+    );
+}
+
+#[test]
+fn tuple_local_out_of_bounds_rejected() {
+    let src = r#"
+outs { out1 }
+sample {
+  a = (1.0, 2.0)
+  out1 = a[2]
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "out-of-bounds index on local tuple should be rejected"
+    );
+}

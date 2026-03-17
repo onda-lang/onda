@@ -27,7 +27,7 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) port_index_ins: Option<PortIndexInfo>,
     pub(crate) port_index_outs: Option<PortIndexInfo>,
     pub(crate) port_index_params: Option<PortIndexInfo>,
-    pub(crate) tuple_vars: &'a HashSet<String>,
+    pub(crate) tuple_vars: &'a HashMap<String, usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -49,8 +49,8 @@ pub(crate) struct ScopeExprInputs<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-static EMPTY_TUPLE_VARS: std::sync::LazyLock<HashSet<String>> =
-    std::sync::LazyLock::new(HashSet::new);
+static EMPTY_TUPLE_VARS: std::sync::LazyLock<HashMap<String, usize>> =
+    std::sync::LazyLock::new(HashMap::new);
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_expr_env<'a>(
