@@ -64,6 +64,7 @@ impl ScopeFlowState {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn fork_scope_flow_state(
     known_scalars: &HashSet<String>,
     local_aliases: &LocalAliasTypes,

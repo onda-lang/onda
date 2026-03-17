@@ -169,11 +169,38 @@ fn is_builtin_receiver_for_return_inference(
     locals.contains_key(root)
 }
 
+fn infer_tuple_type_from_expr(
+    expr: &Expr,
+    locals: &HashMap<String, PrimitiveType>,
+    fn_return_types: &HashMap<String, PrimitiveType>,
+    full_return_types: &HashMap<String, ReturnType>,
+    tuple_locals: &HashMap<String, Vec<PrimitiveType>>,
+) -> Option<Vec<PrimitiveType>> {
+    match expr {
+        Expr::Tuple { values, .. } => Some(
+            values
+                .iter()
+                .map(|v| {
+                    infer_expr_type_for_def_return_inference(v, locals, fn_return_types)
+                        .unwrap_or(PrimitiveType::F32)
+                })
+                .collect(),
+        ),
+        Expr::UserCall { name, .. } => match full_return_types.get(name.as_str()) {
+            Some(ReturnType::Tuple(tys)) => Some(tys.clone()),
+            _ => None,
+        },
+        Expr::Var { name, .. } => tuple_locals.get(name).cloned(),
+        _ => None,
+    }
+}
+
 fn infer_stmt_returns_for_def_return_inference(
     stmts: &[Stmt],
     locals: &mut HashMap<String, PrimitiveType>,
     fn_return_types: &HashMap<String, PrimitiveType>,
     full_return_types: &HashMap<String, ReturnType>,
+    tuple_locals: &mut HashMap<String, Vec<PrimitiveType>>,
     out: &mut Vec<ReturnType>,
 ) {
     for stmt in stmts {
@@ -191,6 +218,17 @@ fn infer_stmt_returns_for_def_return_inference(
                 if matches!(expr, Expr::ArrayCtor { .. }) {
                     continue;
                 }
+                // Check if this assigns a tuple to a variable
+                if let Some(tys) = infer_tuple_type_from_expr(
+                    expr,
+                    locals,
+                    fn_return_types,
+                    full_return_types,
+                    tuple_locals,
+                ) {
+                    tuple_locals.insert(name.clone(), tys);
+                    continue;
+                }
                 let inferred =
                     infer_expr_type_for_def_return_inference(expr, locals, fn_return_types);
                 let target_ty = (*decl_ty)
@@ -201,15 +239,8 @@ fn infer_stmt_returns_for_def_return_inference(
             }
             Stmt::Assign {
                 target: AssignTarget::Tuple(_),
-                expr,
                 ..
-            } => {
-                // For tuple destructuring, try to infer element types from a
-                // UserCall that returns a tuple (via fn_return_types lookup).
-                // For now we skip detailed tracking — element types will be
-                // resolved during body analysis.
-                let _ = expr;
-            }
+            } => {}
             Stmt::Assign {
                 target: AssignTarget::Index { .. },
                 ..
@@ -220,26 +251,14 @@ fn infer_stmt_returns_for_def_return_inference(
             } => {}
             Stmt::Expr { .. } => {}
             Stmt::Return { expr, .. } => {
-                if let Expr::Tuple { values, .. } = expr {
-                    // Tuple return: infer each element type
-                    let elem_tys: Vec<PrimitiveType> = values
-                        .iter()
-                        .map(|v| {
-                            infer_expr_type_for_def_return_inference(v, locals, fn_return_types)
-                                .unwrap_or(PrimitiveType::F32)
-                        })
-                        .collect();
+                if let Some(elem_tys) = infer_tuple_type_from_expr(
+                    expr,
+                    locals,
+                    fn_return_types,
+                    full_return_types,
+                    tuple_locals,
+                ) {
                     out.push(ReturnType::Tuple(elem_tys));
-                } else if let Expr::UserCall { name, .. } = expr {
-                    // Check if the called function returns a tuple
-                    if let Some(ret_ty) = full_return_types.get(name.as_str()) {
-                        out.push(ret_ty.clone());
-                    } else {
-                        let ty =
-                            infer_expr_type_for_def_return_inference(expr, locals, fn_return_types)
-                                .unwrap_or(PrimitiveType::F32);
-                        out.push(ReturnType::Scalar(ty));
-                    }
                 } else {
                     let ty =
                         infer_expr_type_for_def_return_inference(expr, locals, fn_return_types)
@@ -254,11 +273,14 @@ fn infer_stmt_returns_for_def_return_inference(
             } => {
                 let mut then_locals = locals.clone();
                 let mut else_locals = locals.clone();
+                let mut then_tuple_locals = tuple_locals.clone();
+                let mut else_tuple_locals = tuple_locals.clone();
                 infer_stmt_returns_for_def_return_inference(
                     then_branch,
                     &mut then_locals,
                     fn_return_types,
                     full_return_types,
+                    &mut then_tuple_locals,
                     out,
                 );
                 infer_stmt_returns_for_def_return_inference(
@@ -266,6 +288,7 @@ fn infer_stmt_returns_for_def_return_inference(
                     &mut else_locals,
                     fn_return_types,
                     full_return_types,
+                    &mut else_tuple_locals,
                     out,
                 );
                 let mut merged = locals.clone();
@@ -277,25 +300,36 @@ fn infer_stmt_returns_for_def_return_inference(
                     }
                 }
                 *locals = merged;
+                for (name, then_tys) in &then_tuple_locals {
+                    if let Some(else_tys) = else_tuple_locals.get(name) {
+                        if then_tys == else_tys {
+                            tuple_locals.insert(name.clone(), then_tys.clone());
+                        }
+                    }
+                }
             }
             Stmt::For { var, body, .. } => {
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone(), PrimitiveType::I32);
+                let mut loop_tuple_locals = tuple_locals.clone();
                 infer_stmt_returns_for_def_return_inference(
                     body,
                     &mut loop_locals,
                     fn_return_types,
                     full_return_types,
+                    &mut loop_tuple_locals,
                     out,
                 );
             }
             Stmt::While { body, .. } => {
                 let mut loop_locals = locals.clone();
+                let mut loop_tuple_locals = tuple_locals.clone();
                 infer_stmt_returns_for_def_return_inference(
                     body,
                     &mut loop_locals,
                     fn_return_types,
                     full_return_types,
+                    &mut loop_tuple_locals,
                     out,
                 );
             }
@@ -329,6 +363,7 @@ fn infer_def_return_type(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> ReturnType {
     let mut locals = HashMap::<String, PrimitiveType>::new();
+    let mut tuple_locals = HashMap::<String, Vec<PrimitiveType>>::new();
     for (idx, param) in sig.params.iter().enumerate() {
         match sig.param_types.get(idx).and_then(|ty| ty.as_ref()) {
             Some(FnParamType::Primitive(prim)) => {
@@ -353,8 +388,8 @@ fn infer_def_return_type(
             Some(FnParamType::ArrayGeneric(_)) => {
                 locals.insert(param.clone(), PrimitiveType::F32);
             }
-            Some(FnParamType::Tuple(_)) => {
-                // Tuple params don't contribute a single scalar type to locals
+            Some(FnParamType::Tuple(elem_tys)) => {
+                tuple_locals.insert(param.clone(), elem_tys.clone());
             }
             Some(FnParamType::Array(None)) | None => {
                 locals.insert(param.clone(), PrimitiveType::F32);
@@ -368,6 +403,7 @@ fn infer_def_return_type(
         &mut locals,
         fn_return_types,
         full_return_types,
+        &mut tuple_locals,
         &mut returns,
     );
     let mut it = returns.into_iter();

@@ -457,6 +457,7 @@ Supported:
 - Method-style sugar for functions: `value.fn(a, b)` is rewritten as `fn(value, a, b)` when a matching function `fn` is in scope.
 - Def scope is lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not directly visible inside a `def`.
 - Call argument lists may span multiple lines, and a trailing comma is allowed in both function calls and method calls.
+- Return types: a `def` can return a primitive scalar (`f32`, `f64`, `i32`, `i64`, `bool`) or a tuple of primitives. Returning structs, arrays, or buffers is not supported.
 
 ```omni
 def wrap_phase(p, upper = TWO_PI):
@@ -830,12 +831,18 @@ Rules:
 
 ### Tuple-returning functions
 
+Functions can return a tuple literal, a tuple-returning call, or a tuple variable:
+
 ```omni
 def makePair():
   return (1.0, 2.0)
 
 def swap(p: (f32, f32)):
   return (p[1], p[0])
+
+def forward(x):
+  t = makePair()
+  return t
 ```
 
 ### Tuple parameters

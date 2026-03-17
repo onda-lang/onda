@@ -193,6 +193,7 @@
   - The full target semantics for synchronous proc events are tracked in `SYNC_EVENT_SPEC.md`.
 - Functions (`def`):
   - positional + named args, default values, early return.
+  - return types: a `def` can return a primitive scalar (`f32`, `f64`, `i32`, `i64`, `bool`) or a tuple of primitives. Returning structs, arrays, or buffers is not supported.
   - Top-level `def` bodies are lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not in scope unless passed as parameters.
   - Proc-local `def` blocks have implicit access to proc state (init-declared variables, params, nested procs) without `self`. They are private to the enclosing processor and are inlined at call sites during semantic analysis.
   - top-level overloads and struct-method overloads are supported (same symbol with different arity and/or parameter types); proc-local defs are excluded.
@@ -219,7 +220,7 @@
     - dynamic index and out-of-bounds index are compile-time errors.
     - tuple destructuring: `(a, b) = (1.0, 2.0)`, `(x, y) = getTuple()`, `(a, b) = existingTuple`.
     - tuple variables in state (`init`), `sample`, `block`, `def`, and event scopes.
-    - tuple-returning functions: `def makePair(): return (1.0, 2.0)`.
+    - tuple-returning functions: `def makePair(): return (1.0, 2.0)`. Return value can be a tuple literal, a tuple-returning call, or a tuple variable.
     - tuple parameters: `def swap(p: (f32, f32)): return (p[1], p[0])`.
     - tuple fields in structs: `struct Foo { pair: (f32, i32) }`.
     - tuples use a flattened ABI: each element becomes an individual scalar LLVM parameter/return value.

@@ -931,6 +931,7 @@ function ensurePatchPanel(): void {
   );
   patchPanelReady = false;
   patchPanel.onDidDispose(() => {
+    void stopPatch({ silent: true });
     clearPatchPanelMemory();
     patchPanelReady = false;
     patchPanel = undefined;
@@ -1264,14 +1265,14 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
           <button class="secondary" id="reset">Reset</button>
         </div>
       </section>
-      <section class="buffers">
+      <section class="buffers" id="buffers-section">
         <div class="params-header">
           <div class="params-title">Buffers</div>
           <div class="params-subtitle" id="buffers-summary"></div>
         </div>
         <div class="buffers-list" id="buffers"></div>
       </section>
-      <section class="params">
+      <section class="params" id="params-section">
         <div class="params-header">
           <div class="params-title">Params</div>
           <div class="params-subtitle" id="params-summary"></div>
@@ -1297,8 +1298,10 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
       const pathNode = document.getElementById("path");
       const statusNode = document.getElementById("status");
       const errorNode = document.getElementById("error");
+      const buffersSection = document.getElementById("buffers-section");
       const buffersSummaryNode = document.getElementById("buffers-summary");
       const buffersNode = document.getElementById("buffers");
+      const paramsSection = document.getElementById("params-section");
       const paramsSummaryNode = document.getElementById("params-summary");
       const paramsNode = document.getElementById("params");
 
@@ -1330,20 +1333,19 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         pathNode.textContent = state.path ? state.path : "No patch selected";
         statusNode.textContent = state.connected ? state.status : state.running ? state.status + " (connecting controls...)" : state.status;
         errorNode.textContent = state.error || "";
-        buffersSummaryNode.textContent = state.buffers.length === 0 ? "No preview buffers" : state.buffers.length + " buffer" + (state.buffers.length === 1 ? "" : "s");
-        paramsSummaryNode.textContent = state.params.length === 0 ? "No scalar params" : state.params.length + " control" + (state.params.length === 1 ? "" : "s");
+        const hasBuffers = state.buffers.length > 0;
+        const hasParams = state.params.length > 0;
+        buffersSection.style.display = hasBuffers ? "" : "none";
+        paramsSection.style.display = hasParams ? "" : "none";
+        buffersSummaryNode.textContent = hasBuffers ? state.buffers.length + " buffer" + (state.buffers.length === 1 ? "" : "s") : "";
+        paramsSummaryNode.textContent = hasParams ? state.params.length + " control" + (state.params.length === 1 ? "" : "s") : "";
 
         startButton.disabled = !state.path || state.running;
         stopButton.disabled = !state.running;
-        resetButton.disabled = state.params.length === 0;
+        resetButton.disabled = !hasParams;
 
         buffersNode.replaceChildren();
-        if (state.buffers.length === 0) {
-          const empty = document.createElement("div");
-          empty.className = "empty";
-          empty.textContent = "This patch exposes no preview buffer bindings.";
-          buffersNode.appendChild(empty);
-        } else {
+        if (hasBuffers) {
           for (const buffer of state.buffers) {
             const card = document.createElement("div");
             card.className = "buffer-card";
@@ -1405,14 +1407,6 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         }
 
         paramsNode.replaceChildren();
-        if (state.params.length === 0) {
-          const empty = document.createElement("div");
-          empty.className = "empty";
-          empty.textContent = "This patch exposes no scalar params.";
-          paramsNode.appendChild(empty);
-          return;
-        }
-
         for (const param of state.params) {
           const card = document.createElement("div");
           card.className = "param";
@@ -1817,14 +1811,14 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
           <button class="secondary" id="reset">Reset</button>
         </div>
       </section>
-      <section class="buffers">
+      <section class="buffers" id="buffers-section">
         <div class="params-header">
           <div class="params-title">Buffers</div>
           <div class="params-subtitle" id="buffers-summary"></div>
         </div>
         <div class="buffers-list" id="buffers"></div>
       </section>
-      <section class="params">
+      <section class="params" id="params-section">
         <div class="params-header">
           <div class="params-title">Params</div>
           <div class="params-subtitle" id="params-summary"></div>
@@ -1850,8 +1844,10 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
       var pathNode = document.getElementById("path");
       var statusNode = document.getElementById("status");
       var errorNode = document.getElementById("error");
+      var buffersSection = document.getElementById("buffers-section");
       var buffersSummaryNode = document.getElementById("buffers-summary");
       var buffersNode = document.getElementById("buffers");
+      var paramsSection = document.getElementById("params-section");
       var paramsSummaryNode = document.getElementById("params-summary");
       var paramsNode = document.getElementById("params");
 
@@ -1915,14 +1911,6 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
 
       function renderBuffers() {
         clearChildren(buffersNode);
-        if (!state.buffers || state.buffers.length === 0) {
-          var empty = document.createElement("div");
-          empty.className = "empty";
-          empty.textContent = "This patch exposes no preview buffer bindings.";
-          buffersNode.appendChild(empty);
-          return;
-        }
-
         for (var i = 0; i < state.buffers.length; i += 1) {
           var buffer = state.buffers[i];
           var card = document.createElement("div");
@@ -1999,14 +1987,6 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
 
       function renderParams() {
         clearChildren(paramsNode);
-        if (!state.params || state.params.length === 0) {
-          var empty = document.createElement("div");
-          empty.className = "empty";
-          empty.textContent = "This patch exposes no scalar params.";
-          paramsNode.appendChild(empty);
-          return;
-        }
-
         for (var i = 0; i < state.params.length; i += 1) {
           var param = state.params[i];
           var card = document.createElement("div");
@@ -2145,18 +2125,20 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
           statusNode.textContent = state.status;
         }
         errorNode.textContent = state.error || "";
-        buffersSummaryNode.textContent =
-          state.buffers && state.buffers.length > 0
+        var hasBuffers = state.buffers && state.buffers.length > 0;
+        var hasParams = state.params && state.params.length > 0;
+        buffersSection.style.display = hasBuffers ? "" : "none";
+        paramsSection.style.display = hasParams ? "" : "none";
+        buffersSummaryNode.textContent = hasBuffers
             ? String(state.buffers.length) + (state.buffers.length === 1 ? " buffer" : " buffers")
-            : "No preview buffers";
-        paramsSummaryNode.textContent =
-          state.params && state.params.length > 0
+            : "";
+        paramsSummaryNode.textContent = hasParams
             ? String(state.params.length) + (state.params.length === 1 ? " control" : " controls")
-            : "No scalar params";
+            : "";
 
         startButton.disabled = !state.path || state.running;
         stopButton.disabled = !state.running;
-        resetButton.disabled = !state.params || state.params.length === 0;
+        resetButton.disabled = !hasParams;
 
         renderBuffers();
         renderParams();

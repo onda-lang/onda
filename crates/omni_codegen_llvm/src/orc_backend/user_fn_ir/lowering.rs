@@ -346,7 +346,7 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                         &format!("p_{param_name}"),
                     )?;
                     // Store each expanded param into the struct slot
-                    for (i, ty) in elem_tys.iter().enumerate() {
+                    for (i, _ty) in elem_tys.iter().enumerate() {
                         let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
                         if param_val.is_null() {
                             return Err(Diagnostic::internal(format!(

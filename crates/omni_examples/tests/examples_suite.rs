@@ -9091,6 +9091,67 @@ fn tuple_return_and_destructure_compiles_and_runs() {
     assert_near(output[1], 4.0, 1e-6); // 3.0 + 1.0
 }
 
+#[test]
+fn tuple_return_via_variable() {
+    let src = r#"
+outs { out1, out2 }
+
+def calcPair(x):
+  t = (x * 2.0, x + 1.0)
+  return t
+
+sample {
+  (a, b) = calcPair(3.0)
+  out1 = a
+  out2 = b
+}
+"#;
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 6.0, 1e-6); // 3.0 * 2.0
+    assert_near(output[1], 4.0, 1e-6); // 3.0 + 1.0
+}
+
+#[test]
+fn tuple_return_via_variable_chained() {
+    let src = r#"
+outs { out1, out2 }
+
+def makePair(x):
+  return (x * 2.0, x + 1.0)
+
+def forward(x):
+  t = makePair(x)
+  return t
+
+sample {
+  (a, b) = forward(3.0)
+  out1 = a
+  out2 = b
+}
+"#;
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let input = Vec::<f32>::new();
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 6.0, 1e-6); // 3.0 * 2.0
+    assert_near(output[1], 4.0, 1e-6); // 3.0 + 1.0
+}
+
 const TUPLE_ELEMENT_ACCESS: &str = r#"
 outs { out1 }
 

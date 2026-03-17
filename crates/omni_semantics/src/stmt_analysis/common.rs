@@ -20,6 +20,7 @@ impl ScopePolicy {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) struct PortIndexInfo {
     pub(crate) count: usize,
     pub(crate) elem_ty: PrimitiveType,

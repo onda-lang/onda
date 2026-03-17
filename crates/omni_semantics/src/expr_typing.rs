@@ -148,7 +148,7 @@ pub(crate) fn infer_scalar_expr_type(
                 None
             }
         }
-        Expr::Index { base, index, .. } => {
+        Expr::Index { base, .. } => {
             // Port index access: ins[i], outs[i], params[i]
             // These are validated upstream; here we just return the uniform type.
             // The fallback at the end of this arm returns F32 which covers the common case,

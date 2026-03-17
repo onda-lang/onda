@@ -250,7 +250,7 @@ where
             }
             TypedFieldType::Struct => {}
             TypedFieldType::Tuple(ref elem_tys) => {
-                for (idx, prim) in elem_tys.iter().enumerate() {
+                for (idx, _prim) in elem_tys.iter().enumerate() {
                     let elem_flat = format!("{flat}.__{idx}");
                     let (ptr, ty) = lookup_scalar_ptr(&elem_flat)?;
                     push_scalar_struct_arg(

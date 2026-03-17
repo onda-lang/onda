@@ -139,7 +139,7 @@ pub(super) unsafe fn lower_stmt(
                                                     .map(|_| Expr::number(0.0))
                                                     .collect()
                                             };
-                                        for (idx, prim) in elem_tys.iter().enumerate() {
+                                        for (idx, _prim) in elem_tys.iter().enumerate() {
                                             let elem_flat =
                                                 format!("{flat_target}.__{idx}");
                                             let slot = ctx

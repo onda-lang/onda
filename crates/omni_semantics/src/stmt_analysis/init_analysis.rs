@@ -2004,7 +2004,7 @@ fn analyze_struct_field_init_assign(
             state_scalars.insert(flat.clone(), prim);
             known_scalars.insert(flat);
         }
-        TypedFieldType::Tuple(ref elem_tys) => {
+        TypedFieldType::Tuple(_) => {
             push_semantic(
                 diag,
                 errors,
