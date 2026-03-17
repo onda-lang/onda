@@ -61,6 +61,7 @@ Buffer declaration types:
 Buffer method semantics:
 - `buf.len()` returns frame count
 - `buf.chans()` returns channel count
+- `buf.samplerate()` returns the per-buffer sample rate as `f32` (bound from the host via C API)
 - there is no public flattened-length/`totalLen` method
 
 ## 3 Ports, params, buffers
@@ -94,6 +95,24 @@ params 3
 buffers 2
 ```
 
+Count shorthand also accepts compile-time constant expressions and namespace template parameters:
+
+```omni
+const N = 1
+
+outs (N + 1)
+
+sample:
+  out1 = 5.0
+  out2 = 10.0
+```
+
+Rules:
+- The count expression must evaluate to a positive integer at compile time.
+- Supported forms: integer literals, const names, parenthesized arithmetic expressions (`outs (N + 1)`), and namespace template parameters.
+- If both a count and explicit declarations are provided, the count must match the declaration count exactly.
+- `buffers` count shorthand does not support const-expression counts (integer literals only).
+
 Count prefix with explicit declarations (`ins`/`outs`/`params`):
 
 ```omni
@@ -106,34 +125,17 @@ Section default type shorthand:
 
 ```omni
 ins<f64> 2
+
 outs<f64>:
   out1
   meter: f32
+
 params<i32>:
   mode
+
 buffers[f32]:
   line
 ```
-
-Array-typed ports/params are supported:
-
-```omni
-ins:
-  in_st: f32[2]
-outs:
-  out_st: f32[2]
-params:
-  gains: f32[2] = [1.0, 1.0]
-```
-
-Rules:
-- Explicit entry type overrides section default type.
-- For `ins`/`outs`/`params`, count prefix must match explicit declaration count.
-- Ranges are supported on scalar `ins` and scalar `params` only:
-  - `name = default {min, max}`
-  - `name = default {max}` (max-only)
-- Ranges on arrays are rejected.
-- If `inN`/`outN` are used without declaration, they are implicitly created as `f32`.
 
 `init` also supports section default scalar type shorthand:
 
@@ -147,6 +149,61 @@ Rules:
 - `init<T>` / `init<f64>` applies to untyped scalar declarations in `init`.
 - Explicit per-symbol declaration types still win (`x: i32 = ...`).
 - Non-scalar section defaults (for example `init<f32[4]>`) are invalid.
+
+Array-typed ports/params are supported:
+
+```omni
+ins:
+  in_st: f32[2]
+
+outs:
+  out_st: f32[2]
+
+params:
+  gains: f32[2] = [1.0, 1.0]
+```
+
+Rules:
+- Explicit entry type overrides section default type.
+- For `ins`/`outs`/`params`, count prefix must match explicit declaration count.
+- Ranges are supported on scalar `ins` and scalar `params` only:
+  - `name = default {min, max}`
+  - `name = default {max}` (max-only)
+- Ranges on arrays are rejected.
+- If `inN`/`outN` are used without declaration, they are implicitly created as `f32`.
+
+### Dynamic port indexing
+
+When `ins`, `outs`, or `params` are declared with an explicit block (count shorthand or explicit list), runtime indexed access is supported:
+
+```omni
+const N = 4
+
+ins N
+outs N
+
+sample:
+  for i in 0..N:
+    outs[i] = ins[i] * 0.5
+```
+
+Rules:
+- `ins[i]`, `outs[i]`, and `params[i]` use runtime integer indices (0-based).
+- Indices are clamped to the valid range (`0..count-1`) at runtime.
+- `outs[i] = expr` is a write; `ins[i]` and `params[i]` are reads.
+- Port indexing requires an explicit `ins`/`outs`/`params` declaration block. Implicit ports (e.g. using `in1` without an `ins` block) cannot be indexed.
+- Port indexing works at top-level and inside processors.
+- Combined with namespace-generic counts, this enables fully parametric processors:
+
+```omni
+namespace Synth<N = 2>:
+  proc Voice:
+    ins N
+    outs N
+    sample:
+      for i in 0..N:
+        outs[i] = ins[i] * 2.0
+```
 
 ## 4 Variables, assignment, expressions
 

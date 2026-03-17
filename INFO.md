@@ -72,6 +72,17 @@
   - `buffers N` -> `buf1..bufN`
 - For `ins` / `outs` / `params`, count prefix + explicit list is supported (`ins 2: ...`) and must match the explicit declaration count.
 - For `buffers`, explicit declarations and count shorthand still cannot be mixed in the same block.
+- Count shorthand for `ins` / `outs` / `params` also accepts compile-time constant expressions and namespace template parameters:
+  - `const N = 4; ins N` expands to `in1..in4`.
+  - `outs (N + 1)` supports parenthesized arithmetic.
+  - Namespace template params work inside proc definitions: `namespace Synth<Num = 2>: proc Voice: ins Num`.
+  - `buffers` count shorthand does not support const-expression counts (integer literals only).
+- Dynamic port indexing is supported for `ins`, `outs`, and `params` when declared with an explicit block:
+  - `ins[i]`, `outs[i]`, `params[i]` use runtime 0-based integer indices.
+  - Indices are clamped to the valid range at runtime.
+  - `outs[i] = expr` is a write; `ins[i]` and `params[i]` are reads.
+  - Port indexing requires an explicit declaration block; implicit ports cannot be indexed.
+  - Works at both top-level and inside processors.
 - Section default type shorthand is supported for IO/param/buffer sections:
   - `ins<T>: ...`, `outs<f64>: ...`, `params<i32>: ...`, `buffers[T]: ...`
   - Also works with count shorthand (`ins<f64> 2`, `buffers[T] 4`).
@@ -276,45 +287,90 @@
   - mono: `buf[i]`
   - multi-channel: `buf[ch][i]`
   - `.len()` and `.chans()`
+  - `.samplerate()` returns the per-buffer sample rate as `f32` (bound from the host via C API).
   - `unsafe_read` / `unsafe_write` for unchecked access (UB on OOB), via both
     `unsafe_read(buf, i)` / `unsafe_write(buf, i, v)` and method-style
     `buf.unsafe_read(i)` / `buf.unsafe_write(i, v)`.
 - Semantics:
   - `buf.len()` is frame count, not interleaved scalar count.
   - `buf.chans()` is the runtime channel count for dynamic buffers and the declared channel count for static buffers.
+  - `buf.samplerate()` is the per-buffer sample rate (may differ from the compile-time `SR` constant).
   - There is currently no public `total_len` / flattened-length method on arrays or buffers.
 - Runtime binding validates element type and channel constraints.
 
-### Editor, daemon, and preview integration
-- `crates/omni_daemon` provides the shared long-lived engine for:
-  - document overlays and analysis sessions
-  - daemon-backed preview sessions
-  - scalar param metadata and runtime updates
-  - preview buffer metadata and WAV binding
-- `omni lsp` is a stdio LSP adapter layered on top of the daemon analysis session.
-  - Current MVP surface:
-    - `initialize`, `shutdown`, `exit`
-    - `textDocument/didOpen`
-    - `textDocument/didChange` (full-text sync)
-    - `textDocument/didSave`
-    - `textDocument/didClose`
-    - semantic tokens (`full`)
-  - Diagnostics are currently published on open and save.
+### Daemon (`crates/omni_daemon`)
+- The daemon is a stateful session manager between the CLI/LSP and the compiler/runtime. It manages two session types:
+- **Analysis sessions**:
+  - In-memory document overlays (`open` / `update` / `close`) for open files.
+  - `analyze_document` parses and type-checks via the overlay (substituting in-memory content for any file in the overlay, including transitive imports), returning an `AnalysisSnapshot` with diagnostics, parsed AST, and optional typed program.
+- **Preview sessions**:
+  - Build a live JIT-compiled instance from an analyzed document.
+  - Bind input/output audio buffers (zero-filled), bind placeholder zero buffers for declared `buffer[...]` params.
+  - `param_info()` and `buffer_info()` return metadata (names, types, ranges, defaults, channel layout).
+  - `set_param_f64(name, value)` updates scalar params at runtime.
+  - `render_block()` calls `process_bound` and returns per-channel output.
+  - `reset()` resets instance state.
+  - `bind_buffer_wav_path(name, path)` loads a WAV file (f32/i8/i16/i24/i32) and rebinds, rebuilding the instance from scratch (reapplies all buffers and params).
+  - `clear_buffer(name)` replaces a buffer binding with a zero-filled placeholder.
+  - Configurable: `sample_rate`, `block_size`, `fast_math`, `backend`.
+
+### LSP (`omni lsp`)
+- A hand-rolled JSON-RPC 2.0 LSP server over stdio, backed by the daemon analysis session.
+- Supported methods:
+  - `initialize` / `initialized` / `shutdown` / `exit`
+  - `textDocument/didOpen` — opens document in session, publishes diagnostics.
+  - `textDocument/didChange` — full-text sync only (range changes ignored). Does not re-publish diagnostics on every keystroke.
+  - `textDocument/didSave` — updates and publishes diagnostics.
+  - `textDocument/didClose` — closes document, clears diagnostics for the file and its transitive dependencies.
+  - `textDocument/semanticTokens/full` — full semantic tokens (no incremental support).
+- Advertised capabilities:
+  - `textDocumentSync`: open/close + full change sync + save.
+  - `semanticTokensProvider`: full semantic tokens with four token types:
+    - `enumMember` — `const` names.
+    - `variable` — local variables, state vars.
+    - `port` — `ins`/`outs`/`buffers` port names.
+    - `parameter` — `params` parameter names.
+  - No hover, completion, go-to-definition, references, or code actions are currently implemented.
+- Diagnostics are published per-file on open and save, grouped by URI across transitive imports. Stale diagnostics from previously-erroring files are cleared.
+- Semantic tokens are computed from the parsed AST (not the typed AST), so they work even when the file has semantic errors. A regex-based fallback provides `const` highlighting when parsing fails entirely.
+
+### Preview transport
 - `omni preview play` is the real-time preview transport on top of the daemon preview session.
-  - Audio stays in-process via `cpal`.
-  - Preview control uses a localhost control socket when `--control-json` is enabled.
-  - Control surface includes:
-    - param metadata/query
-    - scalar param updates
-    - preview buffer listing
-    - WAV buffer binding / clearing
-- `omni daemon stdio` remains available as a JSON-over-stdio daemon transport for non-LSP clients.
-- The VSCode extension in `editors/vscode` currently provides:
-  - language registration and syntax highlighting
-  - `omni lsp` client wiring
-  - semantic-token-backed highlighting for constants/params/ports/init vars
-  - `Omni: Run Patch` / `Stop Patch` / `Restart Language Server`
-  - embedded preview panel with param controls and preview buffer drop zones
+  - Audio playback is in-process via `cpal`.
+  - Rendering runs on a background thread, outputting interleaved samples into a lock-free SPSC ring buffer that the cpal audio callback drains.
+  - When `--control-json` is enabled:
+    - Emits a JSON `{"event": "ready", ...}` line on stdout with port, params, buffers, and output channel info.
+    - Binds a localhost TCP server on an ephemeral port.
+    - Clients send newline-delimited JSON requests over TCP:
+      - `getParams` — returns current param descriptors.
+      - `getBuffers` — returns current buffer descriptors.
+      - `setParam {name, value}` — updates a scalar param.
+      - `bindBufferWav {name, path}` — loads a WAV and rebinds a buffer.
+      - `clearBuffer {name}` — zeros a buffer.
+- `omni preview render` renders offline to WAV via the daemon preview pipeline.
+- `omni daemon stdio` is a JSON-over-stdio daemon transport for non-LSP clients, supporting `ping`, `initialize`, `open`, `update`, `close`, `diagnose`, `preview_start`, `preview_stop`, `preview_params`, `preview_set_param`, and `preview_render` commands.
+
+### VSCode extension (`editors/vscode`)
+- Language registration with TextMate grammar for syntax highlighting.
+- LSP client wiring: spawns `omni lsp` as a child process over stdio, using `vscode-languageclient`.
+- Semantic-token-backed highlighting for constants, params, ports, and init vars (layered on top of TextMate).
+- Settings:
+  - `omni.server.path` — path to the `omni` binary (default `"omni"`).
+  - `omni.server.args` — extra args prepended before the `lsp` subcommand.
+- Commands:
+  - `Omni: Run Patch` — compiles and starts `omni preview play --forever --control-json` for the active `.omni` file; opens the Patch panel.
+  - `Omni: Stop Patch` — kills the running patch process.
+  - `Omni: Restart Language Server` — stops and restarts the LSP client.
+- **Patch panel** (webview):
+  - Header with patch file path, status, Start/Stop/Reset buttons.
+  - **Buffers section**: one card per `buffer[...]` declaration with drag-and-drop `.wav` zone, "Choose File" file picker, loaded file path display, and "Clear" button.
+  - **Params section**: one card per scalar param with:
+    - `bool` params: checkbox toggle.
+    - Numeric params with range: synchronized range slider + number input.
+    - Numeric params without range: number input only.
+    - Smoothing control: per-param "Smoothing (ms)" input (default 20ms for float/double, 0ms for int/bool). Smoothing uses exponential interpolation at 16ms intervals.
+  - Param/buffer state is preserved across patch restarts for the same file.
+  - Auto-restart on `.omni` file save when a patch is running for that file.
 
 ## Runtime and codegen
 - ORC JIT backend only (`Auto` routes to ORC).
@@ -335,7 +391,7 @@
   - events: `trigger_event_by_index`
   - instance state lifecycle: `reset_instance_state`
   - inputs/outputs: pointer + byte-size binding
-  - buffers: pointer + frames + channels + element type binding
+  - buffers: pointer + frames + channels + sample rate + element type binding
   - outputs: `bind_output` and `copy_output`
 - Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
   - `omni_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
