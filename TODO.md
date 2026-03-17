@@ -79,6 +79,12 @@
   - Decide which stdlib modules are considered stable MVP surface versus still-evolving API.
   - Plan the next expansion/versioning pass beyond the current shipped module set.
 
+- Tuple follow-ups
+  - Nested tuples (`((f32, f32), i32)`).
+  - Expression-level indexing (`calcIdx(pos)[0]` without an intermediate variable).
+  - Tuple equality/comparison.
+  - Tuple in proc port types.
+
 - Generics follow-ups
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.
   - Document generic ownership/error rules in a dedicated language-spec section (`T` must belong to the current generic owner).
