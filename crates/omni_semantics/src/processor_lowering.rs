@@ -2706,6 +2706,11 @@ graph:
                     collect_offending_proc_event_calls_in_expr(e, owner, offending);
                 }
             }
+            Expr::Tuple { values, .. } => {
+                for v in values {
+                    collect_offending_proc_event_calls_in_expr(v, owner, offending);
+                }
+            }
             Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
         }
     }

@@ -6,13 +6,14 @@ pub(super) unsafe fn lower_expr(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
     if let Some(literal) = lower_literal_expr_common(expr, ctx.context, ctx.i32_ty, ctx.float_ty) {
         return Ok(literal);
     }
     match expr {
-        Expr::ArrayLiteral { .. } => Err(Diagnostic::internal(
-            "array literal is not a scalar expression in ORC lowering",
+        Expr::ArrayLiteral { .. } | Expr::Tuple { .. } => Err(Diagnostic::internal(
+            "array/tuple literal is not a scalar expression in ORC lowering",
         )),
         Expr::Var { name, .. } => {
             if let Some((ty, value)) =
@@ -164,18 +165,64 @@ pub(super) unsafe fn lower_expr(
         Expr::Index { base, index, .. } => {
             if base == "ins" {
                 if let Some(meta) = ctx.port_index_ins {
-                    return lower_port_index_ins_read(ctx, meta, index, locals, local_aliases, local_array_aliases);
+                    return lower_port_index_ins_read(ctx, meta, index, locals, local_aliases, local_array_aliases, local_tuples);
                 }
             }
             if base == "outs" {
                 if let Some(meta) = ctx.port_index_outs {
-                    return lower_port_index_outs_read(ctx, meta, index, locals, local_aliases, local_array_aliases);
+                    return lower_port_index_outs_read(ctx, meta, index, locals, local_aliases, local_array_aliases, local_tuples);
                 }
             }
             if base == "params" {
                 if let Some(meta) = ctx.port_index_params {
-                    return lower_port_index_params_read(ctx, meta, index, locals, local_aliases, local_array_aliases);
+                    return lower_port_index_params_read(ctx, meta, index, locals, local_aliases, local_array_aliases, local_tuples);
                 }
+            }
+            // Local tuple element read: pair[0] → local_aliases["pair.__0"]
+            if local_tuples.contains_key(base) {
+                if let Expr::Int { value, .. } = index.as_ref() {
+                    let flat_name = format!("{base}.__{value}");
+                    if let Some(slot) = local_aliases.get(&flat_name) {
+                        return Ok(OrcValue {
+                            value: LLVMBuildLoad2(
+                                ctx.builder,
+                                llvm_ty_for_primitive(ctx.context, slot.ty),
+                                slot.ptr,
+                                b"tuple_local_load\0".as_ptr().cast(),
+                            ),
+                            ty: slot.ty,
+                        });
+                    }
+                    return Err(Diagnostic::internal(format!(
+                        "local tuple element '{flat_name}' not found in local aliases"
+                    )));
+                }
+                return Err(Diagnostic::internal(
+                    "tuple element index must be a compile-time integer constant in ORC lowering",
+                ));
+            }
+            // Tuple state element read: pair[0] → state_slots["pair.__0"]
+            if ctx.state_slots.contains_key(&format!("{base}.__0")) {
+                if let Expr::Int { value, .. } = index.as_ref() {
+                    let flat_name = format!("{base}.__{value}");
+                    if let Some(slot) = ctx.state_slots.get(&flat_name) {
+                        return Ok(OrcValue {
+                            value: LLVMBuildLoad2(
+                                ctx.builder,
+                                llvm_ty_for_primitive(ctx.context, slot.ty),
+                                slot.ptr,
+                                b"tuple_state_load\0".as_ptr().cast(),
+                            ),
+                            ty: slot.ty,
+                        });
+                    }
+                    return Err(Diagnostic::internal(format!(
+                        "tuple state element '{flat_name}' not found in state slots"
+                    )));
+                }
+                return Err(Diagnostic::internal(
+                    "tuple element index must be a compile-time integer constant in ORC lowering",
+                ));
             }
             if ctx.buffer_index.contains_key(base) {
                 let data = lower_buffer_element_ptr(
@@ -185,6 +232,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                     true,
                 )?;
                 return Ok(OrcValue {
@@ -205,6 +253,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                     true,
                 );
             }
@@ -217,6 +266,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                     true,
                 );
             }
@@ -228,6 +278,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                     true,
                 )?;
                 return Ok(OrcValue {
@@ -247,6 +298,7 @@ pub(super) unsafe fn lower_expr(
                 locals,
                 local_aliases,
                 local_array_aliases,
+                local_tuples,
             )?;
             Ok(OrcValue {
                 value: LLVMBuildLoad2(
@@ -265,8 +317,8 @@ pub(super) unsafe fn lower_expr(
             "array constructor is only valid as an init assignment value",
         )),
         Expr::Binary { op, lhs, rhs, .. } => {
-            let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases)?;
-            let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases)?;
+            let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
             let builder = ctx.builder;
             let fast_math_flags = ctx.fast_math_flags;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
@@ -283,8 +335,8 @@ pub(super) unsafe fn lower_expr(
             )
         }
         Expr::Compare { op, lhs, rhs, .. } => {
-            let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases)?;
-            let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases)?;
+            let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
             let builder = ctx.builder;
             let fast_math_flags = ctx.fast_math_flags;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
@@ -301,7 +353,7 @@ pub(super) unsafe fn lower_expr(
             )
         }
         Expr::Cast { to, expr, .. } => {
-            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
+            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
             let casted = cast_orc_value_to(ctx, value, *to, b"cast\0");
             Ok(OrcValue {
                 value: casted,
@@ -309,7 +361,7 @@ pub(super) unsafe fn lower_expr(
             })
         }
         Expr::UnaryNot { expr, .. } => {
-            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
+            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
             let builder = ctx.builder;
             let context = ctx.context;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
@@ -323,7 +375,7 @@ pub(super) unsafe fn lower_expr(
             ))
         }
         Expr::UnaryBitNot { expr, .. } => {
-            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases)?;
+            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
             match value.ty {
                 PrimitiveType::I32 | PrimitiveType::I64 => Ok(OrcValue {
                     value: LLVMBuildNot(ctx.builder, value.value, b"bitnot\0".as_ptr().cast()),
@@ -343,6 +395,7 @@ pub(super) unsafe fn lower_expr(
             locals,
             local_aliases,
             local_array_aliases,
+            local_tuples,
         ),
         Expr::Call { func, args, .. } => {
             let mut lowered = Vec::with_capacity(args.len());
@@ -353,6 +406,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                 )?);
             }
             lower_builtin_call_orc(ctx, *func, &lowered)
@@ -370,6 +424,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                     true,
                 );
             }
@@ -380,6 +435,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                     true,
                 );
             }
@@ -412,6 +468,7 @@ pub(super) unsafe fn lower_expr(
                         locals,
                         local_aliases,
                         local_array_aliases,
+                        local_tuples,
                     );
                 }
             }
@@ -429,6 +486,7 @@ pub(super) unsafe fn lower_expr(
                         locals,
                         local_aliases,
                         local_array_aliases,
+                        local_tuples,
                     );
                 }
             }
@@ -439,6 +497,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                 );
             }
             if name == "unsafe_write" {
@@ -448,6 +507,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                 );
             }
             if ctx.struct_fields.contains_key(name) {
@@ -475,6 +535,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                 )
             };
             let mut infer_buffer_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
@@ -536,6 +597,7 @@ pub(super) unsafe fn lower_expr(
                         locals,
                         local_aliases,
                         local_array_aliases,
+                        local_tuples,
                     )
                 }
             };
@@ -545,6 +607,7 @@ pub(super) unsafe fn lower_expr(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                     arg_values,
                     arg_expr,
                     name,
@@ -554,6 +617,7 @@ pub(super) unsafe fn lower_expr(
                 lower_buffer_call_args_in_orc(
                     &mut *ctx_ptr,
                     local_array_aliases,
+                    local_tuples,
                     arg_values,
                     arg_expr,
                     name,
@@ -580,11 +644,18 @@ pub(super) unsafe fn lower_expr(
                 arg_values.len() as u32,
                 b"call\0".as_ptr().cast(),
             );
-            set_fast_math_for_primitive(call, prepared.ret_ty, ctx.fast_math_flags);
-            Ok(OrcValue {
-                value: call,
-                ty: prepared.ret_ty,
-            })
+            match &prepared.ret_ty {
+                ReturnType::Scalar(scalar_ty) => {
+                    set_fast_math_for_primitive(call, *scalar_ty, ctx.fast_math_flags);
+                    Ok(OrcValue {
+                        value: call,
+                        ty: *scalar_ty,
+                    })
+                }
+                ReturnType::Tuple(_) => Err(Diagnostic::internal(
+                    "tuple-returning call is not a scalar expression in orc expr/stmt lowering",
+                )),
+            }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => unreachable!(),
     }
@@ -598,8 +669,9 @@ unsafe fn lower_port_index_ins_read(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, true)?;
+    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, local_tuples, true)?;
     let in_ptr_ptr = build_ptr_offset(ctx.builder, ctx.float_ptr_ty, ctx.in_ptrs, idx, b"ins_ch_ptr_ptr\0");
     let in_ch_ptr = LLVMBuildLoad2(ctx.builder, ctx.float_ptr_ty, in_ptr_ptr, b"ins_ch_ptr\0".as_ptr().cast());
     let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, meta.elem_ty);
@@ -623,11 +695,12 @@ unsafe fn lower_port_index_outs_read(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
     let arr = ctx.out_slot_ptr_array.ok_or_else(|| {
         Diagnostic::internal("outs[i] read requires out_slot_ptr_array")
     })?;
-    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, true)?;
+    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, local_tuples, true)?;
     let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, meta.elem_ty);
     let slot_ptr_ty = LLVMPointerType(elem_llvm_ty, 0);
     let gep = LLVMBuildGEP2(
@@ -651,8 +724,9 @@ unsafe fn lower_port_index_params_read(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, true)?;
+    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, local_tuples, true)?;
     let elem_bytes = primitive_type_bytes(meta.elem_ty) as u64;
     let byte_offset = LLVMBuildMul(
         ctx.builder,

@@ -7,6 +7,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_buffer_read2_call(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_internal_buffer_2d_call_positional_arity(
@@ -27,6 +28,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_buffer_read2_call(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
         clamp_index,
     )?;
     Ok(OrcValue {
@@ -46,6 +48,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_buffer_write2_call(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_internal_buffer_2d_call_positional_arity(
@@ -67,9 +70,10 @@ pub(in crate::orc_backend) unsafe fn lower_orc_buffer_write2_call(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
         clamp_index,
     )?;
-    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases)?;
+    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
     let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"buf2_write_cast\0");
     LLVMBuildStore(ctx.builder, casted, data.ptr);
     Ok(OrcValue {
@@ -84,6 +88,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_read_call(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_builtin_data_call_positional_arity(args, "unsafe_read", 2, "ORC expression lowering")?;
     let base = builtin_data_call_base_symbol(args, "unsafe_read", "ORC expression lowering")?;
@@ -96,6 +101,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_read_call(
             locals,
             local_aliases,
             local_array_aliases,
+            local_tuples,
             false,
         );
     }
@@ -108,6 +114,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_read_call(
             locals,
             local_aliases,
             local_array_aliases,
+            local_tuples,
             false,
         );
     }
@@ -119,6 +126,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_read_call(
             locals,
             local_aliases,
             local_array_aliases,
+            local_tuples,
             false,
         )?;
         return Ok(OrcValue {
@@ -139,6 +147,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_read_call(
             locals,
             local_aliases,
             local_array_aliases,
+            local_tuples,
             false,
         )?;
         return Ok(OrcValue {
@@ -158,6 +167,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_read_call(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
     )?;
     Ok(OrcValue {
         value: LLVMBuildLoad2(
@@ -176,6 +186,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_write_call(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
     ensure_builtin_data_call_positional_arity(args, "unsafe_write", 3, "ORC expression lowering")?;
     let base = builtin_data_call_base_symbol(args, "unsafe_write", "ORC expression lowering")?;
@@ -194,9 +205,10 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_write_call(
             locals,
             local_aliases,
             local_array_aliases,
+            local_tuples,
             false,
         )?;
-        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases)?;
+        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
         let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"unsafe_out_arr_write_cast\0");
         LLVMBuildStore(ctx.builder, casted, data.ptr);
         return Ok(OrcValue {
@@ -212,9 +224,10 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_write_call(
             locals,
             local_aliases,
             local_array_aliases,
+            local_tuples,
             false,
         )?;
-        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases)?;
+        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
         let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"unsafe_buf_write_cast\0");
         LLVMBuildStore(ctx.builder, casted, data.ptr);
         return Ok(OrcValue {
@@ -229,8 +242,9 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_write_call(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
     )?;
-    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases)?;
+    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
     let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"unsafe_data_write_cast\0");
     LLVMBuildStore(ctx.builder, casted, data.ptr);
     Ok(OrcValue {
@@ -347,6 +361,7 @@ pub(in crate::orc_backend) unsafe fn load_orc_buffer_binding_tuple(
 pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
     ctx: &mut LoweringCtx<'_>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     out_args: &mut Vec<LLVMValueRef>,
     arg_expr: &Expr,
     callee_name: &str,
@@ -376,6 +391,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
                     locals,
                     local_aliases,
                     local_array_aliases,
+                    local_tuples,
                     ptr_out,
                     arg_expr,
                     callee_name,
@@ -393,6 +409,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
     )?;
     let slot_buffer_indices = slot_exprs
         .iter()
@@ -977,6 +994,7 @@ unsafe fn lower_orc_slice_bound(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<LLVMValueRef, Diagnostic> {
     let ctx_ptr: *mut LoweringCtx<'_> = ctx;
     lower_slice_bound_common(
@@ -993,6 +1011,7 @@ unsafe fn lower_orc_slice_bound(
                 locals,
                 local_aliases,
                 local_array_aliases,
+                local_tuples,
             )?;
             Ok(cast_orc_value_to(
                 &*ctx_ptr,
@@ -1009,6 +1028,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_array_view(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     arg_expr: &Expr,
     callee_name: &str,
 ) -> Result<CodegenArrayView, Diagnostic> {
@@ -1033,6 +1053,7 @@ pub(in crate::orc_backend) unsafe fn lower_orc_array_view(
                 locals,
                 local_aliases,
                 local_array_aliases,
+                local_tuples,
             )
         },
     )
@@ -1052,6 +1073,7 @@ pub(in crate::orc_backend) unsafe fn lower_array_call_args_in_orc(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     out_args: &mut Vec<LLVMValueRef>,
     arg_expr: &Expr,
     callee_name: &str,
@@ -1061,6 +1083,7 @@ pub(in crate::orc_backend) unsafe fn lower_array_call_args_in_orc(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
         arg_expr,
         callee_name,
     )?;

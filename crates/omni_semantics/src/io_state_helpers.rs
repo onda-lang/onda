@@ -21,6 +21,16 @@ pub(crate) fn resolve_init_default_ty(
             );
             None
         }
+        Some(DeclType::Tuple(_)) => {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
+                format!(
+                    "{context_label} init section default type must be a scalar primitive type"
+                ),
+            );
+            None
+        }
         Some(DeclType::Array { .. }) | Some(DeclType::ArrayGeneric { .. }) => {
             push_semantic(
                 DiagCtx::default(),
@@ -127,6 +137,13 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                         infer_io_from_expr(end, acc);
                     }
                 }
+                AssignTarget::Tuple(names) => {
+                    for name in names {
+                        acc.max_out = acc
+                            .max_out
+                            .max(parse_numbered_port_index(name, "out").unwrap_or(0));
+                    }
+                }
             }
             infer_io_from_expr(expr, acc);
         }
@@ -212,7 +229,7 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
                 infer_io_from_expr(arg, acc);
             }
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 infer_io_from_expr(value, acc);
             }

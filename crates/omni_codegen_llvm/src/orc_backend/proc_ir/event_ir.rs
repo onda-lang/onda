@@ -249,6 +249,7 @@ pub(in crate::orc_backend) unsafe fn build_event_ir(
                 }
             }
 
+            let mut local_tuples = HashMap::new();
             for stmt in &event.body {
                 lower_stmt(
                     stmt,
@@ -256,6 +257,7 @@ pub(in crate::orc_backend) unsafe fn build_event_ir(
                     &mut locals,
                     &mut local_aliases,
                     &mut local_array_aliases,
+                    &mut local_tuples,
                 )?;
             }
 

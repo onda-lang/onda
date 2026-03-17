@@ -66,6 +66,7 @@ pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
     pub forbidden_assign_names: &'a HashSet<String>,
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub event_policy: Option<EventStmtPolicy<'a>>,
+    pub state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
 }
 
 #[derive(Clone, Copy)]
@@ -132,6 +133,7 @@ fn validate_event_assign_target_restrictions(
         AssignTarget::Var(name) => (name.as_str(), false),
         AssignTarget::Index { base, .. } => (base.as_str(), true),
         AssignTarget::Slice { base, .. } => (base.as_str(), true),
+        AssignTarget::Tuple(_) => return,
     };
     let root = runtime_symbol_root(base);
 
@@ -212,6 +214,7 @@ fn build_runtime_stmt_analysis_ctx<'a>(
     registration_param_names: &'a HashSet<String>,
     forbidden_assign_names: &'a HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
+    state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
 ) -> RuntimeStmtAnalysisCtx<'a> {
     RuntimeStmtAnalysisCtx {
         common,
@@ -227,6 +230,7 @@ fn build_runtime_stmt_analysis_ctx<'a>(
         registration_param_names,
         forbidden_assign_names,
         event_policy,
+        state_tuples,
     }
 }
 
@@ -244,14 +248,16 @@ fn build_runtime_stmt_expr_env<'a>(
     array_vars: &'a HashMap<String, usize>,
     scope: ScopeKind,
 ) -> StmtExprAnalysisEnv<'a> {
-    build_scope_stmt_expr_env(
+    let mut env = build_scope_stmt_expr_env(
         expr_inputs,
         &flow_state.known_scalars,
         &flow_state.local_aliases,
         &flow_state.local_array_aliases,
         array_vars,
         scope,
-    )
+    );
+    env.expr_env.tuple_vars = &flow_state.tuple_vars;
+    env
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -272,6 +278,7 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
     struct_instances: &HashMap<String, String>,
     forbidden_assign_names: &HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
+    state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut state_scalars = state_scalars.clone();
@@ -289,6 +296,7 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
         common.param_names,
         forbidden_assign_names,
         event_policy,
+        state_tuples,
     );
     let mut state =
         build_runtime_stmt_analysis_state(known_scalars, local_aliases, local_array_aliases);
@@ -331,6 +339,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
     runtime_local_aliases: LocalAliasTypes,
     runtime_local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     runtime_forbidden_assign_names: &HashSet<String>,
+    state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let ctx = build_runtime_stmt_analysis_ctx(
@@ -347,6 +356,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         registration_param_names,
         runtime_forbidden_assign_names,
         None,
+        state_tuples,
     );
     let mut state = build_runtime_stmt_analysis_state(
         runtime_known_scalars,
@@ -438,6 +448,7 @@ pub(crate) fn analyze_runtime_events(
             param_names: &event_param_immutable,
             struct_defs: common.struct_defs,
             fn_signatures: common.fn_signatures,
+            fn_return_types: common.fn_return_types,
             options: common.options,
             port_index_ins: None,
             port_index_outs: None,
@@ -472,6 +483,7 @@ pub(crate) fn analyze_runtime_events(
             struct_instances,
             validation_output_names,
             Some(event_policy),
+            &HashMap::new(),
             errors,
         );
     }
@@ -522,6 +534,8 @@ fn analyze_runtime_scope<'a>(
         ctx.registration_mode,
     );
     state.known_scalars.extend(state_scalars.keys().cloned());
+    // Seed tuple_vars so expression validation allows pair[0] indexing
+    state.tuple_vars.extend(ctx.state_tuples.iter().map(|(k, v)| (k.clone(), v.len())));
     for stmt in stmts {
         analyze_runtime_stmt_inner(stmt, locals, state_scalars, ctx, state, loop_depth, errors);
     }
@@ -600,6 +614,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.tuple_vars,
                     locals,
                     state_scalars,
                     declared_symbols,
@@ -613,10 +628,12 @@ fn analyze_runtime_stmt_inner(
                     param_names,
                     struct_defs,
                     fn_signatures,
+                    common.fn_return_types,
                     options,
                     common.port_index_ins,
                     common.port_index_outs,
                     common.port_index_params,
+                    ctx.state_tuples,
                     errors,
                 );
             }
@@ -758,6 +775,7 @@ fn analyze_assign_sample(
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    tuple_vars: &mut HashMap<String, usize>,
     locals: &HashSet<String>,
     state_scalars: &HashMap<String, PrimitiveType>,
     declared_symbols: &DeclaredSymbolMap,
@@ -771,10 +789,12 @@ fn analyze_assign_sample(
     param_names: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     fn_signatures: &HashMap<String, FnSignature>,
+    fn_return_types: &HashMap<String, ReturnType>,
     options: AnalysisOptions,
     port_index_ins: Option<PortIndexInfo>,
     port_index_outs: Option<PortIndexInfo>,
     port_index_params: Option<PortIndexInfo>,
+    state_tuples: &HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let array_vars = merged_data_vars_for_runtime(state_arrays, local_array_aliases);
@@ -805,7 +825,8 @@ fn analyze_assign_sample(
             scope,
         )
     };
-    let scope_expr_env = build_scope_expr_env(expr_inputs, known_scalars, &array_vars, scope);
+    let mut scope_expr_env = build_scope_expr_env(expr_inputs, known_scalars, &array_vars, scope);
+    scope_expr_env.tuple_vars = tuple_vars;
     macro_rules! target_error {
         ($message:expr $(,)?) => {
             errors.push(Diagnostic::semantic_span($message, target_loc))
@@ -857,6 +878,31 @@ fn analyze_assign_sample(
             if matches!(base.as_str(), "ins" | "params") {
                 target_error!(format!("cannot assign to immutable '{base}[i]'"),);
                 validate_expr(index, scope_expr_env, errors);
+                validate_expr(
+                    &rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases),
+                    scope_expr_env,
+                    errors,
+                );
+                return;
+            }
+            if let Some(elem_tys) = state_tuples.get(base) {
+                // Tuple state element write: pair[0] = value
+                match index {
+                    Expr::Int { value, .. } => {
+                        let idx = *value as usize;
+                        if idx >= elem_tys.len() {
+                            target_error!(format!(
+                                "tuple element index {idx} is out of bounds for tuple '{base}' with {} elements",
+                                elem_tys.len()
+                            ),);
+                        }
+                    }
+                    _ => {
+                        target_error!(format!(
+                            "tuple element index must be a compile-time integer constant"
+                        ),);
+                    }
+                }
                 validate_expr(
                     &rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases),
                     scope_expr_env,
@@ -1377,6 +1423,11 @@ fn analyze_assign_sample(
                                 )
                             );
                         }
+                        TypedFieldType::Tuple(_) => {
+                            target_error!(format!(
+                                "tuple field '{flat}' must be accessed with index syntax"
+                            ));
+                        }
                     }
                     return;
                 }
@@ -1564,8 +1615,62 @@ fn analyze_assign_sample(
                 }
             }
 
+            // Track local tuple variables for indexing validation
+            let tuple_arity = match expr {
+                Expr::Tuple { values, .. } => Some(values.len()),
+                Expr::UserCall { name: fn_name, .. } => {
+                    match fn_return_types.get(fn_name.as_str()) {
+                        Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
+                        _ => None,
+                    }
+                }
+                Expr::Var { name: var_name, .. } => {
+                    tuple_vars.get(var_name).copied()
+                }
+                _ => None,
+            };
+            if let Some(arity) = tuple_arity {
+                tuple_vars.insert(name.clone(), arity);
+            }
+
             if output_names.contains(name) || can_track_local {
                 known_scalars.insert(name.clone());
+            }
+        }
+        AssignTarget::Tuple(targets) => {
+            let expr_for_validation =
+                rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+            validate_expr(&expr_for_validation, scope_expr_env, errors);
+            // Validate destructuring arity against the RHS tuple length
+            let rhs_arity = match expr {
+                Expr::Tuple { values, .. } => Some(values.len()),
+                Expr::UserCall { name, .. } => match fn_return_types.get(name.as_str()) {
+                    Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
+                    _ => None,
+                },
+                Expr::Var { name, .. } => state_tuples
+                    .get(name)
+                    .map(|tys| tys.len()),
+                _ => None,
+            };
+            if let Some(expected) = rhs_arity {
+                if targets.len() != expected {
+                    errors.push(Diagnostic::semantic(
+                        format!(
+                            "tuple destructuring has {} targets but the right-hand side has {} elements",
+                            targets.len(),
+                            expected,
+                        ),
+                        0,
+                        0,
+                    ));
+                }
+            }
+            for target_name in targets {
+                known_scalars.insert(target_name.clone());
+                local_aliases
+                    .entry(target_name.clone())
+                    .or_insert(PrimitiveType::F32);
             }
         }
     }

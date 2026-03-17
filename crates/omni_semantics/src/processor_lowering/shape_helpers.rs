@@ -110,9 +110,10 @@ pub(super) fn infer_primary_output_type_from_processor(proc: &ProcessorDef) -> P
     match first_out.ty.as_ref() {
         Some(DeclType::Scalar(ty)) => *ty,
         Some(DeclType::Array { elem, .. }) => *elem,
-        Some(DeclType::Generic(_)) | Some(DeclType::ArrayGeneric { .. }) | None => {
-            PrimitiveType::F32
-        }
+        Some(DeclType::Tuple(_))
+        | Some(DeclType::Generic(_))
+        | Some(DeclType::ArrayGeneric { .. })
+        | None => PrimitiveType::F32,
     }
 }
 
@@ -142,7 +143,7 @@ pub(super) fn compute_proc_shape(
     proc_symbols: &HashSet<String>,
     struct_defs: &HashMap<String, omni_frontend::StructDef>,
     ctor_symbols: &HashSet<String>,
-    fn_return_types: &HashMap<String, PrimitiveType>,
+    fn_return_types: &HashMap<String, ReturnType>,
     fn_signatures_full: &HashMap<String, FnSignature>,
     proc_defs_by_name: &HashMap<String, omni_frontend::ProcessorDef>,
     errors: &mut Vec<Diagnostic>,
@@ -295,13 +296,15 @@ pub(super) fn compute_proc_shape(
         &param_slot_types,
         DeclaredScalarSymbolKind::Param,
     );
-    for (fn_name, fn_ty) in fn_return_types {
-        insert_declared_symbol(
-            &mut state_type_hints,
-            &mut declared_symbols,
-            fn_name.clone(),
-            DeclaredSymbolInfo::FunctionReturn { ty: *fn_ty },
-        );
+    for (fn_name, ret_ty) in fn_return_types {
+        if let ReturnType::Scalar(scalar_ty) = ret_ty {
+            insert_declared_symbol(
+                &mut state_type_hints,
+                &mut declared_symbols,
+                fn_name.clone(),
+                DeclaredSymbolInfo::FunctionReturn { ty: *scalar_ty },
+            );
+        }
     }
 
     let proc_ns = namespace_of_symbol(&proc.name);
@@ -336,6 +339,7 @@ pub(super) fn compute_proc_shape(
             param_names: &typed_param_names,
             struct_defs: &typed_struct_defs,
             fn_signatures: &fn_signatures,
+            fn_return_types,
             options,
             port_index_ins: None,
             port_index_outs: None,
@@ -357,6 +361,7 @@ pub(super) fn compute_proc_shape(
         struct_instance_type_args: HashMap::new(),
         nested_procs: HashMap::new(),
         nested_proc_arrays: HashMap::new(),
+        state_tuples: HashMap::new(),
     };
     // Seed known_scalars with reserved names so they're visible for decl-order checks
     init_st.known_scalars.extend(reserved.iter().cloned());
@@ -381,6 +386,7 @@ pub(super) fn compute_proc_shape(
     let proc_state_array_struct_roots = init_st.state_array_struct_roots;
     let proc_struct_instances = init_st.struct_instances;
     let init_st_type_args = init_st.struct_instance_type_args;
+    let mut proc_state_tuples = init_st.state_tuples;
     let mut proc_struct_instances_typed = proc_struct_instances.clone();
 
     // Add buffer prefix entries so has_declared_buffer_symbol / validate_buffer_param_call_arg work
@@ -455,6 +461,14 @@ pub(super) fn compute_proc_shape(
                         ) {
                             proc_state_arrays.entry(flat).or_insert(size_val);
                         }
+                    }
+                    FieldType::Tuple(elem_tys) => {
+                        for (idx, prim) in elem_tys.iter().enumerate() {
+                            let elem_flat = format!("{flat}.__{idx}");
+                            proc_state_scalars.entry(elem_flat).or_insert(*prim);
+                        }
+                        proc_state_tuples
+                            .insert(flat, elem_tys.clone());
                     }
                     FieldType::Generic(_) => {}
                 }
@@ -624,6 +638,7 @@ pub(super) fn compute_proc_shape(
             param_names: &typed_param_names,
             struct_defs: &typed_struct_defs,
             fn_signatures: &proc_fn_signatures,
+            fn_return_types,
             options,
             port_index_ins,
             port_index_outs,
@@ -645,6 +660,7 @@ pub(super) fn compute_proc_shape(
         LocalAliasTypes::new(),
         HashMap::new(),
         &block_forbidden,
+        &proc_state_tuples,
         errors,
     );
 
@@ -667,6 +683,7 @@ pub(super) fn compute_proc_shape(
             param_names: &typed_param_names,
             struct_defs: &typed_struct_defs,
             fn_signatures: &proc_fn_signatures,
+            fn_return_types,
             options,
             port_index_ins,
             port_index_outs,
@@ -688,6 +705,7 @@ pub(super) fn compute_proc_shape(
         LocalAliasTypes::new(),
         HashMap::new(),
         &sample_forbidden,
+        &proc_state_tuples,
         errors,
     );
 
@@ -730,6 +748,7 @@ pub(super) fn compute_proc_shape(
             param_names: &typed_param_names,
             struct_defs: &typed_struct_defs,
             fn_signatures: &proc_fn_signatures,
+            fn_return_types,
             options,
             port_index_ins,
             port_index_outs,

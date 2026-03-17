@@ -124,7 +124,7 @@ pub(crate) fn rewrite_proc_alias_calls_in_expr(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_proc_alias_calls_in_expr(inner, aliases);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_proc_alias_calls_in_expr(value, aliases);
             }

@@ -10,14 +10,14 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
     block_size: usize,
     fast_math: bool,
     fn_ref: LLVMValueRef,
-    return_ty: PrimitiveType,
+    return_ty: ReturnType,
     scalar_param_types: &[PrimitiveType],
     array_param_types: &[(PrimitiveType, usize)],
     buffer_param_types: &[(PrimitiveType, TypedBufferChannels)],
 ) -> Result<(), Diagnostic> {
     let float_ty = LLVMFloatTypeInContext(context);
     let i32_ty = LLVMInt32TypeInContext(context);
-    let return_llvm_ty = llvm_ty_for_primitive(context, return_ty);
+    let return_llvm_ty = llvm_ty_for_return_type(context, &return_ty);
 
     let entry_name =
         CString::new("entry").map_err(|_| Diagnostic::internal("invalid block name"))?;
@@ -30,7 +30,7 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
 
     let result = (|| -> Result<(), Diagnostic> {
         LLVMPositionBuilderAtEnd(builder, entry);
-        let zero_ret = llvm_zero_for_primitive(context, return_ty);
+        let zero_ret = llvm_zero_for_return_type(context, &return_ty);
 
         let ret_name =
             CString::new("ret").map_err(|_| Diagnostic::internal("invalid local variable name"))?;
@@ -51,6 +51,7 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
             return_slot,
             return_block: ret_block,
             local_slots: HashMap::new(),
+            tuple_slots: HashMap::new(),
             local_array_aliases: HashMap::new(),
             buffer_params: HashMap::new(),
             array_ptrs: HashMap::new(),
@@ -167,6 +168,42 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                                 llvm_param_idx += 1;
                             }
                             TypedFieldType::Struct => {}
+                            TypedFieldType::Tuple(ref elem_tys) => {
+                                for (idx, prim) in elem_tys.iter().enumerate() {
+                                    let elem_flat = format!("{flat}.__{idx}");
+                                    let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                                    if param_val.is_null() {
+                                        return Err(Diagnostic::internal(format!(
+                                            "missing LLVM param {} for function '{}'",
+                                            llvm_param_idx, def.name
+                                        )));
+                                    }
+                                    if by_ref_flags[param_idx] {
+                                        ctx.local_slots.insert(
+                                            elem_flat,
+                                            DefLocalSlot {
+                                                ptr: param_val,
+                                                ty: *prim,
+                                            },
+                                        );
+                                    } else {
+                                        let slot = build_local_slot(
+                                            ctx.builder,
+                                            llvm_ty_for_primitive(ctx.context, *prim),
+                                            &format!("p_{elem_flat}"),
+                                        )?;
+                                        LLVMBuildStore(ctx.builder, param_val, slot);
+                                        ctx.local_slots.insert(
+                                            elem_flat,
+                                            DefLocalSlot {
+                                                ptr: slot,
+                                                ty: *prim,
+                                            },
+                                        );
+                                    }
+                                    llvm_param_idx += 1;
+                                }
+                            }
                             TypedFieldType::Array(len) => {
                                 let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
                                 if param_val.is_null() {
@@ -289,6 +326,51 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                         },
                     );
                     llvm_param_idx += 4;
+                }
+                TypedFnParam::Tuple { elem_tys } => {
+                    // Tuple params are expanded to N individual LLVM params.
+                    // Allocate a tuple slot (LLVM struct alloca) and store each element.
+                    let mut llvm_elem_tys: Vec<LLVMTypeRef> = elem_tys
+                        .iter()
+                        .map(|t| llvm_ty_for_primitive(ctx.context, *t))
+                        .collect();
+                    let struct_ty = LLVMStructTypeInContext(
+                        ctx.context,
+                        llvm_elem_tys.as_mut_ptr(),
+                        llvm_elem_tys.len() as u32,
+                        0,
+                    );
+                    let slot = build_local_slot(
+                        ctx.builder,
+                        struct_ty,
+                        &format!("p_{param_name}"),
+                    )?;
+                    // Store each expanded param into the struct slot
+                    for (i, ty) in elem_tys.iter().enumerate() {
+                        let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                        if param_val.is_null() {
+                            return Err(Diagnostic::internal(format!(
+                                "missing LLVM tuple param {} for function '{}'",
+                                llvm_param_idx, def.name
+                            )));
+                        }
+                        let gep = LLVMBuildStructGEP2(
+                            ctx.builder,
+                            struct_ty,
+                            slot,
+                            i as u32,
+                            b"tup_p_gep\0".as_ptr().cast(),
+                        );
+                        LLVMBuildStore(ctx.builder, param_val, gep);
+                        llvm_param_idx += 1;
+                    }
+                    ctx.tuple_slots.insert(
+                        param_name.clone(),
+                        DefTupleSlot {
+                            ptr: slot,
+                            elem_tys: elem_tys.clone(),
+                        },
+                    );
                 }
             }
         }

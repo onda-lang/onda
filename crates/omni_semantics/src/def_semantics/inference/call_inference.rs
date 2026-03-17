@@ -208,7 +208,7 @@ fn infer_expr_calls(
         | Expr::Bool { .. }
         | Expr::ArrayCtor { .. }
         | Expr::Var { .. } => {}
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 infer_expr_calls(
                     value,

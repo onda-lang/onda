@@ -93,6 +93,7 @@ pub(crate) struct InitAnalysisState {
     pub state_arrays: HashMap<String, usize>,
     pub state_array_struct_roots: HashMap<String, ArrayStructRootInfo>,
     pub struct_instances: HashMap<String, String>,
+    pub state_tuples: HashMap<String, Vec<PrimitiveType>>,
     // Proc-specific fields (empty/unused for top-level analysis)
     pub state_array_specs: HashMap<String, omni_frontend::ArrayTypeSpec>,
     pub struct_instance_type_args: HashMap<String, Vec<PrimitiveType>>,
@@ -1003,6 +1004,50 @@ fn analyze_assign_init(
                 st.known_scalars.insert(name.clone());
                 return;
             }
+            // Tuple literal assignment: flatten to individual scalar state entries
+            if let Expr::Tuple { values, .. } = expr {
+                if st.state_scalars.contains_key(name)
+                    || st.state_arrays.contains_key(name)
+                    || st.state_array_struct_roots.contains_key(name)
+                    || st.struct_instances.contains_key(name)
+                {
+                    target_error!(format!(
+                        "symbol '{name}' already used with a different state type"
+                    ),);
+                    return;
+                }
+                let mut elem_tys = Vec::new();
+                for (idx, value) in values.iter().enumerate() {
+                    validate_expr(
+                        value,
+                        build_scope_expr_env(expr_inputs!(), &st.known_scalars, &array_vars, scope),
+                        errors,
+                    );
+                    let elem_ty = infer_expr_type_for_semantics_with_local_data(
+                        value,
+                        &st.state_scalars,
+                        &st.declared_symbols,
+                        None,
+                        &st.local_aliases,
+                        &st.local_array_aliases,
+                        locals,
+                        input_names,
+                        output_names,
+                        param_names,
+                        &st.struct_instances,
+                        struct_defs,
+                        errors,
+                    )
+                    .unwrap_or(PrimitiveType::F32);
+                    elem_tys.push(elem_ty);
+                    let flat_name = format!("{name}.__{idx}");
+                    st.state_scalars.insert(flat_name, elem_ty);
+                }
+                st.state_tuples.insert(name.clone(), elem_tys);
+                st.known_scalars.insert(name.clone());
+                return;
+            }
+
             if let Expr::Slice {
                 base, start, end, ..
             } = expr
@@ -1297,6 +1342,7 @@ fn analyze_assign_init(
                             &mut st.state_arrays,
                             &mut st.state_array_struct_roots,
                             &mut st.struct_instances,
+                            &mut st.state_tuples,
                             output_names,
                             struct_defs,
                             fn_signatures,
@@ -1705,6 +1751,7 @@ fn analyze_assign_init(
             st.state_scalars.insert(name.clone(), target_ty);
             st.known_scalars.insert(name.clone());
         }
+        AssignTarget::Tuple(_) => {}
     }
 }
 #[allow(clippy::too_many_arguments)]
@@ -1720,6 +1767,7 @@ fn analyze_struct_ctor_init_assign(
     state_arrays: &mut HashMap<String, usize>,
     state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     struct_instances: &mut HashMap<String, String>,
+    state_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
     outputs: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -1818,6 +1866,14 @@ fn analyze_struct_ctor_init_assign(
                 }
                 scalar_idx += 1;
                 state_scalars.insert(flat.clone(), prim);
+                known_scalars.insert(flat);
+            }
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    let elem_flat = format!("{flat}.__{idx}");
+                    state_scalars.insert(elem_flat, *prim);
+                }
+                state_tuples.insert(flat.clone(), elem_tys.clone());
                 known_scalars.insert(flat);
             }
             TypedFieldType::Struct => {}
@@ -1947,6 +2003,15 @@ fn analyze_struct_field_init_assign(
             );
             state_scalars.insert(flat.clone(), prim);
             known_scalars.insert(flat);
+        }
+        TypedFieldType::Tuple(ref elem_tys) => {
+            push_semantic(
+                diag,
+                errors,
+                format!(
+                    "tuple field '{flat}' must be initialized via struct constructor, not direct assignment"
+                ),
+            );
         }
         TypedFieldType::Struct => {
             push_semantic(

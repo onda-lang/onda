@@ -190,7 +190,7 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
             | Expr::UnaryBitNot { expr: inner, .. } => {
                 collect_guards_from_expr(inner, managed_arrays, proc_api, used_arrays, guards);
             }
-            Expr::ArrayLiteral { values, .. } => {
+            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
                 for value in values {
                     collect_guards_from_expr(value, managed_arrays, proc_api, used_arrays, guards);
                 }

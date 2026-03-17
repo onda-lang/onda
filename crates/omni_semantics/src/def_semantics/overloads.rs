@@ -155,7 +155,7 @@ fn infer_scalar_expr_type_for_overload(
                 _ => merge_numeric_types_no_diag(lhs_ty, rhs_ty),
             }
         }
-        Expr::ArrayCtor { .. } | Expr::ArrayLiteral { .. } => None,
+        Expr::ArrayCtor { .. } | Expr::ArrayLiteral { .. } | Expr::Tuple { .. } => None,
     }
 }
 
@@ -330,6 +330,10 @@ fn score_overload_param_match(
             OverloadArgShape::Unknown => Some(2),
             _ => None,
         },
+        Some(FnParamType::Tuple(_)) => match arg_shape {
+            OverloadArgShape::Unknown => Some(2),
+            _ => None,
+        },
         None => Some(3),
     }
 }
@@ -343,6 +347,10 @@ fn format_fn_param_for_overload(name: &str, ty: Option<&FnParamType>, has_defaul
         Some(FnParamType::ArrayGeneric(param)) => format!("{name}: {param}[]"),
         Some(FnParamType::Array(None)) => format!("{name}: []"),
         Some(FnParamType::BareBuffer) => format!("{name}: buffer"),
+        Some(FnParamType::Tuple(elems)) => {
+            let inner = elems.iter().map(|p| format!("{p:?}").to_lowercase()).collect::<Vec<_>>().join(", ");
+            format!("{name}: ({inner})")
+        }
         None => name.to_owned(),
     };
     if has_default {
@@ -562,7 +570,7 @@ pub(crate) fn rewrite_overloaded_calls_in_expr(
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
             rewrite_overloaded_calls_in_expr(expr, env, overloads, errors);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_overloaded_calls_in_expr(value, env, overloads, errors);
             }

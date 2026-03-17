@@ -99,6 +99,47 @@ pub(super) unsafe fn llvm_zero_for_primitive(
     }
 }
 
+pub(super) unsafe fn llvm_ty_for_return_type(
+    context: LLVMContextRef,
+    ret_ty: &ReturnType,
+) -> LLVMTypeRef {
+    match ret_ty {
+        ReturnType::Scalar(prim) => llvm_ty_for_primitive(context, *prim),
+        ReturnType::Tuple(elems) => {
+            let mut elem_tys: Vec<LLVMTypeRef> =
+                elems.iter().map(|p| llvm_ty_for_primitive(context, *p)).collect();
+            LLVMStructTypeInContext(
+                context,
+                elem_tys.as_mut_ptr(),
+                elem_tys.len() as u32,
+                0,
+            )
+        }
+    }
+}
+
+pub(super) unsafe fn llvm_zero_for_return_type(
+    context: LLVMContextRef,
+    ret_ty: &ReturnType,
+) -> LLVMValueRef {
+    match ret_ty {
+        ReturnType::Scalar(prim) => llvm_zero_for_primitive(context, *prim),
+        ReturnType::Tuple(elems) => {
+            let _struct_ty = llvm_ty_for_return_type(context, ret_ty);
+            let mut zeros: Vec<LLVMValueRef> = elems
+                .iter()
+                .map(|p| llvm_zero_for_primitive(context, *p))
+                .collect();
+            LLVMConstStructInContext(
+                context,
+                zeros.as_mut_ptr(),
+                zeros.len() as u32,
+                0,
+            )
+        }
+    }
+}
+
 pub(super) unsafe fn cast_orc_value_to(
     ctx: &LoweringCtx<'_>,
     value: OrcValue,
@@ -125,8 +166,9 @@ pub(super) unsafe fn lower_orc_logical_expr(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    let lhs_value = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases)?;
+    let lhs_value = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
     let lhs_bool = {
         let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
             cast_orc_value_to(ctx, value, to, name)
@@ -147,7 +189,7 @@ pub(super) unsafe fn lower_orc_logical_expr(
         b"logical_phi\0",
         "ORC logical expression",
         || {
-            let rhs_value = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases)?;
+            let rhs_value = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
                 cast_orc_value_to(ctx, value, to, name)
             };

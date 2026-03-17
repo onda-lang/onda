@@ -28,7 +28,7 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
 
     for def in &typed.defs {
         defs.insert(def.name.clone(), def.clone());
-        base_return_tys.insert(def.name.clone(), def.return_ty);
+        base_return_tys.insert(def.name.clone(), def.return_ty.clone());
         let mut arg_tys = Vec::new();
         let mut by_ref_flags = vec![false; def.param_kinds.len()];
         if def.method_of.is_some() && !def.params.is_empty() && def.params[0] == "self" {
@@ -59,6 +59,15 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                                 }
                             }
                             TypedFieldType::Struct => {}
+                            TypedFieldType::Tuple(ref elem_tys) => {
+                                for (_, prim) in elem_tys.iter().enumerate() {
+                                    if by_ref_flags[idx] {
+                                        arg_tys.push(float_ptr_ty);
+                                    } else {
+                                        arg_tys.push(llvm_ty_for_primitive(context, *prim));
+                                    }
+                                }
+                            }
                             TypedFieldType::Array(len) => {
                                 if let Some(elem_struct) = &field.array_elem_struct {
                                     let mut roots = Vec::new();
@@ -92,10 +101,15 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                     arg_tys.push(i32_ty);
                     arg_tys.push(LLVMFloatTypeInContext(context));
                 }
+                TypedFnParam::Tuple { elem_tys } => {
+                    for ty in elem_tys {
+                        arg_tys.push(llvm_ty_for_primitive(context, *ty));
+                    }
+                }
             }
         }
-        let ret_ty = llvm_ty_for_primitive(context, def.return_ty);
-        let fn_ty = LLVMFunctionType(ret_ty, arg_tys.as_mut_ptr(), arg_tys.len() as u32, 0);
+        let ret_llvm_ty = llvm_ty_for_return_type(context, &def.return_ty);
+        let fn_ty = LLVMFunctionType(ret_llvm_ty, arg_tys.as_mut_ptr(), arg_tys.len() as u32, 0);
         let symbol = mangle_user_fn_symbol(&def.name)?;
         let fn_ref = LLVMAddFunction(module, symbol.as_ptr(), fn_ty);
         if fn_ref.is_null() {
@@ -150,7 +164,7 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
             block_size,
             fast_math,
             fn_ref,
-            def.return_ty,
+            def.return_ty.clone(),
             &scalar_sig,
             &array_sig,
             &buffer_sig,
@@ -183,7 +197,7 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
     array_types: &[(PrimitiveType, usize)],
     buffer_types: &[(PrimitiveType, TypedBufferChannels)],
     generic_type_args: &[PrimitiveType],
-) -> Result<(LLVMValueRef, LLVMTypeRef, PrimitiveType), Diagnostic> {
+) -> Result<(LLVMValueRef, LLVMTypeRef, ReturnType), Diagnostic> {
     let effective_sample_rate = effective_callee_sample_rate(registry, name, sample_rate);
     let def = registry
         .defs
@@ -218,7 +232,7 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
         registry.mono_tys.get(&key),
         registry.mono_return_tys.get(&key),
     ) {
-        return Ok((*fn_ref, *fn_ty, *ret_ty));
+        return Ok((*fn_ref, *fn_ty, ret_ty.clone()));
     }
 
     let ret_ty = infer_specialized_def_return_type(
@@ -266,6 +280,15 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                             }
                         }
                         TypedFieldType::Struct => {}
+                        TypedFieldType::Tuple(ref elem_tys) => {
+                            for (_, prim) in elem_tys.iter().enumerate() {
+                                if by_ref_flags[param_idx] {
+                                    arg_tys.push(float_ptr_ty);
+                                } else {
+                                    arg_tys.push(llvm_ty_for_primitive(context, *prim));
+                                }
+                            }
+                        }
                         TypedFieldType::Array(len) => {
                             if let Some(elem_struct) = &field.array_elem_struct {
                                 let mut roots = Vec::new();
@@ -306,10 +329,15 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                 arg_tys.push(i32_ty);
                 arg_tys.push(LLVMFloatTypeInContext(context));
             }
+            TypedFnParam::Tuple { elem_tys } => {
+                for ty in elem_tys {
+                    arg_tys.push(llvm_ty_for_primitive(context, *ty));
+                }
+            }
         }
     }
 
-    let ret_llvm_ty = llvm_ty_for_primitive(context, ret_ty);
+    let ret_llvm_ty = llvm_ty_for_return_type(context, &ret_ty);
     let fn_ty = LLVMFunctionType(ret_llvm_ty, arg_tys.as_mut_ptr(), arg_tys.len() as u32, 0);
     let symbol = mangle_user_fn_symbol_mono(
         name,
@@ -333,7 +361,7 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
 
     registry.mono_refs.insert(key.clone(), fn_ref);
     registry.mono_tys.insert(key.clone(), fn_ty);
-    registry.mono_return_tys.insert(key.clone(), ret_ty);
+    registry.mono_return_tys.insert(key.clone(), ret_ty.clone());
     if registry.in_progress.insert(key.clone()) {
         lower_user_function_body(
             &def,
@@ -345,7 +373,7 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
             block_size,
             fast_math,
             fn_ref,
-            ret_ty,
+            ret_ty.clone(),
             scalar_types,
             array_types,
             buffer_types,

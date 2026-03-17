@@ -30,10 +30,12 @@ pub(super) fn parse_init_default_decl_type(
     let ty = parse_section_default_decl_type(pair, "init")?;
     match ty {
         DeclType::Scalar(_) | DeclType::Generic(_) => Ok(ty),
-        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => Err(vec![syntax_at_loc(
-            loc.as_ref(),
-            "init section default type must be a scalar primitive or generic type",
-        )]),
+        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
+            Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                "init section default type must be a scalar primitive or generic type",
+            )])
+        }
     }
 }
 
@@ -46,7 +48,7 @@ pub(super) fn parse_section_default_buffer_type(
     let elem = match decl_ty {
         DeclType::Scalar(prim) => BufferElemType::Primitive(prim),
         DeclType::Generic(param) => BufferElemType::Generic(param),
-        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } => {
+        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
             return Err(vec![syntax_at_loc(
                 loc.as_ref(),
                 format!(
@@ -156,6 +158,14 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
                 )]),
             }
         }
+        Rule::tuple_type => {
+            let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::type_name)
+                .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                .collect();
+            Ok(DeclType::Tuple(elems?))
+        }
         _ => Err(vec![syntax_at_pair(&pair, "unsupported declaration type")]),
     }
 }
@@ -219,6 +229,14 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
         }
         Rule::fn_untyped_array_param => FnParamType::Array(None),
         Rule::fn_bare_buffer => FnParamType::BareBuffer,
+        Rule::fn_tuple_param => {
+            let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = inner
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::type_name)
+                .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                .collect();
+            FnParamType::Tuple(elems?)
+        }
         Rule::buffer_type => FnParamType::Buffer(parse_buffer_type(inner)?),
         Rule::type_name => {
             FnParamType::Primitive(parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?)
@@ -476,6 +494,14 @@ pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Di
             Rule::array_type => {
                 return Ok(FieldType::Array(parse_array_type_spec(child)?));
             }
+            Rule::tuple_type => {
+                let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = child
+                    .into_inner()
+                    .filter(|p| p.as_rule() == Rule::type_name)
+                    .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                    .collect();
+                return Ok(FieldType::Tuple(elems?));
+            }
             _ => {}
         }
     }
@@ -555,6 +581,14 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
                 base: base_pair.as_str().to_owned(),
                 index: parse_expr(index_pair)?,
             })
+        }
+        Rule::tuple_target => {
+            let targets: Vec<String> = pair
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::ident)
+                .map(|p| p.as_str().to_owned())
+                .collect();
+            Ok(AssignTarget::Tuple(targets))
         }
         Rule::assign_target => {
             let loc = stmt_loc_from_pair(&pair);

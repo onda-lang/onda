@@ -112,7 +112,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             substitute_call_type_args_with_bindings_expr(inner, bindings, context, errors);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 substitute_call_type_args_with_bindings_expr(value, bindings, context, errors);
             }
@@ -187,7 +187,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
                         );
                     }
                 }
-                AssignTarget::Var(_) => {}
+                AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
             }
             substitute_call_type_args_with_bindings_expr(expr, bindings, context, errors);
         }
@@ -285,6 +285,7 @@ pub(crate) fn specialize_generic_struct_template(
                 None => FnParamType::ArrayGeneric(name.clone()),
             },
             FnParamType::BareBuffer => FnParamType::BareBuffer,
+            FnParamType::Tuple(elems) => FnParamType::Tuple(elems.clone()),
         }
     };
 
@@ -327,7 +328,7 @@ pub(crate) fn specialize_generic_struct_template(
                             )? {
                                 FieldType::Scalar(bound) => ArrayElemType::Primitive(bound),
                                 FieldType::Generic(name) => ArrayElemType::Struct(name),
-                                FieldType::Array(_) => unreachable!(),
+                                FieldType::Array(_) | FieldType::Tuple(_) => unreachable!(),
                             }
                         }
                     };
@@ -337,6 +338,7 @@ pub(crate) fn specialize_generic_struct_template(
                     })
                 }
             }
+            FieldType::Tuple(elem_tys) => FieldType::Tuple(elem_tys.clone()),
         };
         fields.push(StructField {
             loc: field.loc.clone(),
@@ -420,7 +422,7 @@ pub(crate) fn add_decl_type_to_generic_inference_locals(
                 .entry(name.to_owned())
                 .or_insert(*elem);
         }
-        Some(DeclType::Generic(_)) | Some(DeclType::ArrayGeneric { .. }) => {}
+        Some(DeclType::Generic(_)) | Some(DeclType::ArrayGeneric { .. }) | Some(DeclType::Tuple(_)) => {}
         None => {
             locals
                 .scalar_types
@@ -529,6 +531,7 @@ pub(crate) fn update_generic_inference_locals_from_assign(
                 locals.array_elem_types.insert(base.clone(), elem_ty);
             }
         }
+        AssignTarget::Tuple(_) => {}
     }
 }
 
@@ -730,7 +733,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_generic_struct_ctor_expr(inner, templates, generated, errors, locals);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_generic_struct_ctor_expr(value, templates, generated, errors, locals);
             }
@@ -1143,7 +1146,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
                         );
                     }
                 }
-                DeclType::Scalar(_) | DeclType::Array { .. } => {}
+                DeclType::Scalar(_) | DeclType::Array { .. } | DeclType::Tuple(_) => {}
             }
         }
     }
@@ -1184,7 +1187,7 @@ pub(crate) fn finalize_generated_generic_struct_specializations(
                             nested_specializations.push(name.clone());
                         }
                     }
-                    FieldType::Scalar(_) => {}
+                    FieldType::Scalar(_) | FieldType::Tuple(_) => {}
                 }
             }
             for nested_name in nested_specializations {
@@ -1250,7 +1253,7 @@ fn rewrite_generic_struct_field_type(
     errors: &mut Vec<Diagnostic>,
 ) {
     match ty {
-        FieldType::Scalar(_) => {}
+        FieldType::Scalar(_) | FieldType::Tuple(_) => {}
         FieldType::Generic(name) => {
             if let Some(specialized) =
                 specialize_explicit_struct_type_name(name, templates, generated, diag, errors)

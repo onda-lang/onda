@@ -1179,6 +1179,16 @@ pub(super) fn expand_proc_param_specs(
                     slots,
                 });
             }
+            Some(DeclType::Tuple(_)) => {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "processor '{proc_name}' param '{}' tuple type is not supported",
+                        param.name
+                    ),
+                    param.ty_loc.or(param.loc),
+                ));
+                continue;
+            }
             Some(DeclType::Array { elem, size }) => {
                 if param.range.is_some() {
                     errors.push(Diagnostic::semantic_span(
@@ -1327,7 +1337,7 @@ pub(super) fn rewrite_proc_calls_in_expr(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             rewrite_proc_calls_in_expr(inner, proc_vars, proc_array_slots, proc_api, errors);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_proc_calls_in_expr(value, proc_vars, proc_array_slots, proc_api, errors);
             }
@@ -1874,7 +1884,7 @@ pub(super) fn normalize_proc_output_aliases_in_expr(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             normalize_proc_output_aliases_in_expr(inner, proc_vars, proc_api);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 normalize_proc_output_aliases_in_expr(value, proc_vars, proc_api);
             }
@@ -1901,6 +1911,11 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
             }
             if let Some(end) = end {
                 normalize_proc_output_aliases_in_expr(end, proc_vars, proc_api);
+            }
+        }
+        AssignTarget::Tuple(names) => {
+            for name in names {
+                normalize_proc_output_alias_path(name, proc_vars, proc_api);
             }
         }
     }
@@ -1970,6 +1985,7 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
         AssignTarget::Var(name) => split_dot_path(name),
         AssignTarget::Index { base, .. } => split_dot_path(base),
         AssignTarget::Slice { base, .. } => split_dot_path(base),
+        AssignTarget::Tuple(_) => None,
     }) else {
         return;
     };
@@ -2397,7 +2413,7 @@ pub(super) fn collect_called_proc_instances_in_expr(
         | Expr::UnaryBitNot { expr: inner, .. } => {
             collect_called_proc_instances_in_expr(inner, proc_vars, proc_array_slots, out);
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 collect_called_proc_instances_in_expr(value, proc_vars, proc_array_slots, out);
             }
@@ -2708,7 +2724,7 @@ pub(super) fn desugar_expr_instance_method_calls(
             current_ns,
             callable_symbols,
         ),
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 desugar_expr_instance_method_calls(
                     value,

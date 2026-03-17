@@ -249,6 +249,21 @@ where
                 );
             }
             TypedFieldType::Struct => {}
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    let elem_flat = format!("{flat}.__{idx}");
+                    let (ptr, ty) = lookup_scalar_ptr(&elem_flat)?;
+                    push_scalar_struct_arg(
+                        builder,
+                        context,
+                        out_args,
+                        ptr,
+                        ty,
+                        by_ref,
+                        load_name.as_slice(),
+                    );
+                }
+            }
             TypedFieldType::Array(_) => {
                 if let Some(elem_struct) = &field.array_elem_struct {
                     let root_len = lookup_struct_array_len(&flat)?;
@@ -313,6 +328,26 @@ where
                 );
             }
             TypedFieldType::Struct => {}
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    let elem_flat = format!("{flat}.__{idx}");
+                    let ptr = load_ptr_at_index(
+                        &elem_flat,
+                        *prim,
+                        clamped_index,
+                        scalar_ptr_name.as_slice(),
+                    )?;
+                    push_scalar_struct_arg(
+                        builder,
+                        context,
+                        out_args,
+                        ptr,
+                        *prim,
+                        by_ref,
+                        scalar_load_name.as_slice(),
+                    );
+                }
+            }
             TypedFieldType::Array(field_len) => {
                 let start_idx =
                     build_data_segment_start_index(builder, i32_ty, clamped_index, field_len)?;
@@ -355,6 +390,7 @@ pub(in crate::orc_backend) unsafe fn lower_struct_call_args_in_orc(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<(), Diagnostic> {
     match arg_expr {
         Expr::Var { name: base, .. } => {
@@ -413,6 +449,7 @@ pub(in crate::orc_backend) unsafe fn lower_struct_call_args_in_orc(
                         locals,
                         local_aliases,
                         local_array_aliases,
+                        local_tuples,
                     )
                 },
             )?

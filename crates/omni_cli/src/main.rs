@@ -2442,6 +2442,7 @@ fn format_assign_target(target: &AssignTarget) -> String {
                 .map(|expr| format_expr(expr))
                 .unwrap_or_default()
         ),
+        AssignTarget::Tuple(names) => format!("({})", names.join(", ")),
     }
 }
 
@@ -2591,6 +2592,14 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             my_prec,
             parent_prec,
         ),
+        Expr::Tuple { values, .. } => format!(
+            "({})",
+            values
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -2662,6 +2671,14 @@ fn format_decl_type(ty: &DeclType) -> String {
         DeclType::Array { elem, size } => {
             format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
         }
+        DeclType::Tuple(elems) => format!(
+            "({})",
+            elems
+                .iter()
+                .map(|t| primitive_type_name(*t).to_owned())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -2670,6 +2687,10 @@ fn format_field_type(ty: &FieldType) -> String {
         FieldType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
         FieldType::Generic(name) => name.clone(),
         FieldType::Array(spec) => format_array_type_spec(spec),
+        FieldType::Tuple(elem_tys) => {
+            let elems: Vec<String> = elem_tys.iter().map(|ty| primitive_type_name(*ty).to_owned()).collect();
+            format!("({})", elems.join(", "))
+        }
     }
 }
 
@@ -2690,6 +2711,10 @@ fn format_fn_param_type(ty: &omni_frontend::FnParamType) -> String {
         omni_frontend::FnParamType::Array(None) => "[]".to_owned(),
         omni_frontend::FnParamType::ArrayGeneric(name) => format!("{name}[]"),
         omni_frontend::FnParamType::BareBuffer => "buffer".to_owned(),
+        omni_frontend::FnParamType::Tuple(elems) => {
+            let inner = elems.iter().map(|p| primitive_type_name(*p)).collect::<Vec<_>>().join(", ");
+            format!("({inner})")
+        }
     }
 }
 

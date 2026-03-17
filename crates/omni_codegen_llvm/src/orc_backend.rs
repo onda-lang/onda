@@ -27,9 +27,9 @@ use omni_frontend::{
 };
 use omni_semantics::{
     internal_names::{PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_EXPR_ARG},
-    ProcSincStageStateFields, ProcStepOversampleMeta, TypedArrayInfo, TypedBufferChannels,
-    TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction, TypedProgram,
-    TypedStructField,
+    ProcSincStageStateFields, ProcStepOversampleMeta, ReturnType, TypedArrayInfo,
+    TypedBufferChannels, TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction,
+    TypedProgram, TypedStructField,
 };
 
 use crate::primitives::primitive_type_bytes;

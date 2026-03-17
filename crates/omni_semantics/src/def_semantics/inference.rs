@@ -314,6 +314,15 @@ pub(crate) fn infer_def_param_kinds(
                 || inferred_kind.saw_call_buffer
                 || (inferred_kind.saw_seeded_buffer && !has_struct_usage);
 
+            // Handle explicitly typed tuple params (e.g. `(f32, i32)`)
+            if let Some(FnParamType::Tuple(elem_tys)) =
+                def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                typed.push(TypedFnParam::Tuple {
+                    elem_tys: elem_tys.clone(),
+                });
+                continue;
+            }
             // Handle explicitly typed array params (e.g. `f32[]`)
             if let Some(FnParamType::Array(Some(prim))) =
                 def.params.get(idx).and_then(|p| p.ty.as_ref())
@@ -637,7 +646,7 @@ fn collect_expr_indexable_param_usage(
         | Expr::Bool { .. }
         | Expr::Var { .. }
         | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 collect_expr_indexable_param_usage(value, param_index, kinds);
             }
@@ -885,7 +894,7 @@ fn propagate_expr_callee_buffer_requirements_to_params(
         | Expr::Bool { .. }
         | Expr::Var { .. }
         | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 propagate_expr_callee_buffer_requirements_to_params(
                     value,
@@ -1266,6 +1275,23 @@ fn collect_stmt_field_usage(
                         );
                     }
                 }
+                AssignTarget::Tuple(names) => {
+                    for name in names {
+                        if let Some((base, field)) = split_simple_field_path(name) {
+                            if let Some(param_idx) = param_index.get(base).copied() {
+                                mark_param_field_usage(
+                                    usage,
+                                    param_idx,
+                                    field,
+                                    StructFieldUsage::Scalar,
+                                    fn_name,
+                                    base,
+                                    errors,
+                                );
+                            }
+                        }
+                    }
+                }
             }
             collect_expr_field_usage(
                 expr,
@@ -1411,7 +1437,7 @@ fn collect_expr_field_usage(
 ) {
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 collect_expr_field_usage(
                     value,
@@ -1661,10 +1687,10 @@ fn build_structural_param_fields(
 
             let (candidate, candidate_data_elem_ty, candidate_data_elem_struct) = match (
                 required_kind,
-                found.ty,
+                &found.ty,
             ) {
                 (StructFieldUsage::Scalar, TypedFieldType::Scalar(prim)) => {
-                    (TypedFieldType::Scalar(prim), None, None)
+                    (TypedFieldType::Scalar(*prim), None, None)
                 }
                 (StructFieldUsage::Scalar, TypedFieldType::Array(_)) => {
                     push_semantic(
@@ -1678,7 +1704,7 @@ fn build_structural_param_fields(
                     continue;
                 }
                 (StructFieldUsage::Array, TypedFieldType::Array(len)) => (
-                    TypedFieldType::Array(len),
+                    TypedFieldType::Array(*len),
                     found.array_elem_ty,
                     found.array_elem_struct.clone(),
                 ),
@@ -1704,12 +1730,23 @@ fn build_structural_param_fields(
                     );
                     continue;
                 }
+                (_, TypedFieldType::Tuple(_)) => {
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' uses '{}.{}' directly but struct '{}' defines it as tuple",
+                            fn_name, param_name, param_name, field_name, struct_name
+                        ),
+                    );
+                    continue;
+                }
             };
 
-            if let Some(existing) = resolved_ty {
+            if let Some(existing) = &resolved_ty {
                 let existing_data_elem_ty = resolved_data_elem_ty.flatten();
                 let existing_data_elem_struct = resolved_data_elem_struct.clone().unwrap_or(None);
-                if existing != candidate
+                if *existing != candidate
                     || existing_data_elem_ty != candidate_data_elem_ty
                     || existing_data_elem_struct != candidate_data_elem_struct
                 {
@@ -1905,6 +1942,11 @@ fn infer_untyped_array_from_observations(
 pub(crate) fn validate_default_expr(expr: &Expr, errors: &mut Vec<Diagnostic>, context: &str) {
     with_expr_diag_context(expr, |expr_diag| match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+        Expr::Tuple { values, .. } => {
+            for value in values {
+                validate_default_expr(value, errors, context);
+            }
+        }
         Expr::ArrayLiteral { values, .. } => {
             for value in values {
                 validate_default_expr(value, errors, context);

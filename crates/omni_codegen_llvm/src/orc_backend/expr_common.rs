@@ -197,9 +197,10 @@ pub(super) struct PreparedUserCall<'a> {
     pub(super) resolved: Vec<Option<&'a Expr>>,
     pub(super) scalar_values: Vec<OrcValue>,
     pub(super) scalar_types: Vec<PrimitiveType>,
+    pub(super) tuple_arg_values: Vec<Vec<OrcValue>>,
     pub(super) fn_ref: LLVMValueRef,
     pub(super) fn_ty: LLVMTypeRef,
-    pub(super) ret_ty: PrimitiveType,
+    pub(super) ret_ty: ReturnType,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -270,6 +271,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
     let mut scalar_types = Vec::<PrimitiveType>::new();
     let mut array_types = Vec::<(PrimitiveType, usize)>::new();
     let mut buffer_types = Vec::<(PrimitiveType, TypedBufferChannels)>::new();
+    let mut tuple_arg_values = Vec::<Vec<OrcValue>>::new();
     for (idx, kind) in param_kinds.iter().enumerate() {
         let resolved_arg = resolved.get(idx).copied().flatten();
         match kind {
@@ -321,6 +323,53 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                 buffer_types.push(resolved_ty);
             }
             TypedFnParam::Struct { .. } => {}
+            TypedFnParam::Tuple { elem_tys } => {
+                // Tuple params expand to N individual scalar LLVM params.
+                // Lower each element of the tuple argument individually.
+                let arg_expr = resolved_arg.ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "function '{name}' missing required tuple argument '{}' in {call_context}",
+                        param_names[idx]
+                    ))
+                })?;
+                let mut elem_vals = Vec::new();
+                match arg_expr {
+                    Expr::Tuple { values, .. } => {
+                        if values.len() != elem_tys.len() {
+                            return Err(Diagnostic::internal(format!(
+                                "function '{name}' tuple argument arity mismatch: expected {}, got {} in {call_context}",
+                                elem_tys.len(), values.len()
+                            )));
+                        }
+                        for val_expr in values.iter() {
+                            let val = lower_scalar_expr(val_expr)?;
+                            elem_vals.push(val);
+                        }
+                    }
+                    Expr::Var { name: var_name, loc } => {
+                        // Tuple variable — extract each element via synthetic index exprs
+                        for i in 0..elem_tys.len() {
+                            let index_expr = Expr::Index {
+                                base: var_name.clone(),
+                                index: Box::new(Expr::Int {
+                                    value: i as i64,
+                                    loc: *loc,
+                                }),
+                                loc: *loc,
+                            };
+                            let val = lower_scalar_expr(&index_expr)?;
+                            elem_vals.push(val);
+                        }
+                    }
+                    _ => {
+                        return Err(Diagnostic::internal(format!(
+                            "tuple parameter '{}' requires a tuple literal or variable in {call_context}",
+                            param_names[idx]
+                        )));
+                    }
+                }
+                tuple_arg_values.push(elem_vals);
+            }
         }
     }
 
@@ -356,6 +405,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
         resolved,
         scalar_values,
         scalar_types,
+        tuple_arg_values,
         fn_ref,
         fn_ty,
         ret_ty,
@@ -386,6 +436,7 @@ pub(super) unsafe fn materialize_user_call_args_common(
     }
 
     let mut scalar_idx = 0usize;
+    let mut tuple_idx = 0usize;
     for (idx, kind) in prepared.param_kinds.iter().enumerate() {
         let resolved_arg = prepared.resolved.get(idx).copied().flatten();
         match kind {
@@ -435,6 +486,21 @@ pub(super) unsafe fn materialize_user_call_args_common(
                     ))
                 })?;
                 lower_buffer_arg(arg_values, arg_expr)?;
+            }
+            TypedFnParam::Tuple { ref elem_tys } => {
+                // Tuple elements were lowered in prepare_user_call_common.
+                // Emit them as individual cast args.
+                if tuple_idx >= prepared.tuple_arg_values.len() {
+                    return Err(Diagnostic::internal(format!(
+                        "function '{callee_name}' tuple argument index out of range in {call_context}"
+                    )));
+                }
+                let elem_vals = &prepared.tuple_arg_values[tuple_idx];
+                tuple_idx += 1;
+                for (val, target_ty) in elem_vals.iter().zip(elem_tys.iter()) {
+                    let cast = cast_scalar_arg(*val, *target_ty, scalar_arg_name);
+                    arg_values.push(cast);
+                }
             }
         }
     }

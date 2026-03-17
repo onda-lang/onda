@@ -81,6 +81,7 @@ pub struct TypedProgram {
     pub block_post: Vec<Stmt>,
     pub state_vars: Vec<String>,
     pub state_types: Vec<PrimitiveType>,
+    pub state_tuples: HashMap<String, Vec<PrimitiveType>>,
     pub array_vars: Vec<TypedArrayVar>,
     pub array_struct_roots: Vec<TypedArrayStructRoot>,
     pub ins_explicit: bool,
@@ -166,11 +167,36 @@ pub struct TypedStructField {
     pub array_elem_struct: Option<String>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TypedFieldType {
     Scalar(PrimitiveType),
     Struct,
     Array(usize),
+    Tuple(Vec<PrimitiveType>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReturnType {
+    Scalar(PrimitiveType),
+    Tuple(Vec<PrimitiveType>),
+}
+
+impl ReturnType {
+    /// Returns the scalar type, panicking if this is a tuple.
+    pub fn as_scalar(&self) -> PrimitiveType {
+        match self {
+            ReturnType::Scalar(ty) => *ty,
+            ReturnType::Tuple(_) => panic!("expected scalar return type, got tuple"),
+        }
+    }
+
+    /// Returns the scalar type if this is a scalar return.
+    pub fn scalar(&self) -> Option<PrimitiveType> {
+        match self {
+            ReturnType::Scalar(ty) => Some(*ty),
+            ReturnType::Tuple(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -181,7 +207,7 @@ pub struct TypedFunction {
     pub params: Vec<String>,
     pub param_defaults: Vec<Option<Expr>>,
     pub param_kinds: Vec<TypedFnParam>,
-    pub return_ty: PrimitiveType,
+    pub return_ty: ReturnType,
     pub body: Vec<Stmt>,
 }
 
@@ -199,6 +225,9 @@ pub enum TypedFnParam {
     Buffer {
         elem_ty: PrimitiveType,
         channels: TypedBufferChannels,
+    },
+    Tuple {
+        elem_tys: Vec<PrimitiveType>,
     },
 }
 

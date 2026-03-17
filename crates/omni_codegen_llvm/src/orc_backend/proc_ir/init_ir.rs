@@ -120,6 +120,7 @@ pub(in crate::orc_backend) unsafe fn build_init_ir(
         let mut locals = HashMap::new();
         let mut local_aliases = HashMap::new();
         let mut local_array_aliases = HashMap::new();
+        let mut local_tuples = HashMap::new();
         for stmt in &typed.init {
             lower_stmt(
                 stmt,
@@ -127,6 +128,7 @@ pub(in crate::orc_backend) unsafe fn build_init_ir(
                 &mut locals,
                 &mut local_aliases,
                 &mut local_array_aliases,
+                &mut local_tuples,
             )?;
         }
 

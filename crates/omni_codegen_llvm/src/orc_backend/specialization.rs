@@ -104,6 +104,7 @@ pub(super) fn default_scalar_signature(def: &TypedFunction) -> Vec<PrimitiveType
             TypedFnParam::Struct { .. } => None,
             TypedFnParam::Array { .. } => None,
             TypedFnParam::Buffer { .. } => None,
+            TypedFnParam::Tuple { .. } => None,
         })
         .collect::<Vec<_>>()
 }
@@ -124,7 +125,7 @@ pub(super) fn count_param_kinds(param_kinds: &[TypedFnParam]) -> (usize, usize, 
             TypedFnParam::Scalar { .. } => scalar += 1,
             TypedFnParam::Array { .. } => array += 1,
             TypedFnParam::Buffer { .. } => buffer += 1,
-            TypedFnParam::Struct { .. } => {}
+            TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
         }
     }
     (scalar, array, buffer)
@@ -298,6 +299,11 @@ pub(super) fn collect_array_struct_bindings(
         match field.ty {
             TypedFieldType::Scalar(prim) => leaves.push((flat, len, prim)),
             TypedFieldType::Struct => {}
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    leaves.push((format!("{flat}.__{idx}"), len, *prim));
+                }
+            }
             TypedFieldType::Array(field_len) => {
                 let nested_len = len.saturating_mul(field_len);
                 if let Some(elem_struct) = &field.array_elem_struct {
@@ -365,7 +371,7 @@ pub(super) fn infer_specialized_expr_return_type(
             PrimitiveType::I64
         }),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } | Expr::Slice { .. } => None,
+        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } | Expr::Slice { .. } | Expr::Tuple { .. } => None,
         Expr::Var { name, .. } => {
             builtin_constant_symbol_type(name).or_else(|| locals.get(name).copied())
         }
@@ -508,7 +514,7 @@ pub(super) fn infer_specialized_expr_return_type(
                     TypedFnParam::Buffer { elem_ty, channels } => {
                         buffer_types.push((*elem_ty, channels.clone()));
                     }
-                    TypedFnParam::Struct { .. } => {}
+                    TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
                 }
             }
             let explicit_type_args = resolve_explicit_call_type_args_for_codegen(
@@ -523,23 +529,109 @@ pub(super) fn infer_specialized_expr_return_type(
                 &mut scalar_types,
                 "return type inference",
             )?;
-            Some(infer_specialized_def_return_type(
+            match infer_specialized_def_return_type(
                 name,
                 &scalar_types,
                 &array_types,
                 &buffer_types,
                 &explicit_type_args,
                 registry,
-            )?)
+            )? {
+                ReturnType::Scalar(ty) => Some(ty),
+                ReturnType::Tuple(_) => None, // tuple returns are not scalar
+            }
         }
     })
+}
+
+/// Infer the full ReturnType for a user call (may be scalar or tuple).
+fn infer_user_call_return_type(
+    name: &str,
+    type_args: &[CallTypeArg],
+    args: &[CallArg],
+    locals: &HashMap<String, PrimitiveType>,
+    registry: &mut UserFnRegistry,
+) -> Result<ReturnType, Diagnostic> {
+    let Some(param_names) = registry.param_names.get(name).cloned() else {
+        return Ok(ReturnType::Scalar(PrimitiveType::F32));
+    };
+    let Some(param_defaults) = registry.param_defaults.get(name).cloned() else {
+        return Ok(ReturnType::Scalar(PrimitiveType::F32));
+    };
+    let Some(param_kinds) = registry.param_kinds.get(name).cloned() else {
+        return Ok(ReturnType::Scalar(PrimitiveType::F32));
+    };
+    let forbid_self_named = param_names.first().map(String::as_str) == Some("self");
+    let resolved = resolve_call_args_codegen(
+        args,
+        &param_names,
+        &param_defaults,
+        forbid_self_named,
+        &format!("function '{name}' call in return type inference"),
+    )
+    .unwrap_or_else(|_| vec![None; param_names.len()]);
+    let mut scalar_types = Vec::<PrimitiveType>::new();
+    let mut array_types = Vec::<(PrimitiveType, usize)>::new();
+    let mut buffer_types = Vec::<(PrimitiveType, TypedBufferChannels)>::new();
+    for (idx, kind) in param_kinds.iter().enumerate() {
+        match kind {
+            TypedFnParam::Scalar { ty: explicit_ty } => {
+                let resolved_arg = resolved.get(idx).copied().flatten();
+                let fallback_ty = if let Some(arg_expr) = resolved_arg {
+                    infer_specialized_expr_return_type(arg_expr, locals, registry)?
+                        .unwrap_or(PrimitiveType::F32)
+                } else if let Some(default_expr) =
+                    param_defaults.get(idx).and_then(|d| d.as_ref())
+                {
+                    infer_specialized_expr_return_type(default_expr, locals, registry)?
+                        .unwrap_or(PrimitiveType::F32)
+                } else {
+                    PrimitiveType::F32
+                };
+                scalar_types.push(resolve_scalar_param_type(*explicit_ty, fallback_ty));
+            }
+            TypedFnParam::Array { elem_ty } => {
+                let resolved_arg = resolved.get(idx).copied().flatten();
+                let arg_sig = if let Some(Expr::Var { name: base, .. }) = resolved_arg {
+                    (locals.get(base.as_str()).copied().unwrap_or(*elem_ty), 1)
+                } else {
+                    (*elem_ty, 1)
+                };
+                array_types.push(arg_sig);
+            }
+            TypedFnParam::Buffer { elem_ty, channels } => {
+                buffer_types.push((*elem_ty, channels.clone()));
+            }
+            TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
+        }
+    }
+    let explicit_type_args = resolve_explicit_call_type_args_for_codegen(
+        name,
+        "return type inference",
+        type_args,
+    )?;
+    apply_explicit_generic_type_args_for_call(
+        registry,
+        name,
+        &explicit_type_args,
+        &mut scalar_types,
+        "return type inference",
+    )?;
+    infer_specialized_def_return_type(
+        name,
+        &scalar_types,
+        &array_types,
+        &buffer_types,
+        &explicit_type_args,
+        registry,
+    )
 }
 
 pub(super) fn infer_specialized_stmt_returns(
     stmts: &[Stmt],
     locals: &mut HashMap<String, PrimitiveType>,
     registry: &mut UserFnRegistry,
-    out: &mut Vec<PrimitiveType>,
+    out: &mut Vec<ReturnType>,
 ) -> Result<(), Diagnostic> {
     for stmt in stmts {
         match stmt {
@@ -568,11 +660,36 @@ pub(super) fn infer_specialized_stmt_returns(
                 target: AssignTarget::Slice { .. },
                 ..
             }
+            | Stmt::Assign {
+                target: AssignTarget::Tuple(_),
+                ..
+            }
             | Stmt::Expr { .. } => {}
             Stmt::Return { expr, .. } => {
-                let ty = infer_specialized_expr_return_type(expr, locals, registry)?
-                    .unwrap_or(PrimitiveType::F32);
-                out.push(ty);
+                if let Expr::Tuple { values, .. } = expr {
+                    let elem_tys: Result<Vec<PrimitiveType>, Diagnostic> = values
+                        .iter()
+                        .map(|v| {
+                            Ok(infer_specialized_expr_return_type(v, locals, registry)?
+                                .unwrap_or(PrimitiveType::F32))
+                        })
+                        .collect();
+                    out.push(ReturnType::Tuple(elem_tys?));
+                } else if let Expr::UserCall { name, type_args, args, .. } = expr {
+                    // Check if the call returns a tuple
+                    let ret_ty = infer_user_call_return_type(name, type_args, args, locals, registry)?;
+                    out.push(ret_ty);
+                } else if let Expr::Var { name, .. } = expr {
+                    // Check if variable is a known tuple (from tuple_locals tracking)
+                    // Fall back to scalar inference
+                    let ty = infer_specialized_expr_return_type(expr, locals, registry)?
+                        .unwrap_or(PrimitiveType::F32);
+                    out.push(ReturnType::Scalar(ty));
+                } else {
+                    let ty = infer_specialized_expr_return_type(expr, locals, registry)?
+                        .unwrap_or(PrimitiveType::F32);
+                    out.push(ReturnType::Scalar(ty));
+                }
             }
             Stmt::If {
                 then_branch,
@@ -608,6 +725,23 @@ pub(super) fn infer_specialized_stmt_returns(
     Ok(())
 }
 
+fn merge_specialized_return_types(a: ReturnType, b: ReturnType) -> Option<ReturnType> {
+    match (&a, &b) {
+        (ReturnType::Scalar(s1), ReturnType::Scalar(s2)) => {
+            merge_inferred_def_return_types(*s1, *s2).map(ReturnType::Scalar)
+        }
+        (ReturnType::Tuple(t1), ReturnType::Tuple(t2)) if t1.len() == t2.len() => {
+            let merged: Option<Vec<PrimitiveType>> = t1
+                .iter()
+                .zip(t2.iter())
+                .map(|(a, b)| merge_inferred_def_return_types(*a, *b))
+                .collect();
+            merged.map(ReturnType::Tuple)
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn infer_specialized_def_return_type(
     name: &str,
     scalar_types: &[PrimitiveType],
@@ -615,7 +749,7 @@ pub(super) fn infer_specialized_def_return_type(
     buffer_types: &[(PrimitiveType, TypedBufferChannels)],
     generic_type_args: &[PrimitiveType],
     registry: &mut UserFnRegistry,
-) -> Result<PrimitiveType, Diagnostic> {
+) -> Result<ReturnType, Diagnostic> {
     let key = user_fn_mono_key(
         name,
         scalar_types,
@@ -623,18 +757,18 @@ pub(super) fn infer_specialized_def_return_type(
         buffer_types,
         generic_type_args,
     );
-    if let Some(ret_ty) = registry.mono_return_tys.get(&key).copied() {
+    if let Some(ret_ty) = registry.mono_return_tys.get(&key).cloned() {
         return Ok(ret_ty);
     }
     if !registry.return_in_progress.insert(key.clone()) {
         return Ok(registry
             .base_return_tys
             .get(name)
-            .copied()
-            .unwrap_or(PrimitiveType::F32));
+            .cloned()
+            .unwrap_or(ReturnType::Scalar(PrimitiveType::F32)));
     }
 
-    let out = (|| -> Result<PrimitiveType, Diagnostic> {
+    let out = (|| -> Result<ReturnType, Diagnostic> {
         let def = registry
             .defs
             .get(name)
@@ -666,23 +800,23 @@ pub(super) fn infer_specialized_def_return_type(
                     array_idx += 1;
                     locals.insert(param_name.clone(), param_ty);
                 }
-                TypedFnParam::Struct { .. } | TypedFnParam::Buffer { .. } => {}
+                TypedFnParam::Struct { .. } | TypedFnParam::Buffer { .. } | TypedFnParam::Tuple { .. } => {}
             }
         }
 
-        let mut returns = Vec::<PrimitiveType>::new();
+        let mut returns = Vec::<ReturnType>::new();
         infer_specialized_stmt_returns(&def.body, &mut locals, registry, &mut returns)?;
         let mut it = returns.into_iter();
         let Some(mut ret_ty) = it.next() else {
             return Ok(registry
                 .base_return_tys
                 .get(name)
-                .copied()
-                .unwrap_or(PrimitiveType::F32));
+                .cloned()
+                .unwrap_or(ReturnType::Scalar(PrimitiveType::F32)));
         };
         for ty in it {
-            let Some(merged) = merge_inferred_def_return_types(ret_ty, ty) else {
-                return Ok(PrimitiveType::F32);
+            let Some(merged) = merge_specialized_return_types(ret_ty, ty) else {
+                return Ok(ReturnType::Scalar(PrimitiveType::F32));
             };
             ret_ty = merged;
         }
@@ -691,6 +825,6 @@ pub(super) fn infer_specialized_def_return_type(
 
     registry.return_in_progress.remove(&key);
     let ret_ty = out?;
-    registry.mono_return_tys.insert(key, ret_ty);
+    registry.mono_return_tys.insert(key, ret_ty.clone());
     Ok(ret_ty)
 }

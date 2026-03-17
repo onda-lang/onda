@@ -53,6 +53,7 @@ pub(crate) struct DefStmtAnalysisCtx<'a> {
     pub declared_symbols: &'a DeclaredSymbolMap,
     pub param_structs: &'a HashMap<String, String>,
     pub state_scalars: &'a HashMap<String, PrimitiveType>,
+    pub def_return_types: &'a HashMap<String, ReturnType>,
 }
 
 pub(crate) type DefStmtAnalysisState = ScopeFlowState;
@@ -69,6 +70,7 @@ pub(crate) fn analyze_def_stmt(
         let local_aliases = &mut st.local_aliases;
         let local_array_aliases = &mut st.local_array_aliases;
         let local_proc_aliases = &mut st.local_proc_aliases;
+        let tuple_vars = &mut st.tuple_vars;
         let common = ctx.common;
         let locals = ctx.locals;
         let declared_symbols = ctx.declared_symbols;
@@ -79,6 +81,7 @@ pub(crate) fn analyze_def_stmt(
         let param_names = common.param_names;
         let struct_defs = common.struct_defs;
         let fn_signatures = common.fn_signatures;
+        let def_return_types = ctx.def_return_types;
         let options = common.options;
         let empty_data = HashMap::<String, usize>::new();
         // In def analysis, struct-typed parameters (for example `self`) should be
@@ -96,14 +99,16 @@ pub(crate) fn analyze_def_stmt(
             &empty_outputs,
         );
         let stmt_expr_env = |scope| {
-            build_scope_stmt_expr_env(
+            let mut env = build_scope_stmt_expr_env(
                 expr_inputs,
                 known_scalars,
                 local_aliases,
                 local_array_aliases,
                 &array_vars,
                 scope,
-            )
+            );
+            env.expr_env.tuple_vars = tuple_vars;
+            env
         };
         match stmt {
             Stmt::Const { .. } => {}
@@ -587,6 +592,16 @@ pub(crate) fn analyze_def_stmt(
                                     ),
                                 );
                             }
+                            TypedFieldType::Tuple(_) => {
+                                push_semantic(
+                                    target_diag,
+                                    errors,
+                                    format!(
+                                        "tuple field '{}.{}' must be assigned via index syntax",
+                                        base, field
+                                    ),
+                                );
+                            }
                         }
                         return;
                     }
@@ -770,6 +785,24 @@ pub(crate) fn analyze_def_stmt(
                             &format!("def assignment to '{name}'"),
                             errors,
                         );
+                    }
+                    // Track tuple variables (assigned from tuple literal or
+                    // tuple-returning call) for indexing validation
+                    let tuple_arity = match expr {
+                        Expr::Tuple { values, .. } => Some(values.len()),
+                        Expr::UserCall { name: fn_name, .. } => {
+                            match def_return_types.get(fn_name) {
+                                Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
+                                _ => None,
+                            }
+                        }
+                        Expr::Var { name: var_name, .. } => {
+                            tuple_vars.get(var_name).copied()
+                        }
+                        _ => None,
+                    };
+                    if let Some(arity) = tuple_arity {
+                        tuple_vars.insert(name.clone(), arity);
                     }
                     if can_track_local {
                         local_aliases.entry(name.clone()).or_insert(target_ty);
@@ -975,12 +1008,15 @@ pub(crate) fn analyze_def_stmt(
                             );
                             return;
                         };
-                        if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
+                        if !matches!(
+                            field_decl.ty,
+                            TypedFieldType::Array(_) | TypedFieldType::Tuple(_)
+                        ) {
                             push_semantic(
                                 target_diag,
                                 errors,
                                 format!(
-                                    "field '{}.{}' is not array and cannot be indexed",
+                                    "field '{}.{}' is not array or tuple and cannot be indexed",
                                     root, field
                                 ),
                             );
@@ -1182,6 +1218,50 @@ pub(crate) fn analyze_def_stmt(
                         );
                     }
                 }
+                AssignTarget::Tuple(targets) => {
+                    // Validate the RHS expression
+                    let mut tuple_env = build_scope_stmt_expr_env(
+                        expr_inputs,
+                        known_scalars,
+                        local_aliases,
+                        local_array_aliases,
+                        &array_vars,
+                        ScopeKind::Def,
+                    );
+                    tuple_env.expr_env.tuple_vars = tuple_vars;
+                    analyze_stmt_expr(expr, tuple_env, errors);
+                    // Validate destructuring arity against the RHS tuple length
+                    let rhs_arity = match expr {
+                        Expr::Tuple { values, .. } => Some(values.len()),
+                        Expr::UserCall { name, .. } => {
+                            match def_return_types.get(name.as_str()) {
+                                Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(expected) = rhs_arity {
+                        if targets.len() != expected {
+                            errors.push(Diagnostic::semantic(
+                                format!(
+                                    "tuple destructuring has {} targets but the right-hand side has {} elements",
+                                    targets.len(),
+                                    expected,
+                                ),
+                                0,
+                                0,
+                            ));
+                        }
+                    }
+                    // Register each destructured target as a known scalar
+                    for target_name in targets {
+                        known_scalars.insert(target_name.clone());
+                        local_aliases
+                            .entry(target_name.clone())
+                            .or_insert(PrimitiveType::F32);
+                    }
+                }
             }),
             Stmt::Expr { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
@@ -1203,20 +1283,22 @@ pub(crate) fn analyze_def_stmt(
                     stmt_expr_env(ScopeKind::Def),
                     errors,
                 );
-                let mut then_state = fork_scope_flow_state(
+                let mut then_state = fork_scope_flow_state_with_tuples(
                     known_scalars,
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    tuple_vars,
                 );
                 for nested in then_branch {
                     analyze_def_stmt(nested, ctx, &mut then_state, loop_depth, errors);
                 }
-                let mut else_state = fork_scope_flow_state(
+                let mut else_state = fork_scope_flow_state_with_tuples(
                     known_scalars,
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    tuple_vars,
                 );
                 for nested in else_branch {
                     analyze_def_stmt(nested, ctx, &mut else_state, loop_depth, errors);
@@ -1253,11 +1335,12 @@ pub(crate) fn analyze_def_stmt(
                 validate_for_loop_step_expr(step.as_ref(), stmt_expr_env(ScopeKind::Def), errors);
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone());
-                let mut loop_state = fork_scope_flow_state(
+                let mut loop_state = fork_scope_flow_state_with_tuples(
                     known_scalars,
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    tuple_vars,
                 );
                 let loop_ctx = DefStmtAnalysisCtx {
                     locals: &loop_locals,
@@ -1281,11 +1364,12 @@ pub(crate) fn analyze_def_stmt(
                     stmt_expr_env(ScopeKind::Def),
                     errors,
                 );
-                let mut loop_state = fork_scope_flow_state(
+                let mut loop_state = fork_scope_flow_state_with_tuples(
                     known_scalars,
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    tuple_vars,
                 );
                 for nested in body {
                     analyze_def_stmt(nested, ctx, &mut loop_state, loop_depth + 1, errors);

@@ -199,7 +199,20 @@
     - untyped array params (`arr: []`) — monomorphized per call site by element type.
     - bare buffer params (`buf: buffer`) — monomorphized per call site by buffer type.
     - generic struct/proc params (`v: Voice` where `Voice<T>`) — monomorphized per call site by concrete specialization.
+    - tuple params (`p: (f32, i32)`) — explicit typed tuple parameter.
+    - inferred tuple params — untyped params (`def foo(p)`) called with a tuple literal are monomorphized per call site with inferred element types.
   - overload priority: explicit type > generic/duck-typed > untyped.
+  - tuple types are supported as anonymous fixed-length heterogeneous compound types:
+    - tuple literals: `(1.0, 2.0)`, `(1.0, 2, true)` — up to 16 elements.
+    - element access via integer-constant index: `pair[0]`, `triple[2]`.
+    - dynamic index and out-of-bounds index are compile-time errors.
+    - tuple destructuring: `(a, b) = (1.0, 2.0)`, `(x, y) = getTuple()`, `(a, b) = existingTuple`.
+    - tuple variables in state (`init`), `sample`, `block`, `def`, and event scopes.
+    - tuple-returning functions: `def makePair(): return (1.0, 2.0)`.
+    - tuple parameters: `def swap(p: (f32, f32)): return (p[1], p[0])`.
+    - tuple fields in structs: `struct Foo { pair: (f32, i32) }`.
+    - tuples use a flattened ABI: each element becomes an individual scalar LLVM parameter/return value.
+    - tuples in state are stored as flattened scalar fields (`name.__0`, `name.__1`, ...).
   - function and method call argument lists may span multiple lines, and a trailing comma is allowed.
 - Structs:
   - field defaults and methods supported.

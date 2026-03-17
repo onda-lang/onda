@@ -987,7 +987,7 @@ pub fn analyze_with_options(
                 Some(FnParamType::Array(Some(prim))) => {
                     def_env.array_elem_types.insert(param.name.clone(), *prim);
                 }
-                Some(FnParamType::ArrayGeneric(_)) => {}
+                Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::Tuple(_)) => {}
                 Some(FnParamType::Array(None)) | Some(FnParamType::BareBuffer) | None => {}
             }
             if let Some(default_expr) = &mut param.default {
@@ -1160,7 +1160,13 @@ pub fn analyze_with_options(
             })
             .collect();
 
-        if !mono_eligible.is_empty() {
+        // Also run mono pass when any def has untyped params that could be
+        // inferred as tuple from call-site tuple literal args.
+        let has_untyped_params = fn_signatures.values().any(|sig| {
+            sig.param_types.iter().any(|pt| pt.is_none())
+        });
+
+        if !mono_eligible.is_empty() || has_untyped_params {
             let mut generated_defs = Vec::<FunctionDef>::new();
             let mut generated_sigs = HashMap::<String, FnSignature>::new();
             let mut mono_cache =
@@ -1334,12 +1340,14 @@ pub fn analyze_with_options(
         DeclaredScalarSymbolKind::Param,
     );
     for (fn_name, ret_ty) in &def_return_types {
-        insert_declared_symbol(
-            &mut state_scalars,
-            &mut declared_symbols,
-            fn_name.clone(),
-            DeclaredSymbolInfo::FunctionReturn { ty: *ret_ty },
-        );
+        if let ReturnType::Scalar(scalar_ty) = ret_ty {
+            insert_declared_symbol(
+                &mut state_scalars,
+                &mut declared_symbols,
+                fn_name.clone(),
+                DeclaredSymbolInfo::FunctionReturn { ty: *scalar_ty },
+            );
+        }
     }
     for buffer in &typed_buffers {
         let channels = match buffer.channels {
@@ -1381,6 +1389,7 @@ pub fn analyze_with_options(
             param_names: &param_names,
             struct_defs: &struct_defs,
             fn_signatures: &fn_signatures,
+            fn_return_types: &def_return_types,
             options,
             port_index_ins: None,
             port_index_outs: None,
@@ -1398,6 +1407,7 @@ pub fn analyze_with_options(
         state_arrays,
         state_array_struct_roots,
         struct_instances,
+        state_tuples: HashMap::new(),
         state_array_specs: HashMap::new(),
         struct_instance_type_args: HashMap::new(),
         nested_procs: HashMap::new(),
@@ -1425,6 +1435,7 @@ pub fn analyze_with_options(
         state_array_struct_roots,
         struct_instances,
         nested_proc_arrays,
+        state_tuples,
         ..
     } = init_st;
     let init_writable_roots = collect_runtime_state_roots(&state_scalars, &state_arrays);
@@ -1473,6 +1484,7 @@ pub fn analyze_with_options(
             param_names: &param_names,
             struct_defs: &struct_defs,
             fn_signatures: &fn_signatures,
+            fn_return_types: &def_return_types,
             options,
             port_index_ins,
             port_index_outs,
@@ -1494,6 +1506,7 @@ pub fn analyze_with_options(
         LocalAliasTypes::new(),
         block_local_data_aliases,
         &block_forbidden_assigns,
+        &state_tuples,
         &mut errors,
     );
 
@@ -1515,6 +1528,7 @@ pub fn analyze_with_options(
             param_names: &param_names,
             struct_defs: &struct_defs,
             fn_signatures: &fn_signatures,
+            fn_return_types: &def_return_types,
             options,
             port_index_ins,
             port_index_outs,
@@ -1536,6 +1550,7 @@ pub fn analyze_with_options(
         LocalAliasTypes::new(),
         sample_local_data_aliases,
         &sample_forbidden_assigns,
+        &state_tuples,
         &mut errors,
     );
 
@@ -1571,6 +1586,7 @@ pub fn analyze_with_options(
             param_names: &param_names,
             struct_defs: &struct_defs,
             fn_signatures: &fn_signatures,
+            fn_return_types: &def_return_types,
             options,
             port_index_ins: None,
             port_index_outs: None,
@@ -1678,7 +1694,8 @@ pub fn analyze_with_options(
                     | FnParamType::Buffer(_)
                     | FnParamType::Array(_)
                     | FnParamType::ArrayGeneric(_)
-                    | FnParamType::BareBuffer => None,
+                    | FnParamType::BareBuffer
+                    | FnParamType::Tuple(_) => None,
                 });
             if let Some(param_ty) = explicit_prim {
                 def_state_scalars.insert(param.name.clone(), param_ty);
@@ -1742,6 +1759,7 @@ pub fn analyze_with_options(
                 param_names: &def_global_params,
                 struct_defs: &def_struct_defs,
                 fn_signatures: &fn_signatures,
+                fn_return_types: &def_return_types,
                 options,
                 port_index_ins: None,
                 port_index_outs: None,
@@ -1751,6 +1769,7 @@ pub fn analyze_with_options(
             declared_symbols: &def_declared_symbols,
             param_structs: &param_structs,
             state_scalars: &def_state_scalars,
+            def_return_types: &def_return_types,
         };
         let mut def_state = DefStmtAnalysisState::from_parts(
             fn_known,
@@ -1758,6 +1777,14 @@ pub fn analyze_with_options(
             fn_local_data_aliases,
             fn_local_proc_aliases,
         );
+        // Register tuple params as tuple_vars for indexing validation
+        if let Some(kinds) = inferred_def_params.get(&def.name) {
+            for (param, kind) in def.params.iter().zip(kinds.iter()) {
+                if let TypedFnParam::Tuple { elem_tys } = kind {
+                    def_state.tuple_vars.insert(param.name.clone(), elem_tys.len());
+                }
+            }
+        }
         for stmt in &def.body {
             analyze_def_stmt(stmt, def_ctx, &mut def_state, 0, &mut errors);
         }
@@ -1820,8 +1847,8 @@ pub fn analyze_with_options(
                     param_kinds,
                     return_ty: def_return_types
                         .get(&d.name)
-                        .copied()
-                        .unwrap_or(PrimitiveType::F32),
+                        .cloned()
+                        .unwrap_or(ReturnType::Scalar(PrimitiveType::F32)),
                     name: d.name,
                     params: d.params.into_iter().map(|p| p.name).collect(),
                     body: d.body,
@@ -1854,6 +1881,7 @@ pub fn analyze_with_options(
             block_post,
             state_vars: sorted_state,
             state_types,
+            state_tuples,
             array_vars: typed_data,
             array_struct_roots: typed_data_roots,
             ins_explicit,

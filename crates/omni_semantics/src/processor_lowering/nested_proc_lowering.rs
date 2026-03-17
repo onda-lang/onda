@@ -98,7 +98,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 );
             }
         }
-        Expr::ArrayLiteral { values, .. } => {
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
                 rewrite_nested_proc_calls_in_expr(
                     value,
@@ -1149,6 +1149,20 @@ pub(super) fn expand_nested_struct_ctor_assign(
                 scalar_idx += 1;
             }
             FieldType::Array(_) => {
+                if let Some(default) = &field.default {
+                    out.push(Stmt::Assign {
+                        loc: Default::default(),
+                        target_loc: Default::default(),
+                        target: AssignTarget::Var(field_path),
+                        decl_ty: None,
+                        generic_decl_ty: None,
+                        is_typed_decl: false,
+                        typed_decl_ty_loc: Default::default(),
+                        expr: default.clone(),
+                    });
+                }
+            }
+            FieldType::Tuple(_) => {
                 if let Some(default) = &field.default {
                     out.push(Stmt::Assign {
                         loc: Default::default(),

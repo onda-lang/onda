@@ -401,6 +401,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             let mut block_locals = HashMap::new();
             let mut block_aliases = HashMap::new();
             let mut block_data_aliases = HashMap::new();
+            let mut block_tuples = HashMap::new();
             for stmt in &typed.block_pre {
                 lower_stmt(
                     stmt,
@@ -408,6 +409,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                     &mut block_locals,
                     &mut block_aliases,
                     &mut block_data_aliases,
+                    &mut block_tuples,
                 )?;
             }
         }
@@ -490,6 +492,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             let mut locals = HashMap::new();
             let mut local_aliases = HashMap::new();
             let mut local_array_aliases = HashMap::new();
+            let mut local_tuples = HashMap::new();
             for stmt in &typed.sample {
                 lower_stmt(
                     stmt,
@@ -497,6 +500,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                     &mut locals,
                     &mut local_aliases,
                     &mut local_array_aliases,
+                    &mut local_tuples,
                 )?;
             }
         } else {
@@ -748,6 +752,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             let mut locals = HashMap::new();
             let mut local_aliases = HashMap::new();
             let mut local_array_aliases = HashMap::new();
+            let mut local_tuples = HashMap::new();
             for stmt in &typed.sample {
                 lower_stmt(
                     stmt,
@@ -755,6 +760,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                     &mut locals,
                     &mut local_aliases,
                     &mut local_array_aliases,
+                    &mut local_tuples,
                 )?;
             }
             for (name, slot) in &out_slots {
@@ -1047,6 +1053,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             let mut block_locals = HashMap::new();
             let mut block_aliases = HashMap::new();
             let mut block_data_aliases = HashMap::new();
+            let mut block_tuples = HashMap::new();
             for stmt in &typed.block_post {
                 lower_stmt(
                     stmt,
@@ -1054,6 +1061,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                     &mut block_locals,
                     &mut block_aliases,
                     &mut block_data_aliases,
+                    &mut block_tuples,
                 )?;
             }
         }

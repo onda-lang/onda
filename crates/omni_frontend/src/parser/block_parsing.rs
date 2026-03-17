@@ -42,6 +42,7 @@ fn parse_named_decl(
             Rule::decl_type
             | Rule::type_name
             | Rule::array_type
+            | Rule::tuple_type
             | Rule::namespace_ref
             | Rule::qualified_ident => {
                 let (ty, ty_loc) = parse_decl_type_item(item, missing_type_message)?;

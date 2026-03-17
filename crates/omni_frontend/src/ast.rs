@@ -455,6 +455,7 @@ pub enum DeclType {
     Generic(String),
     ArrayGeneric { elem: String, size: Expr },
     Array { elem: PrimitiveType, size: Expr },
+    Tuple(Vec<PrimitiveType>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -465,6 +466,7 @@ pub enum FnParamType {
     Array(Option<PrimitiveType>),
     ArrayGeneric(String),
     BareBuffer,
+    Tuple(Vec<PrimitiveType>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -551,6 +553,7 @@ pub enum FieldType {
     Scalar(PrimitiveType),
     Generic(String),
     Array(ArrayTypeSpec),
+    Tuple(Vec<PrimitiveType>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -577,6 +580,7 @@ pub enum AssignTarget {
         start: Option<Expr>,
         end: Option<Expr>,
     },
+    Tuple(Vec<String>),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
@@ -1187,6 +1191,10 @@ pub enum Expr {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    Tuple {
+        loc: Span,
+        values: Vec<Expr>,
+    },
 }
 
 impl Expr {
@@ -1207,7 +1215,8 @@ impl Expr {
             | Self::UnaryNot { loc, .. }
             | Self::UnaryBitNot { loc, .. }
             | Self::Logical { loc, .. }
-            | Self::Binary { loc, .. } => (*loc).into(),
+            | Self::Binary { loc, .. }
+            | Self::Tuple { loc, .. } => (*loc).into(),
         }
     }
 
@@ -1229,7 +1238,8 @@ impl Expr {
             | Self::UnaryNot { loc, .. }
             | Self::UnaryBitNot { loc, .. }
             | Self::Logical { loc, .. }
-            | Self::Binary { loc, .. } => *loc = new_loc,
+            | Self::Binary { loc, .. }
+            | Self::Tuple { loc, .. } => *loc = new_loc,
         }
     }
 
@@ -1410,6 +1420,7 @@ impl PartialEq for Expr {
                     ..
                 },
             ) => lhs_op == rhs_op && lhs_expr == rhs_expr && lhs_rhs == rhs_rhs,
+            (Self::Tuple { values: lhs, .. }, Self::Tuple { values: rhs, .. }) => lhs == rhs,
             _ => false,
         }
     }

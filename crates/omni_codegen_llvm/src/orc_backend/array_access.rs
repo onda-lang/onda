@@ -7,6 +7,7 @@ pub(super) unsafe fn lower_data_element_ptr(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<ArrayElementPtr, Diagnostic> {
     lower_data_element_ptr_with_bounds_mode(
         ctx,
@@ -15,6 +16,7 @@ pub(super) unsafe fn lower_data_element_ptr(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
         true,
     )
 }
@@ -26,6 +28,7 @@ pub(super) unsafe fn lower_data_element_ptr_unchecked(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<ArrayElementPtr, Diagnostic> {
     lower_data_element_ptr_with_bounds_mode(
         ctx,
@@ -34,6 +37,7 @@ pub(super) unsafe fn lower_data_element_ptr_unchecked(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
         false,
     )
 }
@@ -45,9 +49,10 @@ pub(super) unsafe fn lower_array_index_i32(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<LLVMValueRef, Diagnostic> {
-    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
+    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
     let raw_index_i = cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"arr_idx_i32\0");
     if clamp_index {
         clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, len)
@@ -63,6 +68,7 @@ pub(super) unsafe fn lower_input_array_index_read(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<OrcValue, Diagnostic> {
     if info.offset > i32::MAX as usize {
@@ -77,6 +83,7 @@ pub(super) unsafe fn lower_input_array_index_read(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
         clamp_index,
     )?;
     let offset_v = LLVMConstInt(ctx.i32_ty, info.offset as u64, 0);
@@ -140,6 +147,7 @@ pub(super) unsafe fn lower_param_array_index_read(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<OrcValue, Diagnostic> {
     let elem_bytes = primitive_type_bytes(info.elem_ty);
@@ -160,6 +168,7 @@ pub(super) unsafe fn lower_param_array_index_read(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
         clamp_index,
     )?;
     let offset_v = LLVMConstInt(ctx.i32_ty, base_byte_offset as u64, 0);
@@ -204,6 +213,7 @@ pub(super) unsafe fn lower_output_array_element_ptr(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<ArrayElementPtr, Diagnostic> {
     let info = *ctx
@@ -220,6 +230,7 @@ pub(super) unsafe fn lower_output_array_element_ptr(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
         clamp_index,
     )?;
     Ok(ArrayElementPtr {
@@ -302,6 +313,7 @@ pub(super) unsafe fn lower_buffer_element_ptr(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<ArrayElementPtr, Diagnostic> {
     let Some(buf_idx) = ctx.buffer_index.get(base).copied() else {
@@ -315,7 +327,7 @@ pub(super) unsafe fn lower_buffer_element_ptr(
         ))
     })?;
 
-    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
+    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
     let raw_index_i = cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"buf_idx_i32\0");
     let total_len = load_orc_buffer_total_len_i32(ctx, base)?;
     let final_index = if clamp_index {
@@ -416,6 +428,7 @@ pub(super) unsafe fn lower_buffer_element_ptr_2d(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<ArrayElementPtr, Diagnostic> {
     let channel = lower_expr(
@@ -424,8 +437,9 @@ pub(super) unsafe fn lower_buffer_element_ptr_2d(
         locals,
         local_aliases,
         local_array_aliases,
+        local_tuples,
     )?;
-    let sample = lower_expr(sample_expr, ctx, locals, local_aliases, local_array_aliases)?;
+    let sample = lower_expr(sample_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
     let channel_i = cast_orc_value_to(ctx, channel, PrimitiveType::I32, b"buf_ch_i32\0");
     let sample_i = cast_orc_value_to(ctx, sample, PrimitiveType::I32, b"buf_sample_i32\0");
     let channels = load_orc_buffer_channels_i32(ctx, base)?;
@@ -498,6 +512,7 @@ pub(super) unsafe fn lower_data_element_ptr_with_bounds_mode(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<ArrayElementPtr, Diagnostic> {
     if ctx.array_struct_len.contains_key(base) {
@@ -548,7 +563,7 @@ pub(super) unsafe fn lower_data_element_ptr_with_bounds_mode(
                 LLVMConstInt(ctx.i32_ty, const_idx as u64, 1)
             } else {
                 let raw_index =
-                    lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
+                    lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
                 cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0")
             };
             clamp_data_index_dynamic(ctx.builder, ctx.i32_ty, raw_index, len_val)
@@ -564,13 +579,13 @@ pub(super) unsafe fn lower_data_element_ptr_with_bounds_mode(
             )
         } else {
             let raw_index =
-                lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
+                lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
             let raw_index_i =
                 cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0");
             clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, array_len)?
         }
     } else {
-        let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
+        let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
         cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0")
     };
     Ok(ArrayElementPtr {
@@ -603,8 +618,9 @@ pub(super) unsafe fn lower_clamped_data_index(
     locals: &HashMap<String, OrcValue>,
     local_aliases: &HashMap<String, AliasSlot>,
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
+    local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<LLVMValueRef, Diagnostic> {
-    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases)?;
+    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
     let raw_index_i = cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0");
     clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, len)
 }
@@ -682,6 +698,25 @@ pub(super) unsafe fn bind_struct_data_element_aliases(
                 );
             }
             TypedFieldType::Struct => {}
+            TypedFieldType::Tuple(ref elem_tys) => {
+                for (idx, prim) in elem_tys.iter().enumerate() {
+                    let elem_flat = format!("{array_field_base}.__{idx}");
+                    let array_ptr = load_data_ptr_at_index(
+                        ctx,
+                        &elem_flat,
+                        *prim,
+                        global_index,
+                        b"struct_tuple_elem_ptr\0",
+                    )?;
+                    local_aliases.insert(
+                        format!("{alias_name}.{}.__{idx}", field.name),
+                        AliasSlot {
+                            ptr: array_ptr,
+                            ty: *prim,
+                        },
+                    );
+                }
+            }
             TypedFieldType::Array(field_len) => {
                 let start_idx = build_data_segment_start_index(
                     ctx.builder,

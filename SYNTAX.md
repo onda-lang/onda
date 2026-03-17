@@ -49,6 +49,10 @@ Primitive types:
 Array type syntax:
 - `T[N]` (for example `f32[2]`, `i32[SR * 2]`)
 
+Tuple type syntax:
+- `(T1, T2, ...)` (for example `(f32, i32)`, `(f32, f32, bool)`)
+- Up to 16 elements
+
 Buffer declaration types:
 - `buffer[T]` (mono)
 - `buffer[T[2]]` (static channel count)
@@ -431,6 +435,8 @@ In addition to primitive types and struct types, `def` parameters support:
 - **Typed buffer**: `buf: buffer[f32]`, `buf: buffer[f64[2]]` — accepts a buffer matching the given type/channels.
 - **Bare buffer**: `buf: buffer` — accepts any buffer. Monomorphized at each call site based on the concrete buffer type.
 - **Generic struct/proc**: `v: Voice` where `Voice<T>` is a generic struct or proc — monomorphized at each call site based on the concrete specialization passed.
+- **Typed tuple**: `p: (f32, i32)` — accepts a tuple with the specified element types.
+- **Inferred tuple**: untyped param `p` called with a tuple literal — monomorphized at each call site by inferred element types.
 
 ```omni
 # typed array param
@@ -724,7 +730,119 @@ Unresolved generic type parameters in declaration/type positions produce an erro
 
 Generic struct and proc types can be used as `def` parameter types for call-site monomorphization (see section 6).
 
-## 10 Arrays
+## 10 Tuples
+
+Tuples are anonymous, fixed-length, heterogeneous compound types with up to 16 elements.
+
+### Tuple literals
+
+```omni
+sample:
+  pair = (1.0, 2.0)
+  triple = (1.0, 42, true)
+```
+
+### Element access
+
+Access tuple elements with compile-time integer constant indices:
+
+```omni
+sample:
+  pair = (3.0, 7.0)
+  out1 = pair[0]    # 3.0
+  out2 = pair[1]    # 7.0
+```
+
+Rules:
+- Index must be a compile-time integer constant.
+- Dynamic indices (e.g. `pair[i]`) are rejected.
+- Out-of-bounds indices are compile-time errors.
+
+### Tuple destructuring
+
+```omni
+sample:
+  (a, b) = (10.0, 20.0)
+  (x, y) = getCoords()
+  (p, q) = existingTuple
+```
+
+Rules:
+- Target count must match the tuple arity.
+- RHS can be a tuple literal, a tuple-returning function call, or a tuple variable.
+
+### Tuple-returning functions
+
+```omni
+def makePair():
+  return (1.0, 2.0)
+
+def swap(p: (f32, f32)):
+  return (p[1], p[0])
+```
+
+### Tuple parameters
+
+Explicit typed tuple parameters:
+
+```omni
+def dot(a: (f32, f32), b: (f32, f32)):
+  return a[0] * b[0] + a[1] * b[1]
+```
+
+Inferred (untyped) tuple parameters — monomorphized at call site:
+
+```omni
+def sumPair(p):
+  return p[0] + p[1]
+
+sample:
+  out1 = sumPair((10.0, 25.0))
+```
+
+### Tuple state variables
+
+Tuples can be stored in `init` state and persist across processing calls:
+
+```omni
+init:
+  pair = (0.0, 0.0)
+
+sample:
+  pair = (pair[0] + 1.0, pair[1] + 2.0)
+  out1 = pair[0]
+```
+
+### Tuple fields in structs
+
+```omni
+struct Point:
+  pos: (f32, f32) = (0.0, 0.0)
+
+init:
+  p = Point()
+
+sample:
+  out1 = p.pos[0]
+```
+
+### Tuple scopes
+
+Tuple local variables are supported in all executable scopes:
+- `init`
+- `sample`
+- `block` (within the block pre/post scope)
+- `def` bodies
+- event handlers
+
+### Representation
+
+- Tuples use a flattened ABI: each element is an individual scalar LLVM parameter/return value.
+- Tuple state is stored as flattened scalar fields (e.g. `name.__0`, `name.__1`, ...).
+- Maximum 16 elements per tuple.
+- Nested tuples are not currently supported.
+
+## 11 Arrays
 
 Fixed-size arrays are supported for state/local storage, including typed forms and capacity expressions.
 Array indexing and assignment are supported in `init`/`sample`/`def` where valid.
@@ -763,7 +881,7 @@ Rules:
 - Event payload arrays/slices are read-only and cannot be used as writable slice targets.
 - Struct-element arrays are not sliceable in the current implementation.
 
-## 11 Imports and namespaces
+## 12 Imports and namespaces
 
 Imports:
 - `import module/path`
@@ -994,7 +1112,7 @@ sample:
   out1 = inv.tick()
 ```
 
-## 12 Example-driven starting points
+## 13 Example-driven starting points
 
 Useful examples in `examples/`:
 - Basic oscillator: `sine.omni`, `std_sine.omni`

@@ -330,6 +330,17 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
                 );
             }
         }
+        Expr::Tuple { values, .. } => {
+            for value in values {
+                rewrite_top_level_range_clamps_in_expr(
+                    value,
+                    input_aliases,
+                    param_aliases,
+                    clamp_inputs,
+                    clamp_params,
+                );
+            }
+        }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
@@ -604,6 +615,16 @@ pub(super) fn expand_port_decls(
                     flat.push(slot_name.clone());
                     types.insert(slot_name, PrimitiveType::F32);
                 }
+            }
+            Some(DeclType::Tuple(_)) => {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "{kind} '{}' uses unsupported tuple type",
+                        port.name
+                    ),
+                    port_loc,
+                ));
+                continue;
             }
             Some(DeclType::Array { elem, size }) => {
                 if port.default.is_some() {
