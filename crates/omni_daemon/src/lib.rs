@@ -292,7 +292,13 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_preview(&main)
+            .start_preview_with_options(
+                &main,
+                PreviewOptions {
+                    float_param_smoothing_ms: 0.0,
+                    ..PreviewOptions::default()
+                },
+            )
             .expect("preview should compile and start");
 
         let param_info = session.preview(&main).expect("active preview").param_info();

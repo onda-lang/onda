@@ -138,6 +138,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             let preview = PreviewOptions {
                 sample_rate: sample_rate_hz.unwrap_or(current.preview.sample_rate as u32) as f32,
                 block_size: block_frames.unwrap_or(current.preview.block_size),
+                float_param_smoothing_ms: current.preview.float_param_smoothing_ms,
                 fast_math: fast_math.unwrap_or(current.preview.fast_math),
                 backend: current.preview.backend,
             };
