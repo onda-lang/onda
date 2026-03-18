@@ -941,10 +941,10 @@ function ensurePatchPanel(): void {
   patchPanelReady = false;
   patchPanel.onDidDispose(() => {
     stopScopePolling();
-    void stopPatch({ silent: true });
-    clearPatchPanelMemory();
     patchPanelReady = false;
     patchPanel = undefined;
+    void stopPatch({ silent: true });
+    clearPatchPanelMemory();
   });
   patchPanel.webview.onDidReceiveMessage(async (message: unknown) => {
     const payload = message as {
