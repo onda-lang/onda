@@ -518,7 +518,18 @@ fn read_wav_interleaved_f32(path: &Path) -> Result<(Vec<f32>, usize, u32), Diagn
                     0,
                 )
             })?,
-        (hound::SampleFormat::Int, 24) | (hound::SampleFormat::Int, 32) => reader
+        (hound::SampleFormat::Int, 24) => reader
+            .samples::<i32>()
+            .map(|sample| sample.map(|value| value as f32 / 8_388_608.0))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| {
+                Diagnostic::runtime(
+                    format!("failed to read wav samples '{}': {err}", path.display()),
+                    0,
+                    0,
+                )
+            })?,
+        (hound::SampleFormat::Int, 32) => reader
             .samples::<i32>()
             .map(|sample| sample.map(|value| value as f32 / i32::MAX as f32))
             .collect::<Result<Vec<_>, _>>()

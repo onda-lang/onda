@@ -829,9 +829,11 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         (None, None)
     };
 
+    let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
     let render_thread = spawn_preview_render_thread(
         launch.clone(),
         Arc::clone(&sample_queue),
+        Arc::clone(&scope_ring),
         Arc::clone(&stop_flag),
         Arc::clone(&render_error),
         startup_tx,
@@ -1137,6 +1139,62 @@ enum PlaybackControlCommand {
         name: String,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    GetScopeData {
+        max_frames: usize,
+        reply: mpsc::Sender<Result<ScopeSnapshot, String>>,
+    },
+}
+
+struct ScopeSnapshot {
+    channels: usize,
+    samples: Vec<f32>,
+}
+
+struct ScopeRing {
+    buffer: Vec<f32>,
+    channels: usize,
+    write_pos: usize,
+    frames_written: usize,
+}
+
+impl ScopeRing {
+    fn new(capacity_frames: usize, channels: usize) -> Self {
+        Self {
+            buffer: vec![0.0; capacity_frames * channels],
+            channels,
+            write_pos: 0,
+            frames_written: 0,
+        }
+    }
+
+    fn push_interleaved(&mut self, samples: &[f32]) {
+        let cap = self.buffer.len();
+        if cap == 0 {
+            return;
+        }
+        for (i, &sample) in samples.iter().enumerate() {
+            self.buffer[(self.write_pos + i) % cap] = sample;
+        }
+        self.write_pos = (self.write_pos + samples.len()) % cap;
+        self.frames_written += samples.len() / self.channels.max(1);
+    }
+
+    fn snapshot(&self, max_frames: usize) -> ScopeSnapshot {
+        let total_frames = self.buffer.len() / self.channels.max(1);
+        let available = total_frames.min(self.frames_written);
+        let frames = max_frames.min(available);
+        let sample_count = frames * self.channels;
+        let cap = self.buffer.len();
+        let start = (self.write_pos + cap - sample_count) % cap;
+        let mut samples = Vec::with_capacity(sample_count);
+        for i in 0..sample_count {
+            samples.push(self.buffer[(start + i) % cap]);
+        }
+        ScopeSnapshot {
+            channels: self.channels,
+            samples,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1149,11 +1207,14 @@ struct PlaybackControlRequest {
     path: Option<String>,
     #[serde(default)]
     value: Option<Value>,
+    #[serde(default, rename = "maxFrames")]
+    max_frames: Option<usize>,
 }
 
 fn spawn_preview_render_thread(
     launch: PlaybackLaunch,
     sample_queue: Arc<SpscSampleRing>,
+    scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
     startup_tx: mpsc::Sender<Result<PlaybackStartup, String>>,
@@ -1212,8 +1273,18 @@ fn spawn_preview_render_thread(
         })();
 
         match startup {
-            Ok(startup) => {
-                if startup_tx.send(Ok(startup)).is_err() {
+            Ok(ref startup) => {
+                {
+                    const SCOPE_CAPACITY_FRAMES: usize = 4096;
+                    let mut ring = scope_ring.lock().unwrap();
+                    *ring = ScopeRing::new(SCOPE_CAPACITY_FRAMES, startup.output_channels);
+                }
+                if startup_tx.send(Ok(PlaybackStartup {
+                    path: startup.path.clone(),
+                    output_channels: startup.output_channels,
+                    params: startup.params.clone(),
+                    buffers: startup.buffers.clone(),
+                })).is_err() {
                     return;
                 }
             }
@@ -1280,6 +1351,10 @@ fn spawn_preview_render_thread(
                                 });
                             let _ = reply.send(result);
                         }
+                        PlaybackControlCommand::GetScopeData { max_frames, reply } => {
+                            let snapshot = scope_ring.lock().unwrap().snapshot(max_frames);
+                            let _ = reply.send(Ok(snapshot));
+                        }
                     }
                 }
             }
@@ -1300,6 +1375,10 @@ fn spawn_preview_render_thread(
                 block.len() * block.first().map(Vec::len).unwrap_or(launch.block_frames),
             );
             append_interleaved_block(&mut interleaved, &block);
+
+            if let Ok(mut ring) = scope_ring.try_lock() {
+                ring.push_interleaved(&interleaved);
+            }
 
             let mut offset = 0;
             while offset < interleaved.len() && !stop_flag.load(Ordering::Acquire) {
@@ -1552,6 +1631,34 @@ fn handle_preview_control_client(
                     Ok(()) => json!({
                         "id": request.id,
                         "ok": true,
+                    }),
+                    Err(err) => json!({
+                        "id": request.id,
+                        "ok": false,
+                        "error": err,
+                    }),
+                }
+            }
+            "getScopeData" => {
+                let max_frames = request.max_frames.unwrap_or(2048);
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::GetScopeData {
+                        max_frames,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| "preview control channel closed".to_owned())?;
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "preview control reply channel closed".to_owned())?
+                {
+                    Ok(snapshot) => json!({
+                        "id": request.id,
+                        "ok": true,
+                        "result": {
+                            "channels": snapshot.channels,
+                            "samples": snapshot.samples,
+                        }
                     }),
                     Err(err) => json!({
                         "id": request.id,

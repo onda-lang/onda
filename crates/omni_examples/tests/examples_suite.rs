@@ -6176,11 +6176,16 @@ fn read_wav_mono_f32(path: &str) -> Vec<f32> {
             .map(|s| s.map(|v| v as f32 / i16::MAX as f32))
             .collect::<Result<Vec<_>, _>>()
             .expect("int16 wav samples"),
-        (hound::SampleFormat::Int, 24) | (hound::SampleFormat::Int, 32) => reader
+        (hound::SampleFormat::Int, 24) => reader
+            .samples::<i32>()
+            .map(|s| s.map(|v| v as f32 / 8_388_608.0))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("int24 wav samples"),
+        (hound::SampleFormat::Int, 32) => reader
             .samples::<i32>()
             .map(|s| s.map(|v| v as f32 / i32::MAX as f32))
             .collect::<Result<Vec<_>, _>>()
-            .expect("int24/int32 wav samples"),
+            .expect("int32 wav samples"),
         _ => panic!(
             "unsupported wav format: {:?} {} bits",
             spec.sample_format, spec.bits_per_sample

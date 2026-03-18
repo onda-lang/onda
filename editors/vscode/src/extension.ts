@@ -52,6 +52,7 @@ interface PatchPanelState {
   path?: string;
   status: string;
   error?: string;
+  outputChannels: number;
   buffers: PatchBufferState[];
   params: PatchParamState[];
 }
@@ -82,10 +83,13 @@ let patchControlRequestId = 0;
 let stoppingPatchPid: number | undefined;
 const pendingPatchRequests = new Map<number, PendingControlRequest>();
 const patchParamDispatch = new Map<string, PatchParamDispatchState>();
+let scopePollingTimer: NodeJS.Timeout | undefined;
+let scopePollingInFlight = false;
 let patchPanelState: PatchPanelState = {
   running: false,
   connected: false,
   status: "Stopped",
+  outputChannels: 0,
   buffers: [],
   params: [],
 };
@@ -161,6 +165,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
     path: fsPath,
     status: `Starting ${path.basename(fsPath)}...`,
     error: undefined,
+    outputChannels: patchPanelState.path === fsPath ? patchPanelState.outputChannels : 0,
     buffers: patchPanelState.path === fsPath ? patchPanelState.buffers : [],
     params: preservedParams,
   };
@@ -374,6 +379,7 @@ function handlePatchStdoutLine(line: string): void {
         path: patchPath,
         status: "Running",
         error: undefined,
+        outputChannels: payload.outputChannels ?? 0,
         buffers: mergePatchBuffers(payload.buffers ?? [], patchPanelState.buffers),
         params: mergePatchParams(payload.params, patchPanelState.params),
       };
@@ -467,6 +473,7 @@ function connectPatchControl(port: number): void {
       reapplyCachedPatchParams();
       reapplyCachedPatchBuffers();
     });
+    startScopePolling();
   });
   socket.on("data", (chunk: string) => {
     patchControlBuffer += chunk;
@@ -484,6 +491,7 @@ function connectPatchControl(port: number): void {
     }
   });
   socket.on("error", (error: Error) => {
+    stopScopePolling();
     patchPanelState = {
       ...patchPanelState,
       connected: false,
@@ -492,6 +500,7 @@ function connectPatchControl(port: number): void {
     postPatchPanelState();
   });
   socket.on("close", () => {
+    stopScopePolling();
     if (patchControlSocket === socket) {
       patchControlSocket = undefined;
       patchControlBuffer = "";
@@ -931,6 +940,7 @@ function ensurePatchPanel(): void {
   );
   patchPanelReady = false;
   patchPanel.onDidDispose(() => {
+    stopScopePolling();
     void stopPatch({ silent: true });
     clearPatchPanelMemory();
     patchPanelReady = false;
@@ -1015,6 +1025,40 @@ function postPatchPanelState(): void {
   });
 }
 
+function startScopePolling(): void {
+  stopScopePolling();
+  scopePollingTimer = setInterval(pollScopeData, 33);
+}
+
+function stopScopePolling(): void {
+  if (scopePollingTimer !== undefined) {
+    clearInterval(scopePollingTimer);
+    scopePollingTimer = undefined;
+  }
+  scopePollingInFlight = false;
+}
+
+function pollScopeData(): void {
+  if (scopePollingInFlight || !patchPanelState.connected || !patchPanel || !patchPanelReady) {
+    return;
+  }
+  scopePollingInFlight = true;
+  sendPatchControlRequest<{ channels: number; samples: number[] }>("getScopeData", { maxFrames: 2048 })
+    .then((result) => {
+      scopePollingInFlight = false;
+      if (patchPanel && patchPanelReady) {
+        void patchPanel.webview.postMessage({
+          type: "scopeData",
+          channels: result.channels,
+          samples: result.samples,
+        });
+      }
+    })
+    .catch(() => {
+      scopePollingInFlight = false;
+    });
+}
+
 function renderPatchPanelHtml(webview: vscode.Webview): string {
   const csp = [
     "default-src 'none'",
@@ -1057,7 +1101,7 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         gap: 16px;
       }
 
-      .header, .buffers, .params {
+      .header, .buffers, .params, .scope-section {
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -1250,6 +1294,17 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
       .empty {
         color: var(--muted);
       }
+
+      .scope-section {
+        display: none;
+      }
+      .scope-canvas {
+        width: 100%;
+        height: 140px;
+        border-radius: 6px;
+        background: #0a0a0a;
+        display: block;
+      }
     </style>
   </head>
   <body>
@@ -1264,6 +1319,12 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
           <button class="secondary" id="stop">Stop</button>
           <button class="secondary" id="reset">Reset</button>
         </div>
+      </section>
+      <section class="scope-section" id="scope-section">
+        <div class="params-header">
+          <div class="params-title">Scope</div>
+        </div>
+        <canvas class="scope-canvas" id="scope-canvas"></canvas>
       </section>
       <section class="buffers" id="buffers-section">
         <div class="params-header">
@@ -1281,6 +1342,7 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
       </section>
     </div>
     <script>
+      const SCOPE_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#a855f7", "#ec4899", "#14b8a6", "#f97316"];
       const vscode = acquireVsCodeApi();
       const state = {
         running: false,
@@ -1304,6 +1366,9 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
       const paramsSection = document.getElementById("params-section");
       const paramsSummaryNode = document.getElementById("params-summary");
       const paramsNode = document.getElementById("params");
+      const scopeSection = document.getElementById("scope-section");
+      const scopeCanvas = document.getElementById("scope-canvas");
+      const scopeCtx = scopeCanvas.getContext("2d");
 
       vscode.postMessage({ type: "webviewReady" });
       window.addEventListener("load", () => {
@@ -1320,9 +1385,67 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         vscode.postMessage({ type: "reset" });
       });
 
+      function drawScope(channels, samples) {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = scopeCanvas.getBoundingClientRect();
+        const w = Math.round(rect.width * dpr);
+        const h = Math.round(rect.height * dpr);
+        if (scopeCanvas.width !== w || scopeCanvas.height !== h) {
+          scopeCanvas.width = w;
+          scopeCanvas.height = h;
+        }
+        scopeCtx.clearRect(0, 0, w, h);
+        if (channels === 0 || samples.length === 0) {
+          return;
+        }
+        const frames = Math.floor(samples.length / channels);
+        if (frames === 0) {
+          return;
+        }
+
+        const chHeight = h / channels;
+        for (let ch = 0; ch < channels; ch++) {
+          const yCenter = chHeight * ch + chHeight / 2;
+          const amplitude = chHeight / 2 * 0.85;
+          const color = SCOPE_COLORS[ch % SCOPE_COLORS.length];
+
+          // center line
+          scopeCtx.strokeStyle = "rgba(255,255,255,0.06)";
+          scopeCtx.lineWidth = 1;
+          scopeCtx.beginPath();
+          scopeCtx.moveTo(0, yCenter);
+          scopeCtx.lineTo(w, yCenter);
+          scopeCtx.stroke();
+
+          // waveform
+          scopeCtx.strokeStyle = color;
+          scopeCtx.lineWidth = 1.5 * dpr;
+          scopeCtx.beginPath();
+          for (let i = 0; i < w; i++) {
+            const frameIdx = Math.floor(i * frames / w);
+            const sample = samples[frameIdx * channels + ch];
+            const clamped = Math.max(-1, Math.min(1, sample));
+            const y = yCenter - clamped * amplitude;
+            if (i === 0) {
+              scopeCtx.moveTo(i, y);
+            } else {
+              scopeCtx.lineTo(i, y);
+            }
+          }
+          scopeCtx.stroke();
+        }
+      }
+
       window.addEventListener("message", (event) => {
         const message = event.data;
-        if (!message || message.type !== "state") {
+        if (!message) {
+          return;
+        }
+        if (message.type === "scopeData") {
+          drawScope(message.channels, message.samples);
+          return;
+        }
+        if (message.type !== "state") {
           return;
         }
         Object.assign(state, message.state);
@@ -1333,6 +1456,7 @@ function renderPatchPanelHtml(webview: vscode.Webview): string {
         pathNode.textContent = state.path ? state.path : "No patch selected";
         statusNode.textContent = state.connected ? state.status : state.running ? state.status + " (connecting controls...)" : state.status;
         errorNode.textContent = state.error || "";
+        scopeSection.style.display = state.connected ? "block" : "none";
         const hasBuffers = state.buffers.length > 0;
         const hasParams = state.params.length > 0;
         buffersSection.style.display = hasBuffers ? "" : "none";
@@ -1604,7 +1728,7 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
         gap: 16px;
       }
 
-      .header, .buffers, .params {
+      .header, .buffers, .params, .scope-section {
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -1796,6 +1920,17 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
       .empty {
         color: var(--muted);
       }
+
+      .scope-section {
+        display: none;
+      }
+      .scope-canvas {
+        width: 100%;
+        height: 140px;
+        border-radius: 6px;
+        background: #0a0a0a;
+        display: block;
+      }
     </style>
   </head>
   <body>
@@ -1810,6 +1945,12 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
           <button class="secondary" id="stop">Stop</button>
           <button class="secondary" id="reset">Reset</button>
         </div>
+      </section>
+      <section class="scope-section" id="scope-section">
+        <div class="params-header">
+          <div class="params-title">Scope</div>
+        </div>
+        <canvas class="scope-canvas" id="scope-canvas"></canvas>
       </section>
       <section class="buffers" id="buffers-section">
         <div class="params-header">
@@ -1850,6 +1991,10 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
       var paramsSection = document.getElementById("params-section");
       var paramsSummaryNode = document.getElementById("params-summary");
       var paramsNode = document.getElementById("params");
+      var scopeSection = document.getElementById("scope-section");
+      var scopeCanvas = document.getElementById("scope-canvas");
+      var scopeCtx = scopeCanvas.getContext("2d");
+      var SCOPE_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#a855f7", "#ec4899", "#14b8a6", "#f97316"];
 
       function post(message) {
         vscode.postMessage(message);
@@ -1907,6 +2052,54 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
           }
         }
         return "";
+      }
+
+      function drawScope(channels, samples) {
+        var dpr = window.devicePixelRatio || 1;
+        var rect = scopeCanvas.getBoundingClientRect();
+        var w = Math.round(rect.width * dpr);
+        var h = Math.round(rect.height * dpr);
+        if (scopeCanvas.width !== w || scopeCanvas.height !== h) {
+          scopeCanvas.width = w;
+          scopeCanvas.height = h;
+        }
+        scopeCtx.clearRect(0, 0, w, h);
+        if (channels === 0 || samples.length === 0) {
+          return;
+        }
+        var frames = Math.floor(samples.length / channels);
+        if (frames === 0) {
+          return;
+        }
+        var chHeight = h / channels;
+        for (var ch = 0; ch < channels; ch++) {
+          var yCenter = chHeight * ch + chHeight / 2;
+          var amplitude = chHeight / 2 * 0.85;
+          var color = SCOPE_COLORS[ch % SCOPE_COLORS.length];
+
+          scopeCtx.strokeStyle = "rgba(255,255,255,0.06)";
+          scopeCtx.lineWidth = 1;
+          scopeCtx.beginPath();
+          scopeCtx.moveTo(0, yCenter);
+          scopeCtx.lineTo(w, yCenter);
+          scopeCtx.stroke();
+
+          scopeCtx.strokeStyle = color;
+          scopeCtx.lineWidth = 1.5 * dpr;
+          scopeCtx.beginPath();
+          for (var i = 0; i < w; i++) {
+            var frameIdx = Math.floor(i * frames / w);
+            var sample = samples[frameIdx * channels + ch];
+            var clamped = Math.max(-1, Math.min(1, sample));
+            var y = yCenter - clamped * amplitude;
+            if (i === 0) {
+              scopeCtx.moveTo(i, y);
+            } else {
+              scopeCtx.lineTo(i, y);
+            }
+          }
+          scopeCtx.stroke();
+        }
       }
 
       function renderBuffers() {
@@ -2125,6 +2318,7 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
           statusNode.textContent = state.status;
         }
         errorNode.textContent = state.error || "";
+        scopeSection.style.display = state.connected ? "block" : "none";
         var hasBuffers = state.buffers && state.buffers.length > 0;
         var hasParams = state.params && state.params.length > 0;
         buffersSection.style.display = hasBuffers ? "" : "none";
@@ -2156,7 +2350,14 @@ function renderPatchPanelHtmlSafe(webview: vscode.Webview): string {
 
       window.addEventListener("message", function(event) {
         var message = event.data;
-        if (!message || message.type !== "state") {
+        if (!message) {
+          return;
+        }
+        if (message.type === "scopeData") {
+          drawScope(message.channels, message.samples);
+          return;
+        }
+        if (message.type !== "state") {
           return;
         }
         state.running = Boolean(message.state && message.state.running);
