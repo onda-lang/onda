@@ -1038,18 +1038,16 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             expr: expr_rewritten,
                         })
                     }
-                    AssignTarget::Tuple(_) => {
-                        Some(Stmt::Assign {
-                            loc: source_loc.clone().into(),
-                            target_loc: Default::default(),
-                            target: target.clone(),
-                            decl_ty: *decl_ty,
-                            generic_decl_ty: generic_decl_ty.clone(),
-                            is_typed_decl: *is_typed_decl,
-                            typed_decl_ty_loc: Default::default(),
-                            expr: expr_rewritten,
-                        })
-                    }
+                    AssignTarget::Tuple(_) => Some(Stmt::Assign {
+                        loc: source_loc.clone().into(),
+                        target_loc: Default::default(),
+                        target: target.clone(),
+                        decl_ty: *decl_ty,
+                        generic_decl_ty: generic_decl_ty.clone(),
+                        is_typed_decl: *is_typed_decl,
+                        typed_decl_ty_loc: Default::default(),
+                        expr: expr_rewritten,
+                    }),
                 }
             }
             Stmt::Expr { expr, .. } => {

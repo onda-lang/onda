@@ -527,59 +527,79 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
     collect_symbols_from_source(source, &mut scope);
 
     let mut tokens = Vec::new();
-    scan_identifiers(source, |name, line, start, length, after_dot, is_call, in_ns_path| {
-        // self → parameter color (same as other arguments)
-        if name == "self" {
-            tokens.push(SemanticToken {
-                line, start, length,
-                token_type: SEMANTIC_TOKEN_TYPE_PARAMETER,
-                token_modifiers: 0,
-            });
-            return;
-        }
-        if after_dot {
-            if is_call {
+    scan_identifiers(
+        source,
+        |name, line, start, length, after_dot, is_call, in_ns_path| {
+            // self → parameter color (same as other arguments)
+            if name == "self" {
                 tokens.push(SemanticToken {
-                    line, start, length,
+                    line,
+                    start,
+                    length,
+                    token_type: SEMANTIC_TOKEN_TYPE_PARAMETER,
+                    token_modifiers: 0,
+                });
+                return;
+            }
+            if after_dot {
+                if is_call {
+                    tokens.push(SemanticToken {
+                        line,
+                        start,
+                        length,
+                        token_type: SEMANTIC_TOKEN_TYPE_FUNCTION,
+                        token_modifiers: 0,
+                    });
+                } else {
+                    tokens.push(SemanticToken {
+                        line,
+                        start,
+                        length,
+                        token_type: SEMANTIC_TOKEN_TYPE_VARIABLE,
+                        token_modifiers: 0,
+                    });
+                }
+                return;
+            }
+            // Namespace path segments: std::fft, std::complex::Complex, etc.
+            if in_ns_path {
+                let token_type = scope
+                    .token_type_for(name)
+                    .unwrap_or(SEMANTIC_TOKEN_TYPE_NAMESPACE);
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type,
+                    token_modifiers: 0,
+                });
+                return;
+            }
+            if let Some(mut token_type) = scope.token_type_for(name) {
+                // Variables called with () are callable proc instances — color as function
+                if is_call && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
+                    token_type = SEMANTIC_TOKEN_TYPE_FUNCTION;
+                }
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type,
+                    token_modifiers: 0,
+                });
+            } else if is_call && !is_reserved_word(name) {
+                // Unknown identifier followed by () → intrinsic/function call
+                // (skip keywords like if/while/for and type casts like i32/f32)
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
                     token_type: SEMANTIC_TOKEN_TYPE_FUNCTION,
                     token_modifiers: 0,
                 });
-            } else {
-                tokens.push(SemanticToken {
-                    line, start, length,
-                    token_type: SEMANTIC_TOKEN_TYPE_VARIABLE,
-                    token_modifiers: 0,
-                });
             }
-            return;
-        }
-        // Namespace path segments: std::fft, std::complex::Complex, etc.
-        if in_ns_path {
-            let token_type = scope.token_type_for(name)
-                .unwrap_or(SEMANTIC_TOKEN_TYPE_NAMESPACE);
-            tokens.push(SemanticToken {
-                line, start, length, token_type, token_modifiers: 0,
-            });
-            return;
-        }
-        if let Some(mut token_type) = scope.token_type_for(name) {
-            // Variables called with () are callable proc instances — color as function
-            if is_call && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
-                token_type = SEMANTIC_TOKEN_TYPE_FUNCTION;
-            }
-            tokens.push(SemanticToken {
-                line, start, length, token_type, token_modifiers: 0,
-            });
-        } else if is_call && !is_reserved_word(name) {
-            // Unknown identifier followed by () → intrinsic/function call
-            // (skip keywords like if/while/for and type casts like i32/f32)
-            tokens.push(SemanticToken {
-                line, start, length,
-                token_type: SEMANTIC_TOKEN_TYPE_FUNCTION,
-                token_modifiers: 0,
-            });
-        }
-    });
+        },
+    );
 
     tokens.sort_by_key(|t| (t.line, t.start, t.length, t.token_type, t.token_modifiers));
     tokens.dedup_by(|a, b| {
@@ -595,14 +615,41 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
 fn is_reserved_word(name: &str) -> bool {
     matches!(
         name,
-        "if" | "elif" | "else" | "for" | "in" | "while" | "loop"
-        | "break" | "continue" | "return" | "assert"
-        | "true" | "false"
-        | "f32" | "f64" | "i32" | "i64" | "bool" | "buffer"
-        | "proc" | "processor" | "struct" | "def" | "const"
-        | "namespace" | "import" | "include"
-        | "ins" | "outs" | "params" | "buffers" | "init"
-        | "events" | "sample" | "block" | "graph"
+        "if" | "elif"
+            | "else"
+            | "for"
+            | "in"
+            | "while"
+            | "loop"
+            | "break"
+            | "continue"
+            | "return"
+            | "assert"
+            | "true"
+            | "false"
+            | "f32"
+            | "f64"
+            | "i32"
+            | "i64"
+            | "bool"
+            | "buffer"
+            | "proc"
+            | "processor"
+            | "struct"
+            | "def"
+            | "const"
+            | "namespace"
+            | "import"
+            | "include"
+            | "ins"
+            | "outs"
+            | "params"
+            | "buffers"
+            | "init"
+            | "events"
+            | "sample"
+            | "block"
+            | "graph"
     )
 }
 
@@ -838,9 +885,22 @@ enum SourceSection {
 /// Collect symbols directly from source text. This handles namespaced files where
 /// the parser lowers procs into structs+defs, losing the original structure.
 const BUILTIN_CONSTS: &[&str] = &[
-    "PI", "pi", "TWO_PI", "TWOPI", "two_pi", "twopi",
-    "SAMPLE_RATE", "SAMPLERATE", "SR", "sample_rate", "samplerate",
-    "BLOCK_SIZE", "BLOCKSIZE", "BS", "block_size", "blocksize",
+    "PI",
+    "pi",
+    "TWO_PI",
+    "TWOPI",
+    "two_pi",
+    "twopi",
+    "SAMPLE_RATE",
+    "SAMPLERATE",
+    "SR",
+    "sample_rate",
+    "samplerate",
+    "BLOCK_SIZE",
+    "BLOCKSIZE",
+    "BS",
+    "block_size",
+    "blocksize",
 ];
 
 fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
@@ -887,7 +947,8 @@ fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
         if trimmed.starts_with("namespace ") {
             let rest = &trimmed["namespace ".len()..];
             // Register each segment of the namespace path (before < or :)
-            let path_end = rest.find(|c: char| c == '<' || c == ':' || c == '=')
+            let path_end = rest
+                .find(|c: char| c == '<' || c == ':' || c == '=')
                 .unwrap_or(rest.len());
             let path = rest[..path_end].trim();
             for segment in path.split("::") {
@@ -960,9 +1021,7 @@ fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
                 let name = &trimmed[..paren];
                 if !name.is_empty()
                     && is_ident_start(name.as_bytes()[0])
-                    && name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
                 {
                     scope.functions.insert(name.to_owned());
                     extract_params_from_parens(&trimmed[paren..], scope);
@@ -1060,7 +1119,10 @@ fn extract_leading_ident(text: &str) -> Option<&str> {
     if bytes.is_empty() || !is_ident_start(bytes[0]) {
         return None;
     }
-    let end = bytes.iter().position(|&b| !is_ident_continue(b)).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|&b| !is_ident_continue(b))
+        .unwrap_or(bytes.len());
     Some(&text[..end])
 }
 
@@ -1219,16 +1281,20 @@ fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32, bool, b
                 peek += 1;
             }
             let mut is_call = peek < chars.len() && chars[peek] == '(';
-            let mut followed_by_colons = peek + 1 < chars.len()
-                && chars[peek] == ':' && chars[peek + 1] == ':';
+            let mut followed_by_colons =
+                peek + 1 < chars.len() && chars[peek] == ':' && chars[peek + 1] == ':';
             if !is_call && !followed_by_colons && peek < chars.len() && chars[peek] == '<' {
                 // Skip over <...> generics then check for ( or ::
                 let mut depth = 1;
                 peek += 1;
                 while peek < chars.len() && depth > 0 {
-                    if chars[peek] == '<' { depth += 1; }
-                    else if chars[peek] == '>' { depth -= 1; }
-                    else if chars[peek] == '\n' { break; }
+                    if chars[peek] == '<' {
+                        depth += 1;
+                    } else if chars[peek] == '>' {
+                        depth -= 1;
+                    } else if chars[peek] == '\n' {
+                        break;
+                    }
                     peek += 1;
                 }
                 if depth == 0 {
@@ -1236,12 +1302,20 @@ fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32, bool, b
                         peek += 1;
                     }
                     is_call = peek < chars.len() && chars[peek] == '(';
-                    followed_by_colons = peek + 1 < chars.len()
-                        && chars[peek] == ':' && chars[peek + 1] == ':';
+                    followed_by_colons =
+                        peek + 1 < chars.len() && chars[peek] == ':' && chars[peek + 1] == ':';
                 }
             }
             let in_ns_path = after_colons || followed_by_colons;
-            f(&name, start_line, start_column, length, after_dot, is_call, in_ns_path);
+            f(
+                &name,
+                start_line,
+                start_column,
+                length,
+                after_dot,
+                is_call,
+                in_ns_path,
+            );
             continue;
         }
 
@@ -1801,27 +1875,37 @@ mod tests {
 
         // 'delay' in def clear (line 6)
         assert!(
-            tokens.iter().any(|t| t.line == 6 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            tokens.iter().any(|t| t.line == 6
+                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.length == 5),
             "delay in def: {tokens:?}"
         );
         // 'write' in def clear (line 7)
         assert!(
-            tokens.iter().any(|t| t.line == 7 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            tokens.iter().any(|t| t.line == 7
+                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.length == 5),
             "write in def: {tokens:?}"
         );
         // 'write' in events reset (line 12)
         assert!(
-            tokens.iter().any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            tokens.iter().any(|t| t.line == 12
+                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.length == 5),
             "write in events: {tokens:?}"
         );
         // 'delay' in sample (line 15)
         assert!(
-            tokens.iter().any(|t| t.line == 15 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            tokens.iter().any(|t| t.line == 15
+                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.length == 5),
             "delay in sample: {tokens:?}"
         );
         // 'write' in sample (line 15, inside delay[write])
         assert!(
-            tokens.iter().any(|t| t.line == 15 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            tokens.iter().any(|t| t.line == 15
+                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.length == 5),
             "write in sample delay[write]: {tokens:?}"
         );
     }
@@ -1850,12 +1934,16 @@ mod tests {
 
         // 'buf' in def clear (line 9)
         assert!(
-            tokens.iter().any(|t| t.line == 9 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 3),
+            tokens.iter().any(|t| t.line == 9
+                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.length == 3),
             "buf in def: {tokens:?}"
         );
         // 'pos' in sample (line 13)
         assert!(
-            tokens.iter().any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 3),
+            tokens.iter().any(|t| t.line == 13
+                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.length == 3),
             "pos in sample: {tokens:?}"
         );
     }
@@ -1863,32 +1951,38 @@ mod tests {
     #[test]
     fn semantic_tokens_highlight_for_loop_references() {
         let source = concat!(
-            "namespace test::ns:\n",         // 0
-            "  const SIZE = 10\n",           // 1
-            "\n",                            // 2
-            "  proc Foo:\n",                 // 3
-            "    init:\n",                   // 4
-            "      count: i32 = 0\n",        // 5
-            "\n",                            // 6
-            "    sample:\n",                 // 7
-            "      for i in 0..SIZE:\n",     // 8
-            "        count = count + 1\n",   // 9
+            "namespace test::ns:\n",       // 0
+            "  const SIZE = 10\n",         // 1
+            "\n",                          // 2
+            "  proc Foo:\n",               // 3
+            "    init:\n",                 // 4
+            "      count: i32 = 0\n",      // 5
+            "\n",                          // 6
+            "    sample:\n",               // 7
+            "      for i in 0..SIZE:\n",   // 8
+            "        count = count + 1\n", // 9
         );
         let tokens = semantic_tokens_for_document(source, None);
 
         // SIZE in for loop (line 8) should be const
         assert!(
-            tokens.iter().any(|t| t.line == 8 && t.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER && t.length == 4),
+            tokens.iter().any(|t| t.line == 8
+                && t.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER
+                && t.length == 4),
             "SIZE in for loop: {tokens:?}"
         );
         // count in for body (line 9) should be variable
         assert!(
-            tokens.iter().any(|t| t.line == 9 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            tokens.iter().any(|t| t.line == 9
+                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.length == 5),
             "count in for body: {tokens:?}"
         );
         // i should be variable (loop var)
         assert!(
-            tokens.iter().any(|t| t.line == 8 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 1),
+            tokens.iter().any(|t| t.line == 8
+                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.length == 1),
             "i in for loop: {tokens:?}"
         );
     }
@@ -1896,12 +1990,10 @@ mod tests {
     #[test]
     fn semantic_tokens_work_for_convolution_omni() {
         let source = fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../stdlib/std/convolution.omni"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/std/convolution.omni"),
         )
         .expect("read convolution.omni");
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../stdlib/std/convolution.omni");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/std/convolution.omni");
         let tokens = semantic_tokens_for_document(&source, Some(&path));
 
         let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
@@ -1911,41 +2003,61 @@ mod tests {
                     let line = t.line as usize;
                     let col = t.start as usize;
                     let len = t.length as usize;
-                    source
-                        .lines()
-                        .nth(line)
-                        .and_then(|l| l.get(col..col + len))
-                        == Some(name)
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
                 })
                 .collect()
         };
 
         // Init variables highlighted in defs/events/sample
-        assert!(!find_tokens("delay").is_empty(), "delay should be highlighted");
-        assert!(!find_tokens("write").is_empty(), "write should be highlighted");
-        assert!(!find_tokens("active_taps").is_empty(), "active_taps should be highlighted");
+        assert!(
+            !find_tokens("delay").is_empty(),
+            "delay should be highlighted"
+        );
+        assert!(
+            !find_tokens("write").is_empty(),
+            "write should be highlighted"
+        );
+        assert!(
+            !find_tokens("active_taps").is_empty(),
+            "active_taps should be highlighted"
+        );
 
         // Namespace generic consts
         let fft_tokens = find_tokens("FFTSize");
         assert!(!fft_tokens.is_empty(), "FFTSize should be highlighted");
-        assert!(fft_tokens.iter().all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
-            "FFTSize should be const: {fft_tokens:?}");
+        assert!(
+            fft_tokens
+                .iter()
+                .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+            "FFTSize should be const: {fft_tokens:?}"
+        );
 
         // Type params
         let t_tokens = find_tokens("T");
         assert!(!t_tokens.is_empty(), "T should be highlighted");
-        assert!(t_tokens.iter().all(|t| t.token_type == super::SEMANTIC_TOKEN_TYPE_TYPE),
-            "T should be type: {t_tokens:?}");
+        assert!(
+            t_tokens
+                .iter()
+                .all(|t| t.token_type == super::SEMANTIC_TOKEN_TYPE_TYPE),
+            "T should be type: {t_tokens:?}"
+        );
 
         // Functions (def methods and event handlers)
         let clear_state = find_tokens("clear_state");
         assert!(!clear_state.is_empty(), "clear_state should be highlighted");
-        assert!(clear_state.iter().any(|t| t.token_type == super::SEMANTIC_TOKEN_TYPE_FUNCTION),
-            "clear_state should be function: {clear_state:?}");
+        assert!(
+            clear_state
+                .iter()
+                .any(|t| t.token_type == super::SEMANTIC_TOKEN_TYPE_FUNCTION),
+            "clear_state should be function: {clear_state:?}"
+        );
 
         // Proc instance variables (td, tail in ZeroLatencyConvolver)
         assert!(!find_tokens("td").is_empty(), "td should be highlighted");
-        assert!(!find_tokens("tail").is_empty(), "tail should be highlighted");
+        assert!(
+            !find_tokens("tail").is_empty(),
+            "tail should be highlighted"
+        );
 
         // Event handler names (set_impulse, reset)
         let set_impulse = find_tokens("set_impulse");

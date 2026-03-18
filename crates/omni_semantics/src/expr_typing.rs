@@ -154,18 +154,20 @@ pub(crate) fn infer_scalar_expr_type(
             // The fallback at the end of this arm returns F32 which covers the common case,
             // but for completeness we check input/output/param types explicitly.
             if base == "ins" {
-                let ty = input_names.iter().find_map(|n| {
-                    declared_symbol_scalar_type(declared_symbols, n)
-                }).unwrap_or(PrimitiveType::F32);
+                let ty = input_names
+                    .iter()
+                    .find_map(|n| declared_symbol_scalar_type(declared_symbols, n))
+                    .unwrap_or(PrimitiveType::F32);
                 return Some(ty);
             }
             if base == "outs" {
                 return Some(PrimitiveType::F32);
             }
             if base == "params" {
-                let ty = param_names.iter().find_map(|n| {
-                    declared_symbol_scalar_type(declared_symbols, n)
-                }).unwrap_or(PrimitiveType::F32);
+                let ty = param_names
+                    .iter()
+                    .find_map(|n| declared_symbol_scalar_type(declared_symbols, n))
+                    .unwrap_or(PrimitiveType::F32);
                 return Some(ty);
             }
             if let Some(alias) = local_array_aliases.get(base) {

@@ -422,7 +422,9 @@ pub(crate) fn add_decl_type_to_generic_inference_locals(
                 .entry(name.to_owned())
                 .or_insert(*elem);
         }
-        Some(DeclType::Generic(_)) | Some(DeclType::ArrayGeneric { .. }) | Some(DeclType::Tuple(_)) => {}
+        Some(DeclType::Generic(_))
+        | Some(DeclType::ArrayGeneric { .. })
+        | Some(DeclType::Tuple(_)) => {}
         None => {
             locals
                 .scalar_types

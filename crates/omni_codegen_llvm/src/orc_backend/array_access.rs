@@ -52,7 +52,14 @@ pub(super) unsafe fn lower_array_index_i32(
     local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     clamp_index: bool,
 ) -> Result<LLVMValueRef, Diagnostic> {
-    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+    let raw_index = lower_expr(
+        index_expr,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+    )?;
     let raw_index_i = cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"arr_idx_i32\0");
     if clamp_index {
         clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, len)
@@ -327,7 +334,14 @@ pub(super) unsafe fn lower_buffer_element_ptr(
         ))
     })?;
 
-    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+    let raw_index = lower_expr(
+        index_expr,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+    )?;
     let raw_index_i = cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"buf_idx_i32\0");
     let total_len = load_orc_buffer_total_len_i32(ctx, base)?;
     let final_index = if clamp_index {
@@ -439,7 +453,14 @@ pub(super) unsafe fn lower_buffer_element_ptr_2d(
         local_array_aliases,
         local_tuples,
     )?;
-    let sample = lower_expr(sample_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+    let sample = lower_expr(
+        sample_expr,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+    )?;
     let channel_i = cast_orc_value_to(ctx, channel, PrimitiveType::I32, b"buf_ch_i32\0");
     let sample_i = cast_orc_value_to(ctx, sample, PrimitiveType::I32, b"buf_sample_i32\0");
     let channels = load_orc_buffer_channels_i32(ctx, base)?;
@@ -562,8 +583,14 @@ pub(super) unsafe fn lower_data_element_ptr_with_bounds_mode(
             let raw_index = if let Some(const_idx) = try_constant_index_i64(index_expr) {
                 LLVMConstInt(ctx.i32_ty, const_idx as u64, 1)
             } else {
-                let raw_index =
-                    lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+                let raw_index = lower_expr(
+                    index_expr,
+                    ctx,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    local_tuples,
+                )?;
                 cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0")
             };
             clamp_data_index_dynamic(ctx.builder, ctx.i32_ty, raw_index, len_val)
@@ -578,14 +605,27 @@ pub(super) unsafe fn lower_data_element_ptr_with_bounds_mode(
                 0,
             )
         } else {
-            let raw_index =
-                lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let raw_index = lower_expr(
+                index_expr,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             let raw_index_i =
                 cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0");
             clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, array_len)?
         }
     } else {
-        let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+        let raw_index = lower_expr(
+            index_expr,
+            ctx,
+            locals,
+            local_aliases,
+            local_array_aliases,
+            local_tuples,
+        )?;
         cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0")
     };
     Ok(ArrayElementPtr {
@@ -620,7 +660,14 @@ pub(super) unsafe fn lower_clamped_data_index(
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
     local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<LLVMValueRef, Diagnostic> {
-    let raw_index = lower_expr(index_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+    let raw_index = lower_expr(
+        index_expr,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+    )?;
     let raw_index_i = cast_orc_value_to(ctx, raw_index, PrimitiveType::I32, b"data_idx_i32\0");
     clamp_data_index(ctx.builder, ctx.i32_ty, raw_index_i, len)
 }

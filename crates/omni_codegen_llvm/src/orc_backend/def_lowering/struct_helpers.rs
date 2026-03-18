@@ -334,10 +334,8 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                                 let mut slot_ptrs =
                                     Vec::<LLVMValueRef>::with_capacity(slot_indices.len());
                                 for slot_idx in &slot_indices {
-                                    let slot_name = format!(
-                                        "{base}[{slot_idx}].{}.__{idx}",
-                                        field.name
-                                    );
+                                    let slot_name =
+                                        format!("{base}[{slot_idx}].{}.__{idx}", field.name);
                                     let slot =
                                         find_def_local_slot(ctx, &slot_name).ok_or_else(|| {
                                             Diagnostic::internal(format!(

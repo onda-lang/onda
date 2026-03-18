@@ -346,7 +346,10 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                             elem_vals.push(val);
                         }
                     }
-                    Expr::Var { name: var_name, loc } => {
+                    Expr::Var {
+                        name: var_name,
+                        loc,
+                    } => {
                         // Tuple variable — extract each element via synthetic index exprs
                         for i in 0..elem_tys.len() {
                             let index_expr = Expr::Index {

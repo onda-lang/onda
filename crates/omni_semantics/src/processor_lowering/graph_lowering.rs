@@ -3648,7 +3648,9 @@ fn rewrite_graph_source_expr(
                     .collect()
             }),
         },
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Tuple { .. } => expr.clone(),
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Tuple { .. } => {
+            expr.clone()
+        }
     }
 }
 

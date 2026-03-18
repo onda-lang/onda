@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Omni Patch</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #15171b;
+        --panel: #1f2329;
+        --panel-strong: #282d35;
+        --text: #f3f5f7;
+        --muted: #9ba6b2;
+        --accent: #7fd1b9;
+        --accent-strong: #57b89b;
+        --danger: #e07a7a;
+        --border: #353c46;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 18px;
+        background: #1b1d21;
+        color: var(--text);
+        font: 13px/1.45 ui-sans-serif, system-ui, sans-serif;
+      }
+
+      .shell {
+        display: grid;
+        gap: 16px;
+      }
+
+      .header, .buffers, .params, .scope-section {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+      }
+
+      .title {
+        font-size: 16px;
+        font-weight: 700;
+      }
+
+      .meta {
+        margin-top: 6px;
+        color: var(--muted);
+        word-break: break-word;
+      }
+
+      .status {
+        margin-top: 6px;
+        color: var(--accent);
+      }
+
+      .error {
+        margin-top: 8px;
+        color: var(--danger);
+      }
+
+      .actions {
+        margin-top: 12px;
+        display: flex;
+        gap: 10px;
+      }
+
+      .io-settings {
+        margin-top: 12px;
+        display: none;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 16px;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button.primary {
+        background: var(--accent);
+        color: #0b1713;
+      }
+
+      button.primary:hover {
+        background: var(--accent-strong);
+      }
+
+      button.secondary {
+        background: var(--panel-strong);
+        color: var(--text);
+      }
+
+      button:disabled {
+        cursor: default;
+        opacity: 0.5;
+      }
+
+      .params-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .buffers-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .buffer-card {
+        background: var(--panel-strong);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+      }
+
+      .buffer-path {
+        margin-top: 8px;
+        color: var(--text);
+        word-break: break-word;
+      }
+
+      .buffer-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .params-title {
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .params-subtitle {
+        color: var(--muted);
+      }
+
+      .param-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .param {
+        background: var(--panel-strong);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+      }
+
+      .param-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .param-name {
+        font-weight: 700;
+      }
+
+      .param-type {
+        color: var(--muted);
+      }
+
+      .param-setting {
+        display: grid;
+        gap: 6px;
+      }
+
+      .param-setting-label {
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+
+      .param-controls {
+        display: grid;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .param-range {
+        width: 100%;
+      }
+
+      .param-number {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #111418;
+        color: var(--text);
+        padding: 8px 10px;
+        font: inherit;
+      }
+
+      .param-select {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #111418;
+        color: var(--text);
+        padding: 8px 10px;
+        font: inherit;
+      }
+
+      .param-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text);
+      }
+
+      .empty {
+        color: var(--muted);
+      }
+
+      .scope-section {
+        display: none;
+      }
+      .scope-canvas {
+        width: 100%;
+        height: 140px;
+        border-radius: 6px;
+        background: #0a0a0a;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="header">
+        <div class="title">Omni Patch</div>
+        <div class="meta" id="path"></div>
+        <div class="status" id="status"></div>
+        <div class="error" id="error"></div>
+        <div class="actions">
+          <button class="primary" id="start">Start</button>
+          <button class="secondary" id="stop">Stop</button>
+          <button class="secondary" id="reset">Reset</button>
+        </div>
+        <div class="io-settings" id="io-settings">
+          <div class="param-setting">
+            <div class="param-setting-label">Input Device</div>
+            <select class="param-select" id="input-device"></select>
+          </div>
+          <div class="param-setting">
+            <div class="param-setting-label">Output Device</div>
+            <select class="param-select" id="output-device"></select>
+          </div>
+        </div>
+      </section>
+      <section class="scope-section" id="scope-section">
+        <div class="params-header">
+          <div class="params-title">Scope</div>
+        </div>
+        <canvas class="scope-canvas" id="scope-canvas"></canvas>
+      </section>
+      <section class="buffers" id="buffers-section">
+        <div class="params-header">
+          <div class="params-title">Buffers</div>
+          <div class="params-subtitle" id="buffers-summary"></div>
+        </div>
+        <div class="buffers-list" id="buffers"></div>
+      </section>
+      <section class="params" id="params-section">
+        <div class="params-header">
+          <div class="params-title">Params</div>
+          <div class="params-subtitle" id="params-summary"></div>
+        </div>
+        <div class="param-list" id="params"></div>
+      </section>
+    </div>
+    <script>
+      // ---------------------------------------------------------------------------
+      // Host bridge abstraction
+      // ---------------------------------------------------------------------------
+      // The host environment injects `window.__hostBridge` before this script runs.
+      //
+      // VS Code host sets:
+      //   window.__hostBridge = { mode: "vscode" }
+      //   (uses acquireVsCodeApi().postMessage / window message events)
+      //
+      // wry (native) host sets:
+      //   window.__hostBridge = { mode: "wry" }
+      //   (uses window.ipc.postMessage / window._onHostMessage callback)
+      //
+      // If no bridge is injected we auto-detect VS Code by trying acquireVsCodeApi.
+      // ---------------------------------------------------------------------------
+
+      const hostBridge = (function () {
+        const cfg = window.__hostBridge || {};
+        const mode = cfg.mode || "auto";
+
+        // --- VS Code path ---
+        if (mode === "vscode" || (mode === "auto" && typeof acquireVsCodeApi === "function")) {
+          const vscode = acquireVsCodeApi();
+          return {
+            postMessage(msg) { vscode.postMessage(msg); },
+            onMessage(callback) {
+              window.addEventListener("message", (event) => {
+                if (event.data) callback(event.data);
+              });
+            },
+          };
+        }
+
+        // --- wry (native window) path ---
+        return {
+          postMessage(msg) {
+            if (window.ipc && window.ipc.postMessage) {
+              window.ipc.postMessage(JSON.stringify(msg));
+            }
+          },
+          onMessage(callback) {
+            window._onHostMessage = callback;
+          },
+        };
+      })();
+
+      // ---------------------------------------------------------------------------
+      // State and DOM refs
+      // ---------------------------------------------------------------------------
+
+      const SCOPE_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#a855f7", "#ec4899", "#14b8a6", "#f97316"];
+      const state = {
+        running: false,
+        connected: false,
+        path: "",
+        status: "Stopped",
+        error: "",
+        buffers: [],
+        params: [],
+        inputDevices: [],
+        outputDevices: [],
+        currentInputDevice: null,
+        currentOutputDevice: null,
+      };
+
+      const startButton = document.getElementById("start");
+      const stopButton = document.getElementById("stop");
+      const resetButton = document.getElementById("reset");
+      const pathNode = document.getElementById("path");
+      const statusNode = document.getElementById("status");
+      const errorNode = document.getElementById("error");
+      const ioSettingsNode = document.getElementById("io-settings");
+      const inputDeviceNode = document.getElementById("input-device");
+      const outputDeviceNode = document.getElementById("output-device");
+      const buffersSection = document.getElementById("buffers-section");
+      const buffersSummaryNode = document.getElementById("buffers-summary");
+      const buffersNode = document.getElementById("buffers");
+      const paramsSection = document.getElementById("params-section");
+      const paramsSummaryNode = document.getElementById("params-summary");
+      const paramsNode = document.getElementById("params");
+      const scopeSection = document.getElementById("scope-section");
+      const scopeCanvas = document.getElementById("scope-canvas");
+      const scopeCtx = scopeCanvas.getContext("2d");
+
+      // ---------------------------------------------------------------------------
+      // Host communication
+      // ---------------------------------------------------------------------------
+
+      hostBridge.postMessage({ type: "webviewReady" });
+      window.addEventListener("load", () => {
+        hostBridge.postMessage({ type: "webviewReady" });
+      });
+
+      startButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "start", path: state.path || undefined });
+      });
+      stopButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "stop" });
+      });
+      resetButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "reset" });
+      });
+      inputDeviceNode.addEventListener("change", () => {
+        hostBridge.postMessage({ type: "setInputDevice", name: inputDeviceNode.value || null });
+      });
+      outputDeviceNode.addEventListener("change", () => {
+        hostBridge.postMessage({ type: "setOutputDevice", name: outputDeviceNode.value || null });
+      });
+
+      // ---------------------------------------------------------------------------
+      // Scope rendering
+      // ---------------------------------------------------------------------------
+
+      function drawScope(channels, samples) {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = scopeCanvas.getBoundingClientRect();
+        const w = Math.round(rect.width * dpr);
+        const h = Math.round(rect.height * dpr);
+        if (scopeCanvas.width !== w || scopeCanvas.height !== h) {
+          scopeCanvas.width = w;
+          scopeCanvas.height = h;
+        }
+        scopeCtx.clearRect(0, 0, w, h);
+        if (channels === 0 || samples.length === 0) {
+          return;
+        }
+        const frames = Math.floor(samples.length / channels);
+        if (frames === 0) {
+          return;
+        }
+
+        const chHeight = h / channels;
+        for (let ch = 0; ch < channels; ch++) {
+          const yCenter = chHeight * ch + chHeight / 2;
+          const amplitude = chHeight / 2 * 0.85;
+          const color = SCOPE_COLORS[ch % SCOPE_COLORS.length];
+
+          scopeCtx.strokeStyle = "rgba(255,255,255,0.06)";
+          scopeCtx.lineWidth = 1;
+          scopeCtx.beginPath();
+          scopeCtx.moveTo(0, yCenter);
+          scopeCtx.lineTo(w, yCenter);
+          scopeCtx.stroke();
+
+          scopeCtx.strokeStyle = color;
+          scopeCtx.lineWidth = 1.5 * dpr;
+          scopeCtx.beginPath();
+          for (let i = 0; i < w; i++) {
+            const frameIdx = Math.floor(i * frames / w);
+            const sample = samples[frameIdx * channels + ch];
+            const clamped = Math.max(-1, Math.min(1, sample));
+            const y = yCenter - clamped * amplitude;
+            if (i === 0) {
+              scopeCtx.moveTo(i, y);
+            } else {
+              scopeCtx.lineTo(i, y);
+            }
+          }
+          scopeCtx.stroke();
+        }
+      }
+
+      // ---------------------------------------------------------------------------
+      // Param hydration
+      // ---------------------------------------------------------------------------
+      // Ensures every param has `value` filled in from its metadata when the
+      // host does not provide it. This is the single code path used by both
+      // VS Code and the native window.
+
+      function initialParamValue(param) {
+        if (param.type === "bool") {
+          if (param.default === null || param.default === undefined) {
+            return false;
+          }
+          return param.default !== 0;
+        }
+        if (param.default !== null && param.default !== undefined) {
+          return param.default;
+        }
+        if (param.rangeMin !== null && param.rangeMin !== undefined) {
+          return param.rangeMin;
+        }
+        return 0;
+      }
+
+      function hydrateParams(params) {
+        if (!Array.isArray(params)) return [];
+        return params
+          .filter(function (p) { return p.scalar !== false; })
+          .map(function (p) {
+            return Object.assign({}, p, {
+              value: (p.value !== undefined && p.value !== null) ? p.value : initialParamValue(p),
+            });
+          });
+      }
+
+      // ---------------------------------------------------------------------------
+      // Message handler
+      // ---------------------------------------------------------------------------
+
+      hostBridge.onMessage((message) => {
+        if (!message) {
+          return;
+        }
+        if (message.type === "scopeData") {
+          drawScope(message.channels, message.samples);
+          return;
+        }
+        if (message.type !== "state") {
+          return;
+        }
+        const incoming = message.state || {};
+        // Hydrate params with defaults if the host did not already do so.
+        if (incoming.params) {
+          incoming.params = hydrateParams(incoming.params);
+        }
+        Object.assign(state, incoming);
+        render();
+      });
+
+      // ---------------------------------------------------------------------------
+      // Render
+      // ---------------------------------------------------------------------------
+
+      function render() {
+        pathNode.textContent = state.path ? state.path : "No patch selected";
+        statusNode.textContent = state.connected ? state.status : state.running ? state.status + " (connecting controls...)" : state.status;
+        errorNode.textContent = state.error || "";
+        scopeSection.style.display = state.connected ? "block" : "none";
+        const hasBuffers = state.buffers.length > 0;
+        const hasParams = state.params.length > 0;
+        const hasIoSettings = state.inputDevices.length > 0 || state.outputDevices.length > 0;
+        buffersSection.style.display = hasBuffers ? "" : "none";
+        paramsSection.style.display = hasParams ? "" : "none";
+        ioSettingsNode.style.display = hasIoSettings ? "grid" : "none";
+        buffersSummaryNode.textContent = hasBuffers ? state.buffers.length + " buffer" + (state.buffers.length === 1 ? "" : "s") : "";
+        paramsSummaryNode.textContent = hasParams ? state.params.length + " control" + (state.params.length === 1 ? "" : "s") : "";
+
+        startButton.disabled = !state.path || state.running;
+        stopButton.disabled = !state.running;
+        resetButton.disabled = !hasParams;
+        renderDeviceOptions(inputDeviceNode, state.inputDevices, state.currentInputDevice, true);
+        renderDeviceOptions(outputDeviceNode, state.outputDevices, state.currentOutputDevice, true);
+
+        buffersNode.replaceChildren();
+        if (hasBuffers) {
+          for (const buffer of state.buffers) {
+            const card = document.createElement("div");
+            card.className = "buffer-card";
+
+            const head = document.createElement("div");
+            head.className = "param-head";
+            head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
+            head.querySelector(".param-name").textContent = buffer.name;
+            head.querySelector(".param-type").textContent =
+              buffer.type + " \u00b7 " + describePatchBufferChannels(buffer);
+            card.appendChild(head);
+
+            const loaded = document.createElement("div");
+            loaded.className = "buffer-path";
+            loaded.textContent = buffer.loadedPath ? buffer.loadedPath : "No file loaded";
+            card.appendChild(loaded);
+
+            const actions = document.createElement("div");
+            actions.className = "buffer-actions";
+            const choose = document.createElement("button");
+            choose.className = "secondary";
+            choose.textContent = "Choose File";
+            choose.addEventListener("click", () => {
+              hostBridge.postMessage({ type: "chooseBufferFile", name: buffer.name });
+            });
+            const clear = document.createElement("button");
+            clear.className = "secondary";
+            clear.textContent = "Clear";
+            clear.disabled = !buffer.loadedPath;
+            clear.addEventListener("click", () => {
+              hostBridge.postMessage({ type: "clearBuffer", name: buffer.name });
+            });
+            actions.append(choose, clear);
+            card.appendChild(actions);
+
+            buffersNode.appendChild(card);
+          }
+        }
+
+        paramsNode.replaceChildren();
+        for (const param of state.params) {
+          const card = document.createElement("div");
+          card.className = "param";
+
+          const head = document.createElement("div");
+          head.className = "param-head";
+          head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
+          head.querySelector(".param-name").textContent = param.name;
+          head.querySelector(".param-type").textContent = param.type;
+          card.appendChild(head);
+
+          const controls = document.createElement("div");
+          controls.className = "param-controls";
+          card.appendChild(controls);
+
+          if (param.type === "bool") {
+            const label = document.createElement("label");
+            label.className = "param-toggle";
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = Boolean(param.value);
+            input.disabled = !state.connected;
+            input.addEventListener("change", () => {
+              hostBridge.postMessage({ type: "setParam", name: param.name, value: input.checked });
+            });
+            const text = document.createElement("span");
+            text.textContent = input.checked ? "On" : "Off";
+            input.addEventListener("change", () => {
+              text.textContent = input.checked ? "On" : "Off";
+            });
+            label.append(input, text);
+            controls.appendChild(label);
+          } else {
+            const hasRange = Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax);
+            const step = param.type === "i32" || param.type === "i64" ? "1" : "0.001";
+            const currentValue = typeof param.value === "number" ? param.value : 0;
+
+            if (hasRange) {
+              const range = document.createElement("input");
+              range.className = "param-range";
+              range.type = "range";
+              range.min = String(param.rangeMin);
+              range.max = String(param.rangeMax);
+              range.step = step;
+              range.value = String(currentValue);
+              range.disabled = !state.connected;
+              controls.appendChild(range);
+
+              const number = document.createElement("input");
+              number.className = "param-number";
+              number.type = "number";
+              number.min = String(param.rangeMin);
+              number.max = String(param.rangeMax);
+              number.step = step;
+              number.value = String(currentValue);
+              number.disabled = !state.connected;
+              controls.appendChild(number);
+
+              const sync = (nextValue) => {
+                range.value = nextValue;
+                number.value = nextValue;
+              };
+
+              range.addEventListener("input", () => {
+                sync(range.value);
+                hostBridge.postMessage({ type: "setParam", name: param.name, value: Number(range.value) });
+              });
+              number.addEventListener("change", () => {
+                sync(number.value);
+                hostBridge.postMessage({ type: "setParam", name: param.name, value: Number(number.value) });
+              });
+            } else {
+              const number = document.createElement("input");
+              number.className = "param-number";
+              number.type = "number";
+              number.step = step;
+              number.value = String(currentValue);
+              number.disabled = !state.connected;
+              number.addEventListener("change", () => {
+                hostBridge.postMessage({ type: "setParam", name: param.name, value: Number(number.value) });
+              });
+              controls.appendChild(number);
+            }
+
+          }
+
+          paramsNode.appendChild(card);
+        }
+      }
+
+      // ---------------------------------------------------------------------------
+      // Helpers
+      // ---------------------------------------------------------------------------
+
+      function describePatchBufferChannels(buffer) {
+        switch (buffer.channelsKind) {
+          case "mono":
+            return "mono";
+          case "static":
+            return String(buffer.channelsStatic || 0) + "-channel";
+          case "dynamic":
+            return "dynamic channels";
+          default:
+            return "unknown";
+        }
+      }
+
+      function renderDeviceOptions(node, devices, selected, enabled) {
+        if (!node) {
+          return;
+        }
+        node.replaceChildren();
+        const defaultOption = document.createElement("option");
+        defaultOption.value = "";
+        defaultOption.textContent = "Default";
+        node.appendChild(defaultOption);
+        for (const device of devices || []) {
+          const option = document.createElement("option");
+          option.value = device;
+          option.textContent = device;
+          node.appendChild(option);
+        }
+        node.value = selected || "";
+        node.disabled = !enabled;
+      }
+
+      render();
+    </script>
+  </body>
+</html>

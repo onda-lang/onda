@@ -73,7 +73,14 @@ pub(in crate::orc_backend) unsafe fn lower_orc_buffer_write2_call(
         local_tuples,
         clamp_index,
     )?;
-    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+    let value = lower_expr(
+        value_expr,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+    )?;
     let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"buf2_write_cast\0");
     LLVMBuildStore(ctx.builder, casted, data.ptr);
     Ok(OrcValue {
@@ -208,7 +215,14 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_write_call(
             local_tuples,
             false,
         )?;
-        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+        let value = lower_expr(
+            value_expr,
+            ctx,
+            locals,
+            local_aliases,
+            local_array_aliases,
+            local_tuples,
+        )?;
         let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"unsafe_out_arr_write_cast\0");
         LLVMBuildStore(ctx.builder, casted, data.ptr);
         return Ok(OrcValue {
@@ -227,7 +241,14 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_write_call(
             local_tuples,
             false,
         )?;
-        let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+        let value = lower_expr(
+            value_expr,
+            ctx,
+            locals,
+            local_aliases,
+            local_array_aliases,
+            local_tuples,
+        )?;
         let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"unsafe_buf_write_cast\0");
         LLVMBuildStore(ctx.builder, casted, data.ptr);
         return Ok(OrcValue {
@@ -244,7 +265,14 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_write_call(
         local_array_aliases,
         local_tuples,
     )?;
-    let value = lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+    let value = lower_expr(
+        value_expr,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+    )?;
     let casted = cast_orc_value_to(ctx, value, data.elem_ty, b"unsafe_data_write_cast\0");
     LLVMBuildStore(ctx.builder, casted, data.ptr);
     Ok(OrcValue {
@@ -1100,7 +1128,13 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_def(
 ) -> Result<(), Diagnostic> {
     if let Expr::Var { name: base, .. } = arg_expr {
         if let Some(info) = ctx.buffer_params.get(base) {
-            push_buffer_tuple(out_args, info.ptr, info.frames, info.channels, info.sample_rate);
+            push_buffer_tuple(
+                out_args,
+                info.ptr,
+                info.frames,
+                info.channels,
+                info.sample_rate,
+            );
             return Ok(());
         }
 

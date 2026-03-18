@@ -111,11 +111,9 @@ fn parse_section_count_inner(pair: Pair<'_, Rule>) -> Result<SectionCount, Vec<D
             let n = parse_int(pair.as_str())?;
             Ok(SectionCount::Literal(n as usize))
         }
-        Rule::path_ident | Rule::namespace_ref => {
-            Ok(SectionCount::Deferred(
-                Expr::var(pair.as_str().to_owned()).with_loc(loc),
-            ))
-        }
+        Rule::path_ident | Rule::namespace_ref => Ok(SectionCount::Deferred(
+            Expr::var(pair.as_str().to_owned()).with_loc(loc),
+        )),
         Rule::section_count => {
             let mut inner = pair.into_inner();
             let Some(inner_pair) = inner.next() else {
@@ -170,9 +168,7 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
                         if n == 0 {
                             return Err(vec![syntax_at_loc(
                                 count_loc.as_ref(),
-                                format!(
-                                    "{block_name} count shorthand must be greater than zero"
-                                ),
+                                format!("{block_name} count shorthand must be greater than zero"),
                             )]);
                         }
                         count_prefix = Some(n);

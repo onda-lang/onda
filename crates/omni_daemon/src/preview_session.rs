@@ -56,6 +56,7 @@ pub struct PreviewParamInfo {
     pub index: usize,
     pub name: String,
     pub type_repr: String,
+    pub value: Option<f64>,
     pub default: Option<f64>,
     pub range_min: Option<f64>,
     pub range_max: Option<f64>,
@@ -93,6 +94,7 @@ pub struct PreviewSession {
     jit: JitProgram,
     instance: Instance,
     param_values: HashMap<String, f64>,
+    param_runtime_values: HashMap<String, f64>,
     buffer_bindings: Vec<PreviewBufferBinding>,
     input_buffers: Vec<Vec<f32>>,
     output_buffers: Vec<Vec<f32>>,
@@ -166,6 +168,7 @@ impl PreviewSession {
             jit,
             instance,
             param_values: HashMap::new(),
+            param_runtime_values: HashMap::new(),
             buffer_bindings,
             input_buffers,
             output_buffers,
@@ -192,14 +195,24 @@ impl PreviewSession {
         self.output_buffers.len()
     }
 
+    pub fn input_channel_count(&self) -> usize {
+        self.input_buffers.len()
+    }
+
     pub fn param_info(&self) -> Vec<PreviewParamInfo> {
         (0..self.jit.param_count())
             .filter_map(|index| {
                 let desc = self.jit.param_descriptor(index)?;
+                let value = self
+                    .param_values
+                    .get(desc.name())
+                    .copied()
+                    .or_else(|| desc.default_as_f64());
                 Some(PreviewParamInfo {
                     index,
                     name: desc.name().to_owned(),
                     type_repr: desc.type_repr(),
+                    value,
                     default: desc.default_as_f64(),
                     range_min: desc.range_min_as_f64(),
                     range_max: desc.range_max_as_f64(),
@@ -256,18 +269,49 @@ impl PreviewSession {
                 0,
             ));
         }
-        let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
-        set_param_by_index(&mut self.instance, index, &bytes)?;
         self.param_values.insert(name.to_owned(), value);
+        if should_smooth_preview_param(desc.elem_ty()) {
+            self.param_runtime_values
+                .entry(name.to_owned())
+                .or_insert_with(|| default_preview_param_value(desc));
+        } else {
+            let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
+            set_param_by_index(&mut self.instance, index, &bytes)?;
+            self.param_runtime_values.insert(name.to_owned(), value);
+        }
         Ok(())
     }
 
     pub fn render_block(&mut self) -> Result<Vec<Vec<f32>>, Diagnostic> {
+        self.apply_smoothed_params()?;
         for buffer in &mut self.output_buffers {
             buffer.fill(0.0);
         }
         process_bound(&mut self.instance, self.options.block_size)?;
         Ok(self.output_buffers.clone())
+    }
+
+    pub fn set_input_block(&mut self, interleaved: &[f32], source_channels: usize) {
+        for buffer in &mut self.input_buffers {
+            buffer.fill(0.0);
+        }
+        if source_channels == 0 || interleaved.is_empty() {
+            return;
+        }
+
+        let frames = self
+            .options
+            .block_size
+            .min(interleaved.len() / source_channels);
+        for frame in 0..frames {
+            let base = frame * source_channels;
+            for (channel_index, buffer) in self.input_buffers.iter_mut().enumerate() {
+                if channel_index >= source_channels {
+                    break;
+                }
+                buffer[frame] = interleaved[base + channel_index];
+            }
+        }
     }
 
     pub fn reset(&mut self) {
@@ -281,7 +325,13 @@ impl PreviewSession {
     ) -> Result<(), Diagnostic> {
         let path = path.as_ref();
         let (samples, channels, sample_rate_hz) = read_wav_interleaved_f32(path)?;
-        self.bind_buffer_samples(name, samples, channels, sample_rate_hz as f32, Some(path.to_path_buf()))
+        self.bind_buffer_samples(
+            name,
+            samples,
+            channels,
+            sample_rate_hz as f32,
+            Some(path.to_path_buf()),
+        )
     }
 
     pub fn clear_buffer(&mut self, name: &str) -> Result<(), Diagnostic> {
@@ -409,10 +459,45 @@ impl PreviewSession {
             let Some(desc) = self.jit.param_descriptor(index) else {
                 continue;
             };
-            let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
+            let runtime_value = self
+                .param_runtime_values
+                .get(&name)
+                .copied()
+                .unwrap_or(value);
+            let bytes = scalar_param_bytes(desc.elem_ty(), runtime_value)?;
             set_param_by_index(&mut instance, index, &bytes)?;
         }
         self.instance = instance;
+        Ok(())
+    }
+
+    fn apply_smoothed_params(&mut self) -> Result<(), Diagnostic> {
+        let block_ms = (self.options.block_size as f64 * 1000.0)
+            / f64::from(self.options.sample_rate.max(1.0));
+        let alpha = (block_ms / DEFAULT_PREVIEW_FLOAT_PARAM_SMOOTHING_MS).clamp(0.0, 1.0);
+        for (name, target_value) in self.param_values.clone() {
+            let Some(index) = self.jit.param_index(&name) else {
+                continue;
+            };
+            let Some(desc) = self.jit.param_descriptor(index) else {
+                continue;
+            };
+            if !should_smooth_preview_param(desc.elem_ty()) {
+                continue;
+            }
+            let current_value = self
+                .param_runtime_values
+                .get(&name)
+                .copied()
+                .unwrap_or_else(|| default_preview_param_value(desc));
+            let mut next_value = current_value + (target_value - current_value) * alpha;
+            if (target_value - next_value).abs() <= f64::max(0.0001, target_value.abs() * 0.001) {
+                next_value = target_value;
+            }
+            let bytes = scalar_param_bytes(desc.elem_ty(), next_value)?;
+            set_param_by_index(&mut self.instance, index, &bytes)?;
+            self.param_runtime_values.insert(name, next_value);
+        }
         Ok(())
     }
 }
@@ -465,6 +550,18 @@ fn default_preview_buffer_channels(channels: DeclaredBufferChannels) -> usize {
         DeclaredBufferChannels::Static(channels) => channels.max(1),
         DeclaredBufferChannels::Dynamic => 1,
     }
+}
+
+const DEFAULT_PREVIEW_FLOAT_PARAM_SMOOTHING_MS: f64 = 20.0;
+
+fn should_smooth_preview_param(ty: PrimitiveType) -> bool {
+    matches!(ty, PrimitiveType::F32 | PrimitiveType::F64)
+}
+
+fn default_preview_param_value(desc: &omni_codegen_llvm::DeclaredIo) -> f64 {
+    desc.default_as_f64()
+        .or_else(|| desc.range_min_as_f64())
+        .unwrap_or(0.0)
 }
 
 fn read_wav_interleaved_f32(path: &Path) -> Result<(Vec<f32>, usize, u32), Diagnostic> {

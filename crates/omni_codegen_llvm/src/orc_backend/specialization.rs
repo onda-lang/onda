@@ -371,7 +371,10 @@ pub(super) fn infer_specialized_expr_return_type(
             PrimitiveType::I64
         }),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
-        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } | Expr::Slice { .. } | Expr::Tuple { .. } => None,
+        Expr::ArrayLiteral { .. }
+        | Expr::ArrayCtor { .. }
+        | Expr::Slice { .. }
+        | Expr::Tuple { .. } => None,
         Expr::Var { name, .. } => {
             builtin_constant_symbol_type(name).or_else(|| locals.get(name).copied())
         }
@@ -580,8 +583,7 @@ fn infer_user_call_return_type(
                 let fallback_ty = if let Some(arg_expr) = resolved_arg {
                     infer_specialized_expr_return_type(arg_expr, locals, registry)?
                         .unwrap_or(PrimitiveType::F32)
-                } else if let Some(default_expr) =
-                    param_defaults.get(idx).and_then(|d| d.as_ref())
+                } else if let Some(default_expr) = param_defaults.get(idx).and_then(|d| d.as_ref())
                 {
                     infer_specialized_expr_return_type(default_expr, locals, registry)?
                         .unwrap_or(PrimitiveType::F32)
@@ -605,11 +607,8 @@ fn infer_user_call_return_type(
             TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
         }
     }
-    let explicit_type_args = resolve_explicit_call_type_args_for_codegen(
-        name,
-        "return type inference",
-        type_args,
-    )?;
+    let explicit_type_args =
+        resolve_explicit_call_type_args_for_codegen(name, "return type inference", type_args)?;
     apply_explicit_generic_type_args_for_call(
         registry,
         name,
@@ -644,7 +643,12 @@ fn infer_specialized_tuple_type_from_expr(
                 .collect();
             Ok(Some(tys?))
         }
-        Expr::UserCall { name, type_args, args, .. } => {
+        Expr::UserCall {
+            name,
+            type_args,
+            args,
+            ..
+        } => {
             let ret_ty = infer_user_call_return_type(name, type_args, args, locals, registry)?;
             match ret_ty {
                 ReturnType::Tuple(tys) => Ok(Some(tys)),
@@ -676,7 +680,9 @@ pub(super) fn infer_specialized_stmt_returns(
                     continue;
                 }
                 // Check if this assigns a tuple to a variable
-                if let Some(tys) = infer_specialized_tuple_type_from_expr(expr, locals, registry, tuple_locals)? {
+                if let Some(tys) =
+                    infer_specialized_tuple_type_from_expr(expr, locals, registry, tuple_locals)?
+                {
                     tuple_locals.insert(name.clone(), tys);
                     continue;
                 }
@@ -701,7 +707,9 @@ pub(super) fn infer_specialized_stmt_returns(
             }
             | Stmt::Expr { .. } => {}
             Stmt::Return { expr, .. } => {
-                if let Some(elem_tys) = infer_specialized_tuple_type_from_expr(expr, locals, registry, tuple_locals)? {
+                if let Some(elem_tys) =
+                    infer_specialized_tuple_type_from_expr(expr, locals, registry, tuple_locals)?
+                {
                     out.push(ReturnType::Tuple(elem_tys));
                 } else {
                     let ty = infer_specialized_expr_return_type(expr, locals, registry)?
@@ -718,8 +726,20 @@ pub(super) fn infer_specialized_stmt_returns(
                 let mut else_locals = locals.clone();
                 let mut then_tuple_locals = tuple_locals.clone();
                 let mut else_tuple_locals = tuple_locals.clone();
-                infer_specialized_stmt_returns(then_branch, &mut then_locals, registry, &mut then_tuple_locals, out)?;
-                infer_specialized_stmt_returns(else_branch, &mut else_locals, registry, &mut else_tuple_locals, out)?;
+                infer_specialized_stmt_returns(
+                    then_branch,
+                    &mut then_locals,
+                    registry,
+                    &mut then_tuple_locals,
+                    out,
+                )?;
+                infer_specialized_stmt_returns(
+                    else_branch,
+                    &mut else_locals,
+                    registry,
+                    &mut else_tuple_locals,
+                    out,
+                )?;
                 let mut merged = locals.clone();
                 for (name, then_ty) in &then_locals {
                     if let Some(else_ty) = else_locals.get(name) {
@@ -741,12 +761,24 @@ pub(super) fn infer_specialized_stmt_returns(
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone(), PrimitiveType::I32);
                 let mut loop_tuple_locals = tuple_locals.clone();
-                infer_specialized_stmt_returns(body, &mut loop_locals, registry, &mut loop_tuple_locals, out)?;
+                infer_specialized_stmt_returns(
+                    body,
+                    &mut loop_locals,
+                    registry,
+                    &mut loop_tuple_locals,
+                    out,
+                )?;
             }
             Stmt::While { body, .. } => {
                 let mut loop_locals = locals.clone();
                 let mut loop_tuple_locals = tuple_locals.clone();
-                infer_specialized_stmt_returns(body, &mut loop_locals, registry, &mut loop_tuple_locals, out)?;
+                infer_specialized_stmt_returns(
+                    body,
+                    &mut loop_locals,
+                    registry,
+                    &mut loop_tuple_locals,
+                    out,
+                )?;
             }
             Stmt::Break { .. } | Stmt::Continue { .. } => {}
         }
@@ -838,7 +870,13 @@ pub(super) fn infer_specialized_def_return_type(
         }
 
         let mut returns = Vec::<ReturnType>::new();
-        infer_specialized_stmt_returns(&def.body, &mut locals, registry, &mut tuple_locals, &mut returns)?;
+        infer_specialized_stmt_returns(
+            &def.body,
+            &mut locals,
+            registry,
+            &mut tuple_locals,
+            &mut returns,
+        )?;
         let mut it = returns.into_iter();
         let Some(mut ret_ty) = it.next() else {
             return Ok(registry

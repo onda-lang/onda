@@ -796,9 +796,7 @@ pub(crate) fn analyze_def_stmt(
                                 _ => None,
                             }
                         }
-                        Expr::Var { name: var_name, .. } => {
-                            tuple_vars.get(var_name).copied()
-                        }
+                        Expr::Var { name: var_name, .. } => tuple_vars.get(var_name).copied(),
                         _ => None,
                     };
                     if let Some(arity) = tuple_arity {
@@ -1233,12 +1231,10 @@ pub(crate) fn analyze_def_stmt(
                     // Validate destructuring arity against the RHS tuple length
                     let rhs_arity = match expr {
                         Expr::Tuple { values, .. } => Some(values.len()),
-                        Expr::UserCall { name, .. } => {
-                            match def_return_types.get(name.as_str()) {
-                                Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
-                                _ => None,
-                            }
-                        }
+                        Expr::UserCall { name, .. } => match def_return_types.get(name.as_str()) {
+                            Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
+                            _ => None,
+                        },
                         _ => None,
                     };
                     if let Some(expected) = rhs_arity {

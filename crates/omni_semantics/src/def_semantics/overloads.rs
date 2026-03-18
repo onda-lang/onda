@@ -348,7 +348,11 @@ fn format_fn_param_for_overload(name: &str, ty: Option<&FnParamType>, has_defaul
         Some(FnParamType::Array(None)) => format!("{name}: []"),
         Some(FnParamType::BareBuffer) => format!("{name}: buffer"),
         Some(FnParamType::Tuple(elems)) => {
-            let inner = elems.iter().map(|p| format!("{p:?}").to_lowercase()).collect::<Vec<_>>().join(", ");
+            let inner = elems
+                .iter()
+                .map(|p| format!("{p:?}").to_lowercase())
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("{name}: ({inner})")
         }
         None => name.to_owned(),

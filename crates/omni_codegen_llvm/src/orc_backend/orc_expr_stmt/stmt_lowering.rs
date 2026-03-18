@@ -128,20 +128,17 @@ pub(super) unsafe fn lower_stmt(
                                     TypedFieldType::Struct => {}
                                     TypedFieldType::Tuple(ref elem_tys) => {
                                         // Store defaults for each tuple element
-                                        let default_values: Vec<Expr> =
-                                            if let Some(Expr::Tuple { values, .. }) =
-                                                &field.default
-                                            {
-                                                values.clone()
-                                            } else {
-                                                elem_tys
-                                                    .iter()
-                                                    .map(|_| Expr::number(0.0))
-                                                    .collect()
-                                            };
+                                        let default_values: Vec<Expr> = if let Some(Expr::Tuple {
+                                            values,
+                                            ..
+                                        }) = &field.default
+                                        {
+                                            values.clone()
+                                        } else {
+                                            elem_tys.iter().map(|_| Expr::number(0.0)).collect()
+                                        };
                                         for (idx, _prim) in elem_tys.iter().enumerate() {
-                                            let elem_flat =
-                                                format!("{flat_target}.__{idx}");
+                                            let elem_flat = format!("{flat_target}.__{idx}");
                                             let slot = ctx
                                                 .state_slots
                                                 .get(&elem_flat)
@@ -397,8 +394,14 @@ pub(super) unsafe fn lower_stmt(
                             "array initializer for symbol '{name}' cannot be empty in ORC lowering"
                         )));
                     }
-                    let first_typed =
-                        lower_expr(&values[0], ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+                    let first_typed = lower_expr(
+                        &values[0],
+                        ctx,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        local_tuples,
+                    )?;
                     let elem_ty = first_typed.ty;
                     let len = values.len();
                     let ptr = build_local_array_slot(
@@ -411,7 +414,14 @@ pub(super) unsafe fn lower_stmt(
                         let typed = if idx == 0 {
                             first_typed
                         } else {
-                            lower_expr(value_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?
+                            lower_expr(
+                                value_expr,
+                                ctx,
+                                locals,
+                                local_aliases,
+                                local_array_aliases,
+                                local_tuples,
+                            )?
                         };
                         let casted =
                             cast_orc_value_to(ctx, typed, elem_ty, b"local_arr_init_cast\0");
@@ -454,7 +464,8 @@ pub(super) unsafe fn lower_stmt(
                                 local_array_aliases,
                                 local_tuples,
                             )?;
-                            let casted = cast_orc_value_to(ctx, typed, slot.ty, b"tuple_init_cast\0");
+                            let casted =
+                                cast_orc_value_to(ctx, typed, slot.ty, b"tuple_init_cast\0");
                             LLVMBuildStore(ctx.builder, casted, slot.ptr);
                         }
                         return Ok(());
@@ -472,7 +483,8 @@ pub(super) unsafe fn lower_stmt(
                         )?;
                         let flat_name = format!("{name}.__{idx}");
                         if let Some(slot) = local_aliases.get(&flat_name) {
-                            let casted = cast_orc_value_to(ctx, typed, slot.ty, b"tup_local_cast\0");
+                            let casted =
+                                cast_orc_value_to(ctx, typed, slot.ty, b"tup_local_cast\0");
                             LLVMBuildStore(ctx.builder, casted, slot.ptr);
                         } else {
                             let slot = build_local_slot(
@@ -532,7 +544,10 @@ pub(super) unsafe fn lower_stmt(
                             if let Some(dst_slot) = local_aliases.get(&dst_flat) {
                                 let casted = cast_orc_value_to(
                                     ctx,
-                                    OrcValue { value: val, ty: *ty },
+                                    OrcValue {
+                                        value: val,
+                                        ty: *ty,
+                                    },
                                     dst_slot.ty,
                                     b"tup_copy_cast\0",
                                 );
@@ -544,10 +559,7 @@ pub(super) unsafe fn lower_stmt(
                                     &format!("v_{dst_flat}"),
                                 )?;
                                 LLVMBuildStore(ctx.builder, val, slot);
-                                local_aliases.insert(
-                                    dst_flat,
-                                    AliasSlot { ptr: slot, ty: *ty },
-                                );
+                                local_aliases.insert(dst_flat, AliasSlot { ptr: slot, ty: *ty });
                             }
                         }
                         local_tuples.insert(name.clone(), elem_tys);
@@ -594,7 +606,14 @@ pub(super) unsafe fn lower_stmt(
                 }
 
                 if let Some(alias) = local_aliases.get(name) {
-                    let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+                    let typed = lower_expr(
+                        expr,
+                        ctx,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        local_tuples,
+                    )?;
                     let value = cast_orc_value_to(ctx, typed, alias.ty, b"alias_store_cast\0");
                     LLVMBuildStore(ctx.builder, value, alias.ptr);
                     return Ok(());
@@ -697,7 +716,14 @@ pub(super) unsafe fn lower_stmt(
                     }
                 }
 
-                let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+                let typed = lower_expr(
+                    expr,
+                    ctx,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    local_tuples,
+                )?;
                 if let Some(slot) = ctx.out_slots.get(name) {
                     let casted = cast_orc_value_to(ctx, typed, slot.ty, b"out_store_cast\0");
                     LLVMBuildStore(ctx.builder, casted, slot.ptr);
@@ -752,8 +778,24 @@ pub(super) unsafe fn lower_stmt(
             AssignTarget::Index { base, index } => {
                 if base == "outs" {
                     if let (Some(meta), Some(arr)) = (ctx.port_index_outs, ctx.out_slot_ptr_array) {
-                        let typed_val = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
-                        let idx = lower_array_index_i32(ctx, index, meta.count, locals, local_aliases, local_array_aliases, local_tuples, true)?;
+                        let typed_val = lower_expr(
+                            expr,
+                            ctx,
+                            locals,
+                            local_aliases,
+                            local_array_aliases,
+                            local_tuples,
+                        )?;
+                        let idx = lower_array_index_i32(
+                            ctx,
+                            index,
+                            meta.count,
+                            locals,
+                            local_aliases,
+                            local_array_aliases,
+                            local_tuples,
+                            true,
+                        )?;
                         let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, meta.elem_ty);
                         let slot_ptr_ty = LLVMPointerType(elem_llvm_ty, 0);
                         let gep = LLVMBuildGEP2(
@@ -764,15 +806,28 @@ pub(super) unsafe fn lower_stmt(
                             1,
                             b"outs_w_slot_gep\0".as_ptr().cast(),
                         );
-                        let slot_ptr = LLVMBuildLoad2(ctx.builder, slot_ptr_ty, gep, b"outs_w_slot_ptr\0".as_ptr().cast());
-                        let casted = cast_orc_value_to(ctx, typed_val, meta.elem_ty, b"outs_store_cast\0");
+                        let slot_ptr = LLVMBuildLoad2(
+                            ctx.builder,
+                            slot_ptr_ty,
+                            gep,
+                            b"outs_w_slot_ptr\0".as_ptr().cast(),
+                        );
+                        let casted =
+                            cast_orc_value_to(ctx, typed_val, meta.elem_ty, b"outs_store_cast\0");
                         LLVMBuildStore(ctx.builder, casted, slot_ptr);
                         return Ok(());
                     }
                 }
                 // Tuple state element write: pair[0] = value → state_slots["pair.__0"]
                 if ctx.state_slots.contains_key(&format!("{base}.__0")) {
-                    let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+                    let typed = lower_expr(
+                        expr,
+                        ctx,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        local_tuples,
+                    )?;
                     if let Expr::Int { value, .. } = index {
                         let flat_name = format!("{base}.__{value}");
                         let slot = ctx.state_slots.get(&flat_name).ok_or_else(|| {
@@ -780,7 +835,8 @@ pub(super) unsafe fn lower_stmt(
                                 "tuple state element '{flat_name}' not found in state slots"
                             ))
                         })?;
-                        let casted = cast_orc_value_to(ctx, typed, slot.ty, b"tuple_state_store_cast\0");
+                        let casted =
+                            cast_orc_value_to(ctx, typed, slot.ty, b"tuple_state_store_cast\0");
                         LLVMBuildStore(ctx.builder, casted, slot.ptr);
                         return Ok(());
                     }
@@ -788,7 +844,14 @@ pub(super) unsafe fn lower_stmt(
                         "tuple element index must be a compile-time integer constant in ORC lowering",
                     ));
                 }
-                let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+                let typed = lower_expr(
+                    expr,
+                    ctx,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    local_tuples,
+                )?;
                 if ctx.input_arrays.contains_key(base) || ctx.param_arrays.contains_key(base) {
                     return Err(Diagnostic::internal(format!(
                         "cannot assign to immutable top-level array '{base}' in ORC lowering"
@@ -842,20 +905,25 @@ pub(super) unsafe fn lower_stmt(
                 local_array_aliases,
                 local_tuples,
             ),
-            AssignTarget::Tuple(targets) => {
-                lower_orc_tuple_destructure(
-                    targets,
-                    expr,
-                    ctx,
-                    locals,
-                    local_aliases,
-                    local_array_aliases,
-                    local_tuples,
-                )
-            }
+            AssignTarget::Tuple(targets) => lower_orc_tuple_destructure(
+                targets,
+                expr,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            ),
         },
         Stmt::Expr { expr, .. } => {
-            let _ = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let _ = lower_expr(
+                expr,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             Ok(())
         }
         Stmt::Return { .. } => Err(Diagnostic::internal(
@@ -867,7 +935,14 @@ pub(super) unsafe fn lower_stmt(
             else_branch,
             ..
         } => {
-            let cond_value = lower_expr(cond, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let cond_value = lower_expr(
+                cond,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             let cond_bool = {
                 let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
                     cast_orc_value_to(ctx, value, to, name)
@@ -936,14 +1011,34 @@ pub(super) unsafe fn lower_stmt(
             body,
             ..
         } => {
-            let start_value = lower_expr(start, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let start_value = lower_expr(
+                start,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             let start_v =
                 cast_orc_value_to(ctx, start_value, PrimitiveType::I32, b"for_start_i32\0");
-            let end_value = lower_expr(end, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let end_value = lower_expr(
+                end,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             let end_v = cast_orc_value_to(ctx, end_value, PrimitiveType::I32, b"for_end_i32\0");
             let step_v = if let Some(step_expr) = step {
-                let step_value =
-                    lower_expr(step_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+                let step_value = lower_expr(
+                    step_expr,
+                    ctx,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    local_tuples,
+                )?;
                 cast_orc_value_to(ctx, step_value, PrimitiveType::I32, b"for_step_i32\0")
             } else {
                 const_i32(ctx.i32_ty, 1)
@@ -1011,8 +1106,14 @@ pub(super) unsafe fn lower_stmt(
                 b"while_end\0",
                 || unsafe {
                     let ctx = &mut *ctx_ptr;
-                    let cond_value =
-                        lower_expr(cond, ctx, locals, local_aliases, local_array_aliases, &mut *tuples_ptr)?;
+                    let cond_value = lower_expr(
+                        cond,
+                        ctx,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        &mut *tuples_ptr,
+                    )?;
                     let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
                         cast_orc_value_to(ctx, value, to, name)
                     };
@@ -1158,10 +1259,9 @@ unsafe fn lower_orc_tuple_from_call(
     )?;
     let mut arg_values = Vec::new();
     let ctx_ptr: *mut LoweringCtx<'_> = ctx;
-    let mut cast_scalar_arg =
-        |value: OrcValue, target_ty: PrimitiveType, arg_name: &[u8]| unsafe {
-            cast_orc_value_to(&*ctx_ptr, value, target_ty, arg_name)
-        };
+    let mut cast_scalar_arg = |value: OrcValue, target_ty: PrimitiveType, arg_name: &[u8]| unsafe {
+        cast_orc_value_to(&*ctx_ptr, value, target_ty, arg_name)
+    };
     let mut lower_struct_arg = |arg_values: &mut Vec<LLVMValueRef>,
                                 arg_expr: &Expr,
                                 struct_name: &str,
@@ -1179,32 +1279,30 @@ unsafe fn lower_orc_tuple_from_call(
             local_tuples,
         )
     };
-    let mut lower_array_arg =
-        |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
-            lower_array_call_args_in_orc(
-                &mut *ctx_ptr,
-                locals,
-                local_aliases,
-                local_array_aliases,
-                local_tuples,
-                arg_values,
-                arg_expr,
-                name,
-            )
-        };
-    let mut lower_buffer_arg =
-        |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
-            lower_buffer_call_args_in_orc(
-                &mut *ctx_ptr,
-                local_array_aliases,
-                local_tuples,
-                arg_values,
-                arg_expr,
-                name,
-                locals,
-                local_aliases,
-            )
-        };
+    let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+        lower_array_call_args_in_orc(
+            &mut *ctx_ptr,
+            locals,
+            local_aliases,
+            local_array_aliases,
+            local_tuples,
+            arg_values,
+            arg_expr,
+            name,
+        )
+    };
+    let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+        lower_buffer_call_args_in_orc(
+            &mut *ctx_ptr,
+            local_array_aliases,
+            local_tuples,
+            arg_values,
+            arg_expr,
+            name,
+            locals,
+            local_aliases,
+        )
+    };
     materialize_user_call_args_common(
         name,
         &prepared,
@@ -1351,7 +1449,14 @@ unsafe fn lower_orc_slice_assign(
         return Ok(());
     }
 
-    let typed = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+    let typed = lower_expr(
+        expr,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+    )?;
     let fill_value = cast_orc_value_to(ctx, typed, dst_view.elem_ty, b"slice_fill\0");
     let ctx_ptr: *mut LoweringCtx<'_> = ctx;
     let fill_elem = move |loop_i| unsafe {
@@ -1399,10 +1504,16 @@ unsafe fn lower_orc_tuple_destructure(
                 )));
             }
             for (target_name, val_expr) in targets.iter().zip(values.iter()) {
-                let typed = lower_expr(val_expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+                let typed = lower_expr(
+                    val_expr,
+                    ctx,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    local_tuples,
+                )?;
                 if let Some(slot) = local_aliases.get(target_name) {
-                    let casted =
-                        cast_orc_value_to(ctx, typed, slot.ty, b"tup_destr_cast\0");
+                    let casted = cast_orc_value_to(ctx, typed, slot.ty, b"tup_destr_cast\0");
                     LLVMBuildStore(ctx.builder, casted, slot.ptr);
                 } else {
                     let slot = build_local_slot(
@@ -1451,24 +1562,22 @@ unsafe fn lower_orc_tuple_destructure(
                     local_tuples,
                 )
             };
-            let mut infer_buffer_arg_signature =
-                |arg_expr: &Expr, callee_name: &str| unsafe {
-                    infer_buffer_arg_signature_in_orc(
-                        &*ctx_ptr,
-                        local_array_aliases,
-                        arg_expr,
-                        callee_name,
-                    )
-                };
-            let mut infer_array_arg_signature =
-                |arg_expr: &Expr, callee_name: &str| unsafe {
-                    infer_array_arg_signature_in_orc(
-                        &*ctx_ptr,
-                        local_array_aliases,
-                        arg_expr,
-                        callee_name,
-                    )
-                };
+            let mut infer_buffer_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
+                infer_buffer_arg_signature_in_orc(
+                    &*ctx_ptr,
+                    local_array_aliases,
+                    arg_expr,
+                    callee_name,
+                )
+            };
+            let mut infer_array_arg_signature = |arg_expr: &Expr, callee_name: &str| unsafe {
+                infer_array_arg_signature_in_orc(
+                    &*ctx_ptr,
+                    local_array_aliases,
+                    arg_expr,
+                    callee_name,
+                )
+            };
             let prepared = prepare_user_call_common(
                 name,
                 type_args,
@@ -1528,32 +1637,30 @@ unsafe fn lower_orc_tuple_destructure(
                     )
                 }
             };
-            let mut lower_array_arg =
-                |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
-                    lower_array_call_args_in_orc(
-                        &mut *ctx_ptr,
-                        locals,
-                        local_aliases,
-                        local_array_aliases,
-                        local_tuples,
-                        arg_values,
-                        arg_expr,
-                        name,
-                    )
-                };
-            let mut lower_buffer_arg =
-                |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
-                    lower_buffer_call_args_in_orc(
-                        &mut *ctx_ptr,
-                        local_array_aliases,
-                        local_tuples,
-                        arg_values,
-                        arg_expr,
-                        name,
-                        locals,
-                        local_aliases,
-                    )
-                };
+            let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+                lower_array_call_args_in_orc(
+                    &mut *ctx_ptr,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    local_tuples,
+                    arg_values,
+                    arg_expr,
+                    name,
+                )
+            };
+            let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+                lower_buffer_call_args_in_orc(
+                    &mut *ctx_ptr,
+                    local_array_aliases,
+                    local_tuples,
+                    arg_values,
+                    arg_expr,
+                    name,
+                    locals,
+                    local_aliases,
+                )
+            };
             materialize_user_call_args_common(
                 name,
                 &prepared,
@@ -1573,9 +1680,7 @@ unsafe fn lower_orc_tuple_destructure(
                 arg_values.len() as u32,
                 b"tup_call\0".as_ptr().cast(),
             );
-            for (i, (target_name, elem_ty)) in
-                targets.iter().zip(elem_tys.iter()).enumerate()
-            {
+            for (i, (target_name, elem_ty)) in targets.iter().zip(elem_tys.iter()).enumerate() {
                 let elem_val = LLVMBuildExtractValue(
                     ctx.builder,
                     call,
@@ -1587,8 +1692,7 @@ unsafe fn lower_orc_tuple_destructure(
                     ty: *elem_ty,
                 };
                 if let Some(slot) = local_aliases.get(target_name) {
-                    let casted =
-                        cast_orc_value_to(ctx, elem_orc, slot.ty, b"tup_destr_cast\0");
+                    let casted = cast_orc_value_to(ctx, elem_orc, slot.ty, b"tup_destr_cast\0");
                     LLVMBuildStore(ctx.builder, casted, slot.ptr);
                 } else {
                     let slot = build_local_slot(
@@ -1623,14 +1727,10 @@ unsafe fn lower_orc_tuple_destructure(
                     elem_tys.len()
                 )));
             }
-            for (i, (target_name, elem_ty)) in
-                targets.iter().zip(elem_tys.iter()).enumerate()
-            {
+            for (i, (target_name, elem_ty)) in targets.iter().zip(elem_tys.iter()).enumerate() {
                 let alias_key = format!("{var_name}.__{i}");
                 let src_slot = local_aliases.get(&alias_key).ok_or_else(|| {
-                    Diagnostic::internal(format!(
-                        "tuple destructure: missing alias '{alias_key}'"
-                    ))
+                    Diagnostic::internal(format!("tuple destructure: missing alias '{alias_key}'"))
                 })?;
                 let val = LLVMBuildLoad2(
                     ctx.builder,
@@ -1643,8 +1743,7 @@ unsafe fn lower_orc_tuple_destructure(
                     ty: src_slot.ty,
                 };
                 if let Some(slot) = local_aliases.get(target_name) {
-                    let casted =
-                        cast_orc_value_to(ctx, elem_orc, slot.ty, b"tup_destr_cast\0");
+                    let casted = cast_orc_value_to(ctx, elem_orc, slot.ty, b"tup_destr_cast\0");
                     LLVMBuildStore(ctx.builder, casted, slot.ptr);
                 } else {
                     let slot = build_local_slot(

@@ -10,7 +10,14 @@ pub(super) unsafe fn lower_expr(
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
     local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    expr_lowering::lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)
+    expr_lowering::lower_expr(
+        expr,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+    )
 }
 
 pub(super) unsafe fn lower_stmt(
@@ -21,5 +28,12 @@ pub(super) unsafe fn lower_stmt(
     local_array_aliases: &mut HashMap<String, LocalArrayAlias>,
     local_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<(), Diagnostic> {
-    stmt_lowering::lower_stmt(stmt, ctx, locals, local_aliases, local_array_aliases, local_tuples)
+    stmt_lowering::lower_stmt(
+        stmt,
+        ctx,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+    )
 }

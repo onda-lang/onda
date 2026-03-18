@@ -165,17 +165,41 @@ pub(super) unsafe fn lower_expr(
         Expr::Index { base, index, .. } => {
             if base == "ins" {
                 if let Some(meta) = ctx.port_index_ins {
-                    return lower_port_index_ins_read(ctx, meta, index, locals, local_aliases, local_array_aliases, local_tuples);
+                    return lower_port_index_ins_read(
+                        ctx,
+                        meta,
+                        index,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        local_tuples,
+                    );
                 }
             }
             if base == "outs" {
                 if let Some(meta) = ctx.port_index_outs {
-                    return lower_port_index_outs_read(ctx, meta, index, locals, local_aliases, local_array_aliases, local_tuples);
+                    return lower_port_index_outs_read(
+                        ctx,
+                        meta,
+                        index,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        local_tuples,
+                    );
                 }
             }
             if base == "params" {
                 if let Some(meta) = ctx.port_index_params {
-                    return lower_port_index_params_read(ctx, meta, index, locals, local_aliases, local_array_aliases, local_tuples);
+                    return lower_port_index_params_read(
+                        ctx,
+                        meta,
+                        index,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        local_tuples,
+                    );
                 }
             }
             // Local tuple element read: pair[0] → local_aliases["pair.__0"]
@@ -317,8 +341,22 @@ pub(super) unsafe fn lower_expr(
             "array constructor is only valid as an init assignment value",
         )),
         Expr::Binary { op, lhs, rhs, .. } => {
-            let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
-            let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let left = lower_expr(
+                lhs,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
+            let right = lower_expr(
+                rhs,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             let builder = ctx.builder;
             let fast_math_flags = ctx.fast_math_flags;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
@@ -335,8 +373,22 @@ pub(super) unsafe fn lower_expr(
             )
         }
         Expr::Compare { op, lhs, rhs, .. } => {
-            let left = lower_expr(lhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
-            let right = lower_expr(rhs, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let left = lower_expr(
+                lhs,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
+            let right = lower_expr(
+                rhs,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             let builder = ctx.builder;
             let fast_math_flags = ctx.fast_math_flags;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
@@ -353,7 +405,14 @@ pub(super) unsafe fn lower_expr(
             )
         }
         Expr::Cast { to, expr, .. } => {
-            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let value = lower_expr(
+                expr,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             let casted = cast_orc_value_to(ctx, value, *to, b"cast\0");
             Ok(OrcValue {
                 value: casted,
@@ -361,7 +420,14 @@ pub(super) unsafe fn lower_expr(
             })
         }
         Expr::UnaryNot { expr, .. } => {
-            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let value = lower_expr(
+                expr,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             let builder = ctx.builder;
             let context = ctx.context;
             let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
@@ -375,7 +441,14 @@ pub(super) unsafe fn lower_expr(
             ))
         }
         Expr::UnaryBitNot { expr, .. } => {
-            let value = lower_expr(expr, ctx, locals, local_aliases, local_array_aliases, local_tuples)?;
+            let value = lower_expr(
+                expr,
+                ctx,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                local_tuples,
+            )?;
             match value.ty {
                 PrimitiveType::I32 | PrimitiveType::I64 => Ok(OrcValue {
                     value: LLVMBuildNot(ctx.builder, value.value, b"bitnot\0".as_ptr().cast()),
@@ -671,9 +744,29 @@ unsafe fn lower_port_index_ins_read(
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
     local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, local_tuples, true)?;
-    let in_ptr_ptr = build_ptr_offset(ctx.builder, ctx.float_ptr_ty, ctx.in_ptrs, idx, b"ins_ch_ptr_ptr\0");
-    let in_ch_ptr = LLVMBuildLoad2(ctx.builder, ctx.float_ptr_ty, in_ptr_ptr, b"ins_ch_ptr\0".as_ptr().cast());
+    let idx = lower_array_index_i32(
+        ctx,
+        index_expr,
+        meta.count,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+        true,
+    )?;
+    let in_ptr_ptr = build_ptr_offset(
+        ctx.builder,
+        ctx.float_ptr_ty,
+        ctx.in_ptrs,
+        idx,
+        b"ins_ch_ptr_ptr\0",
+    );
+    let in_ch_ptr = LLVMBuildLoad2(
+        ctx.builder,
+        ctx.float_ptr_ty,
+        in_ptr_ptr,
+        b"ins_ch_ptr\0".as_ptr().cast(),
+    );
     let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, meta.elem_ty);
     let in_ch_ptr_typed = LLVMBuildBitCast(
         ctx.builder,
@@ -681,9 +774,23 @@ unsafe fn lower_port_index_ins_read(
         LLVMPointerType(elem_llvm_ty, 0),
         b"ins_ch_ptr_typed\0".as_ptr().cast(),
     );
-    let ptr = build_f32_ptr_offset(ctx.builder, elem_llvm_ty, in_ch_ptr_typed, ctx.frame_idx, b"ins_ptr\0");
-    let value = LLVMBuildLoad2(ctx.builder, elem_llvm_ty, ptr, b"ins_load\0".as_ptr().cast());
-    Ok(OrcValue { value, ty: meta.elem_ty })
+    let ptr = build_f32_ptr_offset(
+        ctx.builder,
+        elem_llvm_ty,
+        in_ch_ptr_typed,
+        ctx.frame_idx,
+        b"ins_ptr\0",
+    );
+    let value = LLVMBuildLoad2(
+        ctx.builder,
+        elem_llvm_ty,
+        ptr,
+        b"ins_load\0".as_ptr().cast(),
+    );
+    Ok(OrcValue {
+        value,
+        ty: meta.elem_ty,
+    })
 }
 
 /// Read `outs[i]`: load from `out_slots` via `out_ptrs[clamped_i]` at `frame_idx`.
@@ -697,10 +804,19 @@ unsafe fn lower_port_index_outs_read(
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
     local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    let arr = ctx.out_slot_ptr_array.ok_or_else(|| {
-        Diagnostic::internal("outs[i] read requires out_slot_ptr_array")
-    })?;
-    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, local_tuples, true)?;
+    let arr = ctx
+        .out_slot_ptr_array
+        .ok_or_else(|| Diagnostic::internal("outs[i] read requires out_slot_ptr_array"))?;
+    let idx = lower_array_index_i32(
+        ctx,
+        index_expr,
+        meta.count,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+        true,
+    )?;
     let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, meta.elem_ty);
     let slot_ptr_ty = LLVMPointerType(elem_llvm_ty, 0);
     let gep = LLVMBuildGEP2(
@@ -711,9 +827,22 @@ unsafe fn lower_port_index_outs_read(
         1,
         b"outs_r_slot_gep\0".as_ptr().cast(),
     );
-    let slot_ptr = LLVMBuildLoad2(ctx.builder, slot_ptr_ty, gep, b"outs_r_slot_ptr\0".as_ptr().cast());
-    let value = LLVMBuildLoad2(ctx.builder, elem_llvm_ty, slot_ptr, b"outs_load\0".as_ptr().cast());
-    Ok(OrcValue { value, ty: meta.elem_ty })
+    let slot_ptr = LLVMBuildLoad2(
+        ctx.builder,
+        slot_ptr_ty,
+        gep,
+        b"outs_r_slot_ptr\0".as_ptr().cast(),
+    );
+    let value = LLVMBuildLoad2(
+        ctx.builder,
+        elem_llvm_ty,
+        slot_ptr,
+        b"outs_load\0".as_ptr().cast(),
+    );
+    Ok(OrcValue {
+        value,
+        ty: meta.elem_ty,
+    })
 }
 
 /// Read `params[i]`: load from `params_ptr` at byte offset `i * sizeof(type)`.
@@ -726,7 +855,16 @@ unsafe fn lower_port_index_params_read(
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
     local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    let idx = lower_array_index_i32(ctx, index_expr, meta.count, locals, local_aliases, local_array_aliases, local_tuples, true)?;
+    let idx = lower_array_index_i32(
+        ctx,
+        index_expr,
+        meta.count,
+        locals,
+        local_aliases,
+        local_array_aliases,
+        local_tuples,
+        true,
+    )?;
     let elem_bytes = primitive_type_bytes(meta.elem_ty) as u64;
     let byte_offset = LLVMBuildMul(
         ctx.builder,
@@ -749,5 +887,8 @@ unsafe fn lower_port_index_params_read(
         ptr,
         b"params_load\0".as_ptr().cast(),
     );
-    Ok(OrcValue { value, ty: meta.elem_ty })
+    Ok(OrcValue {
+        value,
+        ty: meta.elem_ty,
+    })
 }

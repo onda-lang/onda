@@ -618,10 +618,7 @@ pub(super) fn expand_port_decls(
             }
             Some(DeclType::Tuple(_)) => {
                 errors.push(Diagnostic::semantic_span(
-                    format!(
-                        "{kind} '{}' uses unsupported tuple type",
-                        port.name
-                    ),
+                    format!("{kind} '{}' uses unsupported tuple type", port.name),
                     port_loc,
                 ));
                 continue;

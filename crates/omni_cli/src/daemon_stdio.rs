@@ -258,6 +258,7 @@ fn preview_param_json(param: &PreviewParamInfo) -> Value {
     json!({
         "index": param.index,
         "name": param.name.clone(),
+        "value": param.value,
         "type_repr": param.type_repr.clone(),
         "default": param.default,
         "range_min": param.range_min,

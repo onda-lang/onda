@@ -3,6 +3,10 @@
 ## Overview
 `omni-llvm` is a Rust compiler/runtime for an Omni-syntax audio DSL, targeting LLVM ORC JIT for host embedding (C ABI first-class).
 
+### Code navigation
+
+- Always use `ripgrep` (via `rg`) to navigate the repository whenever possible.
+
 ### Module map: semantics (`crates/omni_semantics/src`)
 - Entry:
   - `lib.rs` (public types + orchestration wiring)
@@ -426,4 +430,3 @@
 - C++ single-header backend.
 - Standard library expansion/versioning beyond MVP module set.
 - RT-safety instrumentation/audit suite and stricter host-facing diagnostics lifecycle.
-

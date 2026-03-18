@@ -340,11 +340,8 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                         llvm_elem_tys.len() as u32,
                         0,
                     );
-                    let slot = build_local_slot(
-                        ctx.builder,
-                        struct_ty,
-                        &format!("p_{param_name}"),
-                    )?;
+                    let slot =
+                        build_local_slot(ctx.builder, struct_ty, &format!("p_{param_name}"))?;
                     // Store each expanded param into the struct slot
                     for (i, _ty) in elem_tys.iter().enumerate() {
                         let param_val = LLVMGetParam(fn_ref, llvm_param_idx);

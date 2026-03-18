@@ -22,8 +22,7 @@ pub(super) unsafe fn lower_def_stmt(
             match &return_ty {
                 ReturnType::Scalar(scalar_ty) => {
                     let value = lower_def_expr(expr, ctx)?;
-                    let ret_v =
-                        cast_def_value_to(ctx, value, *scalar_ty, b"def_ret_cast\0");
+                    let ret_v = cast_def_value_to(ctx, value, *scalar_ty, b"def_ret_cast\0");
                     LLVMBuildStore(ctx.builder, ret_v, ctx.return_slot);
                 }
                 ReturnType::Tuple(elem_tys) => {
@@ -35,16 +34,14 @@ pub(super) unsafe fn lower_def_stmt(
                                 values.len()
                             )));
                         }
-                        let return_llvm_ty =
-                            llvm_ty_for_return_type(ctx.context, &return_ty);
+                        let return_llvm_ty = llvm_ty_for_return_type(ctx.context, &return_ty);
                         let mut agg = LLVMGetUndef(return_llvm_ty);
                         for (i, (val_expr, elem_ty)) in
                             values.iter().zip(elem_tys.iter()).enumerate()
                         {
                             let elem_ty = *elem_ty;
                             let val = lower_def_expr(val_expr, ctx)?;
-                            let cast_v =
-                                cast_def_value_to(ctx, val, elem_ty, b"tup_elem_cast\0");
+                            let cast_v = cast_def_value_to(ctx, val, elem_ty, b"tup_elem_cast\0");
                             agg = LLVMBuildInsertValue(
                                 ctx.builder,
                                 agg,
@@ -116,9 +113,7 @@ unsafe fn lower_def_assign_stmt(
         AssignTarget::Slice { base, start, end } => {
             lower_def_slice_assign(base, start.as_ref(), end.as_ref(), expr, ctx)
         }
-        AssignTarget::Tuple(targets) => {
-            lower_def_tuple_destructure(targets, expr, ctx)
-        }
+        AssignTarget::Tuple(targets) => lower_def_tuple_destructure(targets, expr, ctx),
     }
 }
 
@@ -216,10 +211,9 @@ unsafe fn lower_def_tuple_call(
 
     let mut arg_values = Vec::new();
     let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
-    let mut cast_scalar_arg =
-        |value: OrcValue, target_ty: PrimitiveType, arg_name: &[u8]| unsafe {
-            cast_def_value_to(&*ctx_ptr, value, target_ty, arg_name)
-        };
+    let mut cast_scalar_arg = |value: OrcValue, target_ty: PrimitiveType, arg_name: &[u8]| unsafe {
+        cast_def_value_to(&*ctx_ptr, value, target_ty, arg_name)
+    };
     let mut lower_struct_arg = |arg_values: &mut Vec<LLVMValueRef>,
                                 arg_expr: &Expr,
                                 struct_name: &str,
@@ -270,14 +264,21 @@ unsafe fn lower_def_tuple_value(
     match expr {
         Expr::Tuple { values, .. } => lower_def_tuple_literal(values, ctx),
         Expr::UserCall {
-            name, type_args, args, ..
+            name,
+            type_args,
+            args,
+            ..
         } => lower_def_tuple_call(name, type_args, args, ctx),
         Expr::Var { name, .. } => {
-            let slot = ctx.tuple_slots.get(name).ok_or_else(|| {
-                Diagnostic::internal(format!(
-                    "unknown tuple variable '{name}' in tuple value lowering"
-                ))
-            })?.clone();
+            let slot = ctx
+                .tuple_slots
+                .get(name)
+                .ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "unknown tuple variable '{name}' in tuple value lowering"
+                    ))
+                })?
+                .clone();
             let mut llvm_elem_tys: Vec<LLVMTypeRef> = slot
                 .elem_tys
                 .iter()
@@ -335,11 +336,7 @@ unsafe fn lower_def_var_assign(
                 llvm_elem_tys.len() as u32,
                 0,
             );
-            let slot = build_local_slot(
-                ctx.builder,
-                struct_ty,
-                &format!("v_{target_name}"),
-            )?;
+            let slot = build_local_slot(ctx.builder, struct_ty, &format!("v_{target_name}"))?;
             LLVMBuildStore(ctx.builder, tuple_val, slot);
             ctx.tuple_slots.insert(
                 target_name.to_owned(),

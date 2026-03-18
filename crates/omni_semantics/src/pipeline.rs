@@ -1162,9 +1162,9 @@ pub fn analyze_with_options(
 
         // Also run mono pass when any def has untyped params that could be
         // inferred as tuple from call-site tuple literal args.
-        let has_untyped_params = fn_signatures.values().any(|sig| {
-            sig.param_types.iter().any(|pt| pt.is_none())
-        });
+        let has_untyped_params = fn_signatures
+            .values()
+            .any(|sig| sig.param_types.iter().any(|pt| pt.is_none()));
 
         if !mono_eligible.is_empty() || has_untyped_params {
             let mut generated_defs = Vec::<FunctionDef>::new();
@@ -1781,7 +1781,9 @@ pub fn analyze_with_options(
         if let Some(kinds) = inferred_def_params.get(&def.name) {
             for (param, kind) in def.params.iter().zip(kinds.iter()) {
                 if let TypedFnParam::Tuple { elem_tys } = kind {
-                    def_state.tuple_vars.insert(param.name.clone(), elem_tys.len());
+                    def_state
+                        .tuple_vars
+                        .insert(param.name.clone(), elem_tys.len());
                 }
             }
         }

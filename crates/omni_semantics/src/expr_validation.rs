@@ -277,8 +277,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         }
                     }
                     _ => {
-                        push_expr_error(errors, expr,
-                            "tuple element index must be a compile-time integer constant"
+                        push_expr_error(
+                            errors,
+                            expr,
+                            "tuple element index must be a compile-time integer constant",
                         );
                     }
                 }

@@ -9082,8 +9082,7 @@ sample {
 #[test]
 fn tuple_return_and_destructure_compiles_and_runs() {
     let frames = 1;
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(TUPLE_RETURN_BASIC, frames);
+    let (mut instance, in_channels, out_channels) = compile_instance(TUPLE_RETURN_BASIC, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 2);
 
@@ -9175,8 +9174,7 @@ sample {
 #[test]
 fn tuple_element_access_compiles_and_runs() {
     let frames = 1;
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(TUPLE_ELEMENT_ACCESS, frames);
+    let (mut instance, in_channels, out_channels) = compile_instance(TUPLE_ELEMENT_ACCESS, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 1);
 
@@ -9205,8 +9203,7 @@ sample {
 #[test]
 fn tuple_literal_assign_compiles_and_runs() {
     let frames = 1;
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(TUPLE_LITERAL_ASSIGN, frames);
+    let (mut instance, in_channels, out_channels) = compile_instance(TUPLE_LITERAL_ASSIGN, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 2);
 
@@ -9216,7 +9213,7 @@ fn tuple_literal_assign_compiles_and_runs() {
         .expect("process should succeed");
 
     assert_near(output[0], 30.0, 1e-6); // 10.0 + 20.0
-    assert_near(output[1], 3.0, 1e-6);  // 1.0 + 2.0
+    assert_near(output[1], 3.0, 1e-6); // 1.0 + 2.0
 }
 
 const TUPLE_MIXED_TYPES: &str = r#"
@@ -9238,8 +9235,7 @@ sample {
 #[test]
 fn tuple_mixed_types_compiles_and_runs() {
     let frames = 1;
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(TUPLE_MIXED_TYPES, frames);
+    let (mut instance, in_channels, out_channels) = compile_instance(TUPLE_MIXED_TYPES, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 2);
 
@@ -9248,8 +9244,8 @@ fn tuple_mixed_types_compiles_and_runs() {
     process_interleaved(&mut instance, &input, &mut output, frames)
         .expect("process should succeed");
 
-    assert_near(output[0], 3.0, 1e-6);  // floor(3.7) = 3
-    assert_near(output[1], 0.7, 1e-5);  // 3.7 - 3.0 = 0.7
+    assert_near(output[0], 3.0, 1e-6); // floor(3.7) = 3
+    assert_near(output[1], 0.7, 1e-5); // 3.7 - 3.0 = 0.7
 }
 
 const TUPLE_PARAM_BASIC: &str = r#"
@@ -9271,8 +9267,7 @@ sample {
 #[test]
 fn tuple_param_basic_compiles_and_runs() {
     let frames = 1;
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(TUPLE_PARAM_BASIC, frames);
+    let (mut instance, in_channels, out_channels) = compile_instance(TUPLE_PARAM_BASIC, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 2);
 
@@ -9311,8 +9306,8 @@ fn tuple_param_mixed_types_compiles_and_runs() {
     process_interleaved(&mut instance, &input, &mut output, frames)
         .expect("process should succeed");
 
-    assert_near(output[0], 6.0, 1e-6);  // i32(3) * 2.0
-    assert_near(output[1], 8.5, 1e-6);  // 7.5 + 1.0
+    assert_near(output[0], 6.0, 1e-6); // i32(3) * 2.0
+    assert_near(output[1], 8.5, 1e-6); // 7.5 + 1.0
 }
 
 const TUPLE_STATE_BASIC: &str = r#"
@@ -9330,8 +9325,7 @@ sample {
 #[test]
 fn tuple_state_basic_compiles_and_runs() {
     let frames = 1;
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(TUPLE_STATE_BASIC, frames);
+    let (mut instance, in_channels, out_channels) = compile_instance(TUPLE_STATE_BASIC, frames);
     assert_eq!(in_channels, 0);
     assert_eq!(out_channels, 2);
 
@@ -9362,8 +9356,7 @@ sample {
 #[test]
 fn tuple_state_write_compiles_and_runs() {
     let frames = 1;
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(TUPLE_STATE_WRITE, frames);
+    let (mut instance, in_channels, out_channels) = compile_instance(TUPLE_STATE_WRITE, frames);
     assert_eq!(in_channels, 1);
     assert_eq!(out_channels, 2);
 
@@ -10786,7 +10779,10 @@ fn def_return_type_is_inferred_from_return_expression() {
         .iter()
         .find(|d| d.name == "mydef")
         .expect("mydef should be present");
-    assert_eq!(mydef.return_ty, omni_semantics::ReturnType::Scalar(PrimitiveType::F64));
+    assert_eq!(
+        mydef.return_ty,
+        omni_semantics::ReturnType::Scalar(PrimitiveType::F64)
+    );
 }
 
 #[test]
@@ -17156,7 +17152,7 @@ fn port_index_outs_write_and_ins_read() {
 
     let mut input = vec![0.0_f32; frames * 2];
     for f in 0..frames {
-        input[f * 2] = (f + 1) as f32;      // ch0
+        input[f * 2] = (f + 1) as f32; // ch0
         input[f * 2 + 1] = (f + 10) as f32; // ch1
     }
     let mut output = vec![0.0_f32; frames * 2];
@@ -17207,8 +17203,7 @@ fn port_index_params_dynamic_read() {
     set_param_f32(&mut instance, "d", 40.0);
 
     let mut output = vec![0.0_f32; frames];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     // Frame 0: sel=0 → params[0]=a=10.0, then sel=1
     // Frame 1: sel=1 → params[1]=b=20.0, then sel=2
@@ -17278,10 +17273,15 @@ sample {
 "#;
     let parsed = parse_program(src).expect("parse should succeed");
     let result = analyze(parsed);
-    assert!(result.is_err(), "should reject ins[i] without explicit ins block");
+    assert!(
+        result.is_err(),
+        "should reject ins[i] without explicit ins block"
+    );
     let errors = result.unwrap_err();
     assert!(
-        errors.iter().any(|d| d.message.contains("ins[i]") && d.message.contains("explicit")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("ins[i]") && d.message.contains("explicit")),
         "error should mention explicit block requirement: {:?}",
         errors
     );
@@ -17331,8 +17331,7 @@ sample {
     set_param_f32(&mut instance, "param2", 7.0);
 
     let mut output = vec![0.0_f32; frames];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 10.0, 1e-6);
 }
 
@@ -17351,8 +17350,7 @@ sample {
     assert_eq!(out_channels, 2);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 5.0, 1e-6);
     assert_near(output[1], 10.0, 1e-6);
 }
@@ -17380,8 +17378,7 @@ sample:
     assert_eq!(out_channels, 2);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 2.0, 1e-6);
     assert_near(output[1], 20.0, 1e-6);
 }
@@ -17410,8 +17407,7 @@ sample:
     assert_eq!(out_channels, 1);
 
     let mut output = vec![0.0_f32; frames];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 6.0, 1e-6);
 }
 
@@ -17460,8 +17456,7 @@ sample:
     assert_eq!(out_channels, 2);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 2.0, 1e-6);
     assert_near(output[1], 20.0, 1e-6);
 }
@@ -17491,8 +17486,7 @@ sample:
     assert_eq!(out_channels, 2);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 3.0, 1e-6);
     assert_near(output[1], 50.0, 1e-6);
 }
@@ -17525,8 +17519,7 @@ sample:
     assert_eq!(out_channels, 1);
 
     let mut output = vec![0.0_f32; frames];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     // 10*1 + 20*2 + 30*3 = 10 + 40 + 90 = 140
     assert_near(output[0], 140.0, 1e-6);
 }
@@ -17576,8 +17569,7 @@ sample:
     set_param_f32(&mut instance, "param3", 25.0);
 
     let mut output = vec![0.0_f32; frames];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 45.0, 1e-6);
 }
 
@@ -17598,8 +17590,7 @@ sample {
     assert_eq!(out_channels, 1);
 
     let mut output = vec![0.0_f32; frames];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for sample in &output {
         assert_near(*sample, 1.0, 1e-6);
     }
@@ -17623,8 +17614,7 @@ sample {
     assert_eq!(out_channels, 1);
 
     let mut output = vec![0.0_f32; frames];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 1.0, 1e-6);
     assert_near(output[1], 2.0, 1e-6);
     assert_near(output[2], 3.0, 1e-6);
@@ -17648,8 +17638,7 @@ sample {
     assert_eq!(out_channels, 1);
 
     let mut output = vec![0.0_f32; frames];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     assert_near(output[0], 3.5, 1e-6);
 }
 
@@ -17690,8 +17679,7 @@ sample {
     assert_eq!(out_channels, 3);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert_near(output[0], 1.0, 1e-6);
     assert_near(output[1], 2.0, 1e-6);
@@ -17723,8 +17711,7 @@ sample {
     assert_eq!(out_channels, 4);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert_near(output[0], 5.0, 1e-6);
     assert_near(output[1], 10.0, 1e-6);
@@ -17755,8 +17742,7 @@ sample {
     assert_eq!(out_channels, 2);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert_near(output[0], 11.0, 1e-6);
     assert_near(output[1], 14.0, 1e-6);
@@ -17792,8 +17778,7 @@ sample {
     assert_eq!(out_channels, 2);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert_near(output[0], 21.0, 1e-6); // 2.0 * 10.0 + 1.0
     assert_near(output[1], 31.0, 1e-6); // 3.0 * 10.0 + 1.0
@@ -17823,8 +17808,7 @@ sample {
     assert_eq!(out_channels, 2);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert_near(output[0], 200.0, 1e-6);
     assert_near(output[1], 100.0, 1e-6);
@@ -17853,8 +17837,7 @@ sample {
     assert_eq!(out_channels, 2);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert_near(output[0], 1.0, 1e-6);
     assert_near(output[1], 2.0, 1e-6);
@@ -17879,8 +17862,7 @@ sample {
     assert_eq!(out_channels, 2);
 
     let mut output = vec![0.0_f32; frames * out_channels];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert_near(output[0], 3.0, 1e-6);
     assert_near(output[1], 4.0, 1e-6);
@@ -17958,10 +17940,7 @@ sample {
 "#;
     let parsed = parse_program(src).expect("parse should succeed");
     let result = analyze(parsed);
-    assert!(
-        result.is_err(),
-        "dynamic tuple index should be rejected"
-    );
+    assert!(result.is_err(), "dynamic tuple index should be rejected");
 }
 
 #[test]
@@ -18018,8 +17997,7 @@ sample {
 #[test]
 fn tuple_local_sample_literal() {
     let frames = 1;
-    let (mut instance, _, out_channels) =
-        compile_instance(TUPLE_LOCAL_SAMPLE_LITERAL, frames);
+    let (mut instance, _, out_channels) = compile_instance(TUPLE_LOCAL_SAMPLE_LITERAL, frames);
     assert_eq!(out_channels, 2);
     let input = Vec::<f32>::new();
     let mut output = vec![0.0_f32; frames * out_channels];
@@ -18042,8 +18020,7 @@ sample {
 #[test]
 fn tuple_local_sample_copy() {
     let frames = 1;
-    let (mut instance, _, out_channels) =
-        compile_instance(TUPLE_LOCAL_SAMPLE_COPY, frames);
+    let (mut instance, _, out_channels) = compile_instance(TUPLE_LOCAL_SAMPLE_COPY, frames);
     assert_eq!(out_channels, 2);
     let input = Vec::<f32>::new();
     let mut output = vec![0.0_f32; frames * out_channels];
@@ -18067,8 +18044,7 @@ sample {
 #[test]
 fn tuple_local_sample_from_call() {
     let frames = 1;
-    let (mut instance, _, out_channels) =
-        compile_instance(TUPLE_LOCAL_SAMPLE_FROM_CALL, frames);
+    let (mut instance, _, out_channels) = compile_instance(TUPLE_LOCAL_SAMPLE_FROM_CALL, frames);
     assert_eq!(out_channels, 2);
     let input = Vec::<f32>::new();
     let mut output = vec![0.0_f32; frames * out_channels];
@@ -18092,8 +18068,7 @@ sample {
 #[test]
 fn tuple_local_sample_destructure() {
     let frames = 1;
-    let (mut instance, _, out_channels) =
-        compile_instance(TUPLE_LOCAL_SAMPLE_DESTRUCTURE, frames);
+    let (mut instance, _, out_channels) = compile_instance(TUPLE_LOCAL_SAMPLE_DESTRUCTURE, frames);
     assert_eq!(out_channels, 3);
     let input = Vec::<f32>::new();
     let mut output = vec![0.0_f32; frames * out_channels];
@@ -18118,8 +18093,7 @@ block {
 #[test]
 fn tuple_local_block() {
     let frames = 1;
-    let (mut instance, _, out_channels) =
-        compile_instance(TUPLE_LOCAL_BLOCK, frames);
+    let (mut instance, _, out_channels) = compile_instance(TUPLE_LOCAL_BLOCK, frames);
     assert_eq!(out_channels, 2);
     let input = Vec::<f32>::new();
     let mut output = vec![0.0_f32; frames * out_channels];
@@ -18147,8 +18121,7 @@ sample {
 #[test]
 fn tuple_inferred_param() {
     let frames = 1;
-    let (mut instance, _, out_channels) =
-        compile_instance(TUPLE_INFERRED_PARAM, frames);
+    let (mut instance, _, out_channels) = compile_instance(TUPLE_INFERRED_PARAM, frames);
     assert_eq!(out_channels, 2);
     let input = Vec::<f32>::new();
     let mut output = vec![0.0_f32; frames * out_channels];
@@ -18170,8 +18143,7 @@ sample {
 #[test]
 fn tuple_inferred_param_sum() {
     let frames = 1;
-    let (mut instance, _, out_channels) =
-        compile_instance(TUPLE_INFERRED_PARAM_SUM, frames);
+    let (mut instance, _, out_channels) = compile_instance(TUPLE_INFERRED_PARAM_SUM, frames);
     assert_eq!(out_channels, 1);
     let input = Vec::<f32>::new();
     let mut output = vec![0.0_f32; frames];

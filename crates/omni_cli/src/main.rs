@@ -14,6 +14,7 @@ mod daemon_stdio;
 mod lsp_stdio;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::Sample;
 use omni_codegen_llvm::{
     lower_and_jit_with_options, lower_to_llvm_ir_with_options, CompileOptions, ExecutionBackend,
 };
@@ -45,8 +46,9 @@ const USAGE: &str = r#"Usage:
   omni compile <input.omni> [--dump-graph] [--ir] [--meta] [--fast-math]
   omni render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
   omni lsp
+  omni preview <input.omni> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>]
+  omni preview play <input.omni> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>] [--control-json] [--input-device <name>] [--output-device <name>]
   omni preview render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
-  omni preview play <input.omni> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>] [--control-json]
   omni daemon diagnose <input.omni> [--sample-rate <hz>] [--block <frames>]
   omni daemon stdio
 
@@ -59,6 +61,8 @@ Options:
   --ir           Print optimized LLVM IR before compile/render
   --meta         Print declared ins/outs/params metadata
   --control-json Emit preview control handshake on stdout and serve param control over localhost
+  --input-device Select audio input device by exact name for preview playback
+  --output-device Select audio output device by exact name for preview playback
   --fast-math    Enable LLVM fast-math flags for floating-point operations
   --help, -h     Show this help
 "#;
@@ -92,6 +96,8 @@ enum PreviewCommand {
         dur_seconds: Option<u32>,
         sample_rate_hz: u32,
         block_frames: usize,
+        input_device: Option<String>,
+        output_device: Option<String>,
         fast_math: bool,
         show_meta: bool,
         control_json: bool,
@@ -106,6 +112,14 @@ enum PreviewCommand {
         fast_math: bool,
         show_meta: bool,
         param_sets: Vec<(String, f64)>,
+    },
+    Window {
+        input: PathBuf,
+        sample_rate_hz: u32,
+        block_frames: usize,
+        input_device: Option<String>,
+        output_device: Option<String>,
+        fast_math: bool,
     },
 }
 
@@ -197,15 +211,19 @@ fn parse_lsp_args(args: impl Iterator<Item = String>) -> Result<Command, String>
 
 fn parse_preview_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(subcommand) = args.next() else {
-        return Err(format!("preview requires a subcommand\n\n{USAGE}"));
+        return Err(format!(
+            "preview requires a subcommand or input file\n\n{USAGE}"
+        ));
     };
     let preview = match subcommand.as_str() {
         "play" => parse_preview_play_args(args)?,
         "render" => parse_preview_render_args(args)?,
         _ => {
-            return Err(format!(
-                "unknown preview subcommand '{subcommand}'\n\n{USAGE}"
-            ))
+            // Treat as `omni preview <file.omni>` — the windowed preview.
+            if subcommand.starts_with('-') {
+                return Err(format!("unknown preview option '{subcommand}'\n\n{USAGE}"));
+            }
+            parse_preview_window_args(subcommand, args)?
         }
     };
     Ok(Command::Preview(preview))
@@ -478,6 +496,73 @@ fn parse_preview_render_args(
     })
 }
 
+fn parse_preview_window_args(
+    input: String,
+    mut args: impl Iterator<Item = String>,
+) -> Result<PreviewCommand, String> {
+    let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
+    let mut block_frames = DEFAULT_PLAY_BLOCK_FRAMES;
+    let mut input_device = None;
+    let mut output_device = None;
+    let mut fast_math = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--sample-rate" | "--sr" => {
+                let Some(value) = args.next() else {
+                    return Err("--sample-rate/--sr requires a positive integer value".to_owned());
+                };
+                sample_rate_hz = parse_sample_rate_hz(&value)?;
+            }
+            "--block" | "-b" => {
+                let Some(value) = args.next() else {
+                    return Err("--block requires a positive integer value".to_owned());
+                };
+                block_frames = parse_block_frames(&value)?;
+            }
+            "--input-device" => {
+                let Some(value) = args.next() else {
+                    return Err("--input-device requires a device name".to_owned());
+                };
+                input_device = Some(value);
+            }
+            "--output-device" => {
+                let Some(value) = args.next() else {
+                    return Err("--output-device requires a device name".to_owned());
+                };
+                output_device = Some(value);
+            }
+            "--fast-math" => fast_math = true,
+            "--help" | "-h" => return Err(USAGE.to_owned()),
+            _ if arg.starts_with("--sample-rate=") => {
+                sample_rate_hz = parse_sample_rate_hz(&arg["--sample-rate=".len()..])?;
+            }
+            _ if arg.starts_with("--sr=") => {
+                sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
+            }
+            _ if arg.starts_with("--block=") => {
+                block_frames = parse_block_frames(&arg["--block=".len()..])?;
+            }
+            _ if arg.starts_with("--input-device=") => {
+                input_device = Some(arg["--input-device=".len()..].to_owned());
+            }
+            _ if arg.starts_with("--output-device=") => {
+                output_device = Some(arg["--output-device=".len()..].to_owned());
+            }
+            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+        }
+    }
+
+    Ok(PreviewCommand::Window {
+        input: PathBuf::from(input),
+        sample_rate_hz,
+        block_frames,
+        input_device,
+        output_device,
+        fast_math,
+    })
+}
+
 fn parse_preview_play_args(
     mut args: impl Iterator<Item = String>,
 ) -> Result<PreviewCommand, String> {
@@ -488,6 +573,8 @@ fn parse_preview_play_args(
     let mut dur_seconds = Some(DEFAULT_DUR_SECONDS);
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_PLAY_BLOCK_FRAMES;
+    let mut input_device = None;
+    let mut output_device = None;
     let mut fast_math = false;
     let mut show_meta = false;
     let mut control_json = false;
@@ -523,6 +610,18 @@ fn parse_preview_play_args(
                 };
                 param_sets.push(parse_param_setting(&value)?);
             }
+            "--input-device" => {
+                let Some(value) = args.next() else {
+                    return Err("--input-device requires a device name".to_owned());
+                };
+                input_device = Some(value);
+            }
+            "--output-device" => {
+                let Some(value) = args.next() else {
+                    return Err("--output-device requires a device name".to_owned());
+                };
+                output_device = Some(value);
+            }
             "--forever" => {
                 if dur_seconds != Some(DEFAULT_DUR_SECONDS) {
                     return Err("--forever cannot be combined with --dur".to_owned());
@@ -549,6 +648,12 @@ fn parse_preview_play_args(
             _ if arg.starts_with("--block=") => {
                 block_frames = parse_block_frames(&arg["--block=".len()..])?;
             }
+            _ if arg.starts_with("--input-device=") => {
+                input_device = Some(arg["--input-device=".len()..].to_owned());
+            }
+            _ if arg.starts_with("--output-device=") => {
+                output_device = Some(arg["--output-device=".len()..].to_owned());
+            }
             _ if arg.starts_with("--set=") => {
                 param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
             }
@@ -561,6 +666,8 @@ fn parse_preview_play_args(
         dur_seconds,
         sample_rate_hz,
         block_frames,
+        input_device,
+        output_device,
         fast_math,
         show_meta,
         control_json,
@@ -631,6 +738,8 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             dur_seconds,
             sample_rate_hz,
             block_frames,
+            input_device,
+            output_device,
             fast_math,
             show_meta,
             control_json,
@@ -640,6 +749,8 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             dur_seconds,
             sample_rate_hz,
             block_frames,
+            input_device.as_deref(),
+            output_device.as_deref(),
             fast_math,
             show_meta,
             control_json,
@@ -664,6 +775,29 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             show_meta,
             &param_sets,
         ),
+        PreviewCommand::Window {
+            input,
+            sample_rate_hz,
+            block_frames,
+            input_device,
+            output_device,
+            fast_math,
+        } => {
+            let omni_bin = env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "omni".to_owned());
+            omni_window::run_preview_window(
+                &input,
+                omni_window::PreviewWindowOptions {
+                    sample_rate_hz,
+                    block_frames,
+                    input_device,
+                    output_device,
+                    fast_math,
+                    omni_bin,
+                },
+            )
+        }
     }
 }
 
@@ -782,6 +916,8 @@ fn run_daemon_play(
     dur_seconds: Option<u32>,
     sample_rate_hz: u32,
     block_frames: usize,
+    input_device: Option<&str>,
+    output_device: Option<&str>,
     fast_math: bool,
     show_meta: bool,
     control_json: bool,
@@ -792,6 +928,8 @@ fn run_daemon_play(
         dur_seconds,
         sample_rate_hz,
         block_frames,
+        input_device: input_device.map(str::to_owned),
+        output_device: output_device.map(str::to_owned),
         fast_math,
         show_meta,
         control_json,
@@ -801,23 +939,22 @@ fn run_daemon_play(
 
 fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| "no default output audio device available".to_owned())?;
-    let default_config = device
+    let output_device = find_output_device(&host, launch.output_device.as_deref())?;
+    let default_output_config = output_device
         .default_output_config()
         .map_err(|err| format!("failed to query default output config: {err}"))?;
 
-    let device_channels = usize::from(default_config.channels());
-    let mut config: cpal::StreamConfig = default_config.config();
-    config.channels = default_config.channels();
-    config.sample_rate = cpal::SampleRate(launch.sample_rate_hz);
-    config.buffer_size = cpal::BufferSize::Fixed(launch.block_frames as u32);
+    let output_device_channels = usize::from(default_output_config.channels());
+    let mut output_config: cpal::StreamConfig = default_output_config.config();
+    output_config.channels = default_output_config.channels();
+    output_config.sample_rate = cpal::SampleRate(launch.sample_rate_hz);
+    output_config.buffer_size = cpal::BufferSize::Fixed(launch.block_frames as u32);
 
-    let queue_capacity = (launch.block_frames * device_channels.max(2) * 16)
+    let queue_capacity = (launch.block_frames * output_device_channels.max(2) * 16)
         .next_power_of_two()
         .max(1024);
     let sample_queue = Arc::new(SpscSampleRing::new(queue_capacity));
+    let input_queue = Arc::new(SpscSampleRing::new(queue_capacity));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_error = Arc::new(Mutex::new(None::<String>));
     let error_state = Arc::new(Mutex::new(None::<String>));
@@ -833,6 +970,7 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let render_thread = spawn_preview_render_thread(
         launch.clone(),
         Arc::clone(&sample_queue),
+        Arc::clone(&input_queue),
         Arc::clone(&scope_ring),
         Arc::clone(&stop_flag),
         Arc::clone(&render_error),
@@ -860,6 +998,10 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             "params": startup.params.iter().map(preview_param_json).collect::<Vec<_>>(),
             "buffers": startup.buffers.iter().map(preview_buffer_json).collect::<Vec<_>>(),
             "outputChannels": startup.output_channels,
+            "inputDevices": startup.input_devices,
+            "outputDevices": startup.output_devices,
+            "currentInputDevice": startup.current_input_device,
+            "currentOutputDevice": startup.current_output_device,
         });
         write_json_line(
             &mut BufWriter::new(std::io::stdout().lock()),
@@ -889,6 +1031,50 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         return Err("daemon play requires at least one output channel".to_owned());
     }
 
+    let input_stream = if startup.input_channels > 0 {
+        let input_device = find_input_device(&host, launch.input_device.as_deref())?;
+        let default_input_config = input_device
+            .default_input_config()
+            .map_err(|err| format!("failed to query default input config: {err}"))?;
+        let mut input_config: cpal::StreamConfig = default_input_config.config();
+        input_config.channels = default_input_config.channels();
+        input_config.sample_rate = cpal::SampleRate(launch.sample_rate_hz);
+        input_config.buffer_size = cpal::BufferSize::Fixed(launch.block_frames as u32);
+        Some(match default_input_config.sample_format() {
+            cpal::SampleFormat::F32 => build_input_stream::<f32>(
+                &input_device,
+                &input_config,
+                startup.input_channels,
+                Arc::clone(&input_queue),
+                make_input_stream_error_handler(Arc::clone(&error_state)),
+            )?,
+            cpal::SampleFormat::I16 => build_input_stream::<i16>(
+                &input_device,
+                &input_config,
+                startup.input_channels,
+                Arc::clone(&input_queue),
+                make_input_stream_error_handler(Arc::clone(&error_state)),
+            )?,
+            cpal::SampleFormat::U16 => build_input_stream::<u16>(
+                &input_device,
+                &input_config,
+                startup.input_channels,
+                Arc::clone(&input_queue),
+                make_input_stream_error_handler(Arc::clone(&error_state)),
+            )?,
+            other => {
+                stop_flag.store(true, Ordering::Release);
+                let _ = render_thread.join();
+                drop(control_server);
+                return Err(format!(
+                    "unsupported input sample format from audio device: {other:?}"
+                ));
+            }
+        })
+    } else {
+        None
+    };
+
     wait_for_prefill(
         &sample_queue,
         startup.output_channels * launch.block_frames,
@@ -896,27 +1082,27 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         &render_error,
     )?;
 
-    let stream = match default_config.sample_format() {
+    let stream = match default_output_config.sample_format() {
         cpal::SampleFormat::F32 => build_output_stream::<f32>(
-            &device,
-            &config,
-            device_channels,
+            &output_device,
+            &output_config,
+            output_device_channels,
             startup.output_channels,
             Arc::clone(&sample_queue),
             make_stream_error_handler(Arc::clone(&error_state)),
         )?,
         cpal::SampleFormat::I16 => build_output_stream::<i16>(
-            &device,
-            &config,
-            device_channels,
+            &output_device,
+            &output_config,
+            output_device_channels,
             startup.output_channels,
             Arc::clone(&sample_queue),
             make_stream_error_handler(Arc::clone(&error_state)),
         )?,
         cpal::SampleFormat::U16 => build_output_stream::<u16>(
-            &device,
-            &config,
-            device_channels,
+            &output_device,
+            &output_config,
+            output_device_channels,
             startup.output_channels,
             Arc::clone(&sample_queue),
             make_stream_error_handler(Arc::clone(&error_state)),
@@ -930,6 +1116,11 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         }
     };
 
+    if let Some(input_stream) = input_stream.as_ref() {
+        input_stream
+            .play()
+            .map_err(|err| format!("failed to start audio input stream: {err}"))?;
+    }
     stream
         .play()
         .map_err(|err| format!("failed to start audio output stream: {err}"))?;
@@ -948,6 +1139,7 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     wait_for_playback_completion(launch.dur_seconds, &stop_flag, &render_error, &error_state)?;
 
     stop_flag.store(true, Ordering::Release);
+    drop(input_stream);
     drop(stream);
     let _ = render_thread.join();
     drop(control_server);
@@ -971,15 +1163,8 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
 
 fn playback_status_message(path: &Path, dur_seconds: Option<u32>) -> String {
     match dur_seconds {
-        Some(dur_seconds) => format!(
-            "Playing {} for {} seconds on default output device",
-            display_path(path),
-            dur_seconds
-        ),
-        None => format!(
-            "Playing {} until stopped on default output device",
-            display_path(path)
-        ),
+        Some(dur_seconds) => format!("Playing {} for {} seconds", display_path(path), dur_seconds),
+        None => format!("Playing {} until stopped", display_path(path)),
     }
 }
 
@@ -1041,12 +1226,46 @@ where
         .map_err(|err| format!("failed to build audio output stream: {err}"))
 }
 
+fn build_input_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    target_channels: usize,
+    input_queue: Arc<SpscSampleRing>,
+    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> Result<cpal::Stream, String>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let device_channels = usize::from(config.channels);
+    device
+        .build_input_stream(
+            config,
+            move |data: &[T], _| {
+                write_input_data::<T>(data, device_channels, target_channels, &input_queue)
+            },
+            err_fn,
+            None,
+        )
+        .map_err(|err| format!("failed to build audio input stream: {err}"))
+}
+
 fn make_stream_error_handler(
     error_state: Arc<Mutex<Option<String>>>,
 ) -> impl FnMut(cpal::StreamError) + Send + 'static {
     move |err| {
         if let Ok(mut slot) = error_state.lock() {
             *slot = Some(format!("audio output stream error: {err}"));
+        }
+    }
+}
+
+fn make_input_stream_error_handler(
+    error_state: Arc<Mutex<Option<String>>>,
+) -> impl FnMut(cpal::StreamError) + Send + 'static {
+    move |err| {
+        if let Ok(mut slot) = error_state.lock() {
+            *slot = Some(format!("audio input stream error: {err}"));
         }
     }
 }
@@ -1082,6 +1301,27 @@ fn write_output_data<T>(
     }
 }
 
+fn write_input_data<T>(
+    data: &[T],
+    device_channels: usize,
+    target_channels: usize,
+    input_queue: &Arc<SpscSampleRing>,
+) where
+    T: cpal::Sample,
+    f32: cpal::FromSample<T>,
+{
+    if device_channels == 0 || target_channels == 0 {
+        return;
+    }
+    for frame in data.chunks(device_channels) {
+        for sample in frame.iter().take(target_channels).copied() {
+            if !input_queue.push_one(f32::from_sample(sample)) {
+                return;
+            }
+        }
+    }
+}
+
 fn append_interleaved_block(rendered: &mut Vec<f32>, block: &[Vec<f32>]) {
     if block.is_empty() {
         return;
@@ -1099,12 +1339,74 @@ fn display_path(path: &Path) -> String {
     raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_owned()
 }
 
+fn find_output_device(
+    host: &cpal::Host,
+    requested_name: Option<&str>,
+) -> Result<cpal::Device, String> {
+    match requested_name {
+        Some(name) => host
+            .output_devices()
+            .map_err(|err| format!("failed to enumerate output devices: {err}"))?
+            .find(|device| {
+                device
+                    .name()
+                    .map(|device_name| device_name == name)
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| format!("output device '{name}' was not found")),
+        None => host
+            .default_output_device()
+            .ok_or_else(|| "no default output audio device available".to_owned()),
+    }
+}
+
+fn list_input_devices(host: &cpal::Host) -> Vec<String> {
+    host.input_devices()
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|device| device.name().ok())
+        .collect()
+}
+
+fn list_output_devices(host: &cpal::Host) -> Vec<String> {
+    host.output_devices()
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|device| device.name().ok())
+        .collect()
+}
+
+fn find_input_device(
+    host: &cpal::Host,
+    requested_name: Option<&str>,
+) -> Result<cpal::Device, String> {
+    match requested_name {
+        Some(name) => host
+            .input_devices()
+            .map_err(|err| format!("failed to enumerate input devices: {err}"))?
+            .find(|device| {
+                device
+                    .name()
+                    .map(|device_name| device_name == name)
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| format!("input device '{name}' was not found")),
+        None => host
+            .default_input_device()
+            .ok_or_else(|| "no default input audio device available".to_owned()),
+    }
+}
+
 #[derive(Clone)]
 struct PlaybackLaunch {
     input: PathBuf,
     dur_seconds: Option<u32>,
     sample_rate_hz: u32,
     block_frames: usize,
+    input_device: Option<String>,
+    output_device: Option<String>,
     fast_math: bool,
     show_meta: bool,
     control_json: bool,
@@ -1113,9 +1415,14 @@ struct PlaybackLaunch {
 
 struct PlaybackStartup {
     path: PathBuf,
+    input_channels: usize,
     output_channels: usize,
     params: Vec<PreviewParamInfo>,
     buffers: Vec<PreviewBufferInfo>,
+    input_devices: Vec<String>,
+    output_devices: Vec<String>,
+    current_input_device: Option<String>,
+    current_output_device: Option<String>,
 }
 
 enum PlaybackControlCommand {
@@ -1214,6 +1521,7 @@ struct PlaybackControlRequest {
 fn spawn_preview_render_thread(
     launch: PlaybackLaunch,
     sample_queue: Arc<SpscSampleRing>,
+    input_queue: Arc<SpscSampleRing>,
     scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
@@ -1253,6 +1561,17 @@ fn spawn_preview_render_thread(
             } else {
                 Vec::new()
             };
+            let input_devices = if launch.control_json {
+                list_input_devices(&cpal::default_host())
+            } else {
+                Vec::new()
+            };
+            let output_devices = if launch.control_json {
+                list_output_devices(&cpal::default_host())
+            } else {
+                Vec::new()
+            };
+            let input_channels = preview.input_channel_count();
             let output_channels = preview.output_channel_count();
             let path = preview.path().to_path_buf();
 
@@ -1266,33 +1585,47 @@ fn spawn_preview_render_thread(
 
             Ok(PlaybackStartup {
                 path,
+                input_channels,
                 output_channels,
                 params,
                 buffers,
+                input_devices,
+                output_devices,
+                current_input_device: launch.input_device.clone(),
+                current_output_device: launch.output_device.clone(),
             })
         })();
 
-        match startup {
+        let render_input_channels = match startup {
             Ok(ref startup) => {
                 {
                     const SCOPE_CAPACITY_FRAMES: usize = 4096;
                     let mut ring = scope_ring.lock().unwrap();
                     *ring = ScopeRing::new(SCOPE_CAPACITY_FRAMES, startup.output_channels);
                 }
-                if startup_tx.send(Ok(PlaybackStartup {
-                    path: startup.path.clone(),
-                    output_channels: startup.output_channels,
-                    params: startup.params.clone(),
-                    buffers: startup.buffers.clone(),
-                })).is_err() {
+                if startup_tx
+                    .send(Ok(PlaybackStartup {
+                        path: startup.path.clone(),
+                        input_channels: startup.input_channels,
+                        output_channels: startup.output_channels,
+                        params: startup.params.clone(),
+                        buffers: startup.buffers.clone(),
+                        input_devices: startup.input_devices.clone(),
+                        output_devices: startup.output_devices.clone(),
+                        current_input_device: startup.current_input_device.clone(),
+                        current_output_device: startup.current_output_device.clone(),
+                    }))
+                    .is_err()
+                {
                     return;
                 }
+                startup.input_channels
             }
             Err(err) => {
                 let _ = startup_tx.send(Err(err));
                 return;
             }
-        }
+        };
 
         while !stop_flag.load(Ordering::Acquire) {
             if let Some(control_rx) = &control_rx {
@@ -1356,6 +1689,18 @@ fn spawn_preview_render_thread(
                             let _ = reply.send(Ok(snapshot));
                         }
                     }
+                }
+            }
+
+            if render_input_channels > 0 {
+                let input_channels = render_input_channels;
+                let input_samples = launch.block_frames * input_channels;
+                let mut captured = vec![0.0_f32; input_samples];
+                for sample in &mut captured {
+                    *sample = input_queue.pop_one().unwrap_or(0.0);
+                }
+                if let Some(preview) = session.preview_mut(&launch.input) {
+                    preview.set_input_block(&captured, input_channels);
                 }
             }
 
@@ -1425,6 +1770,7 @@ fn preview_param_json(param: &PreviewParamInfo) -> Value {
         "index": param.index,
         "name": param.name,
         "type": param.type_repr,
+        "value": param.value,
         "default": param.default,
         "rangeMin": param.range_min,
         "rangeMax": param.range_max,
@@ -1754,6 +2100,19 @@ impl SpscSampleRing {
             self.write_index.store(write + count, Ordering::Release);
         }
         count
+    }
+
+    fn push_one(&self, sample: f32) -> bool {
+        let write = self.write_index.load(Ordering::Relaxed);
+        let read = self.read_index.load(Ordering::Acquire);
+        if self.capacity.saturating_sub(write.saturating_sub(read)) == 0 {
+            return false;
+        }
+        let index = write & self.mask;
+        // SAFETY: producer is single-writer and only writes slots not yet published via write_index.
+        unsafe { *self.slots[index].get() = sample };
+        self.write_index.store(write + 1, Ordering::Release);
+        true
     }
 
     fn pop_one(&self) -> Option<f32> {
@@ -2795,7 +3154,10 @@ fn format_field_type(ty: &FieldType) -> String {
         FieldType::Generic(name) => name.clone(),
         FieldType::Array(spec) => format_array_type_spec(spec),
         FieldType::Tuple(elem_tys) => {
-            let elems: Vec<String> = elem_tys.iter().map(|ty| primitive_type_name(*ty).to_owned()).collect();
+            let elems: Vec<String> = elem_tys
+                .iter()
+                .map(|ty| primitive_type_name(*ty).to_owned())
+                .collect();
             format!("({})", elems.join(", "))
         }
     }
@@ -2819,7 +3181,11 @@ fn format_fn_param_type(ty: &omni_frontend::FnParamType) -> String {
         omni_frontend::FnParamType::ArrayGeneric(name) => format!("{name}[]"),
         omni_frontend::FnParamType::BareBuffer => "buffer".to_owned(),
         omni_frontend::FnParamType::Tuple(elems) => {
-            let inner = elems.iter().map(|p| primitive_type_name(*p)).collect::<Vec<_>>().join(", ");
+            let inner = elems
+                .iter()
+                .map(|p| primitive_type_name(*p))
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("({inner})")
         }
     }

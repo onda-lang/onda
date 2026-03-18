@@ -467,8 +467,7 @@ pub(super) fn compute_proc_shape(
                             let elem_flat = format!("{flat}.__{idx}");
                             proc_state_scalars.entry(elem_flat).or_insert(*prim);
                         }
-                        proc_state_tuples
-                            .insert(flat, elem_tys.clone());
+                        proc_state_tuples.insert(flat, elem_tys.clone());
                     }
                     FieldType::Generic(_) => {}
                 }
@@ -585,14 +584,18 @@ pub(super) fn compute_proc_shape(
 
     // Compute port index info for proc scopes (procs always have explicit port blocks)
     let port_index_ins = if !ins.is_empty() {
-        crate::pipeline::uniform_port_type(&ins, &in_types)
-            .map(|ty| PortIndexInfo { count: ins.len(), elem_ty: ty })
+        crate::pipeline::uniform_port_type(&ins, &in_types).map(|ty| PortIndexInfo {
+            count: ins.len(),
+            elem_ty: ty,
+        })
     } else {
         None
     };
     let port_index_outs = if !outs.is_empty() {
-        crate::pipeline::uniform_port_type(&outs, &out_types)
-            .map(|ty| PortIndexInfo { count: outs.len(), elem_ty: ty })
+        crate::pipeline::uniform_port_type(&outs, &out_types).map(|ty| PortIndexInfo {
+            count: outs.len(),
+            elem_ty: ty,
+        })
     } else {
         None
     };

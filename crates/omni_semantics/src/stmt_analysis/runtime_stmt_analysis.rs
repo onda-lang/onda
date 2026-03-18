@@ -535,7 +535,9 @@ fn analyze_runtime_scope<'a>(
     );
     state.known_scalars.extend(state_scalars.keys().cloned());
     // Seed tuple_vars so expression validation allows pair[0] indexing
-    state.tuple_vars.extend(ctx.state_tuples.iter().map(|(k, v)| (k.clone(), v.len())));
+    state
+        .tuple_vars
+        .extend(ctx.state_tuples.iter().map(|(k, v)| (k.clone(), v.len())));
     for stmt in stmts {
         analyze_runtime_stmt_inner(stmt, locals, state_scalars, ctx, state, loop_depth, errors);
     }
@@ -1624,9 +1626,7 @@ fn analyze_assign_sample(
                         _ => None,
                     }
                 }
-                Expr::Var { name: var_name, .. } => {
-                    tuple_vars.get(var_name).copied()
-                }
+                Expr::Var { name: var_name, .. } => tuple_vars.get(var_name).copied(),
                 _ => None,
             };
             if let Some(arity) = tuple_arity {
@@ -1648,9 +1648,7 @@ fn analyze_assign_sample(
                     Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
                     _ => None,
                 },
-                Expr::Var { name, .. } => state_tuples
-                    .get(name)
-                    .map(|tys| tys.len()),
+                Expr::Var { name, .. } => state_tuples.get(name).map(|tys| tys.len()),
                 _ => None,
             };
             if let Some(expected) = rhs_arity {

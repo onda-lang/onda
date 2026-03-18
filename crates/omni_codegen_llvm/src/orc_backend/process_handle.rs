@@ -12,16 +12,15 @@ pub(super) type OrcProcessFn = unsafe extern "C" fn(
     *const f32,
 );
 pub(super) type OrcInitFn = unsafe extern "C" fn(*const u8, *mut u8);
-pub(super) type OrcEventFn =
-    unsafe extern "C" fn(
-        *const u8,
-        *const u8,
-        *mut u8,
-        *const *mut u8,
-        *const i32,
-        *const i32,
-        *const f32,
-    );
+pub(super) type OrcEventFn = unsafe extern "C" fn(
+    *const u8,
+    *const u8,
+    *mut u8,
+    *const *mut u8,
+    *const i32,
+    *const i32,
+    *const f32,
+);
 
 pub(super) fn is_proc_glue_function_name(name: &str) -> bool {
     name.contains(".__proc_")

@@ -77,23 +77,52 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
         let one_i32 = LLVMConstInt(i32_ty, 1, 0);
 
         let port_index_ins = if typed.ins_explicit && !typed.ins.is_empty() {
-            let first_ty = *typed.in_types.values().next().unwrap_or(&PrimitiveType::F32);
+            let first_ty = *typed
+                .in_types
+                .values()
+                .next()
+                .unwrap_or(&PrimitiveType::F32);
             if typed.in_types.values().all(|t| *t == first_ty) {
-                Some(PortIndexMeta { count: typed.ins.len(), elem_ty: first_ty })
-            } else { None }
-        } else { None };
+                Some(PortIndexMeta {
+                    count: typed.ins.len(),
+                    elem_ty: first_ty,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let port_index_outs = if typed.outs_explicit && !typed.outs.is_empty() {
-            let first_ty = *typed.out_types.values().next().unwrap_or(&PrimitiveType::F32);
+            let first_ty = *typed
+                .out_types
+                .values()
+                .next()
+                .unwrap_or(&PrimitiveType::F32);
             if typed.out_types.values().all(|t| *t == first_ty) {
-                Some(PortIndexMeta { count: typed.outs.len(), elem_ty: first_ty })
-            } else { None }
-        } else { None };
+                Some(PortIndexMeta {
+                    count: typed.outs.len(),
+                    elem_ty: first_ty,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let port_index_params = if typed.params_explicit && !typed.params.is_empty() {
             let first_ty = typed.params[0].ty;
             if typed.params.iter().all(|p| p.ty == first_ty) {
-                Some(PortIndexMeta { count: typed.params.len(), elem_ty: first_ty })
-            } else { None }
-        } else { None };
+                Some(PortIndexMeta {
+                    count: typed.params.len(),
+                    elem_ty: first_ty,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let frame_idx_name =
             CString::new("frame_idx").map_err(|_| Diagnostic::internal("invalid local name"))?;
