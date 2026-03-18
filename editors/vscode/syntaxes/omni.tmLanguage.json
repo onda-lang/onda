@@ -15,13 +15,7 @@
       "include": "#declarations"
     },
     {
-      "include": "#const-declarations"
-    },
-    {
       "include": "#imports"
-    },
-    {
-      "include": "#typed-declarations"
     },
     {
       "include": "#keyword-operators"
@@ -30,25 +24,10 @@
       "include": "#keywords"
     },
     {
-      "include": "#constants"
-    },
-    {
-      "include": "#port-aliases"
-    },
-    {
       "include": "#types"
     },
     {
       "include": "#numbers"
-    },
-    {
-      "include": "#member-access"
-    },
-    {
-      "include": "#function-calls"
-    },
-    {
-      "include": "#namespace-paths"
     }
   ],
   "repository": {
@@ -79,13 +58,10 @@
       "patterns": [
         {
           "name": "meta.section.header.omni",
-          "match": "^(\\s*)(ins|outs|params|const|events|buffers|init|block|sample|graph)(\\s*<[^>\\n]+>)?(\\s+\\d+)?(\\s*(?::|\\{))",
+          "match": "^(\\s*)(ins|outs|params|const|events|buffers|init|block|sample|graph)(?=\\s*(?:<|\\d|[:{]))(\\s*<[^>\\n]+>)?(\\s+\\d+)?(\\s*(?::|\\{))?",
           "captures": {
             "2": {
               "name": "storage.type.block.omni"
-            },
-            "3": {
-              "name": "meta.generic.section.omni"
             },
             "4": {
               "name": "constant.numeric.omni"
@@ -101,52 +77,43 @@
       "patterns": [
         {
           "name": "meta.declaration.namespace.omni",
-          "match": "^(\\s*)(namespace)(\\s+)([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)(\\s*<[^>\\n]+>)?(\\s*=)?",
+          "match": "^(\\s*)(namespace)\\b",
           "captures": {
             "2": {
               "name": "storage.type.block.omni"
-            },
-            "4": {
-              "name": "entity.name.namespace.omni"
-            },
-            "5": {
-              "name": "meta.generic.namespace.omni"
-            },
-            "6": {
-              "name": "keyword.operator.assignment.omni"
             }
           }
         },
         {
           "name": "meta.declaration.type.omni",
-          "match": "^(\\s*)(proc|processor|struct)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(\\s*<[^>\\n]+>)?(\\s*:)?",
+          "match": "^(\\s*)(proc|processor|struct)(\\s+)([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "2": {
               "name": "storage.type.block.omni"
             },
             "4": {
               "name": "entity.name.type.omni"
-            },
-            "5": {
-              "name": "meta.generic.type.omni"
-            },
-            "6": {
-              "name": "punctuation.separator.key-value.omni"
             }
           }
         },
         {
           "name": "meta.declaration.function.omni",
-          "match": "^(\\s*)(def)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(\\s*<[^>\\n]+>)?",
+          "match": "^(\\s*)(def)(\\s+)([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "2": {
               "name": "storage.type.block.omni"
             },
             "4": {
               "name": "entity.name.function.omni"
-            },
-            "5": {
-              "name": "meta.generic.function.omni"
+            }
+          }
+        },
+        {
+          "name": "meta.declaration.const.omni",
+          "match": "\\b(const)\\b",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.const.omni"
             }
           }
         }
@@ -180,53 +147,6 @@
         }
       ]
     },
-    "const-declarations": {
-      "patterns": [
-        {
-          "name": "meta.declaration.const.omni",
-          "match": "\\b(const)(\\s+)([A-Za-z_][A-Za-z0-9_]*)",
-          "captures": {
-            "1": {
-              "name": "storage.modifier.const.omni"
-            },
-            "3": {
-              "name": "variable.other.constant.omni"
-            }
-          }
-        }
-      ]
-    },
-    "typed-declarations": {
-      "patterns": [
-        {
-          "name": "meta.typed.declaration.omni",
-          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\s*:\\s*)([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<[^>\\n]+>)?(?:\\[[^\\]\\n]*\\])?)",
-          "captures": {
-            "1": {
-              "name": "variable.other.definition.omni"
-            },
-            "2": {
-              "name": "punctuation.separator.type.omni"
-            },
-            "3": {
-              "name": "storage.type.annotation.omni"
-            }
-          }
-        },
-        {
-          "name": "meta.named-argument.omni",
-          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\s*=)",
-          "captures": {
-            "1": {
-              "name": "variable.parameter.omni"
-            },
-            "2": {
-              "name": "keyword.operator.assignment.omni"
-            }
-          }
-        }
-      ]
-    },
     "keyword-operators": {
       "patterns": [
         {
@@ -239,7 +159,7 @@
         },
         {
           "name": "keyword.operator.logical.omni",
-          "match": "(==|!=|<=|>=|&&|\\|\\|)"
+          "match": "(==|!=|<=|>=|<|>|&&|\\|\\|)"
         },
         {
           "name": "keyword.operator.arithmetic.omni",
@@ -256,26 +176,10 @@
         {
           "name": "keyword.control.omni",
           "match": "\\b(if|elif|else|for|in|while|loop|break|continue|return|assert)\\b"
-        }
-      ]
-    },
-    "constants": {
-      "patterns": [
-        {
-          "name": "constant.language.omni",
-          "match": "\\b(PI|pi|TWO_PI|TWOPI|two_pi|twopi|SAMPLE_RATE|SAMPLERATE|SR|sample_rate|samplerate|BLOCK_SIZE|BLOCKSIZE|BS|block_size|blocksize|true|false)\\b"
-        }
-      ]
-    },
-    "port-aliases": {
-      "patterns": [
-        {
-          "name": "variable.language.port.input.omni",
-          "match": "\\bin(?:[1-9]|[1-5][0-9]|6[0-4])\\b"
         },
         {
-          "name": "variable.language.port.output.omni",
-          "match": "\\bout(?:[1-9]|[1-5][0-9]|6[0-4])\\b"
+          "name": "constant.language.omni",
+          "match": "\\b(true|false)\\b"
         }
       ]
     },
@@ -292,47 +196,6 @@
         {
           "name": "constant.numeric.omni",
           "match": "\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b"
-        }
-      ]
-    },
-    "member-access": {
-      "patterns": [
-        {
-          "name": "variable.other.member.omni",
-          "match": "(?<=\\.)[A-Za-z_][A-Za-z0-9_]*\\b"
-        }
-      ]
-    },
-    "function-calls": {
-      "patterns": [
-        {
-          "name": "entity.name.function.omni",
-          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?:<[^>\\n]+>\\s*)?\\()"
-        }
-      ]
-    },
-    "namespace-paths": {
-      "patterns": [
-        {
-          "name": "meta.path.namespace.omni",
-          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(::)([A-Za-z_][A-Za-z0-9_]*)(?:(::)([A-Za-z_][A-Za-z0-9_]*))*",
-          "captures": {
-            "1": {
-              "name": "entity.name.namespace.omni"
-            },
-            "2": {
-              "name": "keyword.operator.namespace.omni"
-            },
-            "3": {
-              "name": "entity.name.namespace.omni"
-            },
-            "4": {
-              "name": "keyword.operator.namespace.omni"
-            },
-            "5": {
-              "name": "entity.name.namespace.omni"
-            }
-          }
         }
       ]
     }

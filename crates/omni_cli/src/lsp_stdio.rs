@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use omni_daemon::{DaemonSession, DocumentVersion};
 use omni_frontend::{
-    parse_program, parse_program_with_path, AssignTarget, Block, Diagnostic, Expr, FunctionDef,
-    GraphBlock, GraphEndpoint, ParamDecl, PortDecl, ProcessorDef, Program, SourceLoc, Span, Stmt,
+    parse_program, parse_program_with_path, AssignTarget, Block, Diagnostic, FunctionDef, Program,
+    Stmt,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -19,6 +19,9 @@ const SEMANTIC_TOKEN_TYPE_ENUM_MEMBER: u32 = 0;
 const SEMANTIC_TOKEN_TYPE_VARIABLE: u32 = 1;
 const SEMANTIC_TOKEN_TYPE_PORT: u32 = 2;
 const SEMANTIC_TOKEN_TYPE_PARAMETER: u32 = 3;
+const SEMANTIC_TOKEN_TYPE_FUNCTION: u32 = 4;
+const SEMANTIC_TOKEN_TYPE_TYPE: u32 = 5;
+const SEMANTIC_TOKEN_TYPE_NAMESPACE: u32 = 6;
 
 pub fn run_stdio_loop() -> Result<(), String> {
     let stdin = io::stdin();
@@ -439,7 +442,7 @@ fn initialize_result(process_id: Option<u32>) -> Value {
             "semanticTokensProvider": {
                 "full": true,
                 "legend": {
-                    "tokenTypes": ["enumMember", "variable", "port", "parameter"],
+                    "tokenTypes": ["enumMember", "variable", "port", "parameter", "function", "type", "namespace"],
                     "tokenModifiers": [],
                 }
             },
@@ -514,192 +517,100 @@ fn diagnostic_message(diagnostic: &Diagnostic) -> String {
 }
 
 fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<SemanticToken> {
-    let parsed = match path {
+    let mut scope = match path {
         Some(path) => parse_program_with_path(source, path).or_else(|_| parse_program(source)),
         None => parse_program(source),
-    };
-
-    match parsed {
-        Ok(program) => {
-            let mut tokens = semantic_tokens_from_program(source, path, &program);
-            tokens.extend(fallback_const_tokens(source));
-            tokens.sort_by_key(|token| {
-                (
-                    token.line,
-                    token.start,
-                    token.length,
-                    token.token_type,
-                    token.token_modifiers,
-                )
-            });
-            tokens.dedup_by(|lhs, rhs| {
-                lhs.line == rhs.line
-                    && lhs.start == rhs.start
-                    && lhs.length == rhs.length
-                    && lhs.token_type == rhs.token_type
-                    && lhs.token_modifiers == rhs.token_modifiers
-            });
-            tokens
-        }
-        Err(_) => fallback_const_tokens(source),
     }
-}
+    .map(|program| collect_all_symbols(&program))
+    .unwrap_or_default();
 
-fn semantic_tokens_from_program(
-    source: &str,
-    path: Option<&Path>,
-    program: &Program,
-) -> Vec<SemanticToken> {
-    let current_path = path.map(normalize_path);
-    let mut tokens = Vec::new();
-    let top_level_scope = collect_top_level_scope(program, current_path.as_deref(), &mut tokens);
-
-    let mut runtime_scope = top_level_scope.clone();
-    for block in &program.blocks {
-        if !loc_matches_path(block.loc(), current_path.as_deref()) {
-            continue;
-        }
-        match block {
-            Block::Init(init) => {
-                collect_stmt_tokens(
-                    &init.body,
-                    &mut runtime_scope,
-                    current_path.as_deref(),
-                    source,
-                    &mut tokens,
-                    true,
-                );
-            }
-            Block::Block(exec) => {
-                let mut pre_scope = runtime_scope.clone();
-                collect_stmt_tokens(
-                    &exec.pre,
-                    &mut pre_scope,
-                    current_path.as_deref(),
-                    source,
-                    &mut tokens,
-                    false,
-                );
-                if let Some(sample) = &exec.sample {
-                    let mut sample_scope = runtime_scope.clone();
-                    collect_stmt_tokens(
-                        &sample.body,
-                        &mut sample_scope,
-                        current_path.as_deref(),
-                        source,
-                        &mut tokens,
-                        false,
-                    );
-                }
-                let mut post_scope = runtime_scope.clone();
-                collect_stmt_tokens(
-                    &exec.post,
-                    &mut post_scope,
-                    current_path.as_deref(),
-                    source,
-                    &mut tokens,
-                    false,
-                );
-            }
-            Block::Sample(sample) => {
-                let mut scope = runtime_scope.clone();
-                collect_stmt_tokens(
-                    &sample.body,
-                    &mut scope,
-                    current_path.as_deref(),
-                    source,
-                    &mut tokens,
-                    false,
-                );
-            }
-            Block::Graph(graph) => {
-                collect_graph_tokens(
-                    graph,
-                    &runtime_scope,
-                    current_path.as_deref(),
-                    source,
-                    &mut tokens,
-                );
-            }
-            Block::Def(def) => {
-                collect_function_tokens(
-                    def,
-                    &runtime_scope,
-                    current_path.as_deref(),
-                    source,
-                    &mut tokens,
-                );
-            }
-            Block::Proc(proc_def) => {
-                collect_proc_tokens(
-                    proc_def,
-                    &runtime_scope,
-                    current_path.as_deref(),
-                    source,
-                    &mut tokens,
-                );
-            }
-            _ => {}
-        }
-    }
-
-    tokens.sort_by_key(|token| {
-        (
-            token.line,
-            token.start,
-            token.length,
-            token.token_type,
-            token.token_modifiers,
-        )
-    });
-    tokens.dedup_by(|lhs, rhs| {
-        lhs.line == rhs.line
-            && lhs.start == rhs.start
-            && lhs.length == rhs.length
-            && lhs.token_type == rhs.token_type
-            && lhs.token_modifiers == rhs.token_modifiers
-    });
-    tokens
-}
-
-fn fallback_const_tokens(source: &str) -> Vec<SemanticToken> {
-    let const_names = collect_const_names(source);
-    if const_names.is_empty() {
-        return Vec::new();
-    }
+    collect_symbols_from_source(source, &mut scope);
 
     let mut tokens = Vec::new();
-    scan_identifiers(source, |name, line, start, length| {
-        if const_names.contains(name) {
+    scan_identifiers(source, |name, line, start, length, after_dot, is_call, in_ns_path| {
+        // self → parameter color (same as other arguments)
+        if name == "self" {
             tokens.push(SemanticToken {
-                line,
-                start,
-                length,
-                token_type: SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
+                line, start, length,
+                token_type: SEMANTIC_TOKEN_TYPE_PARAMETER,
+                token_modifiers: 0,
+            });
+            return;
+        }
+        if after_dot {
+            if is_call {
+                tokens.push(SemanticToken {
+                    line, start, length,
+                    token_type: SEMANTIC_TOKEN_TYPE_FUNCTION,
+                    token_modifiers: 0,
+                });
+            } else {
+                tokens.push(SemanticToken {
+                    line, start, length,
+                    token_type: SEMANTIC_TOKEN_TYPE_VARIABLE,
+                    token_modifiers: 0,
+                });
+            }
+            return;
+        }
+        // Namespace path segments: std::fft, std::complex::Complex, etc.
+        if in_ns_path {
+            let token_type = scope.token_type_for(name)
+                .unwrap_or(SEMANTIC_TOKEN_TYPE_NAMESPACE);
+            tokens.push(SemanticToken {
+                line, start, length, token_type, token_modifiers: 0,
+            });
+            return;
+        }
+        if let Some(mut token_type) = scope.token_type_for(name) {
+            // Variables called with () are callable proc instances — color as function
+            if is_call && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
+                token_type = SEMANTIC_TOKEN_TYPE_FUNCTION;
+            }
+            tokens.push(SemanticToken {
+                line, start, length, token_type, token_modifiers: 0,
+            });
+        } else if is_call && !is_reserved_word(name) {
+            // Unknown identifier followed by () → intrinsic/function call
+            // (skip keywords like if/while/for and type casts like i32/f32)
+            tokens.push(SemanticToken {
+                line, start, length,
+                token_type: SEMANTIC_TOKEN_TYPE_FUNCTION,
                 token_modifiers: 0,
             });
         }
     });
+
+    tokens.sort_by_key(|t| (t.line, t.start, t.length, t.token_type, t.token_modifiers));
+    tokens.dedup_by(|a, b| {
+        a.line == b.line
+            && a.start == b.start
+            && a.length == b.length
+            && a.token_type == b.token_type
+            && a.token_modifiers == b.token_modifiers
+    });
     tokens
 }
 
-fn collect_const_names(source: &str) -> HashSet<String> {
-    let mut names = HashSet::new();
-    let mut expect_name = false;
-    scan_identifiers(source, |name, _, _, _| {
-        if expect_name {
-            names.insert(name.to_owned());
-            expect_name = false;
-        } else if name == "const" {
-            expect_name = true;
-        }
-    });
-    names
+fn is_reserved_word(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "elif" | "else" | "for" | "in" | "while" | "loop"
+        | "break" | "continue" | "return" | "assert"
+        | "true" | "false"
+        | "f32" | "f64" | "i32" | "i64" | "bool" | "buffer"
+        | "proc" | "processor" | "struct" | "def" | "const"
+        | "namespace" | "import" | "include"
+        | "ins" | "outs" | "params" | "buffers" | "init"
+        | "events" | "sample" | "block" | "graph"
+    )
 }
 
 #[derive(Debug, Clone, Default)]
 struct SemanticScope {
     consts: HashSet<String>,
+    types: HashSet<String>,
+    functions: HashSet<String>,
     variables: HashSet<String>,
     ports: HashSet<String>,
     parameters: HashSet<String>,
@@ -709,16 +620,30 @@ impl SemanticScope {
     fn token_type_for(&self, name: &str) -> Option<u32> {
         if self.consts.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
+        } else if self.types.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_TYPE)
         } else if self.parameters.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_PARAMETER)
         } else if self.ports.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_PORT)
         } else if is_implicit_port_name(name) {
             Some(SEMANTIC_TOKEN_TYPE_PORT)
+        } else if self.functions.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
         } else if self.variables.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_VARIABLE)
         } else {
             None
+        }
+    }
+
+    fn insert_variable(&mut self, name: String) {
+        if !self.consts.contains(&name)
+            && !self.ports.contains(&name)
+            && !self.parameters.contains(&name)
+            && !self.types.contains(&name)
+        {
+            self.variables.insert(name);
         }
     }
 }
@@ -737,358 +662,434 @@ fn implicit_port_index(name: &str, prefix: &str) -> Option<u32> {
     }
 }
 
-fn collect_top_level_scope(
-    program: &Program,
-    current_path: Option<&Path>,
-    tokens: &mut Vec<SemanticToken>,
-) -> SemanticScope {
+fn collect_all_symbols(program: &Program) -> SemanticScope {
     let mut scope = SemanticScope::default();
     for block in &program.blocks {
-        if !loc_matches_path(block.loc(), current_path) {
-            continue;
-        }
-        match block {
-            Block::Const(decl) => {
-                scope.consts.insert(decl.name.clone());
-                push_name_token(
-                    tokens,
-                    decl.loc.into(),
-                    &decl.name,
-                    SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
-                );
-            }
-            Block::Ins(ports) | Block::Outs(ports) => {
-                for decl in &ports.decls {
-                    scope.ports.insert(decl.name.clone());
-                    push_name_token(
-                        tokens,
-                        decl.loc.into(),
-                        &decl.name,
-                        SEMANTIC_TOKEN_TYPE_PORT,
-                    );
-                }
-            }
-            Block::Params(params) => {
-                for decl in &params.decls {
-                    scope.parameters.insert(decl.name.clone());
-                    push_name_token(
-                        tokens,
-                        decl.loc.into(),
-                        &decl.name,
-                        SEMANTIC_TOKEN_TYPE_PARAMETER,
-                    );
-                }
-            }
-            Block::Buffers(buffers) => {
-                for decl in &buffers.decls {
-                    scope.ports.insert(decl.name.clone());
-                    push_name_token(
-                        tokens,
-                        decl.loc.into(),
-                        &decl.name,
-                        SEMANTIC_TOKEN_TYPE_PORT,
-                    );
-                }
-            }
-            _ => {}
-        }
+        collect_block_symbols(block, &mut scope);
     }
     scope
 }
 
-fn collect_proc_tokens(
-    proc_def: &ProcessorDef,
-    parent_scope: &SemanticScope,
-    current_path: Option<&Path>,
-    source: &str,
-    tokens: &mut Vec<SemanticToken>,
-) {
-    if !loc_matches_path(proc_def.loc.into(), current_path) {
-        return;
-    }
-
-    let mut proc_scope = parent_scope.clone();
-    declare_port_tokens(&proc_def.ins, &mut proc_scope, tokens);
-    declare_port_tokens(&proc_def.outs, &mut proc_scope, tokens);
-    declare_param_tokens(&proc_def.params, &mut proc_scope, tokens);
-    for buffer in &proc_def.buffers {
-        proc_scope.ports.insert(buffer.name.clone());
-        push_name_token(
-            tokens,
-            buffer.loc.into(),
-            &buffer.name,
-            SEMANTIC_TOKEN_TYPE_PORT,
-        );
-    }
-
-    let mut runtime_scope = proc_scope.clone();
-    collect_stmt_tokens(
-        &proc_def.init.body,
-        &mut runtime_scope,
-        current_path,
-        source,
-        tokens,
-        true,
-    );
-
-    let mut sample_scope = runtime_scope.clone();
-    collect_stmt_tokens(
-        &proc_def.sample,
-        &mut sample_scope,
-        current_path,
-        source,
-        tokens,
-        false,
-    );
-
-    let mut pre_scope = runtime_scope.clone();
-    collect_stmt_tokens(
-        &proc_def.block_pre,
-        &mut pre_scope,
-        current_path,
-        source,
-        tokens,
-        false,
-    );
-
-    let mut post_scope = runtime_scope.clone();
-    collect_stmt_tokens(
-        &proc_def.block_post,
-        &mut post_scope,
-        current_path,
-        source,
-        tokens,
-        false,
-    );
-
-    if let Some(graph) = &proc_def.graph {
-        collect_graph_tokens(graph, &runtime_scope, current_path, source, tokens);
-    }
-
-    for def in &proc_def.local_defs {
-        collect_function_tokens(def, &runtime_scope, current_path, source, tokens);
+fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
+    match block {
+        Block::Const(decl) => {
+            scope.consts.insert(decl.name.clone());
+        }
+        Block::Ins(ports) | Block::Outs(ports) => {
+            for decl in &ports.decls {
+                scope.ports.insert(decl.name.clone());
+            }
+        }
+        Block::Params(params) => {
+            for decl in &params.decls {
+                scope.parameters.insert(decl.name.clone());
+            }
+        }
+        Block::Buffers(buffers) => {
+            for decl in &buffers.decls {
+                scope.ports.insert(decl.name.clone());
+            }
+        }
+        Block::Events(events) => {
+            for event in &events.events {
+                scope.functions.insert(event.name.clone());
+                for param in &event.params {
+                    scope.parameters.insert(param.name.clone());
+                }
+                collect_stmt_symbols(&event.body, scope);
+            }
+        }
+        Block::Init(init) => {
+            collect_stmt_symbols(&init.body, scope);
+        }
+        Block::Block(exec) => {
+            collect_stmt_symbols(&exec.pre, scope);
+            if let Some(sample) = &exec.sample {
+                collect_stmt_symbols(&sample.body, scope);
+            }
+            collect_stmt_symbols(&exec.post, scope);
+        }
+        Block::Sample(sample) => {
+            collect_stmt_symbols(&sample.body, scope);
+        }
+        Block::Def(def) => {
+            scope.functions.insert(def.name.clone());
+            collect_def_symbols(def, scope);
+        }
+        Block::Proc(proc_def) => {
+            scope.types.insert(proc_def.name.clone());
+            collect_proc_symbols(proc_def, scope);
+        }
+        Block::Struct(struct_def) => {
+            scope.types.insert(struct_def.name.clone());
+            for tp in &struct_def.type_params {
+                scope.types.insert(tp.clone());
+            }
+            for method in &struct_def.methods {
+                scope.functions.insert(method.name.clone());
+                collect_def_symbols(method, scope);
+            }
+        }
+        _ => {}
     }
 }
 
-fn declare_port_tokens(
-    decls: &[PortDecl],
-    scope: &mut SemanticScope,
-    tokens: &mut Vec<SemanticToken>,
-) {
-    for decl in decls {
+fn collect_proc_symbols(proc_def: &omni_frontend::ProcessorDef, scope: &mut SemanticScope) {
+    for tp in &proc_def.type_params {
+        scope.types.insert(tp.clone());
+    }
+    for decl in &proc_def.ins {
         scope.ports.insert(decl.name.clone());
-        push_name_token(
-            tokens,
-            decl.loc.into(),
-            &decl.name,
-            SEMANTIC_TOKEN_TYPE_PORT,
-        );
     }
-}
-
-fn declare_param_tokens(
-    decls: &[ParamDecl],
-    scope: &mut SemanticScope,
-    tokens: &mut Vec<SemanticToken>,
-) {
-    for decl in decls {
+    for decl in &proc_def.outs {
+        scope.ports.insert(decl.name.clone());
+    }
+    for decl in &proc_def.params {
         scope.parameters.insert(decl.name.clone());
-        push_name_token(
-            tokens,
-            decl.loc.into(),
-            &decl.name,
-            SEMANTIC_TOKEN_TYPE_PARAMETER,
-        );
+    }
+    for buffer in &proc_def.buffers {
+        scope.ports.insert(buffer.name.clone());
+    }
+    collect_stmt_symbols(&proc_def.init.body, scope);
+    collect_stmt_symbols(&proc_def.block_pre, scope);
+    collect_stmt_symbols(&proc_def.sample, scope);
+    collect_stmt_symbols(&proc_def.block_post, scope);
+    for event in &proc_def.events {
+        scope.functions.insert(event.name.clone());
+        for param in &event.params {
+            scope.parameters.insert(param.name.clone());
+        }
+        collect_stmt_symbols(&event.body, scope);
+    }
+    for def in &proc_def.local_defs {
+        scope.functions.insert(def.name.clone());
+        collect_def_symbols(def, scope);
     }
 }
 
-fn collect_function_tokens(
-    def: &FunctionDef,
-    parent_scope: &SemanticScope,
-    current_path: Option<&Path>,
-    source: &str,
-    tokens: &mut Vec<SemanticToken>,
-) {
-    if !loc_matches_path(def.loc.into(), current_path) {
-        return;
+fn collect_def_symbols(def: &FunctionDef, scope: &mut SemanticScope) {
+    for tp in &def.type_params {
+        scope.types.insert(tp.clone());
     }
-
-    let mut scope = parent_scope.clone();
     for param in &def.params {
         scope.parameters.insert(param.name.clone());
-        push_name_token(
-            tokens,
-            param.loc.into(),
-            &param.name,
-            SEMANTIC_TOKEN_TYPE_PARAMETER,
-        );
     }
-    collect_stmt_tokens(&def.body, &mut scope, current_path, source, tokens, false);
+    collect_stmt_symbols(&def.body, scope);
 }
 
-fn collect_stmt_tokens(
-    stmts: &[Stmt],
-    scope: &mut SemanticScope,
-    current_path: Option<&Path>,
-    source: &str,
-    tokens: &mut Vec<SemanticToken>,
-    allow_local_variables: bool,
-) {
+fn collect_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
     for stmt in stmts {
-        if !loc_matches_path(stmt.loc(), current_path) {
-            continue;
-        }
         match stmt {
             Stmt::Const { decl, .. } => {
-                push_name_token(
-                    tokens,
-                    decl.loc.into(),
-                    &decl.name,
-                    SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
-                );
-                collect_expr_tokens(&decl.expr, scope, current_path, source, tokens);
                 scope.consts.insert(decl.name.clone());
             }
-            Stmt::Assign {
-                target,
-                target_loc,
-                expr,
-                ..
-            } => {
-                collect_assign_target_tokens(
-                    target,
-                    *target_loc,
-                    scope,
-                    current_path,
-                    source,
-                    tokens,
-                    allow_local_variables,
-                );
-                collect_expr_tokens(expr, scope, current_path, source, tokens);
-            }
-            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                collect_expr_tokens(expr, scope, current_path, source, tokens);
+            Stmt::Assign { target, .. } => {
+                collect_target_symbols(target, scope);
             }
             Stmt::If {
-                cond,
                 then_branch,
                 else_branch,
                 ..
             } => {
-                collect_expr_tokens(cond, scope, current_path, source, tokens);
-                let mut then_scope = scope.clone();
-                collect_stmt_tokens(
-                    then_branch,
-                    &mut then_scope,
-                    current_path,
-                    source,
-                    tokens,
-                    allow_local_variables,
-                );
-                let mut else_scope = scope.clone();
-                collect_stmt_tokens(
-                    else_branch,
-                    &mut else_scope,
-                    current_path,
-                    source,
-                    tokens,
-                    allow_local_variables,
-                );
+                collect_stmt_symbols(then_branch, scope);
+                collect_stmt_symbols(else_branch, scope);
             }
-            Stmt::For {
-                start,
-                end,
-                step,
-                var,
-                body,
-                ..
-            } => {
-                collect_expr_tokens(start, scope, current_path, source, tokens);
-                collect_expr_tokens(end, scope, current_path, source, tokens);
-                if let Some(step) = step {
-                    collect_expr_tokens(step, scope, current_path, source, tokens);
-                }
-                let mut loop_scope = scope.clone();
-                if allow_local_variables {
-                    loop_scope.variables.insert(var.clone());
-                }
-                collect_stmt_tokens(
-                    body,
-                    &mut loop_scope,
-                    current_path,
-                    source,
-                    tokens,
-                    allow_local_variables,
-                );
+            Stmt::For { var, body, .. } => {
+                scope.variables.insert(var.clone());
+                collect_stmt_symbols(body, scope);
             }
-            Stmt::While { cond, body, .. } => {
-                collect_expr_tokens(cond, scope, current_path, source, tokens);
-                let mut loop_scope = scope.clone();
-                collect_stmt_tokens(
-                    body,
-                    &mut loop_scope,
-                    current_path,
-                    source,
-                    tokens,
-                    allow_local_variables,
-                );
+            Stmt::While { body, .. } => {
+                collect_stmt_symbols(body, scope);
             }
-            Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            _ => {}
         }
     }
 }
 
-fn collect_assign_target_tokens(
-    target: &AssignTarget,
-    target_loc: Span,
-    scope: &mut SemanticScope,
-    current_path: Option<&Path>,
-    source: &str,
-    tokens: &mut Vec<SemanticToken>,
-    allow_local_variables: bool,
-) {
-    if !loc_matches_path(target_loc.into(), current_path) {
-        return;
-    }
+fn collect_target_symbols(target: &AssignTarget, scope: &mut SemanticScope) {
     match target {
         AssignTarget::Var(name) => {
-            let Some(token_type) = scope
-                .token_type_for(name)
-                .or_else(|| allow_local_variables.then_some(SEMANTIC_TOKEN_TYPE_VARIABLE))
-            else {
-                return;
-            };
-            push_name_token(tokens, target_loc.into(), name, token_type);
-            if allow_local_variables && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
-                scope.variables.insert(name.clone());
-            }
-        }
-        AssignTarget::Index { base, index } => {
-            if let Some(token_type) = scope.token_type_for(base) {
-                push_name_token(tokens, target_loc.into(), base, token_type);
-            }
-            collect_expr_tokens(index, scope, current_path, source, tokens);
-        }
-        AssignTarget::Slice { base, start, end } => {
-            if let Some(token_type) = scope.token_type_for(base) {
-                push_name_token(tokens, target_loc.into(), base, token_type);
-            }
-            if let Some(start) = start {
-                collect_expr_tokens(start, scope, current_path, source, tokens);
-            }
-            if let Some(end) = end {
-                collect_expr_tokens(end, scope, current_path, source, tokens);
-            }
+            scope.insert_variable(name.clone());
         }
         AssignTarget::Tuple(names) => {
             for name in names {
-                if let Some(token_type) = scope
-                    .token_type_for(name)
-                    .or_else(|| allow_local_variables.then_some(SEMANTIC_TOKEN_TYPE_VARIABLE))
+                scope.insert_variable(name.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SourceSection {
+    None,
+    Ins,
+    Outs,
+    Params,
+    Buffers,
+    Init,
+    Block,
+    Sample,
+    Events,
+    Def,
+    EventHandler,
+}
+
+/// Collect symbols directly from source text. This handles namespaced files where
+/// the parser lowers procs into structs+defs, losing the original structure.
+const BUILTIN_CONSTS: &[&str] = &[
+    "PI", "pi", "TWO_PI", "TWOPI", "two_pi", "twopi",
+    "SAMPLE_RATE", "SAMPLERATE", "SR", "sample_rate", "samplerate",
+    "BLOCK_SIZE", "BLOCKSIZE", "BS", "block_size", "blocksize",
+];
+
+fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
+    for &name in BUILTIN_CONSTS {
+        scope.consts.insert(name.to_owned());
+    }
+
+    let mut section = SourceSection::None;
+    let mut section_indent: usize = 0;
+    // Track the events section so we can restore it when leaving an event handler
+    let mut events_indent: Option<usize> = None;
+
+    for line in source.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // If we've dedented back to or past the section start, leave it
+        if section != SourceSection::None && indent <= section_indent {
+            // When leaving an EventHandler, check if we're still within the events section
+            if section == SourceSection::EventHandler {
+                if let Some(ev_indent) = events_indent {
+                    if indent > ev_indent {
+                        section = SourceSection::Events;
+                        section_indent = ev_indent;
+                    } else {
+                        section = SourceSection::None;
+                        events_indent = None;
+                    }
+                } else {
+                    section = SourceSection::None;
+                }
+            } else {
+                if section == SourceSection::Events {
+                    events_indent = None;
+                }
+                section = SourceSection::None;
+            }
+        }
+
+        // Namespace generic params: namespace name<Param = val, ...>
+        if trimmed.starts_with("namespace ") {
+            let rest = &trimmed["namespace ".len()..];
+            // Register each segment of the namespace path (before < or :)
+            let path_end = rest.find(|c: char| c == '<' || c == ':' || c == '=')
+                .unwrap_or(rest.len());
+            let path = rest[..path_end].trim();
+            for segment in path.split("::") {
+                let segment = segment.trim();
+                if let Some(name) = extract_leading_ident(segment) {
+                    scope.types.insert(name.to_owned());
+                }
+            }
+            extract_namespace_generic_consts(trimmed, scope);
+            section = SourceSection::None;
+            section_indent = indent;
+            continue;
+        }
+
+        // const Name = ...
+        if let Some(rest) = trimmed.strip_prefix("const ") {
+            if let Some(name) = extract_leading_ident(rest) {
+                scope.consts.insert(name.to_owned());
+            }
+            continue;
+        }
+
+        // proc/struct Name<T, ...>:
+        if trimmed.starts_with("proc ")
+            || trimmed.starts_with("processor ")
+            || trimmed.starts_with("struct ")
+        {
+            // Extract the name after the keyword
+            let after_kw = if trimmed.starts_with("processor ") {
+                &trimmed["processor ".len()..]
+            } else if trimmed.starts_with("proc ") {
+                &trimmed["proc ".len()..]
+            } else {
+                &trimmed["struct ".len()..]
+            };
+            if let Some(name) = extract_leading_ident(after_kw.trim_start()) {
+                scope.types.insert(name.to_owned());
+            }
+            extract_type_params(trimmed, scope);
+            section = SourceSection::None;
+            section_indent = indent;
+            continue;
+        }
+
+        // def Name<T>(params):
+        if trimmed.starts_with("def ") {
+            extract_def_symbols(trimmed, scope);
+            section = SourceSection::Def;
+            section_indent = indent;
+            continue;
+        }
+
+        // Section headers: ins/outs/params/buffers/init/events/sample/block/graph
+        if let Some(new_section) = detect_section_header(trimmed) {
+            section = new_section;
+            section_indent = indent;
+            if section == SourceSection::Events {
+                events_indent = Some(indent);
+            }
+            // Handle ins<T> N / outs<T> N — extract type params
+            if matches!(section, SourceSection::Ins | SourceSection::Outs) {
+                extract_type_params(trimmed, scope);
+            }
+            continue;
+        }
+
+        // Event handler: name(params): — inside events section
+        if section == SourceSection::Events && indent > section_indent {
+            if let Some(paren) = trimmed.find('(') {
+                let name = &trimmed[..paren];
+                if !name.is_empty()
+                    && is_ident_start(name.as_bytes()[0])
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
                 {
-                    push_name_token(tokens, target_loc.into(), name, token_type);
-                    if allow_local_variables && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
-                        scope.variables.insert(name.clone());
+                    scope.functions.insert(name.to_owned());
+                    extract_params_from_parens(&trimmed[paren..], scope);
+                    section = SourceSection::EventHandler;
+                    section_indent = indent;
+                    continue;
+                }
+            }
+        }
+
+        // Within port/param/buffer sections: each line declares a name
+        match section {
+            SourceSection::Ins | SourceSection::Outs | SourceSection::Buffers => {
+                if indent > section_indent {
+                    if let Some(name) = extract_leading_ident(trimmed) {
+                        scope.ports.insert(name.to_owned());
+                    }
+                }
+            }
+            SourceSection::Params => {
+                if indent > section_indent {
+                    if let Some(name) = extract_leading_ident(trimmed) {
+                        scope.parameters.insert(name.to_owned());
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // for NAME in
+        if let Some(rest) = trimmed.strip_prefix("for ") {
+            if let Some(in_pos) = rest.find(" in ") {
+                let name = rest[..in_pos].trim();
+                if !name.is_empty() && is_ident_start(name.as_bytes()[0]) {
+                    scope.insert_variable(name.to_owned());
+                }
+            }
+            continue;
+        }
+
+        // Typed declaration: NAME: TYPE or NAME: TYPE = VALUE
+        // Assignment: NAME = VALUE (not ==, !=, <=, >=)
+        // Indexed/slice assignment: NAME[...] = ...
+        if let Some(name) = extract_leading_ident(trimmed) {
+            let rest = trimmed[name.len()..].trim_start();
+            if rest.starts_with(':') && !rest.starts_with("::") {
+                scope.insert_variable(name.to_owned());
+            } else if rest.starts_with('=') && !rest.starts_with("==") {
+                scope.insert_variable(name.to_owned());
+            } else if rest.starts_with('[') {
+                scope.insert_variable(name.to_owned());
+            }
+        }
+    }
+}
+
+fn detect_section_header(trimmed: &str) -> Option<SourceSection> {
+    let pairs: &[(&str, SourceSection)] = &[
+        ("ins", SourceSection::Ins),
+        ("outs", SourceSection::Outs),
+        ("params", SourceSection::Params),
+        ("buffers", SourceSection::Buffers),
+        ("init", SourceSection::Init),
+        ("events", SourceSection::Events),
+        ("sample", SourceSection::Sample),
+        ("block", SourceSection::Block),
+    ];
+    for &(kw, sec) in pairs {
+        if trimmed.starts_with(kw) {
+            let rest = &trimmed[kw.len()..];
+            if rest.is_empty()
+                || rest.starts_with(':')
+                || rest.starts_with('<')
+                || rest.starts_with(' ')
+                || rest.starts_with('{')
+            {
+                return Some(sec);
+            }
+        }
+    }
+    None
+}
+
+fn is_ident_start(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_'
+}
+
+fn is_ident_continue(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Extract the first identifier from `text`, e.g. `"foo_bar: i32"` → `"foo_bar"`.
+fn extract_leading_ident(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() || !is_ident_start(bytes[0]) {
+        return None;
+    }
+    let end = bytes.iter().position(|&b| !is_ident_continue(b)).unwrap_or(bytes.len());
+    Some(&text[..end])
+}
+
+/// Extract const names from namespace generic defaults: `namespace name<A = 1, B = 2>:`.
+fn extract_namespace_generic_consts(trimmed: &str, scope: &mut SemanticScope) {
+    if let Some(open) = trimmed.find('<') {
+        if let Some(close) = trimmed[open..].find('>') {
+            let inner = &trimmed[open + 1..open + close];
+            for part in inner.split(',') {
+                let part = part.trim();
+                if let Some(name) = extract_leading_ident(part) {
+                    scope.consts.insert(name.to_owned());
+                }
+            }
+        }
+    }
+}
+
+/// Extract type params from `<T, U>` in proc/struct/def/ins/outs lines.
+fn extract_type_params(trimmed: &str, scope: &mut SemanticScope) {
+    if let Some(open) = trimmed.find('<') {
+        if let Some(close) = trimmed[open..].find('>') {
+            let inner = &trimmed[open + 1..open + close];
+            for part in inner.split(',') {
+                let part = part.trim();
+                if let Some(name) = extract_leading_ident(part) {
+                    // Skip numeric-only params (e.g. `<256>`) and defaults (e.g. `FFTSize = 256`)
+                    if name.as_bytes()[0].is_ascii_alphabetic() && !part.contains('=') {
+                        scope.types.insert(name.to_owned());
                     }
                 }
             }
@@ -1096,206 +1097,79 @@ fn collect_assign_target_tokens(
     }
 }
 
-fn collect_expr_tokens(
-    expr: &Expr,
-    scope: &SemanticScope,
-    current_path: Option<&Path>,
-    source: &str,
-    tokens: &mut Vec<SemanticToken>,
-) {
-    if !loc_matches_path(expr.loc(), current_path) {
+/// Extract function name and params from `def name(param: Type, ...)` or `def name<T>(...)`.
+fn extract_def_symbols(trimmed: &str, scope: &mut SemanticScope) {
+    let rest = trimmed.strip_prefix("def ").unwrap_or(trimmed).trim_start();
+    if let Some(name) = extract_leading_ident(rest) {
+        scope.functions.insert(name.to_owned());
+        let after_name = &rest[name.len()..];
+        // Skip optional type params
+        let after_generics = if let Some(open) = after_name.find('<') {
+            if let Some(close) = after_name[open..].find('>') {
+                extract_type_params(after_name, scope);
+                &after_name[open + close + 1..]
+            } else {
+                after_name
+            }
+        } else {
+            after_name
+        };
+        // Extract params from parens
+        if let Some(paren_start) = after_generics.find('(') {
+            extract_params_from_parens(&after_generics[paren_start..], scope);
+        }
+    }
+}
+
+/// Extract parameter names from `(name: Type, name2: Type)`.
+fn extract_params_from_parens(text: &str, scope: &mut SemanticScope) {
+    // Find matching parens
+    let inner = if let Some(open) = text.find('(') {
+        if let Some(close) = text[open..].find(')') {
+            &text[open + 1..open + close]
+        } else {
+            return;
+        }
+    } else {
         return;
-    }
-    match expr {
-        Expr::Var { loc, name } => {
-            collect_named_ref_tokens(*loc, name, scope, source, tokens);
-        }
-        Expr::Index { loc, base, index } => {
-            if let Some(token_type) = scope.token_type_for(base) {
-                push_name_token(tokens, (*loc).into(), base, token_type);
-            }
-            collect_expr_tokens(index, scope, current_path, source, tokens);
-        }
-        Expr::Slice {
-            loc,
-            base,
-            start,
-            end,
-        } => {
-            if let Some(token_type) = scope.token_type_for(base) {
-                push_name_token(tokens, (*loc).into(), base, token_type);
-            }
-            if let Some(start) = start {
-                collect_expr_tokens(start, scope, current_path, source, tokens);
-            }
-            if let Some(end) = end {
-                collect_expr_tokens(end, scope, current_path, source, tokens);
-            }
-        }
-        Expr::ArrayLiteral { values, .. } => {
-            for value in values {
-                collect_expr_tokens(value, scope, current_path, source, tokens);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            collect_expr_tokens(&spec.size, scope, current_path, source, tokens);
-            if let Some(init) = init {
-                for value in init {
-                    collect_expr_tokens(value, scope, current_path, source, tokens);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            collect_expr_tokens(lhs, scope, current_path, source, tokens);
-            collect_expr_tokens(rhs, scope, current_path, source, tokens);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_expr_tokens(arg, scope, current_path, source, tokens);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                collect_expr_tokens(&arg.expr, scope, current_path, source, tokens);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_expr_tokens(expr, scope, current_path, source, tokens);
-        }
-        Expr::Tuple { values, .. } => {
-            for value in values {
-                collect_expr_tokens(value, scope, current_path, source, tokens);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-    }
-}
-
-fn collect_graph_tokens(
-    graph: &GraphBlock,
-    scope: &SemanticScope,
-    current_path: Option<&Path>,
-    source: &str,
-    tokens: &mut Vec<SemanticToken>,
-) {
-    if !loc_matches_path(graph.loc.into(), current_path) {
-        return;
-    }
-    for edge in &graph.edges {
-        collect_expr_tokens(&edge.source, scope, current_path, source, tokens);
-        if let Some(delay) = &edge.delay {
-            collect_expr_tokens(delay, scope, current_path, source, tokens);
-        }
-        for dest in &edge.dests {
-            match dest {
-                GraphEndpoint::Symbol { loc, name } => {
-                    collect_named_ref_tokens(*loc, name, scope, source, tokens);
-                }
-                GraphEndpoint::ProcField { loc, proc, field } => {
-                    if let Some(token_type) = scope.token_type_for(proc) {
-                        push_name_token(tokens, (*loc).into(), proc, token_type);
-                    }
-                    push_offset_token(
-                        tokens,
-                        (*loc).into(),
-                        proc.encode_utf16().count() as u32 + 1,
-                        field,
-                        SEMANTIC_TOKEN_TYPE_PORT,
-                    );
-                }
-                GraphEndpoint::ProcIndexedField {
-                    loc, proc, index, ..
-                } => {
-                    if let Some(token_type) = scope.token_type_for(proc) {
-                        push_name_token(tokens, (*loc).into(), proc, token_type);
-                    }
-                    collect_expr_tokens(index, scope, current_path, source, tokens);
-                }
-            }
+    };
+    for part in inner.split(',') {
+        let part = part.trim();
+        if let Some(name) = extract_leading_ident(part) {
+            scope.parameters.insert(name.to_owned());
         }
     }
 }
 
-fn collect_named_ref_tokens(
-    loc: Span,
-    name: &str,
-    scope: &SemanticScope,
-    _source: &str,
-    tokens: &mut Vec<SemanticToken>,
-) {
-    if let Some((base, field)) = name.split_once('.') {
-        if let Some(token_type) = scope.token_type_for(base) {
-            push_name_token(tokens, loc.into(), base, token_type);
+/// Collect `const NAME` declarations from source text (for tests and backward compat).
+#[cfg(test)]
+fn collect_const_names(source: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("const ") {
+            if let Some(name) = extract_leading_ident(rest.trim_start()) {
+                names.insert(name.to_owned());
+            }
         }
-        push_offset_token(
-            tokens,
-            loc.into(),
-            base.encode_utf16().count() as u32 + 1,
-            field,
-            SEMANTIC_TOKEN_TYPE_PORT,
-        );
-        return;
     }
-
-    if let Some(token_type) = scope.token_type_for(name) {
-        push_name_token(tokens, loc.into(), name, token_type);
-    }
+    names
 }
 
-fn push_name_token(tokens: &mut Vec<SemanticToken>, loc: SourceLoc, name: &str, token_type: u32) {
-    if loc.line == 0 || name.is_empty() {
-        return;
-    }
-    tokens.push(SemanticToken {
-        line: (loc.line.saturating_sub(1)) as u32,
-        start: (loc.column.saturating_sub(1)) as u32,
-        length: name.encode_utf16().count() as u32,
-        token_type,
-        token_modifiers: 0,
-    });
-}
-
-fn push_offset_token(
-    tokens: &mut Vec<SemanticToken>,
-    loc: SourceLoc,
-    offset: u32,
-    name: &str,
-    token_type: u32,
-) {
-    if loc.line == 0 || name.is_empty() {
-        return;
-    }
-    tokens.push(SemanticToken {
-        line: (loc.line.saturating_sub(1)) as u32,
-        start: (loc.column.saturating_sub(1)) as u32 + offset,
-        length: name.encode_utf16().count() as u32,
-        token_type,
-        token_modifiers: 0,
-    });
-}
-
-fn loc_matches_path(loc: SourceLoc, current_path: Option<&Path>) -> bool {
-    match current_path {
-        Some(current_path) => loc
-            .file()
-            .map(|file| normalize_path(Path::new(&file)) == current_path)
-            .unwrap_or(false),
-        None => true,
-    }
-}
-
-fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32)) {
+fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32, bool, bool, bool)) {
     let chars = source.chars().collect::<Vec<_>>();
     let mut index = 0;
     let mut line = 0_u32;
     let mut column = 0_u32;
+    let mut prev_char = '\0';
+    let mut prev_prev_char = '\0';
 
     while index < chars.len() {
         let ch = chars[index];
         if ch == '#' {
             while index < chars.len() && chars[index] != '\n' {
+                prev_prev_char = prev_char;
+                prev_char = chars[index];
                 advance_position(chars[index], &mut line, &mut column);
                 index += 1;
             }
@@ -1319,9 +1193,12 @@ fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32)) {
                     break;
                 }
             }
+            prev_prev_char = prev_char;
+            prev_char = '"';
             continue;
         }
         if is_identifier_start(ch) {
+            let after_dot = prev_char == '.' && prev_prev_char != '.';
             let start_line = line;
             let start_column = column;
             let mut name = String::new();
@@ -1332,10 +1209,46 @@ fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32)) {
                 index += 1;
             }
             let length = name.encode_utf16().count() as u32;
-            f(&name, start_line, start_column, length);
+            // Check if preceded by ::
+            let after_colons = prev_char == ':' && prev_prev_char == ':';
+            prev_prev_char = prev_char;
+            prev_char = name.chars().last().unwrap_or('\0');
+            // Peek ahead past optional <...> to see what follows
+            let mut peek = index;
+            while peek < chars.len() && chars[peek].is_whitespace() && chars[peek] != '\n' {
+                peek += 1;
+            }
+            let mut is_call = peek < chars.len() && chars[peek] == '(';
+            let mut followed_by_colons = peek + 1 < chars.len()
+                && chars[peek] == ':' && chars[peek + 1] == ':';
+            if !is_call && !followed_by_colons && peek < chars.len() && chars[peek] == '<' {
+                // Skip over <...> generics then check for ( or ::
+                let mut depth = 1;
+                peek += 1;
+                while peek < chars.len() && depth > 0 {
+                    if chars[peek] == '<' { depth += 1; }
+                    else if chars[peek] == '>' { depth -= 1; }
+                    else if chars[peek] == '\n' { break; }
+                    peek += 1;
+                }
+                if depth == 0 {
+                    while peek < chars.len() && chars[peek].is_whitespace() && chars[peek] != '\n' {
+                        peek += 1;
+                    }
+                    is_call = peek < chars.len() && chars[peek] == '(';
+                    followed_by_colons = peek + 1 < chars.len()
+                        && chars[peek] == ':' && chars[peek + 1] == ':';
+                }
+            }
+            let in_ns_path = after_colons || followed_by_colons;
+            f(&name, start_line, start_column, length, after_dot, is_call, in_ns_path);
             continue;
         }
 
+        if !ch.is_whitespace() {
+            prev_prev_char = prev_char;
+            prev_char = ch;
+        }
         advance_position(ch, &mut line, &mut column);
         index += 1;
     }
@@ -1766,12 +1679,12 @@ mod tests {
     }
 
     #[test]
-    fn semantic_tokens_do_not_mark_local_variable_uses_in_sample_blocks() {
+    fn semantic_tokens_mark_local_variable_uses_in_sample_blocks() {
         let source = "proc Saturate:\n  sample:\n    x = in1\n    out1 = x - (x * x * x) * 0.1\n";
         let tokens = semantic_tokens_for_document(source, None);
 
         assert!(
-            !tokens.iter().any(|token| {
+            tokens.iter().any(|token| {
                 token.length == 1 && token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
             }),
             "tokens: {tokens:?}"
@@ -1860,6 +1773,185 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn semantic_tokens_mark_init_vars_in_proc_defs_events_and_sample() {
+        let source = concat!(
+            "proc Conv:\n",
+            "  init:\n",
+            "    delay: f32[100]\n",
+            "    write: i32 = 0\n",
+            "\n",
+            "  def clear():\n",
+            "    delay[:] = 0.0\n",
+            "    write = 0\n",
+            "\n",
+            "  events:\n",
+            "    reset():\n",
+            "      clear()\n",
+            "      write = 0\n",
+            "\n",
+            "  sample:\n",
+            "    delay[write] = in1\n",
+            "    write = write + 1\n",
+            "    out1 = delay[0]\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        // 'delay' in def clear (line 6)
+        assert!(
+            tokens.iter().any(|t| t.line == 6 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            "delay in def: {tokens:?}"
+        );
+        // 'write' in def clear (line 7)
+        assert!(
+            tokens.iter().any(|t| t.line == 7 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            "write in def: {tokens:?}"
+        );
+        // 'write' in events reset (line 12)
+        assert!(
+            tokens.iter().any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            "write in events: {tokens:?}"
+        );
+        // 'delay' in sample (line 15)
+        assert!(
+            tokens.iter().any(|t| t.line == 15 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            "delay in sample: {tokens:?}"
+        );
+        // 'write' in sample (line 15, inside delay[write])
+        assert!(
+            tokens.iter().any(|t| t.line == 15 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            "write in sample delay[write]: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_work_inside_namespace() {
+        let source = concat!(
+            "namespace test::ns:\n",
+            "  const SIZE = 10\n",
+            "\n",
+            "  proc Foo:\n",
+            "    init:\n",
+            "      buf: f32[SIZE]\n",
+            "      pos: i32 = 0\n",
+            "\n",
+            "    def clear():\n",
+            "      buf[:] = 0.0\n",
+            "      pos = 0\n",
+            "\n",
+            "    sample:\n",
+            "      buf[pos] = in1\n",
+            "      pos = pos + 1\n",
+            "      out1 = buf[0]\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        // 'buf' in def clear (line 9)
+        assert!(
+            tokens.iter().any(|t| t.line == 9 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 3),
+            "buf in def: {tokens:?}"
+        );
+        // 'pos' in sample (line 13)
+        assert!(
+            tokens.iter().any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 3),
+            "pos in sample: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_highlight_for_loop_references() {
+        let source = concat!(
+            "namespace test::ns:\n",         // 0
+            "  const SIZE = 10\n",           // 1
+            "\n",                            // 2
+            "  proc Foo:\n",                 // 3
+            "    init:\n",                   // 4
+            "      count: i32 = 0\n",        // 5
+            "\n",                            // 6
+            "    sample:\n",                 // 7
+            "      for i in 0..SIZE:\n",     // 8
+            "        count = count + 1\n",   // 9
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        // SIZE in for loop (line 8) should be const
+        assert!(
+            tokens.iter().any(|t| t.line == 8 && t.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER && t.length == 4),
+            "SIZE in for loop: {tokens:?}"
+        );
+        // count in for body (line 9) should be variable
+        assert!(
+            tokens.iter().any(|t| t.line == 9 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 5),
+            "count in for body: {tokens:?}"
+        );
+        // i should be variable (loop var)
+        assert!(
+            tokens.iter().any(|t| t.line == 8 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE && t.length == 1),
+            "i in for loop: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_work_for_convolution_omni() {
+        let source = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../stdlib/std/convolution.omni"),
+        )
+        .expect("read convolution.omni");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../stdlib/std/convolution.omni");
+        let tokens = semantic_tokens_for_document(&source, Some(&path));
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source
+                        .lines()
+                        .nth(line)
+                        .and_then(|l| l.get(col..col + len))
+                        == Some(name)
+                })
+                .collect()
+        };
+
+        // Init variables highlighted in defs/events/sample
+        assert!(!find_tokens("delay").is_empty(), "delay should be highlighted");
+        assert!(!find_tokens("write").is_empty(), "write should be highlighted");
+        assert!(!find_tokens("active_taps").is_empty(), "active_taps should be highlighted");
+
+        // Namespace generic consts
+        let fft_tokens = find_tokens("FFTSize");
+        assert!(!fft_tokens.is_empty(), "FFTSize should be highlighted");
+        assert!(fft_tokens.iter().all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+            "FFTSize should be const: {fft_tokens:?}");
+
+        // Type params
+        let t_tokens = find_tokens("T");
+        assert!(!t_tokens.is_empty(), "T should be highlighted");
+        assert!(t_tokens.iter().all(|t| t.token_type == super::SEMANTIC_TOKEN_TYPE_TYPE),
+            "T should be type: {t_tokens:?}");
+
+        // Functions (def methods and event handlers)
+        let clear_state = find_tokens("clear_state");
+        assert!(!clear_state.is_empty(), "clear_state should be highlighted");
+        assert!(clear_state.iter().any(|t| t.token_type == super::SEMANTIC_TOKEN_TYPE_FUNCTION),
+            "clear_state should be function: {clear_state:?}");
+
+        // Proc instance variables (td, tail in ZeroLatencyConvolver)
+        assert!(!find_tokens("td").is_empty(), "td should be highlighted");
+        assert!(!find_tokens("tail").is_empty(), "tail should be highlighted");
+
+        // Event handler names (set_impulse, reset)
+        let set_impulse = find_tokens("set_impulse");
+        assert!(!set_impulse.is_empty(), "set_impulse should be highlighted");
+        let reset = find_tokens("reset");
+        assert!(!reset.is_empty(), "reset should be highlighted");
     }
 
     #[test]

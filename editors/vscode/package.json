@@ -42,7 +42,7 @@
     "semanticTokenTypes": [
       {
         "id": "port",
-        "superType": "parameter",
+        "superType": "variable",
         "description": "Omni audio input, output, or buffer symbol"
       }
     ],
@@ -51,22 +51,19 @@
         "language": "omni",
         "scopes": {
           "enumMember": [
-            "variable.other.constant.omni",
             "variable.other.constant"
           ],
           "variable": [
-            "variable.other.readwrite.omni",
             "variable.other.readwrite"
           ],
           "port": [
-            "variable.parameter.omni",
-            "variable.parameter",
-            "entity.name.variable.parameter"
+            "support.variable"
           ],
           "parameter": [
-            "variable.parameter.omni",
-            "variable.parameter",
-            "entity.name.variable.parameter"
+            "variable.parameter"
+          ],
+          "function": [
+            "entity.name.function"
           ]
         }
       }
