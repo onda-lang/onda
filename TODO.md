@@ -95,10 +95,124 @@
 
 ## Backends
 
-- AOT backend
-  - Add an ahead-of-time compiler path (object/static library) alongside ORC JIT.
-  - Reuse the same semantic/lowering pipeline to keep runtime behavior consistent.
-  - Define exported symbols/ABI for host integration without JIT startup.
+- AOT backend (prerequisite for WASM and C++ backends)
+  - Decouple IR generation from LLJIT: extract `build_optimized_module_for_jit` into a target-agnostic
+    `build_module(triple, datalayout, ...)` that doesn't require a live LLJIT instance.
+  - Add a `TargetConfig` abstraction that carries triple, data layout, CPU name, and features;
+    the ORC path constructs it from `LLVMGetDefaultTargetTriple`/`LLVMGetHostCPUName`,
+    AOT/WASM paths construct it from explicit arguments.
+  - Add object file emission via `LLVMTargetMachineEmitToMemoryBuffer` / `LLVMTargetMachineEmitToFile`
+    (native object format for AOT, wasm object for WASM).
+  - Define exported symbols/ABI for host integration without JIT startup:
+    `omni_init`, `omni_process`, `omni_event_*`, plus metadata query symbols or a companion descriptor.
+  - Add a `compile` CLI output mode: `omni compile foo.omni --emit obj|wasm|llvm-ir --target <triple>`.
+  - Reuse the same semantic/lowering pipeline to keep runtime behavior consistent across backends.
+
+- WASM backend (`.wasm` export)
+  - Target: `wasm32-unknown-unknown` (pure compute module, no WASI dependency).
+  - Two codegen strategies (not mutually exclusive):
+    - **LLVM WebAssembly target** (native-hosted, reuses existing codegen):
+      - LLVM target initialization: `LLVMInitializeWebAssemblyTarget`, `LLVMInitializeWebAssemblyTargetInfo`,
+        `LLVMInitializeWebAssemblyTargetMC`, `LLVMInitializeWebAssemblyAsmPrinter`.
+      - Build system: add `webassembly` to the LLVM component link list alongside `native`
+        (conditional on a cargo feature flag, e.g. `wasm-backend`).
+      - Reuses the existing LLVM IR generation from `orc_backend/` — same `build_*_ir` functions,
+        just targeting a different triple and emitting an object instead of JIT-executing.
+      - Benefits from the full LLVM O3 pipeline (loop vectorization, inlining, etc.).
+      - Only runs where LLVM is available (native host). Cannot run inside WASM itself.
+    - **Binaryen codegen backend** (lightweight, WASM-native, embeddable):
+      - New codegen crate (e.g. `omni_codegen_binaryen`) that emits Binaryen IR directly
+        from `TypedProgram`, bypassing LLVM entirely.
+      - Uses the Binaryen C API (`binaryen-c.h`) to construct modules, functions, and expressions.
+      - Binaryen's own optimizer handles WASM-specific passes (dead code, coalescing, reordering, etc.).
+      - Much smaller dependency than LLVM (~3-5MB as a WASM binary vs 20-30MB+).
+      - Key advantage: Binaryen itself compiles to WASM — this enables the in-browser compiler path
+        (see below). The same codegen backend works natively and inside the browser.
+      - Tradeoff: loses LLVM's general-purpose optimization power; Binaryen is strong on WASM-specific
+        transforms but does not do high-level loop vectorization, aggressive inlining heuristics, etc.
+      - The Binaryen backend can start as the simpler path (no LLVM cross-target plumbing) and
+        serve as the reference WASM codegen, with the LLVM WebAssembly target as an optional
+        "optimized" alternative for offline/CLI builds.
+  - Shared WASM concerns (apply to both strategies):
+    - Memory model:
+      - All state, IO buffers, param blocks, and external buffer bindings live in WASM linear memory.
+      - The host (JS/Rust/etc.) allocates regions and passes i32 byte offsets to exported functions.
+      - The existing pointer+length ABI translates directly: wasm32 pointers are i32 offsets into linear memory.
+      - State blob layout (`layout.rs`) is portable — primitive sizes are identical, pointer-width fields
+        (if any are introduced) need to use explicit i32 widths rather than `isize`/`usize`.
+    - Exported WASM functions:
+      - `omni_init(state_ptr)` — initialize state blob at the given offset.
+      - `omni_process(state_ptr, frames, ins_ptr, outs_ptr, params_ptr, bufs_ptr, buf_frames_ptr, buf_channels_ptr, buf_samplerates_ptr)`
+        — same signature shape as the current ORC `omni_process`, with pointers as i32 memory offsets.
+      - `omni_event_N(state_ptr, payload_ptr, payload_len)` — per-event dispatch.
+      - `omni_alloc(bytes) -> ptr` / `omni_free(ptr)` — optional bump/arena allocator exported from the
+        module so the host can request linear memory regions without linking a full allocator.
+      - `omni_state_size() -> i32` — return required state blob size for host-side allocation.
+      - `omni_metadata()` — optional: return a pointer to a static descriptor blob with
+        input/output/param/buffer/event counts, names, types, and byte sizes.
+    - Optimization:
+      - LLVM path: `default<O3>` pipeline + optional `wasm-opt` post-pass.
+      - Binaryen path: Binaryen's own optimization passes (equivalent to `wasm-opt -O3`).
+      - Evaluate WASM SIMD (`simd128`) for vectorizable inner loops (both paths).
+    - Constraints and exclusions:
+      - No dynamic linking / imported functions — the module is fully self-contained.
+      - No file I/O or OS calls — pure deterministic compute kernel.
+      - `std/fft` and other stdlib modules that use only arithmetic should work unchanged;
+        verify no stdlib path accidentally depends on host intrinsics.
+      - Oversampling sinc/filter tables: bake as constant data in the WASM data section
+        (same as current approach, just verify emission works for wasm target).
+  - AudioWorklet glue (JS/TS runtime):
+    - Ship a JS/TS helper module that loads the `.wasm`, allocates linear memory regions for
+      state/IO/params/buffers, and bridges `AudioWorkletProcessor.process()` to `omni_process`.
+    - The glue layer handles interleaved↔planar conversion if needed (or document that Omni
+      uses planar layout matching `AudioWorkletProcessor` conventions).
+    - Param changes and event dispatch go through the glue layer via `MessagePort`.
+  - Host-side hot-swap (daemon-served live preview):
+    - Compilation stays on the host: the daemon runs LLVM or Binaryen natively and emits `.wasm` bytes —
+      no JIT inside the WASM sandbox.
+    - Reuse the existing daemon recompile-on-save loop; the only change is the output artifact
+      (`.wasm` bytes instead of ORC function pointers).
+    - Transport: daemon serves `.wasm` bytes to the browser client via WebSocket or HTTP endpoint.
+      On source change, daemon recompiles and pushes/notifies the new `.wasm`.
+    - Client-side swap protocol:
+      - Browser receives new `.wasm` bytes → `WebAssembly.compile()` → `WebAssembly.instantiate()`.
+      - New AudioWorklet processor is wired up; old processor is drained/crossfaded or hard-swapped
+        (accept a brief glitch, same as current native preview does on recompile).
+      - State is reset on swap (matches current native preview behavior on recompile).
+      - Param values and buffer bindings are re-applied from the client-side shadow state
+        (same pattern as the current daemon preview session rebuild).
+    - Decide whether to extend `omni preview play --target wasm32` to spawn a local HTTP server +
+      WebSocket bridge, or keep WASM preview as a separate `omni preview web` subcommand.
+    - Evaluate whether the VSCode extension's Patch panel can reuse this path
+      (webview already runs in a browser-like context; could load the AudioWorklet directly).
+  - In-browser compiler (zero-install web playground):
+    - Compile the Omni frontend (`omni_frontend`) + semantics (`omni_semantics`) +
+      Binaryen codegen backend (`omni_codegen_binaryen`) to `wasm32-unknown-unknown` via
+      `cargo build --target wasm32-unknown-unknown`.
+    - The frontend and semantics crates are pure Rust with no OS dependencies — should
+      cross-compile cleanly. Verify no transitive dependency pulls in `std::fs`/`std::net`/etc.
+    - Binaryen itself is compiled to WASM (it supports this) and linked into the codegen crate.
+    - Result: a single WASM module (~3-8MB estimated) that takes Omni source text as input
+      and returns `.wasm` bytes as output — the full compiler running in the browser.
+    - The web playground then: user edits Omni source → compiler WASM produces DSP WASM →
+      DSP WASM is loaded into AudioWorklet → audio plays. All client-side, no server.
+    - Latency budget: Binaryen codegen is fast enough for interactive use (~10-50ms for typical
+      Omni programs); LLVM would be too slow inside WASM.
+    - The playground UI can reuse the AudioWorklet glue layer and param/buffer control surface
+      from the daemon-served path.
+  - CLI integration:
+    - `omni compile foo.omni --target wasm32` emits `foo.wasm`.
+    - `omni compile foo.omni --target wasm32 --emit js` also emits the AudioWorklet glue module.
+    - `omni compile foo.omni --target wasm32 --meta` emits a JSON descriptor alongside the `.wasm`.
+    - `--wasm-backend binaryen|llvm` selects the codegen strategy (default: `binaryen`).
+  - Testing:
+    - Run existing integration-test suite cross-compiled to WASM via a lightweight WASM runtime
+      (e.g. `wasmtime` or `wasmer` invoked from Rust tests) to verify numerical equivalence
+      with the native ORC JIT path.
+    - Add a browser-based integration smoke test for the AudioWorklet hot-swap path
+      (headless Chromium or Playwright).
+    - Test the in-browser compiler path end-to-end: source → compile-in-WASM → instantiate →
+      verify output samples match the native reference.
 
 - C++ backend (`.hpp` export)
   - Add a backend that exports Omni programs to a single-file, self-contained C++ header class.
