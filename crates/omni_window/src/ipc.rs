@@ -10,22 +10,23 @@ use tao::event_loop::EventLoopProxy;
 use crate::UserEvent;
 
 /// Manages the TCP connection to the `omni preview play --control-json` subprocess.
+#[derive(Clone)]
 pub struct IpcBridge {
-    writer: Option<Arc<Mutex<BufWriter<TcpStream>>>>,
+    writer: Arc<Mutex<Option<BufWriter<TcpStream>>>>,
     request_id: Arc<AtomicU64>,
 }
 
 impl IpcBridge {
     pub fn new() -> Self {
         Self {
-            writer: None,
+            writer: Arc::new(Mutex::new(None)),
             request_id: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Connect to the TCP control socket at the given port.
     /// Spawns a background reader thread that forwards responses as `UserEvent::TcpResponse`.
-    pub fn connect(&mut self, port: u16, proxy: EventLoopProxy<UserEvent>) -> Result<(), String> {
+    pub fn connect(&self, port: u16, proxy: EventLoopProxy<UserEvent>) -> Result<(), String> {
         self.disconnect();
 
         let stream = TcpStream::connect(("127.0.0.1", port))
@@ -35,8 +36,9 @@ impl IpcBridge {
             .try_clone()
             .map_err(|e| format!("TCP clone failed: {e}"))?;
 
-        let writer = Arc::new(Mutex::new(BufWriter::new(stream)));
-        self.writer = Some(writer);
+        if let Ok(mut writer) = self.writer.lock() {
+            *writer = Some(BufWriter::new(stream));
+        }
 
         // Background reader thread.
         thread::spawn(move || {
@@ -58,28 +60,35 @@ impl IpcBridge {
     }
 
     /// Disconnect from the TCP control socket.
-    pub fn disconnect(&mut self) {
-        if let Some(ref writer) = self.writer {
-            // Dropping the writer will close our side of the stream, which will
-            // cause the reader thread to exit.
-            if let Ok(w) = writer.lock() {
-                let _ = w.get_ref().shutdown(std::net::Shutdown::Both);
+    pub fn disconnect(&self) {
+        if let Ok(mut writer) = self.writer.lock() {
+            if let Some(writer) = writer.as_mut() {
+                let _ = writer.get_ref().shutdown(std::net::Shutdown::Both);
             }
+            *writer = None;
         }
-        self.writer = None;
     }
 
     /// Send a JSON command to the subprocess over TCP.
-    pub fn send_command(&mut self, command: &str, payload: &Value) {
-        let Some(ref writer) = self.writer else {
-            return;
-        };
+    pub fn send_command(&self, command: &str, payload: &Value) {
         let id = self.request_id.fetch_add(1, Ordering::Relaxed);
+        self.send_command_inner(Some(id), command, payload);
+    }
 
+    /// Send a JSON notification that does not expect a reply.
+    pub fn send_command_notification(&self, command: &str, payload: &Value) {
+        self.send_command_inner(None, command, payload);
+    }
+
+    fn send_command_inner(&self, id: Option<u64>, command: &str, payload: &Value) {
         let mut request = json!({
-            "id": id,
             "command": command,
         });
+        if let Some(id) = id {
+            if let Value::Object(ref mut req_map) = request {
+                req_map.insert("id".to_owned(), Value::from(id));
+            }
+        }
 
         // Merge payload fields into the request object.
         if let Value::Object(map) = payload {
@@ -90,17 +99,23 @@ impl IpcBridge {
             }
         }
 
-        if let Ok(mut w) = writer.lock() {
+        if let Ok(mut writer) = self.writer.lock() {
+            let Some(writer) = writer.as_mut() else {
+                return;
+            };
             let line = serde_json::to_string(&request).unwrap_or_default();
-            let _ = w.write_all(line.as_bytes());
-            let _ = w.write_all(b"\n");
-            let _ = w.flush();
+            let _ = writer.write_all(line.as_bytes());
+            let _ = writer.write_all(b"\n");
+            let _ = writer.flush();
         }
     }
 
     /// Returns true if we have an active TCP connection.
     #[allow(dead_code)]
     pub fn is_connected(&self) -> bool {
-        self.writer.is_some()
+        self.writer
+            .lock()
+            .map(|writer| writer.is_some())
+            .unwrap_or(false)
     }
 }

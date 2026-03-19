@@ -3,11 +3,17 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use serde::Deserialize;
 use serde_json::Value;
 use tao::event_loop::EventLoopProxy;
 
 use crate::{PreviewWindowOptions, UserEvent};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Parsed `{"event": "ready", ...}` from the subprocess stdout.
 #[derive(Debug, Clone)]
@@ -66,6 +72,8 @@ impl ChildSession {
         }
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
 
         let mut child = cmd
             .spawn()

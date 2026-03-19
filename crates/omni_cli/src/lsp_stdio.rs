@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 
 use omni_daemon::{DaemonSession, DocumentVersion};
 use omni_frontend::{
-    parse_program, parse_program_with_path, AssignTarget, Block, Diagnostic, FunctionDef, Program,
-    Stmt,
+    parse_program_with_path, AssignTarget, Block, Diagnostic, FunctionDef, Program, Stmt,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -22,6 +21,7 @@ const SEMANTIC_TOKEN_TYPE_PARAMETER: u32 = 3;
 const SEMANTIC_TOKEN_TYPE_FUNCTION: u32 = 4;
 const SEMANTIC_TOKEN_TYPE_TYPE: u32 = 5;
 const SEMANTIC_TOKEN_TYPE_NAMESPACE: u32 = 6;
+const SEMANTIC_TOKEN_TYPE_STATE: u32 = 7;
 
 pub fn run_stdio_loop() -> Result<(), String> {
     let stdin = io::stdin();
@@ -442,7 +442,7 @@ fn initialize_result(process_id: Option<u32>) -> Value {
             "semanticTokensProvider": {
                 "full": true,
                 "legend": {
-                    "tokenTypes": ["enumMember", "variable", "port", "parameter", "function", "type", "namespace"],
+                    "tokenTypes": ["enumMember", "variable", "port", "parameter", "function", "type", "namespace", "state"],
                     "tokenModifiers": [],
                 }
             },
@@ -517,14 +517,15 @@ fn diagnostic_message(diagnostic: &Diagnostic) -> String {
 }
 
 fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<SemanticToken> {
-    let mut scope = match path {
-        Some(path) => parse_program_with_path(source, path).or_else(|_| parse_program(source)),
-        None => parse_program(source),
-    }
-    .map(|program| collect_all_symbols(&program))
-    .unwrap_or_default();
+    let imported_scope = match path {
+        Some(path) => parse_program_with_path(source, path)
+            .map(|program| collect_all_symbols(&program))
+            .unwrap_or_default(),
+        None => SemanticScope::default(),
+    };
+    let mut local_scope = SemanticScope::default();
 
-    collect_symbols_from_source(source, &mut scope);
+    collect_symbols_from_source(source, &mut local_scope);
 
     let mut tokens = Vec::new();
     scan_identifiers(
@@ -563,8 +564,9 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
             }
             // Namespace path segments: std::fft, std::complex::Complex, etc.
             if in_ns_path {
-                let token_type = scope
+                let token_type = local_scope
                     .token_type_for(name)
+                    .or_else(|| imported_scope.imported_token_type_for(name))
                     .unwrap_or(SEMANTIC_TOKEN_TYPE_NAMESPACE);
                 tokens.push(SemanticToken {
                     line,
@@ -575,7 +577,10 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
                 });
                 return;
             }
-            if let Some(mut token_type) = scope.token_type_for(name) {
+            if let Some(mut token_type) = local_scope
+                .token_type_for(name)
+                .or_else(|| imported_scope.imported_token_type_for(name))
+            {
                 // Variables called with () are callable proc instances — color as function
                 if is_call && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
                     token_type = SEMANTIC_TOKEN_TYPE_FUNCTION;
@@ -658,6 +663,7 @@ struct SemanticScope {
     consts: HashSet<String>,
     types: HashSet<String>,
     functions: HashSet<String>,
+    state_variables: HashSet<String>,
     variables: HashSet<String>,
     ports: HashSet<String>,
     parameters: HashSet<String>,
@@ -677,6 +683,8 @@ impl SemanticScope {
             Some(SEMANTIC_TOKEN_TYPE_PORT)
         } else if self.functions.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
+        } else if self.state_variables.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_STATE)
         } else if self.variables.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_VARIABLE)
         } else {
@@ -691,6 +699,28 @@ impl SemanticScope {
             && !self.types.contains(&name)
         {
             self.variables.insert(name);
+        }
+    }
+
+    fn insert_state_variable(&mut self, name: String) {
+        if !self.consts.contains(&name)
+            && !self.ports.contains(&name)
+            && !self.parameters.contains(&name)
+            && !self.types.contains(&name)
+        {
+            self.state_variables.insert(name);
+        }
+    }
+
+    fn imported_token_type_for(&self, name: &str) -> Option<u32> {
+        if self.consts.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
+        } else if self.types.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_TYPE)
+        } else if self.functions.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
+        } else {
+            None
         }
     }
 }
@@ -747,7 +777,7 @@ fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
             }
         }
         Block::Init(init) => {
-            collect_stmt_symbols(&init.body, scope);
+            collect_state_stmt_symbols(&init.body, scope);
         }
         Block::Block(exec) => {
             collect_stmt_symbols(&exec.pre, scope);
@@ -797,7 +827,7 @@ fn collect_proc_symbols(proc_def: &omni_frontend::ProcessorDef, scope: &mut Sema
     for buffer in &proc_def.buffers {
         scope.ports.insert(buffer.name.clone());
     }
-    collect_stmt_symbols(&proc_def.init.body, scope);
+    collect_state_stmt_symbols(&proc_def.init.body, scope);
     collect_stmt_symbols(&proc_def.block_pre, scope);
     collect_stmt_symbols(&proc_def.sample, scope);
     collect_stmt_symbols(&proc_def.block_post, scope);
@@ -853,6 +883,35 @@ fn collect_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
     }
 }
 
+fn collect_state_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Const { decl, .. } => {
+                scope.consts.insert(decl.name.clone());
+            }
+            Stmt::Assign { target, .. } => {
+                collect_state_target_symbols(target, scope);
+            }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_state_stmt_symbols(then_branch, scope);
+                collect_state_stmt_symbols(else_branch, scope);
+            }
+            Stmt::For { var, body, .. } => {
+                scope.variables.insert(var.clone());
+                collect_state_stmt_symbols(body, scope);
+            }
+            Stmt::While { body, .. } => {
+                collect_state_stmt_symbols(body, scope);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn collect_target_symbols(target: &AssignTarget, scope: &mut SemanticScope) {
     match target {
         AssignTarget::Var(name) => {
@@ -861,6 +920,20 @@ fn collect_target_symbols(target: &AssignTarget, scope: &mut SemanticScope) {
         AssignTarget::Tuple(names) => {
             for name in names {
                 scope.insert_variable(name.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_state_target_symbols(target: &AssignTarget, scope: &mut SemanticScope) {
+    match target {
+        AssignTarget::Var(name) => {
+            scope.insert_state_variable(name.clone());
+        }
+        AssignTarget::Tuple(names) => {
+            for name in names {
+                scope.insert_state_variable(name.clone());
             }
         }
         _ => {}
@@ -1068,11 +1141,23 @@ fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
         if let Some(name) = extract_leading_ident(trimmed) {
             let rest = trimmed[name.len()..].trim_start();
             if rest.starts_with(':') && !rest.starts_with("::") {
-                scope.insert_variable(name.to_owned());
+                if section == SourceSection::Init && indent > section_indent {
+                    scope.insert_state_variable(name.to_owned());
+                } else {
+                    scope.insert_variable(name.to_owned());
+                }
             } else if rest.starts_with('=') && !rest.starts_with("==") {
-                scope.insert_variable(name.to_owned());
+                if section == SourceSection::Init && indent > section_indent {
+                    scope.insert_state_variable(name.to_owned());
+                } else {
+                    scope.insert_variable(name.to_owned());
+                }
             } else if rest.starts_with('[') {
-                scope.insert_variable(name.to_owned());
+                if section == SourceSection::Init && indent > section_indent {
+                    scope.insert_state_variable(name.to_owned());
+                } else {
+                    scope.insert_variable(name.to_owned());
+                }
             }
         }
     }
@@ -1589,7 +1674,8 @@ mod tests {
         collect_const_names, diagnostic_message, file_uri_to_path, latest_full_text,
         lsp_document_path, path_to_file_uri, semantic_tokens_for_document, LspServer,
         TextDocumentContentChangeEvent, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
-        SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT, SEMANTIC_TOKEN_TYPE_VARIABLE,
+        SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT, SEMANTIC_TOKEN_TYPE_STATE,
+        SEMANTIC_TOKEN_TYPE_VARIABLE,
     };
     use omni_frontend::{DiagCode, Diagnostic};
     use serde_json::json;
@@ -1739,14 +1825,14 @@ mod tests {
             token.line == 9
                 && token.start == 2
                 && token.length == 3
-                && token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && token.token_type == SEMANTIC_TOKEN_TYPE_STATE
         }));
         assert!(
             tokens.iter().any(|token| {
                 token.line == 12
                     && token.start == 9
                     && token.length == 3
-                    && token.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                    && token.token_type == SEMANTIC_TOKEN_TYPE_STATE
             }),
             "tokens: {tokens:?}"
         );
@@ -1875,36 +1961,36 @@ mod tests {
 
         // 'delay' in def clear (line 6)
         assert!(
-            tokens.iter().any(|t| t.line == 6
-                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
-                && t.length == 5),
+            tokens
+                .iter()
+                .any(|t| t.line == 6 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE && t.length == 5),
             "delay in def: {tokens:?}"
         );
         // 'write' in def clear (line 7)
         assert!(
-            tokens.iter().any(|t| t.line == 7
-                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
-                && t.length == 5),
+            tokens
+                .iter()
+                .any(|t| t.line == 7 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE && t.length == 5),
             "write in def: {tokens:?}"
         );
         // 'write' in events reset (line 12)
         assert!(
             tokens.iter().any(|t| t.line == 12
-                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.token_type == SEMANTIC_TOKEN_TYPE_STATE
                 && t.length == 5),
             "write in events: {tokens:?}"
         );
         // 'delay' in sample (line 15)
         assert!(
             tokens.iter().any(|t| t.line == 15
-                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.token_type == SEMANTIC_TOKEN_TYPE_STATE
                 && t.length == 5),
             "delay in sample: {tokens:?}"
         );
         // 'write' in sample (line 15, inside delay[write])
         assert!(
             tokens.iter().any(|t| t.line == 15
-                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.token_type == SEMANTIC_TOKEN_TYPE_STATE
                 && t.length == 5),
             "write in sample delay[write]: {tokens:?}"
         );
@@ -1934,17 +2020,135 @@ mod tests {
 
         // 'buf' in def clear (line 9)
         assert!(
-            tokens.iter().any(|t| t.line == 9
-                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
-                && t.length == 3),
+            tokens
+                .iter()
+                .any(|t| t.line == 9 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE && t.length == 3),
             "buf in def: {tokens:?}"
         );
         // 'pos' in sample (line 13)
         assert!(
             tokens.iter().any(|t| t.line == 13
-                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
+                && t.token_type == SEMANTIC_TOKEN_TYPE_STATE
                 && t.length == 3),
             "pos in sample: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_proc_section_declarations() {
+        let source = concat!(
+            "proc Loop:\n",
+            "  ins:\n",
+            "    input\n",
+            "  outs:\n",
+            "    wet\n",
+            "  params:\n",
+            "    rate = 1.0\n",
+            "  buffers:\n",
+            "    buf: f32[]\n",
+            "  init:\n",
+            "    pos = 0.0\n",
+            "  sample:\n",
+            "    wet = input\n",
+            "    pos = pos + rate\n",
+            "    out1 = buf.readL(0, pos)\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        assert!(
+            tokens.iter().any(|t| {
+                t.line == 2
+                    && t.start == 4
+                    && t.length == 5
+                    && t.token_type == SEMANTIC_TOKEN_TYPE_PORT
+            }),
+            "input decl: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| {
+                t.line == 4
+                    && t.start == 4
+                    && t.length == 3
+                    && t.token_type == SEMANTIC_TOKEN_TYPE_PORT
+            }),
+            "wet decl: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| {
+                t.line == 6
+                    && t.start == 4
+                    && t.length == 4
+                    && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
+            }),
+            "rate decl: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| {
+                t.line == 8
+                    && t.start == 4
+                    && t.length == 3
+                    && t.token_type == SEMANTIC_TOKEN_TYPE_PORT
+            }),
+            "buf decl: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| {
+                t.line == 10
+                    && t.start == 4
+                    && t.length == 3
+                    && t.token_type == SEMANTIC_TOKEN_TYPE_STATE
+            }),
+            "pos decl: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_top_level_init_vars_in_buffer_looper_read() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("examples")
+            .join("buffer_looper_read.omni");
+        let source = std::fs::read_to_string(&path).expect("example source should be readable");
+        let tokens = semantic_tokens_for_document(&source, Some(&path));
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        let pos_tokens = find_tokens("pos");
+        assert!(!pos_tokens.is_empty(), "pos should be highlighted");
+        assert!(
+            pos_tokens
+                .iter()
+                .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "pos should be state everywhere: {pos_tokens:?}"
+        );
+
+        let rate_tokens = find_tokens("rate");
+        assert!(!rate_tokens.is_empty(), "rate should be highlighted");
+        assert!(
+            rate_tokens
+                .iter()
+                .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            "rate should be parameter everywhere: {rate_tokens:?}"
+        );
+
+        let src_tokens = find_tokens("src");
+        assert!(!src_tokens.is_empty(), "src should be highlighted");
+        assert!(
+            src_tokens
+                .iter()
+                .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
+            "src should be port everywhere: {src_tokens:?}"
         );
     }
 
@@ -1973,9 +2177,9 @@ mod tests {
         );
         // count in for body (line 9) should be variable
         assert!(
-            tokens.iter().any(|t| t.line == 9
-                && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE
-                && t.length == 5),
+            tokens
+                .iter()
+                .any(|t| t.line == 9 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE && t.length == 5),
             "count in for body: {tokens:?}"
         );
         // i should be variable (loop var)

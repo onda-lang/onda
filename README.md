@@ -48,6 +48,7 @@ Current backend target is ORC JIT only.
 4. Render WAV:
    - `cargo run -p omni_cli -- render examples/sine.omni --output ./omni_out.wav --dur 5`
 5. Preview in real time:
+   - `cargo run -p omni_cli -- preview examples/sine.omni`
    - `cargo run -p omni_cli -- preview play examples/sine.omni --dur 2`
    - `cargo run -p omni_cli -- preview play examples/sine.omni --forever`
 6. Start the language server:
@@ -93,6 +94,7 @@ Binding contract for optimized codegen:
 - `crates/omni_cli`: CLI commands, stdio LSP adapter, preview control transport
 - `examples/`: Omni source examples
 - `editors/vscode`: VSCode extension (language registration, syntax highlighting, LSP client, preview panel)
+- `editors/nvim`: Neovim runtime plugin (filetype detection, syntax highlighting, builtin LSP client, preview command)
 
 ## Editor support
 
@@ -106,15 +108,23 @@ Binding contract for optimized codegen:
   - `Omni: Run Patch`
   - `Omni: Stop Patch`
   - `Omni: Restart Language Server`
+- The Neovim runtime in `editors/nvim` provides:
+  - `.omni` filetype detection
+  - regex syntax highlighting
+  - builtin LSP client startup via `omni lsp`
+  - `:OmniRunPatch`, which launches `omni preview <file>` in the standalone window
 - `Omni: Run Patch` starts `omni preview play ... --forever --control-json`, opens an embedded webview, and exposes:
   - start/stop/reset controls
   - scalar param controls for `bool`, `i32`, `i64`, `f32`, and `f64`
-  - preview buffer binding cards for declared `f32` buffers, including multichannel WAV binding
+  - input/output device selectors
+  - preview buffer binding cards for declared `f32` buffers, including multichannel WAV binding via file picker
 
 ## Preview notes
 
+- `omni preview <file>` opens the standalone patch window with scope, param controls, and device selectors.
 - `omni preview render` is the offline render path.
-- `omni preview play` is the real-time speaker playback path.
+- `omni preview play` is the headless real-time speaker playback/control transport used by editor integrations and other control clients.
+  - With `--control-json`, it exposes the localhost JSON control protocol used by the VSCode Patch panel and the standalone preview window.
 - `omni daemon stdio` is a long-lived JSON-over-stdio control transport for daemon-backed workflows.
 - Preview buffer WAV binding currently uses `hound` and supports `f32`-typed Omni buffers.
 - For multichannel buffers, `.len()` is the frame count and `.chans()` is the runtime channel count.

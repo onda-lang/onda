@@ -90,11 +90,39 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
     let init_script = r#"window.__hostBridge = { mode: "wry" };"#;
 
     let ipc_proxy = proxy.clone();
+    let ipc_bridge = IpcBridge::new();
+    let webview_bridge = ipc_bridge.clone();
     let webview = WebViewBuilder::new()
         .with_html(PREVIEW_HTML)
         .with_initialization_script(init_script)
         .with_ipc_handler(move |msg| {
-            let _ = ipc_proxy.send_event(UserEvent::WebviewMessage(msg.body().to_owned()));
+            let raw = msg.body().to_owned();
+            let handled_directly = serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|value| {
+                    let ty = value.get("type").and_then(|item| item.as_str())?;
+                    if ty != "setParam" {
+                        return Some(false);
+                    }
+                    let commit = value
+                        .get("commit")
+                        .and_then(|item| item.as_bool())
+                        .unwrap_or(false);
+                    if commit {
+                        return Some(false);
+                    }
+                    let name = value.get("name").and_then(|item| item.as_str())?;
+                    let payload = serde_json::json!({
+                        "name": name,
+                        "value": value.get("value").cloned().unwrap_or(serde_json::Value::Null),
+                    });
+                    webview_bridge.send_command_notification("setParam", &payload);
+                    Some(true)
+                })
+                .unwrap_or(false);
+            if !handled_directly {
+                let _ = ipc_proxy.send_event(UserEvent::WebviewMessage(raw));
+            }
         })
         .build(&window)
         .map_err(|e| format!("failed to create webview: {e}"))?;
@@ -122,7 +150,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
     });
 
     // IPC bridge state.
-    let mut bridge = IpcBridge::new();
+    let bridge = ipc_bridge;
 
     // Preserved state for restarts.
     let mut preserved_params: Vec<(String, serde_json::Value)> = Vec::new();
@@ -194,7 +222,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
 
                     // Reapply preserved params.
                     for (name, value) in &preserved_params {
-                        bridge.send_command("setParam", &serde_json::json!({
+                        bridge.send_command_notification("setParam", &serde_json::json!({
                             "name": name,
                             "value": value,
                         }));
@@ -236,7 +264,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                         handle_webview_message(
                             &msg,
                             &webview,
-                            &mut bridge,
+                            &bridge,
                             &mut preserved_params,
                             &mut preserved_buffers,
                             &mut current_params,
@@ -378,7 +406,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
 fn handle_webview_message(
     msg: &serde_json::Value,
     webview: &wry::WebView,
-    bridge: &mut IpcBridge,
+    bridge: &IpcBridge,
     preserved_params: &mut Vec<(String, serde_json::Value)>,
     preserved_buffers: &mut Vec<(String, String)>,
     current_params: &mut Vec<serde_json::Value>,
@@ -504,7 +532,7 @@ fn handle_webview_message(
                     continue;
                 };
                 set_param_value(param, default_value.clone());
-                bridge.send_command(
+                bridge.send_command_notification(
                     "setParam",
                     &serde_json::json!({ "name": name, "value": default_value }),
                 );
@@ -530,7 +558,7 @@ fn handle_webview_message(
             if let (Some(name), Some(value)) =
                 (msg.get("name").and_then(|v| v.as_str()), msg.get("value"))
             {
-                bridge.send_command(
+                bridge.send_command_notification(
                     "setParam",
                     &serde_json::json!({ "name": name, "value": value }),
                 );

@@ -340,6 +340,8 @@
 - Semantic tokens are computed from the parsed AST (not the typed AST), so they work even when the file has semantic errors. A regex-based fallback provides `const` highlighting when parsing fails entirely.
 
 ### Preview transport
+- `omni preview <file>` opens the standalone preview window.
+  - Internally it launches `omni preview play <file> --forever --control-json` and connects the native webview to that control socket.
 - `omni preview play` is the real-time preview transport on top of the daemon preview session.
   - Audio playback is in-process via `cpal`.
   - Rendering runs on a background thread, outputting interleaved samples into a lock-free SPSC ring buffer that the cpal audio callback drains.
@@ -367,15 +369,19 @@
   - `Omni: Stop Patch` — kills the running patch process.
   - `Omni: Restart Language Server` — stops and restarts the LSP client.
 - **Patch panel** (webview):
-  - Header with patch file path, status, Start/Stop/Reset buttons.
-  - **Buffers section**: one card per `buffer[...]` declaration with drag-and-drop `.wav` zone, "Choose File" file picker, loaded file path display, and "Clear" button.
+  - Header with patch file path, status, Start/Stop/Reset buttons, and input/output device selectors.
+  - **Buffers section**: one card per `buffer[...]` declaration with "Choose File", loaded file path display, and "Clear" button.
   - **Params section**: one card per scalar param with:
     - `bool` params: checkbox toggle.
     - Numeric params with range: synchronized range slider + number input.
     - Numeric params without range: number input only.
-    - Smoothing control: per-param "Smoothing (ms)" input (default 20ms for float/double, 0ms for int/bool). Smoothing uses exponential interpolation at 16ms intervals.
   - Param/buffer state is preserved across patch restarts for the same file.
   - Auto-restart on `.omni` file save when a patch is running for that file.
+
+### Neovim runtime (`editors/nvim`)
+- `.omni` filetype detection and regex syntax highlighting.
+- builtin LSP client startup via `omni lsp`.
+- `:OmniRunPatch` launches `omni preview <file>` in the standalone preview window.
 
 ## Runtime and codegen
 - ORC JIT backend only (`Auto` routes to ORC).
@@ -404,6 +410,7 @@
   - `compile <file> [--dump-graph] [--ir] [--meta]`
   - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--dump-graph] [--ir]`
   - `lsp [--stdio]`
+  - `preview <file> [--sr|--sample-rate] [--block] [--fast-math] [--input-device <name>] [--output-device <name>]`
   - `preview render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value]`
   - `preview play <file> [--dur | --forever] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value] [--control-json]`
   - `daemon diagnose <file> [--sr|--sample-rate] [--block]`

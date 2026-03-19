@@ -648,25 +648,7 @@ function queuePatchParamSend(name: string, value: PatchScalarValue): void {
   if (value === null || !patchPanelState.connected) {
     return;
   }
-  void sendPatchControlRequest("setParam", { name, value })
-    .then(() => {
-      if (!patchPanelState.error) {
-        return;
-      }
-      patchPanelState = {
-        ...patchPanelState,
-        error: undefined,
-      };
-      postPatchPanelState();
-    })
-    .catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      patchPanelState = {
-        ...patchPanelState,
-        error: message,
-      };
-      postPatchPanelState();
-    });
+  sendPatchControlNotification("setParam", { name, value });
 }
 
 function describePatchBufferChannels(buffer: PatchBufferPayload): string {
@@ -856,6 +838,17 @@ function sendPatchControlRequest<T>(command: string, payload?: Record<string, un
       reject(error);
     });
   });
+}
+
+function sendPatchControlNotification(command: string, payload?: Record<string, unknown>): void {
+  if (!patchControlSocket || patchControlSocket.destroyed) {
+    return;
+  }
+  const request = JSON.stringify({
+    command,
+    ...payload,
+  });
+  patchControlSocket.write(`${request}\n`);
 }
 
 function ensurePatchPanel(): void {

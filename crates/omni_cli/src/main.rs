@@ -1,4 +1,5 @@
 use std::cell::UnsafeCell;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -38,6 +39,7 @@ use serde_json::{json, Value};
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_DUR_SECONDS: u32 = 5;
+const MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK: usize = 64;
 const DEFAULT_BLOCK_FRAMES: usize = 512;
 const DEFAULT_PLAY_BLOCK_FRAMES: usize = 128;
 const DEFAULT_DAEMON_OUTPUT: &str = "./omni_daemon_out.wav";
@@ -1011,6 +1013,7 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         Some(spawn_preview_control_server(
             listener,
             control_tx,
+            Arc::clone(&scope_ring),
             Arc::clone(&stop_flag),
         ))
     } else {
@@ -1435,7 +1438,7 @@ enum PlaybackControlCommand {
     SetParam {
         name: String,
         value: f64,
-        reply: mpsc::Sender<Result<(), String>>,
+        reply: Option<mpsc::Sender<Result<(), String>>>,
     },
     BindBufferWav {
         name: String,
@@ -1445,10 +1448,6 @@ enum PlaybackControlCommand {
     ClearBuffer {
         name: String,
         reply: mpsc::Sender<Result<(), String>>,
-    },
-    GetScopeData {
-        max_frames: usize,
-        reply: mpsc::Sender<Result<ScopeSnapshot, String>>,
     },
 }
 
@@ -1462,6 +1461,11 @@ struct ScopeRing {
     channels: usize,
     write_pos: usize,
     frames_written: usize,
+}
+
+struct PendingParamUpdate {
+    value: f64,
+    replies: Vec<mpsc::Sender<Result<(), String>>>,
 }
 
 impl ScopeRing {
@@ -1506,7 +1510,8 @@ impl ScopeRing {
 
 #[derive(Debug, Deserialize)]
 struct PlaybackControlRequest {
-    id: Value,
+    #[serde(default)]
+    id: Option<Value>,
     command: String,
     #[serde(default)]
     name: Option<String>,
@@ -1629,9 +1634,18 @@ fn spawn_preview_render_thread(
 
         while !stop_flag.load(Ordering::Acquire) {
             if let Some(control_rx) = &control_rx {
-                while let Ok(command) = control_rx.try_recv() {
+                let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::new();
+                for _ in 0..MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK {
+                    let Ok(command) = control_rx.try_recv() else {
+                        break;
+                    };
                     match command {
                         PlaybackControlCommand::GetParams { reply } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
                             let result = session
                                 .preview(&launch.input)
                                 .map(|preview| preview.param_info())
@@ -1639,6 +1653,11 @@ fn spawn_preview_render_thread(
                             let _ = reply.send(result);
                         }
                         PlaybackControlCommand::GetBuffers { reply } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
                             let result = session
                                 .preview(&launch.input)
                                 .map(|preview| preview.buffer_info())
@@ -1646,17 +1665,23 @@ fn spawn_preview_render_thread(
                             let _ = reply.send(result);
                         }
                         PlaybackControlCommand::SetParam { name, value, reply } => {
-                            let result = session
-                                .preview_mut(&launch.input)
-                                .ok_or_else(|| "preview is not active".to_owned())
-                                .and_then(|preview| {
-                                    preview.set_param_f64(&name, value).map_err(|diag| {
-                                        format_single_diagnostic("daemon play param failed", &diag)
-                                    })
-                                });
-                            let _ = reply.send(result);
+                            let entry = pending_param_updates.entry(name).or_insert_with(|| {
+                                PendingParamUpdate {
+                                    value,
+                                    replies: Vec::new(),
+                                }
+                            });
+                            entry.value = value;
+                            if let Some(reply) = reply {
+                                entry.replies.push(reply);
+                            }
                         }
                         PlaybackControlCommand::BindBufferWav { name, path, reply } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
                             let result = session
                                 .preview_mut(&launch.input)
                                 .ok_or_else(|| "preview is not active".to_owned())
@@ -1671,6 +1696,11 @@ fn spawn_preview_render_thread(
                             let _ = reply.send(result);
                         }
                         PlaybackControlCommand::ClearBuffer { name, reply } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
                             let result = session
                                 .preview_mut(&launch.input)
                                 .ok_or_else(|| "preview is not active".to_owned())
@@ -1684,12 +1714,13 @@ fn spawn_preview_render_thread(
                                 });
                             let _ = reply.send(result);
                         }
-                        PlaybackControlCommand::GetScopeData { max_frames, reply } => {
-                            let snapshot = scope_ring.lock().unwrap().snapshot(max_frames);
-                            let _ = reply.send(Ok(snapshot));
-                        }
                     }
                 }
+                flush_pending_param_updates(
+                    &mut pending_param_updates,
+                    &mut session,
+                    &launch.input,
+                );
             }
 
             if render_input_channels > 0 {
@@ -1736,6 +1767,26 @@ fn spawn_preview_render_thread(
             }
         }
     })
+}
+
+fn flush_pending_param_updates(
+    pending: &mut HashMap<String, PendingParamUpdate>,
+    session: &mut DaemonSession,
+    input: &Path,
+) {
+    for (name, update) in std::mem::take(pending) {
+        let result = session
+            .preview_mut(input)
+            .ok_or_else(|| "preview is not active".to_owned())
+            .and_then(|preview| {
+                preview
+                    .set_param_f64(&name, update.value)
+                    .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))
+            });
+        for reply in update.replies {
+            let _ = reply.send(result.clone());
+        }
+    }
 }
 
 fn wait_for_prefill(
@@ -1803,6 +1854,7 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io
 fn spawn_preview_control_server(
     listener: TcpListener,
     control_tx: mpsc::Sender<PlaybackControlCommand>,
+    scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -1813,7 +1865,8 @@ fn spawn_preview_control_server(
         while !stop_flag.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if let Err(err) = handle_preview_control_client(stream, &control_tx, &stop_flag)
+                    if let Err(err) =
+                        handle_preview_control_client(stream, &control_tx, &scope_ring, &stop_flag)
                     {
                         eprintln!("preview control client error: {err}");
                     }
@@ -1833,6 +1886,7 @@ fn spawn_preview_control_server(
 fn handle_preview_control_client(
     stream: TcpStream,
     control_tx: &mpsc::Sender<PlaybackControlCommand>,
+    scope_ring: &Arc<Mutex<ScopeRing>>,
     stop_flag: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     stream
@@ -1865,54 +1919,75 @@ fn handle_preview_control_client(
 
         let request: PlaybackControlRequest = serde_json::from_str(trimmed)
             .map_err(|err| format!("invalid control request json: {err}"))?;
-        let response = match request.command.as_str() {
-            "getParams" => {
-                let (reply_tx, reply_rx) = mpsc::channel();
-                control_tx
-                    .send(PlaybackControlCommand::GetParams { reply: reply_tx })
-                    .map_err(|_| "preview control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "preview control reply channel closed".to_owned())?
-                {
+        let response = preview_control_response(request, control_tx, scope_ring);
+        if let Some(response) = response {
+            write_json_line(&mut writer, &response)
+                .map_err(|err| format!("failed to write control response: {err}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn preview_control_response(
+    request: PlaybackControlRequest,
+    control_tx: &mpsc::Sender<PlaybackControlCommand>,
+    scope_ring: &Arc<Mutex<ScopeRing>>,
+) -> Option<Value> {
+    let request_id = request.id;
+    let result = match request.command.as_str() {
+        "getParams" => {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::GetParams { reply: reply_tx })
+                .map_err(|_| "preview control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "preview control reply channel closed".to_owned())
+                })
+                .map(|result| Some(match result {
                     Ok(params) => json!({
-                        "id": request.id,
+                        "id": request_id,
                         "ok": true,
                         "result": {
                             "params": params.iter().map(preview_param_json).collect::<Vec<_>>(),
                         }
                     }),
                     Err(err) => json!({
-                        "id": request.id,
+                        "id": request_id,
                         "ok": false,
                         "error": err,
                     }),
-                }
-            }
-            "getBuffers" => {
-                let (reply_tx, reply_rx) = mpsc::channel();
-                control_tx
-                    .send(PlaybackControlCommand::GetBuffers { reply: reply_tx })
-                    .map_err(|_| "preview control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "preview control reply channel closed".to_owned())?
-                {
+                }))
+        }
+        "getBuffers" => {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::GetBuffers { reply: reply_tx })
+                .map_err(|_| "preview control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "preview control reply channel closed".to_owned())
+                })
+                .map(|result| Some(match result {
                     Ok(buffers) => json!({
-                        "id": request.id,
+                        "id": request_id,
                         "ok": true,
                         "result": {
                             "buffers": buffers.iter().map(preview_buffer_json).collect::<Vec<_>>(),
                         }
                     }),
                     Err(err) => json!({
-                        "id": request.id,
+                        "id": request_id,
                         "ok": false,
                         "error": err,
                     }),
-                }
-            }
-            "setParam" => {
+                }))
+        }
+        "setParam" => {
+            let result = (|| -> Result<Option<Value>, String> {
                 let name = request
                     .name
                     .ok_or_else(|| "setParam requires 'name'".to_owned())?;
@@ -1932,30 +2007,43 @@ fn handle_preview_control_client(
                         .ok_or_else(|| "setParam value must be numeric".to_owned())?,
                     _ => return Err("setParam value must be number or boolean".to_owned()),
                 };
+                if request_id.is_none() {
+                    control_tx
+                        .send(PlaybackControlCommand::SetParam {
+                            name,
+                            value,
+                            reply: None,
+                        })
+                        .map_err(|_| "preview control channel closed".to_owned())?;
+                    return Ok(None);
+                }
                 let (reply_tx, reply_rx) = mpsc::channel();
                 control_tx
                     .send(PlaybackControlCommand::SetParam {
                         name,
                         value,
-                        reply: reply_tx,
+                        reply: Some(reply_tx),
                     })
                     .map_err(|_| "preview control channel closed".to_owned())?;
                 match reply_rx
                     .recv()
                     .map_err(|_| "preview control reply channel closed".to_owned())?
                 {
-                    Ok(()) => json!({
-                        "id": request.id,
+                    Ok(()) => Ok(request_id.clone().map(|id| json!({
+                        "id": id,
                         "ok": true,
-                    }),
-                    Err(err) => json!({
-                        "id": request.id,
+                    }))),
+                    Err(err) => Ok(request_id.clone().map(|id| json!({
+                        "id": id,
                         "ok": false,
                         "error": err,
-                    }),
+                    }))),
                 }
-            }
-            "bindBufferWav" => {
+            })();
+            result
+        }
+        "bindBufferWav" => {
+            let result = (|| -> Result<Option<Value>, String> {
                 let name = request
                     .name
                     .ok_or_else(|| "bindBufferWav requires 'name'".to_owned())?;
@@ -1974,46 +2062,35 @@ fn handle_preview_control_client(
                     .recv()
                     .map_err(|_| "preview control reply channel closed".to_owned())?
                 {
-                    Ok(()) => json!({
-                        "id": request.id,
+                    Ok(()) => Ok(request_id.clone().map(|id| json!({
+                        "id": id,
                         "ok": true,
-                    }),
-                    Err(err) => json!({
-                        "id": request.id,
+                    }))),
+                    Err(err) => Ok(request_id.clone().map(|id| json!({
+                        "id": id,
                         "ok": false,
                         "error": err,
-                    }),
+                    }))),
                 }
-            }
-            "getScopeData" => {
-                let max_frames = request.max_frames.unwrap_or(2048);
-                let (reply_tx, reply_rx) = mpsc::channel();
-                control_tx
-                    .send(PlaybackControlCommand::GetScopeData {
-                        max_frames,
-                        reply: reply_tx,
-                    })
-                    .map_err(|_| "preview control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "preview control reply channel closed".to_owned())?
-                {
-                    Ok(snapshot) => json!({
-                        "id": request.id,
-                        "ok": true,
-                        "result": {
-                            "channels": snapshot.channels,
-                            "samples": snapshot.samples,
-                        }
-                    }),
-                    Err(err) => json!({
-                        "id": request.id,
-                        "ok": false,
-                        "error": err,
-                    }),
+            })();
+            result
+        }
+        "getScopeData" => scope_ring
+            .lock()
+            .map_err(|_| "failed to lock scope ring".to_owned())
+            .map(|ring| {
+                let snapshot = ring.snapshot(request.max_frames.unwrap_or(2048));
+                Some(json!({
+                "id": request_id,
+                "ok": true,
+                "result": {
+                    "channels": snapshot.channels,
+                    "samples": snapshot.samples,
                 }
-            }
-            "clearBuffer" => {
+            }))
+            }),
+        "clearBuffer" => {
+            let result = (|| -> Result<Option<Value>, String> {
                 let name = request
                     .name
                     .ok_or_else(|| "clearBuffer requires 'name'".to_owned())?;
@@ -2028,29 +2105,30 @@ fn handle_preview_control_client(
                     .recv()
                     .map_err(|_| "preview control reply channel closed".to_owned())?
                 {
-                    Ok(()) => json!({
-                        "id": request.id,
+                    Ok(()) => Ok(request_id.clone().map(|id| json!({
+                        "id": id,
                         "ok": true,
-                    }),
-                    Err(err) => json!({
-                        "id": request.id,
+                    }))),
+                    Err(err) => Ok(request_id.clone().map(|id| json!({
+                        "id": id,
                         "ok": false,
                         "error": err,
-                    }),
+                    }))),
                 }
-            }
-            other => json!({
-                "id": request.id,
-                "ok": false,
-                "error": format!("unknown command '{other}'"),
-            }),
-        };
+            })();
+            result
+        }
+        other => Err(format!("unknown command '{other}'")),
+    };
 
-        write_json_line(&mut writer, &response)
-            .map_err(|err| format!("failed to write control response: {err}"))?;
+    match result {
+        Ok(value) => value,
+        Err(err) => request_id.map(|id| json!({
+            "id": id,
+            "ok": false,
+            "error": err,
+        })),
     }
-
-    Ok(())
 }
 
 struct SpscSampleRing {
@@ -3457,12 +3535,15 @@ fn f32_to_i16(sample: f32) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_diag_snippet, format_expr, format_program, parse_args, Command, DaemonCommand,
-        PreviewCommand, DEFAULT_PLAY_BLOCK_FRAMES,
+        format_diag_snippet, format_expr, format_program, parse_args, preview_control_response,
+        Command, DaemonCommand, PlaybackControlCommand, PlaybackControlRequest, PreviewCommand,
+        ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES,
     };
     use omni_frontend::{
         Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
     };
+    use serde_json::Value;
+    use std::sync::{mpsc, Arc, Mutex};
 
     #[test]
     fn parse_compile_accepts_dump_graph() {
@@ -3713,5 +3794,33 @@ mod tests {
         assert!(snippet.contains("   |          ^^^^^^^"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn preview_set_param_notification_enqueues_without_waiting_for_reply() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let response = preview_control_response(
+            PlaybackControlRequest {
+                id: None,
+                command: "setParam".to_owned(),
+                name: Some("gain".to_owned()),
+                path: None,
+                value: Some(Value::from(0.5)),
+                max_frames: None,
+            },
+            &control_tx,
+            &scope_ring,
+        );
+
+        assert!(response.is_none());
+        match control_rx.try_recv().expect("setParam should be queued") {
+            PlaybackControlCommand::SetParam { name, value, reply } => {
+                assert_eq!(name, "gain");
+                assert_eq!(value, 0.5);
+                assert!(reply.is_none());
+            }
+            _ => panic!("expected setParam command"),
+        }
     }
 }

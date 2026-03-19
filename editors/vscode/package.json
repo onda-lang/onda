@@ -44,6 +44,11 @@
         "id": "port",
         "superType": "variable",
         "description": "Omni audio input, output, or buffer symbol"
+      },
+      {
+        "id": "state",
+        "superType": "variable",
+        "description": "Omni init-declared state symbol"
       }
     ],
     "semanticTokenScopes": [
@@ -58,6 +63,9 @@
           ],
           "port": [
             "support.variable"
+          ],
+          "state": [
+            "variable.parameter"
           ],
           "parameter": [
             "variable.parameter"

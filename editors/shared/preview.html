@@ -190,6 +190,54 @@
         width: 100%;
       }
 
+      .param-slider {
+        position: relative;
+        width: 100%;
+        height: 22px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #111418;
+        cursor: pointer;
+        touch-action: none;
+      }
+
+      .param-slider:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .param-slider-track {
+        position: absolute;
+        left: 10px;
+        right: 10px;
+        top: 50%;
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateY(-50%);
+      }
+
+      .param-slider-fill {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 0%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+      }
+
+      .param-slider-thumb {
+        position: absolute;
+        top: 50%;
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        background: var(--text);
+        box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+        transform: translate(-50%, -50%);
+      }
+
       .param-number {
         width: 100%;
         border: 1px solid var(--border);
@@ -361,6 +409,8 @@
       const scopeSection = document.getElementById("scope-section");
       const scopeCanvas = document.getElementById("scope-canvas");
       const scopeCtx = scopeCanvas.getContext("2d");
+      const pendingParamMessages = new Map();
+      let pendingParamFrame = 0;
 
       // ---------------------------------------------------------------------------
       // Host communication
@@ -438,6 +488,157 @@
           }
           scopeCtx.stroke();
         }
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function decimalPlaces(step) {
+        const text = String(step);
+        const dot = text.indexOf(".");
+        return dot === -1 ? 0 : text.length - dot - 1;
+      }
+
+      function quantizeToStep(value, min, step) {
+        if (!Number.isFinite(step) || step <= 0) {
+          return value;
+        }
+        const places = decimalPlaces(step);
+        const snapped = min + Math.round((value - min) / step) * step;
+        return Number(snapped.toFixed(places));
+      }
+
+      function createSliderControl(param, currentValue, step, onInputValue, onCommitValue) {
+        const min = Number(param.rangeMin);
+        const max = Number(param.rangeMax);
+        const slider = document.createElement("div");
+        slider.className = "param-slider";
+        slider.tabIndex = state.connected ? 0 : -1;
+        slider.setAttribute("role", "slider");
+        slider.setAttribute("aria-label", param.name);
+        slider.setAttribute("aria-valuemin", String(min));
+        slider.setAttribute("aria-valuemax", String(max));
+        slider.setAttribute("aria-disabled", state.connected ? "false" : "true");
+
+        const track = document.createElement("div");
+        track.className = "param-slider-track";
+        const fill = document.createElement("div");
+        fill.className = "param-slider-fill";
+        const thumb = document.createElement("div");
+        thumb.className = "param-slider-thumb";
+        track.append(fill, thumb);
+        slider.appendChild(track);
+
+        let value = clamp(currentValue, min, max);
+
+        const renderValue = () => {
+          const ratio = max > min ? (value - min) / (max - min) : 0;
+          const pct = clamp(ratio, 0, 1) * 100;
+          fill.style.width = pct + "%";
+          thumb.style.left = pct + "%";
+          slider.setAttribute("aria-valuenow", String(value));
+          slider.dataset.value = String(value);
+        };
+
+        const setFromClientX = (clientX, commit) => {
+          const rect = track.getBoundingClientRect();
+          if (rect.width <= 0) {
+            return;
+          }
+          const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
+          const rawValue = min + ratio * (max - min);
+          value = quantizeToStep(rawValue, min, Number(step));
+          value = clamp(value, min, max);
+          renderValue();
+          if (commit) {
+            onCommitValue(value);
+          } else {
+            onInputValue(value);
+          }
+        };
+
+        if (state.connected) {
+          slider.addEventListener("pointerdown", (event) => {
+            slider.setPointerCapture(event.pointerId);
+            setFromClientX(event.clientX, false);
+
+            const onMove = (moveEvent) => {
+              if (moveEvent.pointerId !== event.pointerId) {
+                return;
+              }
+              setFromClientX(moveEvent.clientX, false);
+            };
+
+            const onEnd = (endEvent) => {
+              if (endEvent.pointerId !== event.pointerId) {
+                return;
+              }
+              slider.removeEventListener("pointermove", onMove);
+              slider.removeEventListener("pointerup", onEnd);
+              slider.removeEventListener("pointercancel", onEnd);
+              setFromClientX(endEvent.clientX, true);
+              if (slider.hasPointerCapture(event.pointerId)) {
+                slider.releasePointerCapture(event.pointerId);
+              }
+            };
+
+            slider.addEventListener("pointermove", onMove);
+            slider.addEventListener("pointerup", onEnd);
+            slider.addEventListener("pointercancel", onEnd);
+          });
+
+          slider.addEventListener("keydown", (event) => {
+            let delta = 0;
+            if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+              delta = -Number(step);
+            } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+              delta = Number(step);
+            } else if (event.key === "Home") {
+              value = min;
+            } else if (event.key === "End") {
+              value = max;
+            } else {
+              return;
+            }
+            event.preventDefault();
+            if (delta !== 0) {
+              value = clamp(quantizeToStep(value + delta, min, Number(step)), min, max);
+            }
+            renderValue();
+            onCommitValue(value);
+          });
+        }
+
+        renderValue();
+        return { slider, setValue(nextValue) {
+          value = clamp(nextValue, min, max);
+          renderValue();
+        }};
+      }
+
+      function flushPendingParamMessages() {
+        pendingParamFrame = 0;
+        if (pendingParamMessages.size === 0) {
+          return;
+        }
+        for (const [name, value] of pendingParamMessages.entries()) {
+          hostBridge.postMessage({ type: "setParam", name, value, commit: false });
+        }
+        pendingParamMessages.clear();
+      }
+
+      function scheduleParamMessage(name, value) {
+        pendingParamMessages.set(name, value);
+        if (pendingParamFrame !== 0) {
+          return;
+        }
+        pendingParamFrame = window.requestAnimationFrame(flushPendingParamMessages);
+      }
+
+      function commitParamMessage(name, value) {
+        pendingParamMessages.delete(name);
+        hostBridge.postMessage({ type: "setParam", name, value, commit: true });
       }
 
       // ---------------------------------------------------------------------------
@@ -602,16 +803,6 @@
             const currentValue = typeof param.value === "number" ? param.value : 0;
 
             if (hasRange) {
-              const range = document.createElement("input");
-              range.className = "param-range";
-              range.type = "range";
-              range.min = String(param.rangeMin);
-              range.max = String(param.rangeMax);
-              range.step = step;
-              range.value = String(currentValue);
-              range.disabled = !state.connected;
-              controls.appendChild(range);
-
               const number = document.createElement("input");
               number.className = "param-number";
               number.type = "number";
@@ -622,18 +813,35 @@
               number.disabled = !state.connected;
               controls.appendChild(number);
 
+              const sliderControl = createSliderControl(
+                param,
+                currentValue,
+                step,
+                (nextValue) => {
+                  const nextText = String(nextValue);
+                  number.value = nextText;
+                  scheduleParamMessage(param.name, nextValue);
+                },
+                (nextValue) => {
+                  const nextText = String(nextValue);
+                  number.value = nextText;
+                  commitParamMessage(param.name, nextValue);
+                },
+              );
+              controls.prepend(sliderControl.slider);
+
               const sync = (nextValue) => {
-                range.value = nextValue;
-                number.value = nextValue;
+                const parsed = Number(nextValue);
+                if (!Number.isFinite(parsed)) {
+                  return;
+                }
+                sliderControl.setValue(parsed);
+                number.value = String(parsed);
               };
 
-              range.addEventListener("input", () => {
-                sync(range.value);
-                hostBridge.postMessage({ type: "setParam", name: param.name, value: Number(range.value) });
-              });
               number.addEventListener("change", () => {
                 sync(number.value);
-                hostBridge.postMessage({ type: "setParam", name: param.name, value: Number(number.value) });
+                commitParamMessage(param.name, Number(number.value));
               });
             } else {
               const number = document.createElement("input");
