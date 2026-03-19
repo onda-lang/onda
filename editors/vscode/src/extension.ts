@@ -85,6 +85,8 @@ let stoppingPatchPid: number | undefined;
 const pendingPatchRequests = new Map<number, PendingControlRequest>();
 let scopePollingTimer: NodeJS.Timeout | undefined;
 let scopePollingInFlight = false;
+const SCOPE_MAX_FRAMES = 1024;
+const SCOPE_POLL_INTERVAL_MS = 50;
 let patchPanelState: PatchPanelState = {
   running: false,
   connected: false,
@@ -955,7 +957,7 @@ function postPatchPanelState(): void {
 
 function startScopePolling(): void {
   stopScopePolling();
-  scopePollingTimer = setInterval(pollScopeData, 33);
+  scopePollingTimer = setInterval(pollScopeData, SCOPE_POLL_INTERVAL_MS);
 }
 
 function stopScopePolling(): void {
@@ -971,7 +973,7 @@ function pollScopeData(): void {
     return;
   }
   scopePollingInFlight = true;
-  sendPatchControlRequest<{ channels: number; samples: number[] }>("getScopeData", { maxFrames: 2048 })
+  sendPatchControlRequest<{ channels: number; samples: number[] }>("getScopeData", { maxFrames: SCOPE_MAX_FRAMES })
     .then((result) => {
       scopePollingInFlight = false;
       if (patchPanel && patchPanelReady) {

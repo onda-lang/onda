@@ -411,6 +411,8 @@
       const scopeCtx = scopeCanvas.getContext("2d");
       const pendingParamMessages = new Map();
       let pendingParamFrame = 0;
+      let pendingScopeFrame = 0;
+      let latestScopeData = { channels: 0, samples: [] };
 
       // ---------------------------------------------------------------------------
       // Host communication
@@ -488,6 +490,17 @@
           }
           scopeCtx.stroke();
         }
+      }
+
+      function scheduleScopeDraw(channels, samples) {
+        latestScopeData = { channels, samples };
+        if (pendingScopeFrame !== 0) {
+          return;
+        }
+        pendingScopeFrame = window.requestAnimationFrame(() => {
+          pendingScopeFrame = 0;
+          drawScope(latestScopeData.channels, latestScopeData.samples);
+        });
       }
 
       function clamp(value, min, max) {
@@ -608,6 +621,13 @@
             renderValue();
             onCommitValue(value);
           });
+
+          slider.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            value = clamp(initialParamValue(param), min, max);
+            renderValue();
+            onCommitValue(value);
+          });
         }
 
         renderValue();
@@ -684,7 +704,7 @@
           return;
         }
         if (message.type === "scopeData") {
-          drawScope(message.channels, message.samples);
+          scheduleScopeDraw(message.channels, message.samples);
           return;
         }
         if (message.type !== "state") {

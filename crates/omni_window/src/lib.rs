@@ -16,6 +16,8 @@ use process::{ChildSession, ReadyEvent};
 use watcher::FileWatcher;
 
 const PREVIEW_HTML: &str = include_str!("../../../editors/shared/preview.html");
+const SCOPE_MAX_FRAMES: usize = 1024;
+const SCOPE_POLL_INTERVAL_MS: u64 = 50;
 
 /// Options for the preview window.
 #[derive(Clone, Debug)]
@@ -162,14 +164,27 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
 
     // Scope polling timer state.
     let mut scope_polling_active = false;
+    let mut scope_polling_in_flight = false;
     let mut last_scope_poll = std::time::Instant::now();
-    let scope_interval = Duration::from_millis(33);
+    let scope_interval = Duration::from_millis(SCOPE_POLL_INTERVAL_MS);
 
     event_loop.run(move |event, _target, control_flow| {
         // Default: poll with a short sleep to drive scope updates.
         *control_flow = ControlFlow::WaitUntil(
             std::time::Instant::now() + Duration::from_millis(16),
         );
+
+        if scope_polling_active
+            && !scope_polling_in_flight
+            && last_scope_poll.elapsed() >= scope_interval
+        {
+            bridge.send_command(
+                "getScopeData",
+                &serde_json::json!({ "maxFrames": SCOPE_MAX_FRAMES }),
+            );
+            scope_polling_in_flight = true;
+            last_scope_poll = std::time::Instant::now();
+        }
 
         match event {
             Event::WindowEvent {
@@ -236,11 +251,13 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                     }
 
                     scope_polling_active = true;
+                    scope_polling_in_flight = false;
                     last_scope_poll = std::time::Instant::now();
                 }
 
                 UserEvent::ChildExited { code, error } => {
                     scope_polling_active = false;
+                    scope_polling_in_flight = false;
                     bridge.disconnect();
                     sync_panel_state(
                         &webview,
@@ -285,6 +302,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                     child.kill();
                     bridge.disconnect();
                     scope_polling_active = false;
+                    scope_polling_in_flight = false;
 
                     sync_panel_state(
                         &webview,
@@ -337,6 +355,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                         if let Some(result) = resp.get("result") {
                             if result.get("channels").is_some() && result.get("samples").is_some()
                             {
+                                scope_polling_in_flight = false;
                                 let scope_msg = serde_json::json!({
                                     "type": "scopeData",
                                     "channels": result["channels"],
@@ -385,17 +404,6 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                     }
                 }
             },
-
-            Event::NewEvents(tao::event::StartCause::ResumeTimeReached { .. }) => {
-                // Poll scope data on timer.
-                if scope_polling_active && last_scope_poll.elapsed() >= scope_interval {
-                    bridge.send_command(
-                        "getScopeData",
-                        &serde_json::json!({ "maxFrames": 2048 }),
-                    );
-                    last_scope_poll = std::time::Instant::now();
-                }
-            }
 
             _ => {}
         }
