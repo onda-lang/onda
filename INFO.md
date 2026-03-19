@@ -133,9 +133,9 @@
   - Bitwise operators accept `i32`/`i64` operands only.
   - Mixed `i32`/`i64` operands widen to `i64`.
   - `>>` lowers as arithmetic right shift.
-- Graph routing/composition is implemented at top-level and proc-local scope:
+  - Graph routing/composition is implemented at top-level and proc-local scope:
   - `graph` is mutually exclusive with `sample` and `block` in the same owner.
-  - Edges support send and receiver forms (`src >> dst`, `dst << src`), destination-set fanout (`src >> { a, b }`, `{ a, b } << src`), proc-bundle destination-set routing (`proc >> { a, b }`, `proc_array[idx] >> { a, b }`), explicit rates (`@block`, `@sample`), and sample delays (`>>[N]`, `<<[N]`).
+  - Edges support send and receiver forms (`src >> dst`, `dst << src`), destination-set fanout (`src >> { a, b }`, `{ a, b } << src`), proc-bundle destination-set routing (`proc >> { a, b }`, `proc_array[idx] >> { a, b }`), explicit rates (`@block`, `@sample`), and sample delays (`>>[expr]`, `<<[expr]`) where `expr` is a compile-time nonnegative integer expression (including consts and namespace template/const expressions).
   - Proc-array slot references with static indices are supported for graph sources and destinations.
   - Strict scalar/array shape checking is enforced on graph edges, with one narrow convenience rule: scalar-to-fixed-array broadcast expands element-wise.
   - Whole-array routing and element-wise array expressions are supported where shapes match exactly.

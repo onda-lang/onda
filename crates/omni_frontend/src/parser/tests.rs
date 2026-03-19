@@ -5144,6 +5144,48 @@ graph:
 }
 
 #[test]
+fn parses_graph_delay_expressions_with_consts_and_namespace_generics() {
+    let src = r#"
+const TAP = 2
+
+namespace DelayCfg<Base = 1>:
+  const LEN = Base + TAP
+
+outs:
+  out1
+
+graph:
+  0.5 >>[DelayCfg<1>::LEN + 1] out1
+"#;
+    let program = parse_program(src).expect("graph delay expression program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    assert_eq!(graph.edges.len(), 1);
+    assert!(matches!(
+        graph.edges[0].delay.as_ref(),
+        Some(Expr::Binary { op: BinaryOp::Add, lhs, rhs, .. })
+            if matches!(rhs.as_ref(), Expr::Int { value: 1, .. })
+                && matches!(
+                    lhs.as_ref(),
+                    Expr::Binary { op: BinaryOp::Add, lhs: inner_lhs, rhs: inner_rhs, .. }
+                        if matches!(inner_rhs.as_ref(), Expr::Int { value: 2, .. })
+                            && matches!(
+                                inner_lhs.as_ref(),
+                                Expr::Cast { to: PrimitiveType::I32, expr, .. }
+                                    if matches!(expr.as_ref(), Expr::Int { value: 1, .. })
+                            )
+                )
+    ));
+}
+
+#[test]
 fn parses_graph_array_literal_and_slice_sources() {
     let src = r#"
 ins:

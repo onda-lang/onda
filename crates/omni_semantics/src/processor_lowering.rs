@@ -1814,6 +1814,43 @@ graph:
     }
 
     #[test]
+    fn analyze_accepts_graph_delay_expressions_with_consts_and_namespace_generics() {
+        let src = r#"
+const TAP = 2
+
+namespace DelayCfg<Base = 1>:
+  const LEN = Base + TAP
+
+outs:
+  out1
+
+graph:
+  0.5 >>[DelayCfg<1>::LEN + 1] out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("graph delay expression should analyze");
+        assert!(
+            typed.init.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr: Expr::ArrayCtor { spec, .. },
+                    ..
+                } if name == "__graph_delay_0_buf"
+                    && matches!(
+                        (&spec.elem, spec.size.as_ref()),
+                        (
+                            ArrayElemType::Primitive(PrimitiveType::F32),
+                            Expr::Int { value: 4, .. }
+                        )
+                    )
+            )),
+            "expected delay buffer sized from const/namespace expression: {:?}",
+            typed.init
+        );
+    }
+
+    #[test]
     fn graph_block_rejects_nonconstant_slice_bounds() {
         let src = r#"
 params:
@@ -2004,6 +2041,70 @@ graph:
                 == 2,
             "expected proc-local graph outputs to lower to scalar output writes: {:?}",
             typed.sample
+        );
+    }
+
+    #[test]
+    fn lower_graphs_accepts_proc_local_delay_expressions_from_namespace_generics() {
+        let src = r#"
+namespace DelayCfg<Tap = 2>:
+  proc DelayProc:
+    ins:
+      in1
+    outs:
+      out1
+    graph:
+      in1 >>[Tap + 1] out1
+
+outs:
+  out1
+
+init:
+  p = DelayCfg<2>::DelayProc()
+
+sample:
+  out1 = p(0.5)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let lowered =
+            crate::lower_graphs_for_inspection_with_options(program, AnalysisOptions::default())
+                .expect("proc-local namespaced graph delay should lower");
+        let proc = lowered
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Proc(proc)
+                    if proc.name.starts_with("DelayCfg__nsinst")
+                        && proc.name.ends_with("::DelayProc") =>
+                {
+                    Some(proc)
+                }
+                _ => None,
+            })
+            .expect("instantiated proc block");
+
+        assert!(
+            proc.graph.is_none(),
+            "proc graph should be lowered away: {proc:?}"
+        );
+        assert!(
+            proc.init.body.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    expr: Expr::ArrayCtor { spec, .. },
+                    ..
+                } if name == "__graph_delay_0_buf"
+                    && matches!(
+                        (&spec.elem, spec.size.as_ref()),
+                        (
+                            ArrayElemType::Primitive(PrimitiveType::F32),
+                            Expr::Int { value: 3, .. }
+                        )
+                    )
+            )),
+            "expected proc-local delay buffer sized from namespace generic expression: {:?}",
+            proc.init.body
         );
     }
 

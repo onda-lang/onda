@@ -367,8 +367,8 @@ dst << src
 @block dst << src
 @sample src >> dst
 @sample dst << src
-src >>[N] dst
-dst <<[N] src
+src >>[expr] dst
+dst <<[expr] src
 src >> { dst1, dst2 }
 { dst1, dst2 } << src
 ```
@@ -380,7 +380,8 @@ Rules:
 - Unannotated edges targeting proc `params` are inferred as `@block`.
 - Unannotated edges targeting other destinations are inferred as `@sample`.
 - `@sample` may override the default `@block` behavior for proc param destinations.
-- `>>[N]` uses a compile-time integer `N >= 0`.
+- `>>[expr]` / `<<[expr]` use a compile-time nonnegative integer expression.
+- Delay expressions can use integer literals, arithmetic/bitwise constant expressions, ordinary `const` values, namespace consts, and namespace template parameters.
 - Delayed edges are sample-rate only.
 - `>>[0]` does not break cycles.
 

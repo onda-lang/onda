@@ -1935,10 +1935,11 @@ fn preview_control_response(
     scope_ring: &Arc<Mutex<ScopeRing>>,
 ) -> Option<Value> {
     let request_id = request.id;
-    let result = match request.command.as_str() {
-        "getParams" => {
-            let (reply_tx, reply_rx) = mpsc::channel();
-            control_tx
+    let result =
+        match request.command.as_str() {
+            "getParams" => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
                 .send(PlaybackControlCommand::GetParams { reply: reply_tx })
                 .map_err(|_| "preview control channel closed".to_owned())
                 .and_then(|_| {
@@ -1960,10 +1961,10 @@ fn preview_control_response(
                         "error": err,
                     }),
                 }))
-        }
-        "getBuffers" => {
-            let (reply_tx, reply_rx) = mpsc::channel();
-            control_tx
+            }
+            "getBuffers" => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
                 .send(PlaybackControlCommand::GetBuffers { reply: reply_tx })
                 .map_err(|_| "preview control channel closed".to_owned())
                 .and_then(|_| {
@@ -1985,149 +1986,163 @@ fn preview_control_response(
                         "error": err,
                     }),
                 }))
-        }
-        "setParam" => {
-            let result = (|| -> Result<Option<Value>, String> {
-                let name = request
-                    .name
-                    .ok_or_else(|| "setParam requires 'name'".to_owned())?;
-                let raw_value = request
-                    .value
-                    .ok_or_else(|| "setParam requires 'value'".to_owned())?;
-                let value = match raw_value {
-                    Value::Bool(value) => {
-                        if value {
-                            1.0
-                        } else {
-                            0.0
+            }
+            "setParam" => {
+                let result = (|| -> Result<Option<Value>, String> {
+                    let name = request
+                        .name
+                        .ok_or_else(|| "setParam requires 'name'".to_owned())?;
+                    let raw_value = request
+                        .value
+                        .ok_or_else(|| "setParam requires 'value'".to_owned())?;
+                    let value = match raw_value {
+                        Value::Bool(value) => {
+                            if value {
+                                1.0
+                            } else {
+                                0.0
+                            }
                         }
+                        Value::Number(value) => value
+                            .as_f64()
+                            .ok_or_else(|| "setParam value must be numeric".to_owned())?,
+                        _ => return Err("setParam value must be number or boolean".to_owned()),
+                    };
+                    if request_id.is_none() {
+                        control_tx
+                            .send(PlaybackControlCommand::SetParam {
+                                name,
+                                value,
+                                reply: None,
+                            })
+                            .map_err(|_| "preview control channel closed".to_owned())?;
+                        return Ok(None);
                     }
-                    Value::Number(value) => value
-                        .as_f64()
-                        .ok_or_else(|| "setParam value must be numeric".to_owned())?,
-                    _ => return Err("setParam value must be number or boolean".to_owned()),
-                };
-                if request_id.is_none() {
+                    let (reply_tx, reply_rx) = mpsc::channel();
                     control_tx
                         .send(PlaybackControlCommand::SetParam {
                             name,
                             value,
-                            reply: None,
+                            reply: Some(reply_tx),
                         })
                         .map_err(|_| "preview control channel closed".to_owned())?;
-                    return Ok(None);
-                }
-                let (reply_tx, reply_rx) = mpsc::channel();
-                control_tx
-                    .send(PlaybackControlCommand::SetParam {
-                        name,
-                        value,
-                        reply: Some(reply_tx),
-                    })
-                    .map_err(|_| "preview control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "preview control reply channel closed".to_owned())?
-                {
-                    Ok(()) => Ok(request_id.clone().map(|id| json!({
-                        "id": id,
+                    match reply_rx
+                        .recv()
+                        .map_err(|_| "preview control reply channel closed".to_owned())?
+                    {
+                        Ok(()) => Ok(request_id.clone().map(|id| {
+                            json!({
+                                "id": id,
+                                "ok": true,
+                            })
+                        })),
+                        Err(err) => Ok(request_id.clone().map(|id| {
+                            json!({
+                                "id": id,
+                                "ok": false,
+                                "error": err,
+                            })
+                        })),
+                    }
+                })();
+                result
+            }
+            "bindBufferWav" => {
+                let result = (|| -> Result<Option<Value>, String> {
+                    let name = request
+                        .name
+                        .ok_or_else(|| "bindBufferWav requires 'name'".to_owned())?;
+                    let path = request
+                        .path
+                        .ok_or_else(|| "bindBufferWav requires 'path'".to_owned())?;
+                    let (reply_tx, reply_rx) = mpsc::channel();
+                    control_tx
+                        .send(PlaybackControlCommand::BindBufferWav {
+                            name,
+                            path: PathBuf::from(path),
+                            reply: reply_tx,
+                        })
+                        .map_err(|_| "preview control channel closed".to_owned())?;
+                    match reply_rx
+                        .recv()
+                        .map_err(|_| "preview control reply channel closed".to_owned())?
+                    {
+                        Ok(()) => Ok(request_id.clone().map(|id| {
+                            json!({
+                                "id": id,
+                                "ok": true,
+                            })
+                        })),
+                        Err(err) => Ok(request_id.clone().map(|id| {
+                            json!({
+                                "id": id,
+                                "ok": false,
+                                "error": err,
+                            })
+                        })),
+                    }
+                })();
+                result
+            }
+            "getScopeData" => scope_ring
+                .lock()
+                .map_err(|_| "failed to lock scope ring".to_owned())
+                .map(|ring| {
+                    let snapshot = ring.snapshot(request.max_frames.unwrap_or(2048));
+                    Some(json!({
+                        "id": request_id,
                         "ok": true,
-                    }))),
-                    Err(err) => Ok(request_id.clone().map(|id| json!({
-                        "id": id,
-                        "ok": false,
-                        "error": err,
-                    }))),
-                }
-            })();
-            result
-        }
-        "bindBufferWav" => {
-            let result = (|| -> Result<Option<Value>, String> {
-                let name = request
-                    .name
-                    .ok_or_else(|| "bindBufferWav requires 'name'".to_owned())?;
-                let path = request
-                    .path
-                    .ok_or_else(|| "bindBufferWav requires 'path'".to_owned())?;
-                let (reply_tx, reply_rx) = mpsc::channel();
-                control_tx
-                    .send(PlaybackControlCommand::BindBufferWav {
-                        name,
-                        path: PathBuf::from(path),
-                        reply: reply_tx,
-                    })
-                    .map_err(|_| "preview control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "preview control reply channel closed".to_owned())?
-                {
-                    Ok(()) => Ok(request_id.clone().map(|id| json!({
-                        "id": id,
-                        "ok": true,
-                    }))),
-                    Err(err) => Ok(request_id.clone().map(|id| json!({
-                        "id": id,
-                        "ok": false,
-                        "error": err,
-                    }))),
-                }
-            })();
-            result
-        }
-        "getScopeData" => scope_ring
-            .lock()
-            .map_err(|_| "failed to lock scope ring".to_owned())
-            .map(|ring| {
-                let snapshot = ring.snapshot(request.max_frames.unwrap_or(2048));
-                Some(json!({
-                "id": request_id,
-                "ok": true,
-                "result": {
-                    "channels": snapshot.channels,
-                    "samples": snapshot.samples,
-                }
-            }))
-            }),
-        "clearBuffer" => {
-            let result = (|| -> Result<Option<Value>, String> {
-                let name = request
-                    .name
-                    .ok_or_else(|| "clearBuffer requires 'name'".to_owned())?;
-                let (reply_tx, reply_rx) = mpsc::channel();
-                control_tx
-                    .send(PlaybackControlCommand::ClearBuffer {
-                        name,
-                        reply: reply_tx,
-                    })
-                    .map_err(|_| "preview control channel closed".to_owned())?;
-                match reply_rx
-                    .recv()
-                    .map_err(|_| "preview control reply channel closed".to_owned())?
-                {
-                    Ok(()) => Ok(request_id.clone().map(|id| json!({
-                        "id": id,
-                        "ok": true,
-                    }))),
-                    Err(err) => Ok(request_id.clone().map(|id| json!({
-                        "id": id,
-                        "ok": false,
-                        "error": err,
-                    }))),
-                }
-            })();
-            result
-        }
-        other => Err(format!("unknown command '{other}'")),
-    };
+                        "result": {
+                            "channels": snapshot.channels,
+                            "samples": snapshot.samples,
+                        }
+                    }))
+                }),
+            "clearBuffer" => {
+                let result = (|| -> Result<Option<Value>, String> {
+                    let name = request
+                        .name
+                        .ok_or_else(|| "clearBuffer requires 'name'".to_owned())?;
+                    let (reply_tx, reply_rx) = mpsc::channel();
+                    control_tx
+                        .send(PlaybackControlCommand::ClearBuffer {
+                            name,
+                            reply: reply_tx,
+                        })
+                        .map_err(|_| "preview control channel closed".to_owned())?;
+                    match reply_rx
+                        .recv()
+                        .map_err(|_| "preview control reply channel closed".to_owned())?
+                    {
+                        Ok(()) => Ok(request_id.clone().map(|id| {
+                            json!({
+                                "id": id,
+                                "ok": true,
+                            })
+                        })),
+                        Err(err) => Ok(request_id.clone().map(|id| {
+                            json!({
+                                "id": id,
+                                "ok": false,
+                                "error": err,
+                            })
+                        })),
+                    }
+                })();
+                result
+            }
+            other => Err(format!("unknown command '{other}'")),
+        };
 
     match result {
         Ok(value) => value,
-        Err(err) => request_id.map(|id| json!({
-            "id": id,
-            "ok": false,
-            "error": err,
-        })),
+        Err(err) => request_id.map(|id| {
+            json!({
+                "id": id,
+                "ok": false,
+                "error": err,
+            })
+        }),
     }
 }
 

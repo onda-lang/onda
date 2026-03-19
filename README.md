@@ -12,7 +12,7 @@
 - An in-repo VSCode extension under `editors/vscode/`.
 - Language support for overloaded top-level `def` functions and struct methods only; proc-local `def` blocks are not overloadable (arity/type-based dispatch with ambiguity diagnostics).
 - Processor-instance array dispatch with literal/runtime indices for calls, endpoint reads, statement calls, and proc-event forwarding (direct indexed instance access, with proc-slot buffer refs synced on `process_bound` for dynamic buffer-backed calls).
-- Graph routing/composition via `graph` blocks, with implicit proc scheduling, sample-delay cycle breaking, strict array shape checks, and graph inspection via CLI `--dump-graph`.
+- Graph routing/composition via `graph` blocks, with implicit proc scheduling, sample-delay cycle breaking via `>>[expr]` / `<<[expr]` compile-time nonnegative integer expressions, strict array shape checks, and graph inspection via CLI `--dump-graph`.
 - User-defined scalar compile-time constants via `const NAME = expr` / `const NAME: T = expr`, available at top-level, in namespaces, and in executable scopes.
 - Python-style slice expressions and writable slice assignment for primitive arrays/buffers (for example `a[1:-1]`, `a[:] = 0.0`, `dst[:] = src[:]`).
   - Namespace consts are addressable from outside via qualified paths such as `std::convolution<8, 8>::HopSize` or `std::convolution::HopSize`.
