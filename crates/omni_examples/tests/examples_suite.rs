@@ -6917,6 +6917,99 @@ fn proc_events_reject_unknown_targets_and_bad_argument_shapes() {
 }
 
 #[test]
+fn proc_event_defaults_bind_omitted_args() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+outs { out1 }
+proc Voice {
+  outs { out1 }
+  events {
+    note_on(freq_hz: f32 = 440.0, accent: bool = true) {
+      gate = freq_hz
+      if (accent) {
+        gate = gate + 1.0
+      }
+    }
+  }
+  init { gate = 0.0 }
+  sample { out1 = gate }
+}
+init { voice = Voice() }
+sample {
+  voice.note_on()
+  out1 = voice()
+}
+"#,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 441.0, 1e-6);
+    }
+}
+
+#[test]
+fn proc_event_array_defaults_bind_omitted_args() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+outs { out1 }
+proc Voice {
+  outs { out1 }
+  events {
+    set_curve(values: f32[3] = [0.25, 0.5, 0.75]) {
+      sum = values[0] + values[1] + values[2]
+    }
+  }
+  init { sum = 0.0 }
+  sample { out1 = sum }
+}
+init { voice = Voice() }
+sample {
+  voice.set_curve()
+  out1 = voice()
+}
+"#,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+fn event_defaults_reject_slice_defaults() {
+    let parsed = parse_program(
+        r#"
+outs { out1 }
+init { gate = 0.0 }
+events {
+  load(values: f32[] = [1.0]) {
+    gate = values[0]
+  }
+}
+sample { out1 = gate }
+"#,
+    )
+    .expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("slice event defaults should fail");
+    assert!(
+        errs.iter().any(|d| d
+            .message
+            .contains("default is not supported for slice event params")),
+        "expected slice-default diagnostic, got {errs:?}"
+    );
+}
+
+#[test]
 fn proc_event_slice_params_accept_internal_array_sources() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =

@@ -161,6 +161,10 @@ const char* omni_param_name(const omni_program_t* program, int index);
 const char* omni_buffer_name(const omni_program_t* program, int index);
 /* Returns event name by index, or NULL if index/program is invalid. */
 const char* omni_event_name(const omni_program_t* program, int index);
+/* Returns event parameter count, or -1 if event/program is invalid. */
+int omni_event_param_count(const omni_program_t* program, int event_index);
+/* Returns event parameter name, or NULL if event/parameter/program is invalid. */
+const char* omni_event_param_name(const omni_program_t* program, int event_index, int param_index);
 
 /* Returns input index for a name, or -1 if not found/invalid. */
 int omni_input_index(const omni_program_t* program, const char* name);
@@ -190,6 +194,28 @@ int omni_output_type_bytes(const omni_program_t* program, int index);
 int omni_param_type_bytes(const omni_program_t* program, int index);
 /* Returns event payload byte width for fixed-shape events, or -1 if invalid or dynamic. */
 int omni_event_payload_bytes(const omni_program_t* program, int index);
+/* Returns event parameter element primitive type id, or -1 if invalid. */
+int omni_event_param_elem_type(const omni_program_t* program, int event_index, int param_index);
+/* Returns event parameter array length (1 for scalar, 0 for slice), or -1 if invalid. */
+int omni_event_param_array_len(const omni_program_t* program, int event_index, int param_index);
+/* Returns 1 if the event parameter is a slice, 0 if not, -1 if invalid. */
+int omni_event_param_is_slice(const omni_program_t* program, int event_index, int param_index);
+/* Returns event parameter byte offset within the packed payload, or -1 if invalid. */
+int omni_event_param_offset_bytes(const omni_program_t* program, int event_index, int param_index);
+/* Returns 1 if the event parameter has a default, 0 if not, -1 if invalid. */
+int omni_event_param_has_default(const omni_program_t* program, int event_index, int param_index);
+/*
+ * Returns the byte count for the parameter default, 0 if no default exists, or -1 if invalid.
+ * If out_bytes is non-NULL and out_capacity is large enough, the packed default bytes are copied.
+ * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is returned.
+ */
+int omni_event_param_default_bytes(
+  const omni_program_t* program,
+  int event_index,
+  int param_index,
+  void* out_bytes,
+  int out_capacity
+);
 /* Returns buffer element primitive type id, or -1 if invalid. */
 int omni_buffer_elem_type(const omni_program_t* program, int index);
 /* Returns buffer element byte width, or -1 if invalid. */

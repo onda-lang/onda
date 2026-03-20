@@ -4,11 +4,13 @@ use std::collections::{HashMap, HashSet};
 
 use omni_frontend::{AssignTarget, CallArg, Expr, PrimitiveType, Stmt};
 use omni_semantics::{
-    TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedConstValue, TypedEventParamType,
-    TypedFnParam, TypedProgram, TypedValueRange,
+    TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedConstValue,
+    TypedEventParamDefault, TypedEventParamType, TypedFnParam, TypedProgram, TypedValueRange,
 };
 
-use crate::primitives::{primitive_type_bytes, primitive_type_name, typed_const_to_f64};
+use crate::primitives::{
+    append_typed_const_bytes, primitive_type_bytes, primitive_type_name, typed_const_to_f64,
+};
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
 };
@@ -144,6 +146,14 @@ impl DeclaredEventParam {
 
     pub fn byte_offset(&self) -> usize {
         self.byte_offset
+    }
+
+    pub fn has_default(&self) -> bool {
+        self.default_bytes.is_some()
+    }
+
+    pub fn default_bytes(&self) -> Option<&[u8]> {
+        self.default_bytes.as_deref()
     }
 
     pub fn type_repr(&self) -> String {
@@ -1002,12 +1012,21 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
             for param in &event.params {
                 match param.ty {
                     TypedEventParamType::Scalar(elem_ty) => {
+                        let default_bytes = match &param.default {
+                            Some(TypedEventParamDefault::Scalar(value)) => {
+                                let mut bytes = Vec::with_capacity(primitive_type_bytes(elem_ty));
+                                append_typed_const_bytes(&mut bytes, *value, elem_ty);
+                                Some(bytes)
+                            }
+                            _ => None,
+                        };
                         params.push(DeclaredEventParam {
                             name: param.name.clone(),
                             elem_ty,
                             array_len: 1,
                             is_slice: false,
                             byte_offset,
+                            default_bytes,
                         });
                         byte_offset = byte_offset.saturating_add(primitive_type_bytes(elem_ty));
                         if let Some(total) = payload_bytes.as_mut() {
@@ -1015,12 +1034,24 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
                         }
                     }
                     TypedEventParamType::Array { elem, len } => {
+                        let default_bytes = match &param.default {
+                            Some(TypedEventParamDefault::Array(values)) => {
+                                let mut bytes =
+                                    Vec::with_capacity(primitive_type_bytes(elem).saturating_mul(len));
+                                for value in values {
+                                    append_typed_const_bytes(&mut bytes, *value, elem);
+                                }
+                                Some(bytes)
+                            }
+                            _ => None,
+                        };
                         params.push(DeclaredEventParam {
                             name: param.name.clone(),
                             elem_ty: elem,
                             array_len: len,
                             is_slice: false,
                             byte_offset,
+                            default_bytes,
                         });
                         let bytes = primitive_type_bytes(elem).saturating_mul(len);
                         byte_offset = byte_offset.saturating_add(bytes);
@@ -1035,6 +1066,7 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
                             array_len: 0,
                             is_slice: true,
                             byte_offset,
+                            default_bytes: None,
                         });
                         payload_bytes = None;
                     }

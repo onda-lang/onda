@@ -236,8 +236,17 @@ pub(super) unsafe fn lower_def_expr(
                     )
                 }
             };
-            let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
-                lower_array_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, name)
+            let mut lower_array_arg =
+                    |arg_values: &mut Vec<LLVMValueRef>,
+                     arg_expr: &Expr,
+                     expected_elem_ty: Option<PrimitiveType>| unsafe {
+                lower_array_call_args_in_def(
+                    &mut *ctx_ptr,
+                    arg_values,
+                    arg_expr,
+                    name,
+                    expected_elem_ty,
+                )
             };
             let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
                 lower_buffer_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, name)

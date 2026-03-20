@@ -101,6 +101,7 @@ pub struct DeclaredEventParam {
     array_len: usize,
     is_slice: bool,
     byte_offset: usize,
+    default_bytes: Option<Vec<u8>>,
 }
 
 pub fn lower_and_jit(typed: TypedProgram) -> Result<JitProgram, Vec<Diagnostic>> {

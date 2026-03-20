@@ -423,6 +423,7 @@ pub(in crate::orc_backend) unsafe fn lower_buffer_call_args_in_orc(
                     ptr_out,
                     arg_expr,
                     callee_name,
+                    None,
                 )
             },
         );
@@ -609,6 +610,56 @@ pub(in crate::orc_backend) struct CodegenArrayView {
     pub(in crate::orc_backend) len_hint: usize,
 }
 
+unsafe fn materialize_const_array_literal_view(
+    builder: LLVMBuilderRef,
+    context: LLVMContextRef,
+    i32_ty: LLVMTypeRef,
+    sample_rate: f32,
+    block_size: f32,
+    values: &[Expr],
+    elem_ty: PrimitiveType,
+    llvm_prefix: &str,
+) -> Result<CodegenArrayView, Diagnostic> {
+    let elem_llvm_ty = llvm_ty_for_primitive(context, elem_ty);
+    let array_ty = LLVMArrayType2(elem_llvm_ty, values.len() as u64);
+    let storage_name = slice_llvm_name(llvm_prefix, "array_lit_storage");
+    let storage = LLVMBuildAlloca(builder, array_ty, storage_name.as_ptr().cast());
+    let zero = LLVMConstInt(i32_ty, 0, 0);
+    let float_ty = llvm_ty_for_primitive(context, PrimitiveType::F32);
+    for (idx, value_expr) in values.iter().enumerate() {
+        let raw = eval_const_default_expr(value_expr, sample_rate, block_size)?;
+        let value = llvm_const_from_typed_f64(context, float_ty, elem_ty, raw);
+        let idx_val = LLVMConstInt(i32_ty, idx as u64, 0);
+        let mut indices = [zero, idx_val];
+        let elem_name = slice_llvm_name(llvm_prefix, "array_lit_elem_ptr");
+        let elem_ptr = LLVMBuildGEP2(
+            builder,
+            array_ty,
+            storage,
+            indices.as_mut_ptr(),
+            indices.len() as u32,
+            elem_name.as_ptr().cast(),
+        );
+        LLVMBuildStore(builder, value, elem_ptr);
+    }
+    let mut base_indices = [zero, zero];
+    let base_name = slice_llvm_name(llvm_prefix, "array_lit_base_ptr");
+    let base_ptr = LLVMBuildGEP2(
+        builder,
+        array_ty,
+        storage,
+        base_indices.as_mut_ptr(),
+        base_indices.len() as u32,
+        base_name.as_ptr().cast(),
+    );
+    Ok(CodegenArrayView {
+        base_ptr,
+        len_val: LLVMConstInt(i32_ty, values.len() as u64, 0),
+        elem_ty,
+        len_hint: values.len(),
+    })
+}
+
 fn infer_array_view_signature_common<FInferBase>(
     arg_expr: &Expr,
     callee_name: &str,
@@ -746,10 +797,13 @@ unsafe fn lower_array_view_common<FLowerBase, FLowerBound>(
     builder: LLVMBuilderRef,
     context: LLVMContextRef,
     i32_ty: LLVMTypeRef,
+    sample_rate: f32,
+    block_size: f32,
     arg_expr: &Expr,
     callee_name: &str,
     context_name: &str,
     llvm_prefix: &str,
+    expected_elem_ty: Option<PrimitiveType>,
     mut lower_base_view: FLowerBase,
     mut lower_slice_bound: FLowerBound,
 ) -> Result<CodegenArrayView, Diagnostic>
@@ -808,6 +862,23 @@ where
                     end.as_deref(),
                 ),
             })
+        }
+        Expr::ArrayLiteral { values, .. } => {
+            let Some(elem_ty) = expected_elem_ty else {
+                return Err(Diagnostic::internal(format!(
+                    "function '{callee_name}' array literal argument requires an expected element type in {context_name}"
+                )));
+            };
+            materialize_const_array_literal_view(
+                builder,
+                context,
+                i32_ty,
+                sample_rate,
+                block_size,
+                values,
+                elem_ty,
+                llvm_prefix,
+            )
         }
         _ => Err(Diagnostic::internal(format!(
             "function '{callee_name}' array argument must be an array symbol or slice in {context_name}"
@@ -1059,16 +1130,20 @@ pub(in crate::orc_backend) unsafe fn lower_orc_array_view(
     local_tuples: &HashMap<String, Vec<PrimitiveType>>,
     arg_expr: &Expr,
     callee_name: &str,
+    expected_elem_ty: Option<PrimitiveType>,
 ) -> Result<CodegenArrayView, Diagnostic> {
     let ctx_ptr: *mut LoweringCtx<'_> = ctx;
     lower_array_view_common(
         ctx.builder,
         ctx.context,
         ctx.i32_ty,
+        ctx.sample_rate,
+        ctx.block_size,
         arg_expr,
         callee_name,
         "ORC expression lowering",
         "slice",
+        expected_elem_ty,
         |base, callee_name| unsafe {
             lower_orc_array_base_view(&mut *ctx_ptr, local_array_aliases, base, callee_name)
         },
@@ -1105,6 +1180,7 @@ pub(in crate::orc_backend) unsafe fn lower_array_call_args_in_orc(
     out_args: &mut Vec<LLVMValueRef>,
     arg_expr: &Expr,
     callee_name: &str,
+    expected_elem_ty: Option<PrimitiveType>,
 ) -> Result<(), Diagnostic> {
     let view = lower_orc_array_view(
         ctx,
@@ -1114,6 +1190,7 @@ pub(in crate::orc_backend) unsafe fn lower_array_call_args_in_orc(
         local_tuples,
         arg_expr,
         callee_name,
+        expected_elem_ty,
     )?;
     out_args.push(view.base_ptr);
     out_args.push(view.len_val);
@@ -1405,16 +1482,20 @@ pub(in crate::orc_backend) unsafe fn lower_def_array_view(
     ctx: &mut DefLoweringCtx<'_>,
     arg_expr: &Expr,
     callee_name: &str,
+    expected_elem_ty: Option<PrimitiveType>,
 ) -> Result<CodegenArrayView, Diagnostic> {
     let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
     lower_array_view_common(
         ctx.builder,
         ctx.context,
         ctx.i32_ty,
+        ctx.sample_rate,
+        ctx.block_size,
         arg_expr,
         callee_name,
         "def lowering",
         "def_slice",
+        expected_elem_ty,
         |base, callee_name| unsafe { lower_def_array_base_view(&mut *ctx_ptr, base, callee_name) },
         |expr, len_val, default_to_len| unsafe {
             lower_def_slice_bound(&mut *ctx_ptr, expr, len_val, default_to_len)
@@ -1440,8 +1521,9 @@ pub(in crate::orc_backend) unsafe fn lower_array_call_args_in_def(
     out_args: &mut Vec<LLVMValueRef>,
     arg_expr: &Expr,
     callee_name: &str,
+    expected_elem_ty: Option<PrimitiveType>,
 ) -> Result<(), Diagnostic> {
-    let view = lower_def_array_view(ctx, arg_expr, callee_name)?;
+    let view = lower_def_array_view(ctx, arg_expr, callee_name, expected_elem_ty)?;
     out_args.push(view.base_ptr);
     out_args.push(view.len_val);
     Ok(())

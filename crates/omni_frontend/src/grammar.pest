@@ -47,7 +47,7 @@ events_block = { "events" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ event_list? ~ NEWLINE* ~
 event_list = { event_decl ~ (stmt_sep+ ~ event_decl)* ~ stmt_sep* }
 event_decl = { ident ~ "(" ~ event_param_list? ~ ")" ~ NEWLINE* ~ stmt_block }
 event_param_list = { event_param_decl ~ ("," ~ event_param_decl)* }
-event_param_decl = { ident ~ (":" ~ event_param_type)? }
+event_param_decl = { ident ~ (":" ~ event_param_type)? ~ ("=" ~ expr)? }
 event_param_type = { array_type | fn_typed_array_param | type_name }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 proc_item = _{ ins_block | outs_block | params_block | events_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }

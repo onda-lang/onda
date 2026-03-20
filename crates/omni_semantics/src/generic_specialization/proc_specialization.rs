@@ -594,6 +594,18 @@ pub(crate) fn specialize_generic_proc_template(
                 DiagCtx::new(param.ty_loc.or(param.loc)),
                 errors,
             );
+            if let Some(default) = &mut param.default {
+                rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
+                substitute_call_type_args_with_bindings_expr(
+                    default,
+                    &type_bindings,
+                    &format!(
+                        "processor '{}.{}' event parameter default",
+                        template.name, event.name
+                    ),
+                    errors,
+                );
+            }
         }
     }
     if let Some(init_default_ty) = init.default_ty.clone() {

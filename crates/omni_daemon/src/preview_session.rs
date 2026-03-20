@@ -86,6 +86,7 @@ pub struct PreviewEventParamInfo {
     pub index: usize,
     pub name: String,
     pub type_repr: String,
+    pub value: PreviewEventValue,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -287,6 +288,7 @@ impl PreviewSession {
                             index: param_index,
                             name: param.name().to_owned(),
                             type_repr: param.type_repr(),
+                            value: default_preview_event_value(param),
                         })
                         .collect(),
                 })
@@ -650,6 +652,32 @@ fn is_preview_supported_event(desc: &DeclaredEvent) -> bool {
     desc.params()
         .iter()
         .all(|param| !param.is_slice() && param.array_len() == 1)
+}
+
+fn default_preview_event_value(param: &DeclaredEventParam) -> PreviewEventValue {
+    let Some(bytes) = param.default_bytes() else {
+        return match param.elem_ty() {
+            PrimitiveType::Bool => PreviewEventValue::Bool(false),
+            _ => PreviewEventValue::Number(0.0),
+        };
+    };
+    match param.elem_ty() {
+        PrimitiveType::F32 if bytes.len() == 4 => PreviewEventValue::Number(
+            f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
+        ),
+        PrimitiveType::F64 if bytes.len() == 8 => PreviewEventValue::Number(f64::from_ne_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ])),
+        PrimitiveType::I32 if bytes.len() == 4 => PreviewEventValue::Number(
+            i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
+        ),
+        PrimitiveType::I64 if bytes.len() == 8 => PreviewEventValue::Number(i64::from_ne_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]) as f64),
+        PrimitiveType::Bool if !bytes.is_empty() => PreviewEventValue::Bool(bytes[0] != 0),
+        PrimitiveType::Bool => PreviewEventValue::Bool(false),
+        _ => PreviewEventValue::Number(0.0),
+    }
 }
 
 fn format_event_signature(desc: &DeclaredEvent) -> String {

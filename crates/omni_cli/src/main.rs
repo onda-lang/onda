@@ -1916,6 +1916,12 @@ fn preview_event_json(event: &PreviewEventInfo) -> Value {
             "index": param.index,
             "name": param.name,
             "type": param.type_repr,
+            "value": match param.value {
+                PreviewEventValue::Bool(value) => Value::Bool(value),
+                PreviewEventValue::Number(value) => serde_json::Number::from_f64(value)
+                    .map(Value::Number)
+                    .unwrap_or(Value::Null),
+            },
         })).collect::<Vec<_>>(),
     })
 }
@@ -3063,7 +3069,14 @@ fn format_event(event: &omni_frontend::EventDef, indent: usize, out: &mut String
         &event
             .params
             .iter()
-            .map(|param| format!("{}: {}", param.name, format_event_param_type(&param.ty)))
+            .map(|param| {
+                let mut text = format!("{}: {}", param.name, format_event_param_type(&param.ty));
+                if let Some(default) = &param.default {
+                    text.push_str(" = ");
+                    text.push_str(&format_expr(default));
+                }
+                text
+            })
             .collect::<Vec<_>>()
             .join(", "),
     );

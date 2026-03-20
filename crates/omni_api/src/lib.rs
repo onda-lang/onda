@@ -2,7 +2,8 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 
 use omni_codegen_llvm::{
-    lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, JitProgram,
+    lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, DeclaredEventParam,
+    JitProgram,
 };
 use omni_frontend::{parse_program, DiagCode, Diagnostic, PrimitiveType};
 use omni_runtime::{
@@ -43,6 +44,7 @@ pub struct omni_program {
     buffer_names: Vec<CString>,
     buffer_types: Vec<CString>,
     event_names: Vec<CString>,
+    event_param_names: Vec<Vec<CString>>,
 }
 
 #[allow(non_camel_case_types)]
@@ -63,6 +65,17 @@ fn build_cstring_cache(strings: Vec<String>, context: &str) -> Result<Vec<CStrin
             ))
         })?;
         out.push(c);
+    }
+    Ok(out)
+}
+
+fn build_nested_cstring_cache(
+    groups: Vec<Vec<String>>,
+    context: &str,
+) -> Result<Vec<Vec<CString>>, Diagnostic> {
+    let mut out = Vec::with_capacity(groups.len());
+    for group in groups {
+        out.push(build_cstring_cache(group, context)?);
     }
     Ok(out)
 }
@@ -375,6 +388,28 @@ unsafe fn omni_compile_impl(
             return ptr::null_mut();
         }
     };
+    let event_param_names = match build_nested_cstring_cache(
+        (0..jit.event_count())
+            .map(|event_idx| {
+                jit.event_descriptor(event_idx)
+                    .map(|event| {
+                        event
+                            .params()
+                            .iter()
+                            .map(|param| param.name().to_owned())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect(),
+        "event parameter name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
 
     Box::into_raw(Box::new(omni_program {
         jit,
@@ -387,6 +422,7 @@ unsafe fn omni_compile_impl(
         buffer_names,
         buffer_types,
         event_names,
+        event_param_names,
     }))
 }
 
@@ -813,6 +849,20 @@ where
     resolver(index as usize).unwrap_or(fallback)
 }
 
+unsafe fn event_param_descriptor<'a>(
+    program: *const omni_program,
+    event_index: i32,
+    param_index: i32,
+) -> Option<&'a DeclaredEventParam> {
+    if program.is_null() || event_index < 0 || param_index < 0 {
+        return None;
+    }
+    (*program)
+        .jit
+        .event_descriptor(event_index as usize)
+        .and_then(|event| event.params().get(param_index as usize))
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn omni_input_name(
     program: *const omni_program,
@@ -866,6 +916,35 @@ pub unsafe extern "C" fn omni_event_name(
         return ptr::null();
     }
     cstr_ptr_at(&(*program).event_names, index)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_param_count(
+    program: *const omni_program,
+    event_index: i32,
+) -> i32 {
+    if program.is_null() || event_index < 0 {
+        return -1;
+    }
+    (*program)
+        .jit
+        .event_descriptor(event_index as usize)
+        .and_then(|event| i32::try_from(event.params().len()).ok())
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_param_name(
+    program: *const omni_program,
+    event_index: i32,
+    param_index: i32,
+) -> *const c_char {
+    if program.is_null() || event_index < 0 || param_index < 0 {
+        return ptr::null();
+    }
+    (&(*program).event_param_names)
+        .get(event_index as usize)
+        .map_or(ptr::null(), |names| cstr_ptr_at(names, param_index))
 }
 
 #[no_mangle]
@@ -998,6 +1077,93 @@ pub unsafe extern "C" fn omni_event_payload_bytes(program: *const omni_program, 
     }
     /* Dynamic slice-event payloads also report -1 here. */
     bytes_from_index(index, |idx| (*program).jit.event_payload_bytes(idx))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_param_elem_type(
+    program: *const omni_program,
+    event_index: i32,
+    param_index: i32,
+) -> i32 {
+    event_param_descriptor(program, event_index, param_index)
+        .map(|param| primitive_type_to_i32(param.elem_ty()))
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_param_array_len(
+    program: *const omni_program,
+    event_index: i32,
+    param_index: i32,
+) -> i32 {
+    event_param_descriptor(program, event_index, param_index)
+        .and_then(|param| i32::try_from(param.array_len()).ok())
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_param_is_slice(
+    program: *const omni_program,
+    event_index: i32,
+    param_index: i32,
+) -> i32 {
+    event_param_descriptor(program, event_index, param_index)
+        .map(|param| if param.is_slice() { 1 } else { 0 })
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_param_offset_bytes(
+    program: *const omni_program,
+    event_index: i32,
+    param_index: i32,
+) -> i32 {
+    event_param_descriptor(program, event_index, param_index)
+        .and_then(|param| i32::try_from(param.byte_offset()).ok())
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_param_has_default(
+    program: *const omni_program,
+    event_index: i32,
+    param_index: i32,
+) -> i32 {
+    event_param_descriptor(program, event_index, param_index)
+        .map(|param| if param.has_default() { 1 } else { 0 })
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn omni_event_param_default_bytes(
+    program: *const omni_program,
+    event_index: i32,
+    param_index: i32,
+    out_bytes: *mut c_void,
+    out_capacity: i32,
+) -> i32 {
+    let Some(param) = event_param_descriptor(program, event_index, param_index) else {
+        return -1;
+    };
+    let Some(default_bytes) = param.default_bytes() else {
+        return 0;
+    };
+    let required = match i32::try_from(default_bytes.len()) {
+        Ok(value) => value,
+        Err(_) => return -1,
+    };
+    if out_capacity < 0 {
+        return -1;
+    }
+    if out_bytes.is_null() || out_capacity < required {
+        return required;
+    }
+    ptr::copy_nonoverlapping(
+        default_bytes.as_ptr(),
+        out_bytes.cast::<u8>(),
+        default_bytes.len(),
+    );
+    required
 }
 
 #[no_mangle]

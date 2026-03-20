@@ -96,10 +96,17 @@ pub struct TypedEvent {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypedEventParamDefault {
+    Scalar(TypedConstValue),
+    Array(Vec<TypedConstValue>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypedEventParam {
     pub name: String,
     pub ty: TypedEventParamType,
+    pub default: Option<TypedEventParamDefault>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

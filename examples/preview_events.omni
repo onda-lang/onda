@@ -10,7 +10,7 @@ init:
   osc = std::osc::Sine(freq = 220.0)
 
 events:
-  note_on(freq_hz: f32, amp: i32):
+  note_on(freq_hz = 440.0, amp = 1.0):
     freq_state = freq_hz
     amp_state = amp
     gate = true

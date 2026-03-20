@@ -856,6 +856,9 @@ fn rewrite_event_def(
             }
             EventParamType::Scalar(_) | EventParamType::Slice { .. } => {}
         }
+        if let Some(default) = &mut param.default {
+            rewrite_expr(default, current_ns, const_env, state, generated)?;
+        }
     }
     rewrite_stmts(&mut event.body, current_ns, const_env, state, generated)
 }

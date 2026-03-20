@@ -674,7 +674,10 @@ pub(super) unsafe fn lower_expr(
                     )
                 }
             };
-            let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+            let mut lower_array_arg =
+                    |arg_values: &mut Vec<LLVMValueRef>,
+                     arg_expr: &Expr,
+                     expected_elem_ty: Option<PrimitiveType>| unsafe {
                 lower_array_call_args_in_orc(
                     &mut *ctx_ptr,
                     locals,
@@ -684,6 +687,7 @@ pub(super) unsafe fn lower_expr(
                     arg_values,
                     arg_expr,
                     name,
+                    expected_elem_ty,
                 )
             };
             let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {

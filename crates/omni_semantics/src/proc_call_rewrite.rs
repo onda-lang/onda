@@ -910,11 +910,14 @@ pub(super) fn expand_proc_event_call_args(
         .iter()
         .map(|p| p.name.clone())
         .collect::<Vec<_>>();
-    let param_defaults = vec![None; param_names.len()];
+    let binding_defaults = param_names
+        .iter()
+        .map(|_| Some(Expr::number(0.0)))
+        .collect::<Vec<_>>();
     let resolved = resolve_call_args(
         call_args,
         &param_names,
-        &param_defaults,
+        &binding_defaults,
         false,
         false,
         &format!("processor event call '{call_display_name}(...)'"),
@@ -923,7 +926,8 @@ pub(super) fn expand_proc_event_call_args(
     let mut expanded = Vec::<CallArg>::new();
     for (idx, param) in event.params.iter().enumerate() {
         let resolved_expr = match resolved.get(idx).and_then(|a| *a) {
-            Some(arg_expr) => arg_expr,
+            Some(arg_expr) => arg_expr.clone(),
+            None if param.default.is_some() => param.default.clone().unwrap_or_else(|| Expr::number(0.0)),
             None => {
                 push_semantic(
                     diag,
@@ -939,12 +943,12 @@ pub(super) fn expand_proc_event_call_args(
         if param.fixed_array_elem_ty.is_some() || param.slice_elem_ty.is_some() {
             expanded.push(CallArg {
                 name: None,
-                expr: resolved_expr.clone(),
+                expr: resolved_expr,
             });
             continue;
         }
         let slot_exprs = expand_expr_to_slots(
-            resolved_expr,
+            &resolved_expr,
             param.slots.len(),
             &format!(
                 "processor event call '{call_display_name}(...)' argument '{}'",

@@ -4212,6 +4212,40 @@ sample { out1 = gate }
 }
 
 #[test]
+fn parses_event_param_defaults() {
+    let src = r#"
+events:
+  note_on(freq_hz: f32 = 440.0, offsets: i32[2] = [1, 2], accent: bool = true):
+    gate = freq_hz
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("event defaults should parse");
+    let events = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Events(v) => Some(v),
+            _ => None,
+        })
+        .expect("events block");
+    assert_eq!(events[0].params.len(), 3);
+    assert!(matches!(
+        events[0].params[0].default,
+        Some(Expr::Number { value, .. }) if (value - 440.0).abs() < f32::EPSILON
+    ));
+    assert!(matches!(
+        events[0].params[1].default.as_ref(),
+        Some(Expr::ArrayLiteral { values, .. }) if values.len() == 2
+    ));
+    assert!(matches!(
+        events[0].params[2].default,
+        Some(Expr::Bool { value: true, .. })
+    ));
+}
+
+#[test]
 fn defaults_untyped_proc_event_params_to_f32() {
     let src = r#"
 proc Voice:
@@ -4242,6 +4276,41 @@ sample:
         EventParamType::Scalar(PrimitiveType::F32) => {}
         ref other => panic!("expected default f32 proc event param, got {other:?}"),
     }
+}
+
+#[test]
+fn parses_proc_event_param_defaults() {
+    let src = r#"
+proc Voice:
+  outs 1
+  events:
+    note_on(note: f32 = 440.0, accent: bool = false):
+      gate = note
+  init:
+    gate = 0.0
+  sample:
+    out1 = gate
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("proc event defaults should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert!(matches!(
+        proc.events[0].params[0].default,
+        Some(Expr::Number { value, .. }) if (value - 440.0).abs() < f32::EPSILON
+    ));
+    assert!(matches!(
+        proc.events[0].params[1].default,
+        Some(Expr::Bool { value: false, .. })
+    ));
 }
 
 // ---- Phase 0: Namespace Const Fixes — Parser-level tests ----

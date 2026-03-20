@@ -478,20 +478,27 @@ pub(super) fn parse_events_block(
                                     "missing event parameter name",
                                 )]);
                             };
-                            let Some(param_ty_pair) = param_inner.next() else {
-                                params.push(EventParamDecl {
-                                    loc: param_loc,
-                                    name: param_name_pair.as_str().to_owned(),
-                                    ty: EventParamType::Scalar(PrimitiveType::F32),
-                                    ty_loc: Span::ZERO,
-                                });
-                                continue;
-                            };
+                            let mut ty = EventParamType::Scalar(PrimitiveType::F32);
+                            let mut ty_loc = Span::ZERO;
+                            let mut default = None;
+                            for item in param_inner {
+                                match item.as_rule() {
+                                    Rule::event_param_type => {
+                                        ty_loc = stmt_loc_from_pair(&item);
+                                        ty = parse_event_param_type(item)?;
+                                    }
+                                    Rule::expr => {
+                                        default = Some(parse_expr_inner(item));
+                                    }
+                                    _ => {}
+                                }
+                            }
                             params.push(EventParamDecl {
                                 loc: param_loc,
                                 name: param_name_pair.as_str().to_owned(),
-                                ty: parse_event_param_type(param_ty_pair.clone())?,
-                                ty_loc: stmt_loc_from_pair(&param_ty_pair),
+                                ty,
+                                ty_loc,
+                                default,
                             });
                         }
                     }

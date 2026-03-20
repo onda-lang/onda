@@ -266,6 +266,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
         forbid_self_named,
         &format!("function '{name}' call in {call_context}"),
     )?;
+    let mut resolved_args = resolved.clone();
 
     let mut scalar_values = Vec::new();
     let mut scalar_types = Vec::<PrimitiveType>::new();
@@ -273,7 +274,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
     let mut buffer_types = Vec::<(PrimitiveType, TypedBufferChannels)>::new();
     let mut tuple_arg_values = Vec::<Vec<OrcValue>>::new();
     for (idx, kind) in param_kinds.iter().enumerate() {
-        let resolved_arg = resolved.get(idx).copied().flatten();
+        let resolved_arg = resolved_args.get(idx).copied().flatten();
         match kind {
             TypedFnParam::Scalar { ty: explicit_ty } => {
                 let value = if let Some(arg_expr) = resolved_arg {
@@ -304,14 +305,24 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                 scalar_values.push(value);
                 scalar_types.push(resolve_scalar_param_type(*explicit_ty, value.ty));
             }
-            TypedFnParam::Array { .. } => {
-                let arg_expr = resolved_arg.ok_or_else(|| {
-                    Diagnostic::internal(format!(
+            TypedFnParam::Array { elem_ty } => {
+                let arg_expr = if let Some(arg_expr) = resolved_arg {
+                    arg_expr
+                } else if let Some(default_expr) =
+                    param_defaults.get(idx).and_then(|d| d.as_ref())
+                {
+                    resolved_args[idx] = Some(default_expr);
+                    default_expr
+                } else {
+                    return Err(Diagnostic::internal(format!(
                         "function '{name}' missing required array argument '{}' in {call_context}",
                         param_names[idx]
-                    ))
-                })?;
-                let resolved_ty = infer_array_arg_signature(arg_expr, name)?;
+                    )));
+                };
+                let resolved_ty = match arg_expr {
+                    Expr::ArrayLiteral { values, .. } => (*elem_ty, values.len()),
+                    _ => infer_array_arg_signature(arg_expr, name)?,
+                };
                 array_types.push(resolved_ty);
             }
             TypedFnParam::Buffer { elem_ty, channels } => {
@@ -405,7 +416,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
         param_names,
         param_kinds,
         param_by_ref,
-        resolved,
+        resolved: resolved_args,
         scalar_values,
         scalar_types,
         tuple_arg_values,
@@ -429,7 +440,8 @@ pub(super) unsafe fn materialize_user_call_args_common(
         &str,
         bool,
     ) -> Result<(), Diagnostic>,
-    lower_array_arg: &mut dyn FnMut(&mut Vec<LLVMValueRef>, &Expr) -> Result<(), Diagnostic>,
+    lower_array_arg:
+        &mut dyn FnMut(&mut Vec<LLVMValueRef>, &Expr, Option<PrimitiveType>) -> Result<(), Diagnostic>,
     lower_buffer_arg: &mut dyn FnMut(&mut Vec<LLVMValueRef>, &Expr) -> Result<(), Diagnostic>,
 ) -> Result<(), Diagnostic> {
     if prepared.scalar_values.len() != prepared.scalar_types.len() {
@@ -472,14 +484,14 @@ pub(super) unsafe fn materialize_user_call_args_common(
                     prepared.param_by_ref[idx],
                 )?;
             }
-            TypedFnParam::Array { .. } => {
+            TypedFnParam::Array { elem_ty } => {
                 let arg_expr = resolved_arg.ok_or_else(|| {
                     Diagnostic::internal(format!(
                         "function '{callee_name}' missing required array argument '{}' in {call_context}",
                         prepared.param_names[idx]
                     ))
                 })?;
-                lower_array_arg(arg_values, arg_expr)?;
+                lower_array_arg(arg_values, arg_expr, Some(*elem_ty))?;
             }
             TypedFnParam::Buffer { .. } => {
                 let arg_expr = resolved_arg.ok_or_else(|| {

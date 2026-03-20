@@ -95,10 +95,10 @@ fn c_api_event_metadata_queries_work() {
             r#"
 outs { out1 }
 events {
-  note_on(note: i32, vel: i32) {
+  note_on(note: i32 = 60, vel: i32, accent: bool = true) {
     amp = f32(vel) / 127.0
   }
-  set_curve(values: f32[2]) {
+  set_curve(values: f32[2] = [0.25, 0.75]) {
     amp = values[0] + values[1]
   }
 }
@@ -108,6 +108,8 @@ sample { out1 = amp }
         );
 
         assert_eq!(omni_event_count(program.0), 2);
+        assert_eq!(omni_event_param_count(program.0, 0), 3);
+        assert_eq!(omni_event_param_count(program.0, 1), 1);
         let name0 = CStr::from_ptr(omni_event_name(program.0, 0))
             .to_string_lossy()
             .into_owned();
@@ -121,8 +123,81 @@ sample { out1 = amp }
         let set_curve = CString::new("set_curve").expect("valid cstr");
         assert_eq!(omni_event_index(program.0, note_on.as_ptr()), 0);
         assert_eq!(omni_event_index(program.0, set_curve.as_ptr()), 1);
-        assert_eq!(omni_event_payload_bytes(program.0, 0), 8);
+        assert_eq!(omni_event_payload_bytes(program.0, 0), 9);
         assert_eq!(omni_event_payload_bytes(program.0, 1), 8);
+
+        let note_name = CStr::from_ptr(omni_event_param_name(program.0, 0, 0))
+            .to_string_lossy()
+            .into_owned();
+        let vel_name = CStr::from_ptr(omni_event_param_name(program.0, 0, 1))
+            .to_string_lossy()
+            .into_owned();
+        let accent_name = CStr::from_ptr(omni_event_param_name(program.0, 0, 2))
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(note_name, "note");
+        assert_eq!(vel_name, "vel");
+        assert_eq!(accent_name, "accent");
+
+        assert_eq!(omni_event_param_elem_type(program.0, 0, 0), 2);
+        assert_eq!(omni_event_param_array_len(program.0, 0, 0), 1);
+        assert_eq!(omni_event_param_is_slice(program.0, 0, 0), 0);
+        assert_eq!(omni_event_param_offset_bytes(program.0, 0, 0), 0);
+        assert_eq!(omni_event_param_has_default(program.0, 0, 0), 1);
+        assert_eq!(omni_event_param_default_bytes(program.0, 0, 0, std::ptr::null_mut(), 0), 4);
+        let mut note_default = [0_u8; 4];
+        assert_eq!(
+            omni_event_param_default_bytes(
+                program.0,
+                0,
+                0,
+                note_default.as_mut_ptr().cast::<c_void>(),
+                note_default.len() as i32,
+            ),
+            4
+        );
+        assert_eq!(i32::from_ne_bytes(note_default), 60);
+
+        assert_eq!(omni_event_param_has_default(program.0, 0, 1), 0);
+        assert_eq!(
+            omni_event_param_default_bytes(program.0, 0, 1, std::ptr::null_mut(), 0),
+            0
+        );
+
+        assert_eq!(omni_event_param_elem_type(program.0, 0, 2), 4);
+        assert_eq!(omni_event_param_offset_bytes(program.0, 0, 2), 8);
+        let mut accent_default = [0_u8; 1];
+        assert_eq!(
+            omni_event_param_default_bytes(
+                program.0,
+                0,
+                2,
+                accent_default.as_mut_ptr().cast::<c_void>(),
+                accent_default.len() as i32,
+            ),
+            1
+        );
+        assert_eq!(accent_default[0], 1);
+
+        assert_eq!(omni_event_param_elem_type(program.0, 1, 0), 0);
+        assert_eq!(omni_event_param_array_len(program.0, 1, 0), 2);
+        assert_eq!(omni_event_param_is_slice(program.0, 1, 0), 0);
+        assert_eq!(omni_event_param_offset_bytes(program.0, 1, 0), 0);
+        assert_eq!(omni_event_param_has_default(program.0, 1, 0), 1);
+        assert_eq!(omni_event_param_default_bytes(program.0, 1, 0, std::ptr::null_mut(), 0), 8);
+        let mut curve_default = [0_u8; 8];
+        assert_eq!(
+            omni_event_param_default_bytes(
+                program.0,
+                1,
+                0,
+                curve_default.as_mut_ptr().cast::<c_void>(),
+                curve_default.len() as i32,
+            ),
+            8
+        );
+        assert_eq!(f32::from_ne_bytes(curve_default[0..4].try_into().unwrap()), 0.25);
+        assert_eq!(f32::from_ne_bytes(curve_default[4..8].try_into().unwrap()), 0.75);
     }
 }
 

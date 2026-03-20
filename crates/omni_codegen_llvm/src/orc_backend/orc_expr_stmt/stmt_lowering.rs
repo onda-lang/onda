@@ -592,6 +592,7 @@ pub(super) unsafe fn lower_stmt(
                         local_tuples,
                         expr,
                         "slice alias assignment",
+                        None,
                     )?;
                     local_array_aliases.insert(
                         name.clone(),
@@ -1279,7 +1280,10 @@ unsafe fn lower_orc_tuple_from_call(
             local_tuples,
         )
     };
-    let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+    let mut lower_array_arg =
+            |arg_values: &mut Vec<LLVMValueRef>,
+             arg_expr: &Expr,
+             expected_elem_ty: Option<PrimitiveType>| unsafe {
         lower_array_call_args_in_orc(
             &mut *ctx_ptr,
             locals,
@@ -1289,6 +1293,7 @@ unsafe fn lower_orc_tuple_from_call(
             arg_values,
             arg_expr,
             name,
+            expected_elem_ty,
         )
     };
     let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
@@ -1386,6 +1391,7 @@ unsafe fn lower_orc_slice_assign(
         local_tuples,
         &dst_expr,
         "slice assignment target",
+        None,
     )?;
     let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, dst_view.elem_ty);
 
@@ -1398,6 +1404,7 @@ unsafe fn lower_orc_slice_assign(
             local_tuples,
             expr,
             "slice assignment source",
+            None,
         )?;
         let ctx_ptr: *mut LoweringCtx<'_> = ctx;
         let copy_elem = move |loop_i| unsafe {
@@ -1637,7 +1644,10 @@ unsafe fn lower_orc_tuple_destructure(
                     )
                 }
             };
-            let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
+            let mut lower_array_arg =
+                    |arg_values: &mut Vec<LLVMValueRef>,
+                     arg_expr: &Expr,
+                     expected_elem_ty: Option<PrimitiveType>| unsafe {
                 lower_array_call_args_in_orc(
                     &mut *ctx_ptr,
                     locals,
@@ -1647,6 +1657,7 @@ unsafe fn lower_orc_tuple_destructure(
                     arg_values,
                     arg_expr,
                     name,
+                    expected_elem_ty,
                 )
             };
             let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {

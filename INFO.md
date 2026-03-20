@@ -194,7 +194,6 @@
   - Proc events are receiver-only synchronous proc commands reached through explicit calls/forwarding (for example `voice.note_on(...)`).
   - Proc-event calls are statement-only; unqualified calls never resolve to proc events.
   - A proc cannot directly instantiate its own proc type as state.
-  - The full target semantics for synchronous proc events are tracked in `SYNC_EVENT_SPEC.md`.
 - Functions (`def`):
   - positional + named args, default values, early return.
   - return types: a `def` can return a primitive scalar (`f32`, `f64`, `i32`, `i64`, `bool`) or a tuple of primitives. Returning structs, arrays, or buffers is not supported.

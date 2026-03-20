@@ -227,8 +227,17 @@ unsafe fn lower_def_tuple_call(
             by_ref,
         )
     };
-    let mut lower_array_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
-        lower_array_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, name)
+    let mut lower_array_arg =
+            |arg_values: &mut Vec<LLVMValueRef>,
+             arg_expr: &Expr,
+             expected_elem_ty: Option<PrimitiveType>| unsafe {
+        lower_array_call_args_in_def(
+            &mut *ctx_ptr,
+            arg_values,
+            arg_expr,
+            name,
+            expected_elem_ty,
+        )
     };
     let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
         lower_buffer_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, name)
@@ -357,7 +366,7 @@ unsafe fn lower_def_var_assign(
                 "slice alias declaration for '{target_name}' conflicts with existing symbol in def lowering"
             )));
         }
-        let view = lower_def_array_view(ctx, expr, "slice alias assignment")?;
+        let view = lower_def_array_view(ctx, expr, "slice alias assignment", None)?;
         ctx.local_array_aliases.insert(
             target_name.to_owned(),
             LocalArrayAlias::Primitive {
@@ -653,11 +662,11 @@ unsafe fn lower_def_slice_assign(
         start: start.cloned().map(Box::new),
         end: end.cloned().map(Box::new),
     };
-    let dst_view = lower_def_array_view(ctx, &dst_expr, "slice assignment target")?;
+    let dst_view = lower_def_array_view(ctx, &dst_expr, "slice assignment target", None)?;
     let elem_llvm_ty = llvm_ty_for_primitive(ctx.context, dst_view.elem_ty);
 
     if matches!(expr, Expr::Var { .. } | Expr::Slice { .. }) {
-        let src_view = lower_def_array_view(ctx, expr, "slice assignment source")?;
+        let src_view = lower_def_array_view(ctx, expr, "slice assignment source", None)?;
         let ctx_ptr: *mut DefLoweringCtx<'_> = ctx;
         let copy_elem = move |loop_i| unsafe {
             let ctx = &mut *ctx_ptr;

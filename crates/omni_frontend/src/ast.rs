@@ -511,6 +511,7 @@ pub struct EventParamDecl {
     pub name: String,
     pub ty: EventParamType,
     pub ty_loc: Span,
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

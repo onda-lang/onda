@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::*;
+use omni_frontend::EventParamDecl;
 
 mod generated_blocks;
 mod generic_proc_rewrite;
@@ -21,6 +22,134 @@ use shape_helpers::*;
 
 fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
     errors.push(diag.semantic(message, 0, 0));
+}
+
+fn coerce_scalar_event_default(
+    default_expr: &Expr,
+    ty: PrimitiveType,
+    context: &str,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<TypedConstValue> {
+    validate_default_expr(default_expr, errors, context);
+    eval_typed_const_expr(
+        default_expr,
+        ty,
+        options,
+        context,
+        is_float_type(ty),
+        matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
+        errors,
+    )
+}
+
+fn coerce_fixed_array_event_default(
+    default_expr: &Expr,
+    elem_ty: PrimitiveType,
+    len: usize,
+    context: &str,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Vec<TypedConstValue>> {
+    let expr_diag = DiagCtx::new(default_expr.loc());
+    let Expr::ArrayLiteral { values, .. } = default_expr else {
+        push_semantic(
+            expr_diag,
+            errors,
+            format!("{context} default must be a fixed-size array literal"),
+        );
+        return None;
+    };
+    if values.len() != len {
+        push_semantic(
+            expr_diag,
+            errors,
+            format!("{context} default expects {len} elements, got {}", values.len()),
+        );
+        return None;
+    }
+    let mut coerced = Vec::with_capacity(len);
+    for (idx, value) in values.iter().enumerate() {
+        let Some(typed) = coerce_scalar_event_default(
+            value,
+            elem_ty,
+            &format!("{context} default element {idx}"),
+            options,
+            errors,
+        ) else {
+            return None;
+        };
+        coerced.push(typed);
+    }
+    Some(coerced)
+}
+
+fn coerce_typed_event_default(
+    param: &EventParamDecl,
+    typed_ty: &TypedEventParamType,
+    context: &str,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<TypedEventParamDefault> {
+    let default_expr = param.default.as_ref()?;
+    match typed_ty {
+        TypedEventParamType::Scalar(ty) => coerce_scalar_event_default(
+            default_expr,
+            *ty,
+            context,
+            options,
+            errors,
+        )
+        .map(TypedEventParamDefault::Scalar),
+        TypedEventParamType::Array { elem, len } => coerce_fixed_array_event_default(
+            default_expr,
+            *elem,
+            *len,
+            context,
+            options,
+            errors,
+        )
+        .map(TypedEventParamDefault::Array),
+        TypedEventParamType::Slice { .. } => {
+            push_semantic(
+                DiagCtx::new(default_expr.loc()),
+                errors,
+                format!("{context} default is not supported for slice event params"),
+            );
+            None
+        }
+    }
+}
+
+fn validate_proc_event_default_expr(
+    param: &EventParamDecl,
+    len: Option<usize>,
+    context: &str,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Expr> {
+    let default_expr = param.default.as_ref()?;
+    match &param.ty {
+        EventParamType::Scalar(ty) => {
+            coerce_scalar_event_default(default_expr, *ty, context, options, errors)?;
+            Some(default_expr.clone())
+        }
+        EventParamType::Array { elem, .. } => {
+            let Some(len) = len else {
+                return None;
+            };
+            coerce_fixed_array_event_default(default_expr, *elem, len, context, options, errors)?;
+            Some(default_expr.clone())
+        }
+        EventParamType::Slice { .. } | EventParamType::GenericSlice { .. } => {
+            push_semantic(
+                DiagCtx::new(default_expr.loc()),
+                errors,
+                format!("{context} default is not supported for slice event params"),
+            );
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -244,9 +373,17 @@ pub(crate) fn coerce_typed_events(
                     }
                 }
             };
+            let default = coerce_typed_event_default(
+                param,
+                &typed,
+                &format!("event '{}.{}'", event.name, param.name),
+                options,
+                errors,
+            );
             typed_params.push(TypedEventParam {
                 name: param.name.clone(),
                 ty: typed,
+                default,
             });
         }
         out.push(TypedEvent {
@@ -297,6 +434,16 @@ fn expand_proc_event_specs(
                     }],
                     fixed_array_elem_ty: None,
                     slice_elem_ty: None,
+                    default: validate_proc_event_default_expr(
+                        param,
+                        None,
+                        &format!(
+                            "processor '{}.{}' event parameter '{}'",
+                            proc.name, event.name, param.name
+                        ),
+                        options,
+                        errors,
+                    ),
                 }),
                 EventParamType::Array { elem, size } => {
                     let context = format!(
@@ -319,6 +466,13 @@ fn expand_proc_event_specs(
                         slots: Vec::new(),
                         fixed_array_elem_ty: Some(*elem),
                         slice_elem_ty: None,
+                        default: validate_proc_event_default_expr(
+                            param,
+                            Some(len),
+                            &context,
+                            options,
+                            errors,
+                        ),
                     });
                 }
                 EventParamType::Slice { elem } => {
@@ -327,6 +481,16 @@ fn expand_proc_event_specs(
                         slots: Vec::new(),
                         fixed_array_elem_ty: None,
                         slice_elem_ty: Some(*elem),
+                        default: validate_proc_event_default_expr(
+                            param,
+                            None,
+                            &format!(
+                                "processor '{}.{}' event parameter '{}'",
+                                proc.name, event.name, param.name
+                            ),
+                            options,
+                            errors,
+                        ),
                     });
                 }
                 EventParamType::GenericSlice { elem } => {
@@ -343,6 +507,16 @@ fn expand_proc_event_specs(
                         slots: Vec::new(),
                         fixed_array_elem_ty: None,
                         slice_elem_ty: Some(PrimitiveType::F32),
+                        default: validate_proc_event_default_expr(
+                            param,
+                            None,
+                            &format!(
+                                "processor '{}.{}' event parameter '{}'",
+                                proc.name, event.name, param.name
+                            ),
+                            options,
+                            errors,
+                        ),
                     });
                 }
             }
