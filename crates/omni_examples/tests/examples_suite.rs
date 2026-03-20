@@ -13780,6 +13780,47 @@ sample:
 }
 
 #[test]
+fn proc_level_consts_using_namespace_consts_compile_and_run() {
+    let src = r#"
+namespace Synth<N = 2>:
+  const Base = N + 1
+
+  proc Voice:
+    const Count = Base + 1
+    ins Count
+    outs Count
+
+    sample:
+      out1 = in1
+      out2 = in2
+      out3 = f32(Count)
+      out4 = f32(Base)
+
+outs { out1, out2, out3, out4 }
+init:
+  v = Synth<2>::Voice()
+sample:
+  v(1.0, 2.0, 3.0, 4.0)
+  out1 = v.out1
+  out2 = v.out2
+  out3 = v.out3
+  out4 = v.out4
+"#;
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-6);
+    assert_near(output[1], 2.0, 1e-6);
+    assert_near(output[2], 4.0, 1e-6);
+    assert_near(output[3], 3.0, 1e-6);
+}
+
+#[test]
 fn nested_namespace_instantiated_generic_struct_with_nested_struct_field_compiles_and_runs() {
     let src = r#"
 namespace Outer<S = 3>:

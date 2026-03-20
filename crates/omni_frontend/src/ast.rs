@@ -416,6 +416,7 @@ pub struct ProcessorDef {
     pub loc: Span,
     pub name: String,
     pub type_params: Vec<String>,
+    pub consts: Vec<ConstDecl>,
     pub ins: Vec<PortDecl>,
     pub ins_deferred_count: Option<Expr>,
     pub ins_deferred_default_ty: Option<DeclType>,

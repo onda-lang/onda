@@ -1190,6 +1190,100 @@ sample { out1 = p(0.5) }
 }
 
 #[test]
+fn parses_and_rewrites_proc_level_consts() {
+    let src = r#"
+proc Voice {
+  const N = 2
+  const Z = 1
+  ins N
+  outs N
+  sample {
+    out1 = in1
+    out2 = f32(Z)
+  }
+}
+outs { out1 }
+sample { out1 = 0.0 }
+"#;
+
+    let program = parse_program(src).expect("proc-level consts should parse and rewrite");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("expected a proc block");
+
+    assert!(proc.consts.is_empty(), "proc consts should be stripped after rewrite");
+    assert_eq!(proc.ins.len(), 2);
+    assert_eq!(proc.outs.len(), 2);
+    assert!(matches!(
+        &proc.sample[1],
+        Stmt::Assign {
+            expr:
+                Expr::Cast {
+                    expr,
+                    to: PrimitiveType::F32,
+                    ..
+                },
+            ..
+        } if matches!(&**expr, Expr::Int { value: 1, .. })
+    ));
+}
+
+#[test]
+fn parses_and_rewrites_proc_level_consts_using_namespace_consts() {
+    let src = r#"
+namespace Synth<N = 2> {
+  const Base = N + 1
+
+  proc Voice {
+    const Count = Base + 1
+    ins Count
+    outs Count
+    sample {
+      out1 = in1
+      out2 = in2
+      out3 = f32(Count)
+      out4 = f32(Base)
+    }
+  }
+}
+outs { out1 }
+init { v = Synth<2>::Voice() }
+sample {
+  v(1.0, 2.0, 3.0, 4.0)
+  out1 = v.out1
+}
+"#;
+
+    let program = parse_program(src)
+        .expect("proc-level consts should be able to reference namespace consts");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) if p.name.contains("__nsinst") && p.name.ends_with("::Voice") => Some(p),
+            _ => None,
+        })
+        .expect("expected an instantiated namespaced proc block");
+
+    assert!(proc.consts.is_empty(), "proc consts should be stripped after rewrite");
+    assert_eq!(proc.ins.len(), 4);
+    assert_eq!(proc.outs.len(), 4);
+    assert!(
+        !stmt_contains_var_with_suffix(&proc.sample[2], "Count"),
+        "instantiated proc body should not retain proc-local const symbols"
+    );
+    assert!(
+        !stmt_contains_var_with_suffix(&proc.sample[3], "Base"),
+        "instantiated proc body should not retain namespace const symbols"
+    );
+}
+
+#[test]
 fn parses_proc_block_wrapping_sample() {
     let src = r#"
 proc Wrapped {

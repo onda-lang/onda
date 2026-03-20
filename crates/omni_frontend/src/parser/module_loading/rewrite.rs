@@ -606,6 +606,20 @@ pub(super) fn rewrite_block_namespace_refs(
             rewrite_function_def(d, current_ns, const_env, state, generated)?;
         }
         Block::Proc(p) => {
+            let mut proc_const_env = const_env.clone();
+            let mut proc_const_names = HashSet::<String>::new();
+            for decl in &mut p.consts {
+                if !proc_const_names.insert(decl.name.clone()) {
+                    return Err(vec![Diagnostic::semantic_span(
+                        format!("duplicate proc constant '{}'", decl.name),
+                        decl.loc.as_ref(),
+                    )]);
+                }
+                let value =
+                    finalize_const_decl_expr(decl, current_ns, &proc_const_env, state, generated)?;
+                proc_const_env.insert(decl.name.clone(), value);
+            }
+            p.consts.clear();
             expand_deferred_proc_port_count(
                 &mut p.ins,
                 &mut p.ins_deferred_count,
@@ -613,7 +627,7 @@ pub(super) fn rewrite_block_namespace_refs(
                 "in",
                 &p.loc,
                 current_ns,
-                const_env,
+                &proc_const_env,
                 state,
                 generated,
             )?;
@@ -624,7 +638,7 @@ pub(super) fn rewrite_block_namespace_refs(
                 "out",
                 &p.loc,
                 current_ns,
-                const_env,
+                &proc_const_env,
                 state,
                 generated,
             )?;
@@ -634,22 +648,22 @@ pub(super) fn rewrite_block_namespace_refs(
                 &mut p.params_deferred_default_ty,
                 &p.loc,
                 current_ns,
-                const_env,
+                &proc_const_env,
                 state,
                 generated,
             )?;
-            rewrite_port_decls(&mut p.ins, current_ns, const_env, state, generated)?;
-            rewrite_port_decls(&mut p.outs, current_ns, const_env, state, generated)?;
-            rewrite_param_decls(&mut p.params, current_ns, const_env, state, generated)?;
+            rewrite_port_decls(&mut p.ins, current_ns, &proc_const_env, state, generated)?;
+            rewrite_port_decls(&mut p.outs, current_ns, &proc_const_env, state, generated)?;
+            rewrite_param_decls(&mut p.params, current_ns, &proc_const_env, state, generated)?;
             for event in &mut p.events {
-                rewrite_event_def(event, current_ns, const_env, state, generated)?;
+                rewrite_event_def(event, current_ns, &proc_const_env, state, generated)?;
             }
             for decl in &mut p.buffers {
                 if let Some(ty) = &mut decl.ty {
                     rewrite_buffer_type(
                         ty,
                         current_ns,
-                        const_env,
+                        &proc_const_env,
                         state,
                         generated,
                         decl.ty_loc.as_ref().or(decl.loc.as_ref()),
@@ -660,24 +674,24 @@ pub(super) fn rewrite_block_namespace_refs(
                 rewrite_decl_type(
                     default_ty,
                     current_ns,
-                    const_env,
+                    &proc_const_env,
                     state,
                     generated,
                     p.init.default_ty_loc.as_ref().or(p.init.loc.as_ref()),
                 )?;
             }
-            rewrite_stmts(&mut p.init.body, current_ns, const_env, state, generated)?;
-            rewrite_stmts(&mut p.block_pre, current_ns, const_env, state, generated)?;
+            rewrite_stmts(&mut p.init.body, current_ns, &proc_const_env, state, generated)?;
+            rewrite_stmts(&mut p.block_pre, current_ns, &proc_const_env, state, generated)?;
             if let Some(os) = &mut p.sample_oversample_factor {
-                rewrite_expr(os, current_ns, const_env, state, generated)?;
+                rewrite_expr(os, current_ns, &proc_const_env, state, generated)?;
             }
-            rewrite_stmts(&mut p.sample, current_ns, const_env, state, generated)?;
-            rewrite_stmts(&mut p.block_post, current_ns, const_env, state, generated)?;
+            rewrite_stmts(&mut p.sample, current_ns, &proc_const_env, state, generated)?;
+            rewrite_stmts(&mut p.block_post, current_ns, &proc_const_env, state, generated)?;
             if let Some(graph) = &mut p.graph {
-                rewrite_graph_block(graph, current_ns, const_env, state, generated)?;
+                rewrite_graph_block(graph, current_ns, &proc_const_env, state, generated)?;
             }
             for def in &mut p.local_defs {
-                rewrite_function_def(def, current_ns, const_env, state, generated)?;
+                rewrite_function_def(def, current_ns, &proc_const_env, state, generated)?;
             }
         }
         Block::Init(init) => {

@@ -788,6 +788,7 @@ pub(super) fn parse_proc_block(
     let loc = stmt_loc_from_pair(&block_pair);
     let mut name: Option<String> = None;
     let mut type_params = Vec::new();
+    let mut consts = Vec::new();
     let mut ins = Vec::new();
     let mut ins_deferred_count: Option<Expr> = None;
     let mut ins_deferred_default_ty: Option<DeclType> = None;
@@ -818,6 +819,14 @@ pub(super) fn parse_proc_block(
                         type_params.push(item.as_str().to_owned());
                     }
                 }
+            }
+            Rule::const_block => {
+                let child_loc = stmt_loc_from_pair(&child);
+                let mut inner = child.into_inner();
+                let decl = inner.next().ok_or_else(|| {
+                    vec![syntax_at_loc(child_loc.as_ref(), "missing const declaration")]
+                })?;
+                consts.push(parse_const_decl(decl)?);
             }
             Rule::ins_block => {
                 if !ins.is_empty() || ins_deferred_count.is_some() {
@@ -934,6 +943,7 @@ pub(super) fn parse_proc_block(
         loc,
         name,
         type_params,
+        consts,
         ins,
         ins_deferred_count,
         ins_deferred_default_ty,
