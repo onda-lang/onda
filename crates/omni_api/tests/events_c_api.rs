@@ -144,7 +144,10 @@ sample { out1 = amp }
         assert_eq!(omni_event_param_is_slice(program.0, 0, 0), 0);
         assert_eq!(omni_event_param_offset_bytes(program.0, 0, 0), 0);
         assert_eq!(omni_event_param_has_default(program.0, 0, 0), 1);
-        assert_eq!(omni_event_param_default_bytes(program.0, 0, 0, std::ptr::null_mut(), 0), 4);
+        assert_eq!(
+            omni_event_param_default_bytes(program.0, 0, 0, std::ptr::null_mut(), 0),
+            4
+        );
         let mut note_default = [0_u8; 4];
         assert_eq!(
             omni_event_param_default_bytes(
@@ -184,7 +187,10 @@ sample { out1 = amp }
         assert_eq!(omni_event_param_is_slice(program.0, 1, 0), 0);
         assert_eq!(omni_event_param_offset_bytes(program.0, 1, 0), 0);
         assert_eq!(omni_event_param_has_default(program.0, 1, 0), 1);
-        assert_eq!(omni_event_param_default_bytes(program.0, 1, 0, std::ptr::null_mut(), 0), 8);
+        assert_eq!(
+            omni_event_param_default_bytes(program.0, 1, 0, std::ptr::null_mut(), 0),
+            8
+        );
         let mut curve_default = [0_u8; 8];
         assert_eq!(
             omni_event_param_default_bytes(
@@ -196,8 +202,14 @@ sample { out1 = amp }
             ),
             8
         );
-        assert_eq!(f32::from_ne_bytes(curve_default[0..4].try_into().unwrap()), 0.25);
-        assert_eq!(f32::from_ne_bytes(curve_default[4..8].try_into().unwrap()), 0.75);
+        assert_eq!(
+            f32::from_ne_bytes(curve_default[0..4].try_into().unwrap()),
+            0.25
+        );
+        assert_eq!(
+            f32::from_ne_bytes(curve_default[4..8].try_into().unwrap()),
+            0.75
+        );
     }
 }
 

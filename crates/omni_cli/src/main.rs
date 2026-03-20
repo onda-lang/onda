@@ -1916,14 +1916,19 @@ fn preview_event_json(event: &PreviewEventInfo) -> Value {
             "index": param.index,
             "name": param.name,
             "type": param.type_repr,
-            "value": match param.value {
-                PreviewEventValue::Bool(value) => Value::Bool(value),
-                PreviewEventValue::Number(value) => serde_json::Number::from_f64(value)
-                    .map(Value::Number)
-                    .unwrap_or(Value::Null),
-            },
+            "default": preview_event_value_json(&param.value),
+            "value": preview_event_value_json(&param.value),
         })).collect::<Vec<_>>(),
     })
+}
+
+fn preview_event_value_json(value: &PreviewEventValue) -> Value {
+    match value {
+        PreviewEventValue::Bool(value) => Value::Bool(*value),
+        PreviewEventValue::Number(value) => serde_json::Number::from_f64(*value)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+    }
 }
 
 fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io::Error> {

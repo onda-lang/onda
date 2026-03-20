@@ -265,7 +265,7 @@ impl PreviewSession {
                     .buffer_bindings
                     .get(index)
                     .and_then(|binding| binding.loaded_path.as_ref())
-                    .map(|path| path.display().to_string()),
+                    .map(|path| display_path(path)),
             })
             .collect()
     }
@@ -662,15 +662,19 @@ fn default_preview_event_value(param: &DeclaredEventParam) -> PreviewEventValue 
         };
     };
     match param.elem_ty() {
-        PrimitiveType::F32 if bytes.len() == 4 => PreviewEventValue::Number(
-            f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
-        ),
+        PrimitiveType::F32 if bytes.len() == 4 => {
+            PreviewEventValue::Number(
+                f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
+            )
+        }
         PrimitiveType::F64 if bytes.len() == 8 => PreviewEventValue::Number(f64::from_ne_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ])),
-        PrimitiveType::I32 if bytes.len() == 4 => PreviewEventValue::Number(
-            i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64,
-        ),
+        PrimitiveType::I32 if bytes.len() == 4 => {
+            PreviewEventValue::Number(
+                i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
+            )
+        }
         PrimitiveType::I64 if bytes.len() == 8 => PreviewEventValue::Number(i64::from_ne_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]) as f64),
@@ -917,4 +921,26 @@ fn scalar_param_bytes(ty: omni_frontend::PrimitiveType, value: f64) -> Result<Ve
         }
     }
     Ok(out)
+}
+
+fn display_path(path: &Path) -> String {
+    let raw = path.display().to_string();
+    raw.strip_prefix(r"\\?\")
+        .or_else(|| raw.strip_prefix("//?/"))
+        .unwrap_or(&raw)
+        .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_path;
+    use std::path::Path;
+
+    #[test]
+    fn display_path_strips_windows_verbatim_prefix() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\C:\Users\franc\audio\file.wav")),
+            r"C:\Users\franc\audio\file.wav"
+        );
+    }
 }

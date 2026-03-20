@@ -725,6 +725,13 @@
       }
 
       function initialEventArgValue(arg) {
+        if (arg.default !== null && arg.default !== undefined) {
+          if (arg.type === "bool") {
+            return Boolean(arg.default);
+          }
+          const defaultValue = Number(arg.default);
+          return Number.isFinite(defaultValue) ? defaultValue : 0;
+        }
         if (arg.type === "bool") {
           if (arg.value !== null && arg.value !== undefined) {
             return arg.value !== 0;
@@ -751,9 +758,11 @@
               const previousArg = previousArgs.find(function (item) {
                 return item && item.name === arg.name;
               }) || previousArgs[index];
-              const rawValue = previousArg && previousArg.value !== undefined && previousArg.value !== null
-                ? previousArg.value
-                : arg.value;
+              const rawValue = arg.value !== undefined && arg.value !== null
+                ? arg.value
+                : previousArg && previousArg.value !== undefined && previousArg.value !== null
+                  ? previousArg.value
+                  : undefined;
               const value = rawValue !== undefined && rawValue !== null
                 ? rawValue
                 : initialEventArgValue(arg);
@@ -815,7 +824,7 @@
 
         startButton.disabled = !state.path || state.running;
         stopButton.disabled = !state.running;
-        resetButton.disabled = !hasParams;
+        resetButton.disabled = !hasParams && !hasEvents;
         renderDeviceOptions(inputDeviceNode, state.inputDevices, state.currentInputDevice, true);
         renderDeviceOptions(outputDeviceNode, state.outputDevices, state.currentOutputDevice, true);
 

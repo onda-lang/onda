@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use omni_frontend::{AssignTarget, CallArg, Expr, PrimitiveType, Stmt};
 use omni_semantics::{
-    TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedConstValue,
-    TypedEventParamDefault, TypedEventParamType, TypedFnParam, TypedProgram, TypedValueRange,
+    TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedConstValue, TypedEventParamDefault,
+    TypedEventParamType, TypedFnParam, TypedProgram, TypedValueRange,
 };
 
 use crate::primitives::{
@@ -1036,8 +1036,9 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
                     TypedEventParamType::Array { elem, len } => {
                         let default_bytes = match &param.default {
                             Some(TypedEventParamDefault::Array(values)) => {
-                                let mut bytes =
-                                    Vec::with_capacity(primitive_type_bytes(elem).saturating_mul(len));
+                                let mut bytes = Vec::with_capacity(
+                                    primitive_type_bytes(elem).saturating_mul(len),
+                                );
                                 for value in values {
                                     append_typed_const_bytes(&mut bytes, *value, elem);
                                 }

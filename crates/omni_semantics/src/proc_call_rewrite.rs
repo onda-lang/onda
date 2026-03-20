@@ -927,7 +927,9 @@ pub(super) fn expand_proc_event_call_args(
     for (idx, param) in event.params.iter().enumerate() {
         let resolved_expr = match resolved.get(idx).and_then(|a| *a) {
             Some(arg_expr) => arg_expr.clone(),
-            None if param.default.is_some() => param.default.clone().unwrap_or_else(|| Expr::number(0.0)),
+            None if param.default.is_some() => {
+                param.default.clone().unwrap_or_else(|| Expr::number(0.0))
+            }
             None => {
                 push_semantic(
                     diag,

@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use omni_daemon::{DaemonSession, DocumentVersion};
 use omni_frontend::{
-    parse_program_with_path, AssignTarget, Block, Diagnostic, FunctionDef, Program, Stmt,
+    parse_program, parse_program_with_path, AssignTarget, Block, Diagnostic, FunctionDef, Program,
+    Span, Stmt,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -517,15 +518,24 @@ fn diagnostic_message(diagnostic: &Diagnostic) -> String {
 }
 
 fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<SemanticToken> {
-    let imported_scope = match path {
-        Some(path) => parse_program_with_path(source, path)
-            .map(|program| collect_all_symbols(&program))
-            .unwrap_or_default(),
-        None => SemanticScope::default(),
+    let parsed_program = match path {
+        Some(path) => parse_program_with_path(source, path).ok(),
+        None => parse_program(source).ok(),
     };
-    let mut local_scope = SemanticScope::default();
+    let imported_scope = parsed_program
+        .as_ref()
+        .map(collect_all_symbols)
+        .unwrap_or_default();
+    let current_file_key = match path {
+        Some(path) => normalize_file_key_for_path(path),
+        None => Some(normalize_file_key("<memory>")),
+    };
+    let scope_index = parsed_program
+        .as_ref()
+        .map(|program| build_semantic_scope_index(program, current_file_key.as_deref()));
+    let mut source_scope = SemanticScope::default();
 
-    collect_symbols_from_source(source, &mut local_scope);
+    collect_symbols_from_source(source, &mut source_scope);
 
     let mut tokens = Vec::new();
     scan_identifiers(
@@ -564,8 +574,8 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
             }
             // Namespace path segments: std::fft, std::complex::Complex, etc.
             if in_ns_path {
-                let token_type = local_scope
-                    .token_type_for(name)
+                let token_type = source_scope
+                    .token_type_for_source_fallback(name)
                     .or_else(|| imported_scope.imported_token_type_for(name))
                     .unwrap_or(SEMANTIC_TOKEN_TYPE_NAMESPACE);
                 tokens.push(SemanticToken {
@@ -577,10 +587,22 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
                 });
                 return;
             }
-            if let Some(mut token_type) = local_scope
-                .token_type_for(name)
-                .or_else(|| imported_scope.imported_token_type_for(name))
-            {
+            let scope_resolution = scope_index
+                .as_ref()
+                .map(|index| index.token_type_for(name, line, start));
+            let resolved_token_type = match scope_resolution {
+                Some((token_type, true)) => token_type
+                    .or_else(|| imported_scope.imported_token_type_for(name))
+                    .or_else(|| source_scope.imported_token_type_for(name)),
+                Some((token_type, false)) => token_type
+                    .or_else(|| imported_scope.imported_token_type_for(name))
+                    .or_else(|| source_scope.imported_token_type_for(name))
+                    .or_else(|| source_scope.token_type_for_source_fallback(name)),
+                None => source_scope
+                    .token_type_for_source_fallback(name)
+                    .or_else(|| imported_scope.imported_token_type_for(name)),
+            };
+            if let Some(mut token_type) = resolved_token_type {
                 // Variables called with () are callable proc instances — color as function
                 if is_call && token_type == SEMANTIC_TOKEN_TYPE_VARIABLE {
                     token_type = SEMANTIC_TOKEN_TYPE_FUNCTION;
@@ -679,8 +701,6 @@ impl SemanticScope {
             Some(SEMANTIC_TOKEN_TYPE_PARAMETER)
         } else if self.ports.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_PORT)
-        } else if is_implicit_port_name(name) {
-            Some(SEMANTIC_TOKEN_TYPE_PORT)
         } else if self.functions.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
         } else if self.state_variables.contains(name) {
@@ -690,6 +710,16 @@ impl SemanticScope {
         } else {
             None
         }
+    }
+
+    fn token_type_for_source_fallback(&self, name: &str) -> Option<u32> {
+        self.token_type_for(name).or_else(|| {
+            if is_implicit_port_name(name) {
+                Some(SEMANTIC_TOKEN_TYPE_PORT)
+            } else {
+                None
+            }
+        })
     }
 
     fn insert_variable(&mut self, name: String) {
@@ -723,6 +753,496 @@ impl SemanticScope {
             None
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct SemanticScopeIndex {
+    document_scope: SemanticScope,
+    scopes: Vec<ScopedSemanticScope>,
+}
+
+#[derive(Debug, Clone)]
+struct ScopedSemanticScope {
+    scope: SemanticScope,
+    parent: Option<usize>,
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+    depth: usize,
+    allows_implicit_ports: bool,
+}
+
+impl SemanticScopeIndex {
+    fn token_type_for(&self, name: &str, line: u32, column: u32) -> (Option<u32>, bool) {
+        let containing_scope = self.innermost_scope_index(line, column);
+        let token_type = containing_scope
+            .and_then(|idx| self.resolve_scope_chain(idx, name))
+            .or_else(|| self.document_scope.token_type_for(name));
+        (token_type, containing_scope.is_some())
+    }
+
+    fn push_scope(&mut self, parent: Option<usize>, span: Span) -> Option<usize> {
+        if span.is_zero() {
+            return None;
+        }
+        let depth = parent.map(|idx| self.scopes[idx].depth + 1).unwrap_or(0);
+        let allows_implicit_ports = parent
+            .map(|idx| self.scopes[idx].allows_implicit_ports)
+            .unwrap_or(false);
+        self.scopes.push(ScopedSemanticScope::from_span(
+            span,
+            parent,
+            depth,
+            allows_implicit_ports,
+        ));
+        Some(self.scopes.len() - 1)
+    }
+
+    fn push_full_document_scope(&mut self, parent: Option<usize>) -> usize {
+        let depth = parent.map(|idx| self.scopes[idx].depth + 1).unwrap_or(0);
+        self.scopes.push(ScopedSemanticScope {
+            scope: SemanticScope::default(),
+            parent,
+            start_line: 0,
+            start_column: 0,
+            end_line: u32::MAX,
+            end_column: u32::MAX,
+            depth,
+            allows_implicit_ports: true,
+        });
+        self.scopes.len() - 1
+    }
+
+    fn innermost_scope_index(&self, line: u32, column: u32) -> Option<usize> {
+        let mut best: Option<usize> = None;
+        for (idx, scope) in self.scopes.iter().enumerate() {
+            if !scope.contains(line, column) {
+                continue;
+            }
+            let replace = match best {
+                None => true,
+                Some(best_idx) => {
+                    scope.depth > self.scopes[best_idx].depth
+                        || (scope.depth == self.scopes[best_idx].depth
+                            && scope.is_narrower_than(&self.scopes[best_idx]))
+                }
+            };
+            if replace {
+                best = Some(idx);
+            }
+        }
+        best
+    }
+
+    fn resolve_scope_chain(&self, idx: usize, name: &str) -> Option<u32> {
+        let mut current = Some(idx);
+        let mut allows_implicit_ports = false;
+        while let Some(scope_idx) = current {
+            let scope = &self.scopes[scope_idx];
+            allows_implicit_ports |= scope.allows_implicit_ports;
+            if let Some(token_type) = scope.scope.token_type_for(name) {
+                return Some(token_type);
+            }
+            current = scope.parent;
+        }
+        if allows_implicit_ports && is_implicit_port_name(name) {
+            return Some(SEMANTIC_TOKEN_TYPE_PORT);
+        }
+        None
+    }
+}
+
+impl ScopedSemanticScope {
+    fn from_span(
+        span: Span,
+        parent: Option<usize>,
+        depth: usize,
+        allows_implicit_ports: bool,
+    ) -> Self {
+        Self {
+            scope: SemanticScope::default(),
+            parent,
+            start_line: span.line.saturating_sub(1),
+            start_column: u32::from(span.column.saturating_sub(1)),
+            end_line: span.end_line().saturating_sub(1),
+            end_column: u32::from(span.end_column.saturating_sub(1)),
+            depth,
+            allows_implicit_ports,
+        }
+    }
+
+    fn contains(&self, line: u32, column: u32) -> bool {
+        if line < self.start_line || line > self.end_line {
+            return false;
+        }
+        if line == self.start_line && column < self.start_column {
+            return false;
+        }
+        if line == self.end_line && column > self.end_column {
+            return false;
+        }
+        true
+    }
+
+    fn is_narrower_than(&self, other: &Self) -> bool {
+        let self_line_span = self.end_line.saturating_sub(self.start_line);
+        let other_line_span = other.end_line.saturating_sub(other.start_line);
+        if self_line_span != other_line_span {
+            return self_line_span < other_line_span;
+        }
+
+        let self_col_span = self.end_column.saturating_sub(self.start_column);
+        let other_col_span = other.end_column.saturating_sub(other.start_column);
+        self_col_span < other_col_span
+    }
+}
+
+fn build_semantic_scope_index(
+    program: &Program,
+    current_file_key: Option<&str>,
+) -> SemanticScopeIndex {
+    let mut index = SemanticScopeIndex::default();
+    for &name in BUILTIN_CONSTS {
+        index.document_scope.consts.insert(name.to_owned());
+    }
+
+    for block in &program.blocks {
+        if block_belongs_to_current_file(block, current_file_key) {
+            collect_document_scope_symbols(block, &mut index.document_scope);
+        }
+    }
+
+    let top_level_runtime_scope = has_top_level_runtime_blocks(program, current_file_key)
+        .then(|| index.push_full_document_scope(None));
+
+    for block in &program.blocks {
+        if !block_belongs_to_current_file(block, current_file_key) {
+            continue;
+        }
+        build_block_scope_index(block, &mut index, top_level_runtime_scope);
+    }
+
+    index
+}
+
+fn normalize_file_key_for_path(path: &Path) -> Option<String> {
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    Some(normalize_file_key(&canonical.to_string_lossy()))
+}
+
+fn normalize_file_key(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let normalized = normalized
+        .strip_prefix("//?/")
+        .or_else(|| normalized.strip_prefix("\\\\?\\"))
+        .unwrap_or(&normalized);
+    normalized.to_ascii_lowercase()
+}
+
+fn block_belongs_to_current_file(block: &Block, current_file_key: Option<&str>) -> bool {
+    span_belongs_to_current_file(block.loc().span(), current_file_key)
+}
+
+fn span_belongs_to_current_file(span: Span, current_file_key: Option<&str>) -> bool {
+    match current_file_key {
+        Some(expected) => span
+            .file()
+            .map(|file| normalize_file_key(&file) == expected)
+            .unwrap_or(false),
+        None => true,
+    }
+}
+
+fn has_top_level_runtime_blocks(program: &Program, current_file_key: Option<&str>) -> bool {
+    program.blocks.iter().any(|block| {
+        block_belongs_to_current_file(block, current_file_key)
+            && matches!(
+                block,
+                Block::Ins(_)
+                    | Block::Outs(_)
+                    | Block::Params(_)
+                    | Block::Events(_)
+                    | Block::Buffers(_)
+                    | Block::Init(_)
+                    | Block::Block(_)
+                    | Block::Sample(_)
+                    | Block::Graph(_)
+            )
+    })
+}
+
+fn collect_document_scope_symbols(block: &Block, scope: &mut SemanticScope) {
+    match block {
+        Block::Const(decl) => {
+            scope.consts.insert(decl.name.clone());
+        }
+        Block::Def(def) => {
+            scope.functions.insert(def.name.clone());
+        }
+        Block::Proc(proc_def) => {
+            scope.types.insert(proc_def.name.clone());
+        }
+        Block::Struct(struct_def) => {
+            scope.types.insert(struct_def.name.clone());
+            for method in &struct_def.methods {
+                scope.functions.insert(method.name.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_block_scope_index(
+    block: &Block,
+    index: &mut SemanticScopeIndex,
+    top_level_runtime_scope: Option<usize>,
+) {
+    match block {
+        Block::Ins(ports) | Block::Outs(ports) => {
+            if let Some(scope_idx) = top_level_runtime_scope {
+                for decl in &ports.decls {
+                    index.scopes[scope_idx]
+                        .scope
+                        .ports
+                        .insert(decl.name.clone());
+                }
+            }
+        }
+        Block::Params(params) => {
+            if let Some(scope_idx) = top_level_runtime_scope {
+                for decl in &params.decls {
+                    index.scopes[scope_idx]
+                        .scope
+                        .parameters
+                        .insert(decl.name.clone());
+                }
+            }
+        }
+        Block::Buffers(buffers) => {
+            if let Some(scope_idx) = top_level_runtime_scope {
+                for decl in &buffers.decls {
+                    index.scopes[scope_idx]
+                        .scope
+                        .ports
+                        .insert(decl.name.clone());
+                }
+            }
+        }
+        Block::Init(init) => {
+            if let Some(scope_idx) = top_level_runtime_scope {
+                collect_runtime_state_symbols(&init.body, &mut index.scopes[scope_idx].scope);
+                build_const_only_stmt_scope(index, scope_idx, init.loc, &init.body);
+            }
+        }
+        Block::Block(exec) => {
+            if let Some(scope_idx) = top_level_runtime_scope {
+                build_stmt_scope_from_body(index, scope_idx, &exec.pre);
+                if let Some(sample) = &exec.sample {
+                    build_stmt_scope(index, scope_idx, sample.loc, &sample.body);
+                }
+                build_stmt_scope_from_body(index, scope_idx, &exec.post);
+            }
+        }
+        Block::Sample(sample) => {
+            if let Some(scope_idx) = top_level_runtime_scope {
+                build_stmt_scope(index, scope_idx, sample.loc, &sample.body);
+            }
+        }
+        Block::Events(events) => {
+            if let Some(scope_idx) = top_level_runtime_scope {
+                for event in &events.events {
+                    build_event_scope(index, scope_idx, event);
+                }
+            }
+        }
+        Block::Def(def) => build_function_scope(index, None, def),
+        Block::Proc(proc_def) => build_proc_scope(index, proc_def),
+        Block::Struct(struct_def) => {
+            let Some(owner_idx) = index.push_scope(None, struct_def.loc) else {
+                return;
+            };
+            for tp in &struct_def.type_params {
+                index.scopes[owner_idx].scope.types.insert(tp.clone());
+            }
+            for method in &struct_def.methods {
+                build_function_scope(index, Some(owner_idx), method);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &omni_frontend::ProcessorDef) {
+    let Some(owner_idx) = index.push_scope(None, proc_def.loc) else {
+        return;
+    };
+    index.scopes[owner_idx].allows_implicit_ports = true;
+    {
+        let owner = &mut index.scopes[owner_idx].scope;
+        for tp in &proc_def.type_params {
+            owner.types.insert(tp.clone());
+        }
+        for decl in &proc_def.ins {
+            owner.ports.insert(decl.name.clone());
+        }
+        for decl in &proc_def.outs {
+            owner.ports.insert(decl.name.clone());
+        }
+        for decl in &proc_def.params {
+            owner.parameters.insert(decl.name.clone());
+        }
+        for buffer in &proc_def.buffers {
+            owner.ports.insert(buffer.name.clone());
+        }
+        for def in &proc_def.local_defs {
+            owner.functions.insert(def.name.clone());
+        }
+        collect_runtime_state_symbols(&proc_def.init.body, owner);
+    }
+
+    build_const_only_stmt_scope(index, owner_idx, proc_def.init.loc, &proc_def.init.body);
+    build_stmt_scope_from_body(index, owner_idx, &proc_def.block_pre);
+    build_stmt_scope_from_body(index, owner_idx, &proc_def.sample);
+    build_stmt_scope_from_body(index, owner_idx, &proc_def.block_post);
+
+    for event in &proc_def.events {
+        build_event_scope(index, owner_idx, event);
+    }
+    for def in &proc_def.local_defs {
+        build_function_scope(index, Some(owner_idx), def);
+    }
+}
+
+fn build_function_scope(index: &mut SemanticScopeIndex, parent: Option<usize>, def: &FunctionDef) {
+    let Some(scope_idx) = index.push_scope(parent, span_for_function_scope(def)) else {
+        return;
+    };
+    let reserved = parent
+        .map(|idx| index.scopes[idx].scope.clone())
+        .unwrap_or_default();
+    let allows_implicit_ports = index.scopes[scope_idx].allows_implicit_ports;
+    {
+        let scope = &mut index.scopes[scope_idx].scope;
+        scope.functions.insert(def.name.clone());
+        for tp in &def.type_params {
+            scope.types.insert(tp.clone());
+        }
+        for param in &def.params {
+            scope.parameters.insert(param.name.clone());
+        }
+        collect_stmt_symbols(&def.body, scope);
+        prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
+    }
+}
+
+fn build_event_scope(
+    index: &mut SemanticScopeIndex,
+    parent: usize,
+    event: &omni_frontend::EventDef,
+) {
+    let Some(scope_idx) = index.push_scope(Some(parent), span_for_event_scope(event)) else {
+        return;
+    };
+    let reserved = index.scopes[parent].scope.clone();
+    let allows_implicit_ports = index.scopes[scope_idx].allows_implicit_ports;
+    {
+        let scope = &mut index.scopes[scope_idx].scope;
+        scope.functions.insert(event.name.clone());
+        for param in &event.params {
+            scope.parameters.insert(param.name.clone());
+        }
+        collect_stmt_symbols(&event.body, scope);
+        prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
+    }
+}
+
+fn build_stmt_scope(index: &mut SemanticScopeIndex, parent: usize, span: Span, stmts: &[Stmt]) {
+    let Some(scope_idx) = index.push_scope(Some(parent), span) else {
+        return;
+    };
+    let reserved = index.scopes[parent].scope.clone();
+    let allows_implicit_ports = index.scopes[scope_idx].allows_implicit_ports;
+    {
+        let scope = &mut index.scopes[scope_idx].scope;
+        collect_stmt_symbols(stmts, scope);
+        prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
+    }
+}
+
+fn build_stmt_scope_from_body(index: &mut SemanticScopeIndex, parent: usize, stmts: &[Stmt]) {
+    if let Some(span) = span_for_stmt_body(stmts) {
+        build_stmt_scope(index, parent, span, stmts);
+    }
+}
+
+fn build_const_only_stmt_scope(
+    index: &mut SemanticScopeIndex,
+    parent: usize,
+    span: Span,
+    stmts: &[Stmt],
+) {
+    let Some(scope_idx) = index.push_scope(Some(parent), span) else {
+        return;
+    };
+    collect_const_stmt_symbols(stmts, &mut index.scopes[scope_idx].scope);
+}
+
+fn span_for_stmt_body(stmts: &[Stmt]) -> Option<Span> {
+    let first = stmts.first()?.loc().span();
+    let last = stmts.last()?.loc().span();
+    Some(Span::spanning(first, last))
+}
+
+fn span_for_function_scope(def: &FunctionDef) -> Span {
+    span_for_stmt_body(&def.body)
+        .map(|body_span| Span::spanning(def.loc, body_span))
+        .unwrap_or(def.loc)
+}
+
+fn span_for_event_scope(event: &omni_frontend::EventDef) -> Span {
+    span_for_stmt_body(&event.body)
+        .map(|body_span| Span::spanning(event.loc, body_span))
+        .unwrap_or(event.loc)
+}
+
+fn collect_runtime_state_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
+    let mut collected = SemanticScope::default();
+    collect_state_stmt_symbols(stmts, &mut collected);
+    scope.state_variables.extend(collected.state_variables);
+}
+
+fn collect_const_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Const { decl, .. } => {
+                scope.consts.insert(decl.name.clone());
+            }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_const_stmt_symbols(then_branch, scope);
+                collect_const_stmt_symbols(else_branch, scope);
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                collect_const_stmt_symbols(body, scope);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn prune_shadowed_variables(
+    scope: &mut SemanticScope,
+    reserved: &SemanticScope,
+    allows_implicit_ports: bool,
+) {
+    scope.variables.retain(|name| {
+        reserved.token_type_for(name).is_none()
+            && (!allows_implicit_ports || !is_implicit_port_name(name))
+    });
 }
 
 fn is_implicit_port_name(name: &str) -> bool {
@@ -1873,6 +2393,355 @@ mod tests {
                     && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
             }),
             "tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_leak_event_locals_into_sample_blocks() {
+        let source = concat!(
+            "import std/osc\n",
+            "\n",
+            "outs:\n",
+            "  out1\n",
+            "\n",
+            "init:\n",
+            "  freq_state = 220.0\n",
+            "  amp_state = 0.0\n",
+            "  gate = false\n",
+            "  osc = std::osc::Sine(freq = 220.0)\n",
+            "\n",
+            "events:\n",
+            "  note_on(freq_hz = 440.0, amp = 1.0):\n",
+            "    freq_state = freq_hz\n",
+            "    amp_state = amp\n",
+            "    gate = true\n",
+            "\n",
+            "  note_off():\n",
+            "    gate = false\n",
+            "\n",
+            "sample:\n",
+            "  osc.freq = freq_state\n",
+            "\n",
+            "  out1 = 0.0\n",
+            "  if (gate):\n",
+            "    out1 = osc() * amp\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        let amp_tokens = tokens
+            .iter()
+            .filter(|token| {
+                let line = token.line as usize;
+                let start = token.start as usize;
+                let end = start + token.length as usize;
+                source
+                    .lines()
+                    .nth(line)
+                    .and_then(|text| text.get(start..end))
+                    == Some("amp")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            amp_tokens.iter().any(|token| {
+                token.line == 12 && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
+            }),
+            "event param declaration should still be highlighted: {amp_tokens:?}"
+        );
+        assert!(
+            amp_tokens.iter().any(|token| {
+                token.line == 14 && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
+            }),
+            "event param use should still be highlighted: {amp_tokens:?}"
+        );
+        assert!(
+            !amp_tokens.iter().any(|token| token.line == 25),
+            "sample block should not highlight event-local amp: {amp_tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_leak_event_locals_into_sample_blocks_for_preview_events_file() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("examples")
+            .join("preview_events.omni");
+        let source = std::fs::read_to_string(&path).expect("example source should be readable");
+        let tokens = semantic_tokens_for_document(&source, Some(&path));
+
+        let amp_tokens = tokens
+            .iter()
+            .filter(|token| {
+                let line = token.line as usize;
+                let start = token.start as usize;
+                let end = start + token.length as usize;
+                source
+                    .lines()
+                    .nth(line)
+                    .and_then(|text| text.get(start..end))
+                    == Some("amp")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            amp_tokens.iter().any(|token| {
+                token.line == 12 && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
+            }),
+            "event param declaration should still be highlighted: {amp_tokens:?}"
+        );
+        assert!(
+            amp_tokens.iter().any(|token| {
+                token.line == 14 && token.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER
+            }),
+            "event param use should still be highlighted: {amp_tokens:?}"
+        );
+        assert!(
+            !amp_tokens.iter().any(|token| token.line == 24),
+            "sample block should not highlight event-local amp: {amp_tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_expose_top_level_runtime_scope_inside_top_level_defs() {
+        let source = concat!(
+            "outs:\n",
+            "  out1\n",
+            "params:\n",
+            "  gain = 1.0\n",
+            "buffers:\n",
+            "  buf: f32[]\n",
+            "init:\n",
+            "  state = 0.0\n",
+            "\n",
+            "def leak(x):\n",
+            "  y = x + in1 + out1 + gain + state + buf[0]\n",
+            "  return y\n",
+            "\n",
+            "sample:\n",
+            "  out1 = state + gain\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        assert!(
+            find_tokens("x")
+                .iter()
+                .any(|t| t.line == 9 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            "top-level def param x should be highlighted inside def body"
+        );
+        assert!(
+            find_tokens("y")
+                .iter()
+                .any(|t| t.line == 10 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE),
+            "top-level def local y should be highlighted inside def body"
+        );
+        assert!(
+            !find_tokens("in1").iter().any(|t| t.line == 10),
+            "implicit top-level input should not be highlighted inside top-level def"
+        );
+        for name in ["out1", "gain", "state", "buf"] {
+            assert!(
+                !find_tokens(name).iter().any(|t| t.line == 10),
+                "{name} should not be highlighted inside top-level def"
+            );
+        }
+        assert!(
+            find_tokens("state")
+                .iter()
+                .any(|t| t.line == 14 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "top-level state should still be highlighted in sample"
+        );
+        assert!(
+            find_tokens("gain")
+                .iter()
+                .any(|t| t.line == 14 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            "top-level param should still be highlighted in sample"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_bleed_between_top_level_defs() {
+        let source = concat!(
+            "def first(x):\n",
+            "  local = x\n",
+            "  return local\n",
+            "\n",
+            "def second():\n",
+            "  return x + local\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        assert!(
+            find_tokens("x")
+                .iter()
+                .any(|t| t.line == 1 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            "first def param x should be highlighted in first body"
+        );
+        assert!(
+            find_tokens("local")
+                .iter()
+                .any(|t| t.line == 2 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE),
+            "first def local should be highlighted in first body"
+        );
+        assert!(
+            !find_tokens("x").iter().any(|t| t.line == 5),
+            "first def param should not bleed into second def"
+        );
+        assert!(
+            !find_tokens("local").iter().any(|t| t.line == 5),
+            "first def local should not bleed into second def"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_bleed_between_struct_methods() {
+        let source = concat!(
+            "struct Box:\n",
+            "  value: f32 = 0.0\n",
+            "\n",
+            "  def set(self, x):\n",
+            "    tmp = x\n",
+            "    self.value = tmp\n",
+            "\n",
+            "  def get(self):\n",
+            "    return x + tmp + self.value\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        assert!(
+            find_tokens("x")
+                .iter()
+                .any(|t| t.line == 4 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            "method param x should be highlighted in set body"
+        );
+        assert!(
+            find_tokens("tmp")
+                .iter()
+                .any(|t| t.line == 5 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE),
+            "method local tmp should be highlighted in set body"
+        );
+        assert!(
+            !find_tokens("x").iter().any(|t| t.line == 8),
+            "set param x should not bleed into get"
+        );
+        assert!(
+            !find_tokens("tmp").iter().any(|t| t.line == 8),
+            "set local tmp should not bleed into get"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_keep_proc_runtime_scope_but_not_proc_local_def_locals() {
+        let source = concat!(
+            "proc Reader:\n",
+            "  ins:\n",
+            "    in1\n",
+            "  outs:\n",
+            "    out1\n",
+            "  params:\n",
+            "    gain = 1.0\n",
+            "  buffers:\n",
+            "    line: buffer[f32]\n",
+            "  init:\n",
+            "    state = 0.0\n",
+            "\n",
+            "  def helper(x):\n",
+            "    tmp = x + in1 + gain + state + line[0]\n",
+            "    return tmp\n",
+            "\n",
+            "  sample:\n",
+            "    out1 = helper(0.0)\n",
+            "    out1 = tmp\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        assert!(
+            find_tokens("x")
+                .iter()
+                .any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            "proc-local def param should be highlighted"
+        );
+        assert!(
+            find_tokens("tmp")
+                .iter()
+                .any(|t| t.line == 14 && t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE),
+            "proc-local def local should be highlighted"
+        );
+        assert!(
+            find_tokens("in1")
+                .iter()
+                .any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
+            "proc input should be highlighted inside proc-local def"
+        );
+        assert!(
+            find_tokens("gain")
+                .iter()
+                .any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            "proc param should be highlighted inside proc-local def"
+        );
+        assert!(
+            find_tokens("state")
+                .iter()
+                .any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "proc state should be highlighted inside proc-local def"
+        );
+        assert!(
+            find_tokens("line")
+                .iter()
+                .any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
+            "proc buffer should be highlighted inside proc-local def"
+        );
+        assert!(
+            !find_tokens("tmp").iter().any(|t| t.line == 18),
+            "proc-local def local should not bleed into sample"
         );
     }
 

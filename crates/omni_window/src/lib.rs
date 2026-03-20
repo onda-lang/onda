@@ -268,7 +268,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                         &webview,
                         false,
                         false,
-                        &omni_path_clone.display().to_string(),
+                        &display_path(&omni_path_clone),
                         "Stopped",
                         error.or_else(|| code.filter(|c| *c != 0).map(|c| format!("exit code {c}"))),
                         0,
@@ -316,7 +316,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                         &webview,
                         false,
                         false,
-                        &omni_path_clone.display().to_string(),
+                        &display_path(&omni_path_clone),
                         "Restarting...",
                         None,
                         0,
@@ -343,7 +343,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                                 &webview,
                                 false,
                                 false,
-                                &omni_path_clone.display().to_string(),
+                                &display_path(&omni_path_clone),
                                 "Failed to restart",
                                 Some(e),
                                 0,
@@ -400,7 +400,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                             &webview,
                             true,
                             bridge.is_connected(),
-                            &omni_path_clone.display().to_string(),
+                            &display_path(&omni_path_clone),
                             "Running",
                             None,
                             current_output_channels,
@@ -453,7 +453,7 @@ fn handle_webview_message(
                     webview,
                     true,
                     bridge.is_connected(),
-                    &omni_path.display().to_string(),
+                    &display_path(omni_path),
                     "Running",
                     None,
                     current_output_channels,
@@ -470,7 +470,7 @@ fn handle_webview_message(
                     webview,
                     false,
                     false,
-                    &omni_path.display().to_string(),
+                    &display_path(omni_path),
                     "Starting...",
                     None,
                     0,
@@ -548,6 +548,7 @@ fn handle_webview_message(
 
         "reset" => {
             preserved_params.clear();
+            preserved_events.clear();
             for param in current_params.iter_mut() {
                 let Some(name) = param_name(param).map(str::to_owned) else {
                     continue;
@@ -561,11 +562,12 @@ fn handle_webview_message(
                     &serde_json::json!({ "name": name, "value": default_value }),
                 );
             }
+            reset_event_values(current_events);
             sync_panel_state(
                 webview,
                 true,
                 bridge.is_connected(),
-                &omni_path.display().to_string(),
+                &display_path(omni_path),
                 "Running",
                 None,
                 current_output_channels,
@@ -653,7 +655,7 @@ fn handle_webview_message(
                     webview,
                     true,
                     bridge.is_connected(),
-                    &omni_path.display().to_string(),
+                    &display_path(omni_path),
                     "Running",
                     None,
                     current_output_channels,
@@ -677,7 +679,7 @@ fn handle_webview_message(
                     webview,
                     true,
                     bridge.is_connected(),
-                    &omni_path.display().to_string(),
+                    &display_path(omni_path),
                     "Running",
                     None,
                     current_output_channels,
@@ -848,6 +850,22 @@ fn set_event_values(event: &mut serde_json::Value, values: &[serde_json::Value])
     }
 }
 
+fn reset_event_values(events: &mut [serde_json::Value]) {
+    for event in events {
+        let Some(args) = event.get_mut("args").and_then(|value| value.as_array_mut()) else {
+            continue;
+        };
+        for arg in args {
+            let Some(default_value) = event_arg_default_value(arg) else {
+                continue;
+            };
+            if let Some(obj) = arg.as_object_mut() {
+                obj.insert("value".to_owned(), default_value);
+            }
+        }
+    }
+}
+
 fn param_default_value(param: &serde_json::Value) -> Option<serde_json::Value> {
     let default = param.get("default");
     if let Some(default) = default.filter(|value| !value.is_null()) {
@@ -858,6 +876,17 @@ fn param_default_value(param: &serde_json::Value) -> Option<serde_json::Value> {
         return Some(range_min.clone());
     }
     Some(match param.get("type").and_then(|value| value.as_str()) {
+        Some("bool") => serde_json::Value::Bool(false),
+        _ => serde_json::Value::Number(serde_json::Number::from(0)),
+    })
+}
+
+fn event_arg_default_value(arg: &serde_json::Value) -> Option<serde_json::Value> {
+    let default = arg.get("default");
+    if let Some(default) = default.filter(|value| !value.is_null()) {
+        return Some(default.clone());
+    }
+    Some(match arg.get("type").and_then(|value| value.as_str()) {
         Some("bool") => serde_json::Value::Bool(false),
         _ => serde_json::Value::Number(serde_json::Number::from(0)),
     })
@@ -896,4 +925,45 @@ fn send_to_webview(webview: &wry::WebView, msg_type: &str, payload: &serde_json:
 
 fn eval_js(webview: &wry::WebView, script: &str) {
     let _ = webview.evaluate_script(script);
+}
+
+fn display_path(path: &Path) -> String {
+    let raw = path.display().to_string();
+    raw.strip_prefix(r"\\?\")
+        .or_else(|| raw.strip_prefix("//?/"))
+        .unwrap_or(&raw)
+        .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_path, reset_event_values};
+    use serde_json::json;
+    use std::path::Path;
+
+    #[test]
+    fn display_path_strips_windows_verbatim_prefix() {
+        assert_eq!(
+            display_path(Path::new(
+                r"\\?\C:\Users\franc\Sources\omni-llvm\examples\sine.omni"
+            )),
+            r"C:\Users\franc\Sources\omni-llvm\examples\sine.omni"
+        );
+    }
+
+    #[test]
+    fn reset_event_values_restore_declared_defaults() {
+        let mut events = vec![json!({
+            "name": "note_on",
+            "args": [
+                { "name": "gate", "type": "bool", "default": true, "value": false },
+                { "name": "freq", "type": "f32", "default": 440.0, "value": 220.0 }
+            ]
+        })];
+
+        reset_event_values(&mut events);
+
+        assert_eq!(events[0]["args"][0]["value"], json!(true));
+        assert_eq!(events[0]["args"][1]["value"], json!(440.0));
+    }
 }

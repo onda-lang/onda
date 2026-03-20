@@ -675,21 +675,21 @@ pub(super) unsafe fn lower_expr(
                 }
             };
             let mut lower_array_arg =
-                    |arg_values: &mut Vec<LLVMValueRef>,
-                     arg_expr: &Expr,
-                     expected_elem_ty: Option<PrimitiveType>| unsafe {
-                lower_array_call_args_in_orc(
-                    &mut *ctx_ptr,
-                    locals,
-                    local_aliases,
-                    local_array_aliases,
-                    local_tuples,
-                    arg_values,
-                    arg_expr,
-                    name,
-                    expected_elem_ty,
-                )
-            };
+                |arg_values: &mut Vec<LLVMValueRef>,
+                 arg_expr: &Expr,
+                 expected_elem_ty: Option<PrimitiveType>| unsafe {
+                    lower_array_call_args_in_orc(
+                        &mut *ctx_ptr,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        local_tuples,
+                        arg_values,
+                        arg_expr,
+                        name,
+                        expected_elem_ty,
+                    )
+                };
             let mut lower_buffer_arg = |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr| unsafe {
                 lower_buffer_call_args_in_orc(
                     &mut *ctx_ptr,

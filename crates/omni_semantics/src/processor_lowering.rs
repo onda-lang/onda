@@ -64,7 +64,10 @@ fn coerce_fixed_array_event_default(
         push_semantic(
             expr_diag,
             errors,
-            format!("{context} default expects {len} elements, got {}", values.len()),
+            format!(
+                "{context} default expects {len} elements, got {}",
+                values.len()
+            ),
         );
         return None;
     }
@@ -93,23 +96,14 @@ fn coerce_typed_event_default(
 ) -> Option<TypedEventParamDefault> {
     let default_expr = param.default.as_ref()?;
     match typed_ty {
-        TypedEventParamType::Scalar(ty) => coerce_scalar_event_default(
-            default_expr,
-            *ty,
-            context,
-            options,
-            errors,
-        )
-        .map(TypedEventParamDefault::Scalar),
-        TypedEventParamType::Array { elem, len } => coerce_fixed_array_event_default(
-            default_expr,
-            *elem,
-            *len,
-            context,
-            options,
-            errors,
-        )
-        .map(TypedEventParamDefault::Array),
+        TypedEventParamType::Scalar(ty) => {
+            coerce_scalar_event_default(default_expr, *ty, context, options, errors)
+                .map(TypedEventParamDefault::Scalar)
+        }
+        TypedEventParamType::Array { elem, len } => {
+            coerce_fixed_array_event_default(default_expr, *elem, *len, context, options, errors)
+                .map(TypedEventParamDefault::Array)
+        }
         TypedEventParamType::Slice { .. } => {
             push_semantic(
                 DiagCtx::new(default_expr.loc()),

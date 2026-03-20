@@ -308,8 +308,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
             TypedFnParam::Array { elem_ty } => {
                 let arg_expr = if let Some(arg_expr) = resolved_arg {
                     arg_expr
-                } else if let Some(default_expr) =
-                    param_defaults.get(idx).and_then(|d| d.as_ref())
+                } else if let Some(default_expr) = param_defaults.get(idx).and_then(|d| d.as_ref())
                 {
                     resolved_args[idx] = Some(default_expr);
                     default_expr
@@ -440,8 +439,11 @@ pub(super) unsafe fn materialize_user_call_args_common(
         &str,
         bool,
     ) -> Result<(), Diagnostic>,
-    lower_array_arg:
-        &mut dyn FnMut(&mut Vec<LLVMValueRef>, &Expr, Option<PrimitiveType>) -> Result<(), Diagnostic>,
+    lower_array_arg: &mut dyn FnMut(
+        &mut Vec<LLVMValueRef>,
+        &Expr,
+        Option<PrimitiveType>,
+    ) -> Result<(), Diagnostic>,
     lower_buffer_arg: &mut dyn FnMut(&mut Vec<LLVMValueRef>, &Expr) -> Result<(), Diagnostic>,
 ) -> Result<(), Diagnostic> {
     if prepared.scalar_values.len() != prepared.scalar_types.len() {
