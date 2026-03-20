@@ -3,8 +3,8 @@ mod preview_session;
 
 pub use analysis_session::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use preview_session::{
-    PreviewBufferChannels, PreviewBufferInfo, PreviewBuildError, PreviewOptions, PreviewParamInfo,
-    PreviewSession,
+    PreviewBufferChannels, PreviewBufferInfo, PreviewBuildError, PreviewEventInfo,
+    PreviewEventParamInfo, PreviewEventValue, PreviewOptions, PreviewParamInfo, PreviewSession,
 };
 
 use std::collections::HashMap;
@@ -456,6 +456,51 @@ mod tests {
             .render_preview_block(&main)
             .expect("preview render with rebound buffer should succeed");
         assert!((second[0][0] - 1.0).abs() < 1e-6);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_exposes_and_triggers_scalar_events() {
+        let dir = mk_temp_dir("preview_events");
+        let main = dir.join("main.omni");
+
+        write_file(
+            &main,
+            "outs:\n  out1\n  out2\ninit:\n  note_state: i32 = 0\n  vel_state = 0.0\nevents:\n  note_on(note: i32, vel: f32, accent: bool):\n    note_state = note\n    vel_state = vel\n    if (accent):\n      vel_state = vel_state + 1.0\n  unsupported(values: f32[2]):\n    note_state = 1\nsample:\n  out1 = f32(note_state)\n  out2 = vel_state\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_preview(&main)
+            .expect("preview should compile and start");
+
+        let events = session.preview(&main).expect("active preview").event_info();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].name, "note_on");
+        assert_eq!(events[0].params.len(), 3);
+        assert_eq!(events[0].params[0].type_repr, "i32");
+        assert_eq!(events[0].params[1].type_repr, "f32");
+        assert_eq!(events[0].params[2].type_repr, "bool");
+
+        session
+            .preview_mut(&main)
+            .expect("active preview")
+            .trigger_event(
+                "note_on",
+                &[
+                    PreviewEventValue::Number(72.0),
+                    PreviewEventValue::Number(0.25),
+                    PreviewEventValue::Bool(true),
+                ],
+            )
+            .expect("event trigger should succeed");
+
+        let rendered = session
+            .render_preview_block(&main)
+            .expect("preview render after event should succeed");
+        assert!((rendered[0][0] - 72.0).abs() < 1e-6);
+        assert!((rendered[1][0] - 1.25).abs() < 1e-6);
 
         fs::remove_dir_all(&dir).ok();
     }

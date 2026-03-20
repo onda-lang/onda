@@ -32,7 +32,7 @@
         gap: 16px;
       }
 
-      .header, .buffers, .params, .scope-section {
+      .header, .buffers, .events, .params, .scope-section {
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -131,6 +131,12 @@
         display: flex;
         gap: 10px;
         margin-top: 10px;
+      }
+
+      .event-actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 12px;
       }
 
       .params-title {
@@ -317,6 +323,13 @@
         </div>
         <div class="buffers-list" id="buffers"></div>
       </section>
+      <section class="events" id="events-section">
+        <div class="params-header">
+          <div class="params-title">Events</div>
+          <div class="params-subtitle" id="events-summary"></div>
+        </div>
+        <div class="param-list" id="events"></div>
+      </section>
       <section class="params" id="params-section">
         <div class="params-header">
           <div class="params-title">Params</div>
@@ -384,6 +397,7 @@
         status: "Stopped",
         error: "",
         buffers: [],
+        events: [],
         params: [],
         inputDevices: [],
         outputDevices: [],
@@ -403,6 +417,9 @@
       const buffersSection = document.getElementById("buffers-section");
       const buffersSummaryNode = document.getElementById("buffers-summary");
       const buffersNode = document.getElementById("buffers");
+      const eventsSection = document.getElementById("events-section");
+      const eventsSummaryNode = document.getElementById("events-summary");
+      const eventsNode = document.getElementById("events");
       const paramsSection = document.getElementById("params-section");
       const paramsSummaryNode = document.getElementById("params-summary");
       const paramsNode = document.getElementById("params");
@@ -695,6 +712,47 @@
           });
       }
 
+      function initialEventArgValue(arg) {
+        if (arg.type === "bool") {
+          if (arg.value !== null && arg.value !== undefined) {
+            return arg.value !== 0;
+          }
+          return false;
+        }
+        if (arg.value !== null && arg.value !== undefined) {
+          const value = Number(arg.value);
+          return Number.isFinite(value) ? value : 0;
+        }
+        return 0;
+      }
+
+      function hydrateEvents(events, existingEvents) {
+        if (!Array.isArray(events)) return [];
+        const previousEvents = Array.isArray(existingEvents) ? existingEvents : [];
+        return events.map(function (event) {
+          const previous = previousEvents.find(function (item) {
+            return item && item.name === event.name;
+          });
+          const previousArgs = Array.isArray(previous && previous.args) ? previous.args : [];
+          return Object.assign({}, event, {
+            args: Array.isArray(event.args) ? event.args.map(function (arg, index) {
+              const previousArg = previousArgs.find(function (item) {
+                return item && item.name === arg.name;
+              }) || previousArgs[index];
+              const rawValue = previousArg && previousArg.value !== undefined && previousArg.value !== null
+                ? previousArg.value
+                : arg.value;
+              const value = rawValue !== undefined && rawValue !== null
+                ? rawValue
+                : initialEventArgValue(arg);
+              return Object.assign({}, arg, {
+                value: arg.type === "bool" ? Boolean(value) : (Number.isFinite(Number(value)) ? Number(value) : 0),
+              });
+            }) : [],
+          });
+        });
+      }
+
       // ---------------------------------------------------------------------------
       // Message handler
       // ---------------------------------------------------------------------------
@@ -715,6 +773,9 @@
         if (incoming.params) {
           incoming.params = hydrateParams(incoming.params);
         }
+        if (incoming.events) {
+          incoming.events = hydrateEvents(incoming.events, state.events);
+        }
         Object.assign(state, incoming);
         render();
       });
@@ -729,12 +790,15 @@
         errorNode.textContent = state.error || "";
         scopeSection.style.display = state.connected ? "block" : "none";
         const hasBuffers = state.buffers.length > 0;
+        const hasEvents = state.events.length > 0;
         const hasParams = state.params.length > 0;
         const hasIoSettings = state.inputDevices.length > 0 || state.outputDevices.length > 0;
         buffersSection.style.display = hasBuffers ? "" : "none";
+        eventsSection.style.display = hasEvents ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
         ioSettingsNode.style.display = hasIoSettings ? "grid" : "none";
         buffersSummaryNode.textContent = hasBuffers ? state.buffers.length + " buffer" + (state.buffers.length === 1 ? "" : "s") : "";
+        eventsSummaryNode.textContent = hasEvents ? state.events.length + " event" + (state.events.length === 1 ? "" : "s") : "";
         paramsSummaryNode.textContent = hasParams ? state.params.length + " control" + (state.params.length === 1 ? "" : "s") : "";
 
         startButton.disabled = !state.path || state.running;
@@ -781,6 +845,93 @@
             card.appendChild(actions);
 
             buffersNode.appendChild(card);
+          }
+        }
+
+        eventsNode.replaceChildren();
+        if (hasEvents) {
+          for (const event of state.events) {
+            const card = document.createElement("div");
+            card.className = "param";
+
+            const head = document.createElement("div");
+            head.className = "param-head";
+            head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
+            head.querySelector(".param-name").textContent = event.name;
+            head.querySelector(".param-type").textContent = Array.isArray(event.args) && event.args.length > 0
+              ? event.args.map((arg) => arg.name + ": " + arg.type).join(", ")
+              : "no args";
+            card.appendChild(head);
+
+            const controls = document.createElement("div");
+            controls.className = "param-controls";
+            card.appendChild(controls);
+
+            for (const arg of event.args || []) {
+              const setting = document.createElement("div");
+              setting.className = "param-setting";
+
+              const label = document.createElement("div");
+              label.className = "param-setting-label";
+              label.textContent = arg.name;
+              setting.appendChild(label);
+
+              if (arg.type === "bool") {
+                const toggle = document.createElement("label");
+                toggle.className = "param-toggle";
+                const input = document.createElement("input");
+                input.type = "checkbox";
+                input.checked = Boolean(arg.value);
+                input.disabled = !state.connected;
+                const text = document.createElement("span");
+                text.textContent = input.checked ? "On" : "Off";
+                input.addEventListener("change", () => {
+                  arg.value = input.checked;
+                  text.textContent = input.checked ? "On" : "Off";
+                });
+                toggle.append(input, text);
+                setting.appendChild(toggle);
+              } else {
+                const number = document.createElement("input");
+                number.className = "param-number";
+                number.type = "number";
+                number.step = arg.type === "i32" || arg.type === "i64" ? "1" : "0.001";
+                number.value = String(typeof arg.value === "number" ? arg.value : 0);
+                number.disabled = !state.connected;
+                number.addEventListener("input", () => {
+                  const nextValue = Number(number.value);
+                  if (Number.isFinite(nextValue)) {
+                    arg.value = nextValue;
+                  }
+                });
+                number.addEventListener("change", () => {
+                  const nextValue = Number(number.value);
+                  arg.value = Number.isFinite(nextValue) ? nextValue : 0;
+                  number.value = String(arg.value);
+                });
+                setting.appendChild(number);
+              }
+
+              controls.appendChild(setting);
+            }
+
+            const actions = document.createElement("div");
+            actions.className = "event-actions";
+            const trigger = document.createElement("button");
+            trigger.className = "secondary";
+            trigger.textContent = "Trigger";
+            trigger.disabled = !state.connected;
+            trigger.addEventListener("click", () => {
+              hostBridge.postMessage({
+                type: "triggerEvent",
+                name: event.name,
+                values: (event.args || []).map((arg) => arg.type === "bool" ? Boolean(arg.value) : Number(arg.value)),
+              });
+            });
+            actions.appendChild(trigger);
+            card.appendChild(actions);
+
+            eventsNode.appendChild(card);
           }
         }
 

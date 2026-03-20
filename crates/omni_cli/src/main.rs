@@ -21,7 +21,7 @@ use omni_codegen_llvm::{
 };
 use omni_daemon::{
     DaemonConfig, DaemonSession, PreviewBufferChannels, PreviewBufferInfo, PreviewBuildError,
-    PreviewOptions, PreviewParamInfo,
+    PreviewEventInfo, PreviewEventValue, PreviewOptions, PreviewParamInfo,
 };
 use omni_frontend::{
     parse_program_file, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
@@ -999,6 +999,7 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             "port": port,
             "params": startup.params.iter().map(preview_param_json).collect::<Vec<_>>(),
             "buffers": startup.buffers.iter().map(preview_buffer_json).collect::<Vec<_>>(),
+            "events": startup.events.iter().map(preview_event_json).collect::<Vec<_>>(),
             "outputChannels": startup.output_channels,
             "inputDevices": startup.input_devices,
             "outputDevices": startup.output_devices,
@@ -1025,6 +1026,13 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             eprintln!("{}", format_preview_param_info(&startup.params));
         } else {
             println!("{}", format_preview_param_info(&startup.params));
+        }
+    }
+    if launch.show_meta && !startup.events.is_empty() {
+        if launch.control_json {
+            eprintln!("{}", format_preview_event_info(&startup.events));
+        } else {
+            println!("{}", format_preview_event_info(&startup.events));
         }
     }
     if startup.output_channels == 0 {
@@ -1422,6 +1430,7 @@ struct PlaybackStartup {
     output_channels: usize,
     params: Vec<PreviewParamInfo>,
     buffers: Vec<PreviewBufferInfo>,
+    events: Vec<PreviewEventInfo>,
     input_devices: Vec<String>,
     output_devices: Vec<String>,
     current_input_device: Option<String>,
@@ -1435,9 +1444,17 @@ enum PlaybackControlCommand {
     GetBuffers {
         reply: mpsc::Sender<Result<Vec<PreviewBufferInfo>, String>>,
     },
+    GetEvents {
+        reply: mpsc::Sender<Result<Vec<PreviewEventInfo>, String>>,
+    },
     SetParam {
         name: String,
         value: f64,
+        reply: Option<mpsc::Sender<Result<(), String>>>,
+    },
+    TriggerEvent {
+        name: String,
+        values: Vec<PreviewEventValue>,
         reply: Option<mpsc::Sender<Result<(), String>>>,
     },
     BindBufferWav {
@@ -1519,6 +1536,8 @@ struct PlaybackControlRequest {
     path: Option<String>,
     #[serde(default)]
     value: Option<Value>,
+    #[serde(default)]
+    values: Option<Vec<Value>>,
     #[serde(default, rename = "maxFrames")]
     max_frames: Option<usize>,
 }
@@ -1566,6 +1585,11 @@ fn spawn_preview_render_thread(
             } else {
                 Vec::new()
             };
+            let events = if launch.show_meta || launch.control_json {
+                preview.event_info()
+            } else {
+                Vec::new()
+            };
             let input_devices = if launch.control_json {
                 list_input_devices(&cpal::default_host())
             } else {
@@ -1594,6 +1618,7 @@ fn spawn_preview_render_thread(
                 output_channels,
                 params,
                 buffers,
+                events,
                 input_devices,
                 output_devices,
                 current_input_device: launch.input_device.clone(),
@@ -1615,6 +1640,7 @@ fn spawn_preview_render_thread(
                         output_channels: startup.output_channels,
                         params: startup.params.clone(),
                         buffers: startup.buffers.clone(),
+                        events: startup.events.clone(),
                         input_devices: startup.input_devices.clone(),
                         output_devices: startup.output_devices.clone(),
                         current_input_device: startup.current_input_device.clone(),
@@ -1664,6 +1690,18 @@ fn spawn_preview_render_thread(
                                 .ok_or_else(|| "preview is not active".to_owned());
                             let _ = reply.send(result);
                         }
+                        PlaybackControlCommand::GetEvents { reply } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
+                            let result = session
+                                .preview(&launch.input)
+                                .map(|preview| preview.event_info())
+                                .ok_or_else(|| "preview is not active".to_owned());
+                            let _ = reply.send(result);
+                        }
                         PlaybackControlCommand::SetParam { name, value, reply } => {
                             let entry = pending_param_updates.entry(name).or_insert_with(|| {
                                 PendingParamUpdate {
@@ -1674,6 +1712,31 @@ fn spawn_preview_render_thread(
                             entry.value = value;
                             if let Some(reply) = reply {
                                 entry.replies.push(reply);
+                            }
+                        }
+                        PlaybackControlCommand::TriggerEvent {
+                            name,
+                            values,
+                            reply,
+                        } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
+                            let result = session
+                                .preview_mut(&launch.input)
+                                .ok_or_else(|| "preview is not active".to_owned())
+                                .and_then(|preview| {
+                                    preview.trigger_event(&name, &values).map_err(|diag| {
+                                        format_single_diagnostic(
+                                            "daemon play trigger event failed",
+                                            &diag,
+                                        )
+                                    })
+                                });
+                            if let Some(reply) = reply {
+                                let _ = reply.send(result);
                             }
                         }
                         PlaybackControlCommand::BindBufferWav { name, path, reply } => {
@@ -1845,6 +1908,18 @@ fn preview_buffer_json(buffer: &PreviewBufferInfo) -> Value {
     })
 }
 
+fn preview_event_json(event: &PreviewEventInfo) -> Value {
+    json!({
+        "index": event.index,
+        "name": event.name,
+        "args": event.params.iter().map(|param| json!({
+            "index": param.index,
+            "name": param.name,
+            "type": param.type_repr,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io::Error> {
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
@@ -1987,6 +2062,31 @@ fn preview_control_response(
                     }),
                 }))
             }
+            "getEvents" => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                .send(PlaybackControlCommand::GetEvents { reply: reply_tx })
+                .map_err(|_| "preview control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "preview control reply channel closed".to_owned())
+                })
+                .map(|result| Some(match result {
+                    Ok(events) => json!({
+                        "id": request_id,
+                        "ok": true,
+                        "result": {
+                            "events": events.iter().map(preview_event_json).collect::<Vec<_>>(),
+                        }
+                    }),
+                    Err(err) => json!({
+                        "id": request_id,
+                        "ok": false,
+                        "error": err,
+                    }),
+                }))
+            }
             "setParam" => {
                 let result = (|| -> Result<Option<Value>, String> {
                     let name = request
@@ -2023,6 +2123,62 @@ fn preview_control_response(
                         .send(PlaybackControlCommand::SetParam {
                             name,
                             value,
+                            reply: Some(reply_tx),
+                        })
+                        .map_err(|_| "preview control channel closed".to_owned())?;
+                    match reply_rx
+                        .recv()
+                        .map_err(|_| "preview control reply channel closed".to_owned())?
+                    {
+                        Ok(()) => Ok(request_id.clone().map(|id| {
+                            json!({
+                                "id": id,
+                                "ok": true,
+                            })
+                        })),
+                        Err(err) => Ok(request_id.clone().map(|id| {
+                            json!({
+                                "id": id,
+                                "ok": false,
+                                "error": err,
+                            })
+                        })),
+                    }
+                })();
+                result
+            }
+            "triggerEvent" => {
+                let result = (|| -> Result<Option<Value>, String> {
+                    let name = request
+                        .name
+                        .ok_or_else(|| "triggerEvent requires 'name'".to_owned())?;
+                    let raw_values = request.values.unwrap_or_default();
+                    let values = raw_values
+                        .into_iter()
+                        .map(|value| match value {
+                            Value::Bool(value) => Ok(PreviewEventValue::Bool(value)),
+                            Value::Number(value) => value
+                                .as_f64()
+                                .map(PreviewEventValue::Number)
+                                .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
+                            _ => Err("triggerEvent values must be numbers or booleans".to_owned()),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if request_id.is_none() {
+                        control_tx
+                            .send(PlaybackControlCommand::TriggerEvent {
+                                name,
+                                values,
+                                reply: None,
+                            })
+                            .map_err(|_| "preview control channel closed".to_owned())?;
+                        return Ok(None);
+                    }
+                    let (reply_tx, reply_rx) = mpsc::channel();
+                    control_tx
+                        .send(PlaybackControlCommand::TriggerEvent {
+                            name,
+                            values,
                             reply: Some(reply_tx),
                         })
                         .map_err(|_| "preview control channel closed".to_owned())?;
@@ -2247,6 +2403,28 @@ fn format_preview_param_info(params: &[PreviewParamInfo]) -> String {
             "  {}: {}{}{}{}",
             param.name, param.type_repr, default, range, scalar
         ));
+    }
+    lines.join("\n")
+}
+
+fn format_preview_event_info(events: &[PreviewEventInfo]) -> String {
+    let mut lines = Vec::with_capacity(events.len() + 1);
+    lines.push("Preview events:".to_owned());
+    for event in events {
+        let signature = if event.params.is_empty() {
+            "()".to_owned()
+        } else {
+            format!(
+                "({})",
+                event
+                    .params
+                    .iter()
+                    .map(|param| format!("{}: {}", param.name, param.type_repr))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        lines.push(format!("  {}{}", event.name, signature));
     }
     lines.join("\n")
 }
@@ -3552,7 +3730,7 @@ mod tests {
     use super::{
         format_diag_snippet, format_expr, format_program, parse_args, preview_control_response,
         Command, DaemonCommand, PlaybackControlCommand, PlaybackControlRequest, PreviewCommand,
-        ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES,
+        PreviewEventValue, ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES,
     };
     use omni_frontend::{
         Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
@@ -3822,6 +4000,7 @@ mod tests {
                 name: Some("gain".to_owned()),
                 path: None,
                 value: Some(Value::from(0.5)),
+                values: None,
                 max_frames: None,
             },
             &control_tx,
@@ -3836,6 +4015,49 @@ mod tests {
                 assert!(reply.is_none());
             }
             _ => panic!("expected setParam command"),
+        }
+    }
+
+    #[test]
+    fn preview_trigger_event_notification_enqueues_full_payload() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let response = preview_control_response(
+            PlaybackControlRequest {
+                id: None,
+                command: "triggerEvent".to_owned(),
+                name: Some("note_on".to_owned()),
+                path: None,
+                value: None,
+                values: Some(vec![Value::from(60), Value::from(0.75), Value::Bool(true)]),
+                max_frames: None,
+            },
+            &control_tx,
+            &scope_ring,
+        );
+
+        assert!(response.is_none());
+        match control_rx
+            .try_recv()
+            .expect("triggerEvent should be queued")
+        {
+            PlaybackControlCommand::TriggerEvent {
+                name,
+                values,
+                reply,
+            } => {
+                assert_eq!(name, "note_on");
+                assert_eq!(
+                    values,
+                    vec![
+                        PreviewEventValue::Number(60.0),
+                        PreviewEventValue::Number(0.75),
+                        PreviewEventValue::Bool(true),
+                    ]
+                );
+                assert!(reply.is_none());
+            }
+            _ => panic!("expected triggerEvent command"),
         }
     }
 }

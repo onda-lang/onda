@@ -22,6 +22,7 @@ pub struct ReadyEvent {
     pub port: u16,
     pub params: Vec<Value>,
     pub buffers: Vec<Value>,
+    pub events: Vec<Value>,
     pub output_channels: usize,
 }
 
@@ -32,6 +33,7 @@ struct RawReadyEvent {
     port: Option<u16>,
     params: Option<Vec<Value>>,
     buffers: Option<Vec<Value>>,
+    events: Option<Vec<Value>>,
     #[serde(rename = "outputChannels")]
     output_channels: Option<usize>,
 }
@@ -120,6 +122,7 @@ impl ChildSession {
                             port: raw.port.unwrap_or(0),
                             params: raw.params.unwrap_or_default(),
                             buffers: raw.buffers.unwrap_or_default(),
+                            events: raw.events.unwrap_or_default(),
                             output_channels: raw.output_channels.unwrap_or(0),
                         };
                         let _ = stdout_proxy.send_event(UserEvent::ChildReady(ready));

@@ -36,12 +36,36 @@ interface PatchBufferPayload {
 
 interface PatchBufferState extends PatchBufferPayload {}
 
+interface PatchEventArgPayload {
+  index: number;
+  name: string;
+  type: string;
+  value?: PatchScalarValue;
+}
+
+interface PatchEventArgState extends PatchEventArgPayload {
+  value: PatchScalarValue;
+}
+
+interface PatchEventPayload {
+  index: number;
+  name: string;
+  args: PatchEventArgPayload[];
+}
+
+interface PatchEventState {
+  index: number;
+  name: string;
+  args: PatchEventArgState[];
+}
+
 interface PatchReadyEvent {
   event: "ready";
   path: string;
   port: number;
   params: PatchParamPayload[];
   buffers: PatchBufferPayload[];
+  events: PatchEventPayload[];
   outputChannels: number;
   inputDevices: string[];
   outputDevices: string[];
@@ -57,6 +81,7 @@ interface PatchPanelState {
   error?: string;
   outputChannels: number;
   buffers: PatchBufferState[];
+  events: PatchEventState[];
   params: PatchParamState[];
   inputDevices: string[];
   outputDevices: string[];
@@ -93,6 +118,7 @@ let patchPanelState: PatchPanelState = {
   status: "Stopped",
   outputChannels: 0,
   buffers: [],
+  events: [],
   params: [],
   inputDevices: [],
   outputDevices: [],
@@ -165,6 +191,8 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
   ensurePatchPanel();
   const preservedParams =
     patchPanelState.path === fsPath ? patchPanelState.params : [];
+  const preservedEvents =
+    patchPanelState.path === fsPath ? patchPanelState.events : [];
   patchPanelState = {
     running: false,
     connected: false,
@@ -173,6 +201,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
     error: undefined,
     outputChannels: patchPanelState.path === fsPath ? patchPanelState.outputChannels : 0,
     buffers: patchPanelState.path === fsPath ? patchPanelState.buffers : [],
+    events: preservedEvents,
     params: preservedParams,
     inputDevices: patchPanelState.inputDevices,
     outputDevices: patchPanelState.outputDevices,
@@ -397,6 +426,7 @@ function handlePatchStdoutLine(line: string): void {
         error: undefined,
         outputChannels: payload.outputChannels ?? 0,
         buffers: mergePatchBuffers(payload.buffers ?? [], patchPanelState.buffers),
+        events: mergePatchEvents(payload.events ?? [], patchPanelState.events),
         params: mergePatchParams(payload.params, patchPanelState.params),
         inputDevices: payload.inputDevices ?? [],
         outputDevices: payload.outputDevices ?? [],
@@ -444,6 +474,27 @@ function mergePatchBuffers(
   });
 }
 
+function mergePatchEvents(
+  events: PatchEventPayload[],
+  existing: PatchEventState[],
+): PatchEventState[] {
+  return events.map((event) => {
+    const previous = existing.find((item) => item.name === event.name);
+    return {
+      ...event,
+      args: (event.args ?? []).map((arg) => {
+        const previousArg =
+          previous?.args.find((item) => item.name === arg.name) ??
+          previous?.args[arg.index];
+        return {
+          ...arg,
+          value: previousArg?.value ?? initialEventArgValue(arg),
+        };
+      }),
+    };
+  });
+}
+
 function connectPatchControl(port: number): void {
   closePatchControlSocket();
 
@@ -460,7 +511,7 @@ function connectPatchControl(port: number): void {
       error: undefined,
     };
     postPatchPanelState();
-    void Promise.all([refreshPatchParams(), refreshPatchBuffers()]).then(() => {
+    void Promise.all([refreshPatchParams(), refreshPatchBuffers(), refreshPatchEvents()]).then(() => {
       reapplyCachedPatchParams();
       reapplyCachedPatchBuffers();
     });
@@ -581,6 +632,27 @@ async function refreshPatchBuffers(): Promise<void> {
   }
 }
 
+async function refreshPatchEvents(): Promise<void> {
+  try {
+    const result = await sendPatchControlRequest<{ events: PatchEventPayload[] }>("getEvents");
+    if (!result || !Array.isArray(result.events)) {
+      return;
+    }
+    patchPanelState = {
+      ...patchPanelState,
+      events: mergePatchEvents(result.events, patchPanelState.events),
+    };
+    postPatchPanelState();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    patchPanelState = {
+      ...patchPanelState,
+      error: message,
+    };
+    postPatchPanelState();
+  }
+}
+
 async function reapplyCachedPatchParams(): Promise<void> {
   for (const param of patchPanelState.params) {
     if (param.value === null) {
@@ -642,6 +714,21 @@ function initialParamValue(param: Pick<PatchParamPayload, "type" | "value" | "de
   return 0;
 }
 
+function initialEventArgValue(
+  arg: Pick<PatchEventArgPayload, "type" | "value">,
+): PatchScalarValue {
+  if (arg.type === "bool") {
+    if (arg.value !== null && arg.value !== undefined) {
+      return arg.value !== 0;
+    }
+    return false;
+  }
+  if (arg.value !== null && arg.value !== undefined) {
+    return arg.value;
+  }
+  return 0;
+}
+
 function patchParamDefaultValue(param: PatchParamState): PatchScalarValue {
   return initialParamValue(param);
 }
@@ -682,6 +769,64 @@ function applyPatchParamChange(name: string, value: PatchScalarValue): void {
     return;
   }
   queuePatchParamSend(name, value);
+}
+
+function updatePatchEventState(
+  name: string,
+  update: (event: PatchEventState) => PatchEventState,
+): PatchEventState | undefined {
+  let nextEvent: PatchEventState | undefined;
+  patchPanelState = {
+    ...patchPanelState,
+    events: patchPanelState.events.map((event) => {
+      if (event.name !== name) {
+        return event;
+      }
+      nextEvent = update(event);
+      return nextEvent;
+    }),
+  };
+  return nextEvent;
+}
+
+async function triggerPatchEvent(
+  name: string,
+  values: PatchScalarValue[],
+): Promise<void> {
+  const event = updatePatchEventState(name, (current) => ({
+    ...current,
+    args: current.args.map((arg, index) => ({
+      ...arg,
+      value: values[index] ?? arg.value,
+    })),
+  }));
+  if (!event) {
+    return;
+  }
+  postPatchPanelState();
+
+  if (!patchPanelState.connected) {
+    return;
+  }
+
+  try {
+    await sendPatchControlRequest("triggerEvent", {
+      name,
+      values: event.args.map((arg) => arg.value),
+    });
+    patchPanelState = {
+      ...patchPanelState,
+      error: undefined,
+    };
+    postPatchPanelState();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    patchPanelState = {
+      ...patchPanelState,
+      error: message,
+    };
+    postPatchPanelState();
+  }
 }
 
 function resetPatchParams(): void {
@@ -784,6 +929,7 @@ function clearPatchPanelMemory(): void {
   patchPanelState = {
     ...patchPanelState,
     buffers: [],
+    events: [],
     params: [],
     inputDevices: [],
     outputDevices: [],
@@ -882,6 +1028,7 @@ function ensurePatchPanel(): void {
       path?: string;
       name?: string | null;
       value?: PatchScalarValue;
+      values?: PatchScalarValue[];
       filePath?: string;
     };
     switch (payload.type) {
@@ -889,7 +1036,7 @@ function ensurePatchPanel(): void {
         patchPanelReady = true;
         postPatchPanelState();
         if (patchPanelState.connected) {
-          void Promise.all([refreshPatchParams(), refreshPatchBuffers()]);
+          void Promise.all([refreshPatchParams(), refreshPatchBuffers(), refreshPatchEvents()]);
         }
         break;
       case "start":
@@ -904,6 +1051,11 @@ function ensurePatchPanel(): void {
       case "setParam":
         if (typeof payload.name === "string") {
           applyPatchParamChange(payload.name, payload.value ?? null);
+        }
+        break;
+      case "triggerEvent":
+        if (typeof payload.name === "string") {
+          await triggerPatchEvent(payload.name, payload.values ?? []);
         }
         break;
       case "setInputDevice":
@@ -934,7 +1086,7 @@ function ensurePatchPanel(): void {
   patchPanel.webview.html = renderSharedPreviewHtml(patchPanel.webview);
   postPatchPanelState();
   if (patchPanelState.connected) {
-    void Promise.all([refreshPatchParams(), refreshPatchBuffers()]);
+    void Promise.all([refreshPatchParams(), refreshPatchBuffers(), refreshPatchEvents()]);
   }
 }
 

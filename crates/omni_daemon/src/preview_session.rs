@@ -2,13 +2,13 @@ use std::path::{Path, PathBuf};
 use std::{collections::HashMap, mem};
 
 use omni_codegen_llvm::{
-    lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, ExecutionBackend,
-    JitProgram,
+    lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, DeclaredEvent,
+    DeclaredEventParam, ExecutionBackend, JitProgram,
 };
 use omni_frontend::{Diagnostic, PrimitiveType};
 use omni_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, process_bound, reset_instance_state,
-    set_param_by_index, Instance, InstanceConfig,
+    set_param_by_index, trigger_event_by_index, Instance, InstanceConfig,
 };
 use omni_semantics::{AnalysisOptions, TypedProgram};
 
@@ -72,6 +72,26 @@ pub struct PreviewBufferInfo {
     pub type_repr: String,
     pub channels: PreviewBufferChannels,
     pub loaded_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviewEventInfo {
+    pub index: usize,
+    pub name: String,
+    pub params: Vec<PreviewEventParamInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviewEventParamInfo {
+    pub index: usize,
+    pub name: String,
+    pub type_repr: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreviewEventValue {
+    Bool(bool),
+    Number(f64),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -249,6 +269,31 @@ impl PreviewSession {
             .collect()
     }
 
+    pub fn event_info(&self) -> Vec<PreviewEventInfo> {
+        (0..self.jit.event_count())
+            .filter_map(|index| {
+                let desc = self.jit.event_descriptor(index)?;
+                if !is_preview_supported_event(desc) {
+                    return None;
+                }
+                Some(PreviewEventInfo {
+                    index,
+                    name: desc.name().to_owned(),
+                    params: desc
+                        .params()
+                        .iter()
+                        .enumerate()
+                        .map(|(param_index, param)| PreviewEventParamInfo {
+                            index: param_index,
+                            name: param.name().to_owned(),
+                            type_repr: param.type_repr(),
+                        })
+                        .collect(),
+                })
+            })
+            .collect()
+    }
+
     pub fn set_param_f64(&mut self, name: &str, value: f64) -> Result<(), Diagnostic> {
         let Some(index) = self.jit.param_index(name) else {
             return Err(Diagnostic::runtime(
@@ -282,6 +327,32 @@ impl PreviewSession {
             self.param_runtime_values.insert(name.to_owned(), value);
         }
         Ok(())
+    }
+
+    pub fn trigger_event(
+        &mut self,
+        name: &str,
+        values: &[PreviewEventValue],
+    ) -> Result<(), Diagnostic> {
+        let Some(index) = self.jit.event_index(name) else {
+            return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
+        };
+        let Some(desc) = self.jit.event_descriptor(index) else {
+            return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
+        };
+        if !is_preview_supported_event(desc) {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "preview only supports host events with primitive scalar parameters, but '{}' is {}",
+                    name,
+                    format_event_signature(desc)
+                ),
+                0,
+                0,
+            ));
+        }
+        let payload = scalar_event_payload_bytes(desc, values)?;
+        trigger_event_by_index(&mut self.instance, index, &payload)
     }
 
     pub fn render_block(&mut self) -> Result<Vec<Vec<f32>>, Diagnostic> {
@@ -573,6 +644,122 @@ fn default_preview_buffer_channels(channels: DeclaredBufferChannels) -> usize {
 
 fn should_smooth_preview_param(ty: PrimitiveType) -> bool {
     matches!(ty, PrimitiveType::F32 | PrimitiveType::F64)
+}
+
+fn is_preview_supported_event(desc: &DeclaredEvent) -> bool {
+    desc.params()
+        .iter()
+        .all(|param| !param.is_slice() && param.array_len() == 1)
+}
+
+fn format_event_signature(desc: &DeclaredEvent) -> String {
+    if desc.params().is_empty() {
+        return format!("{}()", desc.name());
+    }
+    let params = desc
+        .params()
+        .iter()
+        .map(|param| format!("{}: {}", param.name(), param.type_repr()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}({params})", desc.name())
+}
+
+fn scalar_event_payload_bytes(
+    desc: &DeclaredEvent,
+    values: &[PreviewEventValue],
+) -> Result<Vec<u8>, Diagnostic> {
+    if values.len() != desc.params().len() {
+        return Err(Diagnostic::runtime(
+            format!(
+                "event '{}' expects {} scalar values, got {}",
+                desc.name(),
+                desc.params().len(),
+                values.len()
+            ),
+            0,
+            0,
+        ));
+    }
+
+    let mut out = Vec::with_capacity(desc.payload_bytes().unwrap_or(0));
+    for (param, value) in desc.params().iter().zip(values.iter()) {
+        append_scalar_event_value(&mut out, desc.name(), param, value)?;
+    }
+    Ok(out)
+}
+
+fn append_scalar_event_value(
+    out: &mut Vec<u8>,
+    event_name: &str,
+    param: &DeclaredEventParam,
+    value: &PreviewEventValue,
+) -> Result<(), Diagnostic> {
+    match param.elem_ty() {
+        PrimitiveType::F32 => out.extend_from_slice(
+            &(event_number_value(event_name, param, value)? as f32).to_ne_bytes(),
+        ),
+        PrimitiveType::F64 => {
+            out.extend_from_slice(&event_number_value(event_name, param, value)?.to_ne_bytes())
+        }
+        PrimitiveType::I32 => out.extend_from_slice(
+            &(event_number_value(event_name, param, value)? as i32).to_ne_bytes(),
+        ),
+        PrimitiveType::I64 => out.extend_from_slice(
+            &(event_number_value(event_name, param, value)? as i64).to_ne_bytes(),
+        ),
+        PrimitiveType::Bool => {
+            let encoded = match value {
+                PreviewEventValue::Bool(value) => {
+                    if *value {
+                        1_i8
+                    } else {
+                        0_i8
+                    }
+                }
+                PreviewEventValue::Number(value) => {
+                    if *value == 0.0 {
+                        0_i8
+                    } else if *value == 1.0 {
+                        1_i8
+                    } else {
+                        return Err(Diagnostic::runtime(
+                            format!(
+                                "event '{}' parameter '{}' requires a boolean value, got {value}",
+                                event_name,
+                                param.name()
+                            ),
+                            0,
+                            0,
+                        ));
+                    }
+                }
+            };
+            out.extend_from_slice(&encoded.to_ne_bytes());
+        }
+    }
+    Ok(())
+}
+
+fn event_number_value(
+    event_name: &str,
+    param: &DeclaredEventParam,
+    value: &PreviewEventValue,
+) -> Result<f64, Diagnostic> {
+    match value {
+        PreviewEventValue::Number(value) => Ok(*value),
+        PreviewEventValue::Bool(value) => Err(Diagnostic::runtime(
+            format!(
+                "event '{}' parameter '{}' requires a numeric {} value, got {}",
+                event_name,
+                param.name(),
+                param.type_repr(),
+                value
+            ),
+            0,
+            0,
+        )),
+    }
 }
 
 fn default_preview_param_value(desc: &omni_codegen_llvm::DeclaredIo) -> f64 {

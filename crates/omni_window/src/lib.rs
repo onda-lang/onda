@@ -157,8 +157,10 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
     // Preserved state for restarts.
     let mut preserved_params: Vec<(String, serde_json::Value)> = Vec::new();
     let mut preserved_buffers: Vec<(String, String)> = Vec::new();
+    let mut preserved_events: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
     let mut current_params: Vec<serde_json::Value> = Vec::new();
     let mut current_buffers: Vec<serde_json::Value> = Vec::new();
+    let mut current_events: Vec<serde_json::Value> = Vec::new();
     let mut current_output_channels = 0usize;
     let omni_path_clone = omni_path.clone();
 
@@ -217,6 +219,8 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                     apply_preserved_param_state(&mut current_params, &preserved_params);
                     current_buffers = ready.buffers;
                     apply_preserved_buffer_state(&mut current_buffers, &preserved_buffers);
+                    current_events = ready.events;
+                    apply_preserved_event_state(&mut current_events, &preserved_events);
                     current_output_channels = ready.output_channels;
 
                     sync_panel_state(
@@ -228,6 +232,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                         None,
                         current_output_channels,
                         &current_buffers,
+                        &current_events,
                         &current_params,
                         &input_devices,
                         &output_devices,
@@ -269,6 +274,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                         0,
                         &[],
                         &[],
+                        &[],
                         &input_devices,
                         &output_devices,
                         current_options.input_device.as_deref(),
@@ -284,8 +290,10 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                             &bridge,
                             &mut preserved_params,
                             &mut preserved_buffers,
+                            &mut preserved_events,
                             &mut current_params,
                             &mut current_buffers,
+                            &mut current_events,
                             current_output_channels,
                             &omni_path_clone,
                             &mut current_options,
@@ -314,6 +322,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                         0,
                         &[],
                         &[],
+                        &[],
                         &input_devices,
                         &output_devices,
                         current_options.input_device.as_deref(),
@@ -338,6 +347,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                                 "Failed to restart",
                                 Some(e),
                                 0,
+                                &[],
                                 &[],
                                 &[],
                                 &input_devices,
@@ -395,6 +405,7 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
                             None,
                             current_output_channels,
                             &current_buffers,
+                            &current_events,
                             &current_params,
                             &input_devices,
                             &output_devices,
@@ -417,8 +428,10 @@ fn handle_webview_message(
     bridge: &IpcBridge,
     preserved_params: &mut Vec<(String, serde_json::Value)>,
     preserved_buffers: &mut Vec<(String, String)>,
+    preserved_events: &mut Vec<(String, Vec<serde_json::Value>)>,
     current_params: &mut Vec<serde_json::Value>,
     current_buffers: &mut Vec<serde_json::Value>,
+    current_events: &mut Vec<serde_json::Value>,
     current_output_channels: usize,
     omni_path: &Path,
     options: &mut PreviewWindowOptions,
@@ -433,6 +446,7 @@ fn handle_webview_message(
         "webviewReady" => {
             if !current_params.is_empty()
                 || !current_buffers.is_empty()
+                || !current_events.is_empty()
                 || current_output_channels > 0
             {
                 sync_panel_state(
@@ -444,6 +458,7 @@ fn handle_webview_message(
                     None,
                     current_output_channels,
                     current_buffers,
+                    current_events,
                     current_params,
                     input_devices,
                     output_devices,
@@ -459,6 +474,7 @@ fn handle_webview_message(
                     "Starting...",
                     None,
                     0,
+                    &[],
                     &[],
                     &[],
                     input_devices,
@@ -554,6 +570,7 @@ fn handle_webview_message(
                 None,
                 current_output_channels,
                 current_buffers,
+                current_events,
                 current_params,
                 input_devices,
                 output_devices,
@@ -577,6 +594,26 @@ fn handle_webview_message(
                     preserved_params.push((name.to_owned(), value.clone()));
                 }
                 update_param_value(current_params, name, value.clone());
+            }
+        }
+
+        "triggerEvent" => {
+            if let Some(name) = msg.get("name").and_then(|v| v.as_str()) {
+                let values = msg
+                    .get("values")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                bridge.send_command(
+                    "triggerEvent",
+                    &serde_json::json!({ "name": name, "values": values }),
+                );
+                if let Some(entry) = preserved_events.iter_mut().find(|(n, _)| n == name) {
+                    entry.1 = values.clone();
+                } else {
+                    preserved_events.push((name.to_owned(), values.clone()));
+                }
+                update_event_values(current_events, name, &values);
             }
         }
 
@@ -621,6 +658,7 @@ fn handle_webview_message(
                     None,
                     current_output_channels,
                     current_buffers,
+                    current_events,
                     current_params,
                     input_devices,
                     output_devices,
@@ -644,6 +682,7 @@ fn handle_webview_message(
                     None,
                     current_output_channels,
                     current_buffers,
+                    current_events,
                     current_params,
                     input_devices,
                     output_devices,
@@ -666,6 +705,7 @@ fn sync_panel_state(
     error: Option<String>,
     output_channels: usize,
     buffers: &[serde_json::Value],
+    events: &[serde_json::Value],
     params: &[serde_json::Value],
     input_devices: &[String],
     output_devices: &[String],
@@ -680,6 +720,7 @@ fn sync_panel_state(
         "error": error,
         "outputChannels": output_channels,
         "buffers": buffers,
+        "events": events,
         "params": params,
         "inputDevices": input_devices,
         "outputDevices": output_devices,
@@ -722,10 +763,36 @@ fn apply_preserved_buffer_state(
     }
 }
 
+fn apply_preserved_event_state(
+    events: &mut [serde_json::Value],
+    preserved_events: &[(String, Vec<serde_json::Value>)],
+) {
+    for event in events {
+        let Some(name) = event_name(event).map(str::to_owned) else {
+            continue;
+        };
+        if let Some((_, values)) = preserved_events
+            .iter()
+            .find(|(event_name, _)| event_name == &name)
+        {
+            set_event_values(event, values);
+        }
+    }
+}
+
 fn update_param_value(params: &mut [serde_json::Value], name: &str, value: serde_json::Value) {
     for param in params {
         if param_name(param) == Some(name) {
             set_param_value(param, value.clone());
+            break;
+        }
+    }
+}
+
+fn update_event_values(events: &mut [serde_json::Value], name: &str, values: &[serde_json::Value]) {
+    for event in events {
+        if event_name(event) == Some(name) {
+            set_event_values(event, values);
             break;
         }
     }
@@ -760,9 +827,24 @@ fn buffer_name(buffer: &serde_json::Value) -> Option<&str> {
     buffer.get("name").and_then(|value| value.as_str())
 }
 
+fn event_name(event: &serde_json::Value) -> Option<&str> {
+    event.get("name").and_then(|value| value.as_str())
+}
+
 fn set_param_value(param: &mut serde_json::Value, value: serde_json::Value) {
     if let Some(obj) = param.as_object_mut() {
         obj.insert("value".to_owned(), value);
+    }
+}
+
+fn set_event_values(event: &mut serde_json::Value, values: &[serde_json::Value]) {
+    let Some(args) = event.get_mut("args").and_then(|value| value.as_array_mut()) else {
+        return;
+    };
+    for (arg, value) in args.iter_mut().zip(values.iter()) {
+        if let Some(obj) = arg.as_object_mut() {
+            obj.insert("value".to_owned(), value.clone());
+        }
     }
 }
 
