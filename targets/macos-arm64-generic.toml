@@ -1,0 +1,7 @@
+triple = "arm64-apple-darwin"
+cpu = "generic"
+features = ""
+abi_name = ""
+reloc_model = "pic"
+code_model = "small"
+opt_level = 3

@@ -1,0 +1,7 @@
+triple = "x86_64-pc-windows-msvc"
+cpu = "generic"
+features = ""
+abi_name = ""
+reloc_model = "default"
+code_model = "small"
+opt_level = 3

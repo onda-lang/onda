@@ -1,0 +1,7 @@
+triple = "x86_64-unknown-linux-gnu"
+cpu = "x86-64-v3"
+features = ""
+abi_name = ""
+reloc_model = "pic"
+code_model = "small"
+opt_level = 3
