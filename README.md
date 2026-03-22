@@ -47,6 +47,7 @@ Current execution backend target is ORC JIT only. The `compile` command can also
    - `cargo run -p omni_cli -- compile examples/sine.omni`
    - `cargo run -p omni_cli -- compile examples/sine.omni --emit obj`
    - `cargo run -p omni_cli -- compile examples/sine.omni --target-spec ./targets/arm64.toml --emit obj`
+   - checked-in example target specs live under `./targets/`
    - `cargo run -p omni_cli -- compile examples/proc_gain_graph.omni --dump-graph`
    - `cargo run -p omni_cli -- compile examples/stdlib_f32_graph.omni --dump-graph`
    - `cargo run -p omni_cli -- compile examples/inspect_feedback_mix_graph.omni --dump-graph`

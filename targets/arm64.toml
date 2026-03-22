@@ -1,0 +1,8 @@
+version = 1
+triple = "aarch64-unknown-linux-gnu"
+cpu = "generic"
+features = ""
+abi_name = ""
+reloc_model = "pic"
+code_model = "small"
+opt_level = 3

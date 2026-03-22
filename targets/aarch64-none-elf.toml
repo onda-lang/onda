@@ -1,0 +1,8 @@
+version = 1
+triple = "aarch64-none-elf"
+cpu = "generic"
+features = ""
+abi_name = ""
+reloc_model = "static"
+code_model = "small"
+opt_level = 3

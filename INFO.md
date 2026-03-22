@@ -423,6 +423,7 @@
   - `compile --emit obj` writes a native object file plus a JSON metadata sidecar.
   - `compile` remains host-native by default; cross-target AOT requires `--target` or `--target-spec`.
   - `compile --target-spec <path>` loads a small versioned TOML codegen preset; direct CLI flags override spec values.
+  - checked-in example target specs live under the repo-root `targets/` folder.
   - Useful graph examples: `examples/proc_gain_graph.omni`, `examples/proc_split_graph.omni`, `examples/proc_array_stereo_sine_graph.omni`, `examples/std_one_pole_graph.omni`, `examples/stdlib_f32_graph.omni`, `examples/feedback_saturator_graph.omni`, `examples/reverb_graph.omni`.
 
 ## LLVM dependency strategy

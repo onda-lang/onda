@@ -1,0 +1,8 @@
+version = 1
+triple = "wasm32-unknown-unknown"
+cpu = "generic"
+features = ""
+abi_name = ""
+reloc_model = "default"
+code_model = "default"
+opt_level = 3
