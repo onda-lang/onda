@@ -1,0 +1,56 @@
+{
+  "format_version": 1,
+  "target": {
+    "triple": "wasm32-unknown-unknown",
+    "cpu": "generic",
+    "features": "",
+    "reloc_model": "default",
+    "code_model": "default",
+    "opt_level": "3",
+    "abi_name": null
+  },
+  "compile": {
+    "sample_rate": 48000.0,
+    "block_size": 128,
+    "fast_math": false
+  },
+  "exports": {
+    "init": "omni_init",
+    "process": "omni_process",
+    "events": []
+  },
+  "runtime": {
+    "state_size_bytes": 16
+  },
+  "metadata": {
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "out1",
+        "type_repr": "f32",
+        "array_len": 1,
+        "slot_offset": 0,
+        "byte_offset": 0,
+        "byte_size": 4,
+        "default_repr": null,
+        "range_min_repr": null,
+        "range_max_repr": null
+      }
+    ],
+    "params": [
+      {
+        "name": "freq",
+        "type_repr": "f32",
+        "array_len": 1,
+        "slot_offset": 0,
+        "byte_offset": 0,
+        "byte_size": 4,
+        "default_repr": "440",
+        "range_min_repr": "20",
+        "range_max_repr": "1000"
+      }
+    ],
+    "buffers": [],
+    "events": []
+  }
+}

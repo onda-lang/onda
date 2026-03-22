@@ -4,11 +4,18 @@ use std::sync::Arc;
 use omni_frontend::{Diagnostic, PrimitiveType};
 use omni_semantics::{TypedConstValue, TypedProgram, TypedValueRange};
 
+mod aot_artifact;
 mod metadata;
 #[cfg(feature = "llvm-orc")]
 mod orc_backend;
 mod primitives;
 mod runtime_validation;
+mod target_config;
+
+pub use aot_artifact::{AotMetadata, AotObjectArtifact};
+pub use target_config::{
+    CodegenOptions, TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
+};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ExecutionBackend {
@@ -138,6 +145,34 @@ pub fn lower_to_llvm_ir_with_options(
     }
 }
 
+pub fn lower_to_target_llvm_ir_with_options(
+    typed: TypedProgram,
+    options: CodegenOptions,
+) -> Result<String, Vec<Diagnostic>> {
+    runtime_validation::validate_codegen_options(&options).map_err(|diag| vec![diag])?;
+    emit_targeted_ir(
+        typed,
+        options.sample_rate,
+        options.block_size,
+        options.fast_math,
+        options.target,
+    )
+}
+
+pub fn lower_to_object_with_options(
+    typed: TypedProgram,
+    options: CodegenOptions,
+) -> Result<AotObjectArtifact, Vec<Diagnostic>> {
+    runtime_validation::validate_codegen_options(&options).map_err(|diag| vec![diag])?;
+    emit_targeted_object(
+        typed,
+        options.sample_rate,
+        options.block_size,
+        options.fast_math,
+        options.target,
+    )
+}
+
 #[cfg(feature = "llvm-orc")]
 fn build_orc_program(
     typed: TypedProgram,
@@ -178,6 +213,30 @@ fn emit_orc_ir(
         .map_err(|diag| vec![diag])
 }
 
+#[cfg(feature = "llvm-orc")]
+fn emit_targeted_ir(
+    typed: TypedProgram,
+    sample_rate: f32,
+    block_size: usize,
+    fast_math: bool,
+    target: TargetConfig,
+) -> Result<String, Vec<Diagnostic>> {
+    orc_backend::emit_targeted_ir(&typed, sample_rate, block_size, fast_math, &target)
+        .map_err(|diag| vec![diag])
+}
+
+#[cfg(feature = "llvm-orc")]
+fn emit_targeted_object(
+    typed: TypedProgram,
+    sample_rate: f32,
+    block_size: usize,
+    fast_math: bool,
+    target: TargetConfig,
+) -> Result<AotObjectArtifact, Vec<Diagnostic>> {
+    orc_backend::emit_targeted_object(&typed, sample_rate, block_size, fast_math, &target)
+        .map_err(|diag| vec![diag])
+}
+
 #[cfg(not(feature = "llvm-orc"))]
 fn emit_orc_ir(
     _typed: TypedProgram,
@@ -191,6 +250,32 @@ fn emit_orc_ir(
 }
 
 #[cfg(not(feature = "llvm-orc"))]
+fn emit_targeted_ir(
+    _typed: TypedProgram,
+    _sample_rate: f32,
+    _block_size: usize,
+    _fast_math: bool,
+    _target: TargetConfig,
+) -> Result<String, Vec<Diagnostic>> {
+    Err(vec![Diagnostic::internal(
+        "LLVM backend is required but omni_codegen_llvm was built without 'llvm-orc' feature",
+    )])
+}
+
+#[cfg(not(feature = "llvm-orc"))]
+fn emit_targeted_object(
+    _typed: TypedProgram,
+    _sample_rate: f32,
+    _block_size: usize,
+    _fast_math: bool,
+    _target: TargetConfig,
+) -> Result<AotObjectArtifact, Vec<Diagnostic>> {
+    Err(vec![Diagnostic::internal(
+        "LLVM backend is required but omni_codegen_llvm was built without 'llvm-orc' feature",
+    )])
+}
+
+#[cfg(not(feature = "llvm-orc"))]
 fn build_orc_program(
     _typed: TypedProgram,
     _sample_rate: f32,
@@ -200,4 +285,62 @@ fn build_orc_program(
     Err(vec![Diagnostic::internal(
         "ORC backend is required but omni_codegen_llvm was built without 'llvm-orc' feature",
     )])
+}
+
+#[cfg(all(test, feature = "llvm-orc"))]
+mod tests {
+    use super::*;
+
+    use omni_frontend::parse_program;
+    use omni_semantics::{analyze_with_options, AnalysisOptions};
+
+    fn typed_program(src: &str) -> TypedProgram {
+        let program = parse_program(src).expect("source should parse");
+        analyze_with_options(program, AnalysisOptions::default()).expect("source should analyze")
+    }
+
+    fn is_missing_target_backend(diags: &[Diagnostic]) -> bool {
+        diags.iter().any(|diag| {
+            diag.message.contains("LLVMGetTargetFromTriple failed")
+                || diag
+                    .message
+                    .contains("No available targets are compatible with triple")
+        })
+    }
+
+    #[test]
+    fn emits_cross_target_object_when_backend_is_available() {
+        let typed = typed_program(
+            r#"
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#,
+        );
+
+        let result = lower_to_object_with_options(
+            typed,
+            CodegenOptions {
+                sample_rate: 48_000.0,
+                block_size: 128,
+                fast_math: false,
+                target: TargetConfig::for_triple("aarch64-unknown-linux-gnu"),
+            },
+        );
+
+        match result {
+            Ok(artifact) => {
+                assert_eq!(artifact.metadata.target.triple, "aarch64-unknown-linux-gnu");
+                assert!(!artifact.object_bytes.is_empty());
+            }
+            Err(diags) if is_missing_target_backend(&diags) => {
+                eprintln!(
+                    "skipping cross-target AOT smoke test because the linked LLVM build does not include AArch64"
+                );
+            }
+            Err(diags) => panic!("cross-target AOT smoke test failed: {diags:#?}"),
+        }
+    }
 }

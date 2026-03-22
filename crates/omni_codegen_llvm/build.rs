@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,40 +88,65 @@ fn has_shared_llvm_c(prefix_path: &Path) -> bool {
 
 fn link_static_llvm_components(prefix_path: &Path) {
     let llvm_config = llvm_config_path(prefix_path);
-    let llvm_libs = run_llvm_config(
+    let components = static_llvm_components(&llvm_config);
+    let llvm_libs = run_llvm_config_with_components(
         &llvm_config,
-        &[
-            "--link-static",
-            "--libnames",
-            "core",
-            "orcjit",
-            "native",
-            "passes",
-        ],
+        &["--link-static", "--libnames"],
+        &components,
     );
-    let system_libs = run_llvm_config(
+    let system_libs = run_llvm_config_with_components(
         &llvm_config,
-        &[
-            "--link-static",
-            "--system-libs",
-            "core",
-            "orcjit",
-            "native",
-            "passes",
-        ],
+        &["--link-static", "--system-libs"],
+        &components,
     );
 
+    let mut llvm_link_libs = BTreeSet::new();
     for token in llvm_libs.split_whitespace() {
         if let Some(name) = parse_lib_token(token) {
-            println!("cargo:rustc-link-lib=static={name}");
+            llvm_link_libs.insert(name);
         }
+    }
+    for name in llvm_link_libs {
+        println!("cargo:rustc-link-lib=static={name}");
     }
 
+    let mut system_link_libs = BTreeSet::new();
     for token in system_libs.split_whitespace() {
         if let Some(name) = parse_lib_token(token) {
-            println!("cargo:rustc-link-lib=dylib={name}");
+            system_link_libs.insert(name);
         }
     }
+    for name in system_link_libs {
+        println!("cargo:rustc-link-lib=dylib={name}");
+    }
+}
+
+fn static_llvm_components(llvm_config: &Path) -> Vec<String> {
+    const BASE_COMPONENTS: &[&str] = &["core", "orcjit", "native", "passes"];
+    const SUPPORTED_AOT_TARGETS: &[(&str, &str)] = &[
+        ("X86", "x86"),
+        ("AArch64", "aarch64"),
+        ("ARM", "arm"),
+        ("WebAssembly", "webassembly"),
+    ];
+
+    let built_targets = run_llvm_config(llvm_config, &["--targets-built"]);
+    let built_targets = built_targets
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .collect::<BTreeSet<_>>();
+
+    let mut components = BASE_COMPONENTS
+        .iter()
+        .map(|component| (*component).to_owned())
+        .collect::<Vec<_>>();
+    for (target_name, component) in SUPPORTED_AOT_TARGETS {
+        if built_targets.contains(target_name) {
+            components.push((*component).to_owned());
+        }
+    }
+    components
 }
 
 fn llvm_config_path(prefix_path: &Path) -> PathBuf {
@@ -160,6 +186,20 @@ fn run_llvm_config(llvm_config: &Path, args: &[&str]) -> String {
     }
 
     String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn run_llvm_config_with_components(
+    llvm_config: &Path,
+    base_args: &[&str],
+    components: &[String],
+) -> String {
+    let mut args = base_args
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect::<Vec<_>>();
+    args.extend(components.iter().cloned());
+    let args_ref = args.iter().map(|arg| arg.as_str()).collect::<Vec<_>>();
+    run_llvm_config(llvm_config, &args_ref)
 }
 
 fn parse_lib_token(token: &str) -> Option<String> {

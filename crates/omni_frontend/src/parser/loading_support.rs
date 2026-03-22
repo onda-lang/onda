@@ -34,6 +34,7 @@ pub(super) enum TopLevelItem {
 pub(super) fn builtin_std_module_source(module: &str) -> Option<&'static str> {
     match module {
         "std/math" => Some(include_str!("../../../../stdlib/std/math.omni")),
+        "std/export_math" => Some(include_str!("../../../../stdlib/std/export_math.omni")),
         "std/complex" => Some(include_str!("../../../../stdlib/std/complex.omni")),
         "std/osc" => Some(include_str!("../../../../stdlib/std/osc.omni")),
         "std/filter" => Some(include_str!("../../../../stdlib/std/filter.omni")),

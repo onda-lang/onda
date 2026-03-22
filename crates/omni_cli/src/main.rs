@@ -17,7 +17,9 @@ mod lsp_stdio;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use omni_codegen_llvm::{
-    lower_and_jit_with_options, lower_to_llvm_ir_with_options, CompileOptions, ExecutionBackend,
+    lower_and_jit_with_options, lower_to_llvm_ir_with_options, lower_to_object_with_options,
+    lower_to_target_llvm_ir_with_options, CodegenOptions, CompileOptions, ExecutionBackend,
+    TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
 };
 use omni_daemon::{
     DaemonConfig, DaemonSession, PreviewBufferChannels, PreviewBufferInfo, PreviewBuildError,
@@ -45,7 +47,7 @@ const DEFAULT_PLAY_BLOCK_FRAMES: usize = 128;
 const DEFAULT_DAEMON_OUTPUT: &str = "./omni_daemon_out.wav";
 
 const USAGE: &str = r#"Usage:
-  omni compile <input.omni> [--dump-graph] [--ir] [--meta] [--fast-math]
+  omni compile <input.omni> [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>] [--dump-graph] [--ir] [--meta] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--target <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <feature-list>] [--target-abi <name>] [--reloc-model <default|static|pic|dynamic-no-pic>] [--code-model <default|small|kernel|medium|large>] [--opt-level <0|1|2|3>]
   omni render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
   omni lsp
   omni preview <input.omni> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>]
@@ -56,12 +58,22 @@ const USAGE: &str = r#"Usage:
 
 Options:
   --output, -o   Output wav path (default: ./omni_out.wav)
+  --emit         Compile artifact for `omni compile`: `check`, `llvm-ir`, or `obj`
+  --meta-out     Write AOT sidecar metadata JSON for `omni compile --emit obj`
   --dur, -d      Render duration in seconds (default: 5)
-  --sample-rate, --sr  Render/output sample rate in Hz (default: 48000)
-  --block, -b    Block size in frames (default: 512; preview play: 128)
+  --sample-rate, --sr  Compile/render/output sample rate in Hz (default: 48000)
+  --block, -b    Compile/render block size in frames (default: 512; preview play: 128)
   --dump-graph   Print program after graph lowering, before proc desugaring/codegen
-  --ir           Print optimized LLVM IR before compile/render
+  --ir           Alias for `omni compile --emit llvm-ir` and render IR dumping
   --meta         Print declared ins/outs/params metadata
+  --target       LLVM target triple for compile-time IR emission
+  --target-spec  Versioned TOML target spec for compile-time IR/object emission
+  --target-cpu   Target CPU name, or 'host' for the native host CPU
+  --target-features  Comma-separated LLVM target feature string
+  --target-abi   Optional target ABI name forwarded to LLVM target machine creation
+  --reloc-model  Target relocation model for compile-time IR emission
+  --code-model   Target code model for compile-time IR emission
+  --opt-level    LLVM optimization level for compile-time IR emission (default: 3)
   --control-json Emit preview control handshake on stdout and serve param control over localhost
   --input-device Select audio input device by exact name for preview playback
   --output-device Select audio output device by exact name for preview playback
@@ -72,10 +84,15 @@ Options:
 enum Command {
     Compile {
         input: PathBuf,
+        emit: CompileEmit,
+        output: Option<PathBuf>,
+        meta_out: Option<PathBuf>,
+        sample_rate_hz: u32,
+        block_frames: usize,
         dump_graph: bool,
-        dump_ir: bool,
         show_meta: bool,
         fast_math: bool,
+        target: TargetConfig,
     },
     Render {
         input: PathBuf,
@@ -90,6 +107,13 @@ enum Command {
     Lsp,
     Preview(PreviewCommand),
     Daemon(DaemonCommand),
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum CompileEmit {
+    Check,
+    LlvmIr,
+    Object,
 }
 
 enum PreviewCommand {
@@ -134,6 +158,29 @@ enum DaemonCommand {
     },
 }
 
+#[derive(Debug, Clone)]
+struct LoadedTargetSpec {
+    target: TargetConfig,
+    cpu_explicit: bool,
+    features_explicit: bool,
+}
+
+impl Default for LoadedTargetSpec {
+    fn default() -> Self {
+        Self {
+            target: TargetConfig::host(),
+            cpu_explicit: false,
+            features_explicit: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum TargetSpecValue {
+    String(String),
+    Integer(i64),
+}
+
 fn main() {
     let cmd = match parse_args(env::args()) {
         Ok(v) => v,
@@ -146,11 +193,27 @@ fn main() {
     let result = match cmd {
         Command::Compile {
             input,
+            emit,
+            output,
+            meta_out,
+            sample_rate_hz,
+            block_frames,
             dump_graph,
-            dump_ir,
             show_meta,
             fast_math,
-        } => run_compile(&input, dump_graph, dump_ir, show_meta, fast_math),
+            target,
+        } => run_compile(
+            &input,
+            emit,
+            output.as_deref(),
+            meta_out.as_deref(),
+            sample_rate_hz,
+            block_frames,
+            dump_graph,
+            show_meta,
+            fast_math,
+            target,
+        ),
         Command::Render {
             input,
             output,
@@ -261,26 +324,248 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     let Some(input) = args.next() else {
         return Err(format!("compile requires an input file\n\n{USAGE}"));
     };
+    let mut emit = CompileEmit::Check;
+    let mut emit_explicit = false;
+    let mut output = None::<PathBuf>;
+    let mut meta_out = None::<PathBuf>;
+    let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
+    let mut block_frames = DEFAULT_BLOCK_FRAMES;
     let mut dump_graph = false;
-    let mut dump_ir = false;
     let mut show_meta = false;
     let mut fast_math = false;
-    for arg in args {
+    let mut target_spec_path = None::<PathBuf>;
+    let mut target_triple_override = None::<String>;
+    let mut target_cpu_override = None::<TargetCpu>;
+    let mut target_features_override = None::<String>;
+    let mut target_abi_override = None::<String>;
+    let mut reloc_model_override = None::<TargetRelocMode>;
+    let mut code_model_override = None::<TargetCodeModel>;
+    let mut opt_level_override = None::<TargetOptLevel>;
+    while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--emit" => {
+                let Some(value) = args.next() else {
+                    return Err("--emit requires check, llvm-ir, or obj".to_owned());
+                };
+                if emit == CompileEmit::LlvmIr && !emit_explicit {
+                    return Err("cannot use both --ir and --emit".to_owned());
+                }
+                emit = parse_compile_emit(&value)?;
+                emit_explicit = true;
+            }
+            "--output" | "-o" => {
+                let Some(value) = args.next() else {
+                    return Err("--output requires a file path".to_owned());
+                };
+                output = Some(PathBuf::from(value));
+            }
+            "--meta-out" => {
+                let Some(value) = args.next() else {
+                    return Err("--meta-out requires a file path".to_owned());
+                };
+                meta_out = Some(PathBuf::from(value));
+            }
+            "--sample-rate" | "--sr" => {
+                let Some(value) = args.next() else {
+                    return Err("--sample-rate/--sr requires a positive integer value".to_owned());
+                };
+                sample_rate_hz = parse_sample_rate_hz(&value)?;
+            }
+            "--block" | "-b" => {
+                let Some(value) = args.next() else {
+                    return Err("--block requires a positive integer value".to_owned());
+                };
+                block_frames = parse_block_frames(&value)?;
+            }
             "--dump-graph" => dump_graph = true,
-            "--ir" => dump_ir = true,
+            "--ir" => {
+                if emit_explicit {
+                    return Err("cannot use both --ir and --emit".to_owned());
+                }
+                emit = CompileEmit::LlvmIr;
+            }
             "--meta" => show_meta = true,
             "--fast-math" => fast_math = true,
+            "--target" => {
+                let Some(value) = args.next() else {
+                    return Err("--target requires a target triple".to_owned());
+                };
+                target_triple_override = Some(value);
+            }
+            "--target-spec" => {
+                let Some(value) = args.next() else {
+                    return Err("--target-spec requires a TOML file path".to_owned());
+                };
+                target_spec_path = Some(PathBuf::from(value));
+            }
+            "--target-cpu" => {
+                let Some(value) = args.next() else {
+                    return Err("--target-cpu requires a CPU name or 'host'".to_owned());
+                };
+                target_cpu_override = Some(parse_target_cpu(&value));
+            }
+            "--target-features" => {
+                let Some(value) = args.next() else {
+                    return Err(
+                        "--target-features requires a comma-separated feature list".to_owned()
+                    );
+                };
+                target_features_override = Some(value);
+            }
+            "--target-abi" => {
+                let Some(value) = args.next() else {
+                    return Err("--target-abi requires a non-empty ABI name".to_owned());
+                };
+                target_abi_override = Some(value);
+            }
+            "--reloc-model" => {
+                let Some(value) = args.next() else {
+                    return Err("--reloc-model requires a value".to_owned());
+                };
+                reloc_model_override = Some(parse_target_reloc_model(&value)?);
+            }
+            "--code-model" => {
+                let Some(value) = args.next() else {
+                    return Err("--code-model requires a value".to_owned());
+                };
+                code_model_override = Some(parse_target_code_model(&value)?);
+            }
+            "--opt-level" => {
+                let Some(value) = args.next() else {
+                    return Err("--opt-level requires a value".to_owned());
+                };
+                opt_level_override = Some(parse_target_opt_level(&value)?);
+            }
             "--help" | "-h" => return Err(USAGE.to_owned()),
+            _ if arg.starts_with("--sample-rate=") => {
+                let value = &arg["--sample-rate=".len()..];
+                sample_rate_hz = parse_sample_rate_hz(value)?;
+            }
+            _ if arg.starts_with("--emit=") => {
+                if emit == CompileEmit::LlvmIr && !emit_explicit {
+                    return Err("cannot use both --ir and --emit".to_owned());
+                }
+                let value = &arg["--emit=".len()..];
+                emit = parse_compile_emit(value)?;
+                emit_explicit = true;
+            }
+            _ if arg.starts_with("--output=") => {
+                let value = &arg["--output=".len()..];
+                if value.is_empty() {
+                    return Err("--output requires a file path".to_owned());
+                }
+                output = Some(PathBuf::from(value));
+            }
+            _ if arg.starts_with("--meta-out=") => {
+                let value = &arg["--meta-out=".len()..];
+                if value.is_empty() {
+                    return Err("--meta-out requires a file path".to_owned());
+                }
+                meta_out = Some(PathBuf::from(value));
+            }
+            _ if arg.starts_with("--sr=") => {
+                let value = &arg["--sr=".len()..];
+                sample_rate_hz = parse_sample_rate_hz(value)?;
+            }
+            _ if arg.starts_with("--block=") => {
+                let value = &arg["--block=".len()..];
+                block_frames = parse_block_frames(value)?;
+            }
+            _ if arg.starts_with("--target=") => {
+                let value = &arg["--target=".len()..];
+                if value.is_empty() {
+                    return Err("--target requires a target triple".to_owned());
+                }
+                target_triple_override = Some(value.to_owned());
+            }
+            _ if arg.starts_with("--target-spec=") => {
+                let value = &arg["--target-spec=".len()..];
+                if value.is_empty() {
+                    return Err("--target-spec requires a TOML file path".to_owned());
+                }
+                target_spec_path = Some(PathBuf::from(value));
+            }
+            _ if arg.starts_with("--target-cpu=") => {
+                let value = &arg["--target-cpu=".len()..];
+                target_cpu_override = Some(parse_target_cpu(value));
+            }
+            _ if arg.starts_with("--target-features=") => {
+                let value = &arg["--target-features=".len()..];
+                target_features_override = Some(value.to_owned());
+            }
+            _ if arg.starts_with("--target-abi=") => {
+                let value = &arg["--target-abi=".len()..];
+                if value.is_empty() {
+                    return Err("--target-abi requires a non-empty ABI name".to_owned());
+                }
+                target_abi_override = Some(value.to_owned());
+            }
+            _ if arg.starts_with("--reloc-model=") => {
+                let value = &arg["--reloc-model=".len()..];
+                reloc_model_override = Some(parse_target_reloc_model(value)?);
+            }
+            _ if arg.starts_with("--code-model=") => {
+                let value = &arg["--code-model=".len()..];
+                code_model_override = Some(parse_target_code_model(value)?);
+            }
+            _ if arg.starts_with("--opt-level=") => {
+                let value = &arg["--opt-level=".len()..];
+                opt_level_override = Some(parse_target_opt_level(value)?);
+            }
             _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
         }
     }
+    let LoadedTargetSpec {
+        mut target,
+        mut cpu_explicit,
+        mut features_explicit,
+    } = match target_spec_path.as_deref() {
+        Some(path) => load_target_spec(path)?,
+        None => LoadedTargetSpec::default(),
+    };
+
+    if let Some(triple) = target_triple_override {
+        target.triple = Some(triple);
+    }
+    if let Some(cpu) = target_cpu_override {
+        target.cpu = cpu;
+        cpu_explicit = true;
+    }
+    if let Some(features) = target_features_override {
+        target.features = Some(features);
+        features_explicit = true;
+    }
+    if let Some(abi_name) = target_abi_override {
+        target.abi_name = Some(abi_name);
+    }
+    if let Some(reloc_model) = reloc_model_override {
+        target.reloc_model = reloc_model;
+    }
+    if let Some(code_model) = code_model_override {
+        target.code_model = code_model;
+    }
+    if let Some(opt_level) = opt_level_override {
+        target.opt_level = opt_level;
+    }
+
+    if target.triple.is_some() && !cpu_explicit {
+        target.cpu = TargetCpu::Explicit("generic".to_owned());
+    }
+    if target.triple.is_some() && !features_explicit && matches!(target.cpu, TargetCpu::Explicit(_))
+    {
+        target.features = Some(String::new());
+    }
     Ok(Command::Compile {
         input: PathBuf::from(input),
+        emit,
+        output,
+        meta_out,
+        sample_rate_hz,
+        block_frames,
         dump_graph,
-        dump_ir,
         show_meta,
         fast_math,
+        target,
     })
 }
 
@@ -705,6 +990,376 @@ fn parse_block_frames(value: &str) -> Result<usize, String> {
         return Err("block size must be greater than zero".to_owned());
     }
     Ok(parsed)
+}
+
+fn parse_compile_emit(value: &str) -> Result<CompileEmit, String> {
+    match value {
+        "check" => Ok(CompileEmit::Check),
+        "llvm-ir" => Ok(CompileEmit::LlvmIr),
+        "obj" => Ok(CompileEmit::Object),
+        _ => Err(format!(
+            "invalid compile emit mode '{value}', expected check|llvm-ir|obj"
+        )),
+    }
+}
+
+fn parse_target_cpu(value: &str) -> TargetCpu {
+    if value.eq_ignore_ascii_case("host") {
+        TargetCpu::Host
+    } else {
+        TargetCpu::Explicit(value.to_owned())
+    }
+}
+
+fn parse_target_reloc_model(value: &str) -> Result<TargetRelocMode, String> {
+    match value {
+        "default" => Ok(TargetRelocMode::Default),
+        "static" => Ok(TargetRelocMode::Static),
+        "pic" => Ok(TargetRelocMode::Pic),
+        "dynamic-no-pic" => Ok(TargetRelocMode::DynamicNoPic),
+        _ => Err(format!(
+            "invalid reloc model '{value}', expected default|static|pic|dynamic-no-pic"
+        )),
+    }
+}
+
+fn parse_target_code_model(value: &str) -> Result<TargetCodeModel, String> {
+    match value {
+        "default" => Ok(TargetCodeModel::Default),
+        "small" => Ok(TargetCodeModel::Small),
+        "kernel" => Ok(TargetCodeModel::Kernel),
+        "medium" => Ok(TargetCodeModel::Medium),
+        "large" => Ok(TargetCodeModel::Large),
+        _ => Err(format!(
+            "invalid code model '{value}', expected default|small|kernel|medium|large"
+        )),
+    }
+}
+
+fn parse_target_opt_level(value: &str) -> Result<TargetOptLevel, String> {
+    match value {
+        "0" => Ok(TargetOptLevel::O0),
+        "1" => Ok(TargetOptLevel::O1),
+        "2" => Ok(TargetOptLevel::O2),
+        "3" => Ok(TargetOptLevel::O3),
+        _ => Err(format!(
+            "invalid optimization level '{value}', expected 0|1|2|3"
+        )),
+    }
+}
+
+fn load_target_spec(path: &Path) -> Result<LoadedTargetSpec, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read target spec '{}': {err}", path.display()))?;
+    let mut loaded = LoadedTargetSpec::default();
+    let mut version = None::<u32>;
+    let mut reloc_model_explicit = false;
+    let mut code_model_explicit = false;
+    let mut opt_level_explicit = false;
+
+    for (line_idx, line) in text.lines().enumerate() {
+        let line_no = line_idx + 1;
+        let line = strip_target_spec_comment(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
+            return Err(format!(
+                "failed to parse target spec '{}': expected 'key = value' at line {}",
+                path.display(),
+                line_no
+            ));
+        };
+        let key = raw_key.trim();
+        let value = parse_target_spec_value(raw_value.trim(), path, line_no)?;
+
+        match key {
+            "version" => {
+                if version.is_some() {
+                    return Err(format!(
+                        "target spec '{}' defines 'version' more than once",
+                        path.display()
+                    ));
+                }
+                version = Some(expect_target_spec_u32(&value, path, line_no, "version")?);
+            }
+            "triple" => {
+                if loaded.target.triple.is_some() {
+                    return Err(format!(
+                        "target spec '{}' defines 'triple' more than once",
+                        path.display()
+                    ));
+                }
+                let triple = expect_target_spec_string(&value, path, line_no, "triple")?;
+                if triple.trim().is_empty() {
+                    return Err(format!(
+                        "target spec '{}' has an empty 'triple' field",
+                        path.display()
+                    ));
+                }
+                loaded.target.triple = Some(triple);
+            }
+            "cpu" => {
+                if loaded.cpu_explicit {
+                    return Err(format!(
+                        "target spec '{}' defines 'cpu' more than once",
+                        path.display()
+                    ));
+                }
+                let cpu = expect_target_spec_string(&value, path, line_no, "cpu")?;
+                if cpu.trim().is_empty() {
+                    return Err(format!(
+                        "target spec '{}' has an empty 'cpu' field",
+                        path.display()
+                    ));
+                }
+                loaded.target.cpu = parse_target_cpu(&cpu);
+                loaded.cpu_explicit = true;
+            }
+            "features" => {
+                if loaded.features_explicit {
+                    return Err(format!(
+                        "target spec '{}' defines 'features' more than once",
+                        path.display()
+                    ));
+                }
+                loaded.target.features = Some(expect_target_spec_string(
+                    &value, path, line_no, "features",
+                )?);
+                loaded.features_explicit = true;
+            }
+            "abi_name" => {
+                if loaded.target.abi_name.is_some() {
+                    return Err(format!(
+                        "target spec '{}' defines 'abi_name' more than once",
+                        path.display()
+                    ));
+                }
+                let abi_name = expect_target_spec_string(&value, path, line_no, "abi_name")?;
+                let abi_name = abi_name.trim();
+                if !abi_name.is_empty() {
+                    loaded.target.abi_name = Some(abi_name.to_owned());
+                }
+            }
+            "reloc_model" => {
+                if reloc_model_explicit {
+                    return Err(format!(
+                        "target spec '{}' defines 'reloc_model' more than once",
+                        path.display()
+                    ));
+                }
+                let reloc_model = expect_target_spec_string(&value, path, line_no, "reloc_model")?;
+                loaded.target.reloc_model = parse_target_reloc_model(&reloc_model)?;
+                reloc_model_explicit = true;
+            }
+            "code_model" => {
+                if code_model_explicit {
+                    return Err(format!(
+                        "target spec '{}' defines 'code_model' more than once",
+                        path.display()
+                    ));
+                }
+                let code_model = expect_target_spec_string(&value, path, line_no, "code_model")?;
+                loaded.target.code_model = parse_target_code_model(&code_model)?;
+                code_model_explicit = true;
+            }
+            "opt_level" => {
+                if opt_level_explicit {
+                    return Err(format!(
+                        "target spec '{}' defines 'opt_level' more than once",
+                        path.display()
+                    ));
+                }
+                loaded.target.opt_level = match value {
+                    TargetSpecValue::Integer(value) => parse_target_opt_level(&value.to_string())?,
+                    TargetSpecValue::String(value) => parse_target_opt_level(&value)?,
+                };
+                opt_level_explicit = true;
+            }
+            _ => {
+                return Err(format!(
+                    "failed to parse target spec '{}': unsupported key '{}' at line {}",
+                    path.display(),
+                    key,
+                    line_no
+                ));
+            }
+        }
+    }
+
+    let Some(version) = version else {
+        return Err(format!(
+            "target spec '{}' is missing required 'version' field",
+            path.display()
+        ));
+    };
+    if version != 1 {
+        return Err(format!(
+            "unsupported target spec version {} in '{}', expected version = 1",
+            version,
+            path.display()
+        ));
+    }
+
+    Ok(loaded)
+}
+
+fn strip_target_spec_comment(line: &str) -> &str {
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in line.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '#' => return &line[..idx],
+            _ => {}
+        }
+    }
+
+    line
+}
+
+fn parse_target_spec_value(
+    raw: &str,
+    path: &Path,
+    line_no: usize,
+) -> Result<TargetSpecValue, String> {
+    if raw.starts_with('"') {
+        return Ok(TargetSpecValue::String(parse_target_spec_string_literal(
+            raw, path, line_no,
+        )?));
+    }
+
+    let value = raw.parse::<i64>().map_err(|_| {
+        format!(
+            "failed to parse target spec '{}': expected string or integer literal at line {}",
+            path.display(),
+            line_no
+        )
+    })?;
+    Ok(TargetSpecValue::Integer(value))
+}
+
+fn parse_target_spec_string_literal(
+    raw: &str,
+    path: &Path,
+    line_no: usize,
+) -> Result<String, String> {
+    if !raw.ends_with('"') || raw.len() < 2 {
+        return Err(format!(
+            "failed to parse target spec '{}': invalid string literal at line {}",
+            path.display(),
+            line_no
+        ));
+    }
+
+    let inner = &raw[1..raw.len() - 1];
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+
+        let Some(escaped) = chars.next() else {
+            return Err(format!(
+                "failed to parse target spec '{}': dangling escape in string literal at line {}",
+                path.display(),
+                line_no
+            ));
+        };
+        match escaped {
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            _ => {
+                return Err(format!(
+                    "failed to parse target spec '{}': unsupported escape '\\{}' at line {}",
+                    path.display(),
+                    escaped,
+                    line_no
+                ));
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn expect_target_spec_string(
+    value: &TargetSpecValue,
+    path: &Path,
+    line_no: usize,
+    key: &str,
+) -> Result<String, String> {
+    match value {
+        TargetSpecValue::String(value) => Ok(value.clone()),
+        TargetSpecValue::Integer(_) => Err(format!(
+            "failed to parse target spec '{}': '{}' must be a string at line {}",
+            path.display(),
+            key,
+            line_no
+        )),
+    }
+}
+
+fn expect_target_spec_u32(
+    value: &TargetSpecValue,
+    path: &Path,
+    line_no: usize,
+    key: &str,
+) -> Result<u32, String> {
+    match value {
+        TargetSpecValue::Integer(value) => u32::try_from(*value).map_err(|_| {
+            format!(
+                "failed to parse target spec '{}': '{}' must be a non-negative integer at line {}",
+                path.display(),
+                key,
+                line_no
+            )
+        }),
+        TargetSpecValue::String(_) => Err(format!(
+            "failed to parse target spec '{}': '{}' must be an integer at line {}",
+            path.display(),
+            key,
+            line_no
+        )),
+    }
+}
+
+fn default_object_output_path(input: &Path, target_triple: &str) -> PathBuf {
+    let ext = if is_coff_target_triple(target_triple) {
+        "obj"
+    } else {
+        "o"
+    };
+    input.with_extension(ext)
+}
+
+fn default_metadata_output_path(object_path: &Path) -> PathBuf {
+    object_path.with_extension("omni.json")
+}
+
+fn is_coff_target_triple(target_triple: &str) -> bool {
+    let triple = target_triple.to_ascii_lowercase();
+    triple.contains("windows") || triple.contains("msvc")
 }
 
 fn parse_param_setting(value: &str) -> Result<(String, f64), String> {
@@ -2442,34 +3097,90 @@ fn format_preview_event_info(events: &[PreviewEventInfo]) -> String {
 
 fn run_compile(
     input: &Path,
+    emit: CompileEmit,
+    output: Option<&Path>,
+    meta_out: Option<&Path>,
+    sample_rate_hz: u32,
+    block_frames: usize,
     dump_graph: bool,
-    dump_ir: bool,
     show_meta: bool,
     fast_math: bool,
+    target: TargetConfig,
 ) -> Result<(), String> {
     if dump_graph {
-        let lowered =
-            parse_and_lower_graphs(input, DEFAULT_SAMPLE_RATE as f32, DEFAULT_BLOCK_FRAMES)?;
+        let lowered = parse_and_lower_graphs(input, sample_rate_hz as f32, block_frames)?;
         print!("{}", format_program(&lowered));
     }
-    let typed = parse_and_analyze(input, DEFAULT_SAMPLE_RATE as f32, DEFAULT_BLOCK_FRAMES)?;
-    if dump_ir {
-        let ir = lower_to_llvm_ir_with_options(
-            typed.clone(),
-            CompileOptions {
-                backend: ExecutionBackend::OrcJit,
-                sample_rate: DEFAULT_SAMPLE_RATE as f32,
-                block_size: DEFAULT_BLOCK_FRAMES,
-                fast_math,
-            },
-        )
-        .map_err(|diags| format_diagnostics("IR lowering failed", &diags))?;
-        println!("{ir}");
-    }
+    let typed = parse_and_analyze(input, sample_rate_hz as f32, block_frames)?;
     if show_meta {
         print_program_meta(&typed);
     }
-    println!("OK: {}", input.display());
+    let codegen_options = CodegenOptions {
+        sample_rate: sample_rate_hz as f32,
+        block_size: block_frames,
+        fast_math,
+        target,
+    };
+
+    match emit {
+        CompileEmit::Check => {
+            if output.is_some() {
+                return Err("--output is only valid with --emit llvm-ir or --emit obj".to_owned());
+            }
+            if meta_out.is_some() {
+                return Err("--meta-out is only valid with --emit obj".to_owned());
+            }
+            if !codegen_options.target.is_host_default() {
+                lower_to_target_llvm_ir_with_options(typed, codegen_options).map_err(|diags| {
+                    format_diagnostics("target codegen validation failed", &diags)
+                })?;
+            }
+            println!("OK: {}", input.display());
+        }
+        CompileEmit::LlvmIr => {
+            if meta_out.is_some() {
+                return Err("--meta-out is only valid with --emit obj".to_owned());
+            }
+            let ir = lower_to_target_llvm_ir_with_options(typed, codegen_options)
+                .map_err(|diags| format_diagnostics("IR lowering failed", &diags))?;
+            if let Some(path) = output {
+                fs::write(path, ir.as_bytes()).map_err(|err| {
+                    format!("failed to write LLVM IR '{}': {err}", path.display())
+                })?;
+                println!("Wrote LLVM IR: {}", path.display());
+            } else {
+                println!("{ir}");
+            }
+        }
+        CompileEmit::Object => {
+            let artifact = lower_to_object_with_options(typed, codegen_options)
+                .map_err(|diags| format_diagnostics("object emission failed", &diags))?;
+            let object_path = output.map(Path::to_path_buf).unwrap_or_else(|| {
+                default_object_output_path(input, &artifact.metadata.target.triple)
+            });
+            fs::write(&object_path, &artifact.object_bytes).map_err(|err| {
+                format!(
+                    "failed to write object file '{}': {err}",
+                    object_path.display()
+                )
+            })?;
+
+            let metadata_path = meta_out
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| default_metadata_output_path(&object_path));
+            let metadata_json = serde_json::to_string_pretty(&artifact.metadata)
+                .map_err(|err| format!("failed to encode metadata JSON: {err}"))?;
+            fs::write(&metadata_path, metadata_json.as_bytes()).map_err(|err| {
+                format!(
+                    "failed to write metadata sidecar '{}': {err}",
+                    metadata_path.display()
+                )
+            })?;
+
+            println!("Wrote object: {}", object_path.display());
+            println!("Wrote metadata: {}", metadata_path.display());
+        }
+    }
     Ok(())
 }
 
@@ -3747,14 +4458,30 @@ fn f32_to_i16(sample: f32) -> i16 {
 mod tests {
     use super::{
         format_diag_snippet, format_expr, format_program, parse_args, preview_control_response,
-        Command, DaemonCommand, PlaybackControlCommand, PlaybackControlRequest, PreviewCommand,
-        PreviewEventValue, ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES,
+        Command, CompileEmit, DaemonCommand, PlaybackControlCommand, PlaybackControlRequest,
+        PreviewCommand, PreviewEventValue, ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES,
     };
+    use omni_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
     use omni_frontend::{
         Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
     };
     use serde_json::Value;
+    use std::path::{Path, PathBuf};
     use std::sync::{mpsc, Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_temp_target_spec(contents: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "omni-target-spec-{}-{stamp}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).expect("target spec should write");
+        path
+    }
 
     #[test]
     fn parse_compile_accepts_dump_graph() {
@@ -3768,6 +4495,245 @@ mod tests {
             Command::Compile { dump_graph, .. } => assert!(dump_graph),
             _ => panic!("expected compile command"),
         }
+    }
+
+    #[test]
+    fn parse_compile_accepts_target_codegen_flags() {
+        let cmd = parse_args(
+            [
+                "omni",
+                "compile",
+                "x.omni",
+                "--sample-rate",
+                "44100",
+                "--block",
+                "256",
+                "--target",
+                "aarch64-unknown-linux-gnu",
+                "--target-cpu",
+                "cortex-a72",
+                "--target-features",
+                "+neon,+fp-armv8",
+                "--target-abi",
+                "aapcs",
+                "--reloc-model",
+                "pic",
+                "--code-model",
+                "small",
+                "--opt-level",
+                "2",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("compile target args should parse");
+        match cmd {
+            Command::Compile {
+                sample_rate_hz,
+                block_frames,
+                target,
+                ..
+            } => {
+                assert_eq!(sample_rate_hz, 44_100);
+                assert_eq!(block_frames, 256);
+                assert_eq!(target.triple.as_deref(), Some("aarch64-unknown-linux-gnu"));
+                assert_eq!(target.cpu, TargetCpu::Explicit("cortex-a72".to_owned()));
+                assert_eq!(target.features.as_deref(), Some("+neon,+fp-armv8"));
+                assert_eq!(target.abi_name.as_deref(), Some("aapcs"));
+                assert_eq!(target.reloc_model, TargetRelocMode::Pic);
+                assert_eq!(target.code_model, TargetCodeModel::Small);
+                assert_eq!(target.opt_level, TargetOptLevel::O2);
+            }
+            _ => panic!("expected compile command"),
+        }
+    }
+
+    #[test]
+    fn parse_compile_defaults_cross_target_cpu_to_generic() {
+        let cmd = parse_args(
+            [
+                "omni",
+                "compile",
+                "x.omni",
+                "--target",
+                "aarch64-unknown-linux-gnu",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("compile target args should parse");
+        match cmd {
+            Command::Compile { target, .. } => {
+                assert_eq!(target.cpu, TargetCpu::Explicit("generic".to_owned()));
+                assert_eq!(target.features.as_deref(), Some(""));
+            }
+            _ => panic!("expected compile command"),
+        }
+    }
+
+    #[test]
+    fn parse_compile_loads_target_spec_and_applies_cli_overrides() {
+        let spec_path = write_temp_target_spec(
+            r#"
+version = 1
+triple = "aarch64-unknown-linux-gnu"
+cpu = "generic"
+features = "+neon"
+abi_name = ""
+reloc_model = "pic"
+code_model = "small"
+opt_level = 1
+"#,
+        );
+        let spec_arg = spec_path.to_string_lossy().to_string();
+        let result = parse_args(
+            [
+                "omni",
+                "compile",
+                "x.omni",
+                "--target-spec",
+                &spec_arg,
+                "--target-cpu",
+                "cortex-a72",
+                "--opt-level",
+                "3",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        let _ = std::fs::remove_file(&spec_path);
+
+        let cmd = result.expect("compile target spec args should parse");
+        match cmd {
+            Command::Compile { target, .. } => {
+                assert_eq!(target.triple.as_deref(), Some("aarch64-unknown-linux-gnu"));
+                assert_eq!(target.cpu, TargetCpu::Explicit("cortex-a72".to_owned()));
+                assert_eq!(target.features.as_deref(), Some("+neon"));
+                assert_eq!(target.reloc_model, TargetRelocMode::Pic);
+                assert_eq!(target.code_model, TargetCodeModel::Small);
+                assert_eq!(target.opt_level, TargetOptLevel::O3);
+            }
+            _ => panic!("expected compile command"),
+        }
+    }
+
+    #[test]
+    fn parse_compile_target_spec_defaults_cross_target_cpu_to_generic() {
+        let spec_path = write_temp_target_spec(
+            r#"
+version = 1
+triple = "wasm32-unknown-unknown"
+"#,
+        );
+        let spec_arg = spec_path.to_string_lossy().to_string();
+        let result = parse_args(
+            ["omni", "compile", "x.omni", "--target-spec", &spec_arg]
+                .into_iter()
+                .map(str::to_owned),
+        );
+        let _ = std::fs::remove_file(&spec_path);
+
+        let cmd = result.expect("compile target spec args should parse");
+        match cmd {
+            Command::Compile { target, .. } => {
+                assert_eq!(target.triple.as_deref(), Some("wasm32-unknown-unknown"));
+                assert_eq!(target.cpu, TargetCpu::Explicit("generic".to_owned()));
+                assert_eq!(target.features.as_deref(), Some(""));
+            }
+            _ => panic!("expected compile command"),
+        }
+    }
+
+    #[test]
+    fn parse_compile_rejects_unknown_target_spec_version() {
+        let spec_path = write_temp_target_spec(
+            r#"
+version = 2
+triple = "aarch64-unknown-linux-gnu"
+"#,
+        );
+        let spec_arg = spec_path.to_string_lossy().to_string();
+        let err = match parse_args(
+            ["omni", "compile", "x.omni", "--target-spec", &spec_arg]
+                .into_iter()
+                .map(str::to_owned),
+        ) {
+            Ok(_) => panic!("compile should reject unsupported target spec versions"),
+            Err(err) => err,
+        };
+        let _ = std::fs::remove_file(&spec_path);
+
+        assert!(err.contains("unsupported target spec version 2"));
+    }
+
+    #[test]
+    fn parse_compile_rejects_duplicate_target_spec_default_keys() {
+        let spec_path = write_temp_target_spec(
+            r#"
+version = 1
+triple = "wasm32-unknown-unknown"
+reloc_model = "default"
+reloc_model = "default"
+"#,
+        );
+        let spec_arg = spec_path.to_string_lossy().to_string();
+        let err = match parse_args(
+            ["omni", "compile", "x.omni", "--target-spec", &spec_arg]
+                .into_iter()
+                .map(str::to_owned),
+        ) {
+            Ok(_) => panic!("compile should reject duplicate target spec keys"),
+            Err(err) => err,
+        };
+        let _ = std::fs::remove_file(&spec_path);
+
+        assert!(err.contains("defines 'reloc_model' more than once"));
+    }
+
+    #[test]
+    fn parse_compile_accepts_object_emit_and_meta_out() {
+        let cmd = parse_args(
+            [
+                "omni",
+                "compile",
+                "x.omni",
+                "--emit",
+                "obj",
+                "--output",
+                "x.o",
+                "--meta-out",
+                "x.omni.json",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("compile object args should parse");
+        match cmd {
+            Command::Compile {
+                emit,
+                output,
+                meta_out,
+                ..
+            } => {
+                assert_eq!(emit, CompileEmit::Object);
+                assert_eq!(output.as_deref(), Some(Path::new("x.o")));
+                assert_eq!(meta_out.as_deref(), Some(Path::new("x.omni.json")));
+            }
+            _ => panic!("expected compile command"),
+        }
+    }
+
+    #[test]
+    fn parse_compile_rejects_ir_and_emit_together() {
+        let err = match parse_args(
+            ["omni", "compile", "x.omni", "--ir", "--emit", "obj"]
+                .into_iter()
+                .map(str::to_owned),
+        ) {
+            Ok(_) => panic!("compile should reject --ir and --emit together"),
+            Err(err) => err,
+        };
+        assert!(err.contains("cannot use both --ir and --emit"));
     }
 
     #[test]

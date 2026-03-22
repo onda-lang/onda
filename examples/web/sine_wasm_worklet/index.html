@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Omni Sine Wasm Worklet</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #11161c;
+        color: #e8eef5;
+        font: 14px/1.5 ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      }
+
+      main {
+        max-width: 840px;
+        margin: 0 auto;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+
+      p {
+        margin: 0 0 16px;
+        color: #9cb0c3;
+      }
+
+      .status {
+        display: inline-block;
+        margin-bottom: 16px;
+        padding: 6px 10px;
+        border: 1px solid #314152;
+        border-radius: 999px;
+        color: #dce7f2;
+        background: #18212b;
+      }
+
+      .status.pass {
+        border-color: #227a52;
+        background: #143124;
+        color: #9de2be;
+      }
+
+      .status.fail {
+        border-color: #8a3a45;
+        background: #35181e;
+        color: #f0a3ad;
+      }
+
+      pre {
+        margin: 0;
+        padding: 16px;
+        overflow: auto;
+        border: 1px solid #2a3642;
+        border-radius: 16px;
+        background: #0b1015;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Omni WebAssembly AudioWorklet Smoke</h1>
+      <p>OfflineAudioContext renders the exported Omni sine patch through an AudioWorkletNode and reports the rendered signal summary below.</p>
+      <p><a href="./live.html">Open the live output page</a> to start the same wasm patch in a real AudioContext.</p>
+      <div class="status" data-status>Running...</div>
+      <pre data-output></pre>
+    </main>
+    <script>
+      fetch("./__result", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "html_loaded" }),
+      }).catch(() => {});
+    </script>
+    <script type="module" src="./main.js"></script>
+  </body>
+  </html>

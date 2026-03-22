@@ -10,12 +10,21 @@ use llvm_sys::orc2::lljit::*;
 use llvm_sys::orc2::*;
 use llvm_sys::prelude::*;
 use llvm_sys::target::{
-    LLVM_InitializeNativeAsmParser, LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget,
+    LLVMCopyStringRepOfTargetData, LLVMDisposeTargetData, LLVM_InitializeAllAsmParsers,
+    LLVM_InitializeAllAsmPrinters, LLVM_InitializeAllTargetInfos, LLVM_InitializeAllTargetMCs,
+    LLVM_InitializeAllTargets, LLVM_InitializeNativeAsmParser, LLVM_InitializeNativeAsmPrinter,
+    LLVM_InitializeNativeTarget,
 };
 use llvm_sys::target_machine::{
-    LLVMCodeGenOptLevel, LLVMCodeModel, LLVMCreateTargetMachine, LLVMDisposeTargetMachine,
-    LLVMGetDefaultTargetTriple, LLVMGetHostCPUFeatures, LLVMGetHostCPUName,
-    LLVMGetTargetFromTriple, LLVMRelocMode, LLVMTargetMachineRef, LLVMTargetRef,
+    LLVMCodeGenFileType, LLVMCodeGenOptLevel, LLVMCodeModel, LLVMCreateTargetDataLayout,
+    LLVMCreateTargetMachine, LLVMCreateTargetMachineOptions, LLVMCreateTargetMachineWithOptions,
+    LLVMDisposeTargetMachine, LLVMDisposeTargetMachineOptions, LLVMGetDefaultTargetTriple,
+    LLVMGetHostCPUFeatures, LLVMGetHostCPUName, LLVMGetTargetFromTriple,
+    LLVMGetTargetMachineTriple, LLVMNormalizeTargetTriple, LLVMRelocMode,
+    LLVMTargetMachineEmitToMemoryBuffer, LLVMTargetMachineOptionsSetABI,
+    LLVMTargetMachineOptionsSetCPU, LLVMTargetMachineOptionsSetCodeGenOptLevel,
+    LLVMTargetMachineOptionsSetCodeModel, LLVMTargetMachineOptionsSetFeatures,
+    LLVMTargetMachineOptionsSetRelocMode, LLVMTargetMachineRef, LLVMTargetRef,
 };
 use llvm_sys::transforms::pass_builder::{
     LLVMCreatePassBuilderOptions, LLVMDisposePassBuilderOptions, LLVMRunPasses,
@@ -67,7 +76,7 @@ use llvm_helpers::*;
 use orc_expr_stmt::*;
 use orc_locals::*;
 use oversampling::*;
-pub(crate) use pipeline::{compile_orc, emit_optimized_ir};
+pub(crate) use pipeline::{compile_orc, emit_optimized_ir, emit_targeted_ir, emit_targeted_object};
 use pointer_helpers::*;
 use proc_buffer_refs::*;
 use proc_ir::*;

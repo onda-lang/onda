@@ -5,6 +5,7 @@ VERSION="21.1.2"
 CONFIG="Release"
 PYTHON_EXECUTABLE=""
 LINKAGE="Static"
+TARGETS="X86"
 GENERATOR="Auto"
 
 usage() {
@@ -16,6 +17,7 @@ Options:
   --config <Debug|Release|...>      CMake build config (default: Release)
   --python-executable <path>        Optional Python executable for CMake
   --linkage <Static|Shared>         Install flavor (default: Static)
+  --targets <LLVM target list>      Semicolon-separated LLVM targets (default: X86)
   --generator <Auto|Ninja|UnixMakefiles>
                                     CMake generator selection (default: Auto)
 EOF
@@ -37,6 +39,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --linkage)
       LINKAGE="${2:-}"
+      shift 2
+      ;;
+    --targets)
+      TARGETS="${2:-}"
       shift 2
       ;;
     --generator)
@@ -70,6 +76,11 @@ case "$GENERATOR" in
     exit 1
     ;;
 esac
+
+if [[ -z "$TARGETS" ]]; then
+  echo "Invalid --targets value (expected a semicolon-separated LLVM target list such as X86;AArch64;ARM;WebAssembly)" >&2
+  exit 1
+fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
@@ -138,6 +149,7 @@ fi
 
 echo "Configuring LLVM with generator: $resolved_generator"
 echo "Requested LLVM linkage: $LINKAGE"
+echo "Requested LLVM targets: $TARGETS"
 
 if [[ -f "$build_root/CMakeCache.txt" ]]; then
   cache_generator="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$build_root/CMakeCache.txt" | head -n 1 || true)"
@@ -154,7 +166,7 @@ cmake_args=(
   "-DCMAKE_INSTALL_PREFIX=$install_root"
   "-DCMAKE_BUILD_TYPE=$CONFIG"
   -DLLVM_ENABLE_PROJECTS=
-  -DLLVM_TARGETS_TO_BUILD=X86
+  "-DLLVM_TARGETS_TO_BUILD=$TARGETS"
   -DLLVM_INCLUDE_TESTS=OFF
   -DLLVM_INCLUDE_BENCHMARKS=OFF
   -DLLVM_INCLUDE_EXAMPLES=OFF

@@ -4,6 +4,7 @@ param(
     [string]$PythonExecutable = "",
     [ValidateSet("Static", "Shared")]
     [string]$Linkage = "Static",
+    [string]$Targets = "X86",
     [ValidateSet("Auto", "Ninja", "VS2022")]
     [string]$Generator = "Auto"
 )
@@ -90,8 +91,13 @@ if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
     }
 }
 
+if ([string]::IsNullOrWhiteSpace($Targets)) {
+    throw "Targets must not be empty. Use a semicolon-separated LLVM target list such as 'X86;AArch64;ARM;WebAssembly'."
+}
+
 Write-Host "Configuring LLVM with generator: $resolvedGenerator"
 Write-Host "Requested LLVM linkage: $Linkage"
+Write-Host "Requested LLVM targets: $Targets"
 
 $cmakeArgs = @(
     "-S", $llvmSrc,
@@ -100,7 +106,7 @@ $cmakeArgs = @(
     "-DCMAKE_INSTALL_PREFIX=$installRoot",
     "-DCMAKE_BUILD_TYPE=$Config",
     "-DLLVM_ENABLE_PROJECTS=",
-    "-DLLVM_TARGETS_TO_BUILD=X86",
+    "-DLLVM_TARGETS_TO_BUILD=$Targets",
     "-DLLVM_INCLUDE_TESTS=OFF",
     "-DLLVM_INCLUDE_BENCHMARKS=OFF",
     "-DLLVM_INCLUDE_EXAMPLES=OFF",

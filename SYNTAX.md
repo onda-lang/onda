@@ -953,6 +953,7 @@ Imports:
 - Built-in std modules include:
   - `std/prelude`
   - `std/math`
+  - `std/export_math`
   - `std/complex`
   - `std/osc`
   - `std/filter`

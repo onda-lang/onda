@@ -680,13 +680,31 @@ pub(super) fn rewrite_block_namespace_refs(
                     p.init.default_ty_loc.as_ref().or(p.init.loc.as_ref()),
                 )?;
             }
-            rewrite_stmts(&mut p.init.body, current_ns, &proc_const_env, state, generated)?;
-            rewrite_stmts(&mut p.block_pre, current_ns, &proc_const_env, state, generated)?;
+            rewrite_stmts(
+                &mut p.init.body,
+                current_ns,
+                &proc_const_env,
+                state,
+                generated,
+            )?;
+            rewrite_stmts(
+                &mut p.block_pre,
+                current_ns,
+                &proc_const_env,
+                state,
+                generated,
+            )?;
             if let Some(os) = &mut p.sample_oversample_factor {
                 rewrite_expr(os, current_ns, &proc_const_env, state, generated)?;
             }
             rewrite_stmts(&mut p.sample, current_ns, &proc_const_env, state, generated)?;
-            rewrite_stmts(&mut p.block_post, current_ns, &proc_const_env, state, generated)?;
+            rewrite_stmts(
+                &mut p.block_post,
+                current_ns,
+                &proc_const_env,
+                state,
+                generated,
+            )?;
             if let Some(graph) = &mut p.graph {
                 rewrite_graph_block(graph, current_ns, &proc_const_env, state, generated)?;
             }

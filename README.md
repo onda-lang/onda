@@ -22,7 +22,7 @@
   - Hook triggering is tied to the proc `()` call (including expression/statement forms), not to alias/index retrieval alone.
   - Procs without `block` keep the fast path (no dynamic active-slot hook tracking).
 
-Current backend target is ORC JIT only.
+Current execution backend target is ORC JIT only. The `compile` command can also emit target-aware LLVM IR and native object files.
 
 ## Documentation
 
@@ -38,10 +38,15 @@ Current backend target is ORC JIT only.
    - macOS/Linux (bash):
      - `bash ./scripts/bootstrap-llvm-source.sh`
      - `source ./scripts/use-llvm-env.sh`
+   - Optional cross-target AOT backends:
+     - Windows: `pwsh ./scripts/bootstrap-llvm-source.ps1 -Targets "X86;AArch64;ARM;WebAssembly"`
+     - macOS/Linux: `bash ./scripts/bootstrap-llvm-source.sh --targets 'X86;AArch64;ARM;WebAssembly'`
 2. Build/check:
    - `cargo check --workspace`
 3. Compile an Omni file:
    - `cargo run -p omni_cli -- compile examples/sine.omni`
+   - `cargo run -p omni_cli -- compile examples/sine.omni --emit obj`
+   - `cargo run -p omni_cli -- compile examples/sine.omni --target-spec ./targets/arm64.toml --emit obj`
    - `cargo run -p omni_cli -- compile examples/proc_gain_graph.omni --dump-graph`
    - `cargo run -p omni_cli -- compile examples/stdlib_f32_graph.omni --dump-graph`
    - `cargo run -p omni_cli -- compile examples/inspect_feedback_mix_graph.omni --dump-graph`
@@ -56,8 +61,10 @@ Current backend target is ORC JIT only.
 
 Notes:
 - `scripts/bootstrap-llvm-source.ps1` defaults to `-Linkage Static`.
+- `scripts/bootstrap-llvm-source.ps1` and `scripts/bootstrap-llvm-source.sh` default to native-only `X86`; pass `-Targets` / `--targets` to opt into extra LLVM backends for cross-target AOT.
 - `scripts/use-llvm-env.ps1` defaults to `-Flavor auto`, which prefers `source-static` when available.
 - If you use `scripts/bootstrap-llvm.ps1` (prebuilt LLVM), linking is dynamic (`LLVM-C.dll`).
+- `omni compile` stays native by default; `--target` and `--target-spec` opt into cross-target IR/object emission.
 - Shell equivalents are available for macOS/Linux:
   - `scripts/bootstrap-llvm-source.sh`
   - `scripts/use-llvm-env.sh`
@@ -74,7 +81,7 @@ Notes:
   - Fixed-shape payload bytes are packed in declaration order (native-endian per primitive type; fixed arrays are contiguous).
   - Slice params use dynamic payload layout: `i32 len` followed by contiguous element bytes.
   - `omni_event_payload_bytes` returns `-1` for dynamic event layouts such as slice params.
-- Built-in stdlib modules include `std/math`, `std/lookup`, `std/data`, `std/complex`, `std/fft`, and `std/convolution`.
+- Built-in stdlib modules include `std/math`, `std/export_math`, `std/lookup`, `std/data`, `std/complex`, `std/fft`, and `std/convolution`.
 - Buffer threading hint (optional): query `omni_buffer_may_write` to detect buffers that may be written by program code.
 
 Binding contract for optimized codegen:

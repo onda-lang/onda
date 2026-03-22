@@ -44,6 +44,7 @@ pub(super) unsafe fn add_enum_param_attribute(
 }
 
 pub(super) static NATIVE_INIT_ERR: OnceLock<Option<String>> = OnceLock::new();
+pub(super) static CODEGEN_TARGETS_INIT: OnceLock<()> = OnceLock::new();
 
 extern "C" {
     pub fn LLVMOrcCreateNewThreadSafeContextFromLLVMContext(

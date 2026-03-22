@@ -1,5 +1,11 @@
 use super::*;
 
+struct PreparedCodegenLayouts {
+    top_level_oversampling_layout: TopLevelOversamplingLayout,
+    proc_slot_buffer_ref_layouts: Vec<ProcSlotBufferRefLayout>,
+    state_total_size_bytes: usize,
+}
+
 pub(crate) fn compile_orc(
     typed: &TypedProgram,
     sample_rate: f32,
@@ -7,16 +13,7 @@ pub(crate) fn compile_orc(
     fast_math: bool,
 ) -> Result<OrcProcess, Diagnostic> {
     initialize_native_target()?;
-    let state_layout = compute_state_layout(typed)?;
-    let arrays_layout = compute_arrays_layout(typed, &state_layout)?;
-    let base_state_size_bytes = state_total_size_bytes(&state_layout, &arrays_layout);
-    let top_level_oversampling_layout =
-        compute_top_level_oversampling_layout(typed, base_state_size_bytes)?;
-    let (proc_slot_buffer_ref_layouts, state_total_size_bytes) =
-        compute_proc_slot_buffer_ref_layouts(
-            typed,
-            top_level_oversampling_layout.state_size_bytes,
-        )?;
+    let layouts = prepare_codegen_layouts(typed)?;
 
     unsafe {
         let builder = LLVMOrcCreateLLJITBuilder();
@@ -59,8 +56,8 @@ pub(crate) fn compile_orc(
             sample_rate,
             block_size,
             fast_math,
-            &top_level_oversampling_layout,
-            &proc_slot_buffer_ref_layouts,
+            &layouts.top_level_oversampling_layout,
+            &layouts.proc_slot_buffer_ref_layouts,
         ) {
             Ok(fns) => fns,
             Err(diag) => {
@@ -82,8 +79,8 @@ pub(crate) fn compile_orc(
             typed.ins.len(),
             typed.outs.len(),
             typed.buffers.len(),
-            state_total_size_bytes,
-            proc_slot_buffer_ref_layouts,
+            layouts.state_total_size_bytes,
+            layouts.proc_slot_buffer_ref_layouts,
         ))
     }
 }
@@ -95,16 +92,7 @@ pub(crate) fn emit_optimized_ir(
     fast_math: bool,
 ) -> Result<String, Diagnostic> {
     initialize_native_target()?;
-    let state_layout = compute_state_layout(typed)?;
-    let arrays_layout = compute_arrays_layout(typed, &state_layout)?;
-    let base_state_size_bytes = state_total_size_bytes(&state_layout, &arrays_layout);
-    let top_level_oversampling_layout =
-        compute_top_level_oversampling_layout(typed, base_state_size_bytes)?;
-    let (proc_slot_buffer_ref_layouts, _state_total_size_bytes) =
-        compute_proc_slot_buffer_ref_layouts(
-            typed,
-            top_level_oversampling_layout.state_size_bytes,
-        )?;
+    let layouts = prepare_codegen_layouts(typed)?;
 
     unsafe {
         let builder = LLVMOrcCreateLLJITBuilder();
@@ -141,22 +129,112 @@ pub(crate) fn emit_optimized_ir(
         }
 
         let result = (|| {
-            let (module, ts_context) = build_optimized_module_for_jit(
+            let (module, context) = build_optimized_module_for_jit(
                 lljit,
                 typed,
                 sample_rate,
                 block_size,
                 fast_math,
-                &top_level_oversampling_layout,
-                &proc_slot_buffer_ref_layouts,
+                &layouts.top_level_oversampling_layout,
+                &layouts.proc_slot_buffer_ref_layouts,
             )?;
             let ir = llvm_module_to_string(module)?;
             LLVMDisposeModule(module);
-            LLVMOrcDisposeThreadSafeContext(ts_context);
+            LLVMContextDispose(context);
             Ok(ir)
         })();
 
         dispose_lljit_quiet(lljit);
+        result
+    }
+}
+
+pub(crate) fn emit_targeted_ir(
+    typed: &TypedProgram,
+    sample_rate: f32,
+    block_size: usize,
+    fast_math: bool,
+    target: &crate::TargetConfig,
+) -> Result<String, Diagnostic> {
+    initialize_codegen_targets()?;
+    let layouts = prepare_codegen_layouts(typed)?;
+
+    unsafe {
+        let resolved = resolve_target_machine_config(target)?;
+        let tm = create_target_machine_from_config(&resolved)?;
+        let result = (|| {
+            let target_triple = target_machine_triple_string(tm)?;
+            let data_layout = target_machine_data_layout_string(tm)?;
+            let (module, context) = build_optimized_module(
+                typed,
+                sample_rate,
+                block_size,
+                fast_math,
+                &layouts.top_level_oversampling_layout,
+                &layouts.proc_slot_buffer_ref_layouts,
+                &target_triple,
+                &data_layout,
+                tm,
+                resolved.opt_level,
+            )?;
+            let ir = llvm_module_to_string(module)?;
+            LLVMDisposeModule(module);
+            LLVMContextDispose(context);
+            Ok(ir)
+        })();
+        LLVMDisposeTargetMachine(tm);
+        result
+    }
+}
+
+pub(crate) fn emit_targeted_object(
+    typed: &TypedProgram,
+    sample_rate: f32,
+    block_size: usize,
+    fast_math: bool,
+    target: &crate::TargetConfig,
+) -> Result<crate::AotObjectArtifact, Diagnostic> {
+    initialize_codegen_targets()?;
+    let layouts = prepare_codegen_layouts(typed)?;
+
+    unsafe {
+        let resolved = resolve_target_machine_config(target)?;
+        let tm = create_target_machine_from_config(&resolved)?;
+        let result = (|| {
+            let target_triple = target_machine_triple_string(tm)?;
+            let data_layout = target_machine_data_layout_string(tm)?;
+            let (module, context) = build_optimized_module(
+                typed,
+                sample_rate,
+                block_size,
+                fast_math,
+                &layouts.top_level_oversampling_layout,
+                &layouts.proc_slot_buffer_ref_layouts,
+                &target_triple,
+                &data_layout,
+                tm,
+                resolved.opt_level,
+            )?;
+            let object_bytes = emit_object_to_memory_buffer(tm, module)?;
+            let metadata = crate::aot_artifact::build_aot_metadata(
+                typed,
+                sample_rate,
+                block_size,
+                fast_math,
+                target,
+                resolved.normalized_triple.clone(),
+                resolved.cpu.clone(),
+                resolved.features.clone(),
+                layouts.state_total_size_bytes,
+            );
+            LLVMDisposeModule(module);
+            LLVMContextDispose(context);
+            Ok(crate::AotObjectArtifact {
+                object_bytes,
+                metadata,
+            })
+        })();
+        LLVMDisposeTargetMachine(tm);
         result
     }
 }
@@ -181,6 +259,36 @@ fn initialize_native_target() -> Result<(), Diagnostic> {
     }
 }
 
+fn initialize_codegen_targets() -> Result<(), Diagnostic> {
+    CODEGEN_TARGETS_INIT.get_or_init(|| unsafe {
+        LLVM_InitializeAllTargetInfos();
+        LLVM_InitializeAllTargets();
+        LLVM_InitializeAllTargetMCs();
+        LLVM_InitializeAllAsmPrinters();
+        LLVM_InitializeAllAsmParsers();
+    });
+    Ok(())
+}
+
+fn prepare_codegen_layouts(typed: &TypedProgram) -> Result<PreparedCodegenLayouts, Diagnostic> {
+    let state_layout = compute_state_layout(typed)?;
+    let arrays_layout = compute_arrays_layout(typed, &state_layout)?;
+    let base_state_size_bytes = state_total_size_bytes(&state_layout, &arrays_layout);
+    let top_level_oversampling_layout =
+        compute_top_level_oversampling_layout(typed, base_state_size_bytes)?;
+    let (proc_slot_buffer_ref_layouts, state_total_size_bytes) =
+        compute_proc_slot_buffer_ref_layouts(
+            typed,
+            top_level_oversampling_layout.state_size_bytes,
+        )?;
+
+    Ok(PreparedCodegenLayouts {
+        top_level_oversampling_layout,
+        proc_slot_buffer_ref_layouts,
+        state_total_size_bytes,
+    })
+}
+
 unsafe fn compile_module_into_jit(
     lljit: LLVMOrcLLJITRef,
     typed: &TypedProgram,
@@ -190,7 +298,7 @@ unsafe fn compile_module_into_jit(
     top_level_oversampling_layout: &TopLevelOversamplingLayout,
     proc_slot_buffer_ref_layouts: &[ProcSlotBufferRefLayout],
 ) -> Result<(OrcProcessFn, OrcInitFn, Vec<OrcEventFn>), Diagnostic> {
-    let (module, ts_context) = build_optimized_module_for_jit(
+    let (module, context) = build_optimized_module_for_jit(
         lljit,
         typed,
         sample_rate,
@@ -199,6 +307,15 @@ unsafe fn compile_module_into_jit(
         top_level_oversampling_layout,
         proc_slot_buffer_ref_layouts,
     )?;
+
+    let ts_context = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(context);
+    if ts_context.is_null() {
+        LLVMDisposeModule(module);
+        LLVMContextDispose(context);
+        return Err(Diagnostic::internal(
+            "failed to create LLVM ORC thread-safe context",
+        ));
+    }
 
     let thread_safe_module = LLVMOrcCreateNewThreadSafeModule(module, ts_context);
     if thread_safe_module.is_null() {
@@ -247,100 +364,117 @@ unsafe fn build_optimized_module_for_jit(
     fast_math: bool,
     top_level_oversampling_layout: &TopLevelOversamplingLayout,
     proc_slot_buffer_ref_layouts: &[ProcSlotBufferRefLayout],
-) -> Result<(LLVMModuleRef, LLVMOrcThreadSafeContextRef), Diagnostic> {
+) -> Result<(LLVMModuleRef, LLVMContextRef), Diagnostic> {
+    let triple = LLVMOrcLLJITGetTripleString(lljit);
+    if triple.is_null() {
+        return Err(Diagnostic::internal("failed to get JIT target triple"));
+    }
+    let target_triple = CStr::from_ptr(triple).to_string_lossy().to_string();
+
+    let datalayout = LLVMOrcLLJITGetDataLayoutStr(lljit);
+    if datalayout.is_null() {
+        return Err(Diagnostic::internal("failed to get JIT data layout"));
+    }
+    let data_layout = CStr::from_ptr(datalayout).to_string_lossy().to_string();
+
+    let opt_tm = create_host_target_machine_aggressive()?;
+    let result = build_optimized_module(
+        typed,
+        sample_rate,
+        block_size,
+        fast_math,
+        top_level_oversampling_layout,
+        proc_slot_buffer_ref_layouts,
+        &target_triple,
+        &data_layout,
+        opt_tm,
+        LLVMCodeGenOptLevel::LLVMCodeGenLevelAggressive,
+    );
+    LLVMDisposeTargetMachine(opt_tm);
+    result
+}
+
+unsafe fn build_optimized_module(
+    typed: &TypedProgram,
+    sample_rate: f32,
+    block_size: usize,
+    fast_math: bool,
+    top_level_oversampling_layout: &TopLevelOversamplingLayout,
+    proc_slot_buffer_ref_layouts: &[ProcSlotBufferRefLayout],
+    target_triple: &str,
+    data_layout: &str,
+    opt_tm: LLVMTargetMachineRef,
+    opt_level: LLVMCodeGenOptLevel,
+) -> Result<(LLVMModuleRef, LLVMContextRef), Diagnostic> {
     let context = LLVMContextCreate();
     if context.is_null() {
         return Err(Diagnostic::internal("failed to create LLVM context"));
-    }
-    let ts_context = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(context);
-    if ts_context.is_null() {
-        LLVMContextDispose(context);
-        return Err(Diagnostic::internal(
-            "failed to create LLVM ORC thread-safe context",
-        ));
     }
 
     let module_name =
         CString::new("omni_module").map_err(|_| Diagnostic::internal("invalid module name"))?;
     let module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), context);
     if module.is_null() {
-        LLVMOrcDisposeThreadSafeContext(ts_context);
+        LLVMContextDispose(context);
         return Err(Diagnostic::internal("failed to create LLVM module"));
     }
 
-    let triple = LLVMOrcLLJITGetTripleString(lljit);
-    if triple.is_null() {
-        LLVMDisposeModule(module);
-        LLVMOrcDisposeThreadSafeContext(ts_context);
-        return Err(Diagnostic::internal("failed to get JIT target triple"));
-    }
-    LLVMSetTarget(module, triple);
+    let target_triple =
+        CString::new(target_triple).map_err(|_| Diagnostic::internal("invalid target triple"))?;
+    LLVMSetTarget(module, target_triple.as_ptr());
 
-    let datalayout = LLVMOrcLLJITGetDataLayoutStr(lljit);
-    if datalayout.is_null() {
-        LLVMDisposeModule(module);
-        LLVMOrcDisposeThreadSafeContext(ts_context);
-        return Err(Diagnostic::internal("failed to get JIT data layout"));
-    }
-    LLVMSetDataLayout(module, datalayout);
+    let data_layout =
+        CString::new(data_layout).map_err(|_| Diagnostic::internal("invalid data layout"))?;
+    LLVMSetDataLayout(module, data_layout.as_ptr());
 
-    let mut user_fns =
-        match build_user_functions_ir(typed, module, context, sample_rate, block_size, fast_math) {
-            Ok(v) => v,
-            Err(diag) => {
-                LLVMDisposeModule(module);
-                LLVMOrcDisposeThreadSafeContext(ts_context);
-                return Err(diag);
-            }
-        };
+    let result = (|| {
+        let mut user_fns =
+            build_user_functions_ir(typed, module, context, sample_rate, block_size, fast_math)?;
 
-    if let Err(diag) = build_init_ir(
-        typed,
-        module,
-        context,
-        &mut user_fns,
-        sample_rate,
-        block_size,
-        fast_math,
-    ) {
+        build_init_ir(
+            typed,
+            module,
+            context,
+            &mut user_fns,
+            sample_rate,
+            block_size,
+            fast_math,
+        )?;
+        build_process_ir(
+            typed,
+            module,
+            context,
+            &mut user_fns,
+            sample_rate,
+            block_size,
+            fast_math,
+            top_level_oversampling_layout,
+            proc_slot_buffer_ref_layouts,
+        )?;
+        build_event_ir(
+            typed,
+            module,
+            context,
+            &mut user_fns,
+            sample_rate,
+            block_size,
+            fast_math,
+        )?;
+        run_default_pass_pipeline(module, opt_tm, opt_level)?;
+        verify_module(module)?;
+        Ok(())
+    })();
+
+    if let Err(diag) = result {
         LLVMDisposeModule(module);
-        LLVMOrcDisposeThreadSafeContext(ts_context);
-        return Err(diag);
-    }
-    if let Err(diag) = build_process_ir(
-        typed,
-        module,
-        context,
-        &mut user_fns,
-        sample_rate,
-        block_size,
-        fast_math,
-        top_level_oversampling_layout,
-        proc_slot_buffer_ref_layouts,
-    ) {
-        LLVMDisposeModule(module);
-        LLVMOrcDisposeThreadSafeContext(ts_context);
-        return Err(diag);
-    }
-    if let Err(diag) = build_event_ir(
-        typed,
-        module,
-        context,
-        &mut user_fns,
-        sample_rate,
-        block_size,
-        fast_math,
-    ) {
-        LLVMDisposeModule(module);
-        LLVMOrcDisposeThreadSafeContext(ts_context);
-        return Err(diag);
-    }
-    if let Err(diag) = run_default_o3_pipeline(module) {
-        LLVMDisposeModule(module);
-        LLVMOrcDisposeThreadSafeContext(ts_context);
+        LLVMContextDispose(context);
         return Err(diag);
     }
 
+    Ok((module, context))
+}
+
+unsafe fn verify_module(module: LLVMModuleRef) -> Result<(), Diagnostic> {
     let mut verify_message: *mut i8 = null_mut();
     let verify_failed = LLVMVerifyModule(
         module,
@@ -355,8 +489,6 @@ unsafe fn build_optimized_module_for_jit(
             LLVMDisposeMessage(verify_message);
             msg
         };
-        LLVMDisposeModule(module);
-        LLVMOrcDisposeThreadSafeContext(ts_context);
         return Err(Diagnostic::internal(format!(
             "LLVM module verification failed: {detail}"
         )));
@@ -364,6 +496,53 @@ unsafe fn build_optimized_module_for_jit(
     if !verify_message.is_null() {
         LLVMDisposeMessage(verify_message);
     }
+    Ok(())
+}
 
-    Ok((module, ts_context))
+unsafe fn emit_object_to_memory_buffer(
+    tm: LLVMTargetMachineRef,
+    module: LLVMModuleRef,
+) -> Result<Vec<u8>, Diagnostic> {
+    let mut error_message: *mut i8 = null_mut();
+    let mut out_mem_buf: LLVMMemoryBufferRef = null_mut();
+    let emit_status = LLVMTargetMachineEmitToMemoryBuffer(
+        tm,
+        module,
+        LLVMCodeGenFileType::LLVMObjectFile,
+        &mut error_message,
+        &mut out_mem_buf,
+    );
+    if emit_status != 0 {
+        let detail = if error_message.is_null() {
+            "unknown object emission error".to_owned()
+        } else {
+            let msg = CStr::from_ptr(error_message).to_string_lossy().to_string();
+            LLVMDisposeMessage(error_message);
+            msg
+        };
+        return Err(Diagnostic::internal(format!(
+            "LLVM target machine object emission failed: {detail}"
+        )));
+    }
+    if out_mem_buf.is_null() {
+        if !error_message.is_null() {
+            LLVMDisposeMessage(error_message);
+        }
+        return Err(Diagnostic::internal(
+            "LLVM target machine object emission returned a null memory buffer",
+        ));
+    }
+
+    let start = LLVMGetBufferStart(out_mem_buf) as *const u8;
+    let size = LLVMGetBufferSize(out_mem_buf);
+    let bytes = if start.is_null() || size == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(start, size).to_vec()
+    };
+    LLVMDisposeMemoryBuffer(out_mem_buf);
+    if !error_message.is_null() {
+        LLVMDisposeMessage(error_message);
+    }
+    Ok(bytes)
 }

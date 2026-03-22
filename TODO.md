@@ -25,6 +25,8 @@
 - `const` follow-ups
   - Evaluate extending `const` beyond scalar primitives to arrays/structural compile-time values where justified.
   - Decide whether forward references and cycle diagnostics should be supported instead of the current strict lexical-order rule.
+  - Fix float-literal precision/typing for typed constants and typed declarations:
+    today decimal literals are parsed as `f32`, so `const X: f64 = 0.33333333333` widens an `f32` value instead of preserving `f64` precision.
 
 - Graph composition follow-ups
   - Widen graph source expressions:
@@ -74,7 +76,7 @@
 
 - Standard library follow-ups
   - Keep the built-in module inventory synced across `README.md`, `INFO.md`, and `SYNTAX.md`:
-    `std/prelude`, `std/math`, `std/complex`, `std/osc`, `std/filter`, `std/env`,
+    `std/prelude`, `std/math`, `std/export_math`, `std/complex`, `std/osc`, `std/filter`, `std/env`,
     `std/delay`, `std/data`, `std/lookup`, `std/fft`, `std/convolution`.
   - Decide which stdlib modules are considered stable MVP surface versus still-evolving API.
   - Plan the next expansion/versioning pass beyond the current shipped module set.
@@ -95,18 +97,11 @@
 
 ## Backends
 
-- AOT backend (prerequisite for WASM and C++ backends)
-  - Decouple IR generation from LLJIT: extract `build_optimized_module_for_jit` into a target-agnostic
-    `build_module(triple, datalayout, ...)` that doesn't require a live LLJIT instance.
-  - Add a `TargetConfig` abstraction that carries triple, data layout, CPU name, and features;
-    the ORC path constructs it from `LLVMGetDefaultTargetTriple`/`LLVMGetHostCPUName`,
-    AOT/WASM paths construct it from explicit arguments.
-  - Add object file emission via `LLVMTargetMachineEmitToMemoryBuffer` / `LLVMTargetMachineEmitToFile`
-    (native object format for AOT, wasm object for WASM).
-  - Define exported symbols/ABI for host integration without JIT startup:
-    `omni_init`, `omni_process`, `omni_event_*`, plus metadata query symbols or a companion descriptor.
-  - Add a `compile` CLI output mode: `omni compile foo.omni --emit obj|wasm|llvm-ir --target <triple>`.
-  - Reuse the same semantic/lowering pipeline to keep runtime behavior consistent across backends.
+- AOT follow-ups
+  - Add a first-class `--emit wasm` convenience path that wraps the current object-emission + `wasm-ld` flow for single-module exports.
+  - Decide whether `omni link` is worth adding as a low-level multi-object/native-link orchestration command, or whether that should stay external.
+  - Decide whether metadata should remain sidecar-only or gain an optional embedded/exported form for host loaders.
+  - Add a few more cross-target artifact smoke tests if we want broader confidence across ELF/COFF/Mach-O/WASM object formats.
 
 - WASM backend (`.wasm` export)
   - Target: `wasm32-unknown-unknown` (pure compute module, no WASI dependency).

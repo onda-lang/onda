@@ -1743,6 +1743,7 @@ const STD_ONE_POLE_GRAPH_FILE_EXAMPLE: &str =
     include_str!("../../../examples/std_one_pole_graph.omni");
 const STDLIB_F32_FILE_EXAMPLE: &str = include_str!("../../../examples/stdlib_f32.omni");
 const STDLIB_F32_GRAPH_FILE_EXAMPLE: &str = include_str!("../../../examples/stdlib_f32_graph.omni");
+const SINE_WASM_FILE_EXAMPLE: &str = include_str!("../../../examples/sine_wasm.omni");
 
 const STRUCT_DATA_EXAMPLE: &str = r#"
 outs { out1 }
@@ -9521,6 +9522,27 @@ fn stdlib_f32_graph_example_matches_sample_version() {
     for (sample, graph) in sample_output.iter().zip(&graph_output) {
         assert_near(*graph, *sample, 1e-5);
     }
+}
+
+#[test]
+fn sine_wasm_example_runs_with_bounded_output() {
+    let frames = 128;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SINE_WASM_FILE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| sample.abs() > 0.05),
+        "expected sine_wasm example to produce audible output, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 1.1),
+        "expected sine_wasm example to remain bounded, got {output:?}"
+    );
 }
 
 #[test]

@@ -1216,7 +1216,10 @@ sample { out1 = 0.0 }
         })
         .expect("expected a proc block");
 
-    assert!(proc.consts.is_empty(), "proc consts should be stripped after rewrite");
+    assert!(
+        proc.consts.is_empty(),
+        "proc consts should be stripped after rewrite"
+    );
     assert_eq!(proc.ins.len(), 2);
     assert_eq!(proc.outs.len(), 2);
     assert!(matches!(
@@ -1259,8 +1262,8 @@ sample {
 }
 "#;
 
-    let program = parse_program(src)
-        .expect("proc-level consts should be able to reference namespace consts");
+    let program =
+        parse_program(src).expect("proc-level consts should be able to reference namespace consts");
     let proc = program
         .blocks
         .iter()
@@ -1270,7 +1273,10 @@ sample {
         })
         .expect("expected an instantiated namespaced proc block");
 
-    assert!(proc.consts.is_empty(), "proc consts should be stripped after rewrite");
+    assert!(
+        proc.consts.is_empty(),
+        "proc consts should be stripped after rewrite"
+    );
     assert_eq!(proc.ins.len(), 4);
     assert_eq!(proc.outs.len(), 4);
     assert!(
@@ -3737,6 +3743,23 @@ sample { out1 = clamp(2.0, 0.0, 1.0) }
     assert!(
         program.blocks.iter().any(|b| matches!(b, Block::Def(_))),
         "expected std module declarations to be imported"
+    );
+}
+
+#[test]
+fn parse_program_in_memory_supports_std_export_math_module() {
+    let src = r#"
+import std/export_math
+outs { out1 }
+sample { out1 = std::export_math::sin(0.5) + std::export_math::exp(0.0) }
+"#;
+    let program = parse_program(src).expect("in-memory std/export_math import should parse");
+    assert!(
+        program
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Def(d) if d.name.contains("std::export_math::sin"))),
+        "expected std/export_math declarations to be imported"
     );
 }
 

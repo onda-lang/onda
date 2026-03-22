@@ -824,7 +824,10 @@ pub(super) fn parse_proc_block(
                 let child_loc = stmt_loc_from_pair(&child);
                 let mut inner = child.into_inner();
                 let decl = inner.next().ok_or_else(|| {
-                    vec![syntax_at_loc(child_loc.as_ref(), "missing const declaration")]
+                    vec![syntax_at_loc(
+                        child_loc.as_ref(),
+                        "missing const declaration",
+                    )]
                 })?;
                 consts.push(parse_const_decl(decl)?);
             }

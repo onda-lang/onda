@@ -1,7 +1,7 @@
 use omni_frontend::Diagnostic;
 
 use crate::primitives::{append_typed_const_bytes, primitive_type_bytes};
-use crate::{CompileOptions, DeclaredEvent, JitProgram, RuntimeState};
+use crate::{CodegenOptions, CompileOptions, DeclaredEvent, JitProgram, RuntimeState, TargetCpu};
 
 pub(crate) fn validate_compile_options(options: &CompileOptions) -> Result<(), Diagnostic> {
     if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
@@ -14,6 +14,56 @@ pub(crate) fn validate_compile_options(options: &CompileOptions) -> Result<(), D
             "compile option 'block_size' must be greater than zero",
         ));
     }
+    Ok(())
+}
+
+pub(crate) fn validate_codegen_options(options: &CodegenOptions) -> Result<(), Diagnostic> {
+    if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
+        return Err(Diagnostic::internal(
+            "codegen option 'sample_rate' must be finite and greater than zero",
+        ));
+    }
+    if options.block_size == 0 {
+        return Err(Diagnostic::internal(
+            "codegen option 'block_size' must be greater than zero",
+        ));
+    }
+
+    if let Some(triple) = &options.target.triple {
+        if triple.trim().is_empty() {
+            return Err(Diagnostic::internal(
+                "target config 'triple' must not be empty when provided",
+            ));
+        }
+    }
+
+    match &options.target.cpu {
+        TargetCpu::Host => {}
+        TargetCpu::Explicit(cpu) => {
+            if cpu.trim().is_empty() {
+                return Err(Diagnostic::internal(
+                    "target config 'cpu' must not be empty when explicitly provided",
+                ));
+            }
+        }
+    }
+
+    if let Some(features) = &options.target.features {
+        if features.contains(char::is_whitespace) {
+            return Err(Diagnostic::internal(
+                "target config 'features' must be a comma-separated LLVM feature string without whitespace",
+            ));
+        }
+    }
+
+    if let Some(abi_name) = &options.target.abi_name {
+        if abi_name.trim().is_empty() {
+            return Err(Diagnostic::internal(
+                "target config 'abi_name' must not be empty when provided",
+            ));
+        }
+    }
+
     Ok(())
 }
 

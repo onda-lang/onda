@@ -152,6 +152,8 @@
 - `std/prelude` is auto-imported during semantic analysis.
 - `std/prelude` currently imports `std/math` and `std/lookup`.
 - Local symbols with the same name take precedence over auto-imported unqualified std helpers; qualified calls remain available via `std::math::...` and `std::lookup::...`.
+- `std/export_math` is available as `import std/export_math` and provides namespace-qualified pure-Omni approximations for freestanding/export-oriented transcendental math (`sin`, `cos`, `tan`, `tanh`, `atan`, `atan2`, `exp`, `log`, `pow`).
+  - It is opt-in and does not replace the existing builtin math lowering path.
 - `std/lookup` exposes duck-typed overloaded helpers `read`, `write`, `readL`, and `readC` (mono and channel-explicit forms) that specialize from both primitive arrays and buffers.
 - `std/complex` is available as `import std/complex` and provides `std::complex::Complex<T>` for method-based complex arithmetic in Omni code.
   - Intended `T` specializations are `f32` and `f64`.
@@ -383,7 +385,8 @@
 - `:OmniRunPatch` launches `omni preview <file>` in the standalone preview window.
 
 ## Runtime and codegen
-- ORC JIT backend only (`Auto` routes to ORC).
+- ORC JIT remains the only execution backend (`Auto` routes to ORC).
+- `omni compile` can now emit target-aware LLVM IR and native object files through the shared LLVM lowering path.
 - Optimized LLVM pipeline is used (`default<O3>` style pass pipeline + host-target settings).
 - Fixed compile-time block size per program/instance.
 - No callback-time allocations for compiler-managed DSP state; allocations happen during setup/init.
@@ -406,7 +409,7 @@
 - Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
   - `omni_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
 - CLI (`omni`) supports:
-  - `compile <file> [--dump-graph] [--ir] [--meta]`
+  - `compile <file> [--emit check|llvm-ir|obj] [--output] [--meta-out] [--target <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <csv>] [--target-abi <name>] [--reloc-model <mode>] [--code-model <mode>] [--opt-level <0|1|2|3>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--meta]`
   - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--dump-graph] [--ir]`
   - `lsp [--stdio]`
   - `preview <file> [--sr|--sample-rate] [--block] [--fast-math] [--input-device <name>] [--output-device <name>]`
@@ -417,6 +420,9 @@
   - `--dump-graph` prints the program immediately after graph lowering, before proc desugaring/codegen.
   - `preview play` defaults to a `128`-frame render/device block size.
   - `preview render` keeps the offline render default block size (`512`).
+  - `compile --emit obj` writes a native object file plus a JSON metadata sidecar.
+  - `compile` remains host-native by default; cross-target AOT requires `--target` or `--target-spec`.
+  - `compile --target-spec <path>` loads a small versioned TOML codegen preset; direct CLI flags override spec values.
   - Useful graph examples: `examples/proc_gain_graph.omni`, `examples/proc_split_graph.omni`, `examples/proc_array_stereo_sine_graph.omni`, `examples/std_one_pole_graph.omni`, `examples/stdlib_f32_graph.omni`, `examples/feedback_saturator_graph.omni`, `examples/reverb_graph.omni`.
 
 ## LLVM dependency strategy
@@ -432,7 +438,7 @@
 
 ## Major remaining work
 - Graph follow-ups: broader source expressions, optional coercion/broadcasting rules, and richer diagnostics.
-- AOT backend.
+- AOT convenience layers: `--emit wasm`, optional link helpers, and any host-integration polish beyond the current object + sidecar model.
 - C++ single-header backend.
 - Standard library expansion/versioning beyond MVP module set.
 - RT-safety instrumentation/audit suite and stricter host-facing diagnostics lifecycle.
