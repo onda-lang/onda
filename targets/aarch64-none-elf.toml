@@ -1,4 +1,3 @@
-version = 1
 triple = "aarch64-none-elf"
 cpu = "generic"
 features = ""

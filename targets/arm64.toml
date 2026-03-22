@@ -1,4 +1,3 @@
-version = 1
 triple = "aarch64-unknown-linux-gnu"
 cpu = "generic"
 features = ""

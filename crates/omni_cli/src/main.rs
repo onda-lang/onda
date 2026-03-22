@@ -67,7 +67,7 @@ Options:
   --ir           Alias for `omni compile --emit llvm-ir` and render IR dumping
   --meta         Print declared ins/outs/params metadata
   --target       LLVM target triple for compile-time IR emission
-  --target-spec  Versioned TOML target spec for compile-time IR/object emission
+  --target-spec  TOML target spec for compile-time IR/object emission
   --target-cpu   Target CPU name, or 'host' for the native host CPU
   --target-features  Comma-separated LLVM target feature string
   --target-abi   Optional target ABI name forwarded to LLVM target machine creation
@@ -1052,7 +1052,6 @@ fn load_target_spec(path: &Path) -> Result<LoadedTargetSpec, String> {
     let text = fs::read_to_string(path)
         .map_err(|err| format!("failed to read target spec '{}': {err}", path.display()))?;
     let mut loaded = LoadedTargetSpec::default();
-    let mut version = None::<u32>;
     let mut reloc_model_explicit = false;
     let mut code_model_explicit = false;
     let mut opt_level_explicit = false;
@@ -1075,15 +1074,6 @@ fn load_target_spec(path: &Path) -> Result<LoadedTargetSpec, String> {
         let value = parse_target_spec_value(raw_value.trim(), path, line_no)?;
 
         match key {
-            "version" => {
-                if version.is_some() {
-                    return Err(format!(
-                        "target spec '{}' defines 'version' more than once",
-                        path.display()
-                    ));
-                }
-                version = Some(expect_target_spec_u32(&value, path, line_no, "version")?);
-            }
             "triple" => {
                 if loaded.target.triple.is_some() {
                     return Err(format!(
@@ -1186,20 +1176,6 @@ fn load_target_spec(path: &Path) -> Result<LoadedTargetSpec, String> {
                 ));
             }
         }
-    }
-
-    let Some(version) = version else {
-        return Err(format!(
-            "target spec '{}' is missing required 'version' field",
-            path.display()
-        ));
-    };
-    if version != 1 {
-        return Err(format!(
-            "unsupported target spec version {} in '{}', expected version = 1",
-            version,
-            path.display()
-        ));
     }
 
     Ok(loaded)
@@ -1313,30 +1289,6 @@ fn expect_target_spec_string(
         TargetSpecValue::String(value) => Ok(value.clone()),
         TargetSpecValue::Integer(_) => Err(format!(
             "failed to parse target spec '{}': '{}' must be a string at line {}",
-            path.display(),
-            key,
-            line_no
-        )),
-    }
-}
-
-fn expect_target_spec_u32(
-    value: &TargetSpecValue,
-    path: &Path,
-    line_no: usize,
-    key: &str,
-) -> Result<u32, String> {
-    match value {
-        TargetSpecValue::Integer(value) => u32::try_from(*value).map_err(|_| {
-            format!(
-                "failed to parse target spec '{}': '{}' must be a non-negative integer at line {}",
-                path.display(),
-                key,
-                line_no
-            )
-        }),
-        TargetSpecValue::String(_) => Err(format!(
-            "failed to parse target spec '{}': '{}' must be an integer at line {}",
             path.display(),
             key,
             line_no
@@ -4575,7 +4527,6 @@ mod tests {
     fn parse_compile_loads_target_spec_and_applies_cli_overrides() {
         let spec_path = write_temp_target_spec(
             r#"
-version = 1
 triple = "aarch64-unknown-linux-gnu"
 cpu = "generic"
 features = "+neon"
@@ -4621,7 +4572,6 @@ opt_level = 1
     fn parse_compile_target_spec_defaults_cross_target_cpu_to_generic() {
         let spec_path = write_temp_target_spec(
             r#"
-version = 1
 triple = "wasm32-unknown-unknown"
 "#,
         );
@@ -4645,32 +4595,9 @@ triple = "wasm32-unknown-unknown"
     }
 
     #[test]
-    fn parse_compile_rejects_unknown_target_spec_version() {
-        let spec_path = write_temp_target_spec(
-            r#"
-version = 2
-triple = "aarch64-unknown-linux-gnu"
-"#,
-        );
-        let spec_arg = spec_path.to_string_lossy().to_string();
-        let err = match parse_args(
-            ["omni", "compile", "x.omni", "--target-spec", &spec_arg]
-                .into_iter()
-                .map(str::to_owned),
-        ) {
-            Ok(_) => panic!("compile should reject unsupported target spec versions"),
-            Err(err) => err,
-        };
-        let _ = std::fs::remove_file(&spec_path);
-
-        assert!(err.contains("unsupported target spec version 2"));
-    }
-
-    #[test]
     fn parse_compile_rejects_duplicate_target_spec_default_keys() {
         let spec_path = write_temp_target_spec(
             r#"
-version = 1
 triple = "wasm32-unknown-unknown"
 reloc_model = "default"
 reloc_model = "default"

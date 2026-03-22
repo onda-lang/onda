@@ -1,4 +1,3 @@
-version = 1
 triple = "wasm32-unknown-unknown"
 cpu = "generic"
 features = ""
