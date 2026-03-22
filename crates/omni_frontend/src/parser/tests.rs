@@ -4350,7 +4350,7 @@ sample:
     assert_eq!(events[0].params.len(), 3);
     assert!(matches!(
         events[0].params[0].default,
-        Some(Expr::Number { value, .. }) if (value - 440.0).abs() < f32::EPSILON
+        Some(Expr::Number { value, .. }) if (value - 440.0).abs() < f64::EPSILON
     ));
     assert!(matches!(
         events[0].params[1].default.as_ref(),
@@ -4422,7 +4422,7 @@ sample:
         .expect("proc block");
     assert!(matches!(
         proc.events[0].params[0].default,
-        Some(Expr::Number { value, .. }) if (value - 440.0).abs() < f32::EPSILON
+        Some(Expr::Number { value, .. }) if (value - 440.0).abs() < f64::EPSILON
     ));
     assert!(matches!(
         proc.events[0].params[1].default,
@@ -5746,4 +5746,38 @@ fn local_typed_decl_namespace_template_diagnostics_report_type_span() {
     assert_eq!(diag.file.as_deref(), Some("<memory>"));
     assert_eq!((diag.line, diag.column), (4, 6));
     assert_eq!(diag.end_line, 4);
+}
+
+#[test]
+fn parses_decimal_literals_with_f64_precision() {
+    let src = "outs:\n  out1\nsample:\n  out1 = 0.12345678901234566\n";
+    let program = parse_program(src).expect("decimal literal program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(&sample.body),
+            _ => None,
+        })
+        .expect("sample block");
+    let expr = match &sample[0] {
+        Stmt::Assign { expr, .. } => expr,
+        other => panic!("expected sample assignment, got {other:?}"),
+    };
+
+    match expr {
+        Expr::Number { value, .. } => {
+            let expected = 0.12345678901234566_f64;
+            let widened_f32 = expected as f32 as f64;
+            assert!(
+                (value - expected).abs() < 1e-18,
+                "expected parser to preserve f64 precision, got {value:?}"
+            );
+            assert!(
+                (value - widened_f32).abs() > 1e-9,
+                "expected parser value to differ from widened f32 literal, got {value:?}"
+            );
+        }
+        other => panic!("expected number literal, got {other:?}"),
+    }
 }

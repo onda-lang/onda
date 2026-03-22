@@ -1846,6 +1846,18 @@ sample {
 }
 "#;
 
+const EXPORT_MATH_TYPED_OVERLOADS_EXAMPLE: &str = r#"
+import std/export_math
+outs {
+  out1
+  out2
+}
+sample {
+  out1 = std::export_math::cos(0.0) + std::export_math::exp(0.0) + std::export_math::log(1.0)
+  out2 = f32(std::export_math::cos(f64(0.0)) + std::export_math::exp(f64(0.0)) + std::export_math::log(f64(1.0)))
+}
+"#;
+
 const BUILTIN_INTRINSICS_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
@@ -10409,6 +10421,23 @@ fn builtin_consts_support_lowercase_samplerate_alias() {
 }
 
 #[test]
+fn export_math_typed_overloads_compile_and_run() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EXPORT_MATH_TYPED_OVERLOADS_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for frame in 0..frames {
+        let base = frame * out_channels;
+        assert_near(output[base], 2.0, 1e-4);
+        assert_near(output[base + 1], 2.0, 1e-4);
+    }
+}
+
+#[test]
 fn builtin_intrinsics_compile_and_run() {
     let frames = 2;
     let (mut instance, in_channels, out_channels) =
@@ -13650,6 +13679,93 @@ init:
   g = FX::Gain<f64>(g = f64(0.5))
 sample:
   out1 = f32(g(f64(2.0)))
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_proc_inside_namespace_template_preserves_typed_f64_const_defaults() {
+    let src = r#"
+namespace FX<N = 1>:
+  const EXACT: f64 = 1.234567890123
+  proc Gain<T>:
+    outs<T> 1
+    params<T>:
+      g = EXACT
+    sample:
+      out1 = g
+outs 1
+init:
+  g = FX<1>::Gain<f64>()
+sample:
+  if (g() == f64(1.234567890123)):
+    out1 = 1.0
+  else:
+    out1 = 0.0
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_proc_inside_namespace_template_preserves_typed_i32_const_defaults() {
+    let src = r#"
+namespace FX<N = 1>:
+  const EXACT: i32 = 1234567890
+  proc Gain<T>:
+    outs<T> 1
+    params<T>:
+      g = EXACT
+    sample:
+      out1 = g
+outs 1
+init:
+  g = FX<1>::Gain<i32>()
+sample:
+  if (g() == i32(1234567890)):
+    out1 = 1.0
+  else:
+    out1 = 0.0
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_proc_inside_namespace_template_preserves_typed_i64_const_defaults() {
+    let src = r#"
+namespace FX<N = 1>:
+  const EXACT: i64 = 9007199254740993
+  proc Gain<T>:
+    outs 1
+    params<T>:
+      g = EXACT
+    sample:
+      if (g == i64(9007199254740993)):
+        out1 = 1.0
+      else:
+        out1 = 0.0
+outs 1
+init:
+  g = FX<1>::Gain<i64>()
+sample:
+  out1 = g()
 "#;
     let frames = 4;
     let (mut instance, _, _) = compile_instance(src, frames);

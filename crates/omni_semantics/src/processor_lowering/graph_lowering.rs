@@ -670,6 +670,27 @@ fn eval_graph_nonnegative_int_expr(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<usize> {
+    if can_eval_const_expr_exact_int(expr) {
+        let value = eval_const_expr_i64_exact(expr, options, context, errors)?;
+        if value < 0 {
+            push_graph_error(
+                errors,
+                expr.loc(),
+                format!("{context} must be greater than or equal to zero"),
+            );
+            return None;
+        }
+        let Ok(value) = usize::try_from(value) else {
+            push_graph_error(
+                errors,
+                expr.loc(),
+                format!("{context} exceeds supported range"),
+            );
+            return None;
+        };
+        return Some(value);
+    }
+
     let value = eval_const_expr_f64(expr, options, context, errors)?;
     if !value.is_finite() {
         push_graph_error(errors, expr.loc(), format!("{context} must be finite"));
@@ -702,6 +723,12 @@ fn eval_graph_static_slice_bound(
     let Some(expr) = expr else {
         return Some(if default_to_len { total_len } else { 0 });
     };
+    if can_eval_const_expr_exact_int(expr) {
+        let raw = eval_const_expr_i64_exact(expr, options, context, errors)?;
+        let adjusted = if raw < 0 { total_len as i64 + raw } else { raw };
+        return Some(adjusted.clamp(0, total_len as i64) as usize);
+    }
+
     let value = eval_const_expr_f64(expr, options, context, errors)?;
     if !value.is_finite() {
         push_graph_error(errors, expr.loc(), format!("{context} must be finite"));

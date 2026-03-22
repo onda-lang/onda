@@ -1966,6 +1966,13 @@ pub(crate) fn validate_default_expr(expr: &Expr, errors: &mut Vec<Diagnostic>, c
                 );
             }
         }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            validate_default_expr(expr, errors, context);
+        }
+        Expr::Logical { lhs, rhs, .. } => {
+            validate_default_expr(lhs, errors, context);
+            validate_default_expr(rhs, errors, context);
+        }
         Expr::Binary { lhs, rhs, .. } | Expr::Compare { lhs, rhs, .. } => {
             validate_default_expr(lhs, errors, context);
             validate_default_expr(rhs, errors, context);

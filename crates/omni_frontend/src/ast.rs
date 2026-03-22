@@ -1117,7 +1117,7 @@ impl GraphEndpoint {
 pub enum Expr {
     Number {
         loc: Span,
-        value: f32,
+        value: f64,
     },
     Int {
         loc: Span,
@@ -1254,7 +1254,7 @@ impl Expr {
         self.with_loc(other.loc())
     }
 
-    pub fn number(value: f32) -> Self {
+    pub fn number(value: f64) -> Self {
         Self::Number {
             loc: Span::ZERO,
             value,

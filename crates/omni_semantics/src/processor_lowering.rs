@@ -2075,7 +2075,7 @@ graph:
                     && matches!(args[0].expr, Expr::Var { name: ref node, .. } if node == "g")
                     && args.iter().any(|arg| matches!(
                         arg.expr,
-                        Expr::Number { value: v, .. } if (v - 0.25).abs() <= f32::EPSILON
+                        Expr::Number { value: v, .. } if (v - 0.25).abs() <= f64::EPSILON
                     ))
             )),
             "expected lowered proc step driven by receiver edge: {:?}",
@@ -2302,7 +2302,7 @@ graph:
                             index,
                             Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
                         )
-                        && (*v - 0.5).abs() <= f32::EPSILON
+                        && (*v - 0.5).abs() <= f64::EPSILON
                 ))
                 .count()
                 == 2,
@@ -2345,7 +2345,7 @@ graph:
                         .iter()
                         .filter(|arg| matches!(
                             arg.expr,
-                            Expr::Number { value: v, .. } if (v - 0.5).abs() <= f32::EPSILON
+                            Expr::Number { value: v, .. } if (v - 0.5).abs() <= f64::EPSILON
                         ))
                         .count()
                         == 2
@@ -2389,7 +2389,7 @@ graph:
                         expr: Expr::Number { value: v, .. },
                         ..
                     } if (name == "sum.gains[0]" || name == "sum.gains[1]")
-                        && (*v - 0.5).abs() <= f32::EPSILON
+                        && (*v - 0.5).abs() <= f64::EPSILON
                 ))
                 .count()
                 == 2,

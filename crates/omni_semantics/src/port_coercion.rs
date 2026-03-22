@@ -1,4 +1,5 @@
 use super::*;
+use omni_frontend::LogicalOp;
 
 fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
     errors.push(diag.semantic(message, 0, 0));
@@ -45,6 +46,276 @@ pub(super) fn typed_min_for_type(ty: PrimitiveType) -> TypedConstValue {
     }
 }
 
+fn float_target_value(value: f64, ty: PrimitiveType) -> f64 {
+    match ty {
+        PrimitiveType::F32 => (value as f32) as f64,
+        PrimitiveType::F64 => value,
+        _ => unreachable!("float_target_value only supports float targets"),
+    }
+}
+
+fn eval_float_const_expr_for_target(
+    expr: &Expr,
+    ty: PrimitiveType,
+    options: AnalysisOptions,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<f64> {
+    debug_assert!(matches!(ty, PrimitiveType::F32 | PrimitiveType::F64));
+
+    if can_eval_const_expr_exact_int(expr) {
+        let value = eval_const_expr_i64_exact(expr, options, context, errors)?;
+        return Some(float_target_value(value as f64, ty));
+    }
+
+    match expr {
+        Expr::Number { value, .. } => Some(float_target_value(*value, ty)),
+        Expr::Int { value, .. } => Some(float_target_value(*value as f64, ty)),
+        Expr::Bool { value, .. } => Some(float_target_value(if *value { 1.0 } else { 0.0 }, ty)),
+        Expr::Var { name, .. } => {
+            if let Some(value) = builtin_constant_value_f64(name, options) {
+                Some(float_target_value(value, ty))
+            } else {
+                errors.push(Diagnostic::semantic_span(
+                    format!("{context} uses non-constant symbol '{name}'"),
+                    expr.loc(),
+                ));
+                None
+            }
+        }
+        Expr::Cast { to, expr, .. } => match to {
+            PrimitiveType::F32 | PrimitiveType::F64 => {
+                eval_float_const_expr_for_target(expr, *to, options, context, errors)
+            }
+            PrimitiveType::I32 | PrimitiveType::I64 => {
+                if can_eval_const_expr_exact_int(expr) {
+                    let value = eval_const_expr_i64_exact(expr, options, context, errors)?;
+                    Some(match to {
+                        PrimitiveType::I32 => (value as i32) as f64,
+                        PrimitiveType::I64 => value as f64,
+                        _ => unreachable!(),
+                    })
+                } else {
+                    let value = eval_const_expr_f64(expr, options, context, errors)?;
+                    Some(match to {
+                        PrimitiveType::I32 => (value as i32) as f64,
+                        PrimitiveType::I64 => (value as i64) as f64,
+                        _ => unreachable!(),
+                    })
+                }
+            }
+            PrimitiveType::Bool => {
+                let value = eval_float_const_expr_for_target(expr, ty, options, context, errors)?;
+                Some(if value != 0.0 { 1.0 } else { 0.0 })
+            }
+        },
+        Expr::UnaryNot { expr, .. } => {
+            let value = eval_float_const_expr_for_target(expr, ty, options, context, errors)?;
+            Some(if value == 0.0 { 1.0 } else { 0.0 })
+        }
+        Expr::UnaryBitNot { expr, .. } => {
+            let operand_ty = infer_const_expr_type(expr, options, context, errors)?;
+            let value = if can_eval_const_expr_exact_int(expr) {
+                eval_const_expr_i64_exact(expr, options, context, errors)? as f64
+            } else {
+                eval_const_expr_f64(expr, options, context, errors)?
+            };
+            Some(match operand_ty {
+                PrimitiveType::I32 => (!(value as i32)) as f64,
+                PrimitiveType::I64 => (!(value as i64)) as f64,
+                _ => {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "{context} bitwise not requires integer operand, got {:?}",
+                            operand_ty
+                        ),
+                        expr.loc(),
+                    ));
+                    return None;
+                }
+            })
+        }
+        Expr::Logical { op, lhs, rhs, .. } => {
+            let lhs_value = eval_float_const_expr_for_target(lhs, ty, options, context, errors)?;
+            match op {
+                LogicalOp::And => {
+                    if lhs_value == 0.0 {
+                        Some(0.0)
+                    } else {
+                        let rhs_value =
+                            eval_float_const_expr_for_target(rhs, ty, options, context, errors)?;
+                        Some(if rhs_value != 0.0 { 1.0 } else { 0.0 })
+                    }
+                }
+                LogicalOp::Or => {
+                    if lhs_value != 0.0 {
+                        Some(1.0)
+                    } else {
+                        let rhs_value =
+                            eval_float_const_expr_for_target(rhs, ty, options, context, errors)?;
+                        Some(if rhs_value != 0.0 { 1.0 } else { 0.0 })
+                    }
+                }
+            }
+        }
+        Expr::Binary { op, lhs, rhs, .. } => match op {
+            BinaryOp::BitAnd
+            | BinaryOp::BitOr
+            | BinaryOp::BitXor
+            | BinaryOp::ShiftLeft
+            | BinaryOp::ShiftRight => {
+                let result_ty = infer_const_expr_type(expr, options, context, errors)?;
+                let lhs_value = if can_eval_const_expr_exact_int(lhs) {
+                    eval_const_expr_i64_exact(lhs, options, context, errors)? as f64
+                } else {
+                    eval_const_expr_f64(lhs, options, context, errors)?
+                };
+                let rhs_value = if can_eval_const_expr_exact_int(rhs) {
+                    eval_const_expr_i64_exact(rhs, options, context, errors)? as f64
+                } else {
+                    eval_const_expr_f64(rhs, options, context, errors)?
+                };
+                Some(match op {
+                    BinaryOp::BitAnd => match result_ty {
+                        PrimitiveType::I32 => ((lhs_value as i32) & (rhs_value as i32)) as f64,
+                        PrimitiveType::I64 => ((lhs_value as i64) & (rhs_value as i64)) as f64,
+                        _ => unreachable!("bitwise expr type must be integer"),
+                    },
+                    BinaryOp::BitOr => match result_ty {
+                        PrimitiveType::I32 => ((lhs_value as i32) | (rhs_value as i32)) as f64,
+                        PrimitiveType::I64 => ((lhs_value as i64) | (rhs_value as i64)) as f64,
+                        _ => unreachable!("bitwise expr type must be integer"),
+                    },
+                    BinaryOp::BitXor => match result_ty {
+                        PrimitiveType::I32 => ((lhs_value as i32) ^ (rhs_value as i32)) as f64,
+                        PrimitiveType::I64 => ((lhs_value as i64) ^ (rhs_value as i64)) as f64,
+                        _ => unreachable!("bitwise expr type must be integer"),
+                    },
+                    BinaryOp::ShiftLeft => match result_ty {
+                        PrimitiveType::I32 => {
+                            (lhs_value as i32).wrapping_shl(rhs_value as u32) as f64
+                        }
+                        PrimitiveType::I64 => {
+                            (lhs_value as i64).wrapping_shl(rhs_value as u32) as f64
+                        }
+                        _ => unreachable!("bitwise expr type must be integer"),
+                    },
+                    BinaryOp::ShiftRight => match result_ty {
+                        PrimitiveType::I32 => {
+                            (lhs_value as i32).wrapping_shr(rhs_value as u32) as f64
+                        }
+                        PrimitiveType::I64 => {
+                            (lhs_value as i64).wrapping_shr(rhs_value as u32) as f64
+                        }
+                        _ => unreachable!("bitwise expr type must be integer"),
+                    },
+                    _ => unreachable!(),
+                })
+            }
+            _ => {
+                let lhs_value =
+                    eval_float_const_expr_for_target(lhs, ty, options, context, errors)?;
+                let rhs_value =
+                    eval_float_const_expr_for_target(rhs, ty, options, context, errors)?;
+                Some(match ty {
+                    PrimitiveType::F32 => {
+                        let lhs = lhs_value as f32;
+                        let rhs = rhs_value as f32;
+                        (match op {
+                            BinaryOp::Add => lhs + rhs,
+                            BinaryOp::Sub => lhs - rhs,
+                            BinaryOp::Mul => lhs * rhs,
+                            BinaryOp::Div => lhs / rhs,
+                            BinaryOp::Mod => lhs % rhs,
+                            _ => unreachable!(),
+                        }) as f64
+                    }
+                    PrimitiveType::F64 => match op {
+                        BinaryOp::Add => lhs_value + rhs_value,
+                        BinaryOp::Sub => lhs_value - rhs_value,
+                        BinaryOp::Mul => lhs_value * rhs_value,
+                        BinaryOp::Div => lhs_value / rhs_value,
+                        BinaryOp::Mod => lhs_value % rhs_value,
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                })
+            }
+        },
+        Expr::Compare { op, lhs, rhs, .. } => {
+            let lhs_value = eval_float_const_expr_for_target(lhs, ty, options, context, errors)?;
+            let rhs_value = eval_float_const_expr_for_target(rhs, ty, options, context, errors)?;
+            let pred = match op {
+                CmpOp::Eq => lhs_value == rhs_value,
+                CmpOp::Ne => lhs_value != rhs_value,
+                CmpOp::Lt => lhs_value < rhs_value,
+                CmpOp::Le => lhs_value <= rhs_value,
+                CmpOp::Gt => lhs_value > rhs_value,
+                CmpOp::Ge => lhs_value >= rhs_value,
+            };
+            Some(if pred { 1.0 } else { 0.0 })
+        }
+        _ => {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} must be a compile-time constant expression"),
+                expr.loc(),
+            ));
+            None
+        }
+    }
+}
+
+fn eval_typed_int_const_expr(
+    expr: &Expr,
+    ty: PrimitiveType,
+    options: AnalysisOptions,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<TypedConstValue> {
+    let expr_diag = DiagCtx::new(expr.loc());
+
+    if can_eval_const_expr_exact_int(expr) {
+        let value = eval_const_expr_i64_exact(expr, options, context, errors)?;
+        return match ty {
+            PrimitiveType::I32 => {
+                if let Ok(value) = i32::try_from(value) {
+                    Some(TypedConstValue::I32(value))
+                } else {
+                    push_semantic(
+                        expr_diag,
+                        errors,
+                        format!("{context} is out of range for {}", primitive_type_label(ty)),
+                    );
+                    None
+                }
+            }
+            PrimitiveType::I64 => Some(TypedConstValue::I64(value)),
+            _ => unreachable!("eval_typed_int_const_expr only supports integer targets"),
+        };
+    }
+
+    let raw = eval_const_expr_f64(expr, options, context, errors)?;
+    if !raw.is_finite() || raw.fract() != 0.0 {
+        push_semantic(
+            expr_diag,
+            errors,
+            format!("{context} must be an integer constant"),
+        );
+        return None;
+    }
+    if let Some((min, max)) = int_bounds_for_type(ty) {
+        if raw < min || raw > max {
+            push_semantic(
+                expr_diag,
+                errors,
+                format!("{context} is out of range for {}", primitive_type_label(ty)),
+            );
+            return None;
+        }
+    }
+    Some(coerce_const_default_to_typed(raw, ty))
+}
+
 pub(super) fn eval_typed_const_expr(
     expr: &Expr,
     ty: PrimitiveType,
@@ -55,30 +326,23 @@ pub(super) fn eval_typed_const_expr(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<TypedConstValue> {
     let expr_diag = DiagCtx::new(expr.loc());
-    let raw = eval_const_expr_f64(expr, options, context, errors)?;
-    if !allow_non_finite && !raw.is_finite() {
-        push_semantic(expr_diag, errors, format!("{context} must be finite"));
-        return None;
-    }
-    if require_integral && (!raw.is_finite() || raw.fract() != 0.0) {
-        push_semantic(
-            expr_diag,
-            errors,
-            format!("{context} must be an integer constant"),
-        );
-        return None;
-    }
-    if let Some((min, max)) = int_bounds_for_type(ty) {
-        if !raw.is_finite() || raw < min || raw > max {
-            push_semantic(
-                expr_diag,
-                errors,
-                format!("{context} is out of range for {}", primitive_type_label(ty)),
-            );
-            return None;
+    match ty {
+        PrimitiveType::F32 | PrimitiveType::F64 => {
+            let raw = eval_float_const_expr_for_target(expr, ty, options, context, errors)?;
+            if !allow_non_finite && !raw.is_finite() {
+                push_semantic(expr_diag, errors, format!("{context} must be finite"));
+                return None;
+            }
+            Some(coerce_const_default_to_typed(raw, ty))
         }
+        PrimitiveType::I32 | PrimitiveType::I64 => {
+            let _ = require_integral;
+            eval_typed_int_const_expr(expr, ty, options, context, errors)
+        }
+        PrimitiveType::Bool => Some(TypedConstValue::Bool(eval_const_bool_expr(
+            expr, options, context, errors,
+        )?)),
     }
-    Some(coerce_const_default_to_typed(raw, ty))
 }
 
 pub(super) fn eval_decl_range_for_type(
@@ -172,11 +436,19 @@ pub(super) fn clamp_typed_const_to_range(
 }
 
 pub(super) fn typed_const_expr(value: TypedConstValue) -> Expr {
+    fn typed_scalar_expr(to: PrimitiveType, expr: Expr) -> Expr {
+        Expr::Cast {
+            loc: Default::default(),
+            to,
+            expr: Box::new(expr),
+        }
+    }
+
     match value {
-        TypedConstValue::F32(v) => Expr::number(v),
-        TypedConstValue::F64(v) => Expr::number(v as f32),
-        TypedConstValue::I32(v) => Expr::int(v as i64),
-        TypedConstValue::I64(v) => Expr::int(v),
+        TypedConstValue::F32(v) => Expr::number(v as f64),
+        TypedConstValue::F64(v) => typed_scalar_expr(PrimitiveType::F64, Expr::number(v)),
+        TypedConstValue::I32(v) => typed_scalar_expr(PrimitiveType::I32, Expr::int(v as i64)),
+        TypedConstValue::I64(v) => typed_scalar_expr(PrimitiveType::I64, Expr::int(v)),
         TypedConstValue::Bool(v) => Expr::bool(v),
     }
 }
@@ -667,4 +939,113 @@ pub(super) fn expand_port_decls(
     }
 
     (flat, types, arrays, defaults, ranges)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eval_typed_const_expr_preserves_f64_literal_precision() {
+        let expr = Expr::Cast {
+            loc: Default::default(),
+            to: PrimitiveType::F64,
+            expr: Box::new(Expr::Binary {
+                loc: Default::default(),
+                op: BinaryOp::Add,
+                lhs: Box::new(Expr::number(0.1)),
+                rhs: Box::new(Expr::number(0.2)),
+            }),
+        };
+        let mut errors = Vec::new();
+        let value = eval_typed_const_expr(
+            &expr,
+            PrimitiveType::F64,
+            AnalysisOptions::default(),
+            "f64 const",
+            true,
+            false,
+            &mut errors,
+        );
+        let expected = 0.1_f64 + 0.2_f64;
+        let widened_f32 = 0.1_f32 as f64 + 0.2_f32 as f64;
+
+        match value {
+            Some(TypedConstValue::F64(v)) => {
+                assert!(
+                    (v - expected).abs() < 1e-18,
+                    "expected f64 precision, got {v:?}"
+                );
+                assert!(
+                    (v - widened_f32).abs() > 1e-9,
+                    "expected f64 const eval to differ from widened f32 path, got {v:?}"
+                );
+            }
+            other => panic!("expected f64 typed const value, got {other:?}"),
+        }
+        assert!(
+            errors.is_empty(),
+            "expected f64 typed const eval to succeed, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn eval_typed_const_expr_preserves_large_i64_values() {
+        let expr = Expr::Cast {
+            loc: Default::default(),
+            to: PrimitiveType::I64,
+            expr: Box::new(Expr::Binary {
+                loc: Default::default(),
+                op: BinaryOp::Add,
+                lhs: Box::new(Expr::int(9_007_199_254_740_992)),
+                rhs: Box::new(Expr::int(1)),
+            }),
+        };
+        let mut errors = Vec::new();
+        let value = eval_typed_const_expr(
+            &expr,
+            PrimitiveType::I64,
+            AnalysisOptions::default(),
+            "i64 const",
+            false,
+            true,
+            &mut errors,
+        );
+
+        assert_eq!(value, Some(TypedConstValue::I64(9_007_199_254_740_993)));
+        assert!(
+            errors.is_empty(),
+            "expected i64 typed const eval to succeed, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn typed_const_expr_preserves_nondefault_numeric_types() {
+        match typed_const_expr(TypedConstValue::F64(1.25)) {
+            Expr::Cast { to, expr, .. } => {
+                assert_eq!(to, PrimitiveType::F64);
+                assert!(matches!(
+                    expr.as_ref(),
+                    Expr::Number { value, .. } if (*value - 1.25).abs() < f64::EPSILON
+                ));
+            }
+            other => panic!("expected f64 typed const expr cast, got {other:?}"),
+        }
+
+        match typed_const_expr(TypedConstValue::I32(7)) {
+            Expr::Cast { to, expr, .. } => {
+                assert_eq!(to, PrimitiveType::I32);
+                assert!(matches!(expr.as_ref(), Expr::Int { value: 7, .. }));
+            }
+            other => panic!("expected i32 typed const expr cast, got {other:?}"),
+        }
+
+        match typed_const_expr(TypedConstValue::I64(7)) {
+            Expr::Cast { to, expr, .. } => {
+                assert_eq!(to, PrimitiveType::I64);
+                assert!(matches!(expr.as_ref(), Expr::Int { value: 7, .. }));
+            }
+            other => panic!("expected i64 typed const expr cast, got {other:?}"),
+        }
+    }
 }

@@ -4269,7 +4269,7 @@ fn format_cmp_op(op: CmpOp) -> &'static str {
     }
 }
 
-fn format_number(value: f32) -> String {
+fn format_number(value: f64) -> String {
     if value.fract() == 0.0 {
         format!("{value:.1}")
     } else {

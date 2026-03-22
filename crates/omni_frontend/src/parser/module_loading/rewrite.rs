@@ -331,7 +331,7 @@ fn try_eval_const_count_i64(expr: &Expr) -> Option<i64> {
         Expr::Int { value, .. } => Some(*value),
         Expr::Number { value, .. } => {
             let v = *value;
-            if v == (v as i64 as f32) {
+            if v == (v as i64 as f64) {
                 Some(v as i64)
             } else {
                 None

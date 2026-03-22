@@ -963,7 +963,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
             let text = pair.as_str();
             if text.contains('.') {
                 Expr::number(
-                    text.parse::<f32>()
+                    text.parse::<f64>()
                         .expect("pest number rule produced invalid float literal"),
                 )
                 .with_loc(loc)
