@@ -165,6 +165,24 @@ pub fn analyze_with_options(
             _ => None,
         })
         .collect::<Vec<_>>();
+
+    for def in &defs {
+        if !def.type_params.is_empty() {
+            let mut seen = HashSet::new();
+            for tp in &def.type_params {
+                if !seen.insert(tp.clone()) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "duplicate type parameter '{}' in def '{}'",
+                            tp, def.name
+                        ),
+                        def.loc,
+                    ));
+                }
+            }
+        }
+    }
+
     let (init_default_decl_ty, mut init) = match program.block(BlockKind::Init) {
         Some(Block::Init(v)) => (v.default_ty.clone(), v.body.clone()),
         _ => (None, Vec::new()),
@@ -461,6 +479,19 @@ pub fn analyze_with_options(
                     ));
                 }
             }
+            for method in &s.methods {
+                for tp in &method.type_params {
+                    if s.type_params.contains(tp) {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "type parameter '{}' on method '{}.{}' shadows '{}' from struct '{}'; use a different name",
+                                tp, s.name, method.name, tp, s.name
+                            ),
+                            method.loc,
+                        ));
+                    }
+                }
+            }
             generic_templates.insert(s.name.clone(), s);
         }
         generic_struct_template_names = generic_templates.keys().cloned().collect();
@@ -725,6 +756,31 @@ pub fn analyze_with_options(
         all_declared.insert(s.name.clone());
 
         for method in &s.methods {
+            for tp in &method.type_params {
+                if s.type_params.contains(tp) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "type parameter '{}' on method '{}.{}' shadows '{}' from struct '{}'; use a different name",
+                            tp, s.name, method.name, tp, s.name
+                        ),
+                        method.loc,
+                    ));
+                }
+            }
+            if !method.type_params.is_empty() {
+                let mut seen = HashSet::new();
+                for tp in &method.type_params {
+                    if !seen.insert(tp.clone()) {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "duplicate type parameter '{}' in method '{}.{}'",
+                                tp, s.name, method.name
+                            ),
+                            method.loc,
+                        ));
+                    }
+                }
+            }
             if method.params.first().map(|p| p.name.as_str()) != Some("self") {
                 errors.push(Diagnostic::semantic_span(
                     format!(
@@ -763,7 +819,7 @@ pub fn analyze_with_options(
             }
             defs.push(FunctionDef {
                 loc: method.loc.clone(),
-                type_params: Vec::new(),
+                type_params: method.type_params.clone(),
                 name: fq_name,
                 params: method.params.clone(),
                 body: desugared_method_body,
@@ -1077,16 +1133,6 @@ pub fn analyze_with_options(
             all_declared.insert(public_name.clone());
         }
 
-        if !def.type_params.is_empty() {
-            push_semantic(
-                def_diag,
-                &mut errors,
-                format!(
-                    "function '{}' does not support generic type parameters; use typed/untyped parameters and call-site monomorphization",
-                    public_name
-                ),
-            );
-        }
         let mut local_params = HashSet::new();
         for p in &def.params {
             let param_diag = DiagCtx::new(p.ty_loc.or(p.loc));
@@ -1136,22 +1182,37 @@ pub fn analyze_with_options(
         }
     }
 
+    // --- Pre-mono validation: check generic def call-site type args ---
+    validate_generic_def_type_args_in_stmts(&init, &fn_signatures, &mut errors);
+    validate_generic_def_type_args_in_stmts(&block_pre, &fn_signatures, &mut errors);
+    validate_generic_def_type_args_in_stmts(&sample, &fn_signatures, &mut errors);
+    validate_generic_def_type_args_in_stmts(&block_post, &fn_signatures, &mut errors);
+    for event in &events {
+        validate_generic_def_type_args_in_stmts(&event.body, &fn_signatures, &mut errors);
+    }
+    for def in &defs {
+        validate_generic_def_type_args_in_stmts(&def.body, &fn_signatures, &mut errors);
+    }
+
     // --- Def monomorphization pass ---
     // Identify defs whose parameters require monomorphization (generic struct,
-    // untyped array `[]`, or bare `buffer`).
+    // untyped array `[]`, bare `buffer`, or generic def type params `<T>`).
     {
         let mono_eligible: HashSet<String> = fn_signatures
             .iter()
             .filter_map(|(name, sig)| {
-                let needs_mono = sig.param_types.iter().any(|pt| match pt {
-                    Some(FnParamType::Struct(s)) if generic_struct_template_names.contains(s) => {
-                        true
-                    }
-                    Some(FnParamType::Array(None))
-                    | Some(FnParamType::ArrayGeneric(_))
-                    | Some(FnParamType::BareBuffer) => true,
-                    _ => false,
-                });
+                let needs_mono = !sig.type_params.is_empty()
+                    || sig.param_types.iter().any(|pt| match pt {
+                        Some(FnParamType::Struct(s))
+                            if generic_struct_template_names.contains(s) =>
+                        {
+                            true
+                        }
+                        Some(FnParamType::Array(None))
+                        | Some(FnParamType::ArrayGeneric(_))
+                        | Some(FnParamType::BareBuffer) => true,
+                        _ => false,
+                    });
                 if needs_mono {
                     Some(name.clone())
                 } else {
@@ -1286,6 +1347,51 @@ pub fn analyze_with_options(
                     &mut generated_sigs,
                     &mut mono_cache,
                 );
+            }
+
+            // Mono-rewrite generated defs' bodies (def-to-def mono calls).
+            // E.g. quad.__mono__g_f32 may call double(...) which also needs mono.
+            // Loop until no new defs are generated.
+            loop {
+                let prev_count = generated_defs.len();
+                let snapshot_for_gen = original_defs_snapshot.clone();
+                let mut extra_defs = Vec::new();
+                let mut extra_sigs = HashMap::new();
+                for def in generated_defs.iter_mut() {
+                    let mut def_env = top_level_env.clone();
+                    for param in &def.params {
+                        if let Some(FnParamType::Primitive(prim)) = &param.ty {
+                            def_env.scalar_types.insert(param.name.clone(), *prim);
+                        }
+                    }
+                    // Use both fn_signatures and already-generated sigs for lookup.
+                    let mut combined_sigs = fn_signatures.clone();
+                    for (k, v) in &generated_sigs {
+                        combined_sigs.insert(k.clone(), v.clone());
+                    }
+                    crate::def_semantics::monomorphize_calls_in_stmts(
+                        &mut def.body,
+                        &def_env,
+                        &mono_eligible,
+                        &combined_sigs,
+                        &snapshot_for_gen,
+                        &generic_struct_template_names,
+                        &struct_defs,
+                        &mut extra_defs,
+                        &mut extra_sigs,
+                        &mut mono_cache,
+                    );
+                }
+                if extra_defs.is_empty() {
+                    break;
+                }
+                generated_defs.extend(extra_defs);
+                for (k, v) in extra_sigs {
+                    generated_sigs.insert(k, v);
+                }
+                if generated_defs.len() == prev_count {
+                    break;
+                }
             }
 
             // Register generated defs and signatures
@@ -1935,4 +2041,124 @@ fn requires_entry_sample(program: &Program) -> bool {
                 | BlockKind::Graph
         )
     })
+}
+
+/// Pre-monomorphization validation of generic def call-site type arguments.
+/// Checks for bool type args and type arg count mismatches BEFORE mono rewrites calls.
+fn validate_generic_def_type_args_in_stmts(
+    stmts: &[Stmt],
+    fn_signatures: &HashMap<String, FnSignature>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for stmt in stmts {
+        validate_generic_def_type_args_in_stmt(stmt, fn_signatures, errors);
+    }
+}
+
+fn validate_generic_def_type_args_in_stmt(
+    stmt: &Stmt,
+    fn_signatures: &HashMap<String, FnSignature>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match stmt {
+        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            validate_generic_def_type_args_in_expr(expr, fn_signatures, errors);
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            validate_generic_def_type_args_in_expr(cond, fn_signatures, errors);
+            validate_generic_def_type_args_in_stmts(then_branch, fn_signatures, errors);
+            validate_generic_def_type_args_in_stmts(else_branch, fn_signatures, errors);
+        }
+        Stmt::For { body, .. } => {
+            validate_generic_def_type_args_in_stmts(body, fn_signatures, errors);
+        }
+        Stmt::While { cond, body, .. } => {
+            validate_generic_def_type_args_in_expr(cond, fn_signatures, errors);
+            validate_generic_def_type_args_in_stmts(body, fn_signatures, errors);
+        }
+        _ => {}
+    }
+}
+
+fn validate_generic_def_type_args_in_expr(
+    expr: &Expr,
+    fn_signatures: &HashMap<String, FnSignature>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::UserCall {
+            name,
+            type_args,
+            args,
+            ..
+        } => {
+            if let Some(sig) = fn_signatures.get(name.as_str()) {
+                if !type_args.is_empty() && !sig.type_params.is_empty() {
+                    if type_args.len() != sig.type_params.len() {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "function '{}' expects {} type arguments, got {}",
+                                name,
+                                sig.type_params.len(),
+                                type_args.len()
+                            ),
+                            expr.loc(),
+                        ));
+                    }
+                    for ta in type_args {
+                        if matches!(ta, CallTypeArg::Primitive(PrimitiveType::Bool)) {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "'bool' is not valid as a generic type argument for '{}'; use f32, f64, i32, or i64",
+                                    name
+                                ),
+                                expr.loc(),
+                            ));
+                        }
+                    }
+                }
+            }
+            for arg in args {
+                validate_generic_def_type_args_in_expr(&arg.expr, fn_signatures, errors);
+            }
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                validate_generic_def_type_args_in_expr(arg, fn_signatures, errors);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. } => {
+            validate_generic_def_type_args_in_expr(lhs, fn_signatures, errors);
+            validate_generic_def_type_args_in_expr(rhs, fn_signatures, errors);
+        }
+        Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. }
+        | Expr::Cast { expr: inner, .. } => {
+            validate_generic_def_type_args_in_expr(inner, fn_signatures, errors);
+        }
+        Expr::Tuple { values, .. } | Expr::ArrayLiteral { values, .. } => {
+            for v in values {
+                validate_generic_def_type_args_in_expr(v, fn_signatures, errors);
+            }
+        }
+        Expr::Index { index, .. } => {
+            validate_generic_def_type_args_in_expr(index, fn_signatures, errors);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(s) = start {
+                validate_generic_def_type_args_in_expr(s, fn_signatures, errors);
+            }
+            if let Some(e) = end {
+                validate_generic_def_type_args_in_expr(e, fn_signatures, errors);
+            }
+        }
+        _ => {}
+    }
 }

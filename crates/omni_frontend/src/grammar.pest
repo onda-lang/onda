@@ -52,7 +52,7 @@ event_param_type = { array_type | fn_typed_array_param | type_name }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 proc_item = _{ ins_block | outs_block | params_block | const_block | events_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
-def_block = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
+def_block = { "def" ~ ident ~ generic_param_list? ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
 const_block = { const_decl ~ NEWLINE* }
 const_decl = { "const" ~ ident ~ (":" ~ type_name)? ~ "=" ~ expr }
@@ -118,7 +118,7 @@ fn_tuple_param = { "(" ~ type_name ~ ("," ~ type_name)+ ~ ")" }
 fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_bare_buffer | fn_tuple_param | type_name | namespace_ref | qualified_ident }
 fn_param_decl = { ident ~ (":" ~ fn_param_type)? ~ ("=" ~ expr)? }
 struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ NEWLINE* }
-struct_method_decl = { "def" ~ ident ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block }
+struct_method_decl = { "def" ~ ident ~ generic_param_list? ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block }
 
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
 stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | const_decl | assign_stmt | call_stmt }

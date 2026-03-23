@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use super::overloads::OverloadRewriteEnv;
 use crate::*;
 
@@ -13,6 +15,8 @@ pub(crate) enum MonoParamKey {
     ResolvedBuffer(PrimitiveType, TypedBufferChannels),
     /// Resolved tuple element types (inferred from tuple literal arg).
     ResolvedTuple(Vec<PrimitiveType>),
+    /// Resolved generic def type parameter (e.g. T = f32).
+    GenericType(PrimitiveType),
 }
 
 fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
@@ -45,6 +49,10 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
                     suffix.push('_');
                     suffix.push_str(&format!("{ty:?}").to_lowercase());
                 }
+            }
+            MonoParamKey::GenericType(prim) => {
+                suffix.push_str("__g_");
+                suffix.push_str(&format!("{prim:?}").to_lowercase());
             }
         }
     }
@@ -143,6 +151,10 @@ fn generate_mono_def(
     new_def.name = mono_name.to_owned();
     let mut new_sig = original_sig.clone();
 
+    // Build type bindings from GenericType keys for body rewriting.
+    let mut type_bindings = HashMap::<String, PrimitiveType>::new();
+    let has_generic_type_params = !original.type_params.is_empty();
+
     for (idx, key) in keys.iter().enumerate() {
         match key {
             MonoParamKey::Passthrough => {}
@@ -188,15 +200,172 @@ fn generate_mono_def(
                     *pt = Some(FnParamType::Tuple(elem_tys.clone()));
                 }
             }
+            MonoParamKey::GenericType(prim) => {
+                // Map the type param at this position to its concrete type.
+                // GenericType keys are stored in order matching the def's type_params,
+                // but they're indexed by *param* position in the keys array.
+                // We need to find which type param this param references.
+                if let Some(param) = new_def.params.get_mut(idx) {
+                    // The param type is Struct("T") where "T" is a type param name —
+                    // replace with Primitive.
+                    param.ty = Some(FnParamType::Primitive(*prim));
+                }
+                if let Some(pt) = new_sig.param_types.get_mut(idx) {
+                    *pt = Some(FnParamType::Primitive(*prim));
+                }
+            }
         }
     }
 
-    // Also need to desugar method calls in the mono body if we resolved struct params
-    // This happens when the original def body calls methods on a generic struct param.
-    // The method desugaring already happened on the original, so we just need the param
-    // type to be correct for inference to work.
+    if has_generic_type_params {
+        // Build type_bindings from GenericType keys.
+        // Keys at param positions (0..params.len()) correspond to value params;
+        // any extra GenericType keys appended after that are for type params not
+        // covered by any value param (e.g. `def zero<T>()` with no params).
+
+        // Pass 1: keys at param positions
+        for (idx, key) in keys.iter().enumerate().take(original.params.len()) {
+            if let MonoParamKey::GenericType(prim) = key {
+                if let Some(original_param) = original.params.get(idx) {
+                    if let Some(FnParamType::Struct(ref name)) = original_param.ty {
+                        if original.type_params.contains(name) {
+                            type_bindings.insert(name.clone(), *prim);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pass 2: extra keys for type params not covered by value params
+        let mut extra_idx = original.params.len();
+        for tp in &original.type_params {
+            if !type_bindings.contains_key(tp) {
+                if let Some(MonoParamKey::GenericType(prim)) = keys.get(extra_idx) {
+                    type_bindings.insert(tp.clone(), *prim);
+                    extra_idx += 1;
+                }
+            }
+        }
+
+        // Rewrite the body: T(expr) → cast, T declarations, etc.
+        if !type_bindings.is_empty() {
+            let context = format!("generic def '{}'", original.name);
+            let mut rewrite_errors = Vec::new();
+            for stmt in &mut new_def.body {
+                crate::generic_specialization::substitute_call_type_args_with_bindings_stmt(
+                    stmt,
+                    &type_bindings,
+                    &context,
+                    &mut rewrite_errors,
+                );
+            }
+            // Also rewrite param default expressions
+            for param in &mut new_def.params {
+                if let Some(default) = &mut param.default {
+                    crate::generic_specialization::substitute_call_type_args_with_bindings_expr(
+                        default,
+                        &type_bindings,
+                        &context,
+                        &mut rewrite_errors,
+                    );
+                }
+            }
+        }
+
+        // Clear type_params — the generated def is no longer generic.
+        new_def.type_params.clear();
+        new_sig.type_params.clear();
+    }
 
     (new_def, new_sig)
+}
+
+/// Resolve generic def type parameter bindings from explicit type args or argument inference.
+fn resolve_generic_def_type_bindings(
+    sig: &FnSignature,
+    type_args: &[CallTypeArg],
+    args: &[CallArg],
+    env: &OverloadRewriteEnv,
+    fn_signatures: &HashMap<String, FnSignature>,
+    generated_sigs: &HashMap<String, FnSignature>,
+) -> HashMap<String, PrimitiveType> {
+    let mut bindings = HashMap::new();
+
+    if !type_args.is_empty() {
+        // Explicit type args: map type_params[i] -> type_args[i]
+        for (i, tp) in sig.type_params.iter().enumerate() {
+            if let Some(CallTypeArg::Primitive(prim)) = type_args.get(i) {
+                bindings.insert(tp.clone(), *prim);
+            }
+            // CallTypeArg::Generic would mean a forwarded generic — not applicable here.
+        }
+    } else {
+        // Infer from argument types: for each param typed as Struct("T") where T is a
+        // type_param, infer T from the argument expression type.
+        let resolved_args = super::resolve_call_args(
+            args,
+            &sig.params,
+            &sig.defaults,
+            false,
+            false,
+            "generic def type inference",
+            &mut Vec::new(),
+        );
+        for (idx, param_ty) in sig.param_types.iter().enumerate() {
+            if let Some(FnParamType::Struct(ref name)) = param_ty {
+                if !sig.type_params.contains(name) {
+                    continue;
+                }
+                if bindings.contains_key(name) {
+                    continue; // Already inferred this type param
+                }
+                if let Some(Some(arg_expr)) = resolved_args.get(idx) {
+                    if let Some(prim) = infer_expr_primitive_type(arg_expr, env, fn_signatures, generated_sigs) {
+                        bindings.insert(name.clone(), prim);
+                    }
+                }
+            }
+        }
+    }
+
+    bindings
+}
+
+/// Infer the primitive type of an expression for generic type inference.
+fn infer_expr_primitive_type(
+    expr: &Expr,
+    env: &OverloadRewriteEnv,
+    fn_signatures: &HashMap<String, FnSignature>,
+    generated_sigs: &HashMap<String, FnSignature>,
+) -> Option<PrimitiveType> {
+    match expr {
+        Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Int { .. } => Some(PrimitiveType::I32),
+        Expr::Bool { .. } => Some(PrimitiveType::Bool),
+        Expr::Cast { to, .. } => Some(*to),
+        Expr::Var { name, .. } => env.scalar_types.get(name).copied(),
+        Expr::UserCall { name, .. } => {
+            // Look up the callee in generated or existing signatures to infer return type.
+            let sig = generated_sigs.get(name.as_str()).or_else(|| fn_signatures.get(name.as_str()));
+            if let Some(sig) = sig {
+                if sig.type_params.is_empty() {
+                    // Concrete function — heuristic: return type matches first primitive param type.
+                    for pt in &sig.param_types {
+                        if let Some(FnParamType::Primitive(prim)) = pt {
+                            return Some(*prim);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            // For binary ops, try to infer from either operand.
+            infer_expr_primitive_type(lhs, env, fn_signatures, generated_sigs)
+                .or_else(|| infer_expr_primitive_type(rhs, env, fn_signatures, generated_sigs))
+        }
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -356,7 +525,12 @@ fn monomorphize_calls_in_expr(
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
 ) {
     match expr {
-        Expr::UserCall { name, args, .. } => {
+        Expr::UserCall {
+            name,
+            type_args,
+            args,
+            ..
+        } => {
             // Recurse into arg expressions first
             for arg in args.iter_mut() {
                 monomorphize_calls_in_expr(
@@ -384,6 +558,15 @@ fn monomorphize_calls_in_expr(
                 return;
             };
 
+            // For generic defs, resolve type param bindings from explicit type args
+            // or infer from argument types.
+            let has_def_type_params = !sig.type_params.is_empty();
+            let resolved_type_bindings: HashMap<String, PrimitiveType> = if has_def_type_params {
+                resolve_generic_def_type_bindings(sig, type_args, args, env, fn_signatures, generated_sigs)
+            } else {
+                HashMap::new()
+            };
+
             // Build monomorphization key from each argument
             let resolved_args = super::resolve_call_args(
                 args,
@@ -399,6 +582,20 @@ fn monomorphize_calls_in_expr(
             let mut all_resolved = true;
             for (idx, _param_name) in sig.params.iter().enumerate() {
                 let param_ty = sig.param_types.get(idx).and_then(|t| t.as_ref());
+
+                // Check if this param references a def type param.
+                if let Some(FnParamType::Struct(ref s)) = param_ty {
+                    if has_def_type_params && sig.type_params.contains(s) {
+                        if let Some(prim) = resolved_type_bindings.get(s) {
+                            keys.push(MonoParamKey::GenericType(*prim));
+                            continue;
+                        }
+                        // Could not resolve this type param — bail.
+                        all_resolved = false;
+                        break;
+                    }
+                }
+
                 let arg_expr = resolved_args.get(idx).and_then(|a| a.as_ref());
                 if let Some(arg_expr) = arg_expr {
                     if let Some(key) =
@@ -412,6 +609,30 @@ fn monomorphize_calls_in_expr(
                 } else {
                     // Use default — passthrough
                     keys.push(MonoParamKey::Passthrough);
+                }
+            }
+
+            // Add GenericType keys for type params not covered by any value param.
+            if has_def_type_params && all_resolved {
+                let mut covered = HashSet::new();
+                for (idx, _) in sig.params.iter().enumerate() {
+                    if let Some(FnParamType::Struct(ref s)) =
+                        sig.param_types.get(idx).and_then(|t| t.as_ref())
+                    {
+                        if sig.type_params.contains(s) {
+                            covered.insert(s.clone());
+                        }
+                    }
+                }
+                for tp in &sig.type_params {
+                    if !covered.contains(tp) {
+                        if let Some(prim) = resolved_type_bindings.get(tp) {
+                            keys.push(MonoParamKey::GenericType(*prim));
+                        } else {
+                            all_resolved = false;
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -448,6 +669,8 @@ fn monomorphize_calls_in_expr(
             };
 
             *name = mono_name;
+            // Clear type_args on the rewritten call — the mono copy is concrete.
+            type_args.clear();
         }
         Expr::Binary { lhs, rhs, .. }
         | Expr::Compare { lhs, rhs, .. }

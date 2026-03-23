@@ -1050,7 +1050,9 @@ fn collect_declared_struct_param_types(
         let mut param_structs = vec![None; def.params.len()];
         for (idx, param) in def.params.iter().enumerate() {
             if let Some(FnParamType::Struct(struct_name)) = &param.ty {
-                if !struct_defs.contains_key(struct_name) {
+                if def.type_params.contains(struct_name) {
+                    // This is a generic type parameter, not a struct — skip.
+                } else if !struct_defs.contains_key(struct_name) {
                     errors.push(Diagnostic::semantic_span(
                         format!(
                             "function '{}' parameter '{}' references unknown struct '{}'",
@@ -1976,6 +1978,12 @@ pub(crate) fn validate_default_expr(expr: &Expr, errors: &mut Vec<Diagnostic>, c
         Expr::Binary { lhs, rhs, .. } | Expr::Compare { lhs, rhs, .. } => {
             validate_default_expr(lhs, errors, context);
             validate_default_expr(rhs, errors, context);
+        }
+        Expr::UserCall { args, .. } => {
+            // Allow T(constant) in defaults — will be resolved to a cast during mono.
+            for arg in args {
+                validate_default_expr(&arg.expr, errors, context);
+            }
         }
         _ => {
             push_semantic(

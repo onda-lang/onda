@@ -283,6 +283,7 @@ fn score_buffer_match(
 fn score_overload_param_match(
     arg_shape: &OverloadArgShape,
     param_ty: Option<&FnParamType>,
+    def_type_params: &[String],
 ) -> Option<i32> {
     match param_ty {
         Some(FnParamType::Primitive(expected)) => match arg_shape {
@@ -298,6 +299,16 @@ fn score_overload_param_match(
             OverloadArgShape::Unknown => Some(2),
             _ => None,
         },
+        Some(FnParamType::Struct(expected_struct))
+            if !def_type_params.is_empty() && def_type_params.contains(expected_struct) =>
+        {
+            // Generic type parameter — matches any scalar arg.
+            // Score 2: between concrete (0) and untyped (3).
+            match arg_shape {
+                OverloadArgShape::Scalar(_) | OverloadArgShape::Unknown => Some(2),
+                _ => None,
+            }
+        }
         Some(FnParamType::Struct(expected_struct)) => match arg_shape {
             OverloadArgShape::Struct(actual_struct) if actual_struct == expected_struct => Some(0),
             OverloadArgShape::Unknown => Some(2),
@@ -424,7 +435,9 @@ fn resolve_overloaded_call_name(
                     .param_types
                     .get(param_idx)
                     .and_then(|t| t.as_ref());
-                let Some(score) = score_overload_param_match(&arg_shape, param_ty) else {
+                let Some(score) =
+                    score_overload_param_match(&arg_shape, param_ty, &cand.signature.type_params)
+                else {
                     viable = false;
                     break;
                 };

@@ -10973,19 +10973,19 @@ fn non_generic_def_rejects_type_args() {
 }
 
 #[test]
-fn def_declaration_rejects_generic_type_params_syntax() {
+fn generic_def_parses_successfully() {
     let parsed = parse_program(
         r#"
 outs { out1 }
-def bad<T>(x) {
+def identity<T>(x: T) {
   return x
 }
-sample { out1 = 0.0 }
+sample { out1 = identity(1.5) }
 "#,
     );
     assert!(
-        parsed.is_err(),
-        "parser should reject generic type params on defs"
+        parsed.is_ok(),
+        "parser should accept generic type params on defs"
     );
 }
 
@@ -18461,4 +18461,568 @@ sample {
         result.is_err(),
         "out-of-bounds index on local tuple should be rejected"
     );
+}
+
+// ── Generic Defs ─────────────────────────────────────────────────────────────
+
+#[test]
+fn generic_def_identity_inferred_compile_and_run() {
+    let src = r#"
+outs { out1 }
+def identity<T>(x: T) {
+  return x
+}
+sample {
+  out1 = identity(3.5)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 3.5, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_cast_in_body_compile_and_run() {
+    let src = r#"
+outs { out1 }
+def half<T>(x: T) {
+  return x * T(0.5)
+}
+sample {
+  out1 = half(6.0)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_explicit_type_arg_compile_and_run() {
+    let src = r#"
+outs { out1 }
+def make<T>(x: T) {
+  return x + T(1)
+}
+sample {
+  out1 = make<f32>(2.0)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_multiple_type_params_compile_and_run() {
+    let src = r#"
+outs { out1 }
+def combine<T, U>(a: T, b: U) {
+  return a + T(b)
+}
+sample {
+  out1 = combine(1.5, f64(2.5))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 4.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_no_arg_requires_explicit_type_compile_and_run() {
+    let src = r#"
+outs { out1 }
+def zero<T>() {
+  return T(0)
+}
+sample {
+  out1 = zero<f32>() + 1.0
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_overload_concrete_wins() {
+    let src = r#"
+outs { out1 }
+def process(x: f32) {
+  return x * 2.0
+}
+def process<T>(x: T) {
+  return x * T(3)
+}
+sample {
+  out1 = process(5.0)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 10.0, 1e-6); // concrete f32 version: 5 * 2 = 10
+    }
+}
+
+#[test]
+fn generic_def_multiple_specializations_compile_and_run() {
+    let src = r#"
+outs { out1 }
+def double<T>(x: T) {
+  return x + x
+}
+sample {
+  a = double(1.5)
+  b = f32(double(f64(2.25)))
+  out1 = a + b
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 7.5, 1e-6); // 3.0 + 4.5
+    }
+}
+
+#[test]
+fn generic_struct_method_with_own_type_param_compile_and_run() {
+    let src = r#"
+outs { out1 }
+struct Holder<T> {
+  val: T = 0.0
+
+  def scale<U>(self, factor: U) {
+    return self.val * T(factor)
+  }
+}
+init {
+  h: Holder<f32> = Holder(val = 10.0)
+}
+sample {
+  out1 = h.scale(f64(0.5))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 5.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_shadow_struct_type_param_error() {
+    let src = r#"
+outs { out1 }
+struct Box<T> {
+  val: T = 0.0
+  def bad<T>(self, x: T) {
+    return x
+  }
+}
+sample { out1 = 0.0 }
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "method type param shadowing struct type param should be rejected"
+    );
+    let errors = result.unwrap_err();
+    let msg = errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join(" ");
+    assert!(
+        msg.contains("shadows"),
+        "error should mention shadowing, got: {msg}"
+    );
+}
+
+#[test]
+fn generic_def_shadow_proc_type_param_error() {
+    let src = r#"
+outs { out1 }
+proc P<T> {
+  outs { out1 }
+  def bad<T>(x: T) {
+    return x
+  }
+  sample { out1 = T(0) }
+}
+init { p = P<f32>() }
+sample { out1 = p() }
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "proc-local def type param shadowing proc type param should be rejected"
+    );
+    let errors = result.unwrap_err();
+    let msg = errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join(" ");
+    assert!(
+        msg.contains("shadows"),
+        "error should mention shadowing, got: {msg}"
+    );
+}
+
+#[test]
+fn generic_def_duplicate_type_param_error() {
+    let src = r#"
+outs { out1 }
+def bad<T, T>(x: T) {
+  return x
+}
+sample { out1 = 0.0 }
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "duplicate type param should be rejected"
+    );
+    let errors = result.unwrap_err();
+    let msg = errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join(" ");
+    assert!(
+        msg.contains("duplicate"),
+        "error should mention duplicate, got: {msg}"
+    );
+}
+
+#[test]
+fn generic_def_bool_type_arg_rejected() {
+    let src = r#"
+outs { out1 }
+def identity<T>(x: T) {
+  return x
+}
+sample {
+  out1 = f32(identity<bool>(true))
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "bool as generic type argument should be rejected"
+    );
+}
+
+#[test]
+fn generic_def_wrong_type_arg_count_rejected() {
+    let src = r#"
+outs { out1 }
+def identity<T>(x: T) {
+  return x
+}
+sample {
+  out1 = identity<f32, f64>(1.0)
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "wrong number of type args should be rejected"
+    );
+}
+
+#[test]
+fn generic_def_non_generic_rejects_type_args() {
+    let src = r#"
+outs { out1 }
+def id(x) {
+  return x
+}
+sample {
+  out1 = id<f32>(1.0)
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let result = analyze(parsed);
+    assert!(
+        result.is_err(),
+        "type args on non-generic def should be rejected"
+    );
+}
+
+#[test]
+fn generic_def_proc_local_compile_and_run() {
+    let src = r#"
+outs { out1 }
+proc Scaler<T> {
+  outs<T> { out1 }
+  def scale<U>(val: T, factor: U) {
+    return val * T(factor)
+  }
+  sample {
+    out1 = scale(T(10), f64(0.3))
+  }
+}
+init {
+  s = Scaler<f32>()
+}
+sample {
+  out1 = s()
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 3.0, 1e-6);
+    }
+}
+
+// ── Corner-case tests for generic defs ──────────────────────────────────
+
+#[test]
+fn generic_def_to_def_call_compile_and_run() {
+    // One generic def calls another generic def (def-to-def mono).
+    let src = r#"
+outs { out1 }
+def double<T>(x: T) {
+  return x + x
+}
+def quad<T>(x: T) {
+  return double(double(x))
+}
+sample {
+  out1 = quad(2.5)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 10.0, 1e-6); // 2.5 * 4 = 10.0
+    }
+}
+
+#[test]
+fn generic_def_integer_specialization_compile_and_run() {
+    // Specialize a generic def to i32 and i64.
+    let src = r#"
+outs { out1 }
+def triple<T>(x: T) {
+  return x + x + x
+}
+sample {
+  a = triple(i32(5))
+  b = triple(i64(3))
+  out1 = f32(a) + f32(b)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 24.0, 1e-6); // 15 + 9
+    }
+}
+
+#[test]
+fn generic_def_inference_from_cast_compile_and_run() {
+    // Type inference from a cast expression: id(f64(x)) should infer T = f64.
+    let src = r#"
+outs { out1 }
+def id<T>(x: T) {
+  return x
+}
+sample {
+  out1 = f32(id(f64(7.5)))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 7.5, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_explicit_overrides_inference_compile_and_run() {
+    // Explicit <f64> overrides what inference (f32) would give.
+    let src = r#"
+outs { out1 }
+def id<T>(x: T) {
+  return x
+}
+sample {
+  out1 = f32(id<f64>(3.25))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 3.25, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_chained_calls_compile_and_run() {
+    // Chained generic calls: id(id(1.0)).
+    let src = r#"
+outs { out1 }
+def id<T>(x: T) {
+  return x
+}
+sample {
+  out1 = id(id(4.0))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 4.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_called_from_init_scope_compile_and_run() {
+    // Generic def called from init scope (not just sample).
+    let src = r#"
+outs { out1 }
+def make<T>(x: T) {
+  return x * x
+}
+init {
+  val = make(3.0)
+}
+sample {
+  out1 = val
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 9.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_non_generic_struct_with_generic_method_compile_and_run() {
+    // Non-generic struct with a generic method.
+    let src = r#"
+outs { out1 }
+struct Adder {
+  base: f32 = 0.0
+
+  def add<U>(self, x: U) {
+    return self.base + f32(x)
+  }
+}
+init {
+  a = Adder(base = 10.0)
+}
+sample {
+  out1 = a.add(f64(2.5))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 12.5, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_mixed_generic_and_untyped_param_compile_and_run() {
+    // Mixed generic type param + untyped param (Phase 3 interaction).
+    let src = r#"
+outs { out1 }
+def apply<T>(scale: T, x) {
+  return T(x) * scale
+}
+sample {
+  out1 = f32(apply(f64(2.0), 3.0))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 6.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_same_type_param_two_args_compile_and_run() {
+    // Two params with same type param T, both inferred from same-type args.
+    let src = r#"
+outs { out1 }
+def add<T>(a: T, b: T) {
+  return a + b
+}
+sample {
+  out1 = add(2.5, 3.5)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 6.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_with_default_param_compile_and_run() {
+    // Generic def with a default parameter value using T cast.
+    let src = r#"
+outs { out1 }
+def inc<T>(x: T, step: T = T(1)) {
+  return x + step
+}
+sample {
+  out1 = inc(4.0)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 5.0, 1e-6);
+    }
 }

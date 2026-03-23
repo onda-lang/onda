@@ -535,17 +535,31 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             ),
                         );
                     }
-                } else if !type_args.is_empty() && type_args.len() != sig.type_params.len() {
-                    push_expr_error(
-                        errors,
-                        expr,
-                        format!(
-                            "function '{}' expects {} type arguments, got {}",
-                            name,
-                            sig.type_params.len(),
-                            type_args.len()
-                        ),
-                    );
+                } else if !type_args.is_empty() {
+                    if type_args.len() != sig.type_params.len() {
+                        push_expr_error(
+                            errors,
+                            expr,
+                            format!(
+                                "function '{}' expects {} type arguments, got {}",
+                                name,
+                                sig.type_params.len(),
+                                type_args.len()
+                            ),
+                        );
+                    }
+                    for ta in type_args {
+                        if matches!(ta, CallTypeArg::Primitive(PrimitiveType::Bool)) {
+                            push_expr_error(
+                                errors,
+                                expr,
+                                format!(
+                                    "'bool' is not valid as a generic type argument for '{}'; use f32, f64, i32, or i64",
+                                    name
+                                ),
+                            );
+                        }
+                    }
                 }
 
                 let forbid_self_named = sig.params.first().map(String::as_str) == Some("self");

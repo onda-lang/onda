@@ -815,6 +815,40 @@ pub(crate) fn desugar_processors(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcessorDesugarResult {
+    // Validate proc-local def type params BEFORE generic proc specialization
+    // (which clears proc.type_params on specialized copies).
+    for block in &program.blocks {
+        if let Block::Proc(proc) = block {
+            for local_def in &proc.local_defs {
+                for tp in &local_def.type_params {
+                    if proc.type_params.contains(tp) {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "type parameter '{}' on def '{}' in proc '{}' shadows '{}' from proc '{}'; use a different name",
+                                tp, local_def.name, proc.name, tp, proc.name
+                            ),
+                            local_def.loc,
+                        ));
+                    }
+                }
+                if !local_def.type_params.is_empty() {
+                    let mut seen = std::collections::HashSet::new();
+                    for tp in &local_def.type_params {
+                        if !seen.insert(tp.clone()) {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "duplicate type parameter '{}' in def '{}' of proc '{}'",
+                                    tp, local_def.name, proc.name
+                                ),
+                                local_def.loc,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     rewrite_and_materialize_generic_processors(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
 

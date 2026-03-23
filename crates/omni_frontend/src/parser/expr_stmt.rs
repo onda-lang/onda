@@ -152,6 +152,7 @@ pub(super) fn parse_struct_method_decl(
         )]);
     }
     let mut name: Option<String> = None;
+    let mut type_params = Vec::new();
     let mut params = Vec::new();
     let mut body = None;
     for child in pair.into_inner() {
@@ -159,6 +160,13 @@ pub(super) fn parse_struct_method_decl(
             Rule::ident => {
                 if name.is_none() {
                     name = Some(child.as_str().to_owned());
+                }
+            }
+            Rule::generic_param_list => {
+                for item in child.into_inner() {
+                    if item.as_rule() == Rule::ident {
+                        type_params.push(item.as_str().to_owned());
+                    }
                 }
             }
             Rule::fn_param_list => {
@@ -184,7 +192,7 @@ pub(super) fn parse_struct_method_decl(
     Ok(FunctionDef {
         loc,
         name,
-        type_params: Vec::new(),
+        type_params,
         params,
         body,
     })

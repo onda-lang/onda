@@ -1128,6 +1128,7 @@ pub(super) fn merge_inferred_integer_type(
 pub(super) fn parse_def_block(block_pair: Pair<'_, Rule>) -> Result<FunctionDef, Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&block_pair);
     let mut name: Option<String> = None;
+    let mut type_params = Vec::new();
     let mut params = Vec::new();
     let mut body = None;
 
@@ -1136,6 +1137,13 @@ pub(super) fn parse_def_block(block_pair: Pair<'_, Rule>) -> Result<FunctionDef,
             Rule::ident => {
                 if name.is_none() {
                     name = Some(child.as_str().to_owned());
+                }
+            }
+            Rule::generic_param_list => {
+                for item in child.into_inner() {
+                    if item.as_rule() == Rule::ident {
+                        type_params.push(item.as_str().to_owned());
+                    }
                 }
             }
             Rule::fn_param_list => {
@@ -1162,7 +1170,7 @@ pub(super) fn parse_def_block(block_pair: Pair<'_, Rule>) -> Result<FunctionDef,
     Ok(FunctionDef {
         loc,
         name,
-        type_params: Vec::new(),
+        type_params,
         params,
         body,
     })
