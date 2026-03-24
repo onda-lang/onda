@@ -849,6 +849,16 @@ fn analyze_assign_sample(
                 );
                 return;
             }
+            if let Some((root, field)) = split_root_field_path(base) {
+                if state_array_struct_roots.contains_key(root) {
+                    target_error!(
+                        format!(
+                            "'{root}' is an array of structs and must be indexed before accessing field '{field}'"
+                        ),
+                    );
+                    return;
+                }
+            }
             if let Some(alias) = local_array_aliases.get(base) {
                 if !alias.writable {
                     target_error!(format!("cannot assign to immutable array alias '{base}'"),);
@@ -971,6 +981,16 @@ fn analyze_assign_sample(
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                 target_error!("typed declaration is only supported for plain scalar variables",);
+            }
+            if let Some((root, field)) = split_root_field_path(base) {
+                if state_array_struct_roots.contains_key(root) {
+                    target_error!(
+                        format!(
+                            "'{root}' is an array of structs and must be indexed before accessing field '{field}'"
+                        ),
+                    );
+                    return;
+                }
             }
             let Some(target_info) = infer_runtime_slice_alias_info(
                 base,

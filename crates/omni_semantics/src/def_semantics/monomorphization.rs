@@ -89,7 +89,7 @@ fn infer_mono_arg_key(
             // Default to f32 if we can't infer
             Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
         }
-        Some(FnParamType::ArrayGeneric(_)) => {
+        Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
             if let Expr::Var { name: var_name, .. } = arg_expr {
                 if let Some(elem_ty) = env.array_elem_types.get(var_name) {
                     return Some(MonoParamKey::ResolvedArray(*elem_ty));
@@ -167,11 +167,22 @@ fn generate_mono_def(
                 }
             }
             MonoParamKey::ResolvedArray(elem_ty) => {
+                // If original param is SizedArray, preserve the size.
+                let original_param_ty = original.params.get(idx).and_then(|p| p.ty.as_ref());
+                let new_ty = if let Some(FnParamType::SizedArray { size, .. }) = original_param_ty {
+                    FnParamType::SizedArray {
+                        elem: Some(*elem_ty),
+                        generic_name: None,
+                        size: size.clone(),
+                    }
+                } else {
+                    FnParamType::Array(Some(*elem_ty))
+                };
                 if let Some(param) = new_def.params.get_mut(idx) {
-                    param.ty = Some(FnParamType::Array(Some(*elem_ty)));
+                    param.ty = Some(new_ty.clone());
                 }
                 if let Some(pt) = new_sig.param_types.get_mut(idx) {
-                    *pt = Some(FnParamType::Array(Some(*elem_ty)));
+                    *pt = Some(new_ty);
                 }
             }
             MonoParamKey::ResolvedBuffer(elem_ty, channels) => {
@@ -223,15 +234,41 @@ fn generate_mono_def(
         // any extra GenericType keys appended after that are for type params not
         // covered by any value param (e.g. `def zero<T>()` with no params).
 
-        // Pass 1: keys at param positions
+        // Pass 1: keys at param positions — extract type bindings from GenericType,
+        // ResolvedArray (for ArrayGeneric params), and ResolvedBuffer (for Buffer(Generic) params).
         for (idx, key) in keys.iter().enumerate().take(original.params.len()) {
-            if let MonoParamKey::GenericType(prim) = key {
-                if let Some(original_param) = original.params.get(idx) {
-                    if let Some(FnParamType::Struct(ref name)) = original_param.ty {
-                        if original.type_params.contains(name) {
-                            type_bindings.insert(name.clone(), *prim);
-                        }
+            if let Some(original_param) = original.params.get(idx) {
+                match (key, &original_param.ty) {
+                    (MonoParamKey::GenericType(prim), Some(FnParamType::Struct(ref name)))
+                        if original.type_params.contains(name) =>
+                    {
+                        type_bindings.insert(name.clone(), *prim);
                     }
+                    (
+                        MonoParamKey::ResolvedArray(prim),
+                        Some(FnParamType::ArrayGeneric(ref name)),
+                    ) if original.type_params.contains(name) => {
+                        type_bindings.insert(name.clone(), *prim);
+                    }
+                    (
+                        MonoParamKey::ResolvedArray(prim),
+                        Some(FnParamType::SizedArray {
+                            generic_name: Some(ref name),
+                            ..
+                        }),
+                    ) if original.type_params.contains(name) => {
+                        type_bindings.insert(name.clone(), *prim);
+                    }
+                    (
+                        MonoParamKey::ResolvedBuffer(prim, _),
+                        Some(FnParamType::Buffer(BufferType {
+                            elem: BufferElemType::Generic(ref name),
+                            ..
+                        })),
+                    ) if original.type_params.contains(name) => {
+                        type_bindings.insert(name.clone(), *prim);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -300,8 +337,8 @@ fn resolve_generic_def_type_bindings(
             // CallTypeArg::Generic would mean a forwarded generic — not applicable here.
         }
     } else {
-        // Infer from argument types: for each param typed as Struct("T") where T is a
-        // type_param, infer T from the argument expression type.
+        // Infer from argument types: for each param typed as Struct("T"), ArrayGeneric("T"),
+        // or Buffer(Generic("T")) where T is a type_param, infer T from the argument.
         let resolved_args = super::resolve_call_args(
             args,
             &sig.params,
@@ -312,17 +349,53 @@ fn resolve_generic_def_type_bindings(
             &mut Vec::new(),
         );
         for (idx, param_ty) in sig.param_types.iter().enumerate() {
-            if let Some(FnParamType::Struct(ref name)) = param_ty {
-                if !sig.type_params.contains(name) {
-                    continue;
+            let type_param_name = match param_ty {
+                Some(FnParamType::Struct(ref name)) if sig.type_params.contains(name) => {
+                    Some(name.clone())
                 }
-                if bindings.contains_key(name) {
-                    continue; // Already inferred this type param
+                Some(FnParamType::ArrayGeneric(ref name)) if sig.type_params.contains(name) => {
+                    Some(name.clone())
                 }
-                if let Some(Some(arg_expr)) = resolved_args.get(idx) {
-                    if let Some(prim) = infer_expr_primitive_type(arg_expr, env, fn_signatures, generated_sigs) {
-                        bindings.insert(name.clone(), prim);
+                Some(FnParamType::SizedArray {
+                    generic_name: Some(ref name),
+                    ..
+                }) if sig.type_params.contains(name) => Some(name.clone()),
+                Some(FnParamType::Buffer(BufferType {
+                    elem: BufferElemType::Generic(ref name),
+                    ..
+                })) if sig.type_params.contains(name) => Some(name.clone()),
+                _ => None,
+            };
+            let Some(name) = type_param_name else {
+                continue;
+            };
+            if bindings.contains_key(&name) {
+                continue; // Already inferred this type param
+            }
+            if let Some(Some(arg_expr)) = resolved_args.get(idx) {
+                // For array/buffer params, infer from the arg's element type.
+                let inferred = match param_ty {
+                    Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
+                        if let Expr::Var { name: var_name, .. } = arg_expr {
+                            env.array_elem_types.get(var_name).copied()
+                        } else {
+                            None
+                        }
                     }
+                    Some(FnParamType::Buffer(BufferType {
+                        elem: BufferElemType::Generic(_),
+                        ..
+                    })) => {
+                        if let Expr::Var { name: var_name, .. } = arg_expr {
+                            env.buffer_types.get(var_name).map(|(prim, _)| *prim)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => infer_expr_primitive_type(arg_expr, env, fn_signatures, generated_sigs),
+                };
+                if let Some(prim) = inferred {
+                    bindings.insert(name, prim);
                 }
             }
         }
@@ -346,7 +419,9 @@ fn infer_expr_primitive_type(
         Expr::Var { name, .. } => env.scalar_types.get(name).copied(),
         Expr::UserCall { name, .. } => {
             // Look up the callee in generated or existing signatures to infer return type.
-            let sig = generated_sigs.get(name.as_str()).or_else(|| fn_signatures.get(name.as_str()));
+            let sig = generated_sigs
+                .get(name.as_str())
+                .or_else(|| fn_signatures.get(name.as_str()));
             if let Some(sig) = sig {
                 if sig.type_params.is_empty() {
                     // Concrete function — heuristic: return type matches first primitive param type.
@@ -559,10 +634,22 @@ fn monomorphize_calls_in_expr(
             };
 
             // For generic defs, resolve type param bindings from explicit type args
-            // or infer from argument types.
+            // or infer from argument types.  Unresolved params default to f32,
+            // consistent with struct/proc generic defaults.
             let has_def_type_params = !sig.type_params.is_empty();
             let resolved_type_bindings: HashMap<String, PrimitiveType> = if has_def_type_params {
-                resolve_generic_def_type_bindings(sig, type_args, args, env, fn_signatures, generated_sigs)
+                let mut bindings = resolve_generic_def_type_bindings(
+                    sig,
+                    type_args,
+                    args,
+                    env,
+                    fn_signatures,
+                    generated_sigs,
+                );
+                for tp in &sig.type_params {
+                    bindings.entry(tp.clone()).or_insert(PrimitiveType::F32);
+                }
+                bindings
             } else {
                 HashMap::new()
             };
@@ -584,15 +671,66 @@ fn monomorphize_calls_in_expr(
                 let param_ty = sig.param_types.get(idx).and_then(|t| t.as_ref());
 
                 // Check if this param references a def type param.
-                if let Some(FnParamType::Struct(ref s)) = param_ty {
-                    if has_def_type_params && sig.type_params.contains(s) {
-                        if let Some(prim) = resolved_type_bindings.get(s) {
-                            keys.push(MonoParamKey::GenericType(*prim));
-                            continue;
+                if has_def_type_params {
+                    if let Some(FnParamType::Struct(ref s)) = param_ty {
+                        if sig.type_params.contains(s) {
+                            if let Some(prim) = resolved_type_bindings.get(s) {
+                                keys.push(MonoParamKey::GenericType(*prim));
+                                continue;
+                            }
+                            all_resolved = false;
+                            break;
                         }
-                        // Could not resolve this type param — bail.
-                        all_resolved = false;
-                        break;
+                    }
+                    // T[] — generic element type array param
+                    if let Some(FnParamType::ArrayGeneric(ref s)) = param_ty {
+                        if sig.type_params.contains(s) {
+                            if let Some(prim) = resolved_type_bindings.get(s) {
+                                keys.push(MonoParamKey::ResolvedArray(*prim));
+                                continue;
+                            }
+                            // Fall through to Phase 3 inference
+                        }
+                    }
+                    // T[N] — generic element type sized array param
+                    if let Some(FnParamType::SizedArray {
+                        generic_name: Some(ref s),
+                        ..
+                    }) = param_ty
+                    {
+                        if sig.type_params.contains(s) {
+                            if let Some(prim) = resolved_type_bindings.get(s) {
+                                keys.push(MonoParamKey::ResolvedArray(*prim));
+                                continue;
+                            }
+                            // Fall through to Phase 3 inference
+                        }
+                    }
+                    // buffer[T] / buffer[T[N]] — generic element type buffer param
+                    if let Some(FnParamType::Buffer(BufferType {
+                        elem: BufferElemType::Generic(ref s),
+                        channels: ref _declared_channels,
+                    })) = param_ty
+                    {
+                        if sig.type_params.contains(s) {
+                            if let Some(prim) = resolved_type_bindings.get(s) {
+                                // Infer channels from the argument
+                                let inferred_channels = resolved_args
+                                    .get(idx)
+                                    .and_then(|a| a.as_ref())
+                                    .and_then(|arg| {
+                                        if let Expr::Var { name: var_name, .. } = arg {
+                                            env.buffer_types.get(var_name).map(|(_, ch)| ch.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .unwrap_or(TypedBufferChannels::Mono);
+                                keys.push(MonoParamKey::ResolvedBuffer(*prim, inferred_channels));
+                                continue;
+                            }
+                            // Fall through to Phase 3 inference
+                        }
                     }
                 }
 
@@ -616,12 +754,27 @@ fn monomorphize_calls_in_expr(
             if has_def_type_params && all_resolved {
                 let mut covered = HashSet::new();
                 for (idx, _) in sig.params.iter().enumerate() {
-                    if let Some(FnParamType::Struct(ref s)) =
-                        sig.param_types.get(idx).and_then(|t| t.as_ref())
-                    {
-                        if sig.type_params.contains(s) {
+                    let pt = sig.param_types.get(idx).and_then(|t| t.as_ref());
+                    match pt {
+                        Some(FnParamType::Struct(ref s)) if sig.type_params.contains(s) => {
                             covered.insert(s.clone());
                         }
+                        Some(FnParamType::ArrayGeneric(ref s)) if sig.type_params.contains(s) => {
+                            covered.insert(s.clone());
+                        }
+                        Some(FnParamType::SizedArray {
+                            generic_name: Some(ref s),
+                            ..
+                        }) if sig.type_params.contains(s) => {
+                            covered.insert(s.clone());
+                        }
+                        Some(FnParamType::Buffer(BufferType {
+                            elem: BufferElemType::Generic(ref s),
+                            ..
+                        })) if sig.type_params.contains(s) => {
+                            covered.insert(s.clone());
+                        }
+                        _ => {}
                     }
                 }
                 for tp in &sig.type_params {

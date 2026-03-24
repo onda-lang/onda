@@ -960,11 +960,18 @@ fn rewrite_fn_param_type(
         FnParamType::ArrayGeneric(name) => {
             rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
         }
+        FnParamType::SizedArray {
+            generic_name: Some(name),
+            ..
+        } => {
+            rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
+        }
         FnParamType::Buffer(buffer_ty) => {
             rewrite_buffer_type(buffer_ty, current_ns, const_env, state, generated, loc)?;
         }
         FnParamType::Primitive(_)
         | FnParamType::Array(_)
+        | FnParamType::SizedArray { .. }
         | FnParamType::BareBuffer
         | FnParamType::Tuple(_) => {}
     }

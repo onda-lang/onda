@@ -284,6 +284,25 @@ pub(crate) fn specialize_generic_struct_template(
                 Some(bound) => FnParamType::Array(Some(bound)),
                 None => FnParamType::ArrayGeneric(name.clone()),
             },
+            FnParamType::SizedArray {
+                elem,
+                generic_name,
+                size,
+            } => {
+                let resolved_elem = generic_name
+                    .as_ref()
+                    .and_then(|n| type_bindings.get(n).copied())
+                    .or(*elem);
+                FnParamType::SizedArray {
+                    elem: resolved_elem,
+                    generic_name: if resolved_elem.is_some() {
+                        None
+                    } else {
+                        generic_name.clone()
+                    },
+                    size: size.clone(),
+                }
+            }
             FnParamType::BareBuffer => FnParamType::BareBuffer,
             FnParamType::Tuple(elems) => FnParamType::Tuple(elems.clone()),
         }

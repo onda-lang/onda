@@ -323,11 +323,36 @@ pub(crate) fn infer_def_param_kinds(
                 });
                 continue;
             }
-            // Handle explicitly typed array params (e.g. `f32[]`)
+            // Handle explicitly typed array params (e.g. `f32[]`, `f32[4]`)
             if let Some(FnParamType::Array(Some(prim))) =
                 def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
                 typed.push(TypedFnParam::Array { elem_ty: *prim });
+                continue;
+            }
+            if let Some(FnParamType::SizedArray {
+                elem: Some(prim), ..
+            }) = def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                typed.push(TypedFnParam::Array { elem_ty: *prim });
+                continue;
+            }
+            if let Some(FnParamType::SizedArray {
+                generic_name: Some(ref param_ty),
+                ..
+            }) = def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                push_semantic(
+                    param_diag,
+                    errors,
+                    format!(
+                        "function '{}' parameter '{}' uses unresolved generic array element type '{}'",
+                        def.name, param_name, param_ty
+                    ),
+                );
+                typed.push(TypedFnParam::Array {
+                    elem_ty: PrimitiveType::F32,
+                });
                 continue;
             }
             if let Some(FnParamType::ArrayGeneric(param_ty)) =

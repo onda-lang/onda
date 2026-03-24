@@ -227,6 +227,34 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
                 }
             }
         }
+        Rule::fn_sized_array_param => {
+            let mut inner_pairs = inner.into_inner();
+            let elem_pair = inner_pairs.next().unwrap();
+            let size_pair = inner_pairs.next().unwrap();
+            let size_expr = super::expr_stmt::parse_expr_inner(size_pair);
+            match elem_pair.as_rule() {
+                Rule::type_name => {
+                    let prim =
+                        parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?;
+                    FnParamType::SizedArray {
+                        elem: Some(prim),
+                        generic_name: None,
+                        size: size_expr,
+                    }
+                }
+                Rule::qualified_ident | Rule::namespace_ref => FnParamType::SizedArray {
+                    elem: None,
+                    generic_name: Some(elem_pair.as_str().trim().to_owned()),
+                    size: size_expr,
+                },
+                _ => {
+                    return Err(vec![syntax_at_loc(
+                        loc.as_ref(),
+                        "unsupported sized array parameter element type",
+                    )])
+                }
+            }
+        }
         Rule::fn_untyped_array_param => FnParamType::Array(None),
         Rule::fn_bare_buffer => FnParamType::BareBuffer,
         Rule::fn_tuple_param => {

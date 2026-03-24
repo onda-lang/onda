@@ -4131,6 +4131,20 @@ fn format_fn_param_type(ty: &omni_frontend::FnParamType) -> String {
         omni_frontend::FnParamType::Array(Some(ty)) => format!("{}[]", primitive_type_name(*ty)),
         omni_frontend::FnParamType::Array(None) => "[]".to_owned(),
         omni_frontend::FnParamType::ArrayGeneric(name) => format!("{name}[]"),
+        omni_frontend::FnParamType::SizedArray {
+            elem,
+            generic_name,
+            size,
+        } => {
+            let type_str = if let Some(prim) = elem {
+                primitive_type_name(*prim).to_owned()
+            } else if let Some(g) = generic_name {
+                g.clone()
+            } else {
+                "?".to_owned()
+            };
+            format!("{type_str}[{size:?}]")
+        }
         omni_frontend::FnParamType::BareBuffer => "buffer".to_owned(),
         omni_frontend::FnParamType::Tuple(elems) => {
             let inner = elems

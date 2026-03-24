@@ -8,7 +8,7 @@ syn match omniComment "#.*$"
 syn region omniString start=+"+ skip=+\\\\\|\\"+ end=+"+
 syn match omniNumber "\<\d\+\%(\.\d\+\)\?\%([eE][+-]\=\d\+\)\?\>"
 
-syn match omniSection "^\s*\zs\%(ins\|outs\|params\|const\|events\|buffers\|init\|block\|sample\|graph\)\ze\%(\s*<\|\s\+\d\+\|\s*:\|\s*{\)"
+syn match omniSection "^\s*\zs\%(ins\|outs\|params\|const\|events\|buffers\|init\|block\|sample\|graph\)\ze\%(\s*<\|\s\+\d\+\|\s*:\|\s*{\|\s\+[A-Za-z_(]\)"
 syn match omniImportKeyword "^\s*\zs\%(import\|include\)\ze\>"
 syn match omniImportPath "^\s*import\s\+\zs[A-Za-z_][A-Za-z0-9_]*\%(/[A-Za-z_][A-Za-z0-9_]*\)*"
 

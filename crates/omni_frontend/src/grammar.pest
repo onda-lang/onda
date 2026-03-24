@@ -112,10 +112,11 @@ generic_type_arg_list = { "<" ~ generic_type_arg ~ ("," ~ generic_type_arg)* ~ "
 generic_type_arg = { type_name | ident }
 fn_param_list = { fn_param_decl ~ ("," ~ fn_param_decl)* }
 fn_typed_array_param = { (type_name | namespace_ref | qualified_ident) ~ "[" ~ "]" }
+fn_sized_array_param = { (type_name | namespace_ref | qualified_ident) ~ "[" ~ expr ~ "]" }
 fn_untyped_array_param = { "[" ~ "]" }
 fn_bare_buffer = { "buffer" }
 fn_tuple_param = { "(" ~ type_name ~ ("," ~ type_name)+ ~ ")" }
-fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_bare_buffer | fn_tuple_param | type_name | namespace_ref | qualified_ident }
+fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_sized_array_param | fn_bare_buffer | fn_tuple_param | type_name | namespace_ref | qualified_ident }
 fn_param_decl = { ident ~ (":" ~ fn_param_type)? ~ ("=" ~ expr)? }
 struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ NEWLINE* }
 struct_method_decl = { "def" ~ ident ~ generic_param_list? ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block }
@@ -162,7 +163,7 @@ call_index_target = { path_ident ~ "[" ~ expr ~ "]" ~ !"::" }
 arg_list = { call_arg ~ (NEWLINE* ~ "," ~ NEWLINE* ~ call_arg)* ~ (NEWLINE* ~ ",")? }
 call_arg = { (ident ~ "=")? ~ expr }
 index_expr = { path_ident ~ "[" ~ expr ~ "]" ~ !"::" ~ ("[" ~ expr ~ "]")? }
-indexed_member_expr = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
+indexed_member_expr = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" ~ ("[" ~ expr ~ "]")? }
 slice_expr = { path_ident ~ "[" ~ slice_start? ~ ":" ~ slice_end? ~ "]" ~ !"::" }
 slice_start = { expr }
 slice_end = { expr }

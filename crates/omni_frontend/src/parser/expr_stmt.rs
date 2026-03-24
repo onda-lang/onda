@@ -1007,25 +1007,55 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
             let field_pair = inner
                 .next()
                 .expect("indexed_member_expr rule must include field identifier");
-            Expr::UserCall {
-                loc,
-                name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
-                type_args: Vec::new(),
-                args: vec![
-                    CallArg {
-                        name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                        expr: Expr::var(base),
-                    },
-                    CallArg {
-                        name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
-                        expr: parse_expr_inner(index_pair),
-                    },
-                    CallArg {
-                        name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
-                        expr: Expr::var(field_pair.as_str().to_owned())
-                            .with_loc(stmt_loc_from_pair(&field_pair)),
-                    },
-                ],
+            let field_index_pair = inner.next();
+            if let Some(field_index_pair) = field_index_pair {
+                // base[idx].field[fidx] — struct array field index
+                Expr::UserCall {
+                    loc,
+                    name: STRUCT_ARRAY_FIELD_INDEX_SENTINEL.to_owned(),
+                    type_args: Vec::new(),
+                    args: vec![
+                        CallArg {
+                            name: Some(SAFI_BASE_ARG.to_owned()),
+                            expr: Expr::var(base),
+                        },
+                        CallArg {
+                            name: Some(SAFI_IDX_ARG.to_owned()),
+                            expr: parse_expr_inner(index_pair),
+                        },
+                        CallArg {
+                            name: Some(SAFI_FIELD_ARG.to_owned()),
+                            expr: Expr::var(field_pair.as_str().to_owned())
+                                .with_loc(stmt_loc_from_pair(&field_pair)),
+                        },
+                        CallArg {
+                            name: Some(SAFI_FIELD_IDX_ARG.to_owned()),
+                            expr: parse_expr_inner(field_index_pair),
+                        },
+                    ],
+                }
+            } else {
+                // base[idx].field — proc array field access
+                Expr::UserCall {
+                    loc,
+                    name: format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"),
+                    type_args: Vec::new(),
+                    args: vec![
+                        CallArg {
+                            name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                            expr: Expr::var(base),
+                        },
+                        CallArg {
+                            name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                            expr: parse_expr_inner(index_pair),
+                        },
+                        CallArg {
+                            name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
+                            expr: Expr::var(field_pair.as_str().to_owned())
+                                .with_loc(stmt_loc_from_pair(&field_pair)),
+                        },
+                    ],
+                }
             }
         }
         Rule::graph_nested_indexed_member_expr => {

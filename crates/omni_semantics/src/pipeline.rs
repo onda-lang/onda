@@ -172,10 +172,7 @@ pub fn analyze_with_options(
             for tp in &def.type_params {
                 if !seen.insert(tp.clone()) {
                     errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "duplicate type parameter '{}' in def '{}'",
-                            tp, def.name
-                        ),
+                        format!("duplicate type parameter '{}' in def '{}'", tp, def.name),
                         def.loc,
                     ));
                 }
@@ -1043,7 +1040,14 @@ pub fn analyze_with_options(
                 Some(FnParamType::Array(Some(prim))) => {
                     def_env.array_elem_types.insert(param.name.clone(), *prim);
                 }
-                Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::Tuple(_)) => {}
+                Some(FnParamType::SizedArray {
+                    elem: Some(prim), ..
+                }) => {
+                    def_env.array_elem_types.insert(param.name.clone(), *prim);
+                }
+                Some(FnParamType::ArrayGeneric(_))
+                | Some(FnParamType::SizedArray { .. })
+                | Some(FnParamType::Tuple(_)) => {}
                 Some(FnParamType::Array(None)) | Some(FnParamType::BareBuffer) | None => {}
             }
             if let Some(default_expr) = &mut param.default {
@@ -1210,6 +1214,10 @@ pub fn analyze_with_options(
                         }
                         Some(FnParamType::Array(None))
                         | Some(FnParamType::ArrayGeneric(_))
+                        | Some(FnParamType::SizedArray {
+                            generic_name: Some(_),
+                            ..
+                        })
                         | Some(FnParamType::BareBuffer) => true,
                         _ => false,
                     });
@@ -1547,6 +1555,26 @@ pub fn analyze_with_options(
     let init_writable_roots = collect_runtime_state_roots(&state_scalars, &state_arrays);
     let empty_nested_proc_instances = HashMap::<String, ProcNestedState>::new();
 
+    // Rewrite struct-array field index sentinels (e.g. data[0].field[i]) to flattened Index exprs.
+    rewrite_struct_array_field_index_stmts(
+        &mut block_pre,
+        &state_array_struct_roots,
+        &struct_defs,
+        &mut errors,
+    );
+    rewrite_struct_array_field_index_stmts(
+        &mut block_post,
+        &state_array_struct_roots,
+        &struct_defs,
+        &mut errors,
+    );
+    rewrite_struct_array_field_index_stmts(
+        &mut sample,
+        &state_array_struct_roots,
+        &struct_defs,
+        &mut errors,
+    );
+
     let port_index_ins = if ins_explicit && !ins.is_empty() {
         uniform_port_type(&ins, &in_types).map(|ty| PortIndexInfo {
             count: ins.len(),
@@ -1800,6 +1828,7 @@ pub fn analyze_with_options(
                     | FnParamType::Buffer(_)
                     | FnParamType::Array(_)
                     | FnParamType::ArrayGeneric(_)
+                    | FnParamType::SizedArray { .. }
                     | FnParamType::BareBuffer
                     | FnParamType::Tuple(_) => None,
                 });
