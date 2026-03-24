@@ -1,8 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
+use omni_frontend::ast::{BinaryOp, CallArg, Expr, Span, Stmt};
 use omni_frontend::{DiagCtx, Diagnostic, PrimitiveType};
 
 use crate::decl_symbols::{insert_declared_symbol, DeclaredSymbolInfo, DeclaredSymbolMap};
+use crate::proc_state_rewrite::{
+    SAFI_BASE_ARG, SAFI_FIELD_ARG, SAFI_FIELD_IDX_ARG, SAFI_IDX_ARG,
+    STRUCT_ARRAY_FIELD_INDEX_SENTINEL,
+};
 use crate::{
     ArrayStructRootInfo, LocalAliasTypes, LocalArrayAliasInfo, TypedFieldType, TypedStructField,
 };
@@ -314,4 +319,239 @@ pub(crate) fn add_struct_element_alias_bindings(
         }
     }
     true
+}
+
+// ---------------------------------------------------------------------------
+// Rewrite `__omni_struct_array_field_index` sentinels to flattened Index exprs
+// ---------------------------------------------------------------------------
+
+/// Rewrite `base[idx].field[fidx]` sentinels in a list of statements.
+/// Each sentinel is replaced with `Index { base: "base.field", index: idx * stride + fidx }`
+/// where `stride` is the per-element field array length derived from the struct definition.
+pub(crate) fn rewrite_struct_array_field_index_stmts(
+    stmts: &mut [Stmt],
+    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for stmt in stmts.iter_mut() {
+        rewrite_struct_array_field_index_stmt(stmt, state_array_struct_roots, struct_defs, errors);
+    }
+}
+
+fn rewrite_struct_array_field_index_stmt(
+    stmt: &mut Stmt,
+    roots: &HashMap<String, ArrayStructRootInfo>,
+    defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match stmt {
+        Stmt::Const { .. } => {}
+        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            rewrite_struct_array_field_index_expr(expr, roots, defs, errors);
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            rewrite_struct_array_field_index_expr(cond, roots, defs, errors);
+            rewrite_struct_array_field_index_stmts(then_branch, roots, defs, errors);
+            rewrite_struct_array_field_index_stmts(else_branch, roots, defs, errors);
+        }
+        Stmt::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            rewrite_struct_array_field_index_expr(start, roots, defs, errors);
+            rewrite_struct_array_field_index_expr(end, roots, defs, errors);
+            if let Some(s) = step {
+                rewrite_struct_array_field_index_expr(s, roots, defs, errors);
+            }
+            rewrite_struct_array_field_index_stmts(body, roots, defs, errors);
+        }
+        Stmt::While { cond, body, .. } => {
+            rewrite_struct_array_field_index_expr(cond, roots, defs, errors);
+            rewrite_struct_array_field_index_stmts(body, roots, defs, errors);
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn rewrite_struct_array_field_index_expr(
+    expr: &mut Expr,
+    roots: &HashMap<String, ArrayStructRootInfo>,
+    defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::UserCall { name, .. }
+            if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL =>
+        {
+            let loc = match expr { Expr::UserCall { loc, .. } => *loc, _ => Span::ZERO };
+            let Expr::UserCall { args, .. } = expr else { return };
+            let (base, idx, field, fidx) = match extract_safi_args(args) {
+                Some(v) => v,
+                None => {
+                    errors.push(Diagnostic::semantic_span(
+                        "malformed struct array field index expression",
+                        loc,
+                    ));
+                    return;
+                }
+            };
+
+            let Some(root_info) = roots.get(&base) else {
+                errors.push(Diagnostic::semantic_span(
+                    format!("'{base}' is not a struct array; cannot use {base}[...].{field}[...]"),
+                    loc,
+                ));
+                return;
+            };
+
+            let Some(fields) = defs.get(&root_info.struct_name) else {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "struct definition '{}' not found for struct array '{base}'",
+                        root_info.struct_name
+                    ),
+                    loc,
+                ));
+                return;
+            };
+
+            let Some(target_field) = fields.iter().find(|f| f.name == field) else {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "struct '{}' has no field '{field}'",
+                        root_info.struct_name
+                    ),
+                    loc,
+                ));
+                return;
+            };
+
+            let stride = match target_field.ty {
+                TypedFieldType::Array(len) => len,
+                TypedFieldType::Scalar(_) => 1,
+                TypedFieldType::Tuple(ref elems) => elems.len(),
+                TypedFieldType::Struct => {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "field '{field}' of struct '{}' is a nested struct and cannot be indexed with {base}[...].{field}[...]",
+                            root_info.struct_name
+                        ),
+                        loc,
+                    ));
+                    return;
+                }
+            };
+
+            let flat_base = format!("{base}.{field}");
+            // Compute flattened index: idx * stride + fidx
+            let flat_index = if stride == 1 {
+                // For scalar fields: just use idx (fidx should be 0 or the only index)
+                Expr::Binary {
+                    loc: Span::ZERO,
+                    op: BinaryOp::Add,
+                    lhs: Box::new(idx),
+                    rhs: Box::new(fidx),
+                }
+            } else {
+                Expr::Binary {
+                    loc: Span::ZERO,
+                    op: BinaryOp::Add,
+                    lhs: Box::new(Expr::Binary {
+                        loc: Span::ZERO,
+                        op: BinaryOp::Mul,
+                        lhs: Box::new(idx),
+                        rhs: Box::new(Expr::int(stride as i64)),
+                    }),
+                    rhs: Box::new(fidx),
+                }
+            };
+
+            *expr = Expr::Index {
+                loc,
+                base: flat_base,
+                index: Box::new(flat_index),
+            };
+        }
+        // Recurse into sub-expressions
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. } => {
+            rewrite_struct_array_field_index_expr(lhs, roots, defs, errors);
+            rewrite_struct_array_field_index_expr(rhs, roots, defs, errors);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                rewrite_struct_array_field_index_expr(arg, roots, defs, errors);
+            }
+        }
+        Expr::UserCall { args, .. } => {
+            for arg in args {
+                rewrite_struct_array_field_index_expr(&mut arg.expr, roots, defs, errors);
+            }
+        }
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
+            rewrite_struct_array_field_index_expr(inner, roots, defs, errors);
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for v in values {
+                rewrite_struct_array_field_index_expr(v, roots, defs, errors);
+            }
+        }
+        Expr::Index { index, .. } => {
+            rewrite_struct_array_field_index_expr(index, roots, defs, errors);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(s) = start {
+                rewrite_struct_array_field_index_expr(s, roots, defs, errors);
+            }
+            if let Some(e) = end {
+                rewrite_struct_array_field_index_expr(e, roots, defs, errors);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            rewrite_struct_array_field_index_expr(&mut spec.size, roots, defs, errors);
+            if let Some(values) = init {
+                for v in values {
+                    rewrite_struct_array_field_index_expr(v, roots, defs, errors);
+                }
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+}
+
+fn extract_safi_args(args: &mut [CallArg]) -> Option<(String, Expr, String, Expr)> {
+    let mut base = None::<String>;
+    let mut idx = None::<Expr>;
+    let mut field = None::<String>;
+    let mut fidx = None::<Expr>;
+    for arg in args.iter() {
+        match arg.name.as_deref() {
+            Some(SAFI_BASE_ARG) => {
+                if let Expr::Var { name, .. } = &arg.expr {
+                    base = Some(name.clone());
+                }
+            }
+            Some(SAFI_IDX_ARG) => idx = Some(arg.expr.clone()),
+            Some(SAFI_FIELD_ARG) => {
+                if let Expr::Var { name, .. } = &arg.expr {
+                    field = Some(name.clone());
+                }
+            }
+            Some(SAFI_FIELD_IDX_ARG) => fidx = Some(arg.expr.clone()),
+            _ => {}
+        }
+    }
+    Some((base?, idx?, field?, fidx?))
 }

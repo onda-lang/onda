@@ -443,6 +443,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_internal_proc_index_call(name, args, env, expr.loc(), errors);
                 return;
             }
+            if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
+                // Should have been rewritten before validation; ignore here.
+                return;
+            }
             if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
                 validate_internal_proc_index_buffer_select_call(
                     name,
@@ -593,6 +597,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             param_ty,
                             Some(FnParamType::Array(_))
                                 | Some(FnParamType::ArrayGeneric(_))
+                                | Some(FnParamType::SizedArray { .. })
                                 | Some(FnParamType::BareBuffer)
                         ) {
                             if matches!(arg, Expr::Slice { .. }) {

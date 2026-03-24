@@ -326,11 +326,13 @@ fn score_overload_param_match(
             OverloadArgShape::Unknown => Some(2),
             _ => None,
         },
-        Some(FnParamType::ArrayGeneric(_)) => match arg_shape {
-            OverloadArgShape::Array => Some(0),
-            OverloadArgShape::Unknown => Some(2),
-            _ => None,
-        },
+        Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
+            match arg_shape {
+                OverloadArgShape::Array => Some(0),
+                OverloadArgShape::Unknown => Some(2),
+                _ => None,
+            }
+        }
         Some(FnParamType::Array(None)) => match arg_shape {
             OverloadArgShape::Array => Some(1),
             OverloadArgShape::Unknown => Some(2),
@@ -356,6 +358,20 @@ fn format_fn_param_for_overload(name: &str, ty: Option<&FnParamType>, has_defaul
         Some(FnParamType::Buffer(buffer_ty)) => format!("{name}: {:?}", buffer_ty),
         Some(FnParamType::Array(Some(prim))) => format!("{name}: {prim:?}[]").to_lowercase(),
         Some(FnParamType::ArrayGeneric(param)) => format!("{name}: {param}[]"),
+        Some(FnParamType::SizedArray {
+            elem,
+            generic_name,
+            size,
+        }) => {
+            let type_str = if let Some(prim) = elem {
+                format!("{prim:?}").to_lowercase()
+            } else if let Some(g) = generic_name {
+                g.clone()
+            } else {
+                "?".to_owned()
+            };
+            format!("{name}: {type_str}[{size:?}]")
+        }
         Some(FnParamType::Array(None)) => format!("{name}: []"),
         Some(FnParamType::BareBuffer) => format!("{name}: buffer"),
         Some(FnParamType::Tuple(elems)) => {

@@ -19026,3 +19026,808 @@ sample {
         assert_near(*s, 5.0, 1e-6);
     }
 }
+
+// ── Generic Def: T[] param ───────────────────────────────────────────────────
+
+#[test]
+fn generic_def_t_slice_param_compile_and_run() {
+    let src = r#"
+outs { out1 }
+init {
+  data: f32[4] = [1.0, 2.0, 3.0, 4.0]
+}
+def sum<T>(arr: T[]) {
+  result = T(0)
+  for i in 0..(arr.len()) {
+    result = result + arr[i]
+  }
+  return result
+}
+sample {
+  out1 = sum(data)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_t_slice_param_i32_compile_and_run() {
+    let src = r#"
+outs { out1 }
+init {
+  data: i32[3] = [10, 20, 30]
+}
+def first<T>(arr: T[]) {
+  return arr[0]
+}
+sample {
+  out1 = f32(first(data))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_t_slice_with_scalar_t_param_compile_and_run() {
+    let src = r#"
+outs { out1 }
+init {
+  data: f32[3] = [2.0, 4.0, 6.0]
+}
+def scale_sum<T>(arr: T[], factor: T) {
+  result = T(0)
+  for i in 0..(arr.len()) {
+    result = result + arr[i] * factor
+  }
+  return result
+}
+sample {
+  out1 = scale_sum(data, 0.5)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 6.0, 1e-6);
+    }
+}
+
+// ── Generic Def: buffer[T] param ────────────────────────────────────────────
+
+#[test]
+fn generic_def_buffer_t_param_compile_and_run() {
+    // Test that def with buffer[T] param compiles and monomorphizes correctly.
+    // We only test compilation, not runtime, since buffer binding in tests is complex.
+    let src = r#"
+outs { out1 }
+buffers {
+  ext: buffer[f32]
+}
+def read_first<T>(buf: buffer[T]) {
+  return buf[0]
+}
+sample {
+  out1 = read_first(ext)
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let _typed = analyze_with_options(
+        parsed,
+        AnalysisOptions::default(),
+    )
+    .expect("semantic analysis should succeed");
+}
+
+#[test]
+fn generic_def_buffer_t_explicit_compile_and_run() {
+    // Test with explicit type arg.
+    let src = r#"
+outs { out1 }
+buffers {
+  ext: buffer[f32]
+}
+def read_first<T>(buf: buffer[T]) {
+  return buf[0]
+}
+sample {
+  out1 = read_first<f32>(ext)
+}
+"#;
+    let parsed = parse_program(src).expect("parse should succeed");
+    let _typed = analyze_with_options(
+        parsed,
+        AnalysisOptions::default(),
+    )
+    .expect("semantic analysis should succeed");
+}
+
+// ── Generic Def: buffer[T[N]] param ─────────────────────────────────────────
+
+#[test]
+fn generic_def_buffer_t_stereo_compile_and_run() {
+    // buffer[T[2]] — generic element type with explicit stereo channels.
+    // Mirrors DEF_BUFFER_STEREO_PARAM_EXAMPLE but with generic T.
+    let src = r#"
+buffers {
+  buf1: buffer[f32[2]]
+}
+outs {
+  out1
+}
+def read_r<T>(b: buffer[T[2]], i: i32) {
+  return b[1][i]
+}
+init {
+  idx: i32 = 0
+}
+sample {
+  out1 = read_r(buf1, idx)
+  idx = idx + 1
+}
+"#;
+    let frames = 6;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    let expected = [10.0_f32, 20.0, 30.0, 40.0, 40.0, 40.0];
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_buffer_t_mono_inferred_compile_and_run() {
+    // buffer[T] with mono buffer — T inferred from argument.
+    let src = r#"
+buffers {
+  buf1: buffer[f32]
+}
+outs {
+  out1
+}
+def read_first<T>(b: buffer[T]) {
+  return b[0]
+}
+sample {
+  out1 = read_first(buf1)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut buf = vec![10.0_f32, 20.0];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    // read_first reads buf[0] = 10.0 for every sample
+    for sample in &out {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+// ── Generic Def: T[N] param ─────────────────────────────────────────────────
+
+#[test]
+fn generic_def_t_sized_array_param_compile_and_run() {
+    let src = r#"
+outs { out1 }
+init {
+  data: f32[4] = [1.0, 2.0, 3.0, 4.0]
+}
+def sum4<T>(arr: T[4]) {
+  return arr[0] + arr[1] + arr[2] + arr[3]
+}
+sample {
+  out1 = sum4(data)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_t_sized_array_with_cast_compile_and_run() {
+    let src = r#"
+outs { out1 }
+init {
+  data: f64[3] = [f64(1.0), f64(2.0), f64(3.0)]
+}
+def avg3<T>(arr: T[3]) {
+  return (arr[0] + arr[1] + arr[2]) * T(1.0) / T(3.0)
+}
+sample {
+  out1 = f32(avg3(data))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 2.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_concrete_sized_array_param_compile_and_run() {
+    let src = r#"
+outs { out1 }
+init {
+  data: f32[2] = [3.0, 7.0]
+}
+def add_pair(arr: f32[2]) {
+  return arr[0] + arr[1]
+}
+sample {
+  out1 = add_pair(data)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 10.0, 1e-6);
+    }
+}
+
+// ── Generic Def: non-f32 element types ──────────────────────────────────────
+
+#[test]
+fn generic_def_t_slice_f64_compile_and_run() {
+    // T[] with f64 arrays — verifies non-f32 element type inference for slices.
+    let src = r#"
+outs { out1 }
+init {
+  data: f64[3]
+  data[0] = f64(10)
+  data[1] = f64(20)
+  data[2] = f64(30)
+}
+def first<T>(arr: T[]) {
+  return arr[0]
+}
+sample {
+  out1 = f32(first(data))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_t_sized_array_i32_compile_and_run() {
+    // T[N] with i32 — verifies non-f32 element type for sized arrays.
+    let src = r#"
+outs { out1 }
+init {
+  data: i32[4]
+  data[0] = i32(10)
+  data[1] = i32(20)
+  data[2] = i32(30)
+  data[3] = i32(40)
+}
+def sum4<T>(arr: T[4]) {
+  return arr[0] + arr[1] + arr[2] + arr[3]
+}
+sample {
+  out1 = f32(sum4(data))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 100.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_buffer_f64_compile_and_run() {
+    // buffer[T] with f64 buffer — verifies non-f32 buffer element type inference.
+    let src = r#"
+outs { out1 }
+buffers {
+  ext: buffer[f64]
+}
+def read_first<T>(buf: buffer[T]) {
+  return buf[0]
+}
+sample {
+  out1 = f32(read_first(ext))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut buf = vec![42.0_f64, 99.0];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F64,
+    )
+    .expect("bind buffer");
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    for sample in &out {
+        assert_near(*sample, 42.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_buffer_i32_compile_and_run() {
+    // buffer[T] with i32 buffer.
+    let src = r#"
+outs { out1 }
+buffers {
+  ext: buffer[i32]
+}
+def read_first<T>(buf: buffer[T]) {
+  return f32(buf[0])
+}
+sample {
+  out1 = read_first(ext)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut buf = vec![7_i32, 13];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::I32,
+    )
+    .expect("bind buffer");
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    for sample in &out {
+        assert_near(*sample, 7.0, 1e-6);
+    }
+}
+
+// ── Generic Def: interaction scenarios ──────────────────────────────────────
+
+#[test]
+fn generic_def_scalar_t_and_t_slice_compile_and_run() {
+    // T used as both scalar param and T[] array param in same def.
+    let src = r#"
+outs { out1 }
+init {
+  data: f32[3]
+  data[0] = 1.0
+  data[1] = 2.0
+  data[2] = 3.0
+}
+def scale_sum<T>(scale: T, arr: T[]) {
+  result: T = T(0)
+  for i in 0..(arr.len()) {
+    result = result + arr[i] * scale
+  }
+  return result
+}
+sample {
+  out1 = scale_sum(0.5, data)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    // (1.0 + 2.0 + 3.0) * 0.5 = 3.0
+    for s in &output {
+        assert_near(*s, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_scalar_t_and_buffer_t_compile_and_run() {
+    // T used as both scalar param and buffer[T] in same def.
+    let src = r#"
+outs { out1 }
+buffers {
+  ext: buffer[f32]
+}
+def weighted_read<T>(scale: T, buf: buffer[T]) {
+  return buf[0] * scale
+}
+sample {
+  out1 = weighted_read(2.0, ext)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut buf = vec![5.0_f32, 10.0];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    for sample in &out {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_multiple_buffers_compile_and_run() {
+    // Two buffer[T] params in the same generic def.
+    let src = r#"
+outs { out1 }
+buffers {
+  a: buffer[f32]
+  b: buffer[f32]
+}
+def add_bufs<T>(b1: buffer[T], b2: buffer[T]) {
+  return b1[0] + b2[0]
+}
+sample {
+  out1 = add_bufs(a, b)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut buf_a = vec![3.0_f32, 6.0];
+    let mut buf_b = vec![7.0_f32, 14.0];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf_a.as_mut_ptr().cast::<u8>(),
+        buf_a.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer a");
+    bind_buffer(
+        &mut instance,
+        1,
+        buf_b.as_mut_ptr().cast::<u8>(),
+        buf_b.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer b");
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    for sample in &out {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_def_to_def_with_t_slice_compile_and_run() {
+    // Generic def calling another generic def, both with T[] params.
+    let src = r#"
+outs { out1 }
+init {
+  data: f32[4]
+  data[0] = 1.0
+  data[1] = 2.0
+  data[2] = 3.0
+  data[3] = 4.0
+}
+def sum<T>(arr: T[]) {
+  result: T = T(0)
+  for i in 0..(arr.len()) {
+    result = result + arr[i]
+  }
+  return result
+}
+def avg<T>(arr: T[]) {
+  return sum(arr) / T(arr.len())
+}
+sample {
+  out1 = avg(data)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    // (1+2+3+4)/4 = 2.5
+    for s in &output {
+        assert_near(*s, 2.5, 1e-6);
+    }
+}
+
+// ── Generic Def: T[N] / buffer[T[N]] with namespace params and consts ───────
+
+#[test]
+fn generic_def_t_sized_array_namespace_param_compile_and_run() {
+    // T[N] where N is a namespace generic parameter.
+    let src = r#"
+namespace DSP<Size = 4> {
+  def sum_all<T>(arr: T[Size]) {
+    result: T = T(0)
+    for i in 0..Size {
+      result = result + arr[i]
+    }
+    return result
+  }
+}
+outs { out1 }
+init {
+  data: f32[4]
+  data[0] = 1.0
+  data[1] = 2.0
+  data[2] = 3.0
+  data[3] = 4.0
+}
+sample {
+  out1 = DSP<4>::sum_all(data)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_t_sized_array_const_size_compile_and_run() {
+    // T[N] where N is a const.
+    let src = r#"
+const LEN = 3
+outs { out1 }
+init {
+  data: f32[LEN]
+  data[0] = 5.0
+  data[1] = 10.0
+  data[2] = 15.0
+}
+def first<T>(arr: T[LEN]) {
+  return arr[0]
+}
+sample {
+  out1 = first(data)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 5.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_t_sized_array_namespace_const_compile_and_run() {
+    // T[N] where N is a namespace-level const.
+    let src = r#"
+namespace Filter<Order = 2> {
+  const TAPS = Order + 1
+
+  def dot<T>(coeffs: T[TAPS], state: T[TAPS]) {
+    result: T = T(0)
+    for i in 0..TAPS {
+      result = result + coeffs[i] * state[i]
+    }
+    return result
+  }
+}
+outs { out1 }
+init {
+  c: f32[3]
+  c[0] = 0.25
+  c[1] = 0.5
+  c[2] = 0.25
+  s: f32[3]
+  s[0] = 1.0
+  s[1] = 2.0
+  s[2] = 3.0
+}
+sample {
+  out1 = Filter<2>::dot(c, s)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    // 0.25*1 + 0.5*2 + 0.25*3 = 0.25 + 1.0 + 0.75 = 2.0
+    for s in &output {
+        assert_near(*s, 2.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_t_sized_array_namespace_expr_compile_and_run() {
+    // T[N*2] where N is a namespace param used in an expression.
+    let src = r#"
+namespace Block<N = 2> {
+  def sum_all<T>(arr: T[N * 2]) {
+    result: T = T(0)
+    for i in 0..(N * 2) {
+      result = result + arr[i]
+    }
+    return result
+  }
+}
+outs { out1 }
+init {
+  data: f32[4]
+  data[0] = 1.0
+  data[1] = 2.0
+  data[2] = 3.0
+  data[3] = 4.0
+}
+sample {
+  out1 = Block<2>::sum_all(data)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_buffer_t_namespace_channels_compile_and_run() {
+    // buffer[T[N]] where N is a namespace generic parameter for channel count.
+    let src = r#"
+namespace IO<Channels = 2> {
+  def read_ch<T>(buf: buffer[T[Channels]], ch: i32) {
+    return buf[0][ch]
+  }
+}
+outs { out1 }
+buffers {
+  ext: buffer[f32[2]]
+}
+sample {
+  out1 = IO<2>::read_ch(ext, 1)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    // buf[0][1] = right channel of frame 0 = 10.0 for every sample
+    for sample in &out {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_buffer_t_const_channels_compile_and_run() {
+    // buffer[T[CH]] where CH is a const.
+    let src = r#"
+const CH = 2
+outs { out1 }
+buffers {
+  ext: buffer[f32[CH]]
+}
+def sum_channels<T>(buf: buffer[T[CH]]) {
+  return buf[0][0] + buf[0][1]
+}
+sample {
+  out1 = sum_channels(ext)
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut buf = vec![
+        3.0_f32, 7.0, //
+        6.0, 14.0, //
+        9.0, 21.0, //
+        12.0, 28.0,
+    ];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    process_bound(&mut instance, frames).expect("process bound");
+    let out = decode_planar_f32(&out_bytes);
+    // buf[0][0] + buf[0][1] = 3.0 + 7.0 = 10.0 for every sample
+    for sample in &out {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}

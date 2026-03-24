@@ -466,6 +466,13 @@ pub enum FnParamType {
     Buffer(BufferType),
     Array(Option<PrimitiveType>),
     ArrayGeneric(String),
+    /// Sized array param: `f32[4]` → `SizedArray(Some(F32), expr)`,
+    /// `T[4]` → `SizedArray(None, expr)` with generic_name set.
+    SizedArray {
+        elem: Option<PrimitiveType>,
+        generic_name: Option<String>,
+        size: Expr,
+    },
     BareBuffer,
     Tuple(Vec<PrimitiveType>),
 }

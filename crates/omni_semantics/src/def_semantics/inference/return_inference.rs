@@ -388,7 +388,7 @@ fn infer_def_return_type(
             Some(FnParamType::Array(Some(prim))) => {
                 locals.insert(param.clone(), *prim);
             }
-            Some(FnParamType::ArrayGeneric(_)) => {
+            Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
                 locals.insert(param.clone(), PrimitiveType::F32);
             }
             Some(FnParamType::Tuple(elem_tys)) => {

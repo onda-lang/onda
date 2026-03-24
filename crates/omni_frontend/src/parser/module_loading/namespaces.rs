@@ -60,6 +60,19 @@ fn expr_span(expr: &Expr) -> Span {
     expr.loc().span()
 }
 
+/// Reconstruct a `<...>` type-arg suffix from namespace call args
+/// that turned out to be struct type arguments rather than namespace template args.
+fn format_call_args_as_type_suffix(args: &[NamespaceCallArg]) -> String {
+    let parts: Vec<String> = args
+        .iter()
+        .map(|a| match &a.expr {
+            Expr::Var { name, .. } => name.clone(),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    format!("<{}>", parts.join(", "))
+}
+
 fn rebase_relative_loc_to_use_site(loc: &mut SourceLoc, use_site_span: Span) {
     if use_site_span.is_zero() || loc.is_zero() {
         return;
@@ -891,14 +904,21 @@ fn resolve_namespace_segments_internal(
     for seg in &segments[idx..] {
         let candidate = namespace_join(&path, &seg.name);
         if let Some(args) = &seg.args {
-            path = instantiate_namespace_template(
-                &candidate,
-                args,
-                const_env,
-                state,
-                generated,
-                use_site_span,
-            )?;
+            if state.namespace_templates.contains_key(&candidate) {
+                path = instantiate_namespace_template(
+                    &candidate,
+                    args,
+                    const_env,
+                    state,
+                    generated,
+                    use_site_span,
+                )?;
+            } else {
+                // Not a namespace template — preserve args as struct type arg suffix
+                // so generic struct specialization can process them later.
+                let suffix = format_call_args_as_type_suffix(args);
+                path = format!("{candidate}{suffix}");
+            }
         } else if state.namespace_templates.contains_key(&candidate) {
             path = instantiate_namespace_template(
                 &candidate,
