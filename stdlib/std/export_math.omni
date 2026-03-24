@@ -1,51 +1,20 @@
 import std/math
 
 namespace std::export_math:
-  # Keep these coefficients local for now. Ordinary float literals are currently
-  # f32-typed, while builtin PI/TWO_PI are f64, so mixing them in generic helpers
-  # is awkward until literal typing/precision is fixed.
-  const PI_Q = 3.14159265358979323846
-  const HALF_PI_Q = 1.57079632679489661923
-  const QUARTER_PI_Q = 0.78539816339744830962
-  const TWO_PI_Q = 6.28318530717958647692
-  const LN2_Q = 0.69314718055994530942
-  const INV_LN2_Q = 1.44269504088896340736
-  const ATAN_A_Q = 0.2447
-  const ATAN_B_Q = 0.0663
+  const HALF_PI: f64 = PI / 2.0
+  const QUARTER_PI: f64 = PI / 4.0
+  const LN2: f64 = 0.69314718055994530942
+  const INV_LN2: f64 = 1.44269504088896340736
+  const EPS: f64 = 0.000001
+  const ATAN_A: f64 = 0.2447
+  const ATAN_B: f64 = 0.0663
 
-  def _zero(x):
-    return x - x
+  def _wrap_pm_pi<T>(x: T):
+    pi_v = T(PI)
+    return std::math::wrap(x + pi_v, T(0), T(TWO_PI)) - pi_v
 
-  def _one(x):
-    return _zero(x) + 1.0
-
-  def _pi(x):
-    return _one(x) * PI_Q
-
-  def _half_pi(x):
-    return _one(x) * HALF_PI_Q
-
-  def _quarter_pi(x):
-    return _one(x) * QUARTER_PI_Q
-
-  def _two_pi(x):
-    return _one(x) * TWO_PI_Q
-
-  def _ln2(x):
-    return _one(x) * LN2_Q
-
-  def _inv_ln2(x):
-    return _one(x) * INV_LN2_Q
-
-  def _eps(x):
-    return _one(x) * 0.000001
-
-  def _wrap_pm_pi(x):
-    pi_v = _pi(x)
-    return std::math::wrap(x + pi_v, _zero(x), _two_pi(x)) - pi_v
-
-  def _pow2i(n: i32, like):
-    result = _one(like)
+  def _pow2i<T>(n: i32, like: T):
+    result = T(1)
     i: i32 = 0
     if (n >= 0):
       while (i < n):
@@ -54,122 +23,108 @@ namespace std::export_math:
       return result
 
     while (i < -n):
-      result = result * 0.5
+      result = result * T(0.5)
       i = i + 1
     return result
 
-  def _nearest_i32(x):
-    half = _one(x) * 0.5
+  def _nearest_i32<T>(x: T):
+    half = T(0.5)
     value: i32 = 0
-    if (x >= _zero(x)):
+    if (x >= T(0)):
       value = i32(floor(x + half))
     else:
-      value = -i32(floor(-x + half))
+      value = i32(-floor(-x + half))
     return value
 
-  def sin(x):
-    one = _one(x)
+  def sin<T>(x: T):
     y = _wrap_pm_pi(x)
-    b = one * 1.2732395447351627
-    c = one * -0.4052847345693511
-    p = one * 0.225
+    b = T(1.2732395447351627)
+    c = T(-0.4052847345693511)
+    p = T(0.225)
     base = b * y + c * y * abs(y)
     return p * (base * abs(base) - base) + base
 
-  def cos(x):
-    return std::export_math::sin(x + _half_pi(x))
+  def cos<T>(x: T):
+    return sin(x + T(HALF_PI))
 
-  def tan(x):
-    s = std::export_math::sin(x)
-    c = std::export_math::cos(x)
-    eps = _eps(x) * 64.0
+  def tan<T>(x: T):
+    s = sin(x)
+    c = cos(x)
+    eps = T(EPS) * T(64)
 
     if (abs(c) <= eps):
-      huge = _one(x) / eps
-      if (s >= _zero(x)):
+      huge = T(1) / eps
+      if (s >= T(0)):
         return huge
       return -huge
 
     return s / c
 
-  def tanh(x):
-    one = _one(x)
-    limit = one * 3.0
+  def tanh<T>(x: T):
+    limit = T(3)
 
     if (x > limit):
-      return one
+      return T(1)
     elif (x < -limit):
-      return -one
+      return T(-1)
 
     x2 = x * x
-    return x * (27.0 + x2) / (27.0 + 9.0 * x2)
+    return x * (T(27) + x2) / (T(27) + T(9) * x2)
 
-  def atan(x):
-    zero = _zero(x)
-    one = _one(x)
-    half_pi_v = _half_pi(x)
-    quarter_pi_v = _quarter_pi(x)
+  def atan<T>(x: T):
     ax = abs(x)
-    a = one * ATAN_A_Q
-    b = one * ATAN_B_Q
+    a = T(ATAN_A)
+    b = T(ATAN_B)
 
-    if (ax > one):
-      t = one / ax
-      base = quarter_pi_v * t - t * (abs(t) - one) * (a + b * abs(t))
-      if (x >= zero):
-        return half_pi_v - base
-      return base - half_pi_v
+    if (ax > T(1)):
+      t = T(1) / ax
+      base = T(QUARTER_PI) * t - t * (abs(t) - T(1)) * (a + b * abs(t))
+      if (x >= T(0)):
+        return T(HALF_PI) - base
+      return base - T(HALF_PI)
 
-    return quarter_pi_v * x - x * (ax - one) * (a + b * ax)
+    return T(QUARTER_PI) * x - x * (ax - T(1)) * (a + b * ax)
 
-  def atan2(y, x):
-    zero = _zero(y)
-    pi_v = _pi(y)
-    half_pi_v = _half_pi(y)
+  def atan2<T>(y: T, x: T):
+    if (x > T(0)):
+      return atan(y / x)
+    elif (x < T(0)):
+      if (y >= T(0)):
+        return atan(y / x) + T(PI)
+      return atan(y / x) - T(PI)
+    elif (y > T(0)):
+      return T(HALF_PI)
+    elif (y < T(0)):
+      return T(-HALF_PI)
+    return T(0)
 
-    if (x > zero):
-      return std::export_math::atan(y / x)
-    elif (x < zero):
-      if (y >= zero):
-        return std::export_math::atan(y / x) + pi_v
-      return std::export_math::atan(y / x) - pi_v
-    elif (y > zero):
-      return half_pi_v
-    elif (y < zero):
-      return -half_pi_v
-    return zero
-
-  def exp(x):
-    zero = _zero(x)
-    one = _one(x)
-    max_x = one * 88.0
+  def exp<T>(x: T):
+    max_x = T(88)
     min_x = -max_x
     clamped = x
 
     if (clamped > max_x):
       clamped = max_x
     elif (clamped < min_x):
-      return zero
+      return T(0)
 
-    k: i32 = std::export_math::_nearest_i32(clamped * _inv_ln2(clamped))
-    r = clamped - k * _ln2(clamped)
-    c2 = one * 0.5
-    c3 = one * 0.16666666666666666
-    c4 = one * 0.041666666666666664
-    c5 = one * 0.008333333333333333
-    c6 = one * 0.001388888888888889
-    poly = one + r * (one + r * (c2 + r * (c3 + r * (c4 + r * (c5 + r * c6)))))
+    k: i32 = _nearest_i32(clamped * T(INV_LN2))
+    r = clamped - T(k) * T(LN2)
+    c2 = T(0.5)
+    c3 = T(0.16666666666666666)
+    c4 = T(0.041666666666666664)
+    c5 = T(0.008333333333333333)
+    c6 = T(0.001388888888888889)
+    poly = T(1) + r * (T(1) + r * (c2 + r * (c3 + r * (c4 + r * (c5 + r * c6)))))
     return poly * _pow2i(k, clamped)
 
-  def log(x):
-    zero = _zero(x)
-    one = _one(x)
-    half = one * 0.5
-    lower = one * 0.75
-    upper = one * 1.5
+  def log<T>(x: T):
+    half = T(0.5)
+    lower = T(0.75)
+    upper = T(1.5)
 
-    if (x <= zero):
-      return zero
+    if (x <= T(0)):
+      return T(0)
 
     m = x
     k: i32 = 0
@@ -180,34 +135,31 @@ namespace std::export_math:
       m = m + m
       k = k - 1
 
-    z = (m - one) / (m + one)
+    z = (m - T(1)) / (m + T(1))
     z2 = z * z
-    c1 = one * 2.0
-    c3 = one * 0.6666666666666666
-    c5 = one * 0.4
-    c7 = one * 0.2857142857142857
-    c9 = one * 0.2222222222222222
+    c1 = T(2)
+    c3 = T(0.6666666666666666)
+    c5 = T(0.4)
+    c7 = T(0.2857142857142857)
+    c9 = T(0.2222222222222222)
     series = z * (c1 + z2 * (c3 + z2 * (c5 + z2 * (c7 + z2 * c9))))
-    return k * _ln2(x) + series
+    return T(k) * T(LN2) + series
 
-  def pow(x, y):
-    zero = _zero(x)
-    one = _one(x)
+  def pow<T>(x: T, y: T):
+    if (y == T(0)):
+      return T(1)
+    elif (x == T(0)):
+      if (y > T(0)):
+        return T(0)
+      return T(1)
+    elif (x > T(0)):
+      return exp(y * log(x))
 
-    if (y == zero):
-      return one
-    elif (x == zero):
-      if (y > zero):
-        return zero
-      return one
-    elif (x > zero):
-      return std::export_math::exp(y * std::export_math::log(x))
+    yi: i32 = _nearest_i32(y)
+    if (abs(y - T(yi)) > T(EPS)):
+      return T(0)
 
-    yi: i32 = std::export_math::_nearest_i32(y)
-    if (abs(y - yi) > _eps(x)):
-      return zero
-
-    mag = std::export_math::exp(yi * std::export_math::log(-x))
+    mag = exp(T(yi) * log(-x))
     if ((yi % 2) == 0):
       return mag
     return -mag
