@@ -987,14 +987,12 @@ fn rewrite_buffer_type(
     loc: impl Into<SourceLoc>,
 ) -> Result<(), Vec<Diagnostic>> {
     let loc = loc.into();
-    eprintln!("[rewrite-buf-debug] before: elem={:?} channels={:?} const_env_keys={:?}", ty.elem, ty.channels, const_env.keys().collect::<Vec<_>>());
     if let BufferElemType::Generic(name) = &mut ty.elem {
         rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
     }
     if let BufferChannels::Static(expr) = &mut ty.channels {
         rewrite_expr(expr, current_ns, const_env, state, generated)?;
     }
-    eprintln!("[rewrite-buf-debug] after: elem={:?} channels={:?}", ty.elem, ty.channels);
     Ok(())
 }
 

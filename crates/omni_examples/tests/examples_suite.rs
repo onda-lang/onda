@@ -18656,7 +18656,11 @@ sample { out1 = 0.0 }
         "method type param shadowing struct type param should be rejected"
     );
     let errors = result.unwrap_err();
-    let msg = errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join(" ");
+    let msg = errors
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
         msg.contains("shadows"),
         "error should mention shadowing, got: {msg}"
@@ -18684,7 +18688,11 @@ sample { out1 = p() }
         "proc-local def type param shadowing proc type param should be rejected"
     );
     let errors = result.unwrap_err();
-    let msg = errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join(" ");
+    let msg = errors
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
         msg.contains("shadows"),
         "error should mention shadowing, got: {msg}"
@@ -18702,12 +18710,13 @@ sample { out1 = 0.0 }
 "#;
     let parsed = parse_program(src).expect("parse should succeed");
     let result = analyze(parsed);
-    assert!(
-        result.is_err(),
-        "duplicate type param should be rejected"
-    );
+    assert!(result.is_err(), "duplicate type param should be rejected");
     let errors = result.unwrap_err();
-    let msg = errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join(" ");
+    let msg = errors
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
         msg.contains("duplicate"),
         "error should mention duplicate, got: {msg}"
@@ -19125,11 +19134,8 @@ sample {
 }
 "#;
     let parsed = parse_program(src).expect("parse should succeed");
-    let _typed = analyze_with_options(
-        parsed,
-        AnalysisOptions::default(),
-    )
-    .expect("semantic analysis should succeed");
+    let _typed = analyze_with_options(parsed, AnalysisOptions::default())
+        .expect("semantic analysis should succeed");
 }
 
 #[test]
@@ -19148,11 +19154,8 @@ sample {
 }
 "#;
     let parsed = parse_program(src).expect("parse should succeed");
-    let _typed = analyze_with_options(
-        parsed,
-        AnalysisOptions::default(),
-    )
-    .expect("semantic analysis should succeed");
+    let _typed = analyze_with_options(parsed, AnalysisOptions::default())
+        .expect("semantic analysis should succeed");
 }
 
 // ── Generic Def: buffer[T[N]] param ─────────────────────────────────────────
@@ -19749,7 +19752,7 @@ fn generic_def_buffer_t_namespace_channels_compile_and_run() {
     let src = r#"
 namespace IO<Channels = 2> {
   def read_ch<T>(buf: buffer[T[Channels]], ch: i32) {
-    return buf[0][ch]
+    return buf[ch][0]
   }
 }
 outs { out1 }
@@ -19798,7 +19801,7 @@ buffers {
   ext: buffer[f32[CH]]
 }
 def sum_channels<T>(buf: buffer[T[CH]]) {
-  return buf[0][0] + buf[0][1]
+  return buf[0][0] + buf[1][0]
 }
 sample {
   out1 = sum_channels(ext)
@@ -19826,8 +19829,61 @@ sample {
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
     process_bound(&mut instance, frames).expect("process bound");
     let out = decode_planar_f32(&out_bytes);
-    // buf[0][0] + buf[0][1] = 3.0 + 7.0 = 10.0 for every sample
+    // buf[0][0] + buf[1][0] = left ch + right ch of frame 0 = 3.0 + 7.0 = 10.0 for every sample
     for sample in &out {
         assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+// --- Struct array root field access error tests ---
+
+const STRUCT_ARRAY_ROOT_FIELD_ACCESS_ERROR: &str = r#"
+namespace multichannel<N = 1>:
+  struct Audio<T>:
+    data: T[N]
+
+const Chans = 10
+
+outs Chans
+
+init:
+  data: multichannel<Chans>::Audio<f32>[2]
+
+sample:
+  for i in 0..Chans:
+    outs[i] = data.data[i]
+"#;
+
+#[test]
+fn struct_array_root_field_access_rejected() {
+    let parsed =
+        parse_program(STRUCT_ARRAY_ROOT_FIELD_ACCESS_ERROR).expect("parse should succeed");
+    let errs = analyze(parsed).expect_err("field access on struct array root should fail");
+    assert!(
+        errs.iter().any(|d| d
+            .message
+            .contains("array of structs and must be indexed before accessing field")),
+        "expected struct array root field access error, got {errs:?}"
+    );
+}
+
+// --- Generic def default type param (f32) ---
+
+#[test]
+fn generic_def_no_arg_defaults_to_f32() {
+    // zero<T>() with no explicit type arg should default T to f32.
+    let src = r#"
+outs { out1 }
+def zero<T>():
+  return T(0)
+sample:
+  out1 = zero()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 0.0, 1e-6);
     }
 }

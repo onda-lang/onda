@@ -169,16 +169,15 @@ fn generate_mono_def(
             MonoParamKey::ResolvedArray(elem_ty) => {
                 // If original param is SizedArray, preserve the size.
                 let original_param_ty = original.params.get(idx).and_then(|p| p.ty.as_ref());
-                let new_ty =
-                    if let Some(FnParamType::SizedArray { size, .. }) = original_param_ty {
-                        FnParamType::SizedArray {
-                            elem: Some(*elem_ty),
-                            generic_name: None,
-                            size: size.clone(),
-                        }
-                    } else {
-                        FnParamType::Array(Some(*elem_ty))
-                    };
+                let new_ty = if let Some(FnParamType::SizedArray { size, .. }) = original_param_ty {
+                    FnParamType::SizedArray {
+                        elem: Some(*elem_ty),
+                        generic_name: None,
+                        size: size.clone(),
+                    }
+                } else {
+                    FnParamType::Array(Some(*elem_ty))
+                };
                 if let Some(param) = new_def.params.get_mut(idx) {
                     param.ty = Some(new_ty.clone());
                 }
@@ -197,7 +196,6 @@ fn generate_mono_def(
                         }
                     },
                 };
-                eprintln!("[mono-gen-debug] {mono_name} param[{idx}] => Buffer({elem_ty:?}, {channels:?}), buf_ty.channels={:?}", buf_ty.channels);
                 if let Some(param) = new_def.params.get_mut(idx) {
                     param.ty = Some(FnParamType::Buffer(buf_ty.clone()));
                 }
@@ -377,8 +375,7 @@ fn resolve_generic_def_type_bindings(
             if let Some(Some(arg_expr)) = resolved_args.get(idx) {
                 // For array/buffer params, infer from the arg's element type.
                 let inferred = match param_ty {
-                    Some(FnParamType::ArrayGeneric(_))
-                    | Some(FnParamType::SizedArray { .. }) => {
+                    Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
                         if let Expr::Var { name: var_name, .. } = arg_expr {
                             env.array_elem_types.get(var_name).copied()
                         } else {
@@ -422,7 +419,9 @@ fn infer_expr_primitive_type(
         Expr::Var { name, .. } => env.scalar_types.get(name).copied(),
         Expr::UserCall { name, .. } => {
             // Look up the callee in generated or existing signatures to infer return type.
-            let sig = generated_sigs.get(name.as_str()).or_else(|| fn_signatures.get(name.as_str()));
+            let sig = generated_sigs
+                .get(name.as_str())
+                .or_else(|| fn_signatures.get(name.as_str()));
             if let Some(sig) = sig {
                 if sig.type_params.is_empty() {
                     // Concrete function — heuristic: return type matches first primitive param type.
@@ -635,10 +634,22 @@ fn monomorphize_calls_in_expr(
             };
 
             // For generic defs, resolve type param bindings from explicit type args
-            // or infer from argument types.
+            // or infer from argument types.  Unresolved params default to f32,
+            // consistent with struct/proc generic defaults.
             let has_def_type_params = !sig.type_params.is_empty();
             let resolved_type_bindings: HashMap<String, PrimitiveType> = if has_def_type_params {
-                resolve_generic_def_type_bindings(sig, type_args, args, env, fn_signatures, generated_sigs)
+                let mut bindings = resolve_generic_def_type_bindings(
+                    sig,
+                    type_args,
+                    args,
+                    env,
+                    fn_signatures,
+                    generated_sigs,
+                );
+                for tp in &sig.type_params {
+                    bindings.entry(tp.clone()).or_insert(PrimitiveType::F32);
+                }
+                bindings
             } else {
                 HashMap::new()
             };
@@ -709,9 +720,7 @@ fn monomorphize_calls_in_expr(
                                     .and_then(|a| a.as_ref())
                                     .and_then(|arg| {
                                         if let Expr::Var { name: var_name, .. } = arg {
-                                            env.buffer_types
-                                                .get(var_name)
-                                                .map(|(_, ch)| ch.clone())
+                                            env.buffer_types.get(var_name).map(|(_, ch)| ch.clone())
                                         } else {
                                             None
                                         }
@@ -750,9 +759,7 @@ fn monomorphize_calls_in_expr(
                         Some(FnParamType::Struct(ref s)) if sig.type_params.contains(s) => {
                             covered.insert(s.clone());
                         }
-                        Some(FnParamType::ArrayGeneric(ref s))
-                            if sig.type_params.contains(s) =>
-                        {
+                        Some(FnParamType::ArrayGeneric(ref s)) if sig.type_params.contains(s) => {
                             covered.insert(s.clone());
                         }
                         Some(FnParamType::SizedArray {

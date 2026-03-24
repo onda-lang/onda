@@ -64,6 +64,37 @@ Buffer method semantics:
 - `buf.samplerate()` returns the per-buffer sample rate as `f32` (bound from the host via C API)
 - there is no public flattened-length/`totalLen` method
 
+### Buffer indexing
+
+Multi-channel buffers use `buf[channel][sample]` indexing — the first index selects the channel, the second selects the sample (frame) position:
+
+```omni
+buffers:
+  bus: buffer[f32[2]]
+
+sample:
+  left  = bus[0][i]   # channel 0, sample i
+  right = bus[1][i]   # channel 1, sample i
+```
+
+For a stereo buffer with 4 frames of data `[1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0]`:
+
+| Expression | Meaning | Value |
+|---|---|---|
+| `bus[0][0]` | channel 0, frame 0 | 1.0 |
+| `bus[1][0]` | channel 1, frame 0 | 10.0 |
+| `bus[0][1]` | channel 0, frame 1 | 2.0 |
+| `bus[1][1]` | channel 1, frame 1 | 20.0 |
+
+Inside `def` bodies, the same convention applies when a buffer is passed as a parameter:
+
+```omni
+def sum_stereo(buf: buffer[f32[2]]):
+  return buf[0][0] + buf[1][0]   # left + right of frame 0
+```
+
+Mono buffers (`buffer[f32]`) use single-index access `buf[sample]`.
+
 ## 3 Ports, params, buffers
 
 Basic declarations:
@@ -571,6 +602,21 @@ Rules:
 - Declaration-only form (`x: Type`) desugars to default constructor initialization.
 - Generic typed declarations require explicit type args (for example `x: Box<f32>`; `x: Box` is rejected for generic `Box<T>`).
 - For untyped constructor assignments (`x = Box()` / `p = Proc()`), unresolved generic constructor type parameters default to `f32`.
+
+### Indexed struct field access
+
+Chained indexed field access like `data[i].field[j]` is **not supported**. Destructure into an intermediate alias instead:
+
+```omni
+# NOT supported:
+# val = voices[i].taps[j]
+
+# Use an intermediate alias:
+v = voices[i]
+val = v.taps[j]
+```
+
+This applies to any `base[idx].field[fidx]` pattern where a struct array element's field is further indexed.
 
 ## 8 Processors (`proc`)
 

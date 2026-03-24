@@ -58,7 +58,7 @@
       "patterns": [
         {
           "name": "meta.section.header.omni",
-          "match": "^(\\s*)(ins|outs|params|const|events|buffers|init|block|sample|graph)(?=\\s*(?:<|\\d|[:{]))(\\s*<[^>\\n]+>)?(\\s+\\d+)?(\\s*(?::|\\{))?",
+          "match": "^(\\s*)(ins|outs|params|const|events|buffers|init|block|sample|graph)(?=\\s*(?:<|\\d|[:{(A-Za-z_]))(\\s*<[^>\\n]+>)?(\\s+\\d+)?(\\s*(?::|\\{))?",
           "captures": {
             "2": {
               "name": "storage.type.block.omni"

@@ -172,10 +172,7 @@ pub fn analyze_with_options(
             for tp in &def.type_params {
                 if !seen.insert(tp.clone()) {
                     errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "duplicate type parameter '{}' in def '{}'",
-                            tp, def.name
-                        ),
+                        format!("duplicate type parameter '{}' in def '{}'", tp, def.name),
                         def.loc,
                     ));
                 }

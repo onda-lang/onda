@@ -78,6 +78,17 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     return;
                 }
 
+                if is_struct_array_root(env.declared_symbols, base) {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!(
+                            "'{base}' is an array of structs and must be indexed before accessing field '{field}'"
+                        ),
+                    );
+                    return;
+                }
+
                 let flat = format!("{base}.{field}");
                 if env.array_vars.contains_key(&flat) {
                     push_expr_error(
@@ -218,6 +229,16 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     }
                     return;
                 }
+                if is_struct_array_root(env.declared_symbols, root) {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!(
+                            "'{root}' is an array of structs and must be indexed before accessing field '{field}'"
+                        ),
+                    );
+                    return;
+                }
             }
             if let Some(port_info) = match base.as_str() {
                 "ins" => env.port_index_ins,
@@ -341,6 +362,15 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             ),
                         );
                     }
+                } else if is_struct_array_root(env.declared_symbols, root) {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!(
+                            "'{root}' is an array of structs and must be indexed before accessing field '{field}'"
+                        ),
+                    );
+                    return;
                 }
             } else if env.scope == ScopeKind::Init
                 && has_declared_buffer_symbol_info(env.declared_symbols, base)
@@ -444,7 +474,12 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 return;
             }
             if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
-                // Should have been rewritten before validation; ignore here.
+                errors.push(Diagnostic::semantic_span(
+                    "indexed struct field access (e.g. `data[i].field[j]`) is not supported; \
+                     destructure into an intermediate alias first: \
+                     `v = data[i]` then `v.field[j]`",
+                    expr.loc(),
+                ));
                 return;
             }
             if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
@@ -695,6 +730,19 @@ fn is_declared_struct_array_root_symbol(declared_symbols: &DeclaredSymbolMap, ba
     let prefix = format!("{base}.");
     declared_symbols.iter().any(|(name, info)| {
         name.starts_with(&prefix) && matches!(info, DeclaredSymbolInfo::DataArray { .. })
+    })
+}
+
+/// Returns true when `name` is an array-of-structs root – i.e. it is a DataArray
+/// AND has dotted child entries (`name.field`) that are also DataArray.
+/// Plain data arrays (e.g. `x: f32[4]`) only have the root entry, no children.
+fn is_struct_array_root(declared_symbols: &DeclaredSymbolMap, name: &str) -> bool {
+    if !is_declared_data_array_symbol(declared_symbols, name) {
+        return false;
+    }
+    let prefix = format!("{name}.");
+    declared_symbols.iter().any(|(k, info)| {
+        k.starts_with(&prefix) && matches!(info, DeclaredSymbolInfo::DataArray { .. })
     })
 }
 
