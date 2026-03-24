@@ -6087,6 +6087,21 @@ fn compile_instance_file_with_options(
     (instance, in_channels, out_channels)
 }
 
+fn emit_ir(src: &str) -> String {
+    let parsed = parse_program(src).expect("parse should succeed");
+    let typed = analyze(parsed).expect("analysis should succeed");
+    omni_codegen_llvm::lower_to_llvm_ir_with_options(
+        typed,
+        CompileOptions {
+            backend: ExecutionBackend::Auto,
+            sample_rate: 48_000.0,
+            block_size: 4,
+            fast_math: false,
+        },
+    )
+    .expect("IR emission should succeed")
+}
+
 fn assert_near(a: f32, b: f32, eps: f32) {
     let delta = (a - b).abs();
     assert!(delta <= eps, "expected {a} ~= {b}, delta={delta}");
@@ -18601,6 +18616,17 @@ sample {
   out1 = a + b
 }
 "#;
+    // IR must contain both f32 and f64 specializations.
+    let ir = emit_ir(src);
+    assert!(
+        ir.contains("float @omni_def_double.__mono__g_f32(float"),
+        "IR should contain f32 (float) specialization"
+    );
+    assert!(
+        ir.contains("double @omni_def_double.__mono__g_f64(double"),
+        "IR should contain f64 (double) specialization"
+    );
+
     let frames = 4;
     let (mut instance, _, _) = compile_instance(src, frames);
     let mut output = vec![0.0_f32; frames];
@@ -18849,6 +18875,17 @@ sample {
   out1 = f32(a) + f32(b)
 }
 "#;
+    // IR must contain i32 and i64 specializations with integer add (not fadd).
+    let ir = emit_ir(src);
+    assert!(
+        ir.contains("i32 @omni_def_triple.__mono__g_i32(i32"),
+        "IR should contain i32 specialization"
+    );
+    assert!(
+        ir.contains("i64 @omni_def_triple.__mono__g_i64(i64"),
+        "IR should contain i64 specialization"
+    );
+
     let frames = 4;
     let (mut instance, _, _) = compile_instance(src, frames);
     let mut output = vec![0.0_f32; frames];
@@ -18870,6 +18907,13 @@ sample {
   out1 = f32(id(f64(7.5)))
 }
 "#;
+    // IR must show f64 specialization inferred from the f64() cast.
+    let ir = emit_ir(src);
+    assert!(
+        ir.contains("double @omni_def_id.__mono__g_f64(double"),
+        "IR should contain f64 (double) specialization inferred from cast"
+    );
+
     let frames = 4;
     let (mut instance, _, _) = compile_instance(src, frames);
     let mut output = vec![0.0_f32; frames];
@@ -18891,6 +18935,13 @@ sample {
   out1 = f32(id<f64>(3.25))
 }
 "#;
+    // IR must show f64 specialization from explicit <f64>, not f32 from inference.
+    let ir = emit_ir(src);
+    assert!(
+        ir.contains("double @omni_def_id.__mono__g_f64(double"),
+        "IR should contain f64 (double) specialization from explicit type arg"
+    );
+
     let frames = 4;
     let (mut instance, _, _) = compile_instance(src, frames);
     let mut output = vec![0.0_f32; frames];
@@ -19885,5 +19936,158 @@ sample:
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for s in &output {
         assert_near(*s, 0.0, 1e-6);
+    }
+}
+
+// --- Generic def: same type param, mismatched arg types (first arg wins) ---
+
+#[test]
+fn generic_def_same_type_param_first_arg_wins_compile_and_run() {
+    // def add<T>(a: T, b: T) called with (f32, i32) — T inferred as f32 from first arg.
+    let src = r#"
+outs { out1 }
+def add<T>(a: T, b: T) {
+  return a + b
+}
+sample {
+  out1 = add(1.5, i32(3))
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 4.5, 1e-6);
+    }
+}
+
+// --- Generic def in non-generic proc ---
+
+#[test]
+fn generic_def_in_non_generic_proc_compile_and_run() {
+    // Proc-local generic def inside a non-generic proc.
+    let src = r#"
+outs { out1 }
+proc Gain {
+  ins { in1 }
+  outs { out1 }
+
+  def scale<T>(x: T, factor: T) {
+    return x * factor
+  }
+
+  sample {
+    out1 = scale(in1, 0.5)
+  }
+}
+init {
+  g = Gain()
+}
+sample {
+  g(4.0)
+  out1 = g.out1
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 2.0, 1e-6);
+    }
+}
+
+// --- Generic method on non-generic struct inside non-generic proc ---
+
+#[test]
+fn generic_struct_method_in_non_generic_proc_compile_and_run() {
+    // Non-generic struct with generic method, used inside a non-generic proc.
+    let src = r#"
+outs { out1 }
+struct Scaler {
+  factor: f32 = 1.0
+
+  def apply<T>(self, x: T) {
+    return self.factor * f32(x)
+  }
+}
+proc Fx {
+  ins { in1 }
+  outs { out1 }
+
+  init {
+    s = Scaler(factor = 0.25)
+  }
+  sample {
+    out1 = s.apply(in1)
+  }
+}
+init {
+  fx = Fx()
+}
+sample {
+  fx(8.0)
+  out1 = fx.out1
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 2.0, 1e-6);
+    }
+}
+
+// --- Explicit type arg overrides cast on argument ---
+
+#[test]
+fn generic_def_explicit_type_arg_overrides_arg_cast_compile_and_run() {
+    // foo<f64>(f32(1.0)) — explicit <f64> wins over f32 cast on the argument.
+    // T is instantiated as f64; the f32 value is promoted to f64 inside the body.
+    // We verify at three levels:
+    //   1. Semantic: monomorphized def name contains f64, not f32.
+    //   2. LLVM IR: the generated function uses `double` (f64) arithmetic, not `float`.
+    //   3. Runtime: correct output value.
+    let src = r#"
+outs { out1 }
+def double<T>(x: T) {
+  return x + x
+}
+sample {
+  out1 = f32(double<f64>(f32(1.5)))
+}
+"#;
+    // Semantic: monomorphized def name contains f64, not f32.
+    let parsed = parse_program(src).expect("parse should succeed");
+    let typed = analyze(parsed).expect("analysis should succeed");
+    let has_f64_def = typed.defs.iter().any(|d| d.name.contains("__g_f64"));
+    let has_f32_def = typed.defs.iter().any(|d| d.name.contains("__g_f32"));
+    assert!(
+        has_f64_def,
+        "expected f64 monomorphized def, got: {:?}",
+        typed.defs.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    assert!(
+        !has_f32_def,
+        "should NOT have f32 monomorphized def when explicit <f64> is used, got: {:?}",
+        typed.defs.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+
+    // LLVM IR: the monomorphized def must use f64 (LLVM `double`) arithmetic.
+    let ir = emit_ir(src);
+    assert!(
+        ir.contains("double @omni_def_double.__mono__g_f64(double"),
+        "IR should contain f64 (double) function signature for generic def"
+    );
+
+    // Runtime output.
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for s in &output {
+        assert_near(*s, 3.0, 1e-6);
     }
 }
