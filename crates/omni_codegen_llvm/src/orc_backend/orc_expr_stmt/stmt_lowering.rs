@@ -79,48 +79,17 @@ pub(super) unsafe fn lower_stmt(
                                                         field.name
                                                     ))
                                                 })?;
-                                            let default_value = eval_const_default_expr(
+                                            let default_value = eval_const_default_expr_typed(
                                                 default_expr,
                                                 ctx.sample_rate,
                                                 ctx.block_size,
                                             )?;
-                                            match slot.ty {
-                                                PrimitiveType::F32 => LLVMConstReal(
-                                                    ctx.float_ty,
-                                                    default_value as f64,
-                                                ),
-                                                PrimitiveType::F64 => LLVMConstReal(
-                                                    llvm_ty_for_primitive(
-                                                        ctx.context,
-                                                        PrimitiveType::F64,
-                                                    ),
-                                                    default_value as f64,
-                                                ),
-                                                PrimitiveType::I32 => LLVMConstInt(
-                                                    llvm_ty_for_primitive(
-                                                        ctx.context,
-                                                        PrimitiveType::I32,
-                                                    ),
-                                                    (default_value as i32) as u64,
-                                                    1,
-                                                ),
-                                                PrimitiveType::I64 => LLVMConstInt(
-                                                    llvm_ty_for_primitive(
-                                                        ctx.context,
-                                                        PrimitiveType::I64,
-                                                    ),
-                                                    (default_value as i64) as u64,
-                                                    1,
-                                                ),
-                                                PrimitiveType::Bool => LLVMConstInt(
-                                                    llvm_ty_for_primitive(
-                                                        ctx.context,
-                                                        PrimitiveType::Bool,
-                                                    ),
-                                                    if default_value != 0.0 { 1 } else { 0 },
-                                                    0,
-                                                ),
-                                            }
+                                            super::super::expr_common::llvm_const_from_const_default_value(
+                                                ctx.context,
+                                                ctx.float_ty,
+                                                slot.ty,
+                                                default_value,
+                                            )
                                         };
                                         scalar_arg_idx += 1;
                                         LLVMBuildStore(ctx.builder, value_typed, slot.ptr);

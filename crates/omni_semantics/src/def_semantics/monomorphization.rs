@@ -493,23 +493,47 @@ fn monomorphize_calls_in_stmt(
         Stmt::Const { .. } => {}
         Stmt::Assign { expr, .. } => {
             monomorphize_calls_in_expr(
-                expr, env, mono_eligible, fn_signatures, original_defs,
-                generic_templates, generated_defs, generated_sigs, mono_cache,
-                errors, enclosing_type_params,
+                expr,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                errors,
+                enclosing_type_params,
             );
         }
         Stmt::Expr { expr, .. } => {
             monomorphize_calls_in_expr(
-                expr, env, mono_eligible, fn_signatures, original_defs,
-                generic_templates, generated_defs, generated_sigs, mono_cache,
-                errors, enclosing_type_params,
+                expr,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                errors,
+                enclosing_type_params,
             );
         }
         Stmt::Return { expr, .. } => {
             monomorphize_calls_in_expr(
-                expr, env, mono_eligible, fn_signatures, original_defs,
-                generic_templates, generated_defs, generated_sigs, mono_cache,
-                errors, enclosing_type_params,
+                expr,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                errors,
+                enclosing_type_params,
             );
         }
         Stmt::If {
@@ -519,31 +543,63 @@ fn monomorphize_calls_in_stmt(
             ..
         } => {
             monomorphize_calls_in_expr(
-                cond, env, mono_eligible, fn_signatures, original_defs,
-                generic_templates, generated_defs, generated_sigs, mono_cache,
-                errors, enclosing_type_params,
+                cond,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                errors,
+                enclosing_type_params,
             );
             for s in then_branch.iter_mut() {
                 monomorphize_calls_in_stmt(
-                    s, env, mono_eligible, fn_signatures, original_defs,
-                    generic_templates, generated_defs, generated_sigs, mono_cache,
-                    errors, enclosing_type_params,
+                    s,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    errors,
+                    enclosing_type_params,
                 );
             }
             for s in else_branch.iter_mut() {
                 monomorphize_calls_in_stmt(
-                    s, env, mono_eligible, fn_signatures, original_defs,
-                    generic_templates, generated_defs, generated_sigs, mono_cache,
-                    errors, enclosing_type_params,
+                    s,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    errors,
+                    enclosing_type_params,
                 );
             }
         }
         Stmt::For { body, .. } | Stmt::While { body, .. } => {
             for s in body.iter_mut() {
                 monomorphize_calls_in_stmt(
-                    s, env, mono_eligible, fn_signatures, original_defs,
-                    generic_templates, generated_defs, generated_sigs, mono_cache,
-                    errors, enclosing_type_params,
+                    s,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    errors,
+                    enclosing_type_params,
                 );
             }
         }
@@ -575,9 +631,17 @@ fn monomorphize_calls_in_expr(
             // Recurse into arg expressions first
             for arg in args.iter_mut() {
                 monomorphize_calls_in_expr(
-                    &mut arg.expr, env, mono_eligible, fn_signatures,
-                    original_defs, generic_templates, generated_defs,
-                    generated_sigs, mono_cache, errors, enclosing_type_params,
+                    &mut arg.expr,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    errors,
+                    enclosing_type_params,
                 );
             }
 
@@ -801,8 +865,14 @@ fn monomorphize_calls_in_expr(
                     .or_else(|| generated_defs.iter().find(|d| d.name == *name));
 
                 if let Some(original) = original {
-                    let (gen_def, gen_sig) =
-                        generate_mono_def(original, sig, &keys, &new_name, generic_templates, errors);
+                    let (gen_def, gen_sig) = generate_mono_def(
+                        original,
+                        sig,
+                        &keys,
+                        &new_name,
+                        generic_templates,
+                        errors,
+                    );
                     generated_defs.push(gen_def);
                     generated_sigs.insert(new_name.clone(), gen_sig);
                 }
@@ -819,22 +889,46 @@ fn monomorphize_calls_in_expr(
         | Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. } => {
             monomorphize_calls_in_expr(
-                lhs, env, mono_eligible, fn_signatures, original_defs,
-                generic_templates, generated_defs, generated_sigs, mono_cache,
-                errors, enclosing_type_params,
+                lhs,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                errors,
+                enclosing_type_params,
             );
             monomorphize_calls_in_expr(
-                rhs, env, mono_eligible, fn_signatures, original_defs,
-                generic_templates, generated_defs, generated_sigs, mono_cache,
-                errors, enclosing_type_params,
+                rhs,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                errors,
+                enclosing_type_params,
             );
         }
         Expr::Call { args, .. } => {
             for arg in args.iter_mut() {
                 monomorphize_calls_in_expr(
-                    arg, env, mono_eligible, fn_signatures, original_defs,
-                    generic_templates, generated_defs, generated_sigs, mono_cache,
-                    errors, enclosing_type_params,
+                    arg,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    errors,
+                    enclosing_type_params,
                 );
             }
         }
@@ -842,17 +936,33 @@ fn monomorphize_calls_in_expr(
         | Expr::UnaryNot { expr: inner, .. }
         | Expr::UnaryBitNot { expr: inner, .. } => {
             monomorphize_calls_in_expr(
-                inner, env, mono_eligible, fn_signatures, original_defs,
-                generic_templates, generated_defs, generated_sigs, mono_cache,
-                errors, enclosing_type_params,
+                inner,
+                env,
+                mono_eligible,
+                fn_signatures,
+                original_defs,
+                generic_templates,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                errors,
+                enclosing_type_params,
             );
         }
         Expr::ArrayLiteral { values: elems, .. } | Expr::Tuple { values: elems, .. } => {
             for elem in elems.iter_mut() {
                 monomorphize_calls_in_expr(
-                    elem, env, mono_eligible, fn_signatures, original_defs,
-                    generic_templates, generated_defs, generated_sigs, mono_cache,
-                    errors, enclosing_type_params,
+                    elem,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    errors,
+                    enclosing_type_params,
                 );
             }
         }

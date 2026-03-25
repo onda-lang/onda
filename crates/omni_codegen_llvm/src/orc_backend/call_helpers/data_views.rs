@@ -627,8 +627,10 @@ unsafe fn materialize_const_array_literal_view(
     let zero = LLVMConstInt(i32_ty, 0, 0);
     let float_ty = llvm_ty_for_primitive(context, PrimitiveType::F32);
     for (idx, value_expr) in values.iter().enumerate() {
-        let raw = eval_const_default_expr(value_expr, sample_rate, block_size)?;
-        let value = llvm_const_from_typed_f64(context, float_ty, elem_ty, raw);
+        let raw = eval_const_default_expr_typed(value_expr, sample_rate, block_size)?;
+        let value = super::super::expr_common::llvm_const_from_const_default_value(
+            context, float_ty, elem_ty, raw,
+        );
         let idx_val = LLVMConstInt(i32_ty, idx as u64, 0);
         let mut indices = [zero, idx_val];
         let elem_name = slice_llvm_name(llvm_prefix, "array_lit_elem_ptr");

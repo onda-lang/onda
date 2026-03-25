@@ -389,11 +389,14 @@ fn rewrite_struct_array_field_index_expr(
     errors: &mut Vec<Diagnostic>,
 ) {
     match expr {
-        Expr::UserCall { name, .. }
-            if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL =>
-        {
-            let loc = match expr { Expr::UserCall { loc, .. } => *loc, _ => Span::ZERO };
-            let Expr::UserCall { args, .. } = expr else { return };
+        Expr::UserCall { name, .. } if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL => {
+            let loc = match expr {
+                Expr::UserCall { loc, .. } => *loc,
+                _ => Span::ZERO,
+            };
+            let Expr::UserCall { args, .. } = expr else {
+                return;
+            };
             let (base, idx, field, fidx) = match extract_safi_args(args) {
                 Some(v) => v,
                 None => {
@@ -426,10 +429,7 @@ fn rewrite_struct_array_field_index_expr(
 
             let Some(target_field) = fields.iter().find(|f| f.name == field) else {
                 errors.push(Diagnostic::semantic_span(
-                    format!(
-                        "struct '{}' has no field '{field}'",
-                        root_info.struct_name
-                    ),
+                    format!("struct '{}' has no field '{field}'", root_info.struct_name),
                     loc,
                 ));
                 return;

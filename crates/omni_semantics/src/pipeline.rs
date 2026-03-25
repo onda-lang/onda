@@ -1244,35 +1244,75 @@ pub fn analyze_with_options(
 
             // Rewrite calls in-place across all scopes.
             crate::def_semantics::monomorphize_calls_in_stmts(
-                &mut init, &top_level_env, &mono_eligible, &fn_signatures,
-                &defs, &generic_struct_template_names, &struct_defs,
-                &mut generated_defs, &mut generated_sigs, &mut mono_cache,
-                &mut errors, &[],
+                &mut init,
+                &top_level_env,
+                &mono_eligible,
+                &fn_signatures,
+                &defs,
+                &generic_struct_template_names,
+                &struct_defs,
+                &mut generated_defs,
+                &mut generated_sigs,
+                &mut mono_cache,
+                &mut errors,
+                &[],
             );
             crate::def_semantics::monomorphize_calls_in_stmts(
-                &mut block_pre, &top_level_env, &mono_eligible, &fn_signatures,
-                &defs, &generic_struct_template_names, &struct_defs,
-                &mut generated_defs, &mut generated_sigs, &mut mono_cache,
-                &mut errors, &[],
+                &mut block_pre,
+                &top_level_env,
+                &mono_eligible,
+                &fn_signatures,
+                &defs,
+                &generic_struct_template_names,
+                &struct_defs,
+                &mut generated_defs,
+                &mut generated_sigs,
+                &mut mono_cache,
+                &mut errors,
+                &[],
             );
             crate::def_semantics::monomorphize_calls_in_stmts(
-                &mut sample, &top_level_env, &mono_eligible, &fn_signatures,
-                &defs, &generic_struct_template_names, &struct_defs,
-                &mut generated_defs, &mut generated_sigs, &mut mono_cache,
-                &mut errors, &[],
+                &mut sample,
+                &top_level_env,
+                &mono_eligible,
+                &fn_signatures,
+                &defs,
+                &generic_struct_template_names,
+                &struct_defs,
+                &mut generated_defs,
+                &mut generated_sigs,
+                &mut mono_cache,
+                &mut errors,
+                &[],
             );
             crate::def_semantics::monomorphize_calls_in_stmts(
-                &mut block_post, &top_level_env, &mono_eligible, &fn_signatures,
-                &defs, &generic_struct_template_names, &struct_defs,
-                &mut generated_defs, &mut generated_sigs, &mut mono_cache,
-                &mut errors, &[],
+                &mut block_post,
+                &top_level_env,
+                &mono_eligible,
+                &fn_signatures,
+                &defs,
+                &generic_struct_template_names,
+                &struct_defs,
+                &mut generated_defs,
+                &mut generated_sigs,
+                &mut mono_cache,
+                &mut errors,
+                &[],
             );
             for event in &mut events {
                 crate::def_semantics::monomorphize_calls_in_stmts(
-                    &mut event.body, &top_level_env, &mono_eligible, &fn_signatures,
-                    &defs, &generic_struct_template_names, &struct_defs,
-                    &mut generated_defs, &mut generated_sigs, &mut mono_cache,
-                    &mut errors, &[],
+                    &mut event.body,
+                    &top_level_env,
+                    &mono_eligible,
+                    &fn_signatures,
+                    &defs,
+                    &generic_struct_template_names,
+                    &struct_defs,
+                    &mut generated_defs,
+                    &mut generated_sigs,
+                    &mut mono_cache,
+                    &mut errors,
+                    &[],
                 );
             }
             // Also walk def bodies (def-to-def mono calls)
@@ -1314,10 +1354,18 @@ pub fn analyze_with_options(
                     }
                 }
                 crate::def_semantics::monomorphize_calls_in_stmts(
-                    &mut def.body, &def_env, &mono_eligible, &fn_signatures,
-                    &original_defs_snapshot, &generic_struct_template_names,
-                    &struct_defs, &mut generated_defs, &mut generated_sigs,
-                    &mut mono_cache, &mut errors, &def.type_params,
+                    &mut def.body,
+                    &def_env,
+                    &mono_eligible,
+                    &fn_signatures,
+                    &original_defs_snapshot,
+                    &generic_struct_template_names,
+                    &struct_defs,
+                    &mut generated_defs,
+                    &mut generated_sigs,
+                    &mut mono_cache,
+                    &mut errors,
+                    &def.type_params,
                 );
             }
 
@@ -1342,10 +1390,18 @@ pub fn analyze_with_options(
                         combined_sigs.insert(k.clone(), v.clone());
                     }
                     crate::def_semantics::monomorphize_calls_in_stmts(
-                        &mut def.body, &def_env, &mono_eligible, &combined_sigs,
-                        &snapshot_for_gen, &generic_struct_template_names,
-                        &struct_defs, &mut extra_defs, &mut extra_sigs,
-                        &mut mono_cache, &mut errors, &def.type_params,
+                        &mut def.body,
+                        &def_env,
+                        &mono_eligible,
+                        &combined_sigs,
+                        &snapshot_for_gen,
+                        &generic_struct_template_names,
+                        &struct_defs,
+                        &mut extra_defs,
+                        &mut extra_sigs,
+                        &mut mono_cache,
+                        &mut errors,
+                        &def.type_params,
                     );
                 }
                 if extra_defs.is_empty() {

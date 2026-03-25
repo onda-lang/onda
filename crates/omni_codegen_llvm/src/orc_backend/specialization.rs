@@ -510,16 +510,12 @@ pub(super) fn infer_specialized_expr_return_type(
                                 if let Some(lit_ty) = untyped_param_literal_type(arg_expr) {
                                     lit_ty
                                 } else {
-                                    infer_specialized_expr_return_type(
-                                        arg_expr, locals, registry,
-                                    )?
-                                    .unwrap_or(PrimitiveType::F32)
+                                    infer_specialized_expr_return_type(arg_expr, locals, registry)?
+                                        .unwrap_or(PrimitiveType::F32)
                                 }
                             } else {
-                                infer_specialized_expr_return_type(
-                                    arg_expr, locals, registry,
-                                )?
-                                .unwrap_or(PrimitiveType::F32)
+                                infer_specialized_expr_return_type(arg_expr, locals, registry)?
+                                    .unwrap_or(PrimitiveType::F32)
                             }
                         } else if let Some(default_expr) =
                             param_defaults.get(idx).and_then(|d| d.as_ref())

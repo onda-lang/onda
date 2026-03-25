@@ -11485,6 +11485,59 @@ fn typed_init_i64_state_preserves_value() {
 }
 
 #[test]
+fn struct_default_i64_preserves_large_value() {
+    let src = r#"
+struct Box {
+  x: i64 = 9007199254740993
+}
+outs { out1 }
+init {
+  b = Box()
+}
+sample {
+  if (b.x == i64(9007199254740993)) { out1 = 1.0 } else { out1 = 0.0 }
+}
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_default_i64_preserves_large_value() {
+    let src = r#"
+outs { out1 }
+def exact(x: i64 = 9007199254740993) {
+  if (x == i64(9007199254740993)) {
+    return 1.0
+  } else {
+    return 0.0
+  }
+}
+sample {
+  out1 = exact()
+}
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
 fn typed_block_declaration_compiles_and_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -19916,8 +19969,7 @@ sample:
 
 #[test]
 fn struct_array_root_field_access_rejected() {
-    let parsed =
-        parse_program(STRUCT_ARRAY_ROOT_FIELD_ACCESS_ERROR).expect("parse should succeed");
+    let parsed = parse_program(STRUCT_ARRAY_ROOT_FIELD_ACCESS_ERROR).expect("parse should succeed");
     let errs = analyze(parsed).expect_err("field access on struct array root should fail");
     assert!(
         errs.iter().any(|d| d

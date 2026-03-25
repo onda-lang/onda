@@ -49,14 +49,36 @@ pub(super) unsafe fn llvm_const_from_typed_i64(
             1,
         ),
         PrimitiveType::F32 => LLVMConstReal(float_ty, value as f64),
-        PrimitiveType::F64 => {
-            LLVMConstReal(llvm_ty_for_primitive(context, PrimitiveType::F64), value as f64)
-        }
+        PrimitiveType::F64 => LLVMConstReal(
+            llvm_ty_for_primitive(context, PrimitiveType::F64),
+            value as f64,
+        ),
         PrimitiveType::Bool => LLVMConstInt(
             llvm_ty_for_primitive(context, PrimitiveType::Bool),
             if value != 0 { 1 } else { 0 },
             0,
         ),
+    }
+}
+
+pub(super) unsafe fn llvm_const_from_const_default_value(
+    context: LLVMContextRef,
+    float_ty: LLVMTypeRef,
+    ty: PrimitiveType,
+    value: ConstDefaultValue,
+) -> LLVMValueRef {
+    match value {
+        ConstDefaultValue::F32(value) => {
+            llvm_const_from_typed_f64(context, float_ty, ty, value as f64)
+        }
+        ConstDefaultValue::F64(value) => llvm_const_from_typed_f64(context, float_ty, ty, value),
+        ConstDefaultValue::I32(value) => {
+            llvm_const_from_typed_i64(context, float_ty, ty, value as i64)
+        }
+        ConstDefaultValue::I64(value) => llvm_const_from_typed_i64(context, float_ty, ty, value),
+        ConstDefaultValue::Bool(value) => {
+            llvm_const_from_typed_i64(context, float_ty, ty, if value { 1 } else { 0 })
+        }
     }
 }
 
@@ -317,10 +339,10 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                             ))
                         })?;
                     let default_value =
-                        eval_const_default_expr(default_expr, sample_rate, block_size)?;
+                        eval_const_default_expr_typed(default_expr, sample_rate, block_size)?;
                     let default_ty = infer_const_default_expr_type(default_expr)?;
                     OrcValue {
-                        value: llvm_const_from_typed_f64(
+                        value: llvm_const_from_const_default_value(
                             context,
                             float_ty,
                             default_ty,

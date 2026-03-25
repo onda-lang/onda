@@ -234,8 +234,7 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
             let size_expr = super::expr_stmt::parse_expr_inner(size_pair);
             match elem_pair.as_rule() {
                 Rule::type_name => {
-                    let prim =
-                        parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?;
+                    let prim = parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?;
                     FnParamType::SizedArray {
                         elem: Some(prim),
                         generic_name: None,

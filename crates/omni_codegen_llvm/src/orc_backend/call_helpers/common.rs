@@ -454,16 +454,88 @@ pub(in crate::orc_backend) fn builtin_constant_value_and_type(
     sample_rate: f32,
     block_size: f32,
 ) -> Option<(PrimitiveType, f64)> {
+    builtin_constant_typed_value(name, sample_rate, block_size)
+        .map(|value| (value.ty(), value.as_f64()))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(in crate::orc_backend) enum ConstDefaultValue {
+    F32(f32),
+    F64(f64),
+    I32(i32),
+    I64(i64),
+    Bool(bool),
+}
+
+impl ConstDefaultValue {
+    pub(in crate::orc_backend) fn ty(self) -> PrimitiveType {
+        match self {
+            Self::F32(_) => PrimitiveType::F32,
+            Self::F64(_) => PrimitiveType::F64,
+            Self::I32(_) => PrimitiveType::I32,
+            Self::I64(_) => PrimitiveType::I64,
+            Self::Bool(_) => PrimitiveType::Bool,
+        }
+    }
+
+    pub(in crate::orc_backend) fn as_f64(self) -> f64 {
+        match self {
+            Self::F32(value) => value as f64,
+            Self::F64(value) => value,
+            Self::I32(value) => value as f64,
+            Self::I64(value) => value as f64,
+            Self::Bool(value) => {
+                if value {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+
+    fn as_i64_cast(self) -> i64 {
+        match self {
+            Self::F32(value) => value as i64,
+            Self::F64(value) => value as i64,
+            Self::I32(value) => value as i64,
+            Self::I64(value) => value,
+            Self::Bool(value) => {
+                if value {
+                    1
+                } else {
+                    0
+                }
+            }
+        }
+    }
+
+    fn truthy(self) -> bool {
+        match self {
+            Self::F32(value) => value != 0.0,
+            Self::F64(value) => value != 0.0,
+            Self::I32(value) => value != 0,
+            Self::I64(value) => value != 0,
+            Self::Bool(value) => value,
+        }
+    }
+}
+
+fn builtin_constant_typed_value(
+    name: &str,
+    sample_rate: f32,
+    block_size: f32,
+) -> Option<ConstDefaultValue> {
     match name {
-        "PI" | "pi" => Some((PrimitiveType::F64, std::f64::consts::PI)),
+        "PI" | "pi" => Some(ConstDefaultValue::F64(std::f64::consts::PI)),
         "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => {
-            Some((PrimitiveType::F64, 2.0 * std::f64::consts::PI))
+            Some(ConstDefaultValue::F64(2.0 * std::f64::consts::PI))
         }
         "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
-            Some((PrimitiveType::F32, sample_rate as f64))
+            Some(ConstDefaultValue::F32(sample_rate))
         }
         "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => {
-            Some((PrimitiveType::I32, (block_size as i32) as f64))
+            Some(ConstDefaultValue::I32(block_size as i32))
         }
         _ => None,
     }
@@ -535,49 +607,45 @@ pub(in crate::orc_backend) fn infer_const_default_expr_type(
     }
 }
 
-pub(in crate::orc_backend) fn eval_const_default_expr(
+pub(in crate::orc_backend) fn eval_const_default_expr_typed(
     expr: &Expr,
     sample_rate: f32,
     block_size: f32,
-) -> Result<f64, Diagnostic> {
+) -> Result<ConstDefaultValue, Diagnostic> {
     match expr {
-        Expr::Number { value: v, .. } => Ok(*v as f64),
-        Expr::Int { value: v, .. } => Ok(*v as f64),
-        Expr::Bool { value: v, .. } => Ok(if *v { 1.0 } else { 0.0 }),
-        Expr::Var { name, .. } => builtin_constant_value_and_type(name, sample_rate, block_size)
-            .map(|(_, value)| value)
+        Expr::Number { value: v, .. } => Ok(ConstDefaultValue::F64(*v)),
+        Expr::Int { value: v, .. } => Ok(ConstDefaultValue::I64(*v)),
+        Expr::Bool { value: v, .. } => Ok(ConstDefaultValue::Bool(*v)),
+        Expr::Var { name, .. } => builtin_constant_typed_value(name, sample_rate, block_size)
             .ok_or_else(|| {
                 Diagnostic::internal(format!(
                     "default expression uses non-constant symbol '{name}' in codegen"
                 ))
             }),
         Expr::Cast { to, expr, .. } => {
-            let v = eval_const_default_expr(expr, sample_rate, block_size)?;
-            let out = match to {
-                PrimitiveType::F32 => (v as f32) as f64,
-                PrimitiveType::F64 => v,
-                PrimitiveType::I32 => (v as i32) as f64,
-                PrimitiveType::I64 => (v as i64) as f64,
-                PrimitiveType::Bool => {
-                    if v != 0.0 {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                }
-            };
-            Ok(out)
+            let value = eval_const_default_expr_typed(expr, sample_rate, block_size)?;
+            Ok(match to {
+                PrimitiveType::F32 => ConstDefaultValue::F32(value.as_f64() as f32),
+                PrimitiveType::F64 => ConstDefaultValue::F64(value.as_f64()),
+                PrimitiveType::I32 => ConstDefaultValue::I32(value.as_i64_cast() as i32),
+                PrimitiveType::I64 => ConstDefaultValue::I64(value.as_i64_cast()),
+                PrimitiveType::Bool => ConstDefaultValue::Bool(value.truthy()),
+            })
         }
         Expr::UnaryNot { expr, .. } => {
-            let v = eval_const_default_expr(expr, sample_rate, block_size)?;
-            Ok(if v == 0.0 { 1.0 } else { 0.0 })
+            let value = eval_const_default_expr_typed(expr, sample_rate, block_size)?;
+            Ok(ConstDefaultValue::Bool(!value.truthy()))
         }
         Expr::UnaryBitNot { expr, .. } => {
             let ty = infer_const_default_expr_type(expr)?;
-            let v = eval_const_default_expr(expr, sample_rate, block_size)?;
             Ok(match ty {
-                PrimitiveType::I32 => (!(v as i32)) as f64,
-                PrimitiveType::I64 => (!(v as i64)) as f64,
+                PrimitiveType::I32 => ConstDefaultValue::I32(
+                    !(eval_const_default_expr_typed(expr, sample_rate, block_size)?.as_i64_cast()
+                        as i32),
+                ),
+                PrimitiveType::I64 => ConstDefaultValue::I64(
+                    !eval_const_default_expr_typed(expr, sample_rate, block_size)?.as_i64_cast(),
+                ),
                 _ => {
                     return Err(Diagnostic::internal(format!(
                         "default bitwise-not expression requires integer operand, got {:?}",
@@ -587,76 +655,127 @@ pub(in crate::orc_backend) fn eval_const_default_expr(
             })
         }
         Expr::Logical { op, lhs, rhs, .. } => {
-            let l = eval_const_default_expr(lhs, sample_rate, block_size)?;
+            let lhs_value = eval_const_default_expr_typed(lhs, sample_rate, block_size)?;
             match op {
                 LogicalOp::And => {
-                    if l == 0.0 {
-                        Ok(0.0)
+                    if !lhs_value.truthy() {
+                        Ok(ConstDefaultValue::Bool(false))
                     } else {
-                        let r = eval_const_default_expr(rhs, sample_rate, block_size)?;
-                        Ok(if r != 0.0 { 1.0 } else { 0.0 })
+                        let rhs_value =
+                            eval_const_default_expr_typed(rhs, sample_rate, block_size)?;
+                        Ok(ConstDefaultValue::Bool(rhs_value.truthy()))
                     }
                 }
                 LogicalOp::Or => {
-                    if l != 0.0 {
-                        Ok(1.0)
+                    if lhs_value.truthy() {
+                        Ok(ConstDefaultValue::Bool(true))
                     } else {
-                        let r = eval_const_default_expr(rhs, sample_rate, block_size)?;
-                        Ok(if r != 0.0 { 1.0 } else { 0.0 })
+                        let rhs_value =
+                            eval_const_default_expr_typed(rhs, sample_rate, block_size)?;
+                        Ok(ConstDefaultValue::Bool(rhs_value.truthy()))
                     }
                 }
             }
         }
         Expr::Binary { op, lhs, rhs, .. } => {
             let result_ty = infer_const_default_expr_type(expr)?;
-            let l = eval_const_default_expr(lhs, sample_rate, block_size)?;
-            let r = eval_const_default_expr(rhs, sample_rate, block_size)?;
-            let out = match op {
-                BinaryOp::Add => l + r,
-                BinaryOp::Sub => l - r,
-                BinaryOp::Mul => l * r,
-                BinaryOp::Div => l / r,
-                BinaryOp::Mod => l % r,
-                BinaryOp::BitAnd => match result_ty {
-                    PrimitiveType::I32 => ((l as i32) & (r as i32)) as f64,
-                    PrimitiveType::I64 => ((l as i64) & (r as i64)) as f64,
-                    _ => unreachable!("bitwise expression must be integer"),
-                },
-                BinaryOp::BitOr => match result_ty {
-                    PrimitiveType::I32 => ((l as i32) | (r as i32)) as f64,
-                    PrimitiveType::I64 => ((l as i64) | (r as i64)) as f64,
-                    _ => unreachable!("bitwise expression must be integer"),
-                },
-                BinaryOp::BitXor => match result_ty {
-                    PrimitiveType::I32 => ((l as i32) ^ (r as i32)) as f64,
-                    PrimitiveType::I64 => ((l as i64) ^ (r as i64)) as f64,
-                    _ => unreachable!("bitwise expression must be integer"),
-                },
-                BinaryOp::ShiftLeft => match result_ty {
-                    PrimitiveType::I32 => ((l as i32) << (r as i32)) as f64,
-                    PrimitiveType::I64 => ((l as i64) << (r as i64)) as f64,
-                    _ => unreachable!("bitwise expression must be integer"),
-                },
-                BinaryOp::ShiftRight => match result_ty {
-                    PrimitiveType::I32 => ((l as i32) >> (r as i32)) as f64,
-                    PrimitiveType::I64 => ((l as i64) >> (r as i64)) as f64,
-                    _ => unreachable!("bitwise expression must be integer"),
-                },
-            };
-            Ok(out)
+            let lhs_value = eval_const_default_expr_typed(lhs, sample_rate, block_size)?;
+            let rhs_value = eval_const_default_expr_typed(rhs, sample_rate, block_size)?;
+            match result_ty {
+                PrimitiveType::F32 => {
+                    let lhs_value = lhs_value.as_f64();
+                    let rhs_value = rhs_value.as_f64();
+                    let result = match op {
+                        BinaryOp::Add => lhs_value + rhs_value,
+                        BinaryOp::Sub => lhs_value - rhs_value,
+                        BinaryOp::Mul => lhs_value * rhs_value,
+                        BinaryOp::Div => lhs_value / rhs_value,
+                        BinaryOp::Mod => lhs_value % rhs_value,
+                        _ => unreachable!("bitwise expression must be integer"),
+                    };
+                    Ok(ConstDefaultValue::F32(result as f32))
+                }
+                PrimitiveType::F64 => {
+                    let lhs_value = lhs_value.as_f64();
+                    let rhs_value = rhs_value.as_f64();
+                    let result = match op {
+                        BinaryOp::Add => lhs_value + rhs_value,
+                        BinaryOp::Sub => lhs_value - rhs_value,
+                        BinaryOp::Mul => lhs_value * rhs_value,
+                        BinaryOp::Div => lhs_value / rhs_value,
+                        BinaryOp::Mod => lhs_value % rhs_value,
+                        _ => unreachable!("bitwise expression must be integer"),
+                    };
+                    Ok(ConstDefaultValue::F64(result))
+                }
+                PrimitiveType::I32 => {
+                    let lhs_value = lhs_value.as_i64_cast() as i32;
+                    let rhs_value = rhs_value.as_i64_cast() as i32;
+                    let result = match op {
+                        BinaryOp::Add => lhs_value.wrapping_add(rhs_value),
+                        BinaryOp::Sub => lhs_value.wrapping_sub(rhs_value),
+                        BinaryOp::Mul => lhs_value.wrapping_mul(rhs_value),
+                        BinaryOp::Div => lhs_value / rhs_value,
+                        BinaryOp::Mod => lhs_value % rhs_value,
+                        BinaryOp::BitAnd => lhs_value & rhs_value,
+                        BinaryOp::BitOr => lhs_value | rhs_value,
+                        BinaryOp::BitXor => lhs_value ^ rhs_value,
+                        BinaryOp::ShiftLeft => lhs_value.wrapping_shl(rhs_value as u32),
+                        BinaryOp::ShiftRight => lhs_value.wrapping_shr(rhs_value as u32),
+                    };
+                    Ok(ConstDefaultValue::I32(result))
+                }
+                PrimitiveType::I64 => {
+                    let lhs_value = lhs_value.as_i64_cast();
+                    let rhs_value = rhs_value.as_i64_cast();
+                    let result = match op {
+                        BinaryOp::Add => lhs_value.wrapping_add(rhs_value),
+                        BinaryOp::Sub => lhs_value.wrapping_sub(rhs_value),
+                        BinaryOp::Mul => lhs_value.wrapping_mul(rhs_value),
+                        BinaryOp::Div => lhs_value / rhs_value,
+                        BinaryOp::Mod => lhs_value % rhs_value,
+                        BinaryOp::BitAnd => lhs_value & rhs_value,
+                        BinaryOp::BitOr => lhs_value | rhs_value,
+                        BinaryOp::BitXor => lhs_value ^ rhs_value,
+                        BinaryOp::ShiftLeft => lhs_value.wrapping_shl(rhs_value as u32),
+                        BinaryOp::ShiftRight => lhs_value.wrapping_shr(rhs_value as u32),
+                    };
+                    Ok(ConstDefaultValue::I64(result))
+                }
+                PrimitiveType::Bool => Err(Diagnostic::internal(
+                    "default binary expression cannot evaluate to bool",
+                )),
+            }
         }
         Expr::Compare { op, lhs, rhs, .. } => {
-            let l = eval_const_default_expr(lhs, sample_rate, block_size)?;
-            let r = eval_const_default_expr(rhs, sample_rate, block_size)?;
-            let pred = match op {
-                CmpOp::Eq => l == r,
-                CmpOp::Ne => l != r,
-                CmpOp::Lt => l < r,
-                CmpOp::Le => l <= r,
-                CmpOp::Gt => l > r,
-                CmpOp::Ge => l >= r,
+            let lhs_ty = infer_const_default_expr_type(lhs)?;
+            let rhs_ty = infer_const_default_expr_type(rhs)?;
+            let lhs_value = eval_const_default_expr_typed(lhs, sample_rate, block_size)?;
+            let rhs_value = eval_const_default_expr_typed(rhs, sample_rate, block_size)?;
+            let pred = if merge_const_integer_types(lhs_ty, rhs_ty).is_some() {
+                let lhs_value = lhs_value.as_i64_cast();
+                let rhs_value = rhs_value.as_i64_cast();
+                match op {
+                    CmpOp::Eq => lhs_value == rhs_value,
+                    CmpOp::Ne => lhs_value != rhs_value,
+                    CmpOp::Lt => lhs_value < rhs_value,
+                    CmpOp::Le => lhs_value <= rhs_value,
+                    CmpOp::Gt => lhs_value > rhs_value,
+                    CmpOp::Ge => lhs_value >= rhs_value,
+                }
+            } else {
+                let lhs_value = lhs_value.as_f64();
+                let rhs_value = rhs_value.as_f64();
+                match op {
+                    CmpOp::Eq => lhs_value == rhs_value,
+                    CmpOp::Ne => lhs_value != rhs_value,
+                    CmpOp::Lt => lhs_value < rhs_value,
+                    CmpOp::Le => lhs_value <= rhs_value,
+                    CmpOp::Gt => lhs_value > rhs_value,
+                    CmpOp::Ge => lhs_value >= rhs_value,
+                }
             };
-            Ok(if pred { 1.0 } else { 0.0 })
+            Ok(ConstDefaultValue::Bool(pred))
         }
         _ => Err(Diagnostic::internal(
             "default expression must be compile-time constant in codegen",
@@ -669,31 +788,72 @@ pub(in crate::orc_backend) fn eval_const_data_size_expr(
     sample_rate: f32,
     block_size: f32,
 ) -> Result<usize, Diagnostic> {
-    let value = eval_const_default_expr(expr, sample_rate, block_size)?;
-    if !value.is_finite() {
-        return Err(Diagnostic::internal(
-            "array size expression must evaluate to a finite constant",
-        ));
-    }
-
-    let truncated = value.trunc();
-    if (value - truncated).abs() > 1e-6 {
-        return Err(Diagnostic::internal(
+    match eval_const_default_expr_typed(expr, sample_rate, block_size)? {
+        ConstDefaultValue::I32(value) => {
+            if value <= 0 {
+                return Err(Diagnostic::internal(
+                    "array size expression must be greater than zero",
+                ));
+            }
+            Ok(value as usize)
+        }
+        ConstDefaultValue::I64(value) => {
+            if value <= 0 {
+                return Err(Diagnostic::internal(
+                    "array size expression must be greater than zero",
+                ));
+            }
+            usize::try_from(value)
+                .map_err(|_| Diagnostic::internal("array size expression exceeds supported range"))
+        }
+        ConstDefaultValue::F32(value) => {
+            let value = value as f64;
+            let truncated = value.trunc();
+            if (value - truncated).abs() > 1e-6 {
+                return Err(Diagnostic::internal(
+                    "array size expression must evaluate to an integer constant",
+                ));
+            }
+            if truncated <= 0.0 {
+                return Err(Diagnostic::internal(
+                    "array size expression must be greater than zero",
+                ));
+            }
+            if truncated > usize::MAX as f64 {
+                return Err(Diagnostic::internal(
+                    "array size expression exceeds supported range",
+                ));
+            }
+            Ok(truncated as usize)
+        }
+        ConstDefaultValue::F64(value) => {
+            if !value.is_finite() {
+                return Err(Diagnostic::internal(
+                    "array size expression must evaluate to a finite constant",
+                ));
+            }
+            let truncated = value.trunc();
+            if (value - truncated).abs() > 1e-6 {
+                return Err(Diagnostic::internal(
+                    "array size expression must evaluate to an integer constant",
+                ));
+            }
+            if truncated <= 0.0 {
+                return Err(Diagnostic::internal(
+                    "array size expression must be greater than zero",
+                ));
+            }
+            if truncated > usize::MAX as f64 {
+                return Err(Diagnostic::internal(
+                    "array size expression exceeds supported range",
+                ));
+            }
+            Ok(truncated as usize)
+        }
+        ConstDefaultValue::Bool(_) => Err(Diagnostic::internal(
             "array size expression must evaluate to an integer constant",
-        ));
+        )),
     }
-    if truncated <= 0.0 {
-        return Err(Diagnostic::internal(
-            "array size expression must be greater than zero",
-        ));
-    }
-    if truncated > usize::MAX as f64 {
-        return Err(Diagnostic::internal(
-            "array size expression exceeds supported range",
-        ));
-    }
-
-    Ok(truncated as usize)
 }
 pub(in crate::orc_backend) fn resolve_call_args_codegen<'a>(
     args: &'a [CallArg],
