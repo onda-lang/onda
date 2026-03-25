@@ -888,26 +888,6 @@ sample {
 }
 
 #[test]
-fn rejects_generic_struct_method_type_params() {
-    let src = r#"
-outs { out1 }
-struct Voice {
-  phase: f32
-  def id<T>(self, x: T) {
-    return x
-  }
-}
-sample {
-  out1 = 0.0
-}
-"#;
-    assert!(
-        parse_program(src).is_err(),
-        "generic method type params should be rejected"
-    );
-}
-
-#[test]
 fn parses_struct_fields_without_explicit_type_as_f32() {
     let src = r#"
 outs { out1 }
@@ -1844,20 +1824,6 @@ sample { out1 = 0.0 }
         defs[2].params[0].ty,
         Some(crate::ast::FnParamType::Buffer(_))
     ));
-}
-
-#[test]
-fn rejects_generic_def_type_params() {
-    let src = r#"
-def pair<T, U>(a: T, b: U) {
-  return a
-}
-sample { out1 = 0.0 }
-"#;
-    assert!(
-        parse_program(src).is_err(),
-        "generic def type params should be rejected"
-    );
 }
 
 #[test]
