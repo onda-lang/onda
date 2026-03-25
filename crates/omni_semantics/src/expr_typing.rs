@@ -18,6 +18,92 @@ use crate::{
     TypedFieldType, TypedStructField,
 };
 
+/// Returns the appropriate type for a literal in an untyped assignment context.
+/// Float literals default to F32, int literals fitting in i32 default to I32,
+/// larger ints default to I64. This preserves backward-compatible inference for
+/// untyped assignments like `x = 0.5` (F32) while typed literals elsewhere use
+/// the full-precision F64/I64 types.
+pub(crate) fn untyped_literal_type(expr: &Expr) -> Option<PrimitiveType> {
+    match expr {
+        Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+            PrimitiveType::I32
+        } else {
+            PrimitiveType::I64
+        }),
+        _ => None,
+    }
+}
+
+/// For untyped first-assignment inference, maps the inferred type of a pure
+/// literal expression to its backward-compatible default (F64→F32, I64→I32).
+pub(crate) fn effective_untyped_assignment_type(
+    expr: &Expr,
+    expr_ty: Option<PrimitiveType>,
+) -> Option<PrimitiveType> {
+    // Bare literals: use the classic F32/I32 defaults
+    if let Some(lit_ty) = untyped_literal_type(expr) {
+        return Some(lit_ty);
+    }
+    // Pure numeric expressions (e.g. 0.5 + 0.5, PI * 2.0): narrow F64→F32, I64→I32
+    if is_pure_numeric_literal_expr(expr) {
+        return expr_ty.map(|ty| match ty {
+            PrimitiveType::F64 => PrimitiveType::F32,
+            PrimitiveType::I64 => PrimitiveType::I32,
+            other => other,
+        });
+    }
+    expr_ty
+}
+
+/// Returns true if the expression is a "pure" numeric expression composed
+/// entirely of numeric literals, unary ops on literals, and binary ops on
+/// literals. Explicit casts (e.g. `i64(1)`) are NOT considered pure literals
+/// — the user chose a specific type and implicit narrowing would discard that.
+///
+/// Used to allow implicit narrowing (F64→F32, I64→I32) at assignment sites
+/// when the entire RHS is a compile-time numeric constant expression.
+pub(crate) fn is_pure_numeric_literal_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Number { .. } | Expr::Int { .. } => true,
+        Expr::UnaryBitNot { expr, .. } => is_pure_numeric_literal_expr(expr),
+        Expr::Binary { lhs, rhs, .. } => {
+            is_pure_numeric_literal_expr(lhs) && is_pure_numeric_literal_expr(rhs)
+        }
+        // Var references to builtin constants (PI, TWO_PI, SR, BS) are pure.
+        Expr::Var { name, .. } => builtin_constant_type(name).is_some(),
+        // Builtin function calls (abs, sin, cos, …) with all-pure-literal args.
+        Expr::Call { args, .. } => args.iter().all(is_pure_numeric_literal_expr),
+        _ => false,
+    }
+}
+
+/// When one operand of a binary expression is a pure numeric literal expression
+/// and the other is not, adapt the literal's inferred type to the non-literal's
+/// type. This preserves backward-compatible expression types (e.g. `x_f32 + 0.5`
+/// → F32, `acc + sin(0.0)` → F32) while keeping full precision internally.
+fn adapt_binary_operand_types(
+    lhs: &Expr,
+    rhs: &Expr,
+    lhs_ty: PrimitiveType,
+    rhs_ty: PrimitiveType,
+) -> (PrimitiveType, PrimitiveType) {
+    let l_pure = is_pure_numeric_literal_expr(lhs);
+    let r_pure = is_pure_numeric_literal_expr(rhs);
+    match (l_pure, r_pure) {
+        // One pure-literal, one non-literal: adapt literal to match the non-literal's type.
+        // Only adapt within the numeric domain (don't coerce bools).
+        (true, false) if lhs_ty != PrimitiveType::Bool && rhs_ty != PrimitiveType::Bool => {
+            (rhs_ty, rhs_ty)
+        }
+        (false, true) if lhs_ty != PrimitiveType::Bool && rhs_ty != PrimitiveType::Bool => {
+            (lhs_ty, lhs_ty)
+        }
+        // Both pure or neither: keep inferred types, let merge handle it.
+        _ => (lhs_ty, rhs_ty),
+    }
+}
+
 fn merge_integer_types_for_expr(
     expr: &Expr,
     lhs: PrimitiveType,
@@ -87,12 +173,8 @@ pub(crate) fn infer_scalar_expr_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     match expr {
-        Expr::Number { .. } => Some(PrimitiveType::F32),
-        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
-            PrimitiveType::I32
-        } else {
-            PrimitiveType::I64
-        }),
+        Expr::Number { .. } => Some(PrimitiveType::F64),
+        Expr::Int { .. } => Some(PrimitiveType::I64),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::ArrayLiteral { .. } => None,
         Expr::Tuple { .. } => None,
@@ -438,15 +520,18 @@ pub(crate) fn infer_scalar_expr_type(
                 errors,
             );
             if let (Some(l), Some(r)) = (l, r) {
+                // Adapt literal types to the non-literal operand's type so that
+                // e.g. `x_f32 + 0.5` stays F32 rather than widening to F64.
+                let (el, er) = adapt_binary_operand_types(lhs, rhs, l, r);
                 match op {
                     omni_frontend::BinaryOp::BitAnd
                     | omni_frontend::BinaryOp::BitOr
                     | omni_frontend::BinaryOp::BitXor
                     | omni_frontend::BinaryOp::ShiftLeft
                     | omni_frontend::BinaryOp::ShiftRight => {
-                        merge_integer_types_for_expr(expr, l, r, "bitwise expression", errors)
+                        merge_integer_types_for_expr(expr, el, er, "bitwise expression", errors)
                     }
-                    _ => merge_numeric_types(l, r, "binary expression", errors),
+                    _ => merge_numeric_types(el, er, "binary expression", errors),
                 }
             } else {
                 None
@@ -570,6 +655,20 @@ pub(crate) fn require_expr_assignable_type(
 ) {
     if let Some(src) = src {
         if src != dst && !can_implicitly_assign(src, dst) {
+            // Pure numeric literal expressions (literals, builtin consts, and
+            // arithmetic on them) may narrow at the assignment site so that
+            // full precision is retained internally while the language surface
+            // still defaults to F32/I32.
+            if is_pure_numeric_literal_expr(expr) {
+                match (src, dst) {
+                    // Same-category narrowing for literals:
+                    (PrimitiveType::F64, PrimitiveType::F32)
+                    | (PrimitiveType::I64, PrimitiveType::I32)
+                    // Int literal to float (e.g. `x: f32 = 5`):
+                    | (PrimitiveType::I64, PrimitiveType::F32) => return,
+                    _ => {}
+                }
+            }
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "{context} type mismatch: cannot assign {:?} to {:?}",

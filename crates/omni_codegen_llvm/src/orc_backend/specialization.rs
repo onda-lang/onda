@@ -358,18 +358,29 @@ fn builtin_constant_symbol_type(name: &str) -> Option<PrimitiveType> {
     }
 }
 
-pub(super) fn infer_specialized_expr_return_type(
-    expr: &Expr,
-    locals: &HashMap<String, PrimitiveType>,
-    registry: &mut UserFnRegistry,
-) -> Result<Option<PrimitiveType>, Diagnostic> {
-    Ok(match expr {
+/// For untyped scalar param inference from call-site arguments, use the
+/// backward-compatible literal types (F32 for float, I32/I64 for int) so that
+/// `def foo(x)` called with `foo(5.0)` infers x as F32, not F64.
+fn untyped_param_literal_type(expr: &Expr) -> Option<PrimitiveType> {
+    match expr {
         Expr::Number { .. } => Some(PrimitiveType::F32),
         Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
             PrimitiveType::I32
         } else {
             PrimitiveType::I64
         }),
+        _ => None,
+    }
+}
+
+pub(super) fn infer_specialized_expr_return_type(
+    expr: &Expr,
+    locals: &HashMap<String, PrimitiveType>,
+    registry: &mut UserFnRegistry,
+) -> Result<Option<PrimitiveType>, Diagnostic> {
+    Ok(match expr {
+        Expr::Number { .. } => Some(PrimitiveType::F64),
+        Expr::Int { .. } => Some(PrimitiveType::I64),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::ArrayLiteral { .. }
         | Expr::ArrayCtor { .. }
@@ -493,8 +504,23 @@ pub(super) fn infer_specialized_expr_return_type(
                     TypedFnParam::Scalar { ty: explicit_ty } => {
                         let resolved_arg = resolved.get(idx).copied().flatten();
                         let fallback_ty = if let Some(arg_expr) = resolved_arg {
-                            infer_specialized_expr_return_type(arg_expr, locals, registry)?
+                            // For untyped params, use backward-compat literal types
+                            // so `foo(5.0)` infers param as F32, not F64.
+                            if explicit_ty.is_none() {
+                                if let Some(lit_ty) = untyped_param_literal_type(arg_expr) {
+                                    lit_ty
+                                } else {
+                                    infer_specialized_expr_return_type(
+                                        arg_expr, locals, registry,
+                                    )?
+                                    .unwrap_or(PrimitiveType::F32)
+                                }
+                            } else {
+                                infer_specialized_expr_return_type(
+                                    arg_expr, locals, registry,
+                                )?
                                 .unwrap_or(PrimitiveType::F32)
+                            }
                         } else if let Some(default_expr) =
                             param_defaults.get(idx).and_then(|d| d.as_ref())
                         {
@@ -581,8 +607,17 @@ fn infer_user_call_return_type(
             TypedFnParam::Scalar { ty: explicit_ty } => {
                 let resolved_arg = resolved.get(idx).copied().flatten();
                 let fallback_ty = if let Some(arg_expr) = resolved_arg {
-                    infer_specialized_expr_return_type(arg_expr, locals, registry)?
-                        .unwrap_or(PrimitiveType::F32)
+                    if explicit_ty.is_none() {
+                        if let Some(lit_ty) = untyped_param_literal_type(arg_expr) {
+                            lit_ty
+                        } else {
+                            infer_specialized_expr_return_type(arg_expr, locals, registry)?
+                                .unwrap_or(PrimitiveType::F32)
+                        }
+                    } else {
+                        infer_specialized_expr_return_type(arg_expr, locals, registry)?
+                            .unwrap_or(PrimitiveType::F32)
+                    }
                 } else if let Some(default_expr) = param_defaults.get(idx).and_then(|d| d.as_ref())
                 {
                     infer_specialized_expr_return_type(default_expr, locals, registry)?

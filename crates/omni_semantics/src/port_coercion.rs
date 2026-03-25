@@ -445,10 +445,10 @@ pub(super) fn typed_const_expr(value: TypedConstValue) -> Expr {
     }
 
     match value {
-        TypedConstValue::F32(v) => Expr::number(v as f64),
-        TypedConstValue::F64(v) => typed_scalar_expr(PrimitiveType::F64, Expr::number(v)),
+        TypedConstValue::F32(v) => typed_scalar_expr(PrimitiveType::F32, Expr::number(v as f64)),
+        TypedConstValue::F64(v) => Expr::number(v),
         TypedConstValue::I32(v) => typed_scalar_expr(PrimitiveType::I32, Expr::int(v as i64)),
-        TypedConstValue::I64(v) => typed_scalar_expr(PrimitiveType::I64, Expr::int(v)),
+        TypedConstValue::I64(v) => Expr::int(v),
         TypedConstValue::Bool(v) => Expr::bool(v),
     }
 }
@@ -1021,15 +1021,25 @@ mod tests {
 
     #[test]
     fn typed_const_expr_preserves_nondefault_numeric_types() {
-        match typed_const_expr(TypedConstValue::F64(1.25)) {
+        match typed_const_expr(TypedConstValue::F32(0.5)) {
             Expr::Cast { to, expr, .. } => {
-                assert_eq!(to, PrimitiveType::F64);
+                assert_eq!(to, PrimitiveType::F32);
                 assert!(matches!(
                     expr.as_ref(),
-                    Expr::Number { value, .. } if (*value - 1.25).abs() < f64::EPSILON
+                    Expr::Number { value, .. } if (*value - 0.5).abs() < f64::EPSILON
                 ));
             }
-            other => panic!("expected f64 typed const expr cast, got {other:?}"),
+            other => panic!("expected f32 typed const expr cast, got {other:?}"),
+        }
+
+        match typed_const_expr(TypedConstValue::F64(1.25)) {
+            Expr::Number { value, .. } => {
+                assert!(
+                    (value - 1.25).abs() < f64::EPSILON,
+                    "expected f64 literal, got {value:?}"
+                );
+            }
+            other => panic!("expected f64 typed const expr number literal, got {other:?}"),
         }
 
         match typed_const_expr(TypedConstValue::I32(7)) {
@@ -1041,11 +1051,8 @@ mod tests {
         }
 
         match typed_const_expr(TypedConstValue::I64(7)) {
-            Expr::Cast { to, expr, .. } => {
-                assert_eq!(to, PrimitiveType::I64);
-                assert!(matches!(expr.as_ref(), Expr::Int { value: 7, .. }));
-            }
-            other => panic!("expected i64 typed const expr cast, got {other:?}"),
+            Expr::Int { value: 7, .. } => {}
+            other => panic!("expected i64 typed const expr int literal, got {other:?}"),
         }
     }
 }

@@ -10,10 +10,9 @@ namespace std::export_math:
   const ATAN_B: f64 = 0.0663
 
   def _wrap_pm_pi<T>(x: T):
-    pi_v = T(PI)
-    return std::math::wrap(x + pi_v, T(0), T(TWO_PI)) - pi_v
+    return std::math::wrap(x + T(PI), T(0), T(TWO_PI)) - T(PI)
 
-  def _pow2i<T>(n: i32, like: T):
+  def _pow2i<T>(n: i32):
     result = T(1)
     i: i32 = 0
     if (n >= 0):
@@ -23,26 +22,22 @@ namespace std::export_math:
       return result
 
     while (i < -n):
-      result = result * T(0.5)
+      result = result * 0.5
       i = i + 1
     return result
 
   def _nearest_i32<T>(x: T):
-    half = T(0.5)
     value: i32 = 0
-    if (x >= T(0)):
-      value = i32(floor(x + half))
+    if (x >= 0):
+      value = i32(floor(x + 0.5))
     else:
-      value = i32(-floor(-x + half))
+      value = i32(-floor(-x + 0.5))
     return value
 
   def sin<T>(x: T):
     y = _wrap_pm_pi(x)
-    b = T(1.2732395447351627)
-    c = T(-0.4052847345693511)
-    p = T(0.225)
-    base = b * y + c * y * abs(y)
-    return p * (base * abs(base) - base) + base
+    base = 1.2732395447351627 * y + (-0.4052847345693511) * y * abs(y)
+    return 0.225 * (base * abs(base) - base) + base
 
   def cos<T>(x: T):
     return sin(x + T(HALF_PI))
@@ -50,109 +45,89 @@ namespace std::export_math:
   def tan<T>(x: T):
     s = sin(x)
     c = cos(x)
-    eps = T(EPS) * T(64)
+    eps = T(EPS) * 64
 
     if (abs(c) <= eps):
       huge = T(1) / eps
-      if (s >= T(0)):
+      if (s >= 0):
         return huge
       return -huge
 
     return s / c
 
   def tanh<T>(x: T):
-    limit = T(3)
-
-    if (x > limit):
+    if (x > 3):
       return T(1)
-    elif (x < -limit):
+    elif (x < -3):
       return T(-1)
 
     x2 = x * x
-    return x * (T(27) + x2) / (T(27) + T(9) * x2)
+    return x * (27 + x2) / (27 + 9 * x2)
 
   def atan<T>(x: T):
     ax = abs(x)
-    a = T(ATAN_A)
-    b = T(ATAN_B)
 
-    if (ax > T(1)):
+    if (ax > 1):
       t = T(1) / ax
-      base = T(QUARTER_PI) * t - t * (abs(t) - T(1)) * (a + b * abs(t))
-      if (x >= T(0)):
+      base = T(QUARTER_PI) * t - t * (abs(t) - 1) * (T(ATAN_A) + T(ATAN_B) * abs(t))
+      if (x >= 0):
         return T(HALF_PI) - base
       return base - T(HALF_PI)
 
-    return T(QUARTER_PI) * x - x * (ax - T(1)) * (a + b * ax)
+    return T(QUARTER_PI) * x - x * (ax - 1) * (T(ATAN_A) + T(ATAN_B) * ax)
 
   def atan2<T>(y: T, x: T):
-    if (x > T(0)):
+    if (x > 0):
       return atan(y / x)
-    elif (x < T(0)):
-      if (y >= T(0)):
+    elif (x < 0):
+      if (y >= 0):
         return atan(y / x) + T(PI)
       return atan(y / x) - T(PI)
-    elif (y > T(0)):
+    elif (y > 0):
       return T(HALF_PI)
-    elif (y < T(0)):
+    elif (y < 0):
       return T(-HALF_PI)
     return T(0)
 
   def exp<T>(x: T):
-    max_x = T(88)
-    min_x = -max_x
     clamped = x
 
-    if (clamped > max_x):
-      clamped = max_x
-    elif (clamped < min_x):
+    if (clamped > 88):
+      clamped = T(88)
+    elif (clamped < -88):
       return T(0)
 
     k: i32 = _nearest_i32(clamped * T(INV_LN2))
     r = clamped - T(k) * T(LN2)
-    c2 = T(0.5)
-    c3 = T(0.16666666666666666)
-    c4 = T(0.041666666666666664)
-    c5 = T(0.008333333333333333)
-    c6 = T(0.001388888888888889)
-    poly = T(1) + r * (T(1) + r * (c2 + r * (c3 + r * (c4 + r * (c5 + r * c6)))))
-    return poly * _pow2i(k, clamped)
+    poly = 1 + r * (1 + r * (0.5 + r * (0.16666666666666666 + r * (0.041666666666666664 + r * (0.008333333333333333 + r * 0.001388888888888889)))))
+    return poly * _pow2i<T>(k)
 
   def log<T>(x: T):
-    half = T(0.5)
-    lower = T(0.75)
-    upper = T(1.5)
-
-    if (x <= T(0)):
+    if (x <= 0):
       return T(0)
 
     m = x
     k: i32 = 0
-    while (m > upper):
-      m = m * half
+    while (m > 1.5):
+      m = m * 0.5
       k = k + 1
-    while (m < lower):
+    while (m < 0.75):
       m = m + m
       k = k - 1
 
-    z = (m - T(1)) / (m + T(1))
+    z = (m - 1) / (m + 1)
     z2 = z * z
-    c1 = T(2)
-    c3 = T(0.6666666666666666)
-    c5 = T(0.4)
-    c7 = T(0.2857142857142857)
-    c9 = T(0.2222222222222222)
-    series = z * (c1 + z2 * (c3 + z2 * (c5 + z2 * (c7 + z2 * c9))))
+    series = z * (2 + z2 * (0.6666666666666666 + z2 * (0.4 + z2 * (0.2857142857142857 + z2 * 0.2222222222222222))))
     return T(k) * T(LN2) + series
 
   def pow<T>(x: T, y: T):
-    if (y == T(0)):
+    if (y == 0):
       return T(1)
-    elif (x == T(0)):
-      if (y > T(0)):
+    elif (x == 0):
+      if (y > 0):
         return T(0)
       return T(1)
-    elif (x > T(0)):
+    elif (x > 0):
       return exp(y * log(x))
 
     yi: i32 = _nearest_i32(y)

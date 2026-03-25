@@ -1258,6 +1258,13 @@ unsafe fn lower_orc_tuple_from_call(
         &mut infer_array_arg_signature,
         "ORC tuple-from-call",
     )?;
+    // Use the actual return type from the monomorphized function, not the
+    // pre-looked-up elem_tys which may come from the base (unspecialized) def.
+    let elem_tys = match &prepared.ret_ty {
+        ReturnType::Tuple(tys) => tys.clone(),
+        _ => elem_tys.to_vec(),
+    };
+    let elem_tys = &elem_tys;
     let mut arg_values = Vec::new();
     let ctx_ptr: *mut LoweringCtx<'_> = ctx;
     let mut cast_scalar_arg = |value: OrcValue, target_ty: PrimitiveType, arg_name: &[u8]| unsafe {

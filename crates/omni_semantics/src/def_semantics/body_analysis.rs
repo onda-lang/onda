@@ -324,7 +324,7 @@ pub(crate) fn analyze_def_stmt(
                                 errors,
                             );
                         }
-                        let elem_ty = infer_expr_type_for_semantics_with_local_data(
+                        let inferred_first = infer_expr_type_for_semantics_with_local_data(
                             &values[0],
                             state_scalars,
                             declared_symbols,
@@ -338,8 +338,10 @@ pub(crate) fn analyze_def_stmt(
                             struct_instance_ctx,
                             struct_defs,
                             errors,
-                        )
-                        .unwrap_or(PrimitiveType::F32);
+                        );
+                        let elem_ty = untyped_literal_type(&values[0])
+                            .or(inferred_first)
+                            .unwrap_or(PrimitiveType::F32);
                         for (idx, value) in values.iter().enumerate() {
                             let value_ty = infer_expr_type_for_semantics_with_local_data(
                                 value,
@@ -770,7 +772,8 @@ pub(crate) fn analyze_def_stmt(
                     } else if let Some(existing) = local_aliases.get(name).copied() {
                         existing
                     } else {
-                        expr_ty.unwrap_or(PrimitiveType::F32)
+                        let untyped_ty = effective_untyped_assignment_type(expr, expr_ty);
+                        untyped_ty.unwrap_or(PrimitiveType::F32)
                     };
                     let suppress_type_mismatch =
                         is_invalid_placeholder_symbol(&declared_symbols, name);

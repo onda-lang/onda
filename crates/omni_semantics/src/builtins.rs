@@ -199,12 +199,8 @@ pub(crate) fn infer_const_expr_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     match expr {
-        Expr::Number { .. } => Some(PrimitiveType::F32),
-        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
-            PrimitiveType::I32
-        } else {
-            PrimitiveType::I64
-        }),
+        Expr::Number { .. } => Some(PrimitiveType::F64),
+        Expr::Int { .. } => Some(PrimitiveType::I64),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::Var { name, .. } => builtin_constant_type(name).or_else(|| {
             errors.push(Diagnostic::semantic_span(
@@ -258,7 +254,9 @@ pub(crate) fn infer_const_expr_type(
                         | (F64, F32)
                         | (F32, F64)
                         | (F64, F64) => Some(F64),
-                        (F32, I32) | (I32, F32) | (F32, F32) => Some(F32),
+                        (F32, I32) | (I32, F32) | (F32, F32) | (F32, I64) | (I64, F32) => {
+                            Some(F32)
+                        }
                         (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
                         (I32, I32) => Some(I32),
                         _ => {

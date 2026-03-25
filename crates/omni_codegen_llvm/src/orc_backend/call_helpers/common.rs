@@ -482,12 +482,8 @@ pub(in crate::orc_backend) fn infer_const_default_expr_type(
     expr: &Expr,
 ) -> Result<PrimitiveType, Diagnostic> {
     match expr {
-        Expr::Number { .. } => Ok(PrimitiveType::F32),
-        Expr::Int { value: v, .. } => Ok(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
-            PrimitiveType::I32
-        } else {
-            PrimitiveType::I64
-        }),
+        Expr::Number { .. } => Ok(PrimitiveType::F64),
+        Expr::Int { .. } => Ok(PrimitiveType::I64),
         Expr::Bool { .. } => Ok(PrimitiveType::Bool),
         Expr::Var { name, .. } => builtin_constant_value_and_type(name, 0.0, 0.0)
             .map(|(ty, _)| ty)

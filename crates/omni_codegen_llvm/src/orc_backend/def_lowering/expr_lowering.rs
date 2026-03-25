@@ -76,6 +76,21 @@ pub(super) unsafe fn lower_def_expr(
             )
         }
         Expr::Cast { to, expr, .. } => {
+            // When casting a literal directly, emit it at target precision
+            // to avoid f32 truncation of f64 constants (e.g. T(1.234...) where T=f64)
+            // and f64-rounding of large i64 values (e.g. i64(2^53+1)).
+            if let Expr::Number { value: n, .. } = expr.as_ref() {
+                return Ok(OrcValue {
+                    value: llvm_const_from_typed_f64(ctx.context, ctx.float_ty, *to, *n),
+                    ty: *to,
+                });
+            }
+            if let Expr::Int { value: n, .. } = expr.as_ref() {
+                return Ok(OrcValue {
+                    value: llvm_const_from_typed_i64(ctx.context, ctx.float_ty, *to, *n),
+                    ty: *to,
+                });
+            }
             let value = lower_def_expr(expr, ctx)?;
             Ok(OrcValue {
                 value: cast_def_value_to(ctx, value, *to, b"def_cast\0"),

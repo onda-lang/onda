@@ -344,7 +344,7 @@ fn register_scope_stmt_state(
                             let inferred_ty = {
                                 let mut infer_errors = Vec::<Diagnostic>::new();
                                 let empty_locals = HashSet::<String>::new();
-                                infer_expr_type_for_semantics(
+                                let full_ty = infer_expr_type_for_semantics(
                                     expr,
                                     state_scalars,
                                     declared_symbols,
@@ -356,8 +356,16 @@ fn register_scope_stmt_state(
                                     struct_instances,
                                     struct_defs,
                                     &mut infer_errors,
-                                )
-                                .unwrap_or(PrimitiveType::F32)
+                                );
+                                // Apply backward-compat narrowing for pure literal
+                                // expressions (F64→F32, I64→I32) so that `gain = 3.0`
+                                // in a block scope stays F32, matching sample scope.
+                                if decl_ty.is_none() {
+                                    effective_untyped_assignment_type(expr, full_ty)
+                                        .unwrap_or(PrimitiveType::F32)
+                                } else {
+                                    full_ty.unwrap_or(PrimitiveType::F32)
+                                }
                             };
                             decl_ty.unwrap_or(inferred_ty)
                         }

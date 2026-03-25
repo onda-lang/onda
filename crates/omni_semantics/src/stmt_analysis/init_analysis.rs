@@ -945,7 +945,9 @@ fn analyze_assign_init(
                     );
                 }
 
-                let elem_ty = infer_expr_type_for_semantics_with_local_data(
+                // Use backward-compatible literal type for the first element so
+                // that `a = [0, 1]` infers as I32[] not I64[].
+                let inferred_first = infer_expr_type_for_semantics_with_local_data(
                     &values[0],
                     &st.state_scalars,
                     &st.declared_symbols,
@@ -959,8 +961,10 @@ fn analyze_assign_init(
                     &st.struct_instances,
                     struct_defs,
                     errors,
-                )
-                .unwrap_or(PrimitiveType::F32);
+                );
+                let elem_ty = untyped_literal_type(&values[0])
+                    .or(inferred_first)
+                    .unwrap_or(PrimitiveType::F32);
                 for (idx, value) in values.iter().enumerate() {
                     let value_ty = infer_expr_type_for_semantics_with_local_data(
                         value,
@@ -1739,8 +1743,17 @@ fn analyze_assign_init(
                     ),);
                 }
             }
-            let target_ty =
-                resolve_scalar_assignment_type(existing, declared_ty, expr_ty, ctx.init_default_ty);
+            let effective_expr_ty = if declared_ty.is_none() && existing.is_none() {
+                effective_untyped_assignment_type(expr, expr_ty)
+            } else {
+                expr_ty
+            };
+            let target_ty = resolve_scalar_assignment_type(
+                existing,
+                declared_ty,
+                effective_expr_ty,
+                ctx.init_default_ty,
+            );
             require_expr_assignable_type(
                 expr,
                 expr_ty,

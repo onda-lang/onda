@@ -1252,7 +1252,7 @@ fn analyze_assign_sample(
                 for value in values {
                     validate_expr(value, scope_expr_env, errors);
                 }
-                let elem_ty = infer_expr_type_for_semantics_with_local_data(
+                let inferred_first = infer_expr_type_for_semantics_with_local_data(
                     &values[0],
                     state_scalars,
                     declared_symbols,
@@ -1266,8 +1266,10 @@ fn analyze_assign_sample(
                     struct_instances,
                     struct_defs,
                     errors,
-                )
-                .unwrap_or(PrimitiveType::F32);
+                );
+                let elem_ty = untyped_literal_type(&values[0])
+                    .or(inferred_first)
+                    .unwrap_or(PrimitiveType::F32);
                 for (idx, value) in values.iter().enumerate() {
                     let value_ty = infer_expr_type_for_semantics_with_local_data(
                         value,
@@ -1622,7 +1624,8 @@ fn analyze_assign_sample(
             } else if let Some(declared) = *decl_ty {
                 Some(declared)
             } else {
-                Some(expr_ty.unwrap_or(PrimitiveType::F32))
+                let untyped_ty = effective_untyped_assignment_type(expr, expr_ty);
+                Some(untyped_ty.unwrap_or(PrimitiveType::F32))
             };
             if let Some(target_ty) = target_ty {
                 require_expr_assignable_type(

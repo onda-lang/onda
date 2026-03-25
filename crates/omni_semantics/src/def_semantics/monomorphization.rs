@@ -146,6 +146,7 @@ fn generate_mono_def(
     keys: &[MonoParamKey],
     mono_name: &str,
     _generic_templates: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
 ) -> (FunctionDef, FnSignature) {
     let mut new_def = original.clone();
     new_def.name = mono_name.to_owned();
@@ -287,13 +288,12 @@ fn generate_mono_def(
         // Rewrite the body: T(expr) → cast, T declarations, etc.
         if !type_bindings.is_empty() {
             let context = format!("generic def '{}'", original.name);
-            let mut rewrite_errors = Vec::new();
             for stmt in &mut new_def.body {
                 crate::generic_specialization::substitute_call_type_args_with_bindings_stmt(
                     stmt,
                     &type_bindings,
                     &context,
-                    &mut rewrite_errors,
+                    errors,
                 );
             }
             // Also rewrite param default expressions
@@ -303,7 +303,7 @@ fn generate_mono_def(
                         default,
                         &type_bindings,
                         &context,
-                        &mut rewrite_errors,
+                        errors,
                     );
                 }
             }
@@ -455,6 +455,8 @@ pub(crate) fn monomorphize_calls_in_stmts(
     generated_defs: &mut Vec<FunctionDef>,
     generated_sigs: &mut HashMap<String, FnSignature>,
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    errors: &mut Vec<Diagnostic>,
+    enclosing_type_params: &[String],
 ) {
     for stmt in stmts.iter_mut() {
         monomorphize_calls_in_stmt(
@@ -467,6 +469,8 @@ pub(crate) fn monomorphize_calls_in_stmts(
             generated_defs,
             generated_sigs,
             mono_cache,
+            errors,
+            enclosing_type_params,
         );
     }
 }
@@ -482,46 +486,30 @@ fn monomorphize_calls_in_stmt(
     generated_defs: &mut Vec<FunctionDef>,
     generated_sigs: &mut HashMap<String, FnSignature>,
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    errors: &mut Vec<Diagnostic>,
+    enclosing_type_params: &[String],
 ) {
     match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { expr, .. } => {
             monomorphize_calls_in_expr(
-                expr,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
+                expr, env, mono_eligible, fn_signatures, original_defs,
+                generic_templates, generated_defs, generated_sigs, mono_cache,
+                errors, enclosing_type_params,
             );
         }
         Stmt::Expr { expr, .. } => {
             monomorphize_calls_in_expr(
-                expr,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
+                expr, env, mono_eligible, fn_signatures, original_defs,
+                generic_templates, generated_defs, generated_sigs, mono_cache,
+                errors, enclosing_type_params,
             );
         }
         Stmt::Return { expr, .. } => {
             monomorphize_calls_in_expr(
-                expr,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
+                expr, env, mono_eligible, fn_signatures, original_defs,
+                generic_templates, generated_defs, generated_sigs, mono_cache,
+                errors, enclosing_type_params,
             );
         }
         Stmt::If {
@@ -531,55 +519,31 @@ fn monomorphize_calls_in_stmt(
             ..
         } => {
             monomorphize_calls_in_expr(
-                cond,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
+                cond, env, mono_eligible, fn_signatures, original_defs,
+                generic_templates, generated_defs, generated_sigs, mono_cache,
+                errors, enclosing_type_params,
             );
             for s in then_branch.iter_mut() {
                 monomorphize_calls_in_stmt(
-                    s,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
+                    s, env, mono_eligible, fn_signatures, original_defs,
+                    generic_templates, generated_defs, generated_sigs, mono_cache,
+                    errors, enclosing_type_params,
                 );
             }
             for s in else_branch.iter_mut() {
                 monomorphize_calls_in_stmt(
-                    s,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
+                    s, env, mono_eligible, fn_signatures, original_defs,
+                    generic_templates, generated_defs, generated_sigs, mono_cache,
+                    errors, enclosing_type_params,
                 );
             }
         }
         Stmt::For { body, .. } | Stmt::While { body, .. } => {
             for s in body.iter_mut() {
                 monomorphize_calls_in_stmt(
-                    s,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
+                    s, env, mono_eligible, fn_signatures, original_defs,
+                    generic_templates, generated_defs, generated_sigs, mono_cache,
+                    errors, enclosing_type_params,
                 );
             }
         }
@@ -598,26 +562,22 @@ fn monomorphize_calls_in_expr(
     generated_defs: &mut Vec<FunctionDef>,
     generated_sigs: &mut HashMap<String, FnSignature>,
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    errors: &mut Vec<Diagnostic>,
+    enclosing_type_params: &[String],
 ) {
     match expr {
         Expr::UserCall {
+            loc,
             name,
             type_args,
             args,
-            ..
         } => {
             // Recurse into arg expressions first
             for arg in args.iter_mut() {
                 monomorphize_calls_in_expr(
-                    &mut arg.expr,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
+                    &mut arg.expr, env, mono_eligible, fn_signatures,
+                    original_defs, generic_templates, generated_defs,
+                    generated_sigs, mono_cache, errors, enclosing_type_params,
                 );
             }
 
@@ -636,7 +596,37 @@ fn monomorphize_calls_in_expr(
             // For generic defs, resolve type param bindings from explicit type args
             // or infer from argument types.  Unresolved params default to f32,
             // consistent with struct/proc generic defaults.
+            //
+            // When explicit type args contain unresolved generics (CallTypeArg::Generic),
+            // check whether each generic name is a type param of the enclosing generic
+            // def.  If so, skip monomorphization — the call will be monomorphized later
+            // when the enclosing def is specialized.  If a generic name is NOT a type
+            // param of the enclosing def, it's an error (e.g. `foo<U>()` where U is
+            // undefined).
             let has_def_type_params = !sig.type_params.is_empty();
+            if !type_args.is_empty() {
+                let mut has_forwarded = false;
+                for ta in type_args.iter() {
+                    if let CallTypeArg::Generic(param) = ta {
+                        if enclosing_type_params.contains(param) {
+                            has_forwarded = true;
+                        } else {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "unresolved generic type argument '{}' in call to '{}'; \
+                                     expected a concrete type (f32, f64, i32, ...) or a type \
+                                     parameter declared by the enclosing generic def",
+                                    param, name
+                                ),
+                                *loc,
+                            ));
+                        }
+                    }
+                }
+                if has_forwarded {
+                    return;
+                }
+            }
             let resolved_type_bindings: HashMap<String, PrimitiveType> = if has_def_type_params {
                 let mut bindings = resolve_generic_def_type_bindings(
                     sig,
@@ -812,7 +802,7 @@ fn monomorphize_calls_in_expr(
 
                 if let Some(original) = original {
                     let (gen_def, gen_sig) =
-                        generate_mono_def(original, sig, &keys, &new_name, generic_templates);
+                        generate_mono_def(original, sig, &keys, &new_name, generic_templates, errors);
                     generated_defs.push(gen_def);
                     generated_sigs.insert(new_name.clone(), gen_sig);
                 }
@@ -829,40 +819,22 @@ fn monomorphize_calls_in_expr(
         | Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. } => {
             monomorphize_calls_in_expr(
-                lhs,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
+                lhs, env, mono_eligible, fn_signatures, original_defs,
+                generic_templates, generated_defs, generated_sigs, mono_cache,
+                errors, enclosing_type_params,
             );
             monomorphize_calls_in_expr(
-                rhs,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
+                rhs, env, mono_eligible, fn_signatures, original_defs,
+                generic_templates, generated_defs, generated_sigs, mono_cache,
+                errors, enclosing_type_params,
             );
         }
         Expr::Call { args, .. } => {
             for arg in args.iter_mut() {
                 monomorphize_calls_in_expr(
-                    arg,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
+                    arg, env, mono_eligible, fn_signatures, original_defs,
+                    generic_templates, generated_defs, generated_sigs, mono_cache,
+                    errors, enclosing_type_params,
                 );
             }
         }
@@ -870,29 +842,17 @@ fn monomorphize_calls_in_expr(
         | Expr::UnaryNot { expr: inner, .. }
         | Expr::UnaryBitNot { expr: inner, .. } => {
             monomorphize_calls_in_expr(
-                inner,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
+                inner, env, mono_eligible, fn_signatures, original_defs,
+                generic_templates, generated_defs, generated_sigs, mono_cache,
+                errors, enclosing_type_params,
             );
         }
         Expr::ArrayLiteral { values: elems, .. } | Expr::Tuple { values: elems, .. } => {
             for elem in elems.iter_mut() {
                 monomorphize_calls_in_expr(
-                    elem,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
+                    elem, env, mono_eligible, fn_signatures, original_defs,
+                    generic_templates, generated_defs, generated_sigs, mono_cache,
+                    errors, enclosing_type_params,
                 );
             }
         }

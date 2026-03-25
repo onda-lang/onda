@@ -29,6 +29,37 @@ pub(super) unsafe fn llvm_const_from_typed_f64(
     }
 }
 
+/// Like `llvm_const_from_typed_f64` but takes an i64 source value directly,
+/// preserving full precision for integer targets (no f64 rounding).
+pub(super) unsafe fn llvm_const_from_typed_i64(
+    context: LLVMContextRef,
+    float_ty: LLVMTypeRef,
+    ty: PrimitiveType,
+    value: i64,
+) -> LLVMValueRef {
+    match ty {
+        PrimitiveType::I32 => LLVMConstInt(
+            llvm_ty_for_primitive(context, PrimitiveType::I32),
+            (value as i32) as u64,
+            1,
+        ),
+        PrimitiveType::I64 => LLVMConstInt(
+            llvm_ty_for_primitive(context, PrimitiveType::I64),
+            value as u64,
+            1,
+        ),
+        PrimitiveType::F32 => LLVMConstReal(float_ty, value as f64),
+        PrimitiveType::F64 => {
+            LLVMConstReal(llvm_ty_for_primitive(context, PrimitiveType::F64), value as f64)
+        }
+        PrimitiveType::Bool => LLVMConstInt(
+            llvm_ty_for_primitive(context, PrimitiveType::Bool),
+            if value != 0 { 1 } else { 0 },
+            0,
+        ),
+    }
+}
+
 pub(super) unsafe fn cast_value_to_common(
     value: OrcValue,
     to: PrimitiveType,
@@ -157,27 +188,23 @@ pub(super) unsafe fn lower_condition_common(
 pub(super) unsafe fn lower_literal_expr_common(
     expr: &Expr,
     context: LLVMContextRef,
-    i32_ty: LLVMTypeRef,
-    float_ty: LLVMTypeRef,
+    _i32_ty: LLVMTypeRef,
+    _float_ty: LLVMTypeRef,
 ) -> Option<OrcValue> {
     match expr {
-        Expr::Number { value, .. } => Some(OrcValue {
-            value: LLVMConstReal(float_ty, *value as f64),
-            ty: PrimitiveType::F32,
-        }),
+        Expr::Number { value, .. } => {
+            let f64_ty = LLVMDoubleTypeInContext(context);
+            Some(OrcValue {
+                value: LLVMConstReal(f64_ty, *value),
+                ty: PrimitiveType::F64,
+            })
+        }
         Expr::Int { value, .. } => {
-            if *value >= i32::MIN as i64 && *value <= i32::MAX as i64 {
-                Some(OrcValue {
-                    value: const_i32(i32_ty, *value as i32),
-                    ty: PrimitiveType::I32,
-                })
-            } else {
-                let i64_ty = llvm_ty_for_primitive(context, PrimitiveType::I64);
-                Some(OrcValue {
-                    value: LLVMConstInt(i64_ty, *value as u64, 1),
-                    ty: PrimitiveType::I64,
-                })
-            }
+            let i64_ty = llvm_ty_for_primitive(context, PrimitiveType::I64);
+            Some(OrcValue {
+                value: LLVMConstInt(i64_ty, *value as u64, 1),
+                ty: PrimitiveType::I64,
+            })
         }
         Expr::Bool { value, .. } => {
             let bool_ty = llvm_ty_for_primitive(context, PrimitiveType::Bool);
