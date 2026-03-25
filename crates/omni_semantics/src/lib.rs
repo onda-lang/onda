@@ -765,4 +765,22 @@ mod tests {
             "unexpected duplicate missing-sample diagnostic"
         );
     }
+
+    #[test]
+    fn def_returns_must_share_a_compatible_type() {
+        let src = "outs:\n  out1\ndef test():\n  if true:\n    return 0\n  return (0, 1)\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("mixed scalar/tuple returns should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("return in function 'test' type mismatch")
+                    && diag.message.contains("cannot assign (i32, i32)")
+            })
+            .expect("missing incompatible return diagnostic");
+
+        assert_eq!((diag.line, diag.column), (6, 10));
+        assert_eq!(diag.end_line, 6);
+    }
 }

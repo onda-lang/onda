@@ -9,7 +9,6 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
     block_size: usize,
     fast_math: bool,
 ) -> Result<UserFnRegistry, Diagnostic> {
-    let float_ptr_ty = LLVMPointerType(LLVMFloatTypeInContext(context), 0);
     let i32_ty = LLVMInt32TypeInContext(context);
     let i8_ty = LLVMInt8TypeInContext(context);
     let i8_ptr_ty = LLVMPointerType(i8_ty, 0);
@@ -53,7 +52,10 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                         match field.ty {
                             TypedFieldType::Scalar(prim) => {
                                 if by_ref_flags[idx] {
-                                    arg_tys.push(float_ptr_ty);
+                                    arg_tys.push(LLVMPointerType(
+                                        llvm_ty_for_primitive(context, prim),
+                                        0,
+                                    ));
                                 } else {
                                     arg_tys.push(llvm_ty_for_primitive(context, prim));
                                 }
@@ -62,7 +64,10 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                             TypedFieldType::Tuple(ref elem_tys) => {
                                 for (_, prim) in elem_tys.iter().enumerate() {
                                     if by_ref_flags[idx] {
-                                        arg_tys.push(float_ptr_ty);
+                                        arg_tys.push(LLVMPointerType(
+                                            llvm_ty_for_primitive(context, *prim),
+                                            0,
+                                        ));
                                     } else {
                                         arg_tys.push(llvm_ty_for_primitive(context, *prim));
                                     }
@@ -81,11 +86,20 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                                         &mut leaves,
                                         &mut Vec::new(),
                                     )?;
-                                    for _ in &leaves {
-                                        arg_tys.push(float_ptr_ty);
+                                    for (_, _, leaf_ty) in &leaves {
+                                        arg_tys.push(LLVMPointerType(
+                                            llvm_ty_for_primitive(context, *leaf_ty),
+                                            0,
+                                        ));
                                     }
                                 } else {
-                                    arg_tys.push(float_ptr_ty);
+                                    arg_tys.push(LLVMPointerType(
+                                        llvm_ty_for_primitive(
+                                            context,
+                                            field.array_elem_ty.unwrap_or(PrimitiveType::F32),
+                                        ),
+                                        0,
+                                    ));
                                 }
                             }
                         }
@@ -130,6 +144,7 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
 
     let mut registry = UserFnRegistry {
         defs,
+        struct_fields: struct_fields.clone(),
         sample_oversample_factors: typed.def_sample_oversample_factors.clone(),
         proc_step_oversample_meta: typed.proc_step_oversample_meta.clone(),
         refs,
@@ -243,8 +258,6 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
         generic_type_args,
         registry,
     )?;
-    let float_ty = LLVMFloatTypeInContext(context);
-    let float_ptr_ty = LLVMPointerType(float_ty, 0);
     let i32_ty = LLVMInt32TypeInContext(context);
     let i8_ty = LLVMInt8TypeInContext(context);
     let i8_ptr_ty = LLVMPointerType(i8_ty, 0);
@@ -274,7 +287,8 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                     match field.ty {
                         TypedFieldType::Scalar(prim) => {
                             if by_ref_flags[param_idx] {
-                                arg_tys.push(float_ptr_ty);
+                                arg_tys
+                                    .push(LLVMPointerType(llvm_ty_for_primitive(context, prim), 0));
                             } else {
                                 arg_tys.push(llvm_ty_for_primitive(context, prim));
                             }
@@ -283,7 +297,10 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                         TypedFieldType::Tuple(ref elem_tys) => {
                             for (_, prim) in elem_tys.iter().enumerate() {
                                 if by_ref_flags[param_idx] {
-                                    arg_tys.push(float_ptr_ty);
+                                    arg_tys.push(LLVMPointerType(
+                                        llvm_ty_for_primitive(context, *prim),
+                                        0,
+                                    ));
                                 } else {
                                     arg_tys.push(llvm_ty_for_primitive(context, *prim));
                                 }
@@ -302,11 +319,20 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                                     &mut leaves,
                                     &mut Vec::new(),
                                 )?;
-                                for _ in &leaves {
-                                    arg_tys.push(float_ptr_ty);
+                                for (_, _, leaf_ty) in &leaves {
+                                    arg_tys.push(LLVMPointerType(
+                                        llvm_ty_for_primitive(context, *leaf_ty),
+                                        0,
+                                    ));
                                 }
                             } else {
-                                arg_tys.push(float_ptr_ty);
+                                arg_tys.push(LLVMPointerType(
+                                    llvm_ty_for_primitive(
+                                        context,
+                                        field.array_elem_ty.unwrap_or(PrimitiveType::F32),
+                                    ),
+                                    0,
+                                ));
                             }
                         }
                     }

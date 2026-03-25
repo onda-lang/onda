@@ -6164,6 +6164,16 @@ fn encode_planar_f64(channels: &[Vec<f64>]) -> Vec<u8> {
     out
 }
 
+fn encode_planar_i64(channels: &[Vec<i64>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for ch in channels {
+        for sample in ch {
+            out.extend_from_slice(&sample.to_ne_bytes());
+        }
+    }
+    out
+}
+
 fn decode_planar_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(std::mem::size_of::<f32>())
@@ -6180,6 +6190,16 @@ fn decode_planar_f64(bytes: &[u8]) -> Vec<f64> {
         .map(|chunk| {
             let arr: [u8; 8] = chunk.try_into().expect("chunk");
             f64::from_ne_bytes(arr)
+        })
+        .collect()
+}
+
+fn decode_planar_i64(bytes: &[u8]) -> Vec<i64> {
+    bytes
+        .chunks_exact(std::mem::size_of::<i64>())
+        .map(|chunk| {
+            let arr: [u8; 8] = chunk.try_into().expect("chunk");
+            i64::from_ne_bytes(arr)
         })
         .collect()
 }
@@ -9645,6 +9665,569 @@ fn bound_io_writes_directly_for_f64_declared_types() {
             "expected {sample} ~= {target}, delta={delta}"
         );
     }
+}
+
+#[test]
+fn top_level_params_respect_f64_and_i64_declared_types() {
+    let src = r#"
+params {
+  gain: f64 = 1.234567890123
+  count: i64 = 9007199254740993
+}
+outs {
+  out1: f64
+  out2: i64
+}
+sample {
+  out1 = gain
+  out2 = count
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+    assert_eq!(instance.param_type(0).as_deref(), Some("f64"));
+    assert_eq!(instance.param_type(1).as_deref(), Some("i64"));
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_f64(&out_f64_bytes) {
+        assert!(
+            (sample - 1.234567890123_f64).abs() <= 1e-12,
+            "expected exact f64 param default, got {sample}"
+        );
+    }
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 9007199254740993_i64);
+    }
+
+    set_param_by_index(&mut instance, 0, &9.876543210987_f64.to_ne_bytes()).expect("set f64 param");
+    set_param_by_index(&mut instance, 1, &9007199254740995_i64.to_ne_bytes())
+        .expect("set i64 param");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_f64(&out_f64_bytes) {
+        assert!(
+            (sample - 9.876543210987_f64).abs() <= 1e-12,
+            "expected exact updated f64 param, got {sample}"
+        );
+    }
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 9007199254740995_i64);
+    }
+}
+
+#[test]
+fn top_level_inputs_respect_f64_and_i64_declared_types() {
+    let src = r#"
+ins {
+  in1: f64
+  in2: i64
+}
+outs {
+  out1: f64
+  out2: i64
+}
+sample {
+  out1 = in1
+  out2 = in2
+}
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 2);
+    assert_eq!(out_channels, 2);
+    assert_eq!(instance.input_type(0).as_deref(), Some("f64"));
+    assert_eq!(instance.input_type(1).as_deref(), Some("i64"));
+
+    let in_f64 = encode_planar_f64(&[vec![
+        1.234567890123_f64,
+        -2.5_f64,
+        0.125_f64,
+        42.000000000001_f64,
+    ]]);
+    let in_i64 = encode_planar_i64(&[vec![
+        9007199254740993_i64,
+        -17_i64,
+        0_i64,
+        9007199254740995_i64,
+    ]]);
+    bind_input(&mut instance, 0, in_f64.as_ptr(), in_f64.len()).expect("bind f64 input");
+    bind_input(&mut instance, 1, in_i64.as_ptr(), in_i64.len()).expect("bind i64 input");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out_f64 = decode_planar_f64(&out_f64_bytes);
+    let out_i64 = decode_planar_i64(&out_i64_bytes);
+    let expected_f64 = [1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+    let expected_i64 = [9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+    for (sample, expected) in out_f64.iter().zip(expected_f64) {
+        assert!(
+            (*sample - expected).abs() <= 1e-12,
+            "expected exact f64 input sample {expected}, got {sample}"
+        );
+    }
+    assert_eq!(out_i64.as_slice(), expected_i64.as_slice());
+}
+
+#[test]
+fn top_level_event_arguments_respect_f64_and_i64_declared_types() {
+    let src = r#"
+outs {
+  out1: f64
+  out2: i64
+}
+events {
+  set(value: f64, count: i64) {
+    level = value
+    total = count
+  }
+}
+init {
+  level: f64 = 0.0
+  total: i64 = 0
+}
+sample {
+  out1 = level
+  out2 = total
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+    assert_eq!(instance.event_count(), 1);
+    assert_eq!(instance.event_payload_bytes(0), Some(16));
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&1.234567890123_f64.to_ne_bytes());
+    payload.extend_from_slice(&9007199254740993_i64.to_ne_bytes());
+    trigger_event_by_index(&mut instance, 0, &payload).expect("trigger event");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_f64(&out_f64_bytes) {
+        assert!(
+            (sample - 1.234567890123_f64).abs() <= 1e-12,
+            "expected exact f64 event payload, got {sample}"
+        );
+    }
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 9007199254740993_i64);
+    }
+}
+
+#[test]
+fn top_level_buffers_respect_f64_and_i64_declared_types() {
+    let src = r#"
+buffers {
+  buf1: buffer[f64]
+  buf2: buffer[i64]
+}
+outs {
+  out1: f64
+  out2: i64
+}
+init {
+  idx: i32 = 0
+}
+sample {
+  out1 = buf1[idx]
+  out2 = buf2[idx]
+  idx = idx + 1
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[f64]"));
+    assert_eq!(instance.buffer_type(1).as_deref(), Some("buffer[i64]"));
+    assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
+    assert_eq!(instance.output_type(1).as_deref(), Some("i64"));
+
+    let mut buf_f64 = vec![1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+    let mut buf_i64 = vec![9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf_f64.as_mut_ptr().cast::<u8>(),
+        buf_f64.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F64,
+    )
+    .expect("bind f64 buffer");
+    bind_buffer(
+        &mut instance,
+        1,
+        buf_i64.as_mut_ptr().cast::<u8>(),
+        buf_i64.len(),
+        1,
+        48_000.0,
+        PrimitiveType::I64,
+    )
+    .expect("bind i64 buffer");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out_f64 = decode_planar_f64(&out_f64_bytes);
+    let out_i64 = decode_planar_i64(&out_i64_bytes);
+    let expected_f64 = [1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+    let expected_i64 = [9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+    for (sample, expected) in out_f64.iter().zip(expected_f64) {
+        assert!(
+            (*sample - expected).abs() <= 1e-12,
+            "expected exact f64 buffer sample {expected}, got {sample}"
+        );
+    }
+    assert_eq!(out_i64.as_slice(), expected_i64.as_slice());
+}
+
+#[test]
+fn proc_params_inputs_and_outputs_respect_f64_and_i64_declared_types() {
+    let src = r#"
+ins {
+  in1: f64
+  in2: i64
+}
+proc Voice {
+  ins {
+    in1: f64
+    in2: i64
+  }
+  params {
+    gain: f64 = 0.0
+    count: i64 = 0
+  }
+  outs {
+    out1: f64
+    out2: i64
+  }
+  sample {
+    out1 = in1 + gain
+    out2 = in2 + count
+  }
+}
+outs {
+  out1: f64
+  out2: i64
+}
+init {
+  voice = Voice(gain = 1.234567890123, count = 9007199254740993)
+}
+sample {
+  voice(in1, in2)
+  out1 = voice.out1
+  out2 = voice.out2
+}
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 2);
+    assert_eq!(out_channels, 2);
+    assert_eq!(instance.input_type(0).as_deref(), Some("f64"));
+    assert_eq!(instance.input_type(1).as_deref(), Some("i64"));
+    assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
+    assert_eq!(instance.output_type(1).as_deref(), Some("i64"));
+
+    let in_f64 = encode_planar_f64(&[vec![0.0_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64]]);
+    let in_i64 = encode_planar_i64(&[vec![0_i64, -17_i64, 0_i64, 2_i64]]);
+    bind_input(&mut instance, 0, in_f64.as_ptr(), in_f64.len()).expect("bind f64 input");
+    bind_input(&mut instance, 1, in_i64.as_ptr(), in_i64.len()).expect("bind i64 input");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out_f64 = decode_planar_f64(&out_f64_bytes);
+    let out_i64 = decode_planar_i64(&out_i64_bytes);
+    let expected_f64 = [
+        1.234567890123_f64,
+        -1.265432109877_f64,
+        1.359567890123_f64,
+        43.234567890124_f64,
+    ];
+    let expected_i64 = [
+        9007199254740993_i64,
+        9007199254740976_i64,
+        9007199254740993_i64,
+        9007199254740995_i64,
+    ];
+    for (sample, expected) in out_f64.iter().zip(expected_f64) {
+        assert!(
+            (*sample - expected).abs() <= 1e-12,
+            "expected exact proc f64 sample {expected}, got {sample}"
+        );
+    }
+    assert_eq!(out_i64.as_slice(), expected_i64.as_slice());
+}
+
+#[test]
+fn proc_event_arguments_and_outputs_respect_f64_and_i64_declared_types() {
+    let src = r#"
+proc Voice {
+  outs {
+    out1: f64
+    out2: i64
+  }
+  events {
+    set(value: f64, count: i64) {
+      level = value
+      total = count
+    }
+  }
+  init {
+    level: f64 = 0.0
+    total: i64 = 0
+  }
+  sample {
+    out1 = level
+    out2 = total
+  }
+}
+outs {
+  out1: f64
+  out2: i64
+}
+events {
+  set(value: f64, count: i64) {
+    voice.set(value, count)
+  }
+}
+init {
+  voice = Voice()
+}
+sample {
+  voice()
+  out1 = voice.out1
+  out2 = voice.out2
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+    assert_eq!(instance.event_count(), 1);
+    assert_eq!(instance.event_payload_bytes(0), Some(16));
+    assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
+    assert_eq!(instance.output_type(1).as_deref(), Some("i64"));
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&1.234567890123_f64.to_ne_bytes());
+    payload.extend_from_slice(&9007199254740993_i64.to_ne_bytes());
+    trigger_event_by_index(&mut instance, 0, &payload).expect("trigger event");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_f64(&out_f64_bytes) {
+        assert!(
+            (sample - 1.234567890123_f64).abs() <= 1e-12,
+            "expected exact proc event f64 payload, got {sample}"
+        );
+    }
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 9007199254740993_i64);
+    }
+}
+
+#[test]
+fn proc_buffers_and_outputs_respect_f64_and_i64_declared_types() {
+    let src = r#"
+buffers {
+  buf1: buffer[f64]
+  buf2: buffer[i64]
+}
+proc Reader {
+  buffers {
+    line1: buffer[f64]
+    line2: buffer[i64]
+  }
+  outs {
+    out1: f64
+    out2: i64
+  }
+  init {
+    idx: i32 = 0
+  }
+  sample {
+    out1 = line1[idx]
+    out2 = line2[idx]
+    idx = idx + 1
+  }
+}
+outs {
+  out1: f64
+  out2: i64
+}
+init {
+  reader = Reader(line1 = buf1, line2 = buf2)
+}
+sample {
+  reader()
+  out1 = reader.out1
+  out2 = reader.out2
+}
+"#;
+    let frames = 4;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 2);
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[f64]"));
+    assert_eq!(instance.buffer_type(1).as_deref(), Some("buffer[i64]"));
+    assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
+    assert_eq!(instance.output_type(1).as_deref(), Some("i64"));
+
+    let mut buf_f64 = vec![1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+    let mut buf_i64 = vec![9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+    bind_buffer(
+        &mut instance,
+        0,
+        buf_f64.as_mut_ptr().cast::<u8>(),
+        buf_f64.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F64,
+    )
+    .expect("bind proc f64 buffer");
+    bind_buffer(
+        &mut instance,
+        1,
+        buf_i64.as_mut_ptr().cast::<u8>(),
+        buf_i64.len(),
+        1,
+        48_000.0,
+        PrimitiveType::I64,
+    )
+    .expect("bind proc i64 buffer");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out_f64 = decode_planar_f64(&out_f64_bytes);
+    let out_i64 = decode_planar_i64(&out_i64_bytes);
+    let expected_f64 = [1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+    let expected_i64 = [9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+    for (sample, expected) in out_f64.iter().zip(expected_f64) {
+        assert!(
+            (*sample - expected).abs() <= 1e-12,
+            "expected exact proc buffer f64 sample {expected}, got {sample}"
+        );
+    }
+    assert_eq!(out_i64.as_slice(), expected_i64.as_slice());
 }
 
 #[test]
@@ -13760,9 +14343,6 @@ sample:
 #[test]
 fn generic_proc_inside_namespace_template_preserves_typed_f64_const_defaults() {
     // Verify that f64-typed const defaults propagate through the param pipeline.
-    // NOTE: param defaults currently go through the f32 binding path in the runtime,
-    // so the f64 const is truncated to f32 precision at bind time. The f64 output
-    // confirms the value arrives (at f32 precision) without further loss.
     let src = r#"
 namespace FX<N = 1>:
   const EXACT: f64 = 1.234567890123
@@ -13784,13 +14364,11 @@ sample:
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
     process_bound(&mut instance, frames).expect("process bound");
     let out = decode_planar_f64(&out_bytes);
-    // Param binding truncates to f32 precision; verify the f32-rounded value arrives.
-    let expected_f32_rounded = 1.234567890123_f64 as f32 as f64;
     for sample in &out {
-        let delta = (*sample - expected_f32_rounded).abs();
+        let delta = (*sample - 1.234567890123_f64).abs();
         assert!(
             delta <= 1e-12,
-            "expected f32-rounded f64 value: {sample} ~= {expected_f32_rounded}, delta={delta}"
+            "expected exact f64 value: {sample} ~= 1.234567890123, delta={delta}"
         );
     }
 }

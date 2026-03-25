@@ -1,5 +1,11 @@
 use super::*;
-use crate::ReturnType;
+use crate::{require_expr_assignable_type, ReturnType};
+
+#[derive(Clone)]
+struct ObservedReturn<'a> {
+    expr: &'a Expr,
+    ty: ReturnType,
+}
 
 fn infer_expr_type_for_def_return_inference_with_call_overrides(
     expr: &Expr,
@@ -198,13 +204,13 @@ fn infer_tuple_type_from_expr(
     }
 }
 
-fn infer_stmt_returns_for_def_return_inference(
-    stmts: &[Stmt],
+fn infer_stmt_returns_for_def_return_inference<'a>(
+    stmts: &'a [Stmt],
     locals: &mut HashMap<String, PrimitiveType>,
     fn_return_types: &HashMap<String, PrimitiveType>,
     full_return_types: &HashMap<String, ReturnType>,
     tuple_locals: &mut HashMap<String, Vec<PrimitiveType>>,
-    out: &mut Vec<ReturnType>,
+    out: &mut Vec<ObservedReturn<'a>>,
 ) {
     for stmt in stmts {
         match stmt {
@@ -261,12 +267,18 @@ fn infer_stmt_returns_for_def_return_inference(
                     full_return_types,
                     tuple_locals,
                 ) {
-                    out.push(ReturnType::Tuple(elem_tys));
+                    out.push(ObservedReturn {
+                        expr,
+                        ty: ReturnType::Tuple(elem_tys),
+                    });
                 } else {
                     let ty =
                         infer_expr_type_for_def_return_inference(expr, locals, fn_return_types)
                             .unwrap_or(PrimitiveType::F32);
-                    out.push(ReturnType::Scalar(ty));
+                    out.push(ObservedReturn {
+                        expr,
+                        ty: ReturnType::Scalar(ty),
+                    });
                 }
             }
             Stmt::If {
@@ -341,30 +353,13 @@ fn infer_stmt_returns_for_def_return_inference(
     }
 }
 
-fn merge_return_types(a: ReturnType, b: ReturnType) -> Option<ReturnType> {
-    match (&a, &b) {
-        (ReturnType::Scalar(s1), ReturnType::Scalar(s2)) => {
-            merge_inferred_return_types(*s1, *s2).map(ReturnType::Scalar)
-        }
-        (ReturnType::Tuple(t1), ReturnType::Tuple(t2)) if t1.len() == t2.len() => {
-            let merged: Option<Vec<PrimitiveType>> = t1
-                .iter()
-                .zip(t2.iter())
-                .map(|(a, b)| merge_inferred_return_types(*a, *b))
-                .collect();
-            merged.map(ReturnType::Tuple)
-        }
-        _ => None, // scalar/tuple mismatch or different tuple lengths
-    }
-}
-
-fn infer_def_return_type(
-    def: &FunctionDef,
+fn collect_def_return_observations<'a>(
+    def: &'a FunctionDef,
     sig: &FnSignature,
     fn_return_types: &HashMap<String, PrimitiveType>,
     full_return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) -> ReturnType {
+) -> Vec<ObservedReturn<'a>> {
     let mut locals = HashMap::<String, PrimitiveType>::new();
     let mut tuple_locals = HashMap::<String, Vec<PrimitiveType>>::new();
     for (idx, param) in sig.params.iter().enumerate() {
@@ -400,7 +395,7 @@ fn infer_def_return_type(
         }
     }
 
-    let mut returns = Vec::<ReturnType>::new();
+    let mut returns = Vec::<ObservedReturn>::new();
     infer_stmt_returns_for_def_return_inference(
         &def.body,
         &mut locals,
@@ -409,7 +404,36 @@ fn infer_def_return_type(
         &mut tuple_locals,
         &mut returns,
     );
-    let mut it = returns.into_iter();
+    returns
+}
+
+fn merge_return_types(a: ReturnType, b: ReturnType) -> Option<ReturnType> {
+    match (&a, &b) {
+        (ReturnType::Scalar(s1), ReturnType::Scalar(s2)) => {
+            merge_inferred_return_types(*s1, *s2).map(ReturnType::Scalar)
+        }
+        (ReturnType::Tuple(t1), ReturnType::Tuple(t2)) if t1.len() == t2.len() => {
+            let merged: Option<Vec<PrimitiveType>> = t1
+                .iter()
+                .zip(t2.iter())
+                .map(|(a, b)| merge_inferred_return_types(*a, *b))
+                .collect();
+            merged.map(ReturnType::Tuple)
+        }
+        _ => None, // scalar/tuple mismatch or different tuple lengths
+    }
+}
+
+fn infer_def_return_type(
+    def: &FunctionDef,
+    sig: &FnSignature,
+    fn_return_types: &HashMap<String, PrimitiveType>,
+    full_return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> ReturnType {
+    let returns =
+        collect_def_return_observations(def, sig, fn_return_types, full_return_types, struct_defs);
+    let mut it = returns.into_iter().map(|ret| ret.ty);
     let Some(mut out) = it.next() else {
         return ReturnType::Scalar(PrimitiveType::F32);
     };
@@ -420,6 +444,123 @@ fn infer_def_return_type(
         out = merged;
     }
     out
+}
+
+fn format_primitive_type(ty: PrimitiveType) -> &'static str {
+    match ty {
+        PrimitiveType::F32 => "f32",
+        PrimitiveType::F64 => "f64",
+        PrimitiveType::I32 => "i32",
+        PrimitiveType::I64 => "i64",
+        PrimitiveType::Bool => "bool",
+    }
+}
+
+fn format_return_type(ty: &ReturnType) -> String {
+    match ty {
+        ReturnType::Scalar(ty) => format_primitive_type(*ty).to_owned(),
+        ReturnType::Tuple(elem_tys) => {
+            let elems = elem_tys
+                .iter()
+                .map(|ty| format_primitive_type(*ty))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({elems})")
+        }
+    }
+}
+
+fn return_type_is_assignable(src: &ReturnType, dst: &ReturnType) -> bool {
+    match (src, dst) {
+        (ReturnType::Scalar(src), ReturnType::Scalar(dst)) => {
+            *src == *dst || can_implicitly_assign(*src, *dst)
+        }
+        (ReturnType::Tuple(src), ReturnType::Tuple(dst)) if src.len() == dst.len() => src
+            .iter()
+            .zip(dst.iter())
+            .all(|(src, dst)| *src == *dst || can_implicitly_assign(*src, *dst)),
+        _ => false,
+    }
+}
+
+fn validate_return_observation(
+    def_name: &str,
+    observed: &ObservedReturn<'_>,
+    expected: &ReturnType,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match (expected, &observed.ty, observed.expr) {
+        (ReturnType::Scalar(expected_ty), ReturnType::Scalar(src_ty), expr) => {
+            require_expr_assignable_type(
+                expr,
+                Some(*src_ty),
+                *expected_ty,
+                &format!("return in function '{def_name}'"),
+                errors,
+            );
+        }
+        (
+            ReturnType::Tuple(expected_tys),
+            ReturnType::Tuple(src_tys),
+            Expr::Tuple { values, .. },
+        ) if src_tys.len() == expected_tys.len() && values.len() == expected_tys.len() => {
+            for ((value, src_ty), expected_ty) in
+                values.iter().zip(src_tys.iter()).zip(expected_tys.iter())
+            {
+                require_expr_assignable_type(
+                    value,
+                    Some(*src_ty),
+                    *expected_ty,
+                    &format!("return in function '{def_name}'"),
+                    errors,
+                );
+            }
+        }
+        _ if return_type_is_assignable(&observed.ty, expected) => {}
+        _ => errors.push(Diagnostic::semantic_span(
+            format!(
+                "return in function '{def_name}' type mismatch: cannot assign {} to {}",
+                format_return_type(&observed.ty),
+                format_return_type(expected)
+            ),
+            observed.expr.loc(),
+        )),
+    }
+}
+
+pub(crate) fn validate_def_return_types(
+    defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
+    full_return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let scalar_return_types = full_return_types
+        .iter()
+        .filter_map(|(name, ty)| match ty {
+            ReturnType::Scalar(ty) => Some((name.clone(), *ty)),
+            ReturnType::Tuple(_) => None,
+        })
+        .collect::<HashMap<_, _>>();
+
+    for def in defs {
+        let Some(sig) = fn_signatures.get(&def.name) else {
+            continue;
+        };
+        let Some(expected) = full_return_types.get(&def.name) else {
+            continue;
+        };
+        let observed_returns = collect_def_return_observations(
+            def,
+            sig,
+            &scalar_return_types,
+            full_return_types,
+            struct_defs,
+        );
+        for observed in &observed_returns {
+            validate_return_observation(&def.name, observed, expected, errors);
+        }
+    }
 }
 
 pub(crate) fn infer_def_return_types(

@@ -893,7 +893,30 @@ pub(super) fn infer_specialized_def_return_type(
                     array_idx += 1;
                     locals.insert(param_name.clone(), param_ty);
                 }
-                TypedFnParam::Struct { .. } | TypedFnParam::Buffer { .. } => {}
+                TypedFnParam::Struct { struct_name } => {
+                    if let Some(fields) = registry.struct_fields.get(struct_name) {
+                        for field in fields {
+                            let flat = format!("{param_name}.{}", field.name);
+                            match field.ty {
+                                TypedFieldType::Scalar(prim) => {
+                                    locals.insert(flat, prim);
+                                }
+                                TypedFieldType::Tuple(ref elem_tys) => {
+                                    for (idx, prim) in elem_tys.iter().enumerate() {
+                                        locals.insert(format!("{flat}.__{idx}"), *prim);
+                                    }
+                                }
+                                TypedFieldType::Array(_) => {
+                                    if let Some(elem_ty) = field.array_elem_ty {
+                                        locals.insert(flat, elem_ty);
+                                    }
+                                }
+                                TypedFieldType::Struct => {}
+                            }
+                        }
+                    }
+                }
+                TypedFnParam::Buffer { .. } => {}
                 TypedFnParam::Tuple { elem_tys } => {
                     tuple_locals.insert(param_name.clone(), elem_tys.clone());
                 }

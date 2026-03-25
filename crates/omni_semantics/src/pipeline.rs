@@ -1439,6 +1439,16 @@ pub fn analyze_with_options(
     let output_names: HashSet<String> = outs.iter().cloned().collect();
     let param_names: HashSet<String> = typed_params.iter().map(|p| p.name.clone()).collect();
     let def_return_types = infer_def_return_types(&defs, &fn_signatures, &struct_defs);
+    validate_def_return_types(
+        &defs,
+        &fn_signatures,
+        &def_return_types,
+        &struct_defs,
+        &mut errors,
+    );
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     fn_signatures
         .entry(PROC_INDEX_CALL_SENTINEL.to_owned())
         .or_insert_with(|| internal_proc_index_call_signature(false));

@@ -136,6 +136,7 @@ pub(super) struct PortIndexMeta {
 
 pub(super) struct UserFnRegistry {
     pub(super) defs: HashMap<String, TypedFunction>,
+    pub(super) struct_fields: HashMap<String, Vec<TypedStructField>>,
     pub(super) sample_oversample_factors: HashMap<String, usize>,
     pub(super) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub(super) refs: HashMap<String, LLVMValueRef>,
