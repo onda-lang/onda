@@ -873,19 +873,9 @@ fn call_stmt(expr: Expr) -> Stmt {
 fn assign_node_field_stmt(node: &GraphNodeKey, field: &str, expr: Expr) -> Stmt {
     match node {
         GraphNodeKey::Direct(name) => assign_stmt(format!("{name}.{field}"), expr),
-        GraphNodeKey::Indexed { base, index } => Stmt::Assign {
-            loc: Default::default(),
-            target_loc: Default::default(),
-            target: AssignTarget::Index {
-                base: format!("{base}.{field}"),
-                index: Expr::int(*index as i64),
-            },
-            decl_ty: None,
-            generic_decl_ty: None,
-            is_typed_decl: false,
-            typed_decl_ty_loc: Default::default(),
-            expr,
-        },
+        GraphNodeKey::Indexed { base, index } => {
+            assign_stmt(format!("{base}[{index}].{field}"), expr)
+        }
     }
 }
 

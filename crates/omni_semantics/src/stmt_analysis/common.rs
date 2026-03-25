@@ -55,6 +55,7 @@ pub(crate) fn build_scope_analysis_expr_inputs<'a>(
     param_structs: &'a HashMap<String, String>,
     struct_instances: &'a HashMap<String, String>,
     expr_outputs: &'a HashSet<String>,
+    proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
 ) -> ScopeExprInputs<'a> {
     ScopeExprInputs {
         locals,
@@ -71,5 +72,6 @@ pub(crate) fn build_scope_analysis_expr_inputs<'a>(
         port_index_ins: common.port_index_ins,
         port_index_outs: common.port_index_outs,
         port_index_params: common.port_index_params,
+        proc_array_roots,
     }
 }

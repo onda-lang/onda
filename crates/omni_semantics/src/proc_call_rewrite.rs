@@ -1927,6 +1927,25 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
     }
 }
 
+fn normalize_proc_array_slot_assign_target(
+    target: &mut AssignTarget,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+) {
+    let AssignTarget::Var(name) = target else {
+        return;
+    };
+    let Some((base, field)) = split_dot_path(name) else {
+        return;
+    };
+    let Some((array_base, slot_idx)) = find_proc_array_slot(base, proc_array_slots) else {
+        return;
+    };
+    *target = AssignTarget::Index {
+        base: format!("{array_base}.{field}"),
+        index: Expr::int(slot_idx as i64),
+    };
+}
+
 pub(super) fn normalize_proc_output_aliases_in_stmt(
     stmt: &mut Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
@@ -2036,6 +2055,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                     aliases.remove(name);
                 }
             }
+            normalize_proc_array_slot_assign_target(target, proc_array_slots);
             rewrite_proc_alias_calls_in_expr(expr, aliases);
             normalize_proc_output_aliases_in_assign_target(target, proc_vars, proc_api);
             rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors);

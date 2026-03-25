@@ -580,6 +580,7 @@ fn analyze_runtime_stmt_inner(
             &empty_param_structs,
             struct_instances,
             output_names,
+            proc_array_roots,
         );
         match stmt {
             Stmt::Const { .. } => {}
@@ -816,6 +817,7 @@ fn analyze_assign_sample(
         port_index_ins,
         port_index_outs,
         port_index_params,
+        proc_array_roots,
     };
     let stmt_expr_env = |scope| {
         build_scope_stmt_expr_env(
@@ -850,7 +852,10 @@ fn analyze_assign_sample(
                 return;
             }
             if let Some((root, field)) = split_root_field_path(base) {
-                if state_array_struct_roots.contains_key(root) {
+                if state_array_struct_roots.contains_key(root)
+                    && !proc_array_roots.contains_key(root)
+                    && !state_arrays.contains_key(base)
+                {
                     target_error!(
                         format!(
                             "'{root}' is an array of structs and must be indexed before accessing field '{field}'"
@@ -983,7 +988,10 @@ fn analyze_assign_sample(
                 target_error!("typed declaration is only supported for plain scalar variables",);
             }
             if let Some((root, field)) = split_root_field_path(base) {
-                if state_array_struct_roots.contains_key(root) {
+                if state_array_struct_roots.contains_key(root)
+                    && !proc_array_roots.contains_key(root)
+                    && !state_arrays.contains_key(base)
+                {
                     target_error!(
                         format!(
                             "'{root}' is an array of structs and must be indexed before accessing field '{field}'"

@@ -276,6 +276,7 @@ pub(crate) fn analyze_init_stmt(
             &empty_param_structs,
             &st.struct_instances,
             common.output_names,
+            &st.nested_proc_arrays,
         );
         let stmt_expr_env = |scope| {
             build_scope_stmt_expr_env(
@@ -487,6 +488,7 @@ fn analyze_assign_init(
                 &empty_param_structs,
                 &st.struct_instances,
                 output_names,
+                &st.nested_proc_arrays,
             )
         };
     }

@@ -1487,6 +1487,31 @@ graph:
   voices[1].out1 >> out2
 "#;
         let program = parse_program(src).expect("parse should succeed");
+        let lowered = crate::lower_graphs_for_inspection_with_options(
+            program.clone(),
+            AnalysisOptions::default(),
+        )
+        .expect("proc-array param graph should lower for inspection");
+        let block_pre = lowered
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Block(exec) => Some(&exec.pre),
+                _ => None,
+            })
+            .expect("lowered top-level block exec");
+        assert!(
+            block_pre.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    ..
+                } if name == "voices[0].gain" || name == "voices[1].gain"
+            )),
+            "expected graph lowering to preserve proc-array slot endpoint paths in block_pre: {:?}",
+            block_pre
+        );
+
         let typed = analyze(program).expect("proc-array param graph should analyze");
         assert!(
             typed.block_pre.iter().any(|stmt| matches!(
@@ -1500,7 +1525,7 @@ graph:
                         Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
                     )
             )),
-            "expected indexed proc-array param assignments in lowered block_pre: {:?}",
+            "expected proc-array param assignments to normalize back to flattened storage in block_pre: {:?}",
             typed.block_pre
         );
         let out_assigns = typed

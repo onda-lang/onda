@@ -28,6 +28,7 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) port_index_outs: Option<PortIndexInfo>,
     pub(crate) port_index_params: Option<PortIndexInfo>,
     pub(crate) tuple_vars: &'a HashMap<String, usize>,
+    pub(crate) proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,10 +47,13 @@ pub(crate) struct ScopeExprInputs<'a> {
     pub(crate) port_index_ins: Option<PortIndexInfo>,
     pub(crate) port_index_outs: Option<PortIndexInfo>,
     pub(crate) port_index_params: Option<PortIndexInfo>,
+    pub(crate) proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
 }
 
 #[allow(clippy::too_many_arguments)]
 static EMPTY_TUPLE_VARS: std::sync::LazyLock<HashMap<String, usize>> =
+    std::sync::LazyLock::new(HashMap::new);
+static EMPTY_PROC_ARRAY_ROOTS: std::sync::LazyLock<HashMap<String, ProcNestedArrayState>> =
     std::sync::LazyLock::new(HashMap::new);
 
 #[allow(clippy::too_many_arguments)]
@@ -81,6 +85,7 @@ pub(crate) fn build_expr_env<'a>(
         port_index_outs: None,
         port_index_params: None,
         tuple_vars: &EMPTY_TUPLE_VARS,
+        proc_array_roots: &EMPTY_PROC_ARRAY_ROOTS,
     }
 }
 
@@ -105,5 +110,6 @@ pub(crate) fn build_scope_expr_env<'a>(
     env.port_index_ins = inputs.port_index_ins;
     env.port_index_outs = inputs.port_index_outs;
     env.port_index_params = inputs.port_index_params;
+    env.proc_array_roots = inputs.proc_array_roots;
     env
 }

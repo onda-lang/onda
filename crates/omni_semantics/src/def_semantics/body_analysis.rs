@@ -88,6 +88,7 @@ pub(crate) fn analyze_def_stmt(
         // visible to expression type inference, including indexed array field reads.
         let struct_instance_ctx = param_structs;
         let empty_outputs = HashSet::<String>::new();
+        let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
         let array_vars = merged_data_vars_for_runtime(&empty_data, local_array_aliases);
         let expr_inputs = build_scope_analysis_expr_inputs(
             common,
@@ -97,6 +98,7 @@ pub(crate) fn analyze_def_stmt(
             param_structs,
             struct_instance_ctx,
             &empty_outputs,
+            &empty_proc_array_roots,
         );
         let stmt_expr_env = |scope| {
             let mut env = build_scope_stmt_expr_env(
