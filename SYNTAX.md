@@ -641,6 +641,7 @@ proc Gain:
 
 Construction/calls:
 - Construct in `init`: `p = Gain(g = 0.5)`
+- Builtin proc init event: `p.init(0.5)` or `p.init(g = 0.5)`
 - Call in `sample`: `out1 = p(0.25)` (single-out scalar sugar)
 - Direct endpoint call read: `out1 = p(0.25).out1` (or endpoint name)
 - Endpoint read: `p.<endpointName>`
@@ -650,6 +651,8 @@ Construction/calls:
 Single-out procs also support endpoint access forms (`p.out1` and named endpoint aliases).
 
 Processor constructors use named arguments for params/buffers.
+The builtin proc `init(...)` event exposes the proc params as event arguments in declaration order, using the concrete specialized param types.
+It is reserved and cannot be redefined in the proc `events` block.
 
 Processor instance arrays are supported in `init` (top-level and proc-level), for example:
 
@@ -724,6 +727,8 @@ Event parameter types:
 Rules:
 - Top-level events are host-entry handlers.
 - Proc events are receiver-only proc commands reached through explicit proc-instance calls (for example `voice.note_on(...)`).
+- Every proc also exposes a reserved builtin `init(...)` proc event whose arguments mirror the proc params after specialization.
+- The builtin proc `init(...)` event cannot be redefined in the proc `events` block.
 - Slice event params such as `f32[]` are allowed on both top-level host events and proc events.
 - Generic slice event params such as `U[]` are allowed on proc events only, and `U` must specialize to a primitive type before lowering.
 - Proc-event calls are statements, not expressions.
@@ -740,6 +745,7 @@ Rules:
 - For event payload passing, prefer slices (`T[]`) over large fixed arrays (`T[N]`).
 - Keep fixed arrays for true fixed-size storage and fixed-shape interfaces where the compile-time size is part of the contract.
 - Proc event names must not collide with callable endpoint names in the same proc.
+- Proc event name `init` is reserved for the builtin proc initializer event.
 - A proc cannot instantiate its own type directly in its state/`init` (for example `other = Voice()` inside `proc Voice` is invalid).
 - Unknown host event indices are ignored.
 - Invalid payload size for a known event is a runtime error.
@@ -1232,7 +1238,7 @@ Useful examples in `examples/`:
 - Buffer preview/lookup example: `buffer_looper_readl.omni`
 - Struct + methods: `cross_fm.omni`
 - Processor usage and output forms: `proc_gain.omni`, `proc_gain_graph.omni`, `proc_split.omni`, `proc_split_graph.omni`, `proc_array_stereo_sine.omni`, `proc_array_stereo_sine_graph.omni`, `std_one_pole.omni`, `std_one_pole_graph.omni`, `reverb.omni`, `reverb_sample.omni`, `reverb_graph.omni`
-- Graph feedback systems: `feedback_saturator_graph.omni`, `inspect_feedback_mix_graph.omni`, `stdlib_f32.omni`, `stdlib_f32_graph.omni`
+- Graph feedback systems: `feedback_saturator_graph.omni`, `cybernetic_feedback_graph.omni`, `inspect_feedback_mix_graph.omni`, `stdlib_f32.omni`, `stdlib_f32_graph.omni`
 - Array-heavy DSP: `karplus_strong_data.omni`, `multitap_feedback_struct_data.omni`
 - Stdlib and generics: `stdlib_f32.omni`, `stdlib_f64.omni`, `fft_bin_shift.omni`
 

@@ -20,8 +20,44 @@ use nested_proc_lowering::*;
 use proc_local_defs::*;
 use shape_helpers::*;
 
+const BUILTIN_PROC_INIT_EVENT_NAME: &str = "init";
+
 fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
     errors.push(diag.semantic(message, 0, 0));
+}
+
+fn is_builtin_proc_init_event_name(name: &str) -> bool {
+    name == BUILTIN_PROC_INIT_EVENT_NAME
+}
+
+fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagnostic>) {
+    for block in &mut program.blocks {
+        let Block::Proc(proc) = block else {
+            continue;
+        };
+        for event in proc
+            .events
+            .iter()
+            .filter(|event| is_builtin_proc_init_event_name(&event.name))
+        {
+            push_semantic(
+                DiagCtx::new(event.loc),
+                errors,
+                format!(
+                    "processor '{}' event name '{}' is reserved for the builtin initializer event",
+                    proc.name, BUILTIN_PROC_INIT_EVENT_NAME
+                ),
+            );
+        }
+        proc.events
+            .retain(|event| !is_builtin_proc_init_event_name(&event.name));
+        proc.events.push(EventDef {
+            loc: proc.loc,
+            name: BUILTIN_PROC_INIT_EVENT_NAME.to_owned(),
+            params: Vec::new(),
+            body: Vec::new(),
+        });
+    }
 }
 
 fn coerce_scalar_event_default(
@@ -389,8 +425,47 @@ pub(crate) fn coerce_typed_events(
     out
 }
 
+fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec {
+    let params = param_specs
+        .iter()
+        .map(|param| {
+            if param.slots.len() == 1 && param.slots[0].name == param.name {
+                let slot = &param.slots[0];
+                ProcEventParamSpec {
+                    name: param.name.clone(),
+                    slots: vec![ProcEventParamSlotSpec {
+                        name: param.name.clone(),
+                        ty: slot.ty,
+                    }],
+                    fixed_array_elem_ty: None,
+                    slice_elem_ty: None,
+                    default: slot.default.clone(),
+                }
+            } else {
+                let default_values = param
+                    .slots
+                    .iter()
+                    .map(|slot| slot.default.clone())
+                    .collect::<Option<Vec<_>>>();
+                ProcEventParamSpec {
+                    name: param.name.clone(),
+                    slots: Vec::new(),
+                    fixed_array_elem_ty: param.slots.first().map(|slot| slot.ty),
+                    slice_elem_ty: None,
+                    default: default_values.map(|values| Expr::ArrayLiteral {
+                        loc: Default::default(),
+                        values,
+                    }),
+                }
+            }
+        })
+        .collect();
+    ProcEventSpec { params }
+}
+
 fn expand_proc_event_specs(
     proc: &ProcessorDef,
+    param_specs: &[ProcParamSpec],
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, ProcEventSpec> {
@@ -413,6 +488,13 @@ fn expand_proc_event_specs(
                 event_diag,
                 errors,
                 format!("duplicate processor event '{}.{}'", proc.name, event.name),
+            );
+            continue;
+        }
+        if is_builtin_proc_init_event_name(&event.name) {
+            out.insert(
+                event.name.clone(),
+                builtin_proc_init_event_spec(param_specs),
             );
             continue;
         }
@@ -768,7 +850,7 @@ fn build_proc_lowering_env(
                     .map(|slot| (slot.name.clone(), slot))
                     .collect::<HashMap<_, _>>(),
                 outs: shape.outs.clone(),
-                events: expand_proc_event_specs(proc, options, errors),
+                events: expand_proc_event_specs(proc, &shape.param_specs, options, errors),
                 buffers: shape.buffer_specs.clone(),
                 has_block: proc.has_block_block,
                 sample_oversample_factor: proc_sample_oversample_factors
@@ -850,6 +932,7 @@ pub(crate) fn desugar_processors(
     }
 
     rewrite_and_materialize_generic_processors(&mut program, errors);
+    inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
 
     // Rewrite proc-local defs into hidden ordinary def calls before proc lowering.
@@ -1164,6 +1247,178 @@ sample:
         assert!(
             offending.is_empty(),
             "expected no raw nested proc-array event calls after desugaring, got {offending:?}"
+        );
+    }
+
+    #[test]
+    fn desugar_processors_synthesizes_builtin_proc_init_event() {
+        let src = r#"
+proc Voice:
+  params:
+    gain: i32 = 1
+    mix: f32[2] = [0.25, 0.5]
+  outs:
+    out1
+  sample:
+    out1 = f32(gain) + mix[0] + mix[1]
+
+outs:
+  out1
+init:
+  voice = Voice()
+  voice.init(3, [1.0, 2.0])
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let mut errors = Vec::new();
+        let desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        assert!(
+            errors.is_empty(),
+            "processor desugaring should not emit errors: {errors:?}"
+        );
+
+        let init_call_name = desugared
+            .program
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Init(init) => init.body.iter().find_map(|stmt| match stmt {
+                    Stmt::Expr {
+                        expr: Expr::UserCall { name, .. },
+                        ..
+                    } if name.ends_with(".__proc_event_init") => Some(name.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("expected lowered top-level builtin init event call");
+        assert_eq!(init_call_name, "Voice.__proc_event_init");
+
+        let init_def = desugared
+            .program
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Def(def) if def.name == "Voice.__proc_event_init" => Some(def),
+                _ => None,
+            })
+            .expect("expected generated builtin init event def");
+
+        assert_eq!(init_def.params.len(), 3);
+        assert!(matches!(
+            init_def.params[1].ty,
+            Some(FnParamType::Primitive(PrimitiveType::I32))
+        ));
+        assert!(matches!(
+            init_def.params[2].ty,
+            Some(FnParamType::Array(Some(PrimitiveType::F32)))
+        ));
+        assert!(init_def.body.iter().any(|stmt| matches!(
+            stmt,
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                expr: Expr::Var { name: value_name, .. },
+                ..
+            } if name == "self.gain" && value_name == "gain"
+        )));
+        assert!(init_def.body.iter().any(|stmt| matches!(
+            stmt,
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                expr: Expr::Index { base, index, .. },
+                ..
+            } if name == "self.mix[0]"
+                && base == "mix"
+                && matches!(index.as_ref(), Expr::Int { value: 0, .. })
+        )));
+        assert!(init_def.body.iter().any(|stmt| matches!(
+            stmt,
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                expr: Expr::Index { base, index, .. },
+                ..
+            } if name == "self.mix[1]"
+                && base == "mix"
+                && matches!(index.as_ref(), Expr::Int { value: 1, .. })
+        )));
+    }
+
+    #[test]
+    fn desugar_processors_specializes_builtin_proc_init_event_for_generic_params() {
+        let src = r#"
+proc Voice<T>:
+  params:
+    value: T = 0
+  outs:
+    out1
+  sample:
+    out1 = f32(value)
+
+outs:
+  out1
+init:
+  voice = Voice<i64>()
+  voice.init(42)
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let mut errors = Vec::new();
+        let desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        assert!(
+            errors.is_empty(),
+            "processor desugaring should not emit errors: {errors:?}"
+        );
+
+        let init_def = desugared
+            .program
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Def(def)
+                    if def.name.contains("Voice") && def.name.ends_with(".__proc_event_init") =>
+                {
+                    Some(def)
+                }
+                _ => None,
+            })
+            .expect("expected generated builtin init event def for specialized proc");
+
+        assert!(matches!(
+            init_def.params[1].ty,
+            Some(FnParamType::Primitive(PrimitiveType::I64))
+        ));
+    }
+
+    #[test]
+    fn analyze_rejects_user_defined_proc_init_event() {
+        let src = r#"
+proc Voice:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  events:
+    init(value: f32):
+      gain = value
+  sample:
+    out1 = gain
+
+outs:
+  out1
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("builtin init redefinition should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("event name 'init' is reserved for the builtin initializer event")),
+            "expected builtin init reservation diagnostic, got {errors:?}"
         );
     }
 
@@ -2917,6 +3172,43 @@ graph:
                 .any(|diag| diag.message.contains("a -> b -> c -> a")),
             "expected explicit cycle path, got {errors:?}"
         );
+    }
+
+    #[test]
+    fn graph_type_mismatch_reports_graph_edge_location() {
+        let src = r#"
+proc Pass:
+  ins:
+    in1
+  outs:
+    out1
+  sample:
+    out1 = in1
+
+params:
+  wide: f64 = 0.5
+
+outs:
+  out1
+
+init:
+  p = Pass()
+
+graph:
+  wide >> p.in1
+  p.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("graph type mismatch should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("graph edge source for destination 'p.in1' type mismatch")
+            })
+            .expect("expected graph type mismatch diagnostic");
+        assert_eq!(diag.line, 20, "expected graph-edge line, got {diag:?}");
+        assert_eq!(diag.column, 3, "expected graph-edge column, got {diag:?}");
     }
 
     fn collect_offending_proc_event_calls_in_stmt(

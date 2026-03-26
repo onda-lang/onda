@@ -234,6 +234,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
   patchProcess = child;
   patchPath = fsPath;
   patchStdoutBuffer = "";
+  let patchStderrBuffer = "";
 
   patchOutput?.appendLine(`$ ${command} ${args.map(shellQuote).join(" ")}`);
   patchOutput?.show(true);
@@ -243,7 +244,9 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
     handlePatchStdout(chunk.toString());
   });
   child.stderr.on("data", (chunk: Buffer) => {
-    patchOutput?.append(chunk.toString());
+    const text = chunk.toString();
+    patchStderrBuffer += text;
+    patchOutput?.append(text);
   });
   child.once("error", (error: Error) => {
     const failedPath = fsPath;
@@ -267,6 +270,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
   child.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
     const finishedPath = fsPath;
     const expectedStop = child.pid !== undefined && stoppingPatchPid === child.pid;
+    const exitError = expectedStop ? undefined : formatPatchExitError(patchStderrBuffer, code, signal);
     if (expectedStop) {
       stoppingPatchPid = undefined;
     }
@@ -279,7 +283,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
       connected: false,
       path: finishedPath,
       status: expectedStop ? "Stopped" : "Patch exited",
-      error: expectedStop ? undefined : signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`,
+      error: exitError,
     };
     postPatchPanelState();
     if (expectedStop) {
@@ -288,7 +292,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
     if (signal === null && code === 0) {
       return;
     }
-    const reason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
+    const reason = exitError ?? (signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`);
     patchOutput?.show(true);
     void vscode.window.showWarningMessage(
       `Omni patch stopped${finishedPath ? ` (${path.basename(finishedPath)})` : ""}: ${reason}`,
@@ -396,6 +400,21 @@ function omniExecutableConfig(): { command: string; extraArgs: string[] } {
 
 function shellQuote(value: string): string {
   return /\s/.test(value) ? JSON.stringify(value) : value;
+}
+
+function trimPatchErrorText(text: string, maxChars = 4000): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return `…${trimmed.slice(trimmed.length - maxChars)}`;
+}
+
+function formatPatchExitError(stderrText: string, code: number | null, signal: NodeJS.Signals | null): string {
+  return trimPatchErrorText(stderrText) ?? (signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`);
 }
 
 function handlePatchStdout(chunk: string): void {

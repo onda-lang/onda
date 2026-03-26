@@ -3055,9 +3055,21 @@ fn require_graph_assignable_type(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let mut push_scalar_mismatch = |src_ty: PrimitiveType, dst_ty: PrimitiveType| {
+        if src_ty != dst_ty && !can_implicitly_assign(src_ty, dst_ty) {
+            push_graph_error(
+                errors,
+                loc,
+                format!(
+                    "{context} type mismatch: cannot assign {:?} to {:?}",
+                    src_ty, dst_ty
+                ),
+            );
+        }
+    };
     match (src, dst) {
         (GraphValueType::Scalar(src_ty), GraphValueType::Scalar(dst_ty)) => {
-            require_assignable_type(Some(*src_ty), *dst_ty, context, errors);
+            push_scalar_mismatch(*src_ty, *dst_ty);
         }
         (
             GraphValueType::Scalar(src_ty),
@@ -3065,7 +3077,7 @@ fn require_graph_assignable_type(
                 elem_ty: dst_elem, ..
             },
         ) => {
-            require_assignable_type(Some(*src_ty), *dst_elem, context, errors);
+            push_scalar_mismatch(*src_ty, *dst_elem);
         }
         (
             GraphValueType::Array {
@@ -3088,7 +3100,7 @@ fn require_graph_assignable_type(
                     ),
                 );
             } else {
-                require_assignable_type(Some(*src_elem), *dst_elem, context, errors);
+                push_scalar_mismatch(*src_elem, *dst_elem);
             }
         }
         _ => push_graph_error(

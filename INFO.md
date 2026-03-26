@@ -183,7 +183,7 @@
     - `for i @ STEP in A..B` (`@ STEP` optional, defaults to `1`; use negative step for descending)
 - Events:
   - Top-level and proc-level `events` blocks are supported.
-  - Top-level event params support primitive scalars and fixed-size primitive arrays.
+- Top-level event params support primitive scalars and fixed-size primitive arrays.
 - Event params support read-only primitive slice forms such as `f32[]` for both top-level and proc events.
 - Proc events also support generic primitive slices such as `T[]` when `T` is a proc generic type parameter that specializes to a primitive.
 - Event array/slice params are passed as read-only references.
@@ -194,6 +194,10 @@
   - Top-level handlers are host-triggered and run immediately on the audio thread.
   - Unknown host event indices are ignored; payload-size mismatches are runtime errors.
   - Proc events are receiver-only synchronous proc commands reached through explicit calls/forwarding (for example `voice.note_on(...)`).
+  - Every proc also gets a reserved builtin `init(...)` event synthesized after proc specialization.
+    - Its arguments mirror the proc params in declaration order, using the concrete specialized types.
+    - It cannot be redefined inside the proc `events` block.
+    - Its generated body simply assigns the provided argument values into the proc params, reusing existing default/clamp behavior.
   - Proc-event calls are statement-only; unqualified calls never resolve to proc events.
   - A proc cannot directly instantiate its own proc type as state.
 - Functions (`def`):
@@ -242,6 +246,8 @@
 - generic processors are supported and specialized/monomorphized on constructor use.
 - `sample` is required; `init` is optional (top-level `init` is also optional).
 - `events` is optional inside `proc`.
+- In addition to user-declared proc events, every proc gets the builtin reserved `init(...)` event.
+  - The builtin event is created after generic specialization, so `Filter<i64>().init(...)` uses `i64` arguments instead of unresolved generic placeholders.
 - proc-local `def` blocks are supported inside `proc` bodies. They act as private helper subroutines with implicit state access (no `self`), callable from `init`, `sample`, `block`, `events`, and other proc-local defs. They support parameters, return values, and transitive calls. Recursive/mutually recursive calls are rejected. Implementation lowers them to hidden ordinary defs with an implicit proc receiver, so argument binding/defaults/return behavior follow the normal `def` pipeline rather than a bespoke inline-only model.
 - generic typed local declarations (`x: T = ...`) are supported in all executable scopes of a generic owner (`init`, `sample`, `block`, `def` methods, `events`).
 - Processor call forms:
@@ -252,6 +258,8 @@
   - statement call + field reads is supported for stateful updates + explicit output access
 - Nested processor state/composition is supported, including deep nesting.
 - Processor constructor arguments for params/buffers are enforced as named-only.
+- The builtin proc `init(...)` event is positional/named like any other proc event call and is useful for proc arrays or post-construction reconfiguration:
+  - `voices[idx].init(i, i * 2, i * 3)`
 - Processor instance arrays are supported in `init` (top-level and proc-level) via typed declarations such as:
   - `voices: Voice<N_EXPR> = [Voice(...), ...]`
   - `voices: Voice<N_EXPR> = Voice(...)` (broadcast constructor sugar)
@@ -424,7 +432,7 @@
   - `compile` remains host-native by default; cross-target AOT requires `--target` or `--target-spec`.
   - `compile --target-spec <path>` loads a small TOML codegen preset; direct CLI flags override spec values.
   - checked-in example target specs live under the repo-root `targets/` folder.
-  - Useful graph examples: `examples/proc_gain_graph.omni`, `examples/proc_split_graph.omni`, `examples/proc_array_stereo_sine_graph.omni`, `examples/std_one_pole_graph.omni`, `examples/stdlib_f32_graph.omni`, `examples/feedback_saturator_graph.omni`, `examples/reverb_graph.omni`.
+  - Useful graph examples: `examples/proc_gain_graph.omni`, `examples/proc_split_graph.omni`, `examples/proc_array_stereo_sine_graph.omni`, `examples/std_one_pole_graph.omni`, `examples/stdlib_f32_graph.omni`, `examples/feedback_saturator_graph.omni`, `examples/cybernetic_feedback_graph.omni`, `examples/reverb_graph.omni`.
 
 ## LLVM dependency strategy
 - Prebuilt LLVM is vendored under `.deps/llvm/21.1.2`.

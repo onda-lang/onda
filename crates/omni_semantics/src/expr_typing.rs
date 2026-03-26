@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use omni_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType, SourceLoc};
+use omni_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType};
 
 use crate::builtins::{
     builtin_constant_type, builtin_name, is_builtin_unsafe_data_fn, is_float_type,
@@ -625,25 +625,6 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data(
         struct_defs,
         errors,
     )
-}
-
-pub(crate) fn require_assignable_type(
-    src: Option<PrimitiveType>,
-    dst: PrimitiveType,
-    context: &str,
-    errors: &mut Vec<Diagnostic>,
-) {
-    if let Some(src) = src {
-        if src != dst && !can_implicitly_assign(src, dst) {
-            errors.push(Diagnostic::semantic_span(
-                format!(
-                    "{context} type mismatch: cannot assign {:?} to {:?}",
-                    src, dst
-                ),
-                None::<SourceLoc>,
-            ));
-        }
-    }
 }
 
 pub(crate) fn require_expr_assignable_type(

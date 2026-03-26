@@ -56,8 +56,16 @@
       }
 
       .error {
-        margin-top: 8px;
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 107, 107, 0.55);
+        background: #080909;
         color: var(--danger);
+        font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+        display: none;
       }
 
       .actions {
@@ -305,12 +313,12 @@
         <div class="title">Omni Patch</div>
         <div class="meta" id="path"></div>
         <div class="status" id="status"></div>
-        <div class="error" id="error"></div>
         <div class="actions">
           <button class="primary" id="start">Start</button>
           <button class="secondary" id="stop">Stop</button>
           <button class="secondary" id="reset">Reset</button>
         </div>
+        <div class="error" id="error"></div>
         <div class="io-settings" id="io-settings">
           <div class="param-setting">
             <div class="param-setting-label">Input Device</div>
@@ -809,6 +817,7 @@
         pathNode.textContent = state.path ? state.path : "No patch selected";
         statusNode.textContent = state.connected ? state.status : state.running ? state.status + " (connecting controls...)" : state.status;
         errorNode.textContent = state.error || "";
+        errorNode.style.display = state.error ? "block" : "none";
         scopeSection.style.display = state.connected ? "block" : "none";
         const hasBuffers = state.buffers.length > 0;
         const hasEvents = state.events.length > 0;

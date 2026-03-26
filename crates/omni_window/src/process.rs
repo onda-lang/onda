@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 #[cfg(target_os = "windows")]
@@ -41,6 +42,7 @@ struct RawReadyEvent {
 /// Manages a running `omni preview play --control-json` subprocess.
 pub struct ChildSession {
     child: Option<Child>,
+    stderr_buffer: Arc<Mutex<String>>,
 }
 
 impl ChildSession {
@@ -90,13 +92,27 @@ impl ChildSession {
             .stderr
             .take()
             .ok_or_else(|| "failed to capture subprocess stderr".to_owned())?;
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
 
         // Background thread: read stderr and print it.
+        let stderr_sink = Arc::clone(&stderr_buffer);
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines() {
                 match line {
-                    Ok(line) => eprintln!("[omni preview] {line}"),
+                    Ok(line) => {
+                        eprintln!("[omni preview] {line}");
+                        if let Ok(mut slot) = stderr_sink.lock() {
+                            if !slot.is_empty() {
+                                slot.push('\n');
+                            }
+                            slot.push_str(&line);
+                            if slot.len() > 4000 {
+                                let keep_from = slot.len().saturating_sub(4000);
+                                *slot = slot[keep_from..].to_owned();
+                            }
+                        }
+                    }
                     Err(_) => break,
                 }
             }
@@ -148,7 +164,25 @@ impl ChildSession {
             let _ = (child_id, pid_proxy);
         });
 
-        Ok(Self { child: Some(child) })
+        Ok(Self {
+            child: Some(child),
+            stderr_buffer,
+        })
+    }
+
+    pub fn try_take_exit(&mut self) -> Option<(Option<i32>, Option<String>)> {
+        let child = self.child.as_mut()?;
+        let status = child.try_wait().ok()??;
+        self.child = None;
+        let error = self.stderr_buffer.lock().ok().and_then(|slot| {
+            let trimmed = slot.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        });
+        Some((status.code(), error))
     }
 
     /// Kill the child process if it's still running.

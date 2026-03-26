@@ -31,6 +31,88 @@ fn runtime_proc_array_active_field_name(array_base: &str) -> String {
     )
 }
 
+fn build_builtin_proc_init_event_parts<F>(
+    receiver_ty: &str,
+    param_specs: &[ProcParamSpec],
+    mut target_for_slot: F,
+) -> (Vec<omni_frontend::FnParamDecl>, Vec<Stmt>)
+where
+    F: FnMut(&str) -> String,
+{
+    let mut event_params = Vec::<omni_frontend::FnParamDecl>::new();
+    event_params.push(omni_frontend::FnParamDecl {
+        loc: Default::default(),
+        name: "self".to_owned(),
+        ty: Some(FnParamType::Struct(receiver_ty.to_owned())),
+        ty_loc: Default::default(),
+        default: None,
+    });
+
+    let mut event_body = Vec::<Stmt>::new();
+    for param in param_specs {
+        if param.slots.len() == 1 && param.slots[0].name == param.name {
+            let slot = &param.slots[0];
+            event_params.push(omni_frontend::FnParamDecl {
+                loc: Default::default(),
+                name: param.name.clone(),
+                ty: Some(FnParamType::Primitive(slot.ty)),
+                ty_loc: Default::default(),
+                default: None,
+            });
+            let mut value = Expr::var(param.name.clone());
+            if let Some(range) = slot.range {
+                value = clamp_expr_to_range(value, range);
+            }
+            event_body.push(Stmt::Assign {
+                loc: Default::default(),
+                target_loc: Default::default(),
+                target: AssignTarget::Var(target_for_slot(&slot.name)),
+                decl_ty: None,
+                generic_decl_ty: None,
+                is_typed_decl: false,
+                typed_decl_ty_loc: Default::default(),
+                expr: value,
+            });
+            continue;
+        }
+
+        let elem_ty = param
+            .slots
+            .first()
+            .map(|slot| slot.ty)
+            .unwrap_or(PrimitiveType::F32);
+        event_params.push(omni_frontend::FnParamDecl {
+            loc: Default::default(),
+            name: param.name.clone(),
+            ty: Some(FnParamType::Array(Some(elem_ty))),
+            ty_loc: Default::default(),
+            default: None,
+        });
+        for (idx, slot) in param.slots.iter().enumerate() {
+            let mut value = Expr::Index {
+                loc: Default::default(),
+                base: param.name.clone(),
+                index: Box::new(Expr::int(idx as i64)),
+            };
+            if let Some(range) = slot.range {
+                value = clamp_expr_to_range(value, range);
+            }
+            event_body.push(Stmt::Assign {
+                loc: Default::default(),
+                target_loc: Default::default(),
+                target: AssignTarget::Var(target_for_slot(&slot.name)),
+                decl_ty: None,
+                generic_decl_ty: None,
+                is_typed_decl: false,
+                typed_decl_ty_loc: Default::default(),
+                expr: value,
+            });
+        }
+    }
+
+    (event_params, event_body)
+}
+
 fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
     stmt: Stmt,
     managed_arrays: &HashMap<String, ManagedDynamicProcArray>,
@@ -1059,64 +1141,75 @@ fn generate_nested_wrapper_defs(
                     );
                     continue;
                 };
-                let mut nested_event_params = Vec::<omni_frontend::FnParamDecl>::new();
-                nested_event_params.push(omni_frontend::FnParamDecl {
-                    loc: Default::default(),
-                    name: "self".to_owned(),
-                    ty: Some(FnParamType::Struct(proc.name.clone())),
-                    ty_loc: Default::default(),
-                    default: None,
-                });
-                let mut callee_event_ins_names = callee_ins_names.clone();
-                let mut callee_event_in_array_slots = HashMap::<String, Vec<String>>::new();
-                for param in &event_spec.params {
-                    callee_event_ins_names.insert(param.name.clone());
-                    if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty) {
-                        nested_event_params.push(omni_frontend::FnParamDecl {
-                            loc: Default::default(),
-                            name: param.name.clone(),
-                            ty: Some(FnParamType::Array(Some(elem_ty))),
-                            ty_loc: Default::default(),
-                            default: None,
-                        });
-                        continue;
-                    }
-                    let mut slot_names = Vec::<String>::new();
-                    for slot in &param.slots {
-                        slot_names.push(slot.name.clone());
-                        callee_event_ins_names.insert(slot.name.clone());
-                        nested_event_params.push(omni_frontend::FnParamDecl {
-                            loc: Default::default(),
-                            name: slot.name.clone(),
-                            ty: Some(FnParamType::Primitive(slot.ty)),
-                            ty_loc: Default::default(),
-                            default: None,
-                        });
-                    }
-                    if slot_names.len() > 1 {
-                        callee_event_in_array_slots.insert(param.name.clone(), slot_names);
-                    }
-                }
-                let nested_event_body = event
-                    .body
-                    .iter()
-                    .filter_map(|stmt| {
-                        lower_callee_stmt_for_nested_wrapper(
-                            stmt,
+                let (nested_event_params, nested_event_body) =
+                    if is_builtin_proc_init_event_name(&event.name) {
+                        build_builtin_proc_init_event_parts(
                             &proc.name,
-                            &callee_proc_name,
-                            &nested_path,
-                            &callee_shape,
-                            &callee_nested_instances,
-                            &callee_event_ins_names,
-                            &callee_shape.field_array_slots,
-                            &callee_event_in_array_slots,
-                            &callee_shape.nested_proc_array_slots,
-                            &proc_api,
-                            errors,
+                            &callee_shape.param_specs,
+                            |slot| nested_field_name(&nested_path, slot),
                         )
-                    })
-                    .collect::<Vec<_>>();
+                    } else {
+                        let mut nested_event_params = Vec::<omni_frontend::FnParamDecl>::new();
+                        nested_event_params.push(omni_frontend::FnParamDecl {
+                            loc: Default::default(),
+                            name: "self".to_owned(),
+                            ty: Some(FnParamType::Struct(proc.name.clone())),
+                            ty_loc: Default::default(),
+                            default: None,
+                        });
+                        let mut callee_event_ins_names = callee_ins_names.clone();
+                        let mut callee_event_in_array_slots = HashMap::<String, Vec<String>>::new();
+                        for param in &event_spec.params {
+                            callee_event_ins_names.insert(param.name.clone());
+                            if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty)
+                            {
+                                nested_event_params.push(omni_frontend::FnParamDecl {
+                                    loc: Default::default(),
+                                    name: param.name.clone(),
+                                    ty: Some(FnParamType::Array(Some(elem_ty))),
+                                    ty_loc: Default::default(),
+                                    default: None,
+                                });
+                                continue;
+                            }
+                            let mut slot_names = Vec::<String>::new();
+                            for slot in &param.slots {
+                                slot_names.push(slot.name.clone());
+                                callee_event_ins_names.insert(slot.name.clone());
+                                nested_event_params.push(omni_frontend::FnParamDecl {
+                                    loc: Default::default(),
+                                    name: slot.name.clone(),
+                                    ty: Some(FnParamType::Primitive(slot.ty)),
+                                    ty_loc: Default::default(),
+                                    default: None,
+                                });
+                            }
+                            if slot_names.len() > 1 {
+                                callee_event_in_array_slots.insert(param.name.clone(), slot_names);
+                            }
+                        }
+                        let nested_event_body = event
+                            .body
+                            .iter()
+                            .filter_map(|stmt| {
+                                lower_callee_stmt_for_nested_wrapper(
+                                    stmt,
+                                    &proc.name,
+                                    &callee_proc_name,
+                                    &nested_path,
+                                    &callee_shape,
+                                    &callee_nested_instances,
+                                    &callee_event_ins_names,
+                                    &callee_shape.field_array_slots,
+                                    &callee_event_in_array_slots,
+                                    &callee_shape.nested_proc_array_slots,
+                                    &proc_api,
+                                    errors,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        (nested_event_params, nested_event_body)
+                    };
                 nested_defs.push(Block::Def(FunctionDef {
                     loc: Default::default(),
                     type_params: Vec::new(),
@@ -2035,64 +2128,71 @@ pub(super) fn generate_lowered_proc_blocks(
                     );
                     continue;
                 };
-                let mut event_params = Vec::<omni_frontend::FnParamDecl>::new();
-                event_params.push(omni_frontend::FnParamDecl {
-                    loc: Default::default(),
-                    name: "self".to_owned(),
-                    ty: Some(FnParamType::Struct(proc.name.clone())),
-                    ty_loc: Default::default(),
-                    default: None,
-                });
-                let mut event_ins_names = ins_names.clone();
-                let mut event_in_array_slots = HashMap::<String, Vec<String>>::new();
-                for param in &event_spec.params {
-                    event_ins_names.insert(param.name.clone());
-                    if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty) {
-                        event_params.push(omni_frontend::FnParamDecl {
-                            loc: Default::default(),
-                            name: param.name.clone(),
-                            ty: Some(FnParamType::Array(Some(elem_ty))),
-                            ty_loc: Default::default(),
-                            default: None,
-                        });
-                        continue;
-                    }
-                    let mut slot_names = Vec::<String>::new();
-                    for slot in &param.slots {
-                        slot_names.push(slot.name.clone());
-                        event_ins_names.insert(slot.name.clone());
-                        event_params.push(omni_frontend::FnParamDecl {
-                            loc: Default::default(),
-                            name: slot.name.clone(),
-                            ty: Some(FnParamType::Primitive(slot.ty)),
-                            ty_loc: Default::default(),
-                            default: None,
-                        });
-                    }
-                    if slot_names.len() > 1 {
-                        event_in_array_slots.insert(param.name.clone(), slot_names);
-                    }
-                }
-                let event_body = event
-                    .body
-                    .iter()
-                    .filter_map(|stmt| {
-                        rewrite_owner_proc_stmt(
-                            stmt.clone(),
-                            &proc.name,
-                            &shape.field_names,
-                            &shape.array_field_names,
-                            &event_ins_names,
-                            &shape.field_array_slots,
-                            &event_in_array_slots,
-                            &shape.nested_proc_array_slots,
-                            &shape.nested_fields,
-                            &nested_instances,
-                            &proc_api,
-                            errors,
-                        )
+                let (event_params, event_body) = if is_builtin_proc_init_event_name(&event.name) {
+                    build_builtin_proc_init_event_parts(&proc.name, &shape.param_specs, |slot| {
+                        format!("self.{slot}")
                     })
-                    .collect::<Vec<_>>();
+                } else {
+                    let mut event_params = Vec::<omni_frontend::FnParamDecl>::new();
+                    event_params.push(omni_frontend::FnParamDecl {
+                        loc: Default::default(),
+                        name: "self".to_owned(),
+                        ty: Some(FnParamType::Struct(proc.name.clone())),
+                        ty_loc: Default::default(),
+                        default: None,
+                    });
+                    let mut event_ins_names = ins_names.clone();
+                    let mut event_in_array_slots = HashMap::<String, Vec<String>>::new();
+                    for param in &event_spec.params {
+                        event_ins_names.insert(param.name.clone());
+                        if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty) {
+                            event_params.push(omni_frontend::FnParamDecl {
+                                loc: Default::default(),
+                                name: param.name.clone(),
+                                ty: Some(FnParamType::Array(Some(elem_ty))),
+                                ty_loc: Default::default(),
+                                default: None,
+                            });
+                            continue;
+                        }
+                        let mut slot_names = Vec::<String>::new();
+                        for slot in &param.slots {
+                            slot_names.push(slot.name.clone());
+                            event_ins_names.insert(slot.name.clone());
+                            event_params.push(omni_frontend::FnParamDecl {
+                                loc: Default::default(),
+                                name: slot.name.clone(),
+                                ty: Some(FnParamType::Primitive(slot.ty)),
+                                ty_loc: Default::default(),
+                                default: None,
+                            });
+                        }
+                        if slot_names.len() > 1 {
+                            event_in_array_slots.insert(param.name.clone(), slot_names);
+                        }
+                    }
+                    let event_body = event
+                        .body
+                        .iter()
+                        .filter_map(|stmt| {
+                            rewrite_owner_proc_stmt(
+                                stmt.clone(),
+                                &proc.name,
+                                &shape.field_names,
+                                &shape.array_field_names,
+                                &event_ins_names,
+                                &shape.field_array_slots,
+                                &event_in_array_slots,
+                                &shape.nested_proc_array_slots,
+                                &shape.nested_fields,
+                                &nested_instances,
+                                &proc_api,
+                                errors,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (event_params, event_body)
+                };
                 generated_defs.push(Block::Def(FunctionDef {
                     loc: Default::default(),
                     type_params: Vec::new(),

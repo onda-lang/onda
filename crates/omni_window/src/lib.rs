@@ -176,6 +176,10 @@ pub fn run_preview_window(omni_path: &Path, options: PreviewWindowOptions) -> Re
             std::time::Instant::now() + Duration::from_millis(16),
         );
 
+        if let Some((code, error)) = child.try_take_exit() {
+            let _ = proxy.send_event(UserEvent::ChildExited { code, error });
+        }
+
         if scope_polling_active
             && !scope_polling_in_flight
             && last_scope_poll.elapsed() >= scope_interval
@@ -495,6 +499,22 @@ fn handle_webview_message(
                 }
                 Err(e) => {
                     eprintln!("failed to start preview: {e}");
+                    sync_panel_state(
+                        webview,
+                        false,
+                        false,
+                        &display_path(omni_path),
+                        "Failed to start",
+                        Some(e),
+                        0,
+                        &[],
+                        &[],
+                        &[],
+                        input_devices,
+                        output_devices,
+                        options.input_device.as_deref(),
+                        options.output_device.as_deref(),
+                    );
                 }
             }
         }
@@ -514,6 +534,22 @@ fn handle_webview_message(
                 }
                 Err(e) => {
                     eprintln!("failed to restart preview after input device change: {e}");
+                    sync_panel_state(
+                        webview,
+                        false,
+                        false,
+                        &display_path(omni_path),
+                        "Failed to restart",
+                        Some(e),
+                        0,
+                        &[],
+                        &[],
+                        &[],
+                        input_devices,
+                        output_devices,
+                        options.input_device.as_deref(),
+                        options.output_device.as_deref(),
+                    );
                 }
             }
         }
@@ -533,6 +569,22 @@ fn handle_webview_message(
                 }
                 Err(e) => {
                     eprintln!("failed to restart preview after output device change: {e}");
+                    sync_panel_state(
+                        webview,
+                        false,
+                        false,
+                        &display_path(omni_path),
+                        "Failed to restart",
+                        Some(e),
+                        0,
+                        &[],
+                        &[],
+                        &[],
+                        input_devices,
+                        output_devices,
+                        options.input_device.as_deref(),
+                        options.output_device.as_deref(),
+                    );
                 }
             }
         }
