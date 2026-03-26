@@ -689,6 +689,16 @@ pub(super) unsafe fn lower_expr(
                     )
                 }
             };
+            let mut lower_struct_array_arg =
+                |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr, struct_name: &str| unsafe {
+                    lower_struct_array_call_args_in_orc(
+                        &mut *ctx_ptr,
+                        arg_values,
+                        arg_expr,
+                        struct_name,
+                        name,
+                    )
+                };
             let mut lower_array_arg =
                 |arg_values: &mut Vec<LLVMValueRef>,
                  arg_expr: &Expr,
@@ -725,6 +735,7 @@ pub(super) unsafe fn lower_expr(
                 "ORC expression lowering",
                 &mut cast_scalar_arg,
                 &mut lower_struct_arg,
+                &mut lower_struct_array_arg,
                 &mut lower_array_arg,
                 &mut lower_buffer_arg,
             )?;

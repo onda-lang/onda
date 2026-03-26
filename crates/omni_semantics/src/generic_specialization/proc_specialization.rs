@@ -4,6 +4,48 @@ fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into
     errors.push(diag.semantic(message, 0, 0));
 }
 
+fn parse_explicit_proc_array_elem_type_args(
+    name: &str,
+    context: &str,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<(String, Vec<PrimitiveType>)> {
+    let (base, suffix) = name.split_once('<')?;
+    let args_raw = suffix.strip_suffix('>')?;
+    let mut resolved = Vec::<PrimitiveType>::new();
+    for raw in args_raw.split(',') {
+        let ty = match raw.trim() {
+            "f32" => PrimitiveType::F32,
+            "f64" => PrimitiveType::F64,
+            "i32" => PrimitiveType::I32,
+            "i64" => PrimitiveType::I64,
+            "bool" => {
+                push_semantic(
+                    diag,
+                    errors,
+                    format!(
+                        "{context}: 'bool' is not allowed as a generic type argument; only numeric types (f32, f64, i32, i64) are supported"
+                    ),
+                );
+                return None;
+            }
+            other => {
+                push_semantic(
+                    diag,
+                    errors,
+                    format!(
+                        "{context}: generic type argument '{}' is not allowed here; expected concrete primitive type",
+                        other
+                    ),
+                );
+                return None;
+            }
+        };
+        resolved.push(ty);
+    }
+    Some((base.to_owned(), resolved))
+}
+
 pub(crate) fn specialize_generic_proc_event_param_type(
     ty: &EventParamType,
     type_bindings: &HashMap<String, PrimitiveType>,
@@ -870,6 +912,79 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                     rewrite_generic_proc_ctor_expr(
                         value, templates, generated, errors, locals, current_ns,
                     );
+                }
+            }
+            if let ArrayElemType::Struct(elem_name) = &mut spec.elem {
+                if let Some((resolved_base, explicit_type_args)) =
+                    parse_explicit_proc_array_elem_type_args(
+                        elem_name,
+                        "processor array element type",
+                        diag,
+                        errors,
+                    )
+                {
+                    if let Some(template) = templates.get(&resolved_base) {
+                        if let Some(specialized) =
+                            specialize_generic_proc_template(template, &explicit_type_args, errors)
+                        {
+                            let specialized_name = specialized.name.clone();
+                            generated
+                                .entry(specialized_name.clone())
+                                .or_insert(specialized);
+                            *elem_name = specialized_name;
+                            return;
+                        }
+                    }
+                }
+
+                if let Some(inferred_ctor) = init.as_ref().and_then(|values| {
+                    let mut ctor_names = values.iter().filter_map(|value| match value {
+                        Expr::UserCall { name, .. } => Some(name.as_str()),
+                        _ => None,
+                    });
+                    let first = ctor_names.next()?;
+                    ctor_names
+                        .all(|name| name == first)
+                        .then(|| first.to_owned())
+                }) {
+                    *elem_name = inferred_ctor;
+                }
+
+                let resolved_name = if templates.contains_key(elem_name) {
+                    Some(elem_name.clone())
+                } else if elem_name.contains("::") {
+                    None
+                } else {
+                    resolve_generic_proc_template_name(elem_name, current_ns, templates)
+                };
+                if let Some(resolved_name) = resolved_name {
+                    if *elem_name != resolved_name {
+                        *elem_name = resolved_name.clone();
+                    }
+                    if let Some(template) = templates.get(elem_name) {
+                        let type_args_to_use = infer_generic_proc_ctor_type_args(
+                            template,
+                            &[],
+                            &locals.scalar_types,
+                            &locals.array_elem_types,
+                            locals.default_ctor_missing_type_params_to_f32,
+                            diag,
+                            errors,
+                        );
+                        if let Some(type_args_to_use) = type_args_to_use {
+                            if let Some(specialized) = specialize_generic_proc_template(
+                                template,
+                                &type_args_to_use,
+                                errors,
+                            ) {
+                                let specialized_name = specialized.name.clone();
+                                generated
+                                    .entry(specialized_name.clone())
+                                    .or_insert(specialized);
+                                *elem_name = specialized_name;
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -105,6 +105,23 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                         }
                     }
                 }
+                TypedFnParam::StructArray { struct_name } => {
+                    arg_tys.push(i32_ty);
+                    let mut roots = Vec::new();
+                    let mut leaves = Vec::new();
+                    collect_array_struct_bindings(
+                        &struct_fields,
+                        struct_name,
+                        &def.params[idx],
+                        1,
+                        &mut roots,
+                        &mut leaves,
+                        &mut Vec::new(),
+                    )?;
+                    for (_, _, leaf_ty) in &leaves {
+                        arg_tys.push(LLVMPointerType(llvm_ty_for_primitive(context, *leaf_ty), 0));
+                    }
+                }
                 TypedFnParam::Array { elem_ty } => {
                     arg_tys.push(LLVMPointerType(llvm_ty_for_primitive(context, *elem_ty), 0));
                     arg_tys.push(i32_ty);
@@ -336,6 +353,23 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                             }
                         }
                     }
+                }
+            }
+            TypedFnParam::StructArray { struct_name } => {
+                arg_tys.push(i32_ty);
+                let mut roots = Vec::new();
+                let mut leaves = Vec::new();
+                collect_array_struct_bindings(
+                    struct_fields,
+                    struct_name,
+                    &def.params[param_idx],
+                    1,
+                    &mut roots,
+                    &mut leaves,
+                    &mut Vec::new(),
+                )?;
+                for (_, _, leaf_ty) in &leaves {
+                    arg_tys.push(LLVMPointerType(llvm_ty_for_primitive(context, *leaf_ty), 0));
                 }
             }
             TypedFnParam::Array { .. } => {

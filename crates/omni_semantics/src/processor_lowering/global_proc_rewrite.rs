@@ -30,6 +30,51 @@ fn runtime_proc_array_active_symbol(array_base: &str) -> String {
     )
 }
 
+fn specialized_proc_template_bases(proc_symbols: &HashSet<String>) -> HashSet<String> {
+    proc_symbols
+        .iter()
+        .filter_map(|name| {
+            name.rsplit_once(".__gen__")
+                .map(|(base, _)| base.to_owned())
+        })
+        .collect()
+}
+
+fn resolve_proc_ctor_symbol_name(
+    ctor_name: &str,
+    current_ns: &str,
+    proc_symbols: &HashSet<String>,
+) -> Option<String> {
+    let direct = if ctor_name.contains("::") {
+        proc_symbols
+            .contains(ctor_name)
+            .then_some(ctor_name.to_owned())
+    } else {
+        resolve_unqualified_symbol_name(ctor_name, current_ns, proc_symbols)
+    };
+    if direct.is_some() {
+        return direct;
+    }
+
+    let resolved_base = if ctor_name.contains("::") {
+        ctor_name.to_owned()
+    } else {
+        let template_bases = specialized_proc_template_bases(proc_symbols);
+        resolve_unqualified_symbol_name(ctor_name, current_ns, &template_bases)?
+    };
+    let prefix = format!("{resolved_base}.__gen__");
+    let mut matches = proc_symbols
+        .iter()
+        .filter(|name| name.starts_with(&prefix))
+        .cloned()
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    }
+}
+
 fn try_dynamic_proc_call_meta<'a>(
     expr: &'a Expr,
     proc_api: &HashMap<String, ProcApi>,
@@ -490,15 +535,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             {
                 let resolved_proc_ctor = match &spec.elem {
                     ArrayElemType::Struct(elem_name) => {
-                        if elem_name.contains("::") {
-                            if proc_symbols.contains(elem_name) {
-                                Some(elem_name.clone())
-                            } else {
-                                None
-                            }
-                        } else {
-                            resolve_unqualified_symbol_name(elem_name, "", &proc_symbols)
-                        }
+                        resolve_proc_ctor_symbol_name(elem_name, "", &proc_symbols)
                     }
                     ArrayElemType::Primitive(_) => None,
                 };
@@ -561,19 +598,8 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     ..
                                 } = value
                                 {
-                                    let resolved_ctor = if ctor_name.contains("::") {
-                                        if proc_symbols.contains(ctor_name) {
-                                            Some(ctor_name.clone())
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        resolve_unqualified_symbol_name(
-                                            ctor_name,
-                                            "",
-                                            &proc_symbols,
-                                        )
-                                    };
+                                    let resolved_ctor =
+                                        resolve_proc_ctor_symbol_name(ctor_name, "", &proc_symbols);
                                     if let Some(resolved_ctor) = resolved_ctor {
                                         if resolved_ctor != proc_ctor {
                                             with_expr_diag_context(value, |expr_diag| {
@@ -971,6 +997,16 @@ pub(super) fn rewrite_top_level_proc_calls(
                     &proc_api,
                     errors,
                 );
+                let mut rewritten_sample = Vec::<Stmt>::new();
+                for stmt in std::mem::take(&mut stmts.body) {
+                    rewritten_sample.extend(rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
+                        stmt,
+                        &proc_api,
+                        &global_proc_array_slots,
+                        &mut runtime_managed_arrays,
+                    ));
+                }
+                stmts.body = rewritten_sample;
             }
             Block::Def(def) => {
                 let mut proc_vars = HashMap::<String, ProcCallInstance>::new();
@@ -1086,6 +1122,32 @@ pub(super) fn rewrite_top_level_proc_calls(
             }
         }
 
+        if !program.blocks.iter().any(|b| matches!(b, Block::Block(_))) {
+            if let Some(sample_idx) = program
+                .blocks
+                .iter()
+                .position(|b| matches!(b, Block::Sample(_)))
+            {
+                let sample_body = match program.blocks.remove(sample_idx) {
+                    Block::Sample(sample) => sample,
+                    _ => SampleBlock {
+                        loc: Default::default(),
+                        oversample_factor: None,
+                        body: Vec::new(),
+                    },
+                };
+                program.blocks.insert(
+                    sample_idx,
+                    Block::Block(BlockExec {
+                        loc: sample_body.loc,
+                        pre: Vec::new(),
+                        sample: Some(sample_body),
+                        post: Vec::new(),
+                    }),
+                );
+            }
+        }
+
         if let Some(Block::Block(exec)) = program
             .blocks
             .iter_mut()
@@ -1178,5 +1240,73 @@ pub(super) fn rewrite_top_level_proc_calls(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AnalysisOptions;
+    use omni_frontend::{parse_program, AssignTarget, Expr};
+
+    #[test]
+    fn sample_only_dynamic_proc_array_calls_gain_runtime_block_hooks() {
+        let src = r#"
+proc Voice:
+  outs:
+    out1
+  init:
+    phase = 0.0
+  block:
+    step = 0.125
+    sample:
+      phase = phase + step
+      out1 = phase
+
+outs:
+  out1
+
+init:
+  voices: Voice[2] = Voice()
+
+sample:
+  mix = 0.0
+  for i in 0..2:
+    mix = mix + voices[i]()
+  out1 = mix
+"#;
+        let typed = analyze_with_options(
+            parse_program(src).expect("parse should succeed"),
+            AnalysisOptions::default(),
+        )
+        .expect("dynamic proc-array sample should analyze");
+
+        assert!(
+            typed
+                .array_vars
+                .iter()
+                .any(|array| array.name == "__omni_proc_block_active_voices"
+                    && array.elem_ty == PrimitiveType::Bool
+                    && array.len == 2),
+            "expected runtime managed active array in typed program: {:?}",
+            typed.array_vars
+        );
+        assert!(
+            typed.block_pre.iter().any(|stmt| matches!(
+                stmt,
+                Stmt::Assign {
+                    target: AssignTarget::Index { base, index },
+                    expr: Expr::Bool { value: false, .. },
+                    ..
+                } if base == "__omni_proc_block_active_voices"
+                    && matches!(index, Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. })
+            )),
+            "expected managed active-slot reset in block_pre: {:?}",
+            typed.block_pre
+        );
+        assert!(
+            !typed.block_post.is_empty(),
+            "expected managed proc-array post hooks in block_post"
+        );
     }
 }

@@ -402,6 +402,48 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
     Ok(())
 }
 
+pub(super) unsafe fn lower_struct_array_call_args_in_def(
+    ctx: &mut DefLoweringCtx<'_>,
+    out_args: &mut Vec<LLVMValueRef>,
+    arg_expr: &Expr,
+    struct_name: &str,
+    callee_name: &str,
+) -> Result<(), Diagnostic> {
+    let Expr::Var { name: base, .. } = arg_expr else {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' expects struct-array '{struct_name}[]' argument as a variable in def lowering"
+        )));
+    };
+    let actual_struct = ctx.array_struct_roots.get(base).ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "function '{callee_name}' expects struct-array '{struct_name}[]' argument, but '{base}' is not a struct-array root in def lowering"
+        ))
+    })?;
+    if actual_struct != struct_name {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' expects struct-array '{struct_name}[]' argument, but '{base}' has element type '{actual_struct}' in def lowering"
+        )));
+    }
+    let len_val = ctx.array_len_values.get(base).copied().unwrap_or_else(|| {
+        LLVMConstInt(
+            ctx.i32_ty,
+            ctx.array_len.get(base).copied().unwrap_or(1) as u64,
+            0,
+        )
+    });
+    out_args.push(len_val);
+    for (leaf_name, _leaf_ty) in
+        collect_struct_array_leaf_symbols(ctx.struct_fields, struct_name, base, 1)?
+    {
+        out_args.push(find_def_array_ptr(ctx, &leaf_name).ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "missing def array pointer '{leaf_name}' while lowering struct-array argument for '{callee_name}'"
+            ))
+        })?);
+    }
+    Ok(())
+}
+
 unsafe fn load_def_array_ptr_at_index(
     ctx: &mut DefLoweringCtx<'_>,
     base: &str,

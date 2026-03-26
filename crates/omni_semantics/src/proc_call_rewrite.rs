@@ -1525,6 +1525,10 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     );
                     return;
                 };
+                if let Some(param_slot) = api.params.get(&field_name) {
+                    *expr = Expr::var(format!("{proc_var}.{}", param_slot.name));
+                    return;
+                }
                 let Some(out_idx) = resolve_proc_output_field_index(
                     api,
                     &field_name,

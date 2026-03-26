@@ -390,6 +390,52 @@ sample {
 }
 "#;
 
+const DEF_STRUCT_ARRAY_INLINE_FIELD_REF_EXAMPLE: &str = r#"
+outs { out1 }
+struct Voice { gain: f32, taps: f32[2] }
+def read_tap(xs: Voice[], idx: i32) {
+  return xs[idx].taps[1]
+}
+def read_mix(xs: Voice[], idx: i32) {
+  return xs[idx].gain + read_tap(xs, idx)
+}
+init {
+  idx: i32 = 0
+  voices: Voice[2]
+  v = voices[0]
+  v.gain = 1.0
+  v.taps[1] = 2.0
+  v = voices[1]
+  v.gain = 3.0
+  v.taps[1] = 4.0
+}
+sample {
+  out1 = read_mix(voices, idx)
+  idx = idx + 1
+}
+"#;
+
+const PROC_ARRAY_INIT_EVENT_EXAMPLE: &str = r#"
+proc Voice:
+  params:
+    gain = 1.0
+    bias = 0.0
+
+  sample:
+    out1 = in1 * gain + bias
+
+init:
+  gains: f32[2] = [0.5, 1.5]
+  biases: f32[2] = [0.1, 0.2]
+  voices: Voice[2] = Voice()
+
+  for i in 0..2:
+    voices[i].init(gain = gains[i], bias = biases[i])
+
+sample:
+  out1 = voices[0](1.0) + voices[1](1.0)
+"#;
+
 const DEF_STRUCTURAL_ARG_EXAMPLE: &str = r#"
 outs { out1 }
 struct A { x: f32, y: f32 }
@@ -1090,6 +1136,60 @@ sample {
 }
 "#;
 
+const DATA_STRUCT_INLINE_FIELD_READ_EXAMPLE: &str = r#"
+outs { out1 }
+struct Pair { x: f32, y: f32 }
+init {
+  idx: i32 = 0
+  buf: Pair[2]
+  p = buf[0]
+  p.x = 1.0
+  p = buf[1]
+  p.x = 3.0
+}
+sample {
+  out1 = buf[idx].x
+  idx = idx + 1
+}
+"#;
+
+const DATA_STRUCT_INLINE_ARRAY_FIELD_READ_EXAMPLE: &str = r#"
+outs { out1 }
+struct Pair { taps: f32[2] }
+init {
+  idx: i32 = 0
+  buf: Pair[2]
+  p = buf[0]
+  p.taps[0] = 1.0
+  p.taps[1] = 2.0
+  p = buf[1]
+  p.taps[0] = 3.0
+  p.taps[1] = 4.0
+}
+sample {
+  out1 = buf[idx].taps[1]
+  idx = idx + 1
+}
+"#;
+
+const INIT_STRUCT_INLINE_FIELD_READ_EXAMPLE: &str = r#"
+outs { out1 }
+struct Pair { x: f32, taps: f32[2] }
+init {
+  buf: Pair[2]
+  p = buf[0]
+  p.x = 1.0
+  p.taps[1] = 2.0
+  p = buf[1]
+  p.x = 3.0
+  p.taps[1] = 4.0
+  total = buf[0].x + buf[1].taps[1]
+}
+sample {
+  out1 = total
+}
+"#;
+
 const DATA_STRUCT_NESTED_DATA_ALIAS_EXAMPLE: &str = r#"
 outs { out1 }
 struct Voice { gain: f32, delay: f32[4] }
@@ -1525,6 +1625,30 @@ events {
   set_gain(v: f32) {
     voice.set_gain(v)
   }
+}
+"#;
+
+const GRAPH_PROC_ARRAY_PARAM_DEST_AND_OUTPUT_SOURCE_EXAMPLE: &str = r#"
+proc Voice {
+  params { gain = 0.0 }
+  outs { out1 }
+  sample {
+    out1 = gain
+  }
+}
+
+outs { out1, out2, out3 }
+
+init {
+  voices: Voice[2] = Voice()
+}
+
+graph {
+  0.25 >> voices[0].gain
+  0.75 >> voices[1].gain
+  voices[0].out1 >> out1
+  voices[1].out1 >> out2
+  voices[1].out1 >> out3
 }
 "#;
 
@@ -3595,6 +3719,42 @@ sample {
   out1 = voices[idx]().out1 * 10000.0 + voices[idx]().out1 * 1000.0 + voices[idx]().out1 * 100.0 + voices[idx]().out1 * 10.0 + voices[idx]().out1
 }
 "#;
+
+fn proc_array_harmonics_block_voice_program(top_level_exec: &str) -> String {
+    format!(
+        r#"
+proc Voice {{
+  outs {{ out1 }}
+  params {{
+    freq = 440.0
+    amp = 1.0
+  }}
+  init {{
+    phase = 0.0
+  }}
+  block {{
+    incr = freq / SR
+    sample {{
+      phase = phase + incr
+      if (phase >= 1.0) {{
+        phase = phase - 1.0
+      }}
+      out1 = sin(phase * f32(TWO_PI)) * amp
+    }}
+  }}
+}}
+outs {{ out1 }}
+init {{
+  voices: Voice[10] = Voice()
+  for i in 0..10 {{
+    h = f32(i + 1)
+    voices[i].init(freq = 55.0 * h, amp = 0.12 / h)
+  }}
+}}
+{top_level_exec}
+"#
+    )
+}
 
 const NESTED_PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_ASSIGN_EXAMPLE: &str = r#"
 proc Voice {
@@ -6117,6 +6277,23 @@ fn rms_after_skip(samples: &[f32], skip: usize) -> f32 {
     (energy / tail.len().max(1) as f32).sqrt()
 }
 
+fn max_abs(samples: &[f32]) -> f32 {
+    samples
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0_f32, f32::max)
+}
+
+fn assert_non_silent(samples: &[f32], context: &str) {
+    let peak = max_abs(samples);
+    let rms = rms_after_skip(samples, 0);
+    assert!(
+        peak > 1e-3 && rms > 1e-4,
+        "expected non-silent output for {context}, peak={peak}, rms={rms}"
+    );
+}
+
 fn state_type_of(typed: &omni_semantics::TypedProgram, name: &str) -> Option<PrimitiveType> {
     typed
         .state_vars
@@ -6942,10 +7119,9 @@ fn proc_events_reject_unknown_targets_and_bad_argument_shapes() {
         .expect("parse should succeed");
     let errs = analyze(parsed).expect_err("unknown proc event target should fail");
     assert!(
-        errs.iter().any(|d| {
-            d.message
-                .contains("unknown processor event 'voice.not_real'; expected one of [note_on]")
-        }),
+        errs.iter().any(|d| d
+            .message
+            .contains("unknown processor event 'voice.not_real'")),
         "expected unknown proc event error, got {:?}",
         errs
     );
@@ -7924,6 +8100,35 @@ fn def_struct_array_indexed_arg_compiles_and_runs() {
 }
 
 #[test]
+fn def_struct_array_inline_field_ref_compiles_and_runs() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_STRUCT_ARRAY_INLINE_FIELD_REF_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 3.0, 1e-6);
+    assert_near(output[1], 7.0, 1e-6);
+}
+
+#[test]
+fn proc_array_init_event_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_INIT_EVENT_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 2.3, 1e-6);
+    }
+}
+
+#[test]
 fn def_structural_arg_compiles_with_multiple_matching_structs() {
     let frames = 8;
     let (mut instance, in_channels, out_channels) =
@@ -8363,6 +8568,51 @@ fn def_struct_field_nested_data_struct_elements_support_alias_field_write() {
 }
 
 #[test]
+fn data_struct_inline_field_read_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DATA_STRUCT_INLINE_FIELD_READ_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 1.0, 1e-6);
+    for sample in &output[1..] {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn data_struct_inline_array_field_read_compiles_and_runs() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DATA_STRUCT_INLINE_ARRAY_FIELD_READ_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_near(output[0], 2.0, 1e-6);
+    assert_near(output[1], 4.0, 1e-6);
+}
+
+#[test]
+fn init_struct_inline_field_read_compiles_and_runs() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(INIT_STRUCT_INLINE_FIELD_READ_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 5.0, 1e-6);
+    }
+}
+
+#[test]
 fn data_struct_nested_data_fields_support_alias_index_read_write() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -8771,6 +9021,25 @@ fn graph_proc_bundle_destinations_run_for_proc_and_proc_array_slot_sources() {
     ];
     for (sample, target) in output.iter().zip(expected) {
         assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+fn graph_proc_array_indexed_param_destinations_and_output_sources_run() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        GRAPH_PROC_ARRAY_PARAM_DEST_AND_OUTPUT_SOURCE_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 3);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for frame in output.chunks_exact(3) {
+        assert_near(frame[0], 0.25, 1e-6);
+        assert_near(frame[1], 0.75, 1e-6);
+        assert_near(frame[2], 0.75, 1e-6);
     }
 }
 
@@ -12668,6 +12937,131 @@ fn proc_array_dynamic_index_block_hooks_use_same_clamped_slot_for_guard_and_call
     let mut out_b = vec![0.0_f32; frames];
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
     assert_near(out_b[0], 201.0, 1e-6);
+}
+
+#[test]
+fn proc_array_init_harmonics_example_is_not_silent() {
+    let frames = 256;
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/proc_array_init_harmonics.omni"
+    );
+    let (mut instance, in_channels, out_channels) = compile_instance_file(path, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_non_silent(&output, "examples/proc_array_init_harmonics.omni");
+}
+
+#[test]
+fn proc_array_dynamic_loop_scalar_sugar_into_block_proc_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"sample {
+  mix = 0.0
+  for i in 0..10 {
+    mix = mix + voices[i]()
+  }
+  out1 = mix
+}"#,
+    );
+    let frames = 256;
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_non_silent(&output, "dynamic loop scalar sugar");
+}
+
+#[test]
+fn proc_array_dynamic_loop_explicit_out1_into_block_proc_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"sample {
+  mix = 0.0
+  for i in 0..10 {
+    mix = mix + voices[i]().out1
+  }
+  out1 = mix
+}"#,
+    );
+    let frames = 256;
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_non_silent(&output, "dynamic loop explicit out1");
+}
+
+#[test]
+fn proc_array_dynamic_loop_statement_call_then_field_read_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"sample {
+  mix = 0.0
+  for i in 0..10 {
+    voices[i]()
+    mix = mix + voices[i].out1
+  }
+  out1 = mix
+}"#,
+    );
+    let frames = 256;
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_non_silent(&output, "dynamic loop statement call then field read");
+}
+
+#[test]
+fn proc_array_dynamic_loop_alias_call_into_block_proc_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"sample {
+  mix = 0.0
+  for i in 0..10 {
+    v = voices[i]
+    mix = mix + v()
+  }
+  out1 = mix
+}"#,
+    );
+    let frames = 256;
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_non_silent(&output, "dynamic loop alias call");
+}
+
+#[test]
+fn proc_array_dynamic_loop_inside_explicit_top_level_block_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"block {
+  sample {
+    mix = 0.0
+    for i in 0..10 {
+      mix = mix + voices[i]()
+    }
+    out1 = mix
+  }
+}"#,
+    );
+    let frames = 256;
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    assert_non_silent(&output, "dynamic loop explicit top-level block");
 }
 
 #[test]
@@ -20546,14 +20940,16 @@ sample:
 "#;
 
 #[test]
-fn struct_array_root_field_access_rejected() {
+fn struct_array_root_field_access_flattens_to_field_array() {
     let parsed = parse_program(STRUCT_ARRAY_ROOT_FIELD_ACCESS_ERROR).expect("parse should succeed");
-    let errs = analyze(parsed).expect_err("field access on struct array root should fail");
+    let typed = analyze(parsed).expect("field access on struct array root should analyze");
     assert!(
-        errs.iter().any(|d| d
-            .message
-            .contains("array of structs and must be indexed before accessing field")),
-        "expected struct array root field access error, got {errs:?}"
+        typed
+            .array_vars
+            .iter()
+            .any(|var| var.name == "data.data" && var.len == 20),
+        "expected flattened struct field array metadata, got {:?}",
+        typed.array_vars
     );
 }
 

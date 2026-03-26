@@ -109,6 +109,11 @@
 - Array type syntax: `T[N]` across declarations (with current scope rules enforced in semantics).
 - Typed primitive array declarations with inline array-literal initializers are supported in `init` / `sample` / `def` (for example `a: f32[2] = [0.5, 0.8]`).
 - Untyped array literal declarations are supported for local/state array declarations in executable blocks (`init` top-level + proc init, `sample`/`block`, `def`, and event handlers), with first-element type inference (for example `a = [0.5, 0.8]`, `a = [f64(0.0), 1.0]`, `a = [0, 1]`, `a = [i64(0), 1]`).
+- Data-struct arrays support one inline field-access dot:
+  - `base[idx].field`
+  - `base[idx].field[fidx]`
+  - Works in `init`, `sample`, `block`, and `def` bodies when the root is a real data-struct array.
+  - Deeper inline chains are still rejected (`base[idx].field.other`, `base[idx].field[fidx].other`).
 - Scalar `ins` and scalar `params` support optional declaration ranges and defaults:
   - `in1 = 440 {0.01, 22000}` (min+max)
   - `in1 = 440 {22000}` (max-only)
@@ -215,6 +220,7 @@
   - explicit struct-typed params are nominal.
   - typed and duck-typed buffer params are supported; duck-typed buffer calls specialize by caller shape/type.
   - untyped indexable params (`x[i]`, `x[ch][i]`) infer as a shared indexable/buffer ABI and can specialize from both primitive arrays and buffers at call sites.
+  - explicit struct-array params such as `xs: Voice[]` are supported as by-reference array-of-struct parameters and allow the same one-dot inline reads inside the def body (`xs[idx].field`, `xs[idx].field[j]`).
   - generic def parameter types are supported with call-site monomorphization:
     - typed array params (`arr: f32[]`, `arr: i64[]`) — no monomorphization needed.
     - untyped array params (`arr: []`) — monomorphized per call site by element type.
@@ -275,6 +281,7 @@
     - `voices[idx](...)`
     - `voices[idx](...).outN` / named output endpoint
     - statement call form: `voices[idx](...)`
+    - indexed param/field access: `voices[idx].gain`
     - proc-event forwarding: `voices[idx].note_on(...)`
     - proc aliasing is supported (`a = voices[idx]`), and call/output access on the alias lowers to the same slot dispatch semantics.
   - Runtime indices are clamped to the valid slot range (`0..len-1`).

@@ -788,7 +788,7 @@ fn build_proc_lowering_env(
             &callable_symbols_for_method_sugar,
         );
     }
-    let proc_defs_by_name = proc_defs
+    let mut proc_defs_by_name = proc_defs
         .iter()
         .map(|p| (p.name.clone(), p.clone()))
         .collect::<HashMap<_, _>>();
@@ -796,7 +796,7 @@ fn build_proc_lowering_env(
     let mut base_shapes = HashMap::<String, ProcBaseShape>::new();
     let mut proc_api = HashMap::<String, ProcApi>::new();
     let mut proc_order = Vec::<String>::new();
-    for proc in &proc_defs {
+    for proc in &mut proc_defs {
         let proc_diag = DiagCtx::new(proc.loc);
         if !proc.has_sample_block {
             push_semantic(
@@ -862,6 +862,10 @@ fn build_proc_lowering_env(
         base_shapes.insert(proc.name.clone(), shape);
         proc_order.push(proc.name.clone());
     }
+    proc_defs_by_name = proc_defs
+        .iter()
+        .map(|p| (p.name.clone(), p.clone()))
+        .collect::<HashMap<_, _>>();
 
     let mut lowering_shapes = HashMap::<String, ProcLoweringShape>::new();
     for proc_name in &proc_order {

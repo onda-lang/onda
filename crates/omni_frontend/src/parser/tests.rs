@@ -2878,6 +2878,49 @@ sample {
 }
 
 #[test]
+fn parses_proc_indexed_param_field_expression() {
+    let src = r#"
+sample {
+  out1 = voices[1].gain
+}
+"#;
+
+    let program = parse_program(src).expect("parse_program should succeed");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign { expr, .. } = &sample[0] else {
+        panic!("expected assignment");
+    };
+    match expr {
+        Expr::UserCall { name, args, .. } => {
+            assert!(
+                name.starts_with(PROC_FIELD_SENTINEL_PREFIX),
+                "expected proc field sentinel call"
+            );
+            assert!(args.iter().any(|a| {
+                a.name.as_deref() == Some(PROC_INDEX_BASE_ARG)
+                    && matches!(a.expr, Expr::Var { name: ref base, .. } if base == "voices")
+            }));
+            assert!(args.iter().any(|a| {
+                a.name.as_deref() == Some(PROC_INDEX_EXPR_ARG)
+                    && matches!(a.expr, Expr::Int { value: 1, .. })
+            }));
+            assert!(args.iter().any(|a| {
+                a.name.as_deref() == Some(PROC_FIELD_SENTINEL_ARG)
+                    && matches!(a.expr, Expr::Var { name: ref field, .. } if field == "gain")
+            }));
+        }
+        other => panic!("expected encoded proc indexed param field expression, got {other:?}"),
+    }
+}
+
+#[test]
 fn parses_proc_indexed_event_call_expression() {
     let src = r#"
 sample {
@@ -5212,6 +5255,56 @@ graph {
 }
 
 #[test]
+fn parses_graph_proc_array_param_slot_sources() {
+    let src = r#"
+proc Voice {
+  params { gain = 0.0 }
+  outs { out1 }
+  sample { out1 = gain }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = Voice()
+}
+graph {
+  voices[1].gain >> out1
+}
+"#;
+
+    let program = parse_program(src).expect("graph proc-array param source program should parse");
+    let graph = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Graph(graph) => Some(graph),
+            _ => None,
+        })
+        .expect("graph block");
+
+    match &graph.edges[0].source {
+        Expr::UserCall { name, args, .. } => {
+            assert_eq!(
+                name,
+                &format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}")
+            );
+            assert!(args.iter().any(|arg| {
+                arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG)
+                    && matches!(arg.expr, Expr::Var { name: ref base, .. } if base == "voices")
+            }));
+            assert!(args.iter().any(|arg| {
+                arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG)
+                    && matches!(arg.expr, Expr::Int { value: 1, .. })
+            }));
+            assert!(args.iter().any(|arg| {
+                arg.name.as_deref() == Some(PROC_FIELD_SENTINEL_ARG)
+                    && matches!(arg.expr, Expr::Var { name: ref field, .. } if field == "gain")
+            }));
+        }
+        other => panic!("expected graph proc-array param source sentinel call, got {other:?}"),
+    }
+}
+
+#[test]
 fn parses_graph_proc_array_output_array_slot_sources() {
     let src = r#"
 proc Voice {
@@ -5263,6 +5356,26 @@ graph {
         }
         other => panic!("expected graph source sentinel call, got {other:?}"),
     }
+}
+
+#[test]
+fn rejects_multi_dot_inline_indexed_member_chain() {
+    let src = r#"
+outs { out1 }
+struct Node { value: f32 }
+struct Wrapper { nodes: Node[2] }
+init {
+  data: Wrapper[2]
+}
+sample {
+  out1 = data[0].nodes[0].value
+}
+"#;
+
+    assert!(
+        parse_program(src).is_err(),
+        "multiple inline dot levels after indexed member access should be rejected"
+    );
 }
 
 #[test]

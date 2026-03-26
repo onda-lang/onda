@@ -342,6 +342,12 @@ pub(crate) fn infer_def_param_kinds(
                 ..
             }) = def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
+                if !def.type_params.contains(param_ty) && struct_defs.contains_key(param_ty) {
+                    typed.push(TypedFnParam::StructArray {
+                        struct_name: param_ty.clone(),
+                    });
+                    continue;
+                }
                 push_semantic(
                     param_diag,
                     errors,
@@ -358,6 +364,12 @@ pub(crate) fn infer_def_param_kinds(
             if let Some(FnParamType::ArrayGeneric(param_ty)) =
                 def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
+                if !def.type_params.contains(param_ty) && struct_defs.contains_key(param_ty) {
+                    typed.push(TypedFnParam::StructArray {
+                        struct_name: param_ty.clone(),
+                    });
+                    continue;
+                }
                 push_semantic(
                     param_diag,
                     errors,
@@ -1824,6 +1836,19 @@ pub(crate) fn param_struct_map_from_kinds(
     let mut out = HashMap::new();
     for (name, kind) in param_names.iter().zip(kinds.iter()) {
         if let TypedFnParam::Struct { struct_name } = kind {
+            out.insert(name.clone(), struct_name.clone());
+        }
+    }
+    out
+}
+
+pub(crate) fn param_struct_array_map_from_kinds(
+    param_names: &[String],
+    kinds: &[TypedFnParam],
+) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (name, kind) in param_names.iter().zip(kinds.iter()) {
+        if let TypedFnParam::StructArray { struct_name } = kind {
             out.insert(name.clone(), struct_name.clone());
         }
     }

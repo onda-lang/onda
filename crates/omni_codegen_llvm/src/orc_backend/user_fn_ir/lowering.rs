@@ -264,6 +264,67 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                         }
                     }
                 }
+                TypedFnParam::StructArray { struct_name } => {
+                    let len_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                    if len_val.is_null() {
+                        return Err(Diagnostic::internal(format!(
+                            "missing LLVM struct-array len param {} for function '{}'",
+                            llvm_param_idx, def.name
+                        )));
+                    }
+                    llvm_param_idx += 1;
+                    let mut roots = Vec::new();
+                    let mut leaves = Vec::new();
+                    collect_array_struct_bindings(
+                        ctx.struct_fields,
+                        struct_name,
+                        param_name,
+                        1,
+                        &mut roots,
+                        &mut leaves,
+                        &mut Vec::new(),
+                    )?;
+                    for (root_name, root_struct, root_len) in roots {
+                        ctx.array_struct_roots
+                            .insert(root_name.clone(), root_struct);
+                        ctx.array_len.insert(root_name.clone(), root_len);
+                        let runtime_len = if root_len == 1 {
+                            len_val
+                        } else {
+                            LLVMBuildMul(
+                                ctx.builder,
+                                len_val,
+                                LLVMConstInt(ctx.i32_ty, root_len as u64, 0),
+                                b"struct_arr_root_len\0".as_ptr().cast(),
+                            )
+                        };
+                        ctx.array_len_values.insert(root_name, runtime_len);
+                    }
+                    for (leaf_name, leaf_len, leaf_ty) in leaves {
+                        let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                        if param_val.is_null() {
+                            return Err(Diagnostic::internal(format!(
+                                "missing LLVM struct-array leaf param {} for function '{}'",
+                                llvm_param_idx, def.name
+                            )));
+                        }
+                        ctx.array_ptrs.insert(leaf_name.clone(), param_val);
+                        ctx.array_len.insert(leaf_name.clone(), leaf_len);
+                        let runtime_len = if leaf_len == 1 {
+                            len_val
+                        } else {
+                            LLVMBuildMul(
+                                ctx.builder,
+                                len_val,
+                                LLVMConstInt(ctx.i32_ty, leaf_len as u64, 0),
+                                b"struct_arr_leaf_len\0".as_ptr().cast(),
+                            )
+                        };
+                        ctx.array_len_values.insert(leaf_name.clone(), runtime_len);
+                        ctx.array_elem_ty.insert(leaf_name, leaf_ty);
+                        llvm_param_idx += 1;
+                    }
+                }
                 TypedFnParam::Array { .. } => {
                     let (elem_ty, len) = array_param_types
                         .get(array_param_idx)

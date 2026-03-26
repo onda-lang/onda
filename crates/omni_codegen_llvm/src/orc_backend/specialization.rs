@@ -102,6 +102,7 @@ pub(super) fn default_scalar_signature(def: &TypedFunction) -> Vec<PrimitiveType
         .filter_map(|k| match k {
             TypedFnParam::Scalar { ty } => Some(resolve_scalar_param_type(*ty, PrimitiveType::F32)),
             TypedFnParam::Struct { .. } => None,
+            TypedFnParam::StructArray { .. } => None,
             TypedFnParam::Array { .. } => None,
             TypedFnParam::Buffer { .. } => None,
             TypedFnParam::Tuple { .. } => None,
@@ -125,7 +126,9 @@ pub(super) fn count_param_kinds(param_kinds: &[TypedFnParam]) -> (usize, usize, 
             TypedFnParam::Scalar { .. } => scalar += 1,
             TypedFnParam::Array { .. } => array += 1,
             TypedFnParam::Buffer { .. } => buffer += 1,
-            TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
+            TypedFnParam::Struct { .. }
+            | TypedFnParam::StructArray { .. }
+            | TypedFnParam::Tuple { .. } => {}
         }
     }
     (scalar, array, buffer)
@@ -539,7 +542,9 @@ pub(super) fn infer_specialized_expr_return_type(
                     TypedFnParam::Buffer { elem_ty, channels } => {
                         buffer_types.push((*elem_ty, channels.clone()));
                     }
-                    TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
+                    TypedFnParam::Struct { .. }
+                    | TypedFnParam::StructArray { .. }
+                    | TypedFnParam::Tuple { .. } => {}
                 }
             }
             let explicit_type_args = resolve_explicit_call_type_args_for_codegen(
@@ -635,7 +640,9 @@ fn infer_user_call_return_type(
             TypedFnParam::Buffer { elem_ty, channels } => {
                 buffer_types.push((*elem_ty, channels.clone()));
             }
-            TypedFnParam::Struct { .. } | TypedFnParam::Tuple { .. } => {}
+            TypedFnParam::Struct { .. }
+            | TypedFnParam::StructArray { .. }
+            | TypedFnParam::Tuple { .. } => {}
         }
     }
     let explicit_type_args =
@@ -892,6 +899,29 @@ pub(super) fn infer_specialized_def_return_type(
                         .unwrap_or(*elem_ty);
                     array_idx += 1;
                     locals.insert(param_name.clone(), param_ty);
+                }
+                TypedFnParam::StructArray { struct_name } => {
+                    if let Some(fields) = registry.struct_fields.get(struct_name) {
+                        for field in fields {
+                            let flat = format!("{param_name}.{}", field.name);
+                            match field.ty {
+                                TypedFieldType::Scalar(prim) => {
+                                    locals.insert(flat, prim);
+                                }
+                                TypedFieldType::Tuple(ref elem_tys) => {
+                                    for (idx, prim) in elem_tys.iter().enumerate() {
+                                        locals.insert(format!("{flat}.__{idx}"), *prim);
+                                    }
+                                }
+                                TypedFieldType::Array(_) => {
+                                    if let Some(elem_ty) = field.array_elem_ty {
+                                        locals.insert(flat, elem_ty);
+                                    }
+                                }
+                                TypedFieldType::Struct => {}
+                            }
+                        }
+                    }
                 }
                 TypedFnParam::Struct { struct_name } => {
                     if let Some(fields) = registry.struct_fields.get(struct_name) {

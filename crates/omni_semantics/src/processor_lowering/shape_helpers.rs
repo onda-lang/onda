@@ -137,7 +137,7 @@ fn is_proc_output_alias_name(name: &str, out_count: usize) -> bool {
 }
 
 pub(super) fn compute_proc_shape(
-    proc: &omni_frontend::ProcessorDef,
+    proc: &mut omni_frontend::ProcessorDef,
     sample_oversample_factor: usize,
     options: AnalysisOptions,
     proc_symbols: &HashSet<String>,
@@ -347,6 +347,7 @@ pub(super) fn compute_proc_shape(
         },
         init_default_ty,
         proc_resolution,
+        top_level_proc_symbols: None,
     };
     let mut init_st = InitAnalysisState {
         known_scalars: HashSet::new(),
@@ -388,6 +389,47 @@ pub(super) fn compute_proc_shape(
     let init_st_type_args = init_st.struct_instance_type_args;
     let mut proc_state_tuples = init_st.state_tuples;
     let mut proc_struct_instances_typed = proc_struct_instances.clone();
+
+    rewrite_struct_array_inline_field_stmts(
+        &mut proc.init,
+        &proc_state_array_struct_roots,
+        &typed_struct_defs,
+        errors,
+    );
+    rewrite_struct_array_inline_field_stmts(
+        &mut proc.block_pre,
+        &proc_state_array_struct_roots,
+        &typed_struct_defs,
+        errors,
+    );
+    rewrite_struct_array_inline_field_stmts(
+        &mut proc.block_post,
+        &proc_state_array_struct_roots,
+        &typed_struct_defs,
+        errors,
+    );
+    rewrite_struct_array_inline_field_stmts(
+        &mut proc.sample,
+        &proc_state_array_struct_roots,
+        &typed_struct_defs,
+        errors,
+    );
+    for event in &mut proc.events {
+        rewrite_struct_array_inline_field_stmts(
+            &mut event.body,
+            &proc_state_array_struct_roots,
+            &typed_struct_defs,
+            errors,
+        );
+    }
+    for def in &mut proc.local_defs {
+        rewrite_struct_array_inline_field_stmts(
+            &mut def.body,
+            &proc_state_array_struct_roots,
+            &typed_struct_defs,
+            errors,
+        );
+    }
 
     // Add buffer prefix entries so has_declared_buffer_symbol / validate_buffer_param_call_arg work
     for buffer in &buffer_specs {

@@ -226,6 +226,9 @@ pub enum TypedFnParam {
     Struct {
         struct_name: String,
     },
+    StructArray {
+        struct_name: String,
+    },
     Array {
         elem_ty: PrimitiveType,
     },
@@ -782,5 +785,29 @@ mod tests {
 
         assert_eq!((diag.line, diag.column), (6, 10));
         assert_eq!(diag.end_line, 6);
+    }
+
+    #[test]
+    fn namespaced_proc_array_typed_declaration_analyzes() {
+        let src = "import std/osc\nouts:\n  out1\ninit:\n  voices: std::osc::Sine[2] = std::osc::Sine()\nsample:\n  out1 = voices[0]()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("namespaced proc array typed declaration should analyze");
+    }
+
+    #[test]
+    fn namespace_errors_on_namespaced_calls_use_call_spans() {
+        let src = "import std/osc\nouts:\n  out1\nsample:\n  out1 = std::osc::Missing()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("unknown namespaced call should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("unknown symbol 'Missing' in namespace 'std::osc'")
+            })
+            .expect("missing unknown namespaced call diagnostic");
+
+        assert_eq!((diag.line, diag.column), (5, 10));
+        assert_eq!(diag.end_line, 5);
     }
 }

@@ -6,7 +6,7 @@ fn struct_llvm_name(prefix: &str, suffix: &str) -> Vec<u8> {
     name
 }
 
-fn collect_struct_array_leaf_symbols(
+pub(in crate::orc_backend) fn collect_struct_array_leaf_symbols(
     struct_fields: &HashMap<String, Vec<TypedStructField>>,
     elem_struct: &str,
     flat: &str,
@@ -27,6 +27,48 @@ fn collect_struct_array_leaf_symbols(
         .into_iter()
         .map(|(name, _, leaf_ty)| (name, leaf_ty))
         .collect())
+}
+
+pub(in crate::orc_backend) unsafe fn lower_struct_array_call_args_in_orc(
+    ctx: &mut LoweringCtx<'_>,
+    out_args: &mut Vec<LLVMValueRef>,
+    arg_expr: &Expr,
+    struct_name: &str,
+    callee_name: &str,
+) -> Result<(), Diagnostic> {
+    let Expr::Var { name: base, .. } = arg_expr else {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' expects struct-array '{struct_name}[]' argument as a variable in ORC lowering"
+        )));
+    };
+    let actual_struct = ctx.array_struct_roots.get(base).ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "function '{callee_name}' expects struct-array '{struct_name}[]' argument, but '{base}' is not a struct-array root in ORC lowering"
+        ))
+    })?;
+    if actual_struct != struct_name {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' expects struct-array '{struct_name}[]' argument, but '{base}' has element type '{actual_struct}' in ORC lowering"
+        )));
+    }
+    let len_val = ctx.array_len_values.get(base).copied().unwrap_or_else(|| {
+        LLVMConstInt(
+            ctx.i32_ty,
+            ctx.array_struct_len.get(base).copied().unwrap_or(1) as u64,
+            0,
+        )
+    });
+    out_args.push(len_val);
+    for (leaf_name, _leaf_ty) in
+        collect_struct_array_leaf_symbols(ctx.struct_fields, struct_name, base, 1)?
+    {
+        out_args.push(ctx.array_base_ptrs.get(&leaf_name).copied().ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "missing ORC array symbol '{leaf_name}' while lowering struct-array argument for '{callee_name}'"
+            ))
+        })?);
+    }
+    Ok(())
 }
 
 unsafe fn push_scalar_struct_arg(

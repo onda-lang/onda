@@ -1,0 +1,16 @@
+import std/osc
+
+const NumOsc = 10
+
+init:
+  voices: std::osc::Sine[NumOsc]
+
+  for i in 0..NumOsc:
+    h = f32(i + 1)
+    voices[i].init(freq = 55.0 * h, amp = 0.12 / h)
+
+sample:
+  mix = 0.0
+  for i in 0..NumOsc:
+    mix = mix + voices[i]()
+  out1 = mix

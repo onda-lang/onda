@@ -230,6 +230,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     return;
                 }
                 if is_struct_array_root(env.declared_symbols, root)
+                    && !env.array_vars.contains_key(base)
                     && !env.proc_array_roots.contains_key(root)
                 {
                     push_expr_error(
@@ -365,6 +366,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         );
                     }
                 } else if is_struct_array_root(env.declared_symbols, root)
+                    && !env.array_vars.contains_key(base)
                     && !env.proc_array_roots.contains_key(root)
                 {
                     push_expr_error(

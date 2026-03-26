@@ -373,6 +373,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                 };
                 array_types.push(resolved_ty);
             }
+            TypedFnParam::StructArray { .. } => {}
             TypedFnParam::Buffer { elem_ty, channels } => {
                 let resolved_ty = if let Some(arg_expr) = resolved_arg {
                     infer_buffer_arg_signature(arg_expr, name)?
@@ -488,6 +489,11 @@ pub(super) unsafe fn materialize_user_call_args_common(
         &str,
         bool,
     ) -> Result<(), Diagnostic>,
+    lower_struct_array_arg: &mut dyn FnMut(
+        &mut Vec<LLVMValueRef>,
+        &Expr,
+        &str,
+    ) -> Result<(), Diagnostic>,
     lower_array_arg: &mut dyn FnMut(
         &mut Vec<LLVMValueRef>,
         &Expr,
@@ -534,6 +540,15 @@ pub(super) unsafe fn materialize_user_call_args_common(
                     struct_name,
                     prepared.param_by_ref[idx],
                 )?;
+            }
+            TypedFnParam::StructArray { struct_name } => {
+                let arg_expr = resolved_arg.ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "function '{callee_name}' missing required struct-array argument '{}' in {call_context}",
+                        prepared.param_names[idx]
+                    ))
+                })?;
+                lower_struct_array_arg(arg_values, arg_expr, struct_name)?;
             }
             TypedFnParam::Array { elem_ty } => {
                 let arg_expr = resolved_arg.ok_or_else(|| {

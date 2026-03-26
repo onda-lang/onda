@@ -605,18 +605,42 @@ Rules:
 
 ### Indexed struct field access
 
-Chained indexed field access like `data[i].field[j]` is **not supported**. Destructure into an intermediate alias instead:
+One inline dot is supported for data-struct arrays:
 
 ```omni
-# NOT supported:
-# val = voices[i].taps[j]
+val = voices[i].gain
+val = voices[i].taps[j]
+```
 
-# Use an intermediate alias:
+This works in executable scopes that can already access the underlying data, including `init`, `sample`, `block`, and `def`.
+
+Inline chains with more than one dot are still **not supported**. Destructure into an intermediate alias instead:
+
+```omni
+# Supported:
+val = voices[i].taps[j]
+
+# NOT supported:
+# val = banks[i].voice.gain
+# val = data[i].nodes[j].value
+
+# Use an intermediate alias for deeper chains:
+bank = banks[i]
+val = bank.voice.gain
+
 v = voices[i]
 val = v.taps[j]
 ```
 
-This applies to any `base[idx].field[fidx]` pattern where a struct array element's field is further indexed.
+So the accepted inline forms are:
+- `base[idx].field`
+- `base[idx].field[fidx]`
+
+But not deeper inline chains such as:
+- `base[idx].field.other`
+- `base[idx].field[fidx].other`
+
+Proc arrays keep their proc-specific indexed forms such as `voices[idx].gain`, `voices[idx].note_on(...)`, `voices[idx](...)`, and graph routing like `voices[idx].gain >> out1`.
 
 ## 8 Processors (`proc`)
 

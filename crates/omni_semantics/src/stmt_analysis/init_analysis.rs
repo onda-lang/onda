@@ -20,6 +20,7 @@ pub(crate) struct InitAnalysisCtx<'a> {
     pub common: ScopeAnalysisCtx<'a>,
     pub init_default_ty: Option<PrimitiveType>,
     pub proc_resolution: Option<ProcResolutionCtx<'a>>,
+    pub top_level_proc_symbols: Option<&'a HashSet<String>>,
 }
 
 impl<'a> InitAnalysisCtx<'a> {
@@ -51,6 +52,41 @@ fn specialized_proc_template_bases(proc_symbols: &HashSet<String>) -> HashSet<St
                 .map(|(base, _)| base.to_owned())
         })
         .collect()
+}
+
+fn resolve_proc_ctor_symbol_name(
+    ctor_name: &str,
+    current_ns: &str,
+    proc_symbols: &HashSet<String>,
+) -> Option<String> {
+    let direct = if ctor_name.contains("::") {
+        proc_symbols
+            .contains(ctor_name)
+            .then_some(ctor_name.to_owned())
+    } else {
+        resolve_unqualified_symbol_name(ctor_name, current_ns, proc_symbols)
+    };
+    if direct.is_some() {
+        return direct;
+    }
+
+    let resolved_base = if ctor_name.contains("::") {
+        ctor_name.to_owned()
+    } else {
+        let template_bases = specialized_proc_template_bases(proc_symbols);
+        resolve_unqualified_symbol_name(ctor_name, current_ns, &template_bases)?
+    };
+    let prefix = format!("{resolved_base}.__gen__");
+    let mut matches = proc_symbols
+        .iter()
+        .filter(|name| name.starts_with(&prefix))
+        .cloned()
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    }
 }
 
 fn resolve_specialized_proc_ctor_name(
@@ -477,6 +513,14 @@ fn analyze_assign_init(
     let options = common.options;
     let scope = common.scope_kind();
     let array_vars = merged_data_vars_for_runtime(&st.state_arrays, &st.local_array_aliases);
+    let mut rewritten_expr = expr.clone();
+    rewrite_struct_array_inline_field_expr(
+        &mut rewritten_expr,
+        &st.state_array_struct_roots,
+        struct_defs,
+        errors,
+    );
+    let expr = &rewritten_expr;
     let empty_param_structs = HashMap::<String, String>::new();
     macro_rules! expr_inputs {
         () => {
@@ -1377,21 +1421,11 @@ fn analyze_assign_init(
                         ),);
                     }
                     let resolved_proc_ctor = match &spec.elem {
-                        ArrayElemType::Struct(elem_name) => {
-                            if elem_name.contains("::") {
-                                if pctx.proc_symbols.contains(elem_name) {
-                                    Some(elem_name.clone())
-                                } else {
-                                    None
-                                }
-                            } else {
-                                resolve_unqualified_symbol_name(
-                                    elem_name,
-                                    pctx.current_ns,
-                                    pctx.proc_symbols,
-                                )
-                            }
-                        }
+                        ArrayElemType::Struct(elem_name) => resolve_proc_ctor_symbol_name(
+                            elem_name,
+                            pctx.current_ns,
+                            pctx.proc_symbols,
+                        ),
                         ArrayElemType::Primitive(_) => None,
                     };
                     if let Some(proc_ctor) = resolved_proc_ctor {
@@ -1494,6 +1528,81 @@ fn analyze_assign_init(
                     }
                     st.known_scalars.insert(name.clone());
                     return;
+                }
+                if let Some(proc_symbols) = ctx.top_level_proc_symbols {
+                    if st.state_scalars.contains_key(name) || st.struct_instances.contains_key(name)
+                    {
+                        target_error!(format!(
+                            "{} state symbol '{name}' is used as both array and non-array value",
+                            ctx.context_label
+                        ),);
+                    }
+                    if st.nested_procs.contains_key(name) {
+                        target_error!(format!(
+                            "{} state symbol '{name}' is used as both array and processor instance",
+                            ctx.context_label
+                        ),);
+                    }
+                    let resolved_proc_ctor = match &spec.elem {
+                        ArrayElemType::Struct(elem_name) => {
+                            resolve_proc_ctor_symbol_name(elem_name, "", proc_symbols)
+                        }
+                        ArrayElemType::Primitive(_) => None,
+                    };
+                    if let Some(proc_ctor) = resolved_proc_ctor {
+                        if st.state_scalars.contains_key(name)
+                            || st.state_arrays.contains_key(name)
+                            || st.state_array_specs.contains_key(name)
+                            || st.nested_procs.contains_key(name)
+                            || st.struct_instances.contains_key(name)
+                        {
+                            target_error!(
+                                format!(
+                                    "{} state symbol '{name}' is used as both processor array and non-processor value",
+                                    ctx.context_label
+                                ),
+                            );
+                        } else if let Some(existing) = st.nested_proc_arrays.get(name) {
+                            if existing.proc_name != proc_ctor || existing.size_expr != *spec.size {
+                                target_error!(
+                                    format!(
+                                        "{} state symbol '{name}' has conflicting processor array declarations",
+                                        ctx.context_label
+                                    ),
+                                );
+                            }
+                        } else {
+                            let size_context =
+                                format!("top-level processor array '{}' size", name.as_str());
+                            let len = with_expr_diag_context(&spec.size, |_diag| {
+                                eval_data_size_expr(&spec.size, options, &size_context, errors)
+                            })
+                            .unwrap_or(1);
+                            st.nested_proc_arrays.insert(
+                                name.clone(),
+                                ProcNestedArrayState {
+                                    proc_name: proc_ctor.clone(),
+                                    size_expr: *spec.size.clone(),
+                                },
+                            );
+                            st.state_array_struct_roots.entry(name.clone()).or_insert(
+                                ArrayStructRootInfo {
+                                    struct_name: proc_ctor,
+                                    len,
+                                },
+                            );
+                        }
+                        insert_declared_symbol(
+                            &mut st.state_scalars,
+                            &mut st.declared_symbols,
+                            name.clone(),
+                            DeclaredSymbolInfo::DataArray {
+                                elem_ty: PrimitiveType::F32,
+                            },
+                        );
+                        st.known_scalars.insert(name.clone());
+                        return;
+                    }
                 }
 
                 // Top-level mode: existing array constructor logic

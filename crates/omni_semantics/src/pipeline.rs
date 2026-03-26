@@ -166,7 +166,7 @@ pub fn analyze_with_options(
         })
         .collect::<Vec<_>>();
 
-    for def in &defs {
+    for def in &mut defs {
         if !def.type_params.is_empty() {
             let mut seen = HashSet::new();
             for tp in &def.type_params {
@@ -269,6 +269,11 @@ pub fn analyze_with_options(
         }
         let struct_namespaces = collect_declared_namespaces(&struct_symbols);
         let callable_namespaces = collect_declared_namespaces(&callable_symbols);
+        let nominal_symbols = struct_symbols
+            .union(&callable_symbols)
+            .cloned()
+            .collect::<HashSet<_>>();
+        let nominal_namespaces = collect_declared_namespaces(&nominal_symbols);
 
         for s in &mut struct_defs_raw {
             let struct_ns = namespace_of_symbol(&s.name);
@@ -281,6 +286,7 @@ pub fn analyze_with_options(
                             &struct_symbols,
                             &struct_namespaces,
                             &format!("struct '{}.{}' array element type", s.name, field.name),
+                            DiagCtx::new(field.ty_loc),
                             &mut errors,
                         );
                     }
@@ -291,10 +297,11 @@ pub fn analyze_with_options(
                         &struct_ns,
                         &callable_symbols,
                         &callable_namespaces,
-                        &struct_symbols,
-                        &struct_namespaces,
+                        &nominal_symbols,
+                        &nominal_namespaces,
                         &mut errors,
                         &format!("struct '{}.{}' default", s.name, field.name),
+                        None,
                     );
                 }
             }
@@ -310,6 +317,7 @@ pub fn analyze_with_options(
                                 "method '{}.{}' parameter '{}'",
                                 s.name, method.name, param.name
                             ),
+                            DiagCtx::new(param.ty_loc),
                             &mut errors,
                         );
                     }
@@ -319,13 +327,14 @@ pub fn analyze_with_options(
                             &struct_ns,
                             &callable_symbols,
                             &callable_namespaces,
-                            &struct_symbols,
-                            &struct_namespaces,
+                            &nominal_symbols,
+                            &nominal_namespaces,
                             &mut errors,
                             &format!(
                                 "method '{}.{}' parameter '{}' default",
                                 s.name, method.name, param.name
                             ),
+                            None,
                         );
                     }
                 }
@@ -335,8 +344,8 @@ pub fn analyze_with_options(
                         &struct_ns,
                         &callable_symbols,
                         &callable_namespaces,
-                        &struct_symbols,
-                        &struct_namespaces,
+                        &nominal_symbols,
+                        &nominal_namespaces,
                         &mut errors,
                         &format!("method '{}.{}' body", s.name, method.name),
                     );
@@ -354,6 +363,7 @@ pub fn analyze_with_options(
                         &struct_symbols,
                         &struct_namespaces,
                         &format!("function '{}' parameter '{}'", def.name, param.name),
+                        DiagCtx::new(param.ty_loc),
                         &mut errors,
                     );
                 }
@@ -363,10 +373,11 @@ pub fn analyze_with_options(
                         &def_ns,
                         &callable_symbols,
                         &callable_namespaces,
-                        &struct_symbols,
-                        &struct_namespaces,
+                        &nominal_symbols,
+                        &nominal_namespaces,
                         &mut errors,
                         &format!("function '{}' parameter '{}' default", def.name, param.name),
+                        None,
                     );
                 }
             }
@@ -376,8 +387,8 @@ pub fn analyze_with_options(
                     &def_ns,
                     &callable_symbols,
                     &callable_namespaces,
-                    &struct_symbols,
-                    &struct_namespaces,
+                    &nominal_symbols,
+                    &nominal_namespaces,
                     &mut errors,
                     &format!("function '{}' body", def.name),
                 );
@@ -390,8 +401,8 @@ pub fn analyze_with_options(
                 "",
                 &callable_symbols,
                 &callable_namespaces,
-                &struct_symbols,
-                &struct_namespaces,
+                &nominal_symbols,
+                &nominal_namespaces,
                 &mut errors,
                 "init",
             );
@@ -402,8 +413,8 @@ pub fn analyze_with_options(
                 "",
                 &callable_symbols,
                 &callable_namespaces,
-                &struct_symbols,
-                &struct_namespaces,
+                &nominal_symbols,
+                &nominal_namespaces,
                 &mut errors,
                 "block pre",
             );
@@ -414,8 +425,8 @@ pub fn analyze_with_options(
                 "",
                 &callable_symbols,
                 &callable_namespaces,
-                &struct_symbols,
-                &struct_namespaces,
+                &nominal_symbols,
+                &nominal_namespaces,
                 &mut errors,
                 "block post",
             );
@@ -426,8 +437,8 @@ pub fn analyze_with_options(
                 "",
                 &callable_symbols,
                 &callable_namespaces,
-                &struct_symbols,
-                &struct_namespaces,
+                &nominal_symbols,
+                &nominal_namespaces,
                 &mut errors,
                 "sample",
             );
@@ -439,8 +450,8 @@ pub fn analyze_with_options(
                     "",
                     &callable_symbols,
                     &callable_namespaces,
-                    &struct_symbols,
-                    &struct_namespaces,
+                    &nominal_symbols,
+                    &nominal_namespaces,
                     &mut errors,
                     &format!("event '{}'", event.name),
                 );
@@ -1212,13 +1223,12 @@ pub fn analyze_with_options(
                         {
                             true
                         }
-                        Some(FnParamType::Array(None))
-                        | Some(FnParamType::ArrayGeneric(_))
-                        | Some(FnParamType::SizedArray {
-                            generic_name: Some(_),
+                        Some(FnParamType::Array(None)) | Some(FnParamType::BareBuffer) => true,
+                        Some(FnParamType::ArrayGeneric(name)) => !struct_defs.contains_key(name),
+                        Some(FnParamType::SizedArray {
+                            generic_name: Some(name),
                             ..
-                        })
-                        | Some(FnParamType::BareBuffer) => true,
+                        }) => !struct_defs.contains_key(name),
                         _ => false,
                     });
                 if needs_mono {
@@ -1521,7 +1531,14 @@ pub fn analyze_with_options(
 
     let init_default_ty =
         resolve_init_default_ty(init_default_decl_ty.as_ref(), "top-level", &mut errors);
-
+    let top_level_proc_symbols = program
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Proc(proc_def) => Some(proc_def.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     let init_ctx = InitAnalysisCtx {
         context_label: "top-level",
         common: ScopeAnalysisCtx {
@@ -1539,6 +1556,7 @@ pub fn analyze_with_options(
         },
         init_default_ty,
         proc_resolution: None,
+        top_level_proc_symbols: Some(&top_level_proc_symbols),
     };
     let mut init_st = InitAnalysisState {
         known_scalars: init_known_scalars,
@@ -1583,25 +1601,40 @@ pub fn analyze_with_options(
     let init_writable_roots = collect_runtime_state_roots(&state_scalars, &state_arrays);
     let empty_nested_proc_instances = HashMap::<String, ProcNestedState>::new();
 
-    // Rewrite struct-array field index sentinels (e.g. data[0].field[i]) to flattened Index exprs.
-    rewrite_struct_array_field_index_stmts(
+    // Rewrite struct-array inline field sentinels (for example `data[0].field` and
+    // `data[0].field[i]`) to flattened Index exprs before runtime analysis.
+    rewrite_struct_array_inline_field_stmts(
+        &mut init,
+        &state_array_struct_roots,
+        &struct_defs,
+        &mut errors,
+    );
+    rewrite_struct_array_inline_field_stmts(
         &mut block_pre,
         &state_array_struct_roots,
         &struct_defs,
         &mut errors,
     );
-    rewrite_struct_array_field_index_stmts(
+    rewrite_struct_array_inline_field_stmts(
         &mut block_post,
         &state_array_struct_roots,
         &struct_defs,
         &mut errors,
     );
-    rewrite_struct_array_field_index_stmts(
+    rewrite_struct_array_inline_field_stmts(
         &mut sample,
         &state_array_struct_roots,
         &struct_defs,
         &mut errors,
     );
+    for event in &mut events {
+        rewrite_struct_array_inline_field_stmts(
+            &mut event.body,
+            &state_array_struct_roots,
+            &struct_defs,
+            &mut errors,
+        );
+    }
 
     let port_index_ins = if ins_explicit && !ins.is_empty() {
         uniform_port_type(&ins, &in_types).map(|ty| PortIndexInfo {
@@ -1829,7 +1862,7 @@ pub fn analyze_with_options(
     let def_global_inputs = HashSet::<String>::new();
     let def_global_outputs = HashSet::<String>::new();
     let def_global_params = HashSet::<String>::new();
-    for def in &defs {
+    for def in &mut defs {
         let fn_known = def
             .params
             .iter()
@@ -1879,6 +1912,34 @@ pub fn analyze_with_options(
             .get(&def.name)
             .map(|k| param_struct_map_from_kinds(&param_names_vec, k))
             .unwrap_or_default();
+        let mut param_struct_arrays = def
+            .params
+            .iter()
+            .filter_map(|param| match param.ty.as_ref() {
+                Some(FnParamType::ArrayGeneric(struct_name))
+                    if def_struct_defs.contains_key(struct_name)
+                        && !def.type_params.contains(struct_name) =>
+                {
+                    Some((param.name.clone(), struct_name.clone()))
+                }
+                Some(FnParamType::SizedArray {
+                    generic_name: Some(struct_name),
+                    ..
+                }) if def_struct_defs.contains_key(struct_name)
+                    && !def.type_params.contains(struct_name) =>
+                {
+                    Some((param.name.clone(), struct_name.clone()))
+                }
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+        for (name, struct_name) in inferred_def_params
+            .get(&def.name)
+            .map(|k| param_struct_array_map_from_kinds(&param_names_vec, k))
+            .unwrap_or_default()
+        {
+            param_struct_arrays.entry(name).or_insert(struct_name);
+        }
         let param_buffers = inferred_def_params
             .get(&def.name)
             .map(|k| param_buffer_map_from_kinds(&param_names_vec, k))
@@ -1896,6 +1957,18 @@ pub fn analyze_with_options(
                     elem_struct: None,
                     writable: true,
                 },
+            );
+        }
+        let mut def_param_array_struct_roots = HashMap::<String, ArrayStructRootInfo>::new();
+        for (param_name, struct_name) in &param_struct_arrays {
+            register_struct_array_param_bindings(
+                param_name,
+                struct_name,
+                &def_struct_defs,
+                &mut def_declared_symbols,
+                &mut fn_local_data_aliases,
+                &mut def_param_array_struct_roots,
+                &mut errors,
             );
         }
         for (param_name, (elem_ty, channels)) in &param_buffers {
@@ -1939,6 +2012,12 @@ pub fn analyze_with_options(
             fn_local_aliases,
             fn_local_data_aliases,
             fn_local_proc_aliases,
+        );
+        rewrite_struct_array_inline_field_stmts(
+            &mut def.body,
+            &def_param_array_struct_roots,
+            &def_struct_defs,
+            &mut errors,
         );
         // Register tuple params as tuple_vars for indexing validation
         if let Some(kinds) = inferred_def_params.get(&def.name) {

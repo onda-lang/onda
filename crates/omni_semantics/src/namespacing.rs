@@ -1,4 +1,5 @@
 use super::*;
+use omni_frontend::Span;
 
 fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
     errors.push(diag.semantic(message, 0, 0));
@@ -54,6 +55,7 @@ pub(super) fn resolve_qualified_symbol_name(
     symbols: &HashSet<String>,
     namespaces: &HashSet<String>,
     context: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<String> {
     if symbols.contains(name) {
@@ -62,23 +64,19 @@ pub(super) fn resolve_qualified_symbol_name(
     if let Some((ns, symbol)) = name.rsplit_once("::") {
         if !namespaces.contains(ns) {
             push_semantic(
-                DiagCtx::default(),
+                diag,
                 errors,
                 format!("{context}: unknown namespace '{ns}' in symbol '{name}'"),
             );
         } else {
             push_semantic(
-                DiagCtx::default(),
+                diag,
                 errors,
                 format!("{context}: unknown symbol '{symbol}' in namespace '{ns}'"),
             );
         }
     } else {
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!("{context}: unknown symbol '{name}'"),
-        );
+        push_semantic(diag, errors, format!("{context}: unknown symbol '{name}'"));
     }
     None
 }
@@ -97,12 +95,14 @@ pub(super) fn resolve_unqualified_symbol_name(
     None
 }
 
-pub(super) fn qualify_struct_type_name(
+fn qualify_named_type_name(
     ty_name: &mut String,
     current_ns: &str,
-    struct_symbols: &HashSet<String>,
-    struct_namespaces: &HashSet<String>,
+    symbols: &HashSet<String>,
+    namespaces: &HashSet<String>,
     context: &str,
+    diag: DiagCtx,
+    strict_qualified: bool,
     errors: &mut Vec<Diagnostic>,
 ) {
     let (base_name, suffix) = if let Some(idx) = ty_name.find('<') {
@@ -111,20 +111,42 @@ pub(super) fn qualify_struct_type_name(
         (ty_name.as_str(), "")
     };
     if base_name.contains("::") {
-        if let Some(resolved) = resolve_qualified_symbol_name(
-            base_name,
-            struct_symbols,
-            struct_namespaces,
-            context,
-            errors,
-        ) {
+        if symbols.contains(base_name) {
+            let resolved = base_name.to_owned();
             *ty_name = format!("{resolved}{suffix}");
+        } else if strict_qualified {
+            if let Some(resolved) =
+                resolve_qualified_symbol_name(base_name, symbols, namespaces, context, diag, errors)
+            {
+                *ty_name = format!("{resolved}{suffix}");
+            }
         }
         return;
     }
-    if let Some(resolved) = resolve_unqualified_symbol_name(base_name, current_ns, struct_symbols) {
+    if let Some(resolved) = resolve_unqualified_symbol_name(base_name, current_ns, symbols) {
         *ty_name = format!("{resolved}{suffix}");
     }
+}
+
+pub(super) fn qualify_struct_type_name(
+    ty_name: &mut String,
+    current_ns: &str,
+    struct_symbols: &HashSet<String>,
+    struct_namespaces: &HashSet<String>,
+    context: &str,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) {
+    qualify_named_type_name(
+        ty_name,
+        current_ns,
+        struct_symbols,
+        struct_namespaces,
+        context,
+        diag,
+        true,
+        errors,
+    );
 }
 
 pub(super) fn qualify_expr_namespaced_symbols(
@@ -132,23 +154,28 @@ pub(super) fn qualify_expr_namespaced_symbols(
     current_ns: &str,
     callable_symbols: &HashSet<String>,
     callable_namespaces: &HashSet<String>,
-    struct_symbols: &HashSet<String>,
-    struct_namespaces: &HashSet<String>,
+    nominal_symbols: &HashSet<String>,
+    nominal_namespaces: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
     context: &str,
+    array_elem_diag: Option<DiagCtx>,
 ) {
     match expr {
-        Expr::UserCall { name, args, .. } => {
+        Expr::UserCall {
+            name, args, loc, ..
+        } => {
+            let diag = DiagCtx::new(*loc);
             for arg in args {
                 qualify_expr_namespaced_symbols(
                     &mut arg.expr,
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
+                    None,
                 );
             }
             if is_builtin_function_name(name)
@@ -163,6 +190,7 @@ pub(super) fn qualify_expr_namespaced_symbols(
                     callable_symbols,
                     callable_namespaces,
                     context,
+                    diag,
                     errors,
                 ) {
                     *name = resolved;
@@ -175,14 +203,16 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 *name = resolved;
             }
         }
-        Expr::ArrayCtor { spec, init, .. } => {
+        Expr::ArrayCtor { loc, spec, init } => {
             if let ArrayElemType::Struct(name) = &mut spec.elem {
-                qualify_struct_type_name(
+                qualify_named_type_name(
                     name,
                     current_ns,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     context,
+                    array_elem_diag.unwrap_or_else(|| DiagCtx::new(*loc)),
+                    false,
                     errors,
                 );
             }
@@ -191,10 +221,11 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 current_ns,
                 callable_symbols,
                 callable_namespaces,
-                struct_symbols,
-                struct_namespaces,
+                nominal_symbols,
+                nominal_namespaces,
                 errors,
                 context,
+                None,
             );
             if let Some(values) = init {
                 for value in values {
@@ -203,10 +234,11 @@ pub(super) fn qualify_expr_namespaced_symbols(
                         current_ns,
                         callable_symbols,
                         callable_namespaces,
-                        struct_symbols,
-                        struct_namespaces,
+                        nominal_symbols,
+                        nominal_namespaces,
                         errors,
                         context,
+                        None,
                     );
                 }
             }
@@ -216,10 +248,11 @@ pub(super) fn qualify_expr_namespaced_symbols(
             current_ns,
             callable_symbols,
             callable_namespaces,
-            struct_symbols,
-            struct_namespaces,
+            nominal_symbols,
+            nominal_namespaces,
             errors,
             context,
+            None,
         ),
         Expr::Slice { start, end, .. } => {
             if let Some(start) = start {
@@ -228,10 +261,11 @@ pub(super) fn qualify_expr_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
+                    None,
                 );
             }
             if let Some(end) = end {
@@ -240,10 +274,11 @@ pub(super) fn qualify_expr_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
+                    None,
                 );
             }
         }
@@ -255,20 +290,22 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 current_ns,
                 callable_symbols,
                 callable_namespaces,
-                struct_symbols,
-                struct_namespaces,
+                nominal_symbols,
+                nominal_namespaces,
                 errors,
                 context,
+                None,
             );
             qualify_expr_namespaced_symbols(
                 rhs,
                 current_ns,
                 callable_symbols,
                 callable_namespaces,
-                struct_symbols,
-                struct_namespaces,
+                nominal_symbols,
+                nominal_namespaces,
                 errors,
                 context,
+                None,
             );
         }
         Expr::Call { args, .. } => {
@@ -278,10 +315,11 @@ pub(super) fn qualify_expr_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
+                    None,
                 );
             }
         }
@@ -293,10 +331,11 @@ pub(super) fn qualify_expr_namespaced_symbols(
                 current_ns,
                 callable_symbols,
                 callable_namespaces,
-                struct_symbols,
-                struct_namespaces,
+                nominal_symbols,
+                nominal_namespaces,
                 errors,
                 context,
+                None,
             );
         }
         Expr::ArrayLiteral { values, .. } => {
@@ -306,10 +345,11 @@ pub(super) fn qualify_expr_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
+                    None,
                 );
             }
         }
@@ -320,10 +360,11 @@ pub(super) fn qualify_expr_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
+                    None,
                 );
             }
         }
@@ -336,14 +377,19 @@ pub(super) fn qualify_stmt_namespaced_symbols(
     current_ns: &str,
     callable_symbols: &HashSet<String>,
     callable_namespaces: &HashSet<String>,
-    struct_symbols: &HashSet<String>,
-    struct_namespaces: &HashSet<String>,
+    nominal_symbols: &HashSet<String>,
+    nominal_namespaces: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
     context: &str,
 ) {
     with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
         Stmt::Const { .. } => {}
-        Stmt::Assign { target, expr, .. } => {
+        Stmt::Assign {
+            target,
+            expr,
+            typed_decl_ty_loc,
+            ..
+        } => {
             match target {
                 AssignTarget::Index { index, .. } => {
                     qualify_expr_namespaced_symbols(
@@ -351,10 +397,11 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                         current_ns,
                         callable_symbols,
                         callable_namespaces,
-                        struct_symbols,
-                        struct_namespaces,
+                        nominal_symbols,
+                        nominal_namespaces,
                         errors,
                         context,
+                        None,
                     );
                 }
                 AssignTarget::Slice { start, end, .. } => {
@@ -364,10 +411,11 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                             current_ns,
                             callable_symbols,
                             callable_namespaces,
-                            struct_symbols,
-                            struct_namespaces,
+                            nominal_symbols,
+                            nominal_namespaces,
                             errors,
                             context,
+                            None,
                         );
                     }
                     if let Some(end) = end {
@@ -376,24 +424,31 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                             current_ns,
                             callable_symbols,
                             callable_namespaces,
-                            struct_symbols,
-                            struct_namespaces,
+                            nominal_symbols,
+                            nominal_namespaces,
                             errors,
                             context,
+                            None,
                         );
                     }
                 }
                 AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
             }
+            let array_elem_diag = if *typed_decl_ty_loc != Span::ZERO {
+                Some(DiagCtx::new(*typed_decl_ty_loc))
+            } else {
+                None
+            };
             qualify_expr_namespaced_symbols(
                 expr,
                 current_ns,
                 callable_symbols,
                 callable_namespaces,
-                struct_symbols,
-                struct_namespaces,
+                nominal_symbols,
+                nominal_namespaces,
                 errors,
                 context,
+                array_elem_diag,
             );
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => qualify_expr_namespaced_symbols(
@@ -401,10 +456,11 @@ pub(super) fn qualify_stmt_namespaced_symbols(
             current_ns,
             callable_symbols,
             callable_namespaces,
-            struct_symbols,
-            struct_namespaces,
+            nominal_symbols,
+            nominal_namespaces,
             errors,
             context,
+            None,
         ),
         Stmt::If {
             cond,
@@ -417,10 +473,11 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                 current_ns,
                 callable_symbols,
                 callable_namespaces,
-                struct_symbols,
-                struct_namespaces,
+                nominal_symbols,
+                nominal_namespaces,
                 errors,
                 context,
+                None,
             );
             for nested in then_branch {
                 qualify_stmt_namespaced_symbols(
@@ -428,8 +485,8 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
                 );
@@ -440,8 +497,8 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
                 );
@@ -459,20 +516,22 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                 current_ns,
                 callable_symbols,
                 callable_namespaces,
-                struct_symbols,
-                struct_namespaces,
+                nominal_symbols,
+                nominal_namespaces,
                 errors,
                 context,
+                None,
             );
             qualify_expr_namespaced_symbols(
                 end,
                 current_ns,
                 callable_symbols,
                 callable_namespaces,
-                struct_symbols,
-                struct_namespaces,
+                nominal_symbols,
+                nominal_namespaces,
                 errors,
                 context,
+                None,
             );
             if let Some(step_expr) = step {
                 qualify_expr_namespaced_symbols(
@@ -480,10 +539,11 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
+                    None,
                 );
             }
             for nested in body {
@@ -492,8 +552,8 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
                 );
@@ -505,10 +565,11 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                 current_ns,
                 callable_symbols,
                 callable_namespaces,
-                struct_symbols,
-                struct_namespaces,
+                nominal_symbols,
+                nominal_namespaces,
                 errors,
                 context,
+                None,
             );
             for nested in body {
                 qualify_stmt_namespaced_symbols(
@@ -516,8 +577,8 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                     current_ns,
                     callable_symbols,
                     callable_namespaces,
-                    struct_symbols,
-                    struct_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
                     errors,
                     context,
                 );

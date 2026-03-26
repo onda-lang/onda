@@ -21,6 +21,7 @@ namespace std::osc:
 
     params<T>:
       freq = 440.0
+      amp = 1.0
 
     init:
       phasor = Phasor(freq = freq)
@@ -28,7 +29,7 @@ namespace std::osc:
     block:
       phasor.freq = freq
       sample:
-        out1 = sin(phasor() * T(TWO_PI))
+        out1 = sin(phasor() * T(TWO_PI)) * amp
   
   def poly_blep(t, dt):
     zero = dt - dt
@@ -48,6 +49,7 @@ namespace std::osc:
 
     params<T>:
       freq = 440.0
+      amp = 1.0
 
     init:
       phasor = Phasor(freq = freq)
@@ -58,4 +60,4 @@ namespace std::osc:
       sample:
         phase = phasor()
         base = phase + phase - T(1.0)
-        out1 = base - std::osc::poly_blep(phase, dt)
+        out1 = base - std::osc::poly_blep(phase, dt) * amp
