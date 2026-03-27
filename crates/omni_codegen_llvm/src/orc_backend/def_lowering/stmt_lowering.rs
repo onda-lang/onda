@@ -1,4 +1,6 @@
-use super::struct_helpers::lower_struct_array_call_args_in_def;
+use super::struct_helpers::{
+    lower_proc_array_call_args_in_def, lower_struct_array_call_args_in_def,
+};
 use super::*;
 
 pub(super) unsafe fn lower_def_stmt(
@@ -233,6 +235,11 @@ unsafe fn lower_def_tuple_call(
                                       struct_name: &str| unsafe {
         lower_struct_array_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, struct_name, name)
     };
+    let mut lower_proc_array_arg = |arg_values: &mut Vec<LLVMValueRef>,
+                                    arg_expr: &Expr,
+                                    struct_name: &str| unsafe {
+        lower_proc_array_call_args_in_def(&mut *ctx_ptr, arg_values, arg_expr, struct_name, name)
+    };
     let mut lower_array_arg =
         |arg_values: &mut Vec<LLVMValueRef>,
          arg_expr: &Expr,
@@ -257,6 +264,7 @@ unsafe fn lower_def_tuple_call(
         &mut cast_scalar_arg,
         &mut lower_struct_arg,
         &mut lower_struct_array_arg,
+        &mut lower_proc_array_arg,
         &mut lower_array_arg,
         &mut lower_buffer_arg,
     )?;
@@ -593,7 +601,11 @@ unsafe fn try_bind_struct_data_alias_in_def(
             PrimitiveType::I32,
             b"def_data_alias_idx_i32\0",
         );
-        let clamped = clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, root_len)?;
+        let clamped = if let Some(runtime_len) = ctx.array_len_values.get(base).copied() {
+            clamp_data_index_dynamic(ctx.builder, ctx.i32_ty, index_i32, runtime_len)
+        } else {
+            clamp_data_index(ctx.builder, ctx.i32_ty, index_i32, root_len)?
+        };
         bind_struct_data_element_aliases_in_def(target_name, &struct_name, base, clamped, ctx)?;
         return Ok(true);
     }

@@ -513,7 +513,7 @@ pub(super) fn rewrite_top_level_proc_calls(
     lowering_shapes: &HashMap<String, ProcLoweringShape>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> TopLevelProcRewriteMeta {
     let mut global_proc_instances = HashMap::<String, ProcCallInstance>::new();
     let mut global_proc_array_slots = HashMap::<String, Vec<String>>::new();
     let mut global_proc_array_broadcast_slots = HashMap::<String, (usize, usize)>::new();
@@ -827,6 +827,28 @@ pub(super) fn rewrite_top_level_proc_calls(
         );
     }
 
+    for (base, slots) in &global_proc_array_slots {
+        let Some(first_slot) = slots.first() else {
+            continue;
+        };
+        let Some(instance) = global_proc_instances.get(first_slot) else {
+            continue;
+        };
+        let Some(api) = proc_api.get(&instance.proc_name) else {
+            continue;
+        };
+        if !api.has_block {
+            continue;
+        }
+        runtime_managed_arrays
+            .entry(base.clone())
+            .or_insert_with(|| RuntimeManagedProcArray {
+                proc_name: instance.proc_name.clone(),
+                slots: slots.clone(),
+                active_symbol: runtime_proc_array_active_symbol(base),
+            });
+    }
+
     let mut called_proc_instances = HashSet::<String>::new();
     for block in &program.blocks {
         match block {
@@ -1008,75 +1030,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 }
                 stmts.body = rewritten_sample;
             }
-            Block::Def(def) => {
-                let mut proc_vars = HashMap::<String, ProcCallInstance>::new();
-                let mut proc_array_slots = global_proc_array_slots.clone();
-                for param in &def.params {
-                    if let Some(FnParamType::Struct(struct_name)) = &param.ty {
-                        if let Some(shape) = lowering_shapes.get(struct_name) {
-                            for (base, slots) in &shape.nested_proc_array_slots {
-                                proc_array_slots
-                                    .entry(base.clone())
-                                    .or_insert_with(|| slots.clone());
-                                let prefixed_base = format!("{}.{}", param.name, base);
-                                let prefixed_slots = slots
-                                    .iter()
-                                    .map(|slot| format!("{}.{}", param.name, slot))
-                                    .collect::<Vec<_>>();
-                                proc_array_slots
-                                    .entry(prefixed_base)
-                                    .or_insert(prefixed_slots);
-                                for slot in slots {
-                                    if let Some(nested) = shape.state.nested_procs.get(slot) {
-                                        proc_vars.entry(slot.clone()).or_insert(ProcCallInstance {
-                                            proc_name: nested.proc_name.clone(),
-                                            buffer_args: Vec::new(),
-                                        });
-                                        let prefixed_slot = format!("{}.{}", param.name, slot);
-                                        proc_vars.entry(prefixed_slot).or_insert(
-                                            ProcCallInstance {
-                                                proc_name: nested.proc_name.clone(),
-                                                buffer_args: Vec::new(),
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                            for (instance_name, nested) in &shape.state.nested_procs {
-                                proc_vars.entry(instance_name.clone()).or_insert(
-                                    ProcCallInstance {
-                                        proc_name: nested.proc_name.clone(),
-                                        buffer_args: Vec::new(),
-                                    },
-                                );
-                                let prefixed_instance = format!("{}.{}", param.name, instance_name);
-                                proc_vars
-                                    .entry(prefixed_instance)
-                                    .or_insert(ProcCallInstance {
-                                        proc_name: nested.proc_name.clone(),
-                                        buffer_args: Vec::new(),
-                                    });
-                            }
-                        }
-                        if proc_api.contains_key(struct_name) {
-                            proc_vars.insert(
-                                param.name.clone(),
-                                ProcCallInstance {
-                                    proc_name: struct_name.clone(),
-                                    buffer_args: Vec::new(),
-                                },
-                            );
-                        }
-                    }
-                }
-                rewrite_proc_calls_in_stmts(
-                    &mut def.body,
-                    &proc_vars,
-                    &proc_array_slots,
-                    &proc_api,
-                    errors,
-                );
-            }
+            Block::Def(_def) => {}
             Block::Events(events) => {
                 for event in events {
                     rewrite_proc_calls_in_stmts(
@@ -1240,6 +1194,11 @@ pub(super) fn rewrite_top_level_proc_calls(
                 }
             }
         }
+    }
+
+    TopLevelProcRewriteMeta {
+        global_proc_instances,
+        global_proc_array_slots,
     }
 }
 

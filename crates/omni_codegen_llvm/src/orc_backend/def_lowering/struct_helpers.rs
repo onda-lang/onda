@@ -9,6 +9,57 @@ fn dot_slot_symbol_to_flat(symbol: &str) -> String {
     symbol.replace('.', "__")
 }
 
+fn sanitize_runtime_symbol_component(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+}
+
+fn runtime_proc_array_active_symbol(array_base: &str) -> String {
+    format!(
+        "__omni_proc_block_active_{}",
+        sanitize_runtime_symbol_component(array_base)
+    )
+}
+
+fn resolve_runtime_proc_array_active_base(
+    ctx: &DefLoweringCtx<'_>,
+    base: &str,
+) -> Result<Option<String>, Diagnostic> {
+    let mut candidates = Vec::<String>::new();
+    candidates.push(runtime_proc_array_active_symbol(base));
+    if let Some(stripped) = base.strip_prefix("self.") {
+        candidates.push(runtime_proc_array_active_symbol(stripped));
+    } else {
+        candidates.push(format!("self.{}", runtime_proc_array_active_symbol(base)));
+    }
+    for candidate in &candidates {
+        if ctx.array_ptrs.contains_key(candidate) {
+            return Ok(Some(candidate.clone()));
+        }
+    }
+
+    let suffix = format!(".{}", runtime_proc_array_active_symbol(base));
+    let matches = ctx
+        .array_ptrs
+        .keys()
+        .filter(|key| key.ends_with(&suffix))
+        .cloned()
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err(Diagnostic::internal(format!(
+            "ambiguous proc-array active-state base for '{base}' in def lowering"
+        )));
+    }
+    Ok(matches.into_iter().next())
+}
+
 fn def_symbol_lookup_candidates(symbol: &str) -> Vec<String> {
     let flat = dot_slot_symbol_to_flat(symbol);
     vec![
@@ -247,12 +298,13 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                 &ctx.local_array_aliases,
                 &ctx.array_struct_roots,
                 &ctx.array_len,
+                Some(&ctx.array_len_values),
                 base,
                 struct_name,
                 callee_name,
                 "def lowering",
                 b"def_struct_idx_alias_global\0",
-                |len| unsafe {
+                |len, runtime_len| unsafe {
                     let raw_index = lower_def_expr(index, &mut *ctx_ptr)?;
                     let index_i32 = cast_def_value_to(
                         &*ctx_ptr,
@@ -260,7 +312,16 @@ pub(super) unsafe fn lower_struct_call_args_in_def(
                         PrimitiveType::I32,
                         b"def_struct_idx_i32\0",
                     );
-                    clamp_data_index((&*ctx_ptr).builder, (&*ctx_ptr).i32_ty, index_i32, len)
+                    Ok(if let Some(runtime_len) = runtime_len {
+                        clamp_data_index_dynamic(
+                            (&*ctx_ptr).builder,
+                            (&*ctx_ptr).i32_ty,
+                            index_i32,
+                            runtime_len,
+                        )
+                    } else {
+                        clamp_data_index((&*ctx_ptr).builder, (&*ctx_ptr).i32_ty, index_i32, len)?
+                    })
                 },
             )?;
             let (resolved_base, clamped_index) = if let Some(resolved) = resolved {
@@ -438,6 +499,59 @@ pub(super) unsafe fn lower_struct_array_call_args_in_def(
         out_args.push(find_def_array_ptr(ctx, &leaf_name).ok_or_else(|| {
             Diagnostic::internal(format!(
                 "missing def array pointer '{leaf_name}' while lowering struct-array argument for '{callee_name}'"
+            ))
+        })?);
+    }
+    Ok(())
+}
+
+pub(super) unsafe fn lower_proc_array_call_args_in_def(
+    ctx: &mut DefLoweringCtx<'_>,
+    out_args: &mut Vec<LLVMValueRef>,
+    arg_expr: &Expr,
+    struct_name: &str,
+    callee_name: &str,
+) -> Result<(), Diagnostic> {
+    let Expr::Var { name: base, .. } = arg_expr else {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' expects proc-array '{struct_name}[]' argument as a variable in def lowering"
+        )));
+    };
+    let actual_struct = ctx.array_struct_roots.get(base).ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "function '{callee_name}' expects proc-array '{struct_name}[]' argument, but '{base}' is not a proc-array root in def lowering"
+        ))
+    })?;
+    if actual_struct != struct_name {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' expects proc-array '{struct_name}[]' argument, but '{base}' has element type '{actual_struct}' in def lowering"
+        )));
+    }
+    let len_val = ctx.array_len_values.get(base).copied().unwrap_or_else(|| {
+        LLVMConstInt(
+            ctx.i32_ty,
+            ctx.array_len.get(base).copied().unwrap_or(1) as u64,
+            0,
+        )
+    });
+    out_args.push(len_val);
+    let bool_ptr_ty = LLVMPointerType(llvm_ty_for_primitive(ctx.context, PrimitiveType::Bool), 0);
+    let active_ptr = if let Some(active_base) = resolve_runtime_proc_array_active_base(ctx, base)? {
+        *ctx.array_ptrs.get(&active_base).ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "missing def proc-array active-state symbol '{active_base}' while lowering '{callee_name}'"
+            ))
+        })?
+    } else {
+        LLVMConstPointerNull(bool_ptr_ty)
+    };
+    out_args.push(active_ptr);
+    for (leaf_name, _leaf_ty) in
+        collect_struct_array_leaf_symbols(ctx.struct_fields, struct_name, base, 1)?
+    {
+        out_args.push(*ctx.array_ptrs.get(&leaf_name).ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "missing def array symbol '{leaf_name}' while lowering proc-array argument for '{callee_name}'"
             ))
         })?);
     }

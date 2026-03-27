@@ -1,4 +1,6 @@
-use super::struct_helpers::lower_struct_array_call_args_in_def;
+use super::struct_helpers::{
+    lower_proc_array_call_args_in_def, lower_struct_array_call_args_in_def,
+};
 use super::*;
 
 pub(super) unsafe fn lower_def_expr(
@@ -262,6 +264,16 @@ pub(super) unsafe fn lower_def_expr(
                         name,
                     )
                 };
+            let mut lower_proc_array_arg =
+                |arg_values: &mut Vec<LLVMValueRef>, arg_expr: &Expr, struct_name: &str| unsafe {
+                    lower_proc_array_call_args_in_def(
+                        &mut *ctx_ptr,
+                        arg_values,
+                        arg_expr,
+                        struct_name,
+                        name,
+                    )
+                };
             let mut lower_array_arg =
                 |arg_values: &mut Vec<LLVMValueRef>,
                  arg_expr: &Expr,
@@ -286,6 +298,7 @@ pub(super) unsafe fn lower_def_expr(
                 &mut cast_scalar_arg,
                 &mut lower_struct_arg,
                 &mut lower_struct_array_arg,
+                &mut lower_proc_array_arg,
                 &mut lower_array_arg,
                 &mut lower_buffer_arg,
             )?;

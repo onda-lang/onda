@@ -1,5 +1,24 @@
 use super::super::*;
 
+fn sanitize_runtime_symbol_component(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+}
+
+fn runtime_proc_array_active_symbol(array_base: &str) -> String {
+    format!(
+        "__omni_proc_block_active_{}",
+        sanitize_runtime_symbol_component(array_base)
+    )
+}
+
 pub(in crate::orc_backend) unsafe fn lower_user_function_body(
     def: &TypedFunction,
     module: LLVMModuleRef,
@@ -310,6 +329,85 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
                         }
                         ctx.array_ptrs.insert(leaf_name.clone(), param_val);
                         ctx.array_len.insert(leaf_name.clone(), leaf_len);
+                        let runtime_len = if leaf_len == 1 {
+                            len_val
+                        } else {
+                            LLVMBuildMul(
+                                ctx.builder,
+                                len_val,
+                                LLVMConstInt(ctx.i32_ty, leaf_len as u64, 0),
+                                b"struct_arr_leaf_len\0".as_ptr().cast(),
+                            )
+                        };
+                        ctx.array_len_values.insert(leaf_name.clone(), runtime_len);
+                        ctx.array_elem_ty.insert(leaf_name, leaf_ty);
+                        llvm_param_idx += 1;
+                    }
+                }
+                TypedFnParam::ProcArray {
+                    proc_name: struct_name,
+                    len: fixed_len,
+                } => {
+                    let len_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                    if len_val.is_null() {
+                        return Err(Diagnostic::internal(format!(
+                            "missing LLVM struct-array len param {} for function '{}'",
+                            llvm_param_idx, def.name
+                        )));
+                    }
+                    llvm_param_idx += 1;
+                    let active_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                    if active_val.is_null() {
+                        return Err(Diagnostic::internal(format!(
+                            "missing LLVM proc-array active-state param {} for function '{}'",
+                            llvm_param_idx, def.name
+                        )));
+                    }
+                    let active_name = runtime_proc_array_active_symbol(param_name);
+                    ctx.array_ptrs.insert(active_name.clone(), active_val);
+                    ctx.array_len.insert(active_name.clone(), *fixed_len);
+                    ctx.array_len_values.insert(active_name.clone(), len_val);
+                    ctx.array_elem_ty.insert(active_name, PrimitiveType::Bool);
+                    llvm_param_idx += 1;
+                    let mut roots = Vec::new();
+                    let mut leaves = Vec::new();
+                    collect_array_struct_bindings(
+                        ctx.struct_fields,
+                        struct_name,
+                        param_name,
+                        1,
+                        &mut roots,
+                        &mut leaves,
+                        &mut Vec::new(),
+                    )?;
+                    for (root_name, root_struct, root_len) in roots {
+                        let compile_len = root_len.saturating_mul(*fixed_len);
+                        ctx.array_struct_roots
+                            .insert(root_name.clone(), root_struct);
+                        ctx.array_len.insert(root_name.clone(), compile_len);
+                        let runtime_len = if root_len == 1 {
+                            len_val
+                        } else {
+                            LLVMBuildMul(
+                                ctx.builder,
+                                len_val,
+                                LLVMConstInt(ctx.i32_ty, root_len as u64, 0),
+                                b"struct_arr_root_len\0".as_ptr().cast(),
+                            )
+                        };
+                        ctx.array_len_values.insert(root_name, runtime_len);
+                    }
+                    for (leaf_name, leaf_len, leaf_ty) in leaves {
+                        let param_val = LLVMGetParam(fn_ref, llvm_param_idx);
+                        if param_val.is_null() {
+                            return Err(Diagnostic::internal(format!(
+                                "missing LLVM struct-array leaf param {} for function '{}'",
+                                llvm_param_idx, def.name
+                            )));
+                        }
+                        let compile_len = leaf_len.saturating_mul(*fixed_len);
+                        ctx.array_ptrs.insert(leaf_name.clone(), param_val);
+                        ctx.array_len.insert(leaf_name.clone(), compile_len);
                         let runtime_len = if leaf_len == 1 {
                             len_val
                         } else {

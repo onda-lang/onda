@@ -103,6 +103,7 @@ pub(super) fn default_scalar_signature(def: &TypedFunction) -> Vec<PrimitiveType
             TypedFnParam::Scalar { ty } => Some(resolve_scalar_param_type(*ty, PrimitiveType::F32)),
             TypedFnParam::Struct { .. } => None,
             TypedFnParam::StructArray { .. } => None,
+            TypedFnParam::ProcArray { .. } => None,
             TypedFnParam::Array { .. } => None,
             TypedFnParam::Buffer { .. } => None,
             TypedFnParam::Tuple { .. } => None,
@@ -128,6 +129,7 @@ pub(super) fn count_param_kinds(param_kinds: &[TypedFnParam]) -> (usize, usize, 
             TypedFnParam::Buffer { .. } => buffer += 1,
             TypedFnParam::Struct { .. }
             | TypedFnParam::StructArray { .. }
+            | TypedFnParam::ProcArray { .. }
             | TypedFnParam::Tuple { .. } => {}
         }
     }
@@ -544,6 +546,7 @@ pub(super) fn infer_specialized_expr_return_type(
                     }
                     TypedFnParam::Struct { .. }
                     | TypedFnParam::StructArray { .. }
+                    | TypedFnParam::ProcArray { .. }
                     | TypedFnParam::Tuple { .. } => {}
                 }
             }
@@ -642,6 +645,7 @@ fn infer_user_call_return_type(
             }
             TypedFnParam::Struct { .. }
             | TypedFnParam::StructArray { .. }
+            | TypedFnParam::ProcArray { .. }
             | TypedFnParam::Tuple { .. } => {}
         }
     }
@@ -900,7 +904,11 @@ pub(super) fn infer_specialized_def_return_type(
                     array_idx += 1;
                     locals.insert(param_name.clone(), param_ty);
                 }
-                TypedFnParam::StructArray { struct_name } => {
+                TypedFnParam::StructArray { struct_name }
+                | TypedFnParam::ProcArray {
+                    proc_name: struct_name,
+                    ..
+                } => {
                     if let Some(fields) = registry.struct_fields.get(struct_name) {
                         for field in fields {
                             let flat = format!("{param_name}.{}", field.name);

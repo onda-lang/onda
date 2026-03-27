@@ -194,6 +194,7 @@ struct ProcBaseShape {
     in_array_slots: HashMap<String, Vec<String>>,
     field_array_slots: HashMap<String, Vec<String>>,
     nested_proc_array_slots: HashMap<String, Vec<String>>,
+    nested_proc_array_active_fields: HashMap<String, String>,
     state: ProcStateFields,
     fields: Vec<StructField>,
     field_names: HashSet<String>,
@@ -201,22 +202,23 @@ struct ProcBaseShape {
 }
 
 #[derive(Debug, Clone)]
-struct ProcLoweringShape {
-    ins: Vec<String>,
-    outs: Vec<String>,
-    in_ports: Vec<ProcPortSpec>,
-    param_specs: Vec<ProcParamSpec>,
-    buffer_specs: Vec<ProcBufferSpec>,
-    in_types: HashMap<String, PrimitiveType>,
-    out_types: HashMap<String, PrimitiveType>,
-    in_array_slots: HashMap<String, Vec<String>>,
-    field_array_slots: HashMap<String, Vec<String>>,
-    nested_proc_array_slots: HashMap<String, Vec<String>>,
-    state: ProcStateFields,
-    fields: Vec<StructField>,
-    field_names: HashSet<String>,
-    array_field_names: HashSet<String>,
-    nested_fields: HashMap<String, HashSet<String>>,
+pub(crate) struct ProcLoweringShape {
+    pub(crate) ins: Vec<String>,
+    pub(crate) outs: Vec<String>,
+    pub(crate) in_ports: Vec<ProcPortSpec>,
+    pub(crate) param_specs: Vec<ProcParamSpec>,
+    pub(crate) buffer_specs: Vec<ProcBufferSpec>,
+    pub(crate) in_types: HashMap<String, PrimitiveType>,
+    pub(crate) out_types: HashMap<String, PrimitiveType>,
+    pub(crate) in_array_slots: HashMap<String, Vec<String>>,
+    pub(crate) field_array_slots: HashMap<String, Vec<String>>,
+    pub(crate) nested_proc_array_slots: HashMap<String, Vec<String>>,
+    pub(crate) nested_proc_array_active_fields: HashMap<String, String>,
+    pub(crate) state: ProcStateFields,
+    pub(crate) fields: Vec<StructField>,
+    pub(crate) field_names: HashSet<String>,
+    pub(crate) array_field_names: HashSet<String>,
+    pub(crate) nested_fields: HashMap<String, HashSet<String>>,
 }
 
 struct ProcLoweringEnv {
@@ -227,13 +229,41 @@ struct ProcLoweringEnv {
     lowering_shapes: HashMap<String, ProcLoweringShape>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TopLevelProcRewriteMeta {
+    pub(crate) global_proc_instances: HashMap<String, ProcCallInstance>,
+    pub(crate) global_proc_array_slots: HashMap<String, Vec<String>>,
+}
+
 pub(crate) struct ProcessorDesugarResult {
     pub(crate) program: Program,
     pub(crate) def_sample_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
+    pub(crate) proc_api: HashMap<String, ProcApi>,
+    pub(crate) lowering_shapes: HashMap<String, ProcLoweringShape>,
+    pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
 }
 
 const ALLOWED_SAMPLE_OVERSAMPLE_FACTORS: &[i64] = &[1, 2, 4, 8, 16, 32, 64];
+
+fn sanitize_runtime_symbol_component(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+}
+
+pub(crate) fn runtime_proc_array_active_field_name(array_base: &str) -> String {
+    format!(
+        "__omni_proc_block_active_{}",
+        sanitize_runtime_symbol_component(array_base)
+    )
+}
 
 pub(crate) fn validated_sample_oversample_factor(
     factor_expr: Option<&Expr>,
@@ -886,6 +916,35 @@ fn build_proc_lowering_env(
             .get(proc_name)
             .unwrap_or(&api.has_block);
     }
+    for proc_name in &proc_order {
+        let Some(proc) = proc_defs_by_name.get(proc_name) else {
+            continue;
+        };
+        let Some(shape) = base_shapes.get(proc_name) else {
+            continue;
+        };
+        let nested_instances = shape
+            .state
+            .nested_procs
+            .iter()
+            .map(|(name, nested)| {
+                (
+                    name.clone(),
+                    ProcCallInstance {
+                        proc_name: nested.proc_name.clone(),
+                        buffer_args: Vec::new(),
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        reject_non_sample_proc_operator_calls_in_proc(
+            proc,
+            &nested_instances,
+            &shape.nested_proc_array_slots,
+            &proc_api,
+            errors,
+        );
+    }
 
     Some(ProcLoweringEnv {
         struct_defs_by_name,
@@ -958,6 +1017,9 @@ pub(crate) fn desugar_processors(
             program,
             def_sample_oversample_factors: HashMap::new(),
             proc_step_oversample_meta: HashMap::new(),
+            proc_api: HashMap::new(),
+            lowering_shapes: HashMap::new(),
+            top_level_proc_rewrite: TopLevelProcRewriteMeta::default(),
         };
     };
     let existing_struct_names = program
@@ -995,11 +1057,15 @@ pub(crate) fn desugar_processors(
     program.blocks.extend(generated_structs);
     program.blocks.extend(generated_defs);
 
-    rewrite_top_level_proc_calls(&mut program, options, &lowering_shapes, &proc_api, errors);
+    let top_level_proc_rewrite =
+        rewrite_top_level_proc_calls(&mut program, options, &lowering_shapes, &proc_api, errors);
     ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
+        proc_api,
+        lowering_shapes,
+        top_level_proc_rewrite,
     }
 }
 

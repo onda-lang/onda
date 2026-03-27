@@ -1,4 +1,5 @@
 use super::*;
+use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 
 type ProcArrayAliases = HashMap<String, ProcArrayAliasInfo>;
 
@@ -2479,7 +2480,7 @@ fn collect_called_proc_instances_in_stmt(
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             let mut expr_for_collect = expr.clone();
-            rewrite_proc_alias_calls_in_expr(&mut expr_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(&mut expr_for_collect, aliases);
             collect_called_proc_instances_in_expr(
                 &expr_for_collect,
                 proc_vars,
@@ -2504,7 +2505,7 @@ fn collect_called_proc_instances_in_stmt(
         }
         Stmt::Return { expr, .. } | Stmt::Expr { expr, .. } => {
             let mut expr_for_collect = expr.clone();
-            rewrite_proc_alias_calls_in_expr(&mut expr_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(&mut expr_for_collect, aliases);
             collect_called_proc_instances_in_expr(
                 &expr_for_collect,
                 proc_vars,
@@ -2519,7 +2520,7 @@ fn collect_called_proc_instances_in_stmt(
             ..
         } => {
             let mut cond_for_collect = cond.clone();
-            rewrite_proc_alias_calls_in_expr(&mut cond_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(&mut cond_for_collect, aliases);
             collect_called_proc_instances_in_expr(
                 &cond_for_collect,
                 proc_vars,
@@ -2555,7 +2556,7 @@ fn collect_called_proc_instances_in_stmt(
             ..
         } => {
             let mut start_for_collect = start.clone();
-            rewrite_proc_alias_calls_in_expr(&mut start_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(&mut start_for_collect, aliases);
             collect_called_proc_instances_in_expr(
                 &start_for_collect,
                 proc_vars,
@@ -2563,7 +2564,7 @@ fn collect_called_proc_instances_in_stmt(
                 out,
             );
             let mut end_for_collect = end.clone();
-            rewrite_proc_alias_calls_in_expr(&mut end_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(&mut end_for_collect, aliases);
             collect_called_proc_instances_in_expr(
                 &end_for_collect,
                 proc_vars,
@@ -2572,7 +2573,7 @@ fn collect_called_proc_instances_in_stmt(
             );
             if let Some(step_expr) = step {
                 let mut step_for_collect = step_expr.clone();
-                rewrite_proc_alias_calls_in_expr(&mut step_for_collect, aliases);
+                rewrite_proc_alias_call_sites_in_expr(&mut step_for_collect, aliases);
                 collect_called_proc_instances_in_expr(
                     &step_for_collect,
                     proc_vars,
@@ -2593,7 +2594,7 @@ fn collect_called_proc_instances_in_stmt(
         }
         Stmt::While { cond, body, .. } => {
             let mut cond_for_collect = cond.clone();
-            rewrite_proc_alias_calls_in_expr(&mut cond_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(&mut cond_for_collect, aliases);
             collect_called_proc_instances_in_expr(
                 &cond_for_collect,
                 proc_vars,

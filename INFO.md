@@ -288,6 +288,7 @@
     - `voices[idx](...).outN` / named output endpoint
     - statement call form: `voices[idx](...)`
     - indexed param/field access: `voices[idx].gain`
+    - indexed scalar field assignment: `voices[idx].gain = value`
     - proc-event forwarding: `voices[idx].note_on(...)`
     - proc aliasing is supported (`a = voices[idx]`), and call/output access on the alias lowers to the same slot dispatch semantics.
   - Runtime indices are clamped to the valid slot range (`0..len-1`).

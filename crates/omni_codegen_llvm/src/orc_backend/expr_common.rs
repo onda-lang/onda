@@ -373,7 +373,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                 };
                 array_types.push(resolved_ty);
             }
-            TypedFnParam::StructArray { .. } => {}
+            TypedFnParam::StructArray { .. } | TypedFnParam::ProcArray { .. } => {}
             TypedFnParam::Buffer { elem_ty, channels } => {
                 let resolved_ty = if let Some(arg_expr) = resolved_arg {
                     infer_buffer_arg_signature(arg_expr, name)?
@@ -494,6 +494,11 @@ pub(super) unsafe fn materialize_user_call_args_common(
         &Expr,
         &str,
     ) -> Result<(), Diagnostic>,
+    lower_proc_array_arg: &mut dyn FnMut(
+        &mut Vec<LLVMValueRef>,
+        &Expr,
+        &str,
+    ) -> Result<(), Diagnostic>,
     lower_array_arg: &mut dyn FnMut(
         &mut Vec<LLVMValueRef>,
         &Expr,
@@ -549,6 +554,18 @@ pub(super) unsafe fn materialize_user_call_args_common(
                     ))
                 })?;
                 lower_struct_array_arg(arg_values, arg_expr, struct_name)?;
+            }
+            TypedFnParam::ProcArray {
+                proc_name: struct_name,
+                ..
+            } => {
+                let arg_expr = resolved_arg.ok_or_else(|| {
+                    Diagnostic::internal(format!(
+                        "function '{callee_name}' missing required proc-array argument '{}' in {call_context}",
+                        prepared.param_names[idx]
+                    ))
+                })?;
+                lower_proc_array_arg(arg_values, arg_expr, struct_name)?;
             }
             TypedFnParam::Array { elem_ty } => {
                 let arg_expr = resolved_arg.ok_or_else(|| {

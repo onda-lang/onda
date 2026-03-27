@@ -226,6 +226,10 @@ pub enum TypedFnParam {
     Struct {
         struct_name: String,
     },
+    ProcArray {
+        proc_name: String,
+        len: usize,
+    },
     StructArray {
         struct_name: String,
     },
@@ -453,7 +457,7 @@ mod tests {
 
     #[test]
     fn def_body_assignment_diagnostics_use_rhs_spans() {
-        let src = "outs:\n  out1\ndef foo():\n  a = [0.0]\n  a[0] = false\n  return 0.0\nsample:\n  out1 = 0.0\n";
+        let src = "outs:\n  out1\ndef foo():\n  a = [0.0]\n  a[0] = false\n  return 0.0\nsample:\n  out1 = foo()\n";
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("def body type mismatch should fail");
         let diag = errors
@@ -792,6 +796,824 @@ mod tests {
         let src = "import std/osc\nouts:\n  out1\ninit:\n  voices: std::osc::Sine[2] = std::osc::Sine()\nsample:\n  out1 = voices[0]()\n";
         let program = parse_program(src).expect("parse should succeed");
         analyze(program).expect("namespaced proc array typed declaration should analyze");
+    }
+
+    #[test]
+    fn def_accepts_proc_array_param_for_indexed_init_events() {
+        let src = "import std/osc\nouts:\n  out1\ndef init_voices(voices):\n  for i in 0..2:\n    voices[i].init(freq = 110.0)\ninit:\n  voices: std::osc::Sine[2]\n  init_voices(voices)\nsample:\n  out1 = voices[0]() + voices[1]()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("proc-array def parameter should analyze");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "init_voices")
+            .expect("missing typed def");
+        assert!(
+            matches!(
+                def.param_kinds.as_slice(),
+                [TypedFnParam::ProcArray {
+                    proc_name,
+                    len: 2
+                }] if proc_name.starts_with("std::osc::Sine")
+            ),
+            "expected proc-array param kind, got {:#?}",
+            def.param_kinds
+        );
+        assert!(
+            !def.body.iter().any(def_stmt_contains_proc_index_sentinel),
+            "proc-array indexed event call should be rewritten before typed def lowering: {:#?}",
+            def.body
+        );
+    }
+
+    #[test]
+    fn def_accepts_proc_array_param_for_indexed_field_assignments() {
+        let src = "proc Voice:\n  params:\n    gain = 0.0\n  outs:\n    out1\n  sample:\n    out1 = gain\nouts:\n  out1\ndef set_gains(voices, gain):\n  for i in 0..2:\n    voices[i].gain = gain + f32(i)\ninit:\n  voices: Voice[2] = Voice()\n  set_gains(voices, 1.0)\nsample:\n  out1 = voices[0]() + voices[1]()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("proc-array indexed field assignment should analyze");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "set_gains")
+            .expect("missing typed def");
+        assert!(
+            matches!(
+                def.param_kinds.as_slice(),
+                [TypedFnParam::ProcArray { proc_name, len: 2 }, TypedFnParam::Scalar { .. }]
+                    if proc_name == "Voice"
+            ),
+            "expected proc-array param kind, got {:#?}",
+            def.param_kinds
+        );
+        assert!(
+            !def.body.iter().any(def_stmt_contains_proc_index_sentinel),
+            "proc-array indexed field assignment should be rewritten before typed def lowering: {:#?}",
+            def.body
+        );
+    }
+
+    #[test]
+    fn def_accepts_proc_array_param_len_builtin() {
+        let src = "proc Voice:\n  params:\n    gain = 0.0\n  outs:\n    out1\n  sample:\n    out1 = gain\nouts:\n  out1\ndef set_and_sum(voices):\n  total = 0.0\n  for i in 0..(voices.len()):\n    voices[i].gain = f32(i + 1)\n    total = total + voices[i]()\n  return total + f32(voices.len())\ninit:\n  voices: Voice[3] = Voice()\nsample:\n  out1 = set_and_sum(voices)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("proc-array len builtin should analyze");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "set_and_sum")
+            .expect("missing typed def");
+        assert!(
+            matches!(
+                def.param_kinds.as_slice(),
+                [TypedFnParam::ProcArray { proc_name, len: 3 }] if proc_name == "Voice"
+            ),
+            "expected proc-array param kind, got {:#?}",
+            def.param_kinds
+        );
+    }
+
+    #[test]
+    fn unused_untyped_proc_array_def_is_ignored() {
+        let src = "import std/osc\nouts:\n  out1\ndef init_voices(voices):\n  for i in 0..2:\n    voices[i].init(freq = 110.0)\ninit:\n  voices: std::osc::Sine[2]\n  for i in 0..2:\n    voices[i].init(freq = 110.0)\nsample:\n  out1 = voices[0]() + voices[1]()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("unused untyped proc-array def should be ignored");
+        assert!(
+            !typed.defs.iter().any(|def| def.name == "init_voices"),
+            "unused def unexpectedly survived into typed program: {:#?}",
+            typed.defs
+        );
+    }
+
+    #[test]
+    fn unused_explicitly_typed_struct_def_still_reports_body_errors() {
+        let src = "struct Pair:\n  x\nouts:\n  out1\ndef broken(pair: Pair):\n  return pair.y\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("unused explicitly typed struct def should still analyze");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("struct parameter 'pair' (type 'Pair') has no field 'y'")),
+            "expected unreachable explicit struct def diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn unused_explicitly_typed_proc_def_still_reports_body_errors() {
+        let src = "proc Voice:\n  outs:\n    out1\n  sample:\n    out1 = 0.0\nouts:\n  out1\ndef broken(voice: Voice):\n  return voice.missing\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("unused explicitly typed proc def should still analyze");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("struct parameter 'voice' (type 'Voice') has no field 'missing'")),
+            "expected unreachable explicit proc def diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn def_forwards_proc_array_params_across_calls() {
+        let src = "import std/osc\nouts:\n  out1\ndef init_inner(voices, freq):\n  for i in 0..2:\n    voices[i].init(freq = freq * f32(i + 1))\ndef init_outer(voices, freq):\n  init_inner(voices, freq)\ninit:\n  voices: std::osc::Sine[2]\n  init_outer(voices, 110.0)\nsample:\n  out1 = voices[0]() + voices[1]()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("forwarded proc-array params should analyze");
+        for def_name in ["init_inner", "init_outer"] {
+            let def = typed
+                .defs
+                .iter()
+                .find(|def| def.name == def_name)
+                .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
+            assert!(
+                matches!(
+                    def.param_kinds.first(),
+                    Some(TypedFnParam::ProcArray { proc_name, len: 2 })
+                        if proc_name.starts_with("std::osc::Sine")
+                ),
+                "expected proc-array first param for '{def_name}', got {:#?}",
+                def.param_kinds
+            );
+        }
+    }
+
+    #[test]
+    fn def_infers_struct_array_params_from_call_sites() {
+        let src = "struct Pair:\n  x\nouts:\n  out1\ndef sum_pairs(pairs):\n  total = 0.0\n  for i in 0..2:\n    total = total + pairs[i].x\n  return total\ninit:\n  pairs: Pair[2]\n  for i in 0..2:\n    p = pairs[i]\n    p.x = f32(i + 1)\nsample:\n  out1 = sum_pairs(pairs)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("struct-array def param should analyze");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "sum_pairs")
+            .expect("missing typed def");
+        assert!(
+            matches!(
+                def.param_kinds.as_slice(),
+                [TypedFnParam::StructArray { struct_name }] if struct_name == "Pair"
+            ),
+            "expected struct-array param kind, got {:#?}",
+            def.param_kinds
+        );
+    }
+
+    #[test]
+    fn def_infers_struct_array_params_from_len_builtin() {
+        let src = "struct Pair:\n  x\nouts:\n  out1\ndef set_and_sum(pairs):\n  total = 0.0\n  for i in 0..(pairs.len()):\n    pairs[i].x = f32(i + 1)\n    total = total + pairs[i].x\n  return total + f32(pairs.len())\ninit:\n  pairs: Pair[3]\nsample:\n  out1 = set_and_sum(pairs)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("struct-array len builtin should analyze");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "set_and_sum")
+            .expect("missing typed def");
+        assert!(
+            matches!(
+                def.param_kinds.as_slice(),
+                [TypedFnParam::StructArray { struct_name }] if struct_name == "Pair"
+            ),
+            "expected struct-array param kind, got {:#?}",
+            def.param_kinds
+        );
+    }
+
+    #[test]
+    fn def_infers_struct_array_params_from_indexed_field_assignments() {
+        let src = "struct Pair:\n  x\nouts:\n  out1\ndef seed_pairs(pairs):\n  for i in 0..2:\n    pairs[i].x = f32(i + 1)\ninit:\n  pairs: Pair[2]\n  seed_pairs(pairs)\nsample:\n  out1 = pairs[0].x + pairs[1].x\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("struct-array indexed field assignment should analyze");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "seed_pairs")
+            .expect("missing typed def");
+        assert!(
+            matches!(
+                def.param_kinds.as_slice(),
+                [TypedFnParam::StructArray { struct_name }] if struct_name == "Pair"
+            ),
+            "expected struct-array param kind, got {:#?}",
+            def.param_kinds
+        );
+    }
+
+    #[test]
+    fn def_forwards_struct_array_params_across_calls() {
+        let src = "struct Pair:\n  x\nouts:\n  out1\ndef sum_inner(pairs):\n  total = 0.0\n  for i in 0..2:\n    total = total + pairs[i].x\n  return total\ndef sum_outer(pairs):\n  return sum_inner(pairs)\ninit:\n  pairs: Pair[2]\n  for i in 0..2:\n    p = pairs[i]\n    p.x = f32(i + 1)\nsample:\n  out1 = sum_outer(pairs)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("forwarded struct-array params should analyze");
+        for def_name in ["sum_inner", "sum_outer"] {
+            let def = typed
+                .defs
+                .iter()
+                .find(|def| def.name == def_name)
+                .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
+            assert!(
+                matches!(
+                    def.param_kinds.first(),
+                    Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Pair"
+                ),
+                "expected struct-array first param for '{def_name}', got {:#?}",
+                def.param_kinds
+            );
+        }
+    }
+
+    #[test]
+    fn def_forwards_struct_array_alias_params_across_calls() {
+        let src = "struct Pair:\n  x\nouts:\n  out1\ndef sum_inner(pairs):\n  total = 0.0\n  for i in 0..2:\n    p = pairs[i]\n    total = total + p.x\n  return total\ndef sum_outer(pairs):\n  return sum_inner(pairs)\ninit:\n  pairs: Pair[2]\n  for i in 0..2:\n    p = pairs[i]\n    p.x = f32(i + 1)\nsample:\n  out1 = sum_outer(pairs)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("forwarded struct-array alias params should analyze");
+        for def_name in ["sum_inner", "sum_outer"] {
+            let def = typed
+                .defs
+                .iter()
+                .find(|def| def.name == def_name)
+                .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
+            assert!(
+                matches!(
+                    def.param_kinds.first(),
+                    Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Pair"
+                ),
+                "expected struct-array first param for '{def_name}', got {:#?}",
+                def.param_kinds
+            );
+        }
+    }
+
+    #[test]
+    fn unused_untyped_struct_array_def_is_ignored() {
+        let src = "struct Pair:\n  x\nouts:\n  out1\ndef sum_pairs(pairs):\n  total = 0.0\n  for i in 0..2:\n    total = total + pairs[i].x\n  return total\ninit:\n  pairs: Pair[2]\n  for i in 0..2:\n    p = pairs[i]\n    p.x = f32(i + 1)\nsample:\n  out1 = pairs[0].x + pairs[1].x\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("unused untyped struct-array def should be ignored");
+        assert!(
+            !typed.defs.iter().any(|def| def.name == "sum_pairs"),
+            "unused def unexpectedly survived into typed program: {:#?}",
+            typed.defs
+        );
+    }
+
+    #[test]
+    fn def_accepts_proc_array_alias_init_events() {
+        let src = "import std/osc\nouts:\n  out1\ndef init_voices(voices):\n  for i in 0..2:\n    voice = voices[i]\n    voice.init(freq = 110.0 * f32(i + 1))\ninit:\n  voices: std::osc::Sine[2]\n  init_voices(voices)\nsample:\n  out1 = voices[0]() + voices[1]()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("proc-array alias init def should analyze");
+    }
+
+    #[test]
+    fn def_forwarding_proc_params_preserves_nested_proc_array_block_hooks() {
+        let src = r#"
+proc Voice:
+  outs:
+    out1
+  block:
+    sample:
+      out1 = 0.25
+
+proc Bank:
+  outs:
+    out1
+  init:
+    voices: Voice[2] = Voice()
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+def inner(bank: Bank, idx: i32):
+  return bank.voices[idx]()
+
+def outer(bank: Bank):
+  idx: i32 = 1
+  return inner(bank, idx)
+
+init:
+  bank = Bank()
+
+sample:
+  out1 = outer(bank)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("forwarded proc param call should analyze");
+
+        let bank_struct = typed
+            .structs
+            .iter()
+            .find(|st| st.name == "Bank")
+            .expect("missing lowered Bank struct");
+        assert!(
+            bank_struct.fields.iter().any(|field| {
+                field.name == "__omni_proc_block_active_voices"
+                    && matches!(field.ty, TypedFieldType::Array(2))
+            }),
+            "expected Bank struct to own nested proc-array active slots, got {:#?}",
+            bank_struct.fields
+        );
+
+        let inner = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "inner")
+            .expect("missing typed inner def");
+        assert!(
+            inner
+                .body
+                .iter()
+                .any(|stmt| stmt_contains_assign_to_index_base(
+                    stmt,
+                    "bank.__omni_proc_block_active_voices"
+                )),
+            "expected inner def to mark nested proc-array slots active: {:#?}",
+            inner.body
+        );
+
+        assert!(
+            typed
+                .block_pre
+                .iter()
+                .any(|stmt| stmt_contains_user_call_name(stmt, "Bank.__proc_block_pre")),
+            "expected sample caller to inject Bank block_pre: {:#?}",
+            typed.block_pre
+        );
+        assert!(
+            typed
+                .block_post
+                .iter()
+                .any(|stmt| stmt_contains_user_call_name(stmt, "Bank.__proc_block_post")),
+            "expected sample caller to inject Bank block_post: {:#?}",
+            typed.block_post
+        );
+
+        let bank_block_post = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "Bank.__proc_block_post")
+            .expect("missing lowered Bank block_post def");
+        assert!(
+            bank_block_post
+                .body
+                .iter()
+                .any(|stmt| stmt_contains_index_base(stmt, "self.__omni_proc_block_active_voices")),
+            "expected Bank block_post to flush nested proc-array active slots: {:#?}",
+            bank_block_post.body
+        );
+    }
+
+    #[test]
+    fn top_level_event_proc_call_is_rejected_as_not_sample_only() {
+        let src = r#"
+proc Voice:
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+events:
+  fire():
+    x = voice()
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errs = analyze(program).expect_err("event proc operator call should fail");
+        assert!(
+            errs.iter().any(|diag| diag
+                .message
+                .contains("proc operator '()' is only allowed in sample")),
+            "expected sample-only proc operator diagnostic, got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn top_level_event_def_proc_array_call_is_rejected_as_not_sample_only() {
+        let src = r#"
+proc Voice:
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+def run_selected(voices, idx: i32):
+  return voices[idx]()
+
+events:
+  fire():
+    x = run_selected(voices, idx)
+
+init:
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 0
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errs = analyze(program).expect_err("event def proc-array operator call should fail");
+        assert!(
+            errs.iter()
+                .any(|diag| diag.message.contains("not provably sample-only")),
+            "expected not-provably-sample-only diagnostic, got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn top_level_event_def_owner_proc_call_is_rejected_as_not_sample_only() {
+        let src = r#"
+proc Voice:
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+proc Bank:
+  outs:
+    out1
+  init:
+    voices: Voice[2] = Voice()
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+def run_selected(bank: Bank, idx: i32):
+  return bank.voices[idx]()
+
+events:
+  fire():
+    x = run_selected(bank, idx)
+
+init:
+  bank = Bank()
+  idx: i32 = 0
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errs = analyze(program).expect_err("event owner-proc operator call should fail");
+        assert!(
+            errs.iter()
+                .any(|diag| diag.message.contains("not provably sample-only")),
+            "expected not-provably-sample-only diagnostic, got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn proc_local_def_called_from_proc_event_cannot_call_nested_proc_operator() {
+        let src = r#"
+proc Child:
+  outs:
+    out1
+  sample:
+    out1 = 0.75
+
+proc Parent:
+  outs:
+    out1
+  init:
+    child = Child()
+
+  def run_child():
+    return child()
+
+  events:
+    ping():
+      x = run_child()
+
+  sample:
+    out1 = 0.0
+
+init:
+  p = Parent()
+
+sample:
+  out1 = p()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errs =
+            analyze(program).expect_err("proc-event proc-local def operator call should fail");
+        assert!(
+            errs.iter()
+                .any(|diag| diag.message.contains("not provably sample-only")),
+            "expected not-provably-sample-only diagnostic, got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn proc_local_def_called_from_proc_event_cannot_call_nested_proc_array_alias() {
+        let src = r#"
+proc Child:
+  outs:
+    out1
+  sample:
+    out1 = 0.75
+
+proc Parent:
+  outs:
+    out1
+  init:
+    children: Child[2] = Child()
+    idx: i32 = 0
+
+  def run_child():
+    v = children[idx]
+    return v()
+
+  events:
+    ping():
+      x = run_child()
+      idx = 1 - idx
+
+  sample:
+    out1 = 0.0
+
+init:
+  p = Parent()
+
+sample:
+  out1 = p()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errs =
+            analyze(program).expect_err("proc-event proc-local proc-array alias call should fail");
+        assert!(
+            errs.iter()
+                .any(|diag| diag.message.contains("not provably sample-only")),
+            "expected not-provably-sample-only diagnostic, got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn proc_event_proc_operator_is_rejected_even_when_called_from_sample() {
+        let src = r#"
+proc Child:
+  outs:
+    out1
+  sample:
+    out1 = 0.25
+
+proc Parent:
+  outs:
+    out1
+  init:
+    child = Child()
+
+  events:
+    ping():
+      x = child()
+
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+init:
+  parent = Parent()
+
+sample:
+  parent.ping()
+  out1 = parent()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errs = analyze(program)
+            .expect_err("proc event body proc operator should fail even from sample caller");
+        assert!(
+            errs.iter().any(|diag| diag
+                .message
+                .contains("proc operator '()' is only allowed in sample")),
+            "expected sample-only proc operator diagnostic, got {errs:?}"
+        );
+    }
+
+    fn def_stmt_contains_proc_index_sentinel(stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,
+            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                expr_contains_proc_index_sentinel(expr)
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                expr_contains_proc_index_sentinel(cond)
+                    || then_branch
+                        .iter()
+                        .any(def_stmt_contains_proc_index_sentinel)
+                    || else_branch
+                        .iter()
+                        .any(def_stmt_contains_proc_index_sentinel)
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                expr_contains_proc_index_sentinel(start)
+                    || expr_contains_proc_index_sentinel(end)
+                    || step
+                        .as_ref()
+                        .is_some_and(|expr| expr_contains_proc_index_sentinel(expr))
+                    || body.iter().any(def_stmt_contains_proc_index_sentinel)
+            }
+            Stmt::While { cond, body, .. } => {
+                expr_contains_proc_index_sentinel(cond)
+                    || body.iter().any(def_stmt_contains_proc_index_sentinel)
+            }
+        }
+    }
+
+    fn stmt_contains_user_call_name(stmt: &Stmt, expected_name: &str) -> bool {
+        match stmt {
+            Stmt::Expr {
+                expr: Expr::UserCall { name, .. },
+                ..
+            } => name == expected_name,
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                then_branch
+                    .iter()
+                    .any(|stmt| stmt_contains_user_call_name(stmt, expected_name))
+                    || else_branch
+                        .iter()
+                        .any(|stmt| stmt_contains_user_call_name(stmt, expected_name))
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => body
+                .iter()
+                .any(|stmt| stmt_contains_user_call_name(stmt, expected_name)),
+            _ => false,
+        }
+    }
+
+    fn stmt_contains_assign_to_index_base(stmt: &Stmt, expected_base: &str) -> bool {
+        match stmt {
+            Stmt::Assign {
+                target: AssignTarget::Index { base, .. },
+                ..
+            } => base == expected_base,
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                then_branch
+                    .iter()
+                    .any(|stmt| stmt_contains_assign_to_index_base(stmt, expected_base))
+                    || else_branch
+                        .iter()
+                        .any(|stmt| stmt_contains_assign_to_index_base(stmt, expected_base))
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => body
+                .iter()
+                .any(|stmt| stmt_contains_assign_to_index_base(stmt, expected_base)),
+            _ => false,
+        }
+    }
+
+    fn stmt_contains_index_base(stmt: &Stmt, expected_base: &str) -> bool {
+        match stmt {
+            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                expr_contains_index_base(expr, expected_base)
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                expr_contains_index_base(cond, expected_base)
+                    || then_branch
+                        .iter()
+                        .any(|stmt| stmt_contains_index_base(stmt, expected_base))
+                    || else_branch
+                        .iter()
+                        .any(|stmt| stmt_contains_index_base(stmt, expected_base))
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                expr_contains_index_base(start, expected_base)
+                    || expr_contains_index_base(end, expected_base)
+                    || step
+                        .as_ref()
+                        .is_some_and(|expr| expr_contains_index_base(expr, expected_base))
+                    || body
+                        .iter()
+                        .any(|stmt| stmt_contains_index_base(stmt, expected_base))
+            }
+            Stmt::While { cond, body, .. } => {
+                expr_contains_index_base(cond, expected_base)
+                    || body
+                        .iter()
+                        .any(|stmt| stmt_contains_index_base(stmt, expected_base))
+            }
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,
+        }
+    }
+
+    fn expr_contains_index_base(expr: &Expr, expected_base: &str) -> bool {
+        match expr {
+            Expr::Index { base, index, .. } => {
+                base == expected_base || expr_contains_index_base(index, expected_base)
+            }
+            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
+                .iter()
+                .any(|expr| expr_contains_index_base(expr, expected_base)),
+            Expr::Slice { start, end, .. } => {
+                start
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_index_base(expr, expected_base))
+                    || end
+                        .as_ref()
+                        .is_some_and(|expr| expr_contains_index_base(expr, expected_base))
+            }
+            Expr::ArrayCtor { spec, init, .. } => {
+                expr_contains_index_base(&spec.size, expected_base)
+                    || init.as_ref().is_some_and(|values| {
+                        values
+                            .iter()
+                            .any(|expr| expr_contains_index_base(expr, expected_base))
+                    })
+            }
+            Expr::Compare { lhs, rhs, .. }
+            | Expr::Logical { lhs, rhs, .. }
+            | Expr::Binary { lhs, rhs, .. } => {
+                expr_contains_index_base(lhs, expected_base)
+                    || expr_contains_index_base(rhs, expected_base)
+            }
+            Expr::Call { args, .. } => args
+                .iter()
+                .any(|expr| expr_contains_index_base(expr, expected_base)),
+            Expr::UserCall { args, .. } => args
+                .iter()
+                .any(|arg| expr_contains_index_base(&arg.expr, expected_base)),
+            Expr::Cast { expr: inner, .. }
+            | Expr::UnaryNot { expr: inner, .. }
+            | Expr::UnaryBitNot { expr: inner, .. } => {
+                expr_contains_index_base(inner, expected_base)
+            }
+            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => false,
+        }
+    }
+
+    fn expr_contains_proc_index_sentinel(expr: &Expr) -> bool {
+        match expr {
+            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => false,
+            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+                values.iter().any(expr_contains_proc_index_sentinel)
+            }
+            Expr::Index { index, .. } => expr_contains_proc_index_sentinel(index),
+            Expr::Slice { start, end, .. } => {
+                start
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_proc_index_sentinel(expr))
+                    || end
+                        .as_ref()
+                        .is_some_and(|expr| expr_contains_proc_index_sentinel(expr))
+            }
+            Expr::ArrayCtor { spec, init, .. } => {
+                expr_contains_proc_index_sentinel(&spec.size)
+                    || init
+                        .as_ref()
+                        .is_some_and(|values| values.iter().any(expr_contains_proc_index_sentinel))
+            }
+            Expr::Compare { lhs, rhs, .. }
+            | Expr::Logical { lhs, rhs, .. }
+            | Expr::Binary { lhs, rhs, .. } => {
+                expr_contains_proc_index_sentinel(lhs) || expr_contains_proc_index_sentinel(rhs)
+            }
+            Expr::Call { args, .. } => args.iter().any(expr_contains_proc_index_sentinel),
+            Expr::UserCall { name, args, .. } => {
+                name.starts_with("__omni_proc_index_call")
+                    || args
+                        .iter()
+                        .any(|arg| expr_contains_proc_index_sentinel(&arg.expr))
+            }
+            Expr::Cast { expr, .. }
+            | Expr::UnaryNot { expr, .. }
+            | Expr::UnaryBitNot { expr, .. } => expr_contains_proc_index_sentinel(expr),
+        }
     }
 
     #[test]

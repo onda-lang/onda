@@ -10,12 +10,12 @@ use crate::builtins::{
 };
 use crate::decl_symbols::{
     declared_buffer_info, declared_symbol_scalar_type, has_declared_buffer_symbol_info,
-    is_declared_data_array_symbol, DeclaredSymbolMap,
+    DeclaredSymbolMap,
 };
 use crate::def_semantics::{can_implicitly_assign, merge_numeric_types};
 use crate::{
-    resolve_struct_field_decl, split_field_path, LocalAliasTypes, LocalArrayAliasInfo,
-    TypedFieldType, TypedStructField,
+    is_builtin_array_like_receiver_with_resolver, resolve_struct_field_decl, split_field_path,
+    LocalAliasTypes, LocalArrayAliasInfo, ProcNestedArrayState, TypedFieldType, TypedStructField,
 };
 
 /// Returns the appropriate type for a literal in an untyped assignment context.
@@ -134,30 +134,23 @@ fn is_data_receiver_symbol_for_builtin(
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     struct_instances: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
 ) -> bool {
-    if local_array_aliases.contains_key(base)
-        || is_declared_data_array_symbol(declared_symbols, base)
-    {
-        return true;
-    }
-    if let Some((root, field)) = split_simple_field_path(base) {
-        if let Some(struct_name) = struct_instances.get(root) {
-            if let Some(field_decl) = resolve_struct_field_decl(struct_name, field, struct_defs) {
-                return matches!(field_decl.ty, TypedFieldType::Array(_));
-            }
-        }
-    }
-    false
+    local_array_aliases.contains_key(base)
+        || is_builtin_array_like_receiver_with_resolver(
+            base,
+            declared_symbols,
+            struct_defs,
+            proc_array_roots,
+            |root| struct_instances.get(root).map(String::as_str),
+        )
 }
 
 fn is_buffer_receiver_symbol_for_builtin(base: &str, declared_symbols: &DeclaredSymbolMap) -> bool {
     has_declared_buffer_symbol_info(declared_symbols, base)
 }
 
-fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
-    crate::split_root_field_path(name)
-}
-
+#[allow(dead_code)]
 pub(crate) fn infer_scalar_expr_type(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
@@ -170,6 +163,39 @@ pub(crate) fn infer_scalar_expr_type(
     param_names: &HashSet<String>,
     struct_instances: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
+    infer_scalar_expr_type_with_proc_arrays(
+        expr,
+        state_scalars,
+        declared_symbols,
+        local_aliases,
+        local_array_aliases,
+        locals,
+        input_names,
+        output_names,
+        param_names,
+        struct_instances,
+        struct_defs,
+        &empty_proc_array_roots,
+        errors,
+    )
+}
+
+fn infer_scalar_expr_type_with_proc_arrays(
+    expr: &Expr,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
+    local_aliases: &LocalAliasTypes,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    locals: &HashSet<String>,
+    input_names: &HashSet<String>,
+    output_names: &HashSet<String>,
+    param_names: &HashSet<String>,
+    struct_instances: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     match expr {
@@ -289,7 +315,7 @@ pub(crate) fn infer_scalar_expr_type(
         Expr::Slice { .. } => None,
         Expr::ArrayCtor { .. } => None,
         Expr::Cast { to, expr, .. } => {
-            let _ = infer_scalar_expr_type(
+            let _ = infer_scalar_expr_type_with_proc_arrays(
                 expr,
                 state_scalars,
                 declared_symbols,
@@ -301,6 +327,7 @@ pub(crate) fn infer_scalar_expr_type(
                 param_names,
                 struct_instances,
                 struct_defs,
+                proc_array_roots,
                 errors,
             )?;
             Some(*to)
@@ -309,7 +336,7 @@ pub(crate) fn infer_scalar_expr_type(
             Some(PrimitiveType::Bool)
         }
         Expr::UnaryBitNot { expr, .. } => {
-            let inner = infer_scalar_expr_type(
+            let inner = infer_scalar_expr_type_with_proc_arrays(
                 expr,
                 state_scalars,
                 declared_symbols,
@@ -321,6 +348,7 @@ pub(crate) fn infer_scalar_expr_type(
                 param_names,
                 struct_instances,
                 struct_defs,
+                proc_array_roots,
                 errors,
             )?;
             merge_integer_types_for_expr(expr, inner, inner, "bitwise not expression", errors)
@@ -329,7 +357,7 @@ pub(crate) fn infer_scalar_expr_type(
             let arg_types = args
                 .iter()
                 .map(|arg| {
-                    infer_scalar_expr_type(
+                    infer_scalar_expr_type_with_proc_arrays(
                         arg,
                         state_scalars,
                         declared_symbols,
@@ -341,6 +369,7 @@ pub(crate) fn infer_scalar_expr_type(
                         param_names,
                         struct_instances,
                         struct_defs,
+                        proc_array_roots,
                         errors,
                     )
                 })
@@ -422,6 +451,7 @@ pub(crate) fn infer_scalar_expr_type(
                     local_array_aliases,
                     struct_instances,
                     struct_defs,
+                    proc_array_roots,
                 ) || is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
                 {
                     return Some(PrimitiveType::I32);
@@ -446,6 +476,7 @@ pub(crate) fn infer_scalar_expr_type(
                     local_array_aliases,
                     struct_instances,
                     struct_defs,
+                    proc_array_roots,
                 ) && !is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
                 {
                     return Some(PrimitiveType::F32);
@@ -491,7 +522,7 @@ pub(crate) fn infer_scalar_expr_type(
             Some(PrimitiveType::F32)
         }
         Expr::Binary { op, lhs, rhs, .. } => {
-            let l = infer_scalar_expr_type(
+            let l = infer_scalar_expr_type_with_proc_arrays(
                 lhs,
                 state_scalars,
                 declared_symbols,
@@ -503,9 +534,10 @@ pub(crate) fn infer_scalar_expr_type(
                 param_names,
                 struct_instances,
                 struct_defs,
+                proc_array_roots,
                 errors,
             );
-            let r = infer_scalar_expr_type(
+            let r = infer_scalar_expr_type_with_proc_arrays(
                 rhs,
                 state_scalars,
                 declared_symbols,
@@ -517,6 +549,7 @@ pub(crate) fn infer_scalar_expr_type(
                 param_names,
                 struct_instances,
                 struct_defs,
+                proc_array_roots,
                 errors,
             );
             if let (Some(l), Some(r)) = (l, r) {
@@ -554,9 +587,41 @@ pub(crate) fn infer_expr_type_for_semantics(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
+    let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
+    infer_expr_type_for_semantics_with_proc_arrays(
+        expr,
+        state_scalars,
+        declared_symbols,
+        param_structs,
+        locals,
+        input_names,
+        output_names,
+        param_names,
+        struct_instances,
+        struct_defs,
+        &empty_proc_array_roots,
+        errors,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn infer_expr_type_for_semantics_with_proc_arrays(
+    expr: &Expr,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
+    param_structs: Option<&HashMap<String, String>>,
+    locals: &HashSet<String>,
+    input_names: &HashSet<String>,
+    output_names: &HashSet<String>,
+    param_names: &HashSet<String>,
+    struct_instances: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
     let empty_local_aliases = LocalAliasTypes::new();
     let empty_local_data_aliases = HashMap::<String, LocalArrayAliasInfo>::new();
-    infer_expr_type_for_semantics_with_local_data(
+    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
         expr,
         state_scalars,
         declared_symbols,
@@ -569,11 +634,13 @@ pub(crate) fn infer_expr_type_for_semantics(
         param_names,
         struct_instances,
         struct_defs,
+        proc_array_roots,
         errors,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub(crate) fn infer_expr_type_for_semantics_with_local_data(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
@@ -587,6 +654,42 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data(
     param_names: &HashSet<String>,
     struct_instances: &HashMap<String, String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
+    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+        expr,
+        state_scalars,
+        declared_symbols,
+        param_structs,
+        local_aliases,
+        local_array_aliases,
+        locals,
+        input_names,
+        output_names,
+        param_names,
+        struct_instances,
+        struct_defs,
+        &empty_proc_array_roots,
+        errors,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+    expr: &Expr,
+    state_scalars: &HashMap<String, PrimitiveType>,
+    declared_symbols: &DeclaredSymbolMap,
+    param_structs: Option<&HashMap<String, String>>,
+    local_aliases: &LocalAliasTypes,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    locals: &HashSet<String>,
+    input_names: &HashSet<String>,
+    output_names: &HashSet<String>,
+    param_names: &HashSet<String>,
+    struct_instances: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     let merged_struct_instances;
@@ -611,7 +714,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data(
         struct_instances
     };
 
-    infer_scalar_expr_type(
+    infer_scalar_expr_type_with_proc_arrays(
         expr,
         state_scalars,
         &declared_symbols,
@@ -623,6 +726,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data(
         param_names,
         struct_instance_ctx,
         struct_defs,
+        proc_array_roots,
         errors,
     )
 }

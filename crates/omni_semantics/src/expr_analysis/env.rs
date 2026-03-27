@@ -15,6 +15,7 @@ pub(crate) struct FnSignature {
 pub(crate) struct ExprEnv<'a> {
     pub(crate) known_scalars: &'a HashSet<String>,
     pub(crate) locals: &'a HashSet<String>,
+    pub(crate) local_aliases: &'a LocalAliasTypes,
     pub(crate) outputs: &'a HashSet<String>,
     pub(crate) array_vars: &'a HashMap<String, usize>,
     pub(crate) declared_symbols: &'a DeclaredSymbolMap,
@@ -53,6 +54,8 @@ pub(crate) struct ScopeExprInputs<'a> {
 #[allow(clippy::too_many_arguments)]
 static EMPTY_TUPLE_VARS: std::sync::LazyLock<HashMap<String, usize>> =
     std::sync::LazyLock::new(HashMap::new);
+static EMPTY_LOCAL_ALIASES: std::sync::LazyLock<LocalAliasTypes> =
+    std::sync::LazyLock::new(HashMap::new);
 static EMPTY_PROC_ARRAY_ROOTS: std::sync::LazyLock<HashMap<String, ProcNestedArrayState>> =
     std::sync::LazyLock::new(HashMap::new);
 
@@ -72,6 +75,7 @@ pub(crate) fn build_expr_env<'a>(
     ExprEnv {
         known_scalars,
         locals,
+        local_aliases: &EMPTY_LOCAL_ALIASES,
         outputs,
         array_vars,
         declared_symbols,
@@ -92,6 +96,7 @@ pub(crate) fn build_expr_env<'a>(
 pub(crate) fn build_scope_expr_env<'a>(
     inputs: ScopeExprInputs<'a>,
     known_scalars: &'a HashSet<String>,
+    local_aliases: &'a LocalAliasTypes,
     array_vars: &'a HashMap<String, usize>,
     scope: ScopeKind,
 ) -> ExprEnv<'a> {
@@ -107,6 +112,7 @@ pub(crate) fn build_scope_expr_env<'a>(
         inputs.fn_signatures,
         scope,
     );
+    env.local_aliases = local_aliases;
     env.port_index_ins = inputs.port_index_ins;
     env.port_index_outs = inputs.port_index_outs;
     env.port_index_params = inputs.port_index_params;

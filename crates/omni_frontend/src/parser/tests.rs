@@ -3346,6 +3346,35 @@ sample {
 }
 
 #[test]
+fn parses_indexed_member_assignment_target_as_flat_index_target() {
+    let src = r#"
+outs { out1 }
+sample {
+  voices[i].freq = hz
+}
+"#;
+    let program = parse_program(src).expect("indexed member assignment should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(sb) => Some(&sb.body),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign { target, .. } = &sample[0] else {
+        panic!("expected assignment");
+    };
+    match target {
+        AssignTarget::Index { base, index } => {
+            assert_eq!(base, "voices.freq");
+            assert!(matches!(index, Expr::Var { name, .. } if name == "i"));
+        }
+        _ => panic!("expected indexed assignment target"),
+    }
+}
+
+#[test]
 fn parses_struct_typed_array_single_ctor_initializer_expression() {
     let src = r#"
 proc Voice {

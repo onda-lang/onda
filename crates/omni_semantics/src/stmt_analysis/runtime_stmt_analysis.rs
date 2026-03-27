@@ -891,7 +891,13 @@ fn analyze_assign_sample(
             scope,
         )
     };
-    let mut scope_expr_env = build_scope_expr_env(expr_inputs, known_scalars, &array_vars, scope);
+    let mut scope_expr_env = build_scope_expr_env(
+        expr_inputs,
+        known_scalars,
+        local_aliases,
+        &array_vars,
+        scope,
+    );
     scope_expr_env.tuple_vars = tuple_vars;
     macro_rules! target_error {
         ($message:expr $(,)?) => {
@@ -1005,7 +1011,7 @@ fn analyze_assign_sample(
             }
             validate_expr(index, scope_expr_env, errors);
             validate_expr(&expr_for_validation, scope_expr_env, errors);
-            let index_ty = infer_expr_type_for_semantics_with_local_data(
+            let index_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 index,
                 state_scalars,
                 declared_symbols,
@@ -1018,10 +1024,11 @@ fn analyze_assign_sample(
                 param_names,
                 struct_instances,
                 struct_defs,
+                proc_array_roots,
                 errors,
             );
             require_expr_numeric_type(index, index_ty, "array index expression", errors);
-            let expr_ty = infer_expr_type_for_semantics_with_local_data(
+            let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 &expr_for_validation,
                 state_scalars,
                 declared_symbols,
@@ -1034,6 +1041,7 @@ fn analyze_assign_sample(
                 param_names,
                 struct_instances,
                 struct_defs,
+                proc_array_roots,
                 errors,
             );
             let expected_ty = local_array_aliases
@@ -1081,7 +1089,7 @@ fn analyze_assign_sample(
             }
             if let Some(start) = start {
                 validate_expr(start, stmt_expr_env(scope).expr_env, errors);
-                let start_ty = infer_expr_type_for_semantics_with_local_data(
+                let start_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     start,
                     state_scalars,
                     declared_symbols,
@@ -1094,13 +1102,14 @@ fn analyze_assign_sample(
                     param_names,
                     struct_instances,
                     struct_defs,
+                    proc_array_roots,
                     errors,
                 );
                 require_expr_numeric_type(start, start_ty, "slice start bound", errors);
             }
             if let Some(end) = end {
                 validate_expr(end, stmt_expr_env(scope).expr_env, errors);
-                let end_ty = infer_expr_type_for_semantics_with_local_data(
+                let end_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     end,
                     state_scalars,
                     declared_symbols,
@@ -1113,6 +1122,7 @@ fn analyze_assign_sample(
                     param_names,
                     struct_instances,
                     struct_defs,
+                    proc_array_roots,
                     errors,
                 );
                 require_expr_numeric_type(end, end_ty, "slice end bound", errors);
@@ -1138,7 +1148,7 @@ fn analyze_assign_sample(
                 }
             } else {
                 validate_expr(&expr_for_validation, stmt_expr_env(scope).expr_env, errors);
-                let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     &expr_for_validation,
                     state_scalars,
                     declared_symbols,
@@ -1151,6 +1161,7 @@ fn analyze_assign_sample(
                     param_names,
                     struct_instances,
                     struct_defs,
+                    proc_array_roots,
                     errors,
                 );
                 require_expr_assignable_type(
@@ -1238,7 +1249,7 @@ fn analyze_assign_sample(
                                 }
                                 for (idx, value) in values.iter().take(size_value).enumerate() {
                                     validate_expr(value, scope_expr_env, errors);
-                                    let value_ty = infer_expr_type_for_semantics_with_local_data(
+                                    let value_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                         value,
                                         state_scalars,
                                         declared_symbols,
@@ -1251,6 +1262,7 @@ fn analyze_assign_sample(
                                         param_names,
                                         struct_instances,
                                         struct_defs,
+                                        proc_array_roots,
                                         errors,
                                     );
                                     require_expr_assignable_type(
@@ -1322,7 +1334,7 @@ fn analyze_assign_sample(
                 for value in values {
                     validate_expr(value, scope_expr_env, errors);
                 }
-                let inferred_first = infer_expr_type_for_semantics_with_local_data(
+                let inferred_first = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     &values[0],
                     state_scalars,
                     declared_symbols,
@@ -1335,13 +1347,14 @@ fn analyze_assign_sample(
                     param_names,
                     struct_instances,
                     struct_defs,
+                    proc_array_roots,
                     errors,
                 );
                 let elem_ty = untyped_literal_type(&values[0])
                     .or(inferred_first)
                     .unwrap_or(PrimitiveType::F32);
                 for (idx, value) in values.iter().enumerate() {
-                    let value_ty = infer_expr_type_for_semantics_with_local_data(
+                    let value_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         value,
                         state_scalars,
                         declared_symbols,
@@ -1354,6 +1367,7 @@ fn analyze_assign_sample(
                         param_names,
                         struct_instances,
                         struct_defs,
+                        proc_array_roots,
                         errors,
                     );
                     require_expr_assignable_type(
@@ -1432,7 +1446,7 @@ fn analyze_assign_sample(
                     }
                 }
                 validate_expr(expr, scope_expr_env, errors);
-                let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     expr,
                     state_scalars,
                     declared_symbols,
@@ -1445,6 +1459,7 @@ fn analyze_assign_sample(
                     param_names,
                     struct_instances,
                     struct_defs,
+                    proc_array_roots,
                     errors,
                 );
                 require_expr_assignable_type(
@@ -1482,21 +1497,23 @@ fn analyze_assign_sample(
                                 ));
                             }
                             validate_expr(expr, scope_expr_env, errors);
-                            let expr_ty = infer_expr_type_for_semantics_with_local_data(
-                                expr,
-                                state_scalars,
-                                declared_symbols,
-                                None,
-                                local_aliases,
-                                local_array_aliases,
-                                locals,
-                                input_names,
-                                output_names,
-                                param_names,
-                                struct_instances,
-                                struct_defs,
-                                errors,
-                            );
+                            let expr_ty =
+                                infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                    expr,
+                                    state_scalars,
+                                    declared_symbols,
+                                    None,
+                                    local_aliases,
+                                    local_array_aliases,
+                                    locals,
+                                    input_names,
+                                    output_names,
+                                    param_names,
+                                    struct_instances,
+                                    struct_defs,
+                                    proc_array_roots,
+                                    errors,
+                                );
                             require_expr_assignable_type(
                                 expr,
                                 expr_ty,
@@ -1557,7 +1574,7 @@ fn analyze_assign_sample(
                         errors,
                     ) {
                         validate_expr(index, scope_expr_env, errors);
-                        let idx_ty = infer_expr_type_for_semantics_with_local_data(
+                        let idx_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             index,
                             state_scalars,
                             declared_symbols,
@@ -1570,6 +1587,7 @@ fn analyze_assign_sample(
                             param_names,
                             struct_instances,
                             struct_defs,
+                            proc_array_roots,
                             errors,
                         );
                         require_expr_numeric_type(index, idx_ty, "array index expression", errors);
@@ -1657,7 +1675,7 @@ fn analyze_assign_sample(
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             validate_expr(&expr_for_validation, scope_expr_env, errors);
-            let expr_ty = infer_expr_type_for_semantics_with_local_data(
+            let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 &expr_for_validation,
                 state_scalars,
                 declared_symbols,
@@ -1670,6 +1688,7 @@ fn analyze_assign_sample(
                 param_names,
                 struct_instances,
                 struct_defs,
+                proc_array_roots,
                 errors,
             );
             let can_track_local = !output_names.contains(name)

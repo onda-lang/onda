@@ -382,8 +382,8 @@ def sum_voice(v: Voice) {
 }
 init {
   voices: Voice[2] = [Voice(), Voice()]
-  voices.a[1] = 1.0
-  voices.b[1] = 2.0
+  voices[1].a = 1.0
+  voices[1].b = 2.0
 }
 sample {
   out1 = sum_voice(voices[1])
@@ -402,17 +402,106 @@ def read_mix(xs: Voice[], idx: i32) {
 init {
   idx: i32 = 0
   voices: Voice[2]
+  voices[0].gain = 1.0
   v = voices[0]
-  v.gain = 1.0
   v.taps[1] = 2.0
+  voices[1].gain = 3.0
   v = voices[1]
-  v.gain = 3.0
   v.taps[1] = 4.0
 }
 sample {
   out1 = read_mix(voices, idx)
   idx = idx + 1
 }
+"#;
+
+const PROC_ARRAY_INDEXED_FIELD_ASSIGN_EXAMPLE: &str = r#"
+proc Voice:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+outs:
+  out1
+
+def set_gains(voices, gain):
+  for i in 0..2:
+    voices[i].gain = gain + f32(i)
+
+init:
+  voices: Voice[2] = Voice()
+  set_gains(voices, 1.0)
+
+sample:
+  out1 = voices[0]() + voices[1]()
+"#;
+
+const PROC_ARRAY_PARAM_LEN_EXAMPLE: &str = r#"
+proc Voice:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+outs:
+  out1
+
+def set_and_sum(voices):
+  total = 0.0
+  for i in 0..(voices.len()):
+    voices[i].gain = f32(i + 1)
+    total = total + voices[i]()
+  return total + f32(voices.len())
+
+init:
+  voices: Voice[3] = Voice()
+
+sample:
+  out1 = set_and_sum(voices)
+"#;
+
+const STRUCT_ARRAY_PARAM_LEN_EXAMPLE: &str = r#"
+struct Pair:
+  x
+
+outs:
+  out1
+
+def set_and_sum(pairs):
+  total = 0.0
+  for i in 0..(pairs.len()):
+    pairs[i].x = f32(i + 1)
+    total = total + pairs[i].x
+  return total + f32(pairs.len())
+
+init:
+  pairs: Pair[3]
+
+sample:
+  out1 = set_and_sum(pairs)
+"#;
+
+const NESTED_STRUCT_FIELD_WRITE_EXAMPLE: &str = r#"
+outs:
+  out1
+
+struct Inner:
+  value: f32 = 0.0
+
+struct Outer:
+  inner: Inner
+
+init:
+  data = Outer()
+  data.inner.value = 3.0
+
+sample:
+  out1 = data.inner.value
 "#;
 
 const PROC_ARRAY_INIT_EVENT_EXAMPLE: &str = r#"
@@ -8116,6 +8205,142 @@ fn def_struct_array_inline_field_ref_compiles_and_runs() {
 }
 
 #[test]
+fn proc_array_indexed_field_assignment_in_def_compiles_and_runs() {
+    let frames = 8;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_INDEXED_FIELD_ASSIGN_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn proc_array_param_len_in_def_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_PARAM_LEN_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 9.0, 1e-6);
+    }
+}
+
+#[test]
+fn struct_array_param_len_in_def_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STRUCT_ARRAY_PARAM_LEN_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 9.0, 1e-6);
+    }
+}
+
+#[test]
+fn nested_struct_field_assignment_compiles_and_runs() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(NESTED_STRUCT_FIELD_WRITE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_struct_array_runtime_index_matches_all_elements() {
+    let src = r#"
+struct Pair:
+  x
+
+outs:
+  out1
+
+def sum_pairs(pairs):
+  total = 0.0
+  for i in 0..4:
+    total = total + pairs[i].x
+  return total
+
+init:
+  pairs: Pair[4]
+  for i in 0..4:
+    p = pairs[i]
+    p.x = f32(i + 1)
+
+sample:
+  out1 = sum_pairs(pairs)
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_struct_array_forwarding_matches_all_elements() {
+    let src = r#"
+struct Pair:
+  x
+
+outs:
+  out1
+
+def sum_inner(pairs):
+  total = 0.0
+  for i in 0..4:
+    p = pairs[i]
+    total = total + p.x
+  return total
+
+def sum_outer(pairs):
+  return sum_inner(pairs)
+
+init:
+  pairs: Pair[4]
+  for i in 0..4:
+    p = pairs[i]
+    p.x = f32(i + 1)
+
+sample:
+  out1 = sum_outer(pairs)
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+#[test]
 fn proc_array_init_event_compiles_and_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -8128,6 +8353,242 @@ fn proc_array_init_event_compiles_and_runs() {
     for sample in &output {
         assert_near(*sample, 2.3, 1e-6);
     }
+}
+
+#[test]
+fn proc_array_def_init_matches_inline_loop() {
+    let def_src = r#"
+import std/osc
+
+const NumOsc = 4
+
+params:
+  freq = 50.0 { 1, 1000 }
+
+def initVoices(voices, freq):
+  for i in 0..NumOsc:
+    h = f32(i + 1)
+    voices[i].init(freq = freq * h, amp = 0.12 / h)
+
+init:
+  voices: std::osc::Sine[NumOsc]
+  initVoices(voices, freq)
+
+sample:
+  mix = 0.0
+  for i in 0..NumOsc:
+    mix = mix + voices[i]()
+  out1 = mix
+"#;
+    let inline_src = r#"
+import std/osc
+
+const NumOsc = 4
+
+params:
+  freq = 50.0 { 1, 1000 }
+
+init:
+  voices: std::osc::Sine[NumOsc]
+  for i in 0..NumOsc:
+    h = f32(i + 1)
+    voices[i].init(freq = freq * h, amp = 0.12 / h)
+
+sample:
+  mix = 0.0
+  for i in 0..NumOsc:
+    mix = mix + voices[i]()
+  out1 = mix
+"#;
+    let frames = 256;
+    let (mut def_instance, _, _) = compile_instance(def_src, frames);
+    let (mut inline_instance, _, _) = compile_instance(inline_src, frames);
+    let mut def_output = vec![0.0_f32; frames];
+    let mut inline_output = vec![0.0_f32; frames];
+    process_interleaved(&mut def_instance, &[], &mut def_output, frames)
+        .expect("def process should succeed");
+    process_interleaved(&mut inline_instance, &[], &mut inline_output, frames)
+        .expect("inline process should succeed");
+
+    for (idx, (def_sample, inline_sample)) in def_output.iter().zip(&inline_output).enumerate() {
+        assert!(
+            (*def_sample - *inline_sample).abs() <= 1e-5,
+            "sample {idx} differed: def={def_sample}, inline={inline_sample}"
+        );
+    }
+}
+
+#[test]
+fn proc_array_def_alias_init_matches_inline_alias_loop() {
+    let def_src = r#"
+import std/osc
+
+const NumOsc = 4
+
+params:
+  freq = 50.0 { 1, 1000 }
+
+def initVoices(voices, freq):
+  for i in 0..NumOsc:
+    h = f32(i + 1)
+    voice = voices[i]
+    voice.init(freq = freq * h, amp = 0.12 / h)
+
+init:
+  voices: std::osc::Sine[NumOsc]
+  initVoices(voices, freq)
+
+sample:
+  mix = 0.0
+  for i in 0..NumOsc:
+    mix = mix + voices[i]()
+  out1 = mix
+"#;
+    let inline_src = r#"
+import std/osc
+
+const NumOsc = 4
+
+params:
+  freq = 50.0 { 1, 1000 }
+
+init:
+  voices: std::osc::Sine[NumOsc]
+  for i in 0..NumOsc:
+    h = f32(i + 1)
+    voice = voices[i]
+    voice.init(freq = freq * h, amp = 0.12 / h)
+
+sample:
+  mix = 0.0
+  for i in 0..NumOsc:
+    mix = mix + voices[i]()
+  out1 = mix
+"#;
+    let frames = 256;
+    let (mut def_instance, _, _) = compile_instance(def_src, frames);
+    let (mut inline_instance, _, _) = compile_instance(inline_src, frames);
+    let mut def_output = vec![0.0_f32; frames];
+    let mut inline_output = vec![0.0_f32; frames];
+    process_interleaved(&mut def_instance, &[], &mut def_output, frames)
+        .expect("def process should succeed");
+    process_interleaved(&mut inline_instance, &[], &mut inline_output, frames)
+        .expect("inline process should succeed");
+
+    for (idx, (def_sample, inline_sample)) in def_output.iter().zip(&inline_output).enumerate() {
+        assert!(
+            (*def_sample - *inline_sample).abs() <= 1e-5,
+            "sample {idx} differed: def={def_sample}, inline={inline_sample}"
+        );
+    }
+}
+
+#[test]
+fn top_level_def_nested_proc_array_dynamic_call_runs_block_hooks_only_for_active_slot_per_block() {
+    let src = r#"
+proc Voice:
+  outs:
+    out1
+    pre
+    post
+  init:
+    pre_count = 0.0
+    post_count = 0.0
+  block:
+    pre_count = pre_count + 1.0
+    sample:
+      out1 = 0.0
+      pre = pre_count
+      post = post_count
+    post_count = post_count + 1.0
+
+proc Bank:
+  outs:
+    out1
+  init:
+    voices: Voice[2] = [Voice(), Voice()]
+    idx: i32 = 0
+  sample:
+    x = run_selected(self, idx)
+    v0 = voices[0]
+    v1 = voices[1]
+    out1 = x * 0.0 + v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post
+    idx = 1 - idx
+
+def run_selected(bank: Bank, idx: i32):
+  return bank.voices[idx]().out1
+
+outs:
+  out1
+
+init:
+  bank = Bank()
+
+sample:
+  out1 = bank()
+"#;
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 1110.0, 1e-6);
+}
+
+#[test]
+fn top_level_def_proc_array_dynamic_call_runs_block_hooks_only_for_active_slot_per_block() {
+    let src = r#"
+proc Voice:
+  outs:
+    out1
+    pre
+    post
+  init:
+    pre_count = 0.0
+    post_count = 0.0
+  block:
+    pre_count = pre_count + 1.0
+    sample:
+      out1 = 0.0
+      pre = pre_count
+      post = post_count
+    post_count = post_count + 1.0
+
+outs:
+  out1
+
+def run_selected(voices, idx: i32):
+  return voices[idx]().out1
+
+init:
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 0
+
+sample:
+  x = run_selected(voices, idx)
+  v0 = voices[0]
+  v1 = voices[1]
+  out1 = x * 0.0 + v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post
+  idx = 1 - idx
+"#;
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 1110.0, 1e-6);
 }
 
 #[test]
@@ -17174,6 +17635,120 @@ fn proc_local_def_nested_return_infers_temp_type_from_nested_branch() {
 }
 
 // ── proc-local defs: error cases ────────────────────────────────────────────
+
+const PROC_LOCAL_DEF_NESTED_PROC_CALL_EXAMPLE: &str = r#"
+proc Child {
+  outs 1
+
+  init {
+    value = 0.75
+  }
+
+  sample {
+    out1 = value
+  }
+}
+
+proc Parent {
+  outs 1
+
+  init {
+    child = Child()
+  }
+
+  def run_child() {
+    return child()
+  }
+
+  sample {
+    out1 = run_child()
+  }
+}
+
+init { p = Parent() }
+sample { out1 = p() }
+"#;
+
+#[test]
+fn proc_local_def_can_call_nested_proc_operator() {
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_LOCAL_DEF_NESTED_PROC_CALL_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 0.75, 1e-6);
+    }
+}
+
+const PROC_LOCAL_DEF_NESTED_PROC_ARRAY_DYNAMIC_BLOCK_HOOK_EXAMPLE: &str = r#"
+proc Voice {
+  outs { out1, pre, post }
+  init {
+    pre_count = 0.0
+    post_count = 0.0
+  }
+  block {
+    pre_count = pre_count + 1.0
+    sample {
+      out1 = 0.0
+      pre = pre_count
+      post = post_count
+    }
+    post_count = post_count + 1.0
+  }
+}
+
+proc Bank {
+  outs { out1 }
+  init {
+    voices: Voice[2] = [Voice(), Voice()]
+    idx: i32 = 0
+  }
+
+  def run_selected() {
+    return voices[idx]().out1 + 0.0
+  }
+
+  sample {
+    x = run_selected()
+    v0 = voices[0]
+    v1 = voices[1]
+    out1 = x * 0.0 + v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post
+    idx = 1 - idx
+  }
+}
+
+outs { out1 }
+init {
+  b = Bank()
+}
+sample {
+  out1 = b()
+}
+"#;
+
+#[test]
+fn proc_local_def_nested_proc_array_dynamic_call_runs_block_hooks_only_for_active_slot_per_block() {
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_LOCAL_DEF_NESTED_PROC_ARRAY_DYNAMIC_BLOCK_HOOK_EXAMPLE,
+        frames,
+    );
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 1110.0, 1e-6);
+}
 
 const PROC_LOCAL_DEF_CYCLE_ERROR_EXAMPLE: &str = r#"
 proc Bad {

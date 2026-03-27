@@ -105,8 +105,18 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
                         }
                     }
                 }
-                TypedFnParam::StructArray { struct_name } => {
+                TypedFnParam::StructArray { struct_name }
+                | TypedFnParam::ProcArray {
+                    proc_name: struct_name,
+                    ..
+                } => {
                     arg_tys.push(i32_ty);
+                    if matches!(kind, TypedFnParam::ProcArray { .. }) {
+                        arg_tys.push(LLVMPointerType(
+                            llvm_ty_for_primitive(context, PrimitiveType::Bool),
+                            0,
+                        ));
+                    }
                     let mut roots = Vec::new();
                     let mut leaves = Vec::new();
                     collect_array_struct_bindings(
@@ -355,8 +365,18 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
                     }
                 }
             }
-            TypedFnParam::StructArray { struct_name } => {
+            TypedFnParam::StructArray { struct_name }
+            | TypedFnParam::ProcArray {
+                proc_name: struct_name,
+                ..
+            } => {
                 arg_tys.push(i32_ty);
+                if matches!(kind, TypedFnParam::ProcArray { .. }) {
+                    arg_tys.push(LLVMPointerType(
+                        llvm_ty_for_primitive(context, PrimitiveType::Bool),
+                        0,
+                    ));
+                }
                 let mut roots = Vec::new();
                 let mut leaves = Vec::new();
                 collect_array_struct_bindings(

@@ -1,7 +1,725 @@
 use super::*;
+use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 
 fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
     errors.push(diag.semantic(message, 0, 0));
+}
+
+fn is_proc_operator_helper_name(name: &str) -> bool {
+    name.ends_with(PROC_STEP_FN_SUFFIX)
+        || name.contains(PROC_CALL_OUT_FN_PREFIX)
+        || (name.contains(".__proc_nested_")
+            && (name.ends_with("_step") || name.contains("_call_out")))
+}
+
+fn collect_proc_operator_helper_diags_from_expr(expr: &Expr, out: &mut Vec<DiagCtx>) {
+    match expr {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                collect_proc_operator_helper_diags_from_expr(value, out);
+            }
+        }
+        Expr::Index { index, .. } => collect_proc_operator_helper_diags_from_expr(index, out),
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                collect_proc_operator_helper_diags_from_expr(start, out);
+            }
+            if let Some(end) = end {
+                collect_proc_operator_helper_diags_from_expr(end, out);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            collect_proc_operator_helper_diags_from_expr(&spec.size, out);
+            if let Some(values) = init {
+                for value in values {
+                    collect_proc_operator_helper_diags_from_expr(value, out);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            collect_proc_operator_helper_diags_from_expr(lhs, out);
+            collect_proc_operator_helper_diags_from_expr(rhs, out);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_proc_operator_helper_diags_from_expr(arg, out);
+            }
+        }
+        Expr::UserCall {
+            name, args, loc, ..
+        } => {
+            if is_proc_operator_helper_name(name) {
+                out.push(DiagCtx::new(*loc));
+            }
+            for arg in args {
+                collect_proc_operator_helper_diags_from_expr(&arg.expr, out);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            collect_proc_operator_helper_diags_from_expr(expr, out);
+        }
+    }
+}
+
+fn collect_proc_operator_helper_diags_from_stmt(stmt: &Stmt, out: &mut Vec<DiagCtx>) {
+    match stmt {
+        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            collect_proc_operator_helper_diags_from_expr(expr, out);
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_proc_operator_helper_diags_from_expr(cond, out);
+            for stmt in then_branch {
+                collect_proc_operator_helper_diags_from_stmt(stmt, out);
+            }
+            for stmt in else_branch {
+                collect_proc_operator_helper_diags_from_stmt(stmt, out);
+            }
+        }
+        Stmt::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            collect_proc_operator_helper_diags_from_expr(start, out);
+            collect_proc_operator_helper_diags_from_expr(end, out);
+            if let Some(step) = step {
+                collect_proc_operator_helper_diags_from_expr(step, out);
+            }
+            for stmt in body {
+                collect_proc_operator_helper_diags_from_stmt(stmt, out);
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            collect_proc_operator_helper_diags_from_expr(cond, out);
+            for stmt in body {
+                collect_proc_operator_helper_diags_from_stmt(stmt, out);
+            }
+        }
+    }
+}
+
+fn collect_non_sample_proc_operator_diags_from_expr(
+    expr: &Expr,
+    owner_proc: &str,
+    nested_instances: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    aliases: &HashMap<String, ProcArrayAliasInfo>,
+    out: &mut Vec<DiagCtx>,
+) {
+    let mut rewritten = expr.clone();
+    rewrite_proc_alias_call_sites_in_expr(&mut rewritten, aliases);
+    let mut scratch = Vec::<Diagnostic>::new();
+    rewrite_nested_proc_calls_in_expr(
+        &mut rewritten,
+        owner_proc,
+        nested_instances,
+        proc_array_slots,
+        proc_api,
+        &mut scratch,
+    );
+    collect_proc_operator_helper_diags_from_expr(&rewritten, out);
+}
+
+fn collect_non_sample_proc_operator_diags_from_expr_stmt(
+    expr: &Expr,
+    owner_proc: &str,
+    nested_instances: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    aliases: &HashMap<String, ProcArrayAliasInfo>,
+    out: &mut Vec<DiagCtx>,
+) {
+    if !matches!(expr, Expr::UserCall { .. }) {
+        collect_non_sample_proc_operator_diags_from_expr(
+            expr,
+            owner_proc,
+            nested_instances,
+            proc_array_slots,
+            proc_api,
+            aliases,
+            out,
+        );
+        return;
+    }
+    let mut rewritten_stmt = Stmt::Expr {
+        loc: expr.loc().into(),
+        expr: expr.clone(),
+    };
+    if let Stmt::Expr { expr, .. } = &mut rewritten_stmt {
+        rewrite_proc_alias_call_sites_in_expr(expr, aliases);
+    }
+    let mut scratch = Vec::<Diagnostic>::new();
+    rewrite_nested_proc_calls_in_stmt(
+        &mut rewritten_stmt,
+        owner_proc,
+        nested_instances,
+        proc_array_slots,
+        proc_api,
+        &mut scratch,
+    );
+    collect_proc_operator_helper_diags_from_stmt(&rewritten_stmt, out);
+}
+
+fn collect_non_sample_proc_operator_diags_from_target(
+    target: &AssignTarget,
+    owner_proc: &str,
+    nested_instances: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    aliases: &HashMap<String, ProcArrayAliasInfo>,
+    out: &mut Vec<DiagCtx>,
+) {
+    match target {
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
+        AssignTarget::Index { index, .. } => collect_non_sample_proc_operator_diags_from_expr(
+            index,
+            owner_proc,
+            nested_instances,
+            proc_array_slots,
+            proc_api,
+            aliases,
+            out,
+        ),
+        AssignTarget::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                collect_non_sample_proc_operator_diags_from_expr(
+                    start,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    aliases,
+                    out,
+                );
+            }
+            if let Some(end) = end {
+                collect_non_sample_proc_operator_diags_from_expr(
+                    end,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    aliases,
+                    out,
+                );
+            }
+        }
+    }
+}
+
+fn proc_alias_from_expr(
+    expr: &Expr,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    aliases: &HashMap<String, ProcArrayAliasInfo>,
+) -> Option<ProcArrayAliasInfo> {
+    match expr {
+        Expr::Index { base, index, .. } if proc_array_slots.contains_key(base) => {
+            Some(ProcArrayAliasInfo {
+                array_base: base.clone(),
+                index_expr: index.as_ref().clone(),
+            })
+        }
+        Expr::Var { name, .. } => aliases.get(name).cloned(),
+        _ => None,
+    }
+}
+
+fn merge_proc_aliases_union(
+    aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    extra: HashMap<String, ProcArrayAliasInfo>,
+) {
+    for (name, info) in extra {
+        aliases.insert(name, info);
+    }
+}
+
+fn collect_non_sample_proc_operator_diags_from_stmts(
+    stmts: &[Stmt],
+    owner_proc: &str,
+    nested_instances: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    out: &mut Vec<DiagCtx>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Assign { target, expr, .. } => {
+                collect_non_sample_proc_operator_diags_from_target(
+                    target,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    aliases,
+                    out,
+                );
+                collect_non_sample_proc_operator_diags_from_expr(
+                    expr,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    aliases,
+                    out,
+                );
+                if let AssignTarget::Var(name) = target {
+                    if let Some(alias) = proc_alias_from_expr(expr, proc_array_slots, aliases) {
+                        aliases.insert(name.clone(), alias);
+                    } else {
+                        aliases.remove(name);
+                    }
+                }
+            }
+            Stmt::Expr { expr, .. } => collect_non_sample_proc_operator_diags_from_expr_stmt(
+                expr,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                aliases,
+                out,
+            ),
+            Stmt::Return { expr, .. } => collect_non_sample_proc_operator_diags_from_expr(
+                expr,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                aliases,
+                out,
+            ),
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_non_sample_proc_operator_diags_from_expr(
+                    cond,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    aliases,
+                    out,
+                );
+                let mut then_aliases = aliases.clone();
+                collect_non_sample_proc_operator_diags_from_stmts(
+                    then_branch,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    &mut then_aliases,
+                    out,
+                );
+                let mut else_aliases = aliases.clone();
+                collect_non_sample_proc_operator_diags_from_stmts(
+                    else_branch,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    &mut else_aliases,
+                    out,
+                );
+                merge_proc_aliases_union(aliases, then_aliases);
+                merge_proc_aliases_union(aliases, else_aliases);
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                collect_non_sample_proc_operator_diags_from_expr(
+                    start,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    aliases,
+                    out,
+                );
+                collect_non_sample_proc_operator_diags_from_expr(
+                    end,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    aliases,
+                    out,
+                );
+                if let Some(step) = step {
+                    collect_non_sample_proc_operator_diags_from_expr(
+                        step,
+                        owner_proc,
+                        nested_instances,
+                        proc_array_slots,
+                        proc_api,
+                        aliases,
+                        out,
+                    );
+                }
+                let mut body_aliases = aliases.clone();
+                collect_non_sample_proc_operator_diags_from_stmts(
+                    body,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    &mut body_aliases,
+                    out,
+                );
+                merge_proc_aliases_union(aliases, body_aliases);
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_non_sample_proc_operator_diags_from_expr(
+                    cond,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    aliases,
+                    out,
+                );
+                let mut body_aliases = aliases.clone();
+                collect_non_sample_proc_operator_diags_from_stmts(
+                    body,
+                    owner_proc,
+                    nested_instances,
+                    proc_array_slots,
+                    proc_api,
+                    &mut body_aliases,
+                    out,
+                );
+                merge_proc_aliases_union(aliases, body_aliases);
+            }
+        }
+    }
+}
+
+fn push_non_sample_proc_call_errors_in_proc_stmts(
+    stmts: &[Stmt],
+    owner_proc: &str,
+    nested_instances: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut aliases = HashMap::<String, ProcArrayAliasInfo>::new();
+    let mut diags = Vec::<DiagCtx>::new();
+    collect_non_sample_proc_operator_diags_from_stmts(
+        stmts,
+        owner_proc,
+        nested_instances,
+        proc_array_slots,
+        proc_api,
+        &mut aliases,
+        &mut diags,
+    );
+    for diag in diags {
+        push_semantic(
+            diag,
+            errors,
+            format!(
+                "proc operator '()' is only allowed in sample; found non-sample use in {context}"
+            ),
+        );
+    }
+}
+
+fn seed_called_proc_local_defs_from_expr(
+    expr: &Expr,
+    def_names: &HashSet<String>,
+    pending: &mut Vec<String>,
+    seen_pending: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                seed_called_proc_local_defs_from_expr(value, def_names, pending, seen_pending);
+            }
+        }
+        Expr::Index { index, .. } => {
+            seed_called_proc_local_defs_from_expr(index, def_names, pending, seen_pending);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                seed_called_proc_local_defs_from_expr(start, def_names, pending, seen_pending);
+            }
+            if let Some(end) = end {
+                seed_called_proc_local_defs_from_expr(end, def_names, pending, seen_pending);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            seed_called_proc_local_defs_from_expr(&spec.size, def_names, pending, seen_pending);
+            if let Some(values) = init {
+                for value in values {
+                    seed_called_proc_local_defs_from_expr(value, def_names, pending, seen_pending);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            seed_called_proc_local_defs_from_expr(lhs, def_names, pending, seen_pending);
+            seed_called_proc_local_defs_from_expr(rhs, def_names, pending, seen_pending);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                seed_called_proc_local_defs_from_expr(arg, def_names, pending, seen_pending);
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            if def_names.contains(name) && seen_pending.insert(name.clone()) {
+                pending.push(name.clone());
+            }
+            for arg in args {
+                seed_called_proc_local_defs_from_expr(&arg.expr, def_names, pending, seen_pending);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            seed_called_proc_local_defs_from_expr(expr, def_names, pending, seen_pending);
+        }
+    }
+}
+
+fn seed_called_proc_local_defs_from_target(
+    target: &AssignTarget,
+    def_names: &HashSet<String>,
+    pending: &mut Vec<String>,
+    seen_pending: &mut HashSet<String>,
+) {
+    match target {
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
+        AssignTarget::Index { index, .. } => {
+            seed_called_proc_local_defs_from_expr(index, def_names, pending, seen_pending);
+        }
+        AssignTarget::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                seed_called_proc_local_defs_from_expr(start, def_names, pending, seen_pending);
+            }
+            if let Some(end) = end {
+                seed_called_proc_local_defs_from_expr(end, def_names, pending, seen_pending);
+            }
+        }
+    }
+}
+
+fn seed_called_proc_local_defs_from_stmts(
+    stmts: &[Stmt],
+    def_names: &HashSet<String>,
+    pending: &mut Vec<String>,
+    seen_pending: &mut HashSet<String>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Assign { target, expr, .. } => {
+                seed_called_proc_local_defs_from_target(target, def_names, pending, seen_pending);
+                seed_called_proc_local_defs_from_expr(expr, def_names, pending, seen_pending);
+            }
+            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                seed_called_proc_local_defs_from_expr(expr, def_names, pending, seen_pending);
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                seed_called_proc_local_defs_from_expr(cond, def_names, pending, seen_pending);
+                seed_called_proc_local_defs_from_stmts(
+                    then_branch,
+                    def_names,
+                    pending,
+                    seen_pending,
+                );
+                seed_called_proc_local_defs_from_stmts(
+                    else_branch,
+                    def_names,
+                    pending,
+                    seen_pending,
+                );
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                seed_called_proc_local_defs_from_expr(start, def_names, pending, seen_pending);
+                seed_called_proc_local_defs_from_expr(end, def_names, pending, seen_pending);
+                if let Some(step) = step {
+                    seed_called_proc_local_defs_from_expr(step, def_names, pending, seen_pending);
+                }
+                seed_called_proc_local_defs_from_stmts(body, def_names, pending, seen_pending);
+            }
+            Stmt::While { cond, body, .. } => {
+                seed_called_proc_local_defs_from_expr(cond, def_names, pending, seen_pending);
+                seed_called_proc_local_defs_from_stmts(body, def_names, pending, seen_pending);
+            }
+        }
+    }
+}
+
+pub(super) fn reject_non_sample_proc_operator_calls_in_proc(
+    proc: &omni_frontend::ProcessorDef,
+    nested_instances: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    push_non_sample_proc_call_errors_in_proc_stmts(
+        &proc.init.body,
+        &proc.name,
+        nested_instances,
+        proc_array_slots,
+        proc_api,
+        &format!("processor '{}'.init", proc.name),
+        errors,
+    );
+    push_non_sample_proc_call_errors_in_proc_stmts(
+        &proc.block_pre,
+        &proc.name,
+        nested_instances,
+        proc_array_slots,
+        proc_api,
+        &format!("processor '{}'.block pre", proc.name),
+        errors,
+    );
+    push_non_sample_proc_call_errors_in_proc_stmts(
+        &proc.block_post,
+        &proc.name,
+        nested_instances,
+        proc_array_slots,
+        proc_api,
+        &format!("processor '{}'.block post", proc.name),
+        errors,
+    );
+    for event in &proc.events {
+        push_non_sample_proc_call_errors_in_proc_stmts(
+            &event.body,
+            &proc.name,
+            nested_instances,
+            proc_array_slots,
+            proc_api,
+            &format!("processor '{}'.event '{}'", proc.name, event.name),
+            errors,
+        );
+    }
+
+    let local_defs = proc
+        .local_defs
+        .iter()
+        .map(|def| (proc_local_hidden_def_name(&proc.name, &def.name), def))
+        .collect::<HashMap<_, _>>();
+    if local_defs.is_empty() {
+        return;
+    }
+
+    let def_names = local_defs.keys().cloned().collect::<HashSet<_>>();
+    let mut defs_with_proc_calls = HashMap::<String, Vec<DiagCtx>>::new();
+    for (hidden_name, def) in &local_defs {
+        let mut aliases = HashMap::<String, ProcArrayAliasInfo>::new();
+        let mut diags = Vec::<DiagCtx>::new();
+        collect_non_sample_proc_operator_diags_from_stmts(
+            &def.body,
+            &proc.name,
+            nested_instances,
+            proc_array_slots,
+            proc_api,
+            &mut aliases,
+            &mut diags,
+        );
+        if !diags.is_empty() {
+            defs_with_proc_calls.insert(hidden_name.clone(), diags);
+        }
+    }
+
+    let mut pending = Vec::<String>::new();
+    let mut seen_pending = HashSet::<String>::new();
+    seed_called_proc_local_defs_from_stmts(
+        &proc.init.body,
+        &def_names,
+        &mut pending,
+        &mut seen_pending,
+    );
+    seed_called_proc_local_defs_from_stmts(
+        &proc.block_pre,
+        &def_names,
+        &mut pending,
+        &mut seen_pending,
+    );
+    seed_called_proc_local_defs_from_stmts(
+        &proc.block_post,
+        &def_names,
+        &mut pending,
+        &mut seen_pending,
+    );
+    for event in &proc.events {
+        seed_called_proc_local_defs_from_stmts(
+            &event.body,
+            &def_names,
+            &mut pending,
+            &mut seen_pending,
+        );
+    }
+
+    let mut non_sample_reachable_defs = HashSet::<String>::new();
+    while let Some(name) = pending.pop() {
+        if !non_sample_reachable_defs.insert(name.clone()) {
+            continue;
+        }
+        let Some(def) = local_defs.get(&name) else {
+            continue;
+        };
+        seed_called_proc_local_defs_from_stmts(
+            &def.body,
+            &def_names,
+            &mut pending,
+            &mut seen_pending,
+        );
+    }
+
+    for (hidden_name, diags) in defs_with_proc_calls {
+        if !non_sample_reachable_defs.contains(&hidden_name) {
+            continue;
+        }
+        let def_name = local_defs
+            .get(&hidden_name)
+            .map(|def| def.name.as_str())
+            .unwrap_or(hidden_name.as_str());
+        for diag in diags {
+            push_semantic(
+                diag,
+                errors,
+                format!(
+                    "proc operator '()' is only allowed in sample; call in processor '{}'.def '{}' is not provably sample-only",
+                    proc.name, def_name
+                ),
+            );
+        }
+    }
 }
 
 pub(super) fn proc_os_sinc_stage_count(factor: usize) -> usize {
@@ -43,34 +761,10 @@ pub(super) fn compute_effective_proc_block_flags(
             .map(|p| p.has_block_block)
             .unwrap_or(false);
         if !has_block {
-            if let (Some(proc_def), Some(shape)) =
-                (proc_defs_by_name.get(proc_name), base_shapes.get(proc_name))
-            {
-                let nested_instances = shape
-                    .state
-                    .nested_procs
-                    .iter()
-                    .map(|(name, state)| {
-                        (
-                            name.clone(),
-                            ProcCallInstance {
-                                proc_name: state.proc_name.clone(),
-                                buffer_args: Vec::new(),
-                            },
-                        )
-                    })
-                    .collect::<HashMap<_, _>>();
-                let called_nested = collect_called_proc_instances_in_stmts(
-                    &proc_def.sample,
-                    &nested_instances,
-                    &shape.nested_proc_array_slots,
-                );
-                for nested_var in called_nested {
-                    let Some(instance) = nested_instances.get(&nested_var) else {
-                        continue;
-                    };
+            if let Some(shape) = base_shapes.get(proc_name) {
+                for nested_state in shape.state.nested_procs.values() {
                     if visit(
-                        &instance.proc_name,
+                        &nested_state.proc_name,
                         proc_defs_by_name,
                         base_shapes,
                         cache,
@@ -78,6 +772,20 @@ pub(super) fn compute_effective_proc_block_flags(
                     ) {
                         has_block = true;
                         break;
+                    }
+                }
+                if !has_block {
+                    for nested_array in shape.state.nested_proc_arrays.values() {
+                        if visit(
+                            &nested_array.proc_name,
+                            proc_defs_by_name,
+                            base_shapes,
+                            cache,
+                            visiting,
+                        ) {
+                            has_block = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -856,6 +1564,7 @@ pub(super) fn compute_proc_shape(
     }
 
     let mut nested_proc_array_slots = HashMap::<String, Vec<String>>::new();
+    let mut nested_proc_array_active_fields = HashMap::<String, String>::new();
     let mut nested_proc_array_names = state.nested_proc_arrays.keys().cloned().collect::<Vec<_>>();
     nested_proc_array_names.sort();
     for array_name in nested_proc_array_names {
@@ -918,6 +1627,10 @@ pub(super) fn compute_proc_shape(
             }
             slots.push(slot);
         }
+        nested_proc_array_active_fields.insert(
+            array_name.clone(),
+            runtime_proc_array_active_field_name(&array_name),
+        );
         nested_proc_array_slots.insert(array_name, slots);
     }
 
@@ -1074,6 +1787,7 @@ pub(super) fn compute_proc_shape(
         in_array_slots,
         field_array_slots,
         nested_proc_array_slots,
+        nested_proc_array_active_fields,
         state,
         fields,
         field_names,
@@ -1164,6 +1878,7 @@ pub(super) fn build_proc_lowering_shape(
     let mut array_field_names = base.array_field_names.clone();
     let mut field_array_slots = base.field_array_slots.clone();
     let mut nested_proc_array_slots = base.nested_proc_array_slots.clone();
+    let mut nested_proc_array_active_fields = base.nested_proc_array_active_fields.clone();
     let mut nested_fields = HashMap::<String, HashSet<String>>::new();
 
     let mut nested_vars = base.state.nested_procs.keys().cloned().collect::<Vec<_>>();
@@ -1200,6 +1915,12 @@ pub(super) fn build_proc_lowering_shape(
                 .map(|slot| nested_field_name(&nested_var, slot))
                 .collect::<Vec<_>>();
             nested_proc_array_slots.insert(prefixed_base, prefixed_slots);
+        }
+        for (array_base, active_field) in &callee_shape.nested_proc_array_active_fields {
+            nested_proc_array_active_fields.insert(
+                nested_field_name(&nested_var, array_base),
+                nested_field_name(&nested_var, active_field),
+            );
         }
 
         let mut nested_callee_fields = callee_shape.fields.clone();
@@ -1239,6 +1960,7 @@ pub(super) fn build_proc_lowering_shape(
         in_array_slots: base.in_array_slots,
         field_array_slots,
         nested_proc_array_slots,
+        nested_proc_array_active_fields,
         state: base.state,
         fields,
         field_names,

@@ -203,7 +203,7 @@ pub(crate) fn build_scope_stmt_expr_env<'a>(
     scope: ScopeKind,
 ) -> StmtExprAnalysisEnv<'a> {
     build_stmt_expr_env(
-        build_scope_expr_env(inputs, known_scalars, array_vars, scope),
+        build_scope_expr_env(inputs, known_scalars, local_aliases, array_vars, scope),
         inputs.state_scalars,
         inputs.declared_symbols,
         local_aliases,
@@ -220,7 +220,7 @@ pub(crate) fn validate_and_infer_stmt_expr_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     validate_expr(expr, env.expr_env, errors);
-    infer_expr_type_for_semantics_with_local_data(
+    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
         expr,
         env.state_scalars,
         env.declared_symbols,
@@ -233,6 +233,7 @@ pub(crate) fn validate_and_infer_stmt_expr_type(
         env.param_names,
         env.expr_env.struct_instances,
         env.expr_env.struct_defs,
+        env.expr_env.proc_array_roots,
         errors,
     )
 }
@@ -252,6 +253,7 @@ fn is_bare_array_ref_expr(expr: &Expr, env: StmtExprAnalysisEnv<'_>) -> bool {
     env.expr_env.array_vars.contains_key(name)
         || is_declared_data_array_symbol(env.declared_symbols, name)
         || has_declared_buffer_symbol_info(env.declared_symbols, name)
+        || env.expr_env.proc_array_roots.contains_key(name)
 }
 
 pub(crate) fn is_data_like_value_expr(expr: &Expr, env: StmtExprAnalysisEnv<'_>) -> bool {

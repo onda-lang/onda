@@ -6,6 +6,58 @@ fn struct_llvm_name(prefix: &str, suffix: &str) -> Vec<u8> {
     name
 }
 
+fn sanitize_runtime_symbol_component(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+}
+
+fn runtime_proc_array_active_symbol(array_base: &str) -> String {
+    format!(
+        "__omni_proc_block_active_{}",
+        sanitize_runtime_symbol_component(array_base)
+    )
+}
+
+fn resolve_runtime_proc_array_active_base<'a, T>(
+    bases: &'a HashMap<String, T>,
+    base: &str,
+    context_name: &str,
+) -> Result<Option<String>, Diagnostic> {
+    let mut candidates = Vec::<String>::new();
+    candidates.push(runtime_proc_array_active_symbol(base));
+    if let Some(stripped) = base.strip_prefix("self.") {
+        candidates.push(runtime_proc_array_active_symbol(stripped));
+    } else {
+        candidates.push(format!("self.{}", runtime_proc_array_active_symbol(base)));
+    }
+
+    for candidate in &candidates {
+        if bases.contains_key(candidate) {
+            return Ok(Some(candidate.clone()));
+        }
+    }
+
+    let suffix = format!(".{}", runtime_proc_array_active_symbol(base));
+    let matches = bases
+        .keys()
+        .filter(|key| key.ends_with(&suffix))
+        .cloned()
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err(Diagnostic::internal(format!(
+            "ambiguous proc-array active-state base for '{base}' in {context_name}"
+        )));
+    }
+    Ok(matches.into_iter().next())
+}
+
 pub(in crate::orc_backend) fn collect_struct_array_leaf_symbols(
     struct_fields: &HashMap<String, Vec<TypedStructField>>,
     elem_struct: &str,
@@ -65,6 +117,63 @@ pub(in crate::orc_backend) unsafe fn lower_struct_array_call_args_in_orc(
         out_args.push(ctx.array_base_ptrs.get(&leaf_name).copied().ok_or_else(|| {
             Diagnostic::internal(format!(
                 "missing ORC array symbol '{leaf_name}' while lowering struct-array argument for '{callee_name}'"
+            ))
+        })?);
+    }
+    Ok(())
+}
+
+pub(in crate::orc_backend) unsafe fn lower_proc_array_call_args_in_orc(
+    ctx: &mut LoweringCtx<'_>,
+    out_args: &mut Vec<LLVMValueRef>,
+    arg_expr: &Expr,
+    struct_name: &str,
+    callee_name: &str,
+) -> Result<(), Diagnostic> {
+    let Expr::Var { name: base, .. } = arg_expr else {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' expects proc-array '{struct_name}[]' argument as a variable in ORC lowering"
+        )));
+    };
+    let actual_struct = ctx.array_struct_roots.get(base).ok_or_else(|| {
+        Diagnostic::internal(format!(
+            "function '{callee_name}' expects proc-array '{struct_name}[]' argument, but '{base}' is not a proc-array root in ORC lowering"
+        ))
+    })?;
+    if actual_struct != struct_name {
+        return Err(Diagnostic::internal(format!(
+            "function '{callee_name}' expects proc-array '{struct_name}[]' argument, but '{base}' has element type '{actual_struct}' in ORC lowering"
+        )));
+    }
+    let len_val = ctx.array_len_values.get(base).copied().unwrap_or_else(|| {
+        LLVMConstInt(
+            ctx.i32_ty,
+            ctx.array_struct_len.get(base).copied().unwrap_or(1) as u64,
+            0,
+        )
+    });
+    out_args.push(len_val);
+    let bool_ptr_ty = LLVMPointerType(llvm_ty_for_primitive(ctx.context, PrimitiveType::Bool), 0);
+    let active_ptr = if let Some(active_base) = resolve_runtime_proc_array_active_base(
+        ctx.array_base_ptrs,
+        base,
+        "ORC proc-array call lowering",
+    )? {
+        ctx.array_base_ptrs.get(&active_base).copied().ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "missing ORC proc-array active-state symbol '{active_base}' while lowering '{callee_name}'"
+            ))
+        })?
+    } else {
+        LLVMConstPointerNull(bool_ptr_ty)
+    };
+    out_args.push(active_ptr);
+    for (leaf_name, _leaf_ty) in
+        collect_struct_array_leaf_symbols(ctx.struct_fields, struct_name, base, 1)?
+    {
+        out_args.push(ctx.array_base_ptrs.get(&leaf_name).copied().ok_or_else(|| {
+            Diagnostic::internal(format!(
+                "missing ORC array symbol '{leaf_name}' while lowering proc-array argument for '{callee_name}'"
             ))
         })?);
     }
@@ -174,6 +283,7 @@ pub(in crate::orc_backend) unsafe fn resolve_indexed_struct_arg_common<FLowerCla
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
     array_struct_roots: &HashMap<String, String>,
     array_struct_len: &HashMap<String, usize>,
+    array_struct_len_values: Option<&HashMap<String, LLVMValueRef>>,
     base: &str,
     struct_name: &str,
     callee_name: &str,
@@ -182,7 +292,7 @@ pub(in crate::orc_backend) unsafe fn resolve_indexed_struct_arg_common<FLowerCla
     mut lower_clamped_index: FLowerClampedIndex,
 ) -> Result<Option<(String, LLVMValueRef)>, Diagnostic>
 where
-    FLowerClampedIndex: FnMut(usize) -> Result<LLVMValueRef, Diagnostic>,
+    FLowerClampedIndex: FnMut(usize, Option<LLVMValueRef>) -> Result<LLVMValueRef, Diagnostic>,
 {
     if let Some(alias) = find_struct_array_alias_by_base(local_array_aliases, base, context_name)? {
         return match alias {
@@ -205,7 +315,7 @@ where
                         "struct-array alias argument '{base}' has zero length in {context_name} for function '{callee_name}'"
                     )));
                 }
-                let clamped_local_idx = lower_clamped_index(*len)?;
+                let clamped_local_idx = lower_clamped_index(*len, None)?;
                 let global_index = LLVMBuildAdd(
                     builder,
                     *start_index,
@@ -242,7 +352,11 @@ where
             "struct-array argument '{resolved_base}' has zero length in {context_name} for function '{callee_name}'"
         )));
     }
-    Ok(Some((resolved_base, lower_clamped_index(len)?)))
+    let runtime_len = array_struct_len_values.and_then(|lens| lens.get(&resolved_base).copied());
+    Ok(Some((
+        resolved_base,
+        lower_clamped_index(len, runtime_len)?,
+    )))
 }
 
 pub(in crate::orc_backend) unsafe fn lower_struct_call_args_for_base_common<
@@ -478,12 +592,13 @@ pub(in crate::orc_backend) unsafe fn lower_struct_call_args_in_orc(
                 local_array_aliases,
                 ctx.array_struct_roots,
                 ctx.array_struct_len,
+                None,
                 base,
                 struct_name,
                 callee_name,
                 "ORC lowering",
                 b"struct_idx_alias_global\0",
-                |len| unsafe {
+                |len, _runtime_len| unsafe {
                     lower_clamped_data_index(
                         &mut *ctx_ptr,
                         index,

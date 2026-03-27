@@ -128,8 +128,9 @@ named_type = { (namespace_ref | qualified_ident | ident) ~ generic_type_arg_list
 typed_decl_type = { array_type | tuple_type | type_name | named_type }
 typed_assign_stmt = { ident ~ ":" ~ typed_decl_type ~ ("=" ~ expr)? }
 plain_assign_stmt = { assign_target ~ "=" ~ expr }
-assign_target = _{ slice_target | index_target | tuple_target | path_ident }
+assign_target = _{ slice_target | indexed_member_target | index_target | tuple_target | path_ident }
 tuple_target = { "(" ~ ident ~ ("," ~ ident)+ ~ ")" }
+indexed_member_target = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
 index_target = { path_ident ~ "[" ~ expr ~ "]" ~ ("[" ~ expr ~ "]")? }
 slice_target = { path_ident ~ "[" ~ slice_start? ~ ":" ~ slice_end? ~ "]" }
 return_stmt = { "return" ~ expr }

@@ -110,6 +110,9 @@ pub fn analyze_with_options(
         program,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
+        proc_api,
+        lowering_shapes,
+        top_level_proc_rewrite,
     } = desugar_processors(program, options, &mut errors);
 
     let mut seen_singleton = HashSet::new();
@@ -1867,6 +1870,31 @@ pub fn analyze_with_options(
         .iter()
         .map(|(name, info)| (name.clone(), info.struct_name.clone()))
         .collect::<HashMap<_, _>>();
+    let mut inferred_proc_array_roots = nested_proc_arrays
+        .iter()
+        .filter_map(|(name, info)| {
+            let size_context = format!("top-level processor array '{}' size", name);
+            let len = eval_data_size_expr(&info.size_expr, options, &size_context, &mut errors)?;
+            Some((
+                name.clone(),
+                InferredProcArrayParam {
+                    proc_name: info.proc_name.clone(),
+                    len,
+                },
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+    for (name, info) in &state_array_struct_roots {
+        if !proc_api.contains_key(&info.struct_name) {
+            continue;
+        }
+        inferred_proc_array_roots
+            .entry(name.clone())
+            .or_insert_with(|| InferredProcArrayParam {
+                proc_name: info.struct_name.clone(),
+                len: info.len,
+            });
+    }
 
     let (inferred_def_params, synthesized_struct_defs) = infer_def_param_kinds(
         &defs,
@@ -1875,6 +1903,7 @@ pub fn analyze_with_options(
         &sample_and_event_exec,
         &struct_instances,
         &inferred_struct_array_roots,
+        &inferred_proc_array_roots,
         &inferred_array_bindings,
         &typed_buffers
             .iter()
@@ -1894,6 +1923,8 @@ pub fn analyze_with_options(
         options,
         &mut errors,
     );
+    let reachable_def_names =
+        collect_reachable_def_names(&init, &block_exec, &sample_and_event_exec, &defs);
 
     let mut def_struct_defs = struct_defs.clone();
     for (name, fields) in &synthesized_struct_defs {
@@ -1903,7 +1934,10 @@ pub fn analyze_with_options(
     let def_global_inputs = HashSet::<String>::new();
     let def_global_outputs = HashSet::<String>::new();
     let def_global_params = HashSet::<String>::new();
-    for def in &mut defs {
+    for def in defs.iter_mut().filter(|def| {
+        reachable_def_names.contains(&def.name)
+            || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs)
+    }) {
         let fn_known = def
             .params
             .iter()
@@ -1985,6 +2019,10 @@ pub fn analyze_with_options(
             .get(&def.name)
             .map(|k| param_buffer_map_from_kinds(&param_names_vec, k))
             .unwrap_or_default();
+        let param_proc_arrays = inferred_def_params
+            .get(&def.name)
+            .map(|k| param_proc_array_map_from_kinds(&param_names_vec, k))
+            .unwrap_or_default();
         let param_arrays = inferred_def_params
             .get(&def.name)
             .map(|k| param_array_map_from_kinds(&param_names_vec, k))
@@ -1997,6 +2035,37 @@ pub fn analyze_with_options(
                     elem_ty: *elem_ty,
                     elem_struct: None,
                     writable: true,
+                },
+            );
+        }
+        for (param_name, proc_info) in &param_proc_arrays {
+            let has_block = proc_api
+                .get(&proc_info.proc_name)
+                .map(|api| api.has_block)
+                .unwrap_or(false);
+            if !has_block {
+                continue;
+            }
+            let len = match &proc_info.size_expr {
+                Expr::Int { value, .. } if *value >= 0 => *value as usize,
+                _ => 1,
+            };
+            let active_symbol = runtime_proc_array_active_symbol(param_name);
+            fn_local_data_aliases.insert(
+                active_symbol.clone(),
+                LocalArrayAliasInfo {
+                    len,
+                    elem_ty: PrimitiveType::Bool,
+                    elem_struct: None,
+                    writable: true,
+                },
+            );
+            insert_declared_symbol(
+                &mut def_state_scalars,
+                &mut def_declared_symbols,
+                active_symbol,
+                DeclaredSymbolInfo::DataArray {
+                    elem_ty: PrimitiveType::Bool,
                 },
             );
         }
@@ -2028,6 +2097,118 @@ pub fn analyze_with_options(
                 },
             );
         }
+        let mut def_proc_vars = HashMap::<String, ProcCallInstance>::new();
+        let mut def_proc_array_slots = HashMap::<String, Vec<String>>::new();
+        let mut def_proc_block_active_symbols = HashMap::<String, String>::new();
+        if let Some(kinds) = inferred_def_params.get(&def.name) {
+            for (param_name, kind) in def.params.iter().map(|p| &p.name).zip(kinds.iter()) {
+                match kind {
+                    TypedFnParam::Struct { struct_name } => {
+                        if let Some(shape) = lowering_shapes.get(struct_name) {
+                            for (base, slots) in &shape.nested_proc_array_slots {
+                                def_proc_array_slots
+                                    .entry(base.clone())
+                                    .or_insert_with(|| slots.clone());
+                                let prefixed_base = format!("{param_name}.{base}");
+                                let prefixed_slots = slots
+                                    .iter()
+                                    .map(|slot| format!("{param_name}.{slot}"))
+                                    .collect::<Vec<_>>();
+                                def_proc_array_slots
+                                    .entry(prefixed_base.clone())
+                                    .or_insert(prefixed_slots);
+                                if let Some(active_field) =
+                                    shape.nested_proc_array_active_fields.get(base)
+                                {
+                                    def_proc_block_active_symbols
+                                        .entry(prefixed_base)
+                                        .or_insert_with(|| format!("{param_name}.{active_field}"));
+                                }
+                                for slot in slots {
+                                    if let Some(nested) = shape.state.nested_procs.get(slot) {
+                                        def_proc_vars.entry(slot.clone()).or_insert(
+                                            ProcCallInstance {
+                                                proc_name: nested.proc_name.clone(),
+                                                buffer_args: Vec::new(),
+                                            },
+                                        );
+                                        let prefixed_slot = format!("{param_name}.{slot}");
+                                        def_proc_vars.entry(prefixed_slot).or_insert(
+                                            ProcCallInstance {
+                                                proc_name: nested.proc_name.clone(),
+                                                buffer_args: Vec::new(),
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                            for (instance_name, nested) in &shape.state.nested_procs {
+                                def_proc_vars.entry(instance_name.clone()).or_insert(
+                                    ProcCallInstance {
+                                        proc_name: nested.proc_name.clone(),
+                                        buffer_args: Vec::new(),
+                                    },
+                                );
+                                let prefixed_instance = format!("{param_name}.{instance_name}");
+                                def_proc_vars.entry(prefixed_instance).or_insert(
+                                    ProcCallInstance {
+                                        proc_name: nested.proc_name.clone(),
+                                        buffer_args: Vec::new(),
+                                    },
+                                );
+                            }
+                        }
+                        if proc_api.contains_key(struct_name) {
+                            def_proc_vars.insert(
+                                param_name.clone(),
+                                ProcCallInstance {
+                                    proc_name: struct_name.clone(),
+                                    buffer_args: Vec::new(),
+                                },
+                            );
+                        }
+                    }
+                    TypedFnParam::ProcArray { proc_name, len } => {
+                        let slot_names = (0..*len)
+                            .map(|idx| format!("{param_name}.__proc_array_slot_{idx}"))
+                            .collect::<Vec<_>>();
+                        for slot_name in &slot_names {
+                            def_proc_vars.insert(
+                                slot_name.clone(),
+                                ProcCallInstance {
+                                    proc_name: proc_name.clone(),
+                                    buffer_args: Vec::new(),
+                                },
+                            );
+                        }
+                        def_proc_array_slots.insert(param_name.clone(), slot_names);
+                        def_proc_block_active_symbols.insert(
+                            param_name.clone(),
+                            runtime_proc_array_active_symbol(param_name),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !def_proc_vars.is_empty() || !def_proc_array_slots.is_empty() {
+            rewrite_proc_calls_in_stmts(
+                &mut def.body,
+                &def_proc_vars,
+                &def_proc_array_slots,
+                &proc_api,
+                &mut errors,
+            );
+            let mut rewritten_def_body = Vec::<Stmt>::new();
+            for stmt in std::mem::take(&mut def.body) {
+                rewritten_def_body.extend(rewrite_stmt_for_def_proc_block_guards(
+                    stmt,
+                    &proc_api,
+                    &def_proc_block_active_symbols,
+                ));
+            }
+            def.body = rewritten_def_body;
+        }
         let def_ctx = DefStmtAnalysisCtx {
             common: ScopeAnalysisCtx {
                 policy: ScopePolicy::Def,
@@ -2045,6 +2226,7 @@ pub fn analyze_with_options(
             locals: &fn_locals,
             declared_symbols: &def_declared_symbols,
             param_structs: &param_structs,
+            proc_array_roots: &param_proc_arrays,
             state_scalars: &def_state_scalars,
             def_return_types: &def_return_types,
         };
@@ -2118,7 +2300,19 @@ pub fn analyze_with_options(
             }
         }
 
-        let typed_defs = defs
+        reject_non_sample_proc_operator_calls(
+            &init,
+            &block_pre,
+            &block_post,
+            &typed_events,
+            &defs,
+            &mut errors,
+        );
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        let all_typed_defs = defs
             .into_iter()
             .map(|d| {
                 let param_kinds = inferred_def_params
@@ -2139,6 +2333,28 @@ pub fn analyze_with_options(
                     body: d.body,
                 }
             })
+            .collect::<Vec<_>>();
+        inject_sample_def_owner_proc_block_hooks(
+            &sample,
+            &mut block_pre,
+            &mut block_post,
+            &all_typed_defs,
+            &proc_api,
+            &top_level_proc_rewrite.global_proc_instances,
+            &top_level_proc_rewrite.global_proc_array_slots,
+            &mut errors,
+        );
+        let reachable_defs = collect_reachable_typed_def_names(
+            &init,
+            &block_pre,
+            &sample,
+            &block_post,
+            &typed_events,
+            &all_typed_defs,
+        );
+        let typed_defs = all_typed_defs
+            .into_iter()
+            .filter(|def| reachable_defs.contains(&def.name))
             .collect::<Vec<_>>();
 
         Ok(TypedProgram {
@@ -2337,5 +2553,1542 @@ fn validate_generic_def_type_args_in_expr(
             }
         }
         _ => {}
+    }
+}
+
+fn collect_reachable_typed_def_names(
+    init: &[Stmt],
+    block_pre: &[Stmt],
+    sample: &[Stmt],
+    block_post: &[Stmt],
+    events: &[TypedEvent],
+    defs: &[TypedFunction],
+) -> HashSet<String> {
+    let def_map = defs
+        .iter()
+        .map(|def| (def.name.clone(), def))
+        .collect::<HashMap<_, _>>();
+    let def_names = def_map.keys().cloned().collect::<HashSet<_>>();
+    let mut pending = Vec::<String>::new();
+    let mut seen_pending = HashSet::<String>::new();
+
+    seed_called_typed_defs_from_stmts(init, &def_names, &mut pending, &mut seen_pending);
+    seed_called_typed_defs_from_stmts(block_pre, &def_names, &mut pending, &mut seen_pending);
+    seed_called_typed_defs_from_stmts(sample, &def_names, &mut pending, &mut seen_pending);
+    seed_called_typed_defs_from_stmts(block_post, &def_names, &mut pending, &mut seen_pending);
+    for event in events {
+        seed_called_typed_defs_from_stmts(&event.body, &def_names, &mut pending, &mut seen_pending);
+    }
+
+    let mut reachable = HashSet::<String>::new();
+    while let Some(name) = pending.pop() {
+        if !reachable.insert(name.clone()) {
+            continue;
+        }
+        let Some(def) = def_map.get(&name) else {
+            continue;
+        };
+        seed_called_typed_defs_from_stmts(&def.body, &def_names, &mut pending, &mut seen_pending);
+    }
+    reachable
+}
+
+fn collect_reachable_def_names(
+    init: &[Stmt],
+    block_exec: &[Stmt],
+    sample_and_event_exec: &[Stmt],
+    defs: &[FunctionDef],
+) -> HashSet<String> {
+    let def_map = defs
+        .iter()
+        .map(|def| (def.name.clone(), def))
+        .collect::<HashMap<_, _>>();
+    let def_names = def_map.keys().cloned().collect::<HashSet<_>>();
+    let mut pending = Vec::<String>::new();
+    let mut seen_pending = HashSet::<String>::new();
+
+    seed_called_typed_defs_from_stmts(init, &def_names, &mut pending, &mut seen_pending);
+    seed_called_typed_defs_from_stmts(block_exec, &def_names, &mut pending, &mut seen_pending);
+    seed_called_typed_defs_from_stmts(
+        sample_and_event_exec,
+        &def_names,
+        &mut pending,
+        &mut seen_pending,
+    );
+
+    let mut reachable = HashSet::<String>::new();
+    while let Some(name) = pending.pop() {
+        if !reachable.insert(name.clone()) {
+            continue;
+        }
+        let Some(def) = def_map.get(&name) else {
+            continue;
+        };
+        seed_called_typed_defs_from_stmts(&def.body, &def_names, &mut pending, &mut seen_pending);
+    }
+    reachable
+}
+
+fn is_proc_sample_call_name(name: &str) -> bool {
+    name.ends_with(PROC_STEP_FN_SUFFIX) || name.contains(PROC_CALL_OUT_FN_PREFIX)
+}
+
+fn def_is_non_sample_generated_root(name: &str) -> bool {
+    name.ends_with(PROC_INIT_FN_SUFFIX)
+        || name.ends_with(PROC_BLOCK_PRE_FN_SUFFIX)
+        || name.ends_with(PROC_BLOCK_POST_FN_SUFFIX)
+        || name.contains(PROC_EVENT_FN_PREFIX)
+}
+
+fn collect_proc_sample_call_diags_from_expr(expr: &Expr, out: &mut Vec<DiagCtx>) {
+    match expr {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                collect_proc_sample_call_diags_from_expr(value, out);
+            }
+        }
+        Expr::Index { index, .. } => collect_proc_sample_call_diags_from_expr(index, out),
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                collect_proc_sample_call_diags_from_expr(start, out);
+            }
+            if let Some(end) = end {
+                collect_proc_sample_call_diags_from_expr(end, out);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            collect_proc_sample_call_diags_from_expr(&spec.size, out);
+            if let Some(values) = init {
+                for value in values {
+                    collect_proc_sample_call_diags_from_expr(value, out);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            collect_proc_sample_call_diags_from_expr(lhs, out);
+            collect_proc_sample_call_diags_from_expr(rhs, out);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_proc_sample_call_diags_from_expr(arg, out);
+            }
+        }
+        Expr::UserCall {
+            name, args, loc, ..
+        } => {
+            if is_proc_sample_call_name(name) {
+                out.push(DiagCtx::new(*loc));
+            }
+            for arg in args {
+                collect_proc_sample_call_diags_from_expr(&arg.expr, out);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            collect_proc_sample_call_diags_from_expr(expr, out);
+        }
+    }
+}
+
+fn collect_proc_sample_call_diags_from_stmts(stmts: &[Stmt], out: &mut Vec<DiagCtx>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                collect_proc_sample_call_diags_from_expr(expr, out);
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_proc_sample_call_diags_from_expr(cond, out);
+                collect_proc_sample_call_diags_from_stmts(then_branch, out);
+                collect_proc_sample_call_diags_from_stmts(else_branch, out);
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                collect_proc_sample_call_diags_from_expr(start, out);
+                collect_proc_sample_call_diags_from_expr(end, out);
+                if let Some(step) = step {
+                    collect_proc_sample_call_diags_from_expr(step, out);
+                }
+                collect_proc_sample_call_diags_from_stmts(body, out);
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_proc_sample_call_diags_from_expr(cond, out);
+                collect_proc_sample_call_diags_from_stmts(body, out);
+            }
+        }
+    }
+}
+
+fn push_non_sample_proc_call_errors(stmts: &[Stmt], context: &str, errors: &mut Vec<Diagnostic>) {
+    let mut diags = Vec::<DiagCtx>::new();
+    collect_proc_sample_call_diags_from_stmts(stmts, &mut diags);
+    for diag in diags {
+        push_semantic(
+            diag,
+            errors,
+            format!(
+                "proc operator '()' is only allowed in sample; found non-sample use in {context}"
+            ),
+        );
+    }
+}
+
+fn reject_non_sample_proc_operator_calls(
+    init: &[Stmt],
+    block_pre: &[Stmt],
+    block_post: &[Stmt],
+    events: &[TypedEvent],
+    defs: &[FunctionDef],
+    errors: &mut Vec<Diagnostic>,
+) {
+    push_non_sample_proc_call_errors(init, "init", errors);
+    push_non_sample_proc_call_errors(block_pre, "block pre", errors);
+    push_non_sample_proc_call_errors(block_post, "block post", errors);
+    for event in events {
+        push_non_sample_proc_call_errors(&event.body, &format!("event '{}'", event.name), errors);
+    }
+
+    let def_names = defs
+        .iter()
+        .map(|def| def.name.clone())
+        .collect::<HashSet<_>>();
+    let def_map = defs
+        .iter()
+        .map(|def| (def.name.clone(), def))
+        .collect::<HashMap<_, _>>();
+    let mut defs_with_proc_calls = HashMap::<String, Vec<DiagCtx>>::new();
+    for def in defs {
+        let mut proc_call_diags = Vec::<DiagCtx>::new();
+        collect_proc_sample_call_diags_from_stmts(&def.body, &mut proc_call_diags);
+        if !proc_call_diags.is_empty() {
+            defs_with_proc_calls.insert(def.name.clone(), proc_call_diags);
+        }
+    }
+
+    let mut pending = Vec::<String>::new();
+    let mut seen_pending = HashSet::<String>::new();
+    seed_called_typed_defs_from_stmts(init, &def_names, &mut pending, &mut seen_pending);
+    seed_called_typed_defs_from_stmts(block_pre, &def_names, &mut pending, &mut seen_pending);
+    seed_called_typed_defs_from_stmts(block_post, &def_names, &mut pending, &mut seen_pending);
+    for event in events {
+        seed_called_typed_defs_from_stmts(&event.body, &def_names, &mut pending, &mut seen_pending);
+    }
+    for def in defs {
+        if def_is_non_sample_generated_root(&def.name) && seen_pending.insert(def.name.clone()) {
+            pending.push(def.name.clone());
+        }
+    }
+
+    let mut non_sample_reachable_defs = HashSet::<String>::new();
+    while let Some(name) = pending.pop() {
+        if !non_sample_reachable_defs.insert(name.clone()) {
+            continue;
+        }
+        let Some(def) = def_map.get(&name) else {
+            continue;
+        };
+        seed_called_typed_defs_from_stmts(&def.body, &def_names, &mut pending, &mut seen_pending);
+    }
+
+    for (def_name, proc_call_diags) in defs_with_proc_calls {
+        if !non_sample_reachable_defs.contains(&def_name) {
+            continue;
+        }
+        for diag in proc_call_diags {
+            push_semantic(
+                diag,
+                errors,
+                format!(
+                    "proc operator '()' is only allowed in sample; call in '{}' is not provably sample-only",
+                    def_name
+                ),
+            );
+        }
+    }
+}
+
+fn def_has_concrete_param_contract(
+    def: &FunctionDef,
+    method_self_struct: &HashMap<String, String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> bool {
+    def.params.iter().enumerate().all(|(idx, param)| {
+        if idx == 0 && method_self_struct.contains_key(&def.name) {
+            return true;
+        }
+        match param.ty.as_ref() {
+            Some(FnParamType::Primitive(_)) | Some(FnParamType::Tuple(_)) => true,
+            Some(FnParamType::Struct(struct_name)) => {
+                !def.type_params.contains(struct_name) && struct_defs.contains_key(struct_name)
+            }
+            Some(FnParamType::Buffer(buffer_ty)) => {
+                matches!(buffer_ty.elem, BufferElemType::Primitive(_))
+            }
+            Some(FnParamType::Array(Some(_))) => true,
+            Some(FnParamType::SizedArray { elem: Some(_), .. }) => true,
+            Some(FnParamType::ArrayGeneric(struct_name)) => {
+                !def.type_params.contains(struct_name) && struct_defs.contains_key(struct_name)
+            }
+            Some(FnParamType::SizedArray {
+                generic_name: Some(struct_name),
+                ..
+            }) => !def.type_params.contains(struct_name) && struct_defs.contains_key(struct_name),
+            Some(FnParamType::Array(None))
+            | Some(FnParamType::BareBuffer)
+            | Some(FnParamType::SizedArray { .. })
+            | None => false,
+        }
+    })
+}
+
+fn sanitize_runtime_symbol_component(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+}
+
+fn runtime_proc_array_active_symbol(array_base: &str) -> String {
+    format!(
+        "__omni_proc_block_active_{}",
+        sanitize_runtime_symbol_component(array_base)
+    )
+}
+
+fn try_indexed_proc_call_meta_in_def<'a>(
+    expr: &'a Expr,
+    proc_api: &HashMap<String, ProcApi>,
+) -> Option<(&'a str, &'a [CallArg], &'a str, &'a Expr)> {
+    let Expr::UserCall {
+        name,
+        args,
+        type_args: _,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    let proc_name = if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
+        step_proc
+    } else if let Some((call_proc, out_idx_raw)) = name.rsplit_once(PROC_CALL_OUT_FN_PREFIX) {
+        if out_idx_raw.parse::<usize>().is_ok() {
+            call_proc
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    let api = proc_api.get(proc_name)?;
+    if !api.has_block {
+        return None;
+    }
+    let self_arg = args.first()?;
+    let Expr::Index { base, index, .. } = &self_arg.expr else {
+        return None;
+    };
+    Some((proc_name, args, base.as_str(), index.as_ref()))
+}
+
+fn rewrite_stmt_for_def_proc_block_guards(
+    stmt: Stmt,
+    proc_api: &HashMap<String, ProcApi>,
+    proc_block_active_symbols: &HashMap<String, String>,
+) -> Vec<Stmt> {
+    fn collect_guards(
+        expr: &Expr,
+        proc_api: &HashMap<String, ProcApi>,
+        proc_block_active_symbols: &HashMap<String, String>,
+        guards: &mut Vec<Stmt>,
+    ) {
+        match expr {
+            Expr::Index { index, .. } => {
+                collect_guards(index, proc_api, proc_block_active_symbols, guards)
+            }
+            Expr::Slice { start, end, .. } => {
+                if let Some(start) = start {
+                    collect_guards(start, proc_api, proc_block_active_symbols, guards);
+                }
+                if let Some(end) = end {
+                    collect_guards(end, proc_api, proc_block_active_symbols, guards);
+                }
+            }
+            Expr::ArrayCtor { spec, init, .. } => {
+                collect_guards(&spec.size, proc_api, proc_block_active_symbols, guards);
+                if let Some(values) = init {
+                    for value in values {
+                        collect_guards(value, proc_api, proc_block_active_symbols, guards);
+                    }
+                }
+            }
+            Expr::Compare { lhs, rhs, .. }
+            | Expr::Logical { lhs, rhs, .. }
+            | Expr::Binary { lhs, rhs, .. } => {
+                collect_guards(lhs, proc_api, proc_block_active_symbols, guards);
+                collect_guards(rhs, proc_api, proc_block_active_symbols, guards);
+            }
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    collect_guards(arg, proc_api, proc_block_active_symbols, guards);
+                }
+            }
+            Expr::UserCall { args, .. } => {
+                for arg in args {
+                    collect_guards(&arg.expr, proc_api, proc_block_active_symbols, guards);
+                }
+                let Some((proc_name, args, array_base, index_expr)) =
+                    try_indexed_proc_call_meta_in_def(expr, proc_api)
+                else {
+                    return;
+                };
+                let Some(api) = proc_api.get(proc_name) else {
+                    return;
+                };
+                let Some(active_symbol) = proc_block_active_symbols.get(array_base).cloned() else {
+                    return;
+                };
+                let input_slots = api.ins.iter().map(|port| port.slots.len()).sum::<usize>();
+                let buffer_start = 1 + input_slots;
+                let mut pre_args = Vec::<CallArg>::new();
+                pre_args.push(CallArg {
+                    name: None,
+                    expr: Expr::Index {
+                        loc: Default::default(),
+                        base: array_base.to_owned(),
+                        index: Box::new(index_expr.clone()),
+                    },
+                });
+                pre_args.extend(args.iter().skip(buffer_start).cloned());
+                guards.push(Stmt::If {
+                    loc: Default::default(),
+                    cond: Expr::UnaryNot {
+                        loc: Default::default(),
+                        expr: Box::new(Expr::Index {
+                            loc: Default::default(),
+                            base: active_symbol.clone(),
+                            index: Box::new(index_expr.clone()),
+                        }),
+                    },
+                    then_branch: vec![
+                        Stmt::Expr {
+                            loc: Default::default(),
+                            expr: Expr::UserCall {
+                                loc: Default::default(),
+                                name: format!("{proc_name}{PROC_BLOCK_PRE_FN_SUFFIX}"),
+                                type_args: Vec::new(),
+                                args: pre_args,
+                            },
+                        },
+                        Stmt::Assign {
+                            loc: Default::default(),
+                            target_loc: Default::default(),
+                            target: AssignTarget::Index {
+                                base: active_symbol,
+                                index: index_expr.clone(),
+                            },
+                            decl_ty: None,
+                            generic_decl_ty: None,
+                            is_typed_decl: false,
+                            typed_decl_ty_loc: Default::default(),
+                            expr: Expr::bool(true),
+                        },
+                    ],
+                    else_branch: Vec::new(),
+                });
+            }
+            Expr::Cast { expr: inner, .. }
+            | Expr::UnaryNot { expr: inner, .. }
+            | Expr::UnaryBitNot { expr: inner, .. } => {
+                collect_guards(inner, proc_api, proc_block_active_symbols, guards)
+            }
+            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+                for value in values {
+                    collect_guards(value, proc_api, proc_block_active_symbols, guards);
+                }
+            }
+            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+        }
+    }
+
+    let mut guards = Vec::<Stmt>::new();
+    match &stmt {
+        Stmt::Expr { expr, .. } | Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
+            collect_guards(expr, proc_api, proc_block_active_symbols, &mut guards);
+        }
+        Stmt::If { cond, .. } | Stmt::While { cond, .. } => {
+            collect_guards(cond, proc_api, proc_block_active_symbols, &mut guards);
+        }
+        Stmt::For {
+            start, end, step, ..
+        } => {
+            collect_guards(start, proc_api, proc_block_active_symbols, &mut guards);
+            collect_guards(end, proc_api, proc_block_active_symbols, &mut guards);
+            if let Some(step) = step {
+                collect_guards(step, proc_api, proc_block_active_symbols, &mut guards);
+            }
+        }
+        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+    if guards.is_empty() {
+        return match stmt {
+            Stmt::If {
+                loc,
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let mut rewritten_then = Vec::<Stmt>::new();
+                for nested in then_branch {
+                    rewritten_then.extend(rewrite_stmt_for_def_proc_block_guards(
+                        nested,
+                        proc_api,
+                        proc_block_active_symbols,
+                    ));
+                }
+                let mut rewritten_else = Vec::<Stmt>::new();
+                for nested in else_branch {
+                    rewritten_else.extend(rewrite_stmt_for_def_proc_block_guards(
+                        nested,
+                        proc_api,
+                        proc_block_active_symbols,
+                    ));
+                }
+                vec![Stmt::If {
+                    loc,
+                    cond,
+                    then_branch: rewritten_then,
+                    else_branch: rewritten_else,
+                }]
+            }
+            Stmt::For {
+                loc,
+                var,
+                start,
+                end,
+                end_inclusive,
+                step,
+                body,
+            } => {
+                let mut rewritten_body = Vec::<Stmt>::new();
+                for nested in body {
+                    rewritten_body.extend(rewrite_stmt_for_def_proc_block_guards(
+                        nested,
+                        proc_api,
+                        proc_block_active_symbols,
+                    ));
+                }
+                vec![Stmt::For {
+                    loc,
+                    var,
+                    start,
+                    end,
+                    end_inclusive,
+                    step,
+                    body: rewritten_body,
+                }]
+            }
+            Stmt::While { loc, cond, body } => {
+                let mut rewritten_body = Vec::<Stmt>::new();
+                for nested in body {
+                    rewritten_body.extend(rewrite_stmt_for_def_proc_block_guards(
+                        nested,
+                        proc_api,
+                        proc_block_active_symbols,
+                    ));
+                }
+                vec![Stmt::While {
+                    loc,
+                    cond,
+                    body: rewritten_body,
+                }]
+            }
+            other => vec![other],
+        };
+    }
+    let mut rewritten = guards;
+    match stmt {
+        Stmt::If {
+            loc,
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let mut rewritten_then = Vec::<Stmt>::new();
+            for nested in then_branch {
+                rewritten_then.extend(rewrite_stmt_for_def_proc_block_guards(
+                    nested,
+                    proc_api,
+                    proc_block_active_symbols,
+                ));
+            }
+            let mut rewritten_else = Vec::<Stmt>::new();
+            for nested in else_branch {
+                rewritten_else.extend(rewrite_stmt_for_def_proc_block_guards(
+                    nested,
+                    proc_api,
+                    proc_block_active_symbols,
+                ));
+            }
+            rewritten.push(Stmt::If {
+                loc,
+                cond,
+                then_branch: rewritten_then,
+                else_branch: rewritten_else,
+            });
+        }
+        Stmt::For {
+            loc,
+            var,
+            start,
+            end,
+            end_inclusive,
+            step,
+            body,
+        } => {
+            let mut rewritten_body = Vec::<Stmt>::new();
+            for nested in body {
+                rewritten_body.extend(rewrite_stmt_for_def_proc_block_guards(
+                    nested,
+                    proc_api,
+                    proc_block_active_symbols,
+                ));
+            }
+            rewritten.push(Stmt::For {
+                loc,
+                var,
+                start,
+                end,
+                end_inclusive,
+                step,
+                body: rewritten_body,
+            });
+        }
+        Stmt::While { loc, cond, body } => {
+            let mut rewritten_body = Vec::<Stmt>::new();
+            for nested in body {
+                rewritten_body.extend(rewrite_stmt_for_def_proc_block_guards(
+                    nested,
+                    proc_api,
+                    proc_block_active_symbols,
+                ));
+            }
+            rewritten.push(Stmt::While {
+                loc,
+                cond,
+                body: rewritten_body,
+            });
+        }
+        other => rewritten.push(other),
+    }
+    rewritten
+}
+
+fn typed_def_owner_proc_param_index_for_symbol(
+    symbol: &str,
+    def: &TypedFunction,
+    proc_api: &HashMap<String, ProcApi>,
+) -> Option<usize> {
+    let root = symbol.split('.').next().unwrap_or(symbol);
+    let param_idx = def.params.iter().position(|param| param == root)?;
+    let TypedFnParam::Struct { struct_name } = def.param_kinds.get(param_idx)? else {
+        return None;
+    };
+    let api = proc_api.get(struct_name)?;
+    if api.has_block {
+        Some(param_idx)
+    } else {
+        None
+    }
+}
+
+fn typed_def_owner_proc_param_index_for_expr(
+    expr: &Expr,
+    def: &TypedFunction,
+    proc_api: &HashMap<String, ProcApi>,
+) -> Option<usize> {
+    match expr {
+        Expr::Var { name, .. } => typed_def_owner_proc_param_index_for_symbol(name, def, proc_api),
+        Expr::Index { base, .. } => {
+            typed_def_owner_proc_param_index_for_symbol(base, def, proc_api)
+        }
+        _ => None,
+    }
+}
+
+fn collect_typed_def_owner_proc_hook_params_from_expr(
+    expr: &Expr,
+    def: &TypedFunction,
+    def_map: &HashMap<String, &TypedFunction>,
+    known_requirements: &HashMap<String, HashSet<usize>>,
+    proc_api: &HashMap<String, ProcApi>,
+    out: &mut HashSet<usize>,
+) {
+    match expr {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    value,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+            }
+        }
+        Expr::Index { index, .. } => {
+            collect_typed_def_owner_proc_hook_params_from_expr(
+                index,
+                def,
+                def_map,
+                known_requirements,
+                proc_api,
+                out,
+            );
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    start,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+            }
+            if let Some(end) = end {
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    end,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            collect_typed_def_owner_proc_hook_params_from_expr(
+                &spec.size,
+                def,
+                def_map,
+                known_requirements,
+                proc_api,
+                out,
+            );
+            if let Some(values) = init {
+                for value in values {
+                    collect_typed_def_owner_proc_hook_params_from_expr(
+                        value,
+                        def,
+                        def_map,
+                        known_requirements,
+                        proc_api,
+                        out,
+                    );
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            collect_typed_def_owner_proc_hook_params_from_expr(
+                lhs,
+                def,
+                def_map,
+                known_requirements,
+                proc_api,
+                out,
+            );
+            collect_typed_def_owner_proc_hook_params_from_expr(
+                rhs,
+                def,
+                def_map,
+                known_requirements,
+                proc_api,
+                out,
+            );
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    arg,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            for arg in args {
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    &arg.expr,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+            }
+            if let Some((_proc_name, _args, array_base, _index_expr)) =
+                try_indexed_proc_call_meta_in_def(expr, proc_api)
+            {
+                if let Some(param_idx) =
+                    typed_def_owner_proc_param_index_for_symbol(array_base, def, proc_api)
+                {
+                    out.insert(param_idx);
+                }
+            }
+            let Some(callee) = def_map.get(name) else {
+                return;
+            };
+            let Some(required_params) = known_requirements.get(name) else {
+                return;
+            };
+            if required_params.is_empty() {
+                return;
+            }
+            let mut call_errors = Vec::new();
+            let resolved = resolve_call_args(
+                args,
+                &callee.params,
+                &callee.param_defaults,
+                false,
+                false,
+                &format!("call '{}(...)'", callee.name),
+                &mut call_errors,
+            );
+            for required_idx in required_params {
+                let Some(Some(arg_expr)) = resolved.get(*required_idx) else {
+                    continue;
+                };
+                if let Some(param_idx) =
+                    typed_def_owner_proc_param_index_for_expr(arg_expr, def, proc_api)
+                {
+                    out.insert(param_idx);
+                }
+            }
+        }
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
+            collect_typed_def_owner_proc_hook_params_from_expr(
+                inner,
+                def,
+                def_map,
+                known_requirements,
+                proc_api,
+                out,
+            );
+        }
+    }
+}
+
+fn collect_typed_def_owner_proc_hook_params_from_stmts(
+    stmts: &[Stmt],
+    def: &TypedFunction,
+    def_map: &HashMap<String, &TypedFunction>,
+    known_requirements: &HashMap<String, HashSet<usize>>,
+    proc_api: &HashMap<String, ProcApi>,
+    out: &mut HashSet<usize>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    expr,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    cond,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+                collect_typed_def_owner_proc_hook_params_from_stmts(
+                    then_branch,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+                collect_typed_def_owner_proc_hook_params_from_stmts(
+                    else_branch,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    start,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    end,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+                if let Some(step) = step {
+                    collect_typed_def_owner_proc_hook_params_from_expr(
+                        step,
+                        def,
+                        def_map,
+                        known_requirements,
+                        proc_api,
+                        out,
+                    );
+                }
+                collect_typed_def_owner_proc_hook_params_from_stmts(
+                    body,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_typed_def_owner_proc_hook_params_from_expr(
+                    cond,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+                collect_typed_def_owner_proc_hook_params_from_stmts(
+                    body,
+                    def,
+                    def_map,
+                    known_requirements,
+                    proc_api,
+                    out,
+                );
+            }
+        }
+    }
+}
+
+fn collect_typed_def_owner_proc_hook_requirements(
+    defs: &[TypedFunction],
+    proc_api: &HashMap<String, ProcApi>,
+) -> HashMap<String, HashSet<usize>> {
+    let def_map = defs
+        .iter()
+        .map(|def| (def.name.clone(), def))
+        .collect::<HashMap<_, _>>();
+    let mut requirements = HashMap::<String, HashSet<usize>>::new();
+
+    loop {
+        let mut changed = false;
+        for def in defs {
+            let mut direct = HashSet::<usize>::new();
+            collect_typed_def_owner_proc_hook_params_from_stmts(
+                &def.body,
+                def,
+                &def_map,
+                &requirements,
+                proc_api,
+                &mut direct,
+            );
+            let entry = requirements.entry(def.name.clone()).or_default();
+            for param_idx in direct {
+                if entry.insert(param_idx) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    requirements
+}
+
+fn expr_global_proc_instance_name(
+    expr: &Expr,
+    global_proc_instances: &HashMap<String, ProcCallInstance>,
+) -> Option<String> {
+    match expr {
+        Expr::Var { name, .. } if global_proc_instances.contains_key(name) => Some(name.clone()),
+        Expr::Index { base, index, .. } => {
+            let Expr::Int { value, .. } = index.as_ref() else {
+                return None;
+            };
+            let slot_name = format!("{base}[{value}]");
+            global_proc_instances
+                .contains_key(&slot_name)
+                .then_some(slot_name)
+        }
+        _ => None,
+    }
+}
+
+fn stmt_has_proc_block_hook_for_instance(
+    stmt: &Stmt,
+    proc_name: &str,
+    suffix: &str,
+    instance_name: &str,
+    global_proc_instances: &HashMap<String, ProcCallInstance>,
+) -> bool {
+    let Stmt::Expr {
+        expr:
+            Expr::UserCall {
+                name,
+                args,
+                type_args: _,
+                ..
+            },
+        ..
+    } = stmt
+    else {
+        return false;
+    };
+    if name != &format!("{proc_name}{suffix}") {
+        return false;
+    }
+    let Some(self_arg) = args.first() else {
+        return false;
+    };
+    expr_global_proc_instance_name(&self_arg.expr, global_proc_instances).as_deref()
+        == Some(instance_name)
+}
+
+fn collect_sample_owner_proc_hook_instances_from_expr(
+    expr: &Expr,
+    def_map: &HashMap<String, &TypedFunction>,
+    requirements: &HashMap<String, HashSet<usize>>,
+    global_proc_instances: &HashMap<String, ProcCallInstance>,
+    out: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    value,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+            }
+        }
+        Expr::Index { index, .. } => {
+            collect_sample_owner_proc_hook_instances_from_expr(
+                index,
+                def_map,
+                requirements,
+                global_proc_instances,
+                out,
+            );
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    start,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+            }
+            if let Some(end) = end {
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    end,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            collect_sample_owner_proc_hook_instances_from_expr(
+                &spec.size,
+                def_map,
+                requirements,
+                global_proc_instances,
+                out,
+            );
+            if let Some(values) = init {
+                for value in values {
+                    collect_sample_owner_proc_hook_instances_from_expr(
+                        value,
+                        def_map,
+                        requirements,
+                        global_proc_instances,
+                        out,
+                    );
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            collect_sample_owner_proc_hook_instances_from_expr(
+                lhs,
+                def_map,
+                requirements,
+                global_proc_instances,
+                out,
+            );
+            collect_sample_owner_proc_hook_instances_from_expr(
+                rhs,
+                def_map,
+                requirements,
+                global_proc_instances,
+                out,
+            );
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    arg,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            for arg in args {
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    &arg.expr,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+            }
+            let Some(callee) = def_map.get(name) else {
+                return;
+            };
+            let Some(required_params) = requirements.get(name) else {
+                return;
+            };
+            if required_params.is_empty() {
+                return;
+            }
+            let mut call_errors = Vec::new();
+            let resolved = resolve_call_args(
+                args,
+                &callee.params,
+                &callee.param_defaults,
+                false,
+                false,
+                &format!("call '{}(...)'", callee.name),
+                &mut call_errors,
+            );
+            for required_idx in required_params {
+                let Some(Some(arg_expr)) = resolved.get(*required_idx) else {
+                    continue;
+                };
+                if let Some(instance_name) =
+                    expr_global_proc_instance_name(arg_expr, global_proc_instances)
+                {
+                    out.insert(instance_name);
+                }
+            }
+        }
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
+            collect_sample_owner_proc_hook_instances_from_expr(
+                inner,
+                def_map,
+                requirements,
+                global_proc_instances,
+                out,
+            );
+        }
+    }
+}
+
+fn collect_sample_owner_proc_hook_instances_from_stmts(
+    stmts: &[Stmt],
+    def_map: &HashMap<String, &TypedFunction>,
+    requirements: &HashMap<String, HashSet<usize>>,
+    global_proc_instances: &HashMap<String, ProcCallInstance>,
+    out: &mut HashSet<String>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    expr,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    cond,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+                collect_sample_owner_proc_hook_instances_from_stmts(
+                    then_branch,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+                collect_sample_owner_proc_hook_instances_from_stmts(
+                    else_branch,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    start,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    end,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+                if let Some(step) = step {
+                    collect_sample_owner_proc_hook_instances_from_expr(
+                        step,
+                        def_map,
+                        requirements,
+                        global_proc_instances,
+                        out,
+                    );
+                }
+                collect_sample_owner_proc_hook_instances_from_stmts(
+                    body,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_sample_owner_proc_hook_instances_from_expr(
+                    cond,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+                collect_sample_owner_proc_hook_instances_from_stmts(
+                    body,
+                    def_map,
+                    requirements,
+                    global_proc_instances,
+                    out,
+                );
+            }
+        }
+    }
+}
+
+fn inject_sample_def_owner_proc_block_hooks(
+    sample: &[Stmt],
+    block_pre: &mut Vec<Stmt>,
+    block_post: &mut Vec<Stmt>,
+    defs: &[TypedFunction],
+    proc_api: &HashMap<String, ProcApi>,
+    global_proc_instances: &HashMap<String, ProcCallInstance>,
+    global_proc_array_slots: &HashMap<String, Vec<String>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if defs.is_empty() || global_proc_instances.is_empty() {
+        return;
+    }
+    let requirements = collect_typed_def_owner_proc_hook_requirements(defs, proc_api);
+    if requirements.values().all(HashSet::is_empty) {
+        return;
+    }
+    let def_map = defs
+        .iter()
+        .map(|def| (def.name.clone(), def))
+        .collect::<HashMap<_, _>>();
+    let mut instance_names = HashSet::<String>::new();
+    collect_sample_owner_proc_hook_instances_from_stmts(
+        sample,
+        &def_map,
+        &requirements,
+        global_proc_instances,
+        &mut instance_names,
+    );
+    if instance_names.is_empty() {
+        return;
+    }
+
+    let mut ordered_instances = instance_names.into_iter().collect::<Vec<_>>();
+    ordered_instances.sort();
+    let mut injected_pre = Vec::<Stmt>::new();
+    let mut injected_post = Vec::<Stmt>::new();
+    for instance_name in ordered_instances {
+        let Some(instance) = global_proc_instances.get(&instance_name) else {
+            continue;
+        };
+        let Some(api) = proc_api.get(&instance.proc_name) else {
+            continue;
+        };
+        if !api.has_block {
+            continue;
+        }
+        let has_existing_pre = block_pre.iter().any(|stmt| {
+            stmt_has_proc_block_hook_for_instance(
+                stmt,
+                &instance.proc_name,
+                PROC_BLOCK_PRE_FN_SUFFIX,
+                &instance_name,
+                global_proc_instances,
+            )
+        });
+        if !has_existing_pre {
+            let mut pre_args = vec![CallArg {
+                name: None,
+                expr: proc_instance_self_expr(&instance_name, global_proc_array_slots),
+            }];
+            pre_args.extend(expand_proc_buffer_call_args(
+                instance,
+                api,
+                &instance_name,
+                errors,
+            ));
+            injected_pre.push(Stmt::Expr {
+                loc: Default::default(),
+                expr: Expr::UserCall {
+                    loc: Default::default(),
+                    name: format!("{}{}", instance.proc_name, PROC_BLOCK_PRE_FN_SUFFIX),
+                    type_args: Vec::new(),
+                    args: pre_args,
+                },
+            });
+        }
+
+        let has_existing_post = block_post.iter().any(|stmt| {
+            stmt_has_proc_block_hook_for_instance(
+                stmt,
+                &instance.proc_name,
+                PROC_BLOCK_POST_FN_SUFFIX,
+                &instance_name,
+                global_proc_instances,
+            )
+        });
+        if !has_existing_post {
+            let mut post_args = vec![CallArg {
+                name: None,
+                expr: proc_instance_self_expr(&instance_name, global_proc_array_slots),
+            }];
+            post_args.extend(expand_proc_buffer_call_args(
+                instance,
+                api,
+                &instance_name,
+                errors,
+            ));
+            injected_post.push(Stmt::Expr {
+                loc: Default::default(),
+                expr: Expr::UserCall {
+                    loc: Default::default(),
+                    name: format!("{}{}", instance.proc_name, PROC_BLOCK_POST_FN_SUFFIX),
+                    type_args: Vec::new(),
+                    args: post_args,
+                },
+            });
+        }
+    }
+    if !injected_pre.is_empty() {
+        let mut new_block_pre = injected_pre;
+        new_block_pre.append(block_pre);
+        *block_pre = new_block_pre;
+    }
+    if !injected_post.is_empty() {
+        block_post.extend(injected_post);
+    }
+}
+
+fn seed_called_typed_defs_from_stmts(
+    stmts: &[Stmt],
+    def_names: &HashSet<String>,
+    pending: &mut Vec<String>,
+    seen_pending: &mut HashSet<String>,
+) {
+    for stmt in stmts {
+        collect_called_typed_defs_in_stmt(stmt, def_names, pending, seen_pending);
+    }
+}
+
+fn collect_called_typed_defs_in_stmt(
+    stmt: &Stmt,
+    def_names: &HashSet<String>,
+    pending: &mut Vec<String>,
+    seen_pending: &mut HashSet<String>,
+) {
+    match stmt {
+        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            collect_called_typed_defs_in_expr(expr, def_names, pending, seen_pending);
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_called_typed_defs_in_expr(cond, def_names, pending, seen_pending);
+            seed_called_typed_defs_from_stmts(then_branch, def_names, pending, seen_pending);
+            seed_called_typed_defs_from_stmts(else_branch, def_names, pending, seen_pending);
+        }
+        Stmt::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            collect_called_typed_defs_in_expr(start, def_names, pending, seen_pending);
+            collect_called_typed_defs_in_expr(end, def_names, pending, seen_pending);
+            if let Some(step) = step {
+                collect_called_typed_defs_in_expr(step, def_names, pending, seen_pending);
+            }
+            seed_called_typed_defs_from_stmts(body, def_names, pending, seen_pending);
+        }
+        Stmt::While { cond, body, .. } => {
+            collect_called_typed_defs_in_expr(cond, def_names, pending, seen_pending);
+            seed_called_typed_defs_from_stmts(body, def_names, pending, seen_pending);
+        }
+    }
+}
+
+fn collect_called_typed_defs_in_expr(
+    expr: &Expr,
+    def_names: &HashSet<String>,
+    pending: &mut Vec<String>,
+    seen_pending: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                collect_called_typed_defs_in_expr(value, def_names, pending, seen_pending);
+            }
+        }
+        Expr::Index { index, .. } => {
+            collect_called_typed_defs_in_expr(index, def_names, pending, seen_pending);
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                collect_called_typed_defs_in_expr(start, def_names, pending, seen_pending);
+            }
+            if let Some(end) = end {
+                collect_called_typed_defs_in_expr(end, def_names, pending, seen_pending);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            collect_called_typed_defs_in_expr(&spec.size, def_names, pending, seen_pending);
+            if let Some(values) = init {
+                for value in values {
+                    collect_called_typed_defs_in_expr(value, def_names, pending, seen_pending);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            collect_called_typed_defs_in_expr(lhs, def_names, pending, seen_pending);
+            collect_called_typed_defs_in_expr(rhs, def_names, pending, seen_pending);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_called_typed_defs_in_expr(arg, def_names, pending, seen_pending);
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            if def_names.contains(name) && seen_pending.insert(name.clone()) {
+                pending.push(name.clone());
+            }
+            for arg in args {
+                collect_called_typed_defs_in_expr(&arg.expr, def_names, pending, seen_pending);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            collect_called_typed_defs_in_expr(expr, def_names, pending, seen_pending);
+        }
     }
 }

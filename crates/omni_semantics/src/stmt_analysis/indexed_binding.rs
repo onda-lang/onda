@@ -85,10 +85,14 @@ pub(crate) fn classify_def_indexed_binding(
     base: &str,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     param_structs: &HashMap<String, String>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     state_scalars: &HashMap<String, PrimitiveType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<IndexedBindingKind> {
+    if proc_array_roots.contains_key(base) {
+        return Some(IndexedBindingKind::ProcArrayAlias);
+    }
     if let Some(alias) = local_array_aliases.get(base) {
         return Some(match &alias.elem_struct {
             Some(elem_struct) => IndexedBindingKind::StructElementAlias(elem_struct.clone()),

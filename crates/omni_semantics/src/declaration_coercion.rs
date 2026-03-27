@@ -316,6 +316,30 @@ pub(crate) fn resolve_struct_field_decl<'a>(
     None
 }
 
+pub(crate) fn is_builtin_array_like_receiver_with_resolver<'a, F>(
+    base: &str,
+    declared_symbols: &DeclaredSymbolMap,
+    struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    mut resolve_struct_name: F,
+) -> bool
+where
+    F: FnMut(&str) -> Option<&'a str>,
+{
+    if is_declared_data_array_symbol(declared_symbols, base) || proc_array_roots.contains_key(base)
+    {
+        return true;
+    }
+    if let Some((root, field)) = split_root_field_path(base) {
+        if let Some(struct_name) = resolve_struct_name(root) {
+            if let Some(field_decl) = resolve_struct_field_decl(struct_name, field, struct_defs) {
+                return matches!(field_decl.ty, TypedFieldType::Array(_));
+            }
+        }
+    }
+    false
+}
+
 pub(crate) fn split_receiver_method_path(name: &str) -> Option<(&str, &str)> {
     let (receiver, method) = name.rsplit_once('.')?;
     if receiver.is_empty() || method.is_empty() {

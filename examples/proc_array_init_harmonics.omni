@@ -2,15 +2,30 @@ import std/osc
 
 const NumOsc = 10
 
-init:
-  voices: std::osc::Sine[NumOsc]
+params:
+  freq = 50.0 { 1, 1000 } 
 
+def initVoices(voices, freq):
   for i in 0..NumOsc:
     h = f32(i + 1)
-    voices[i].init(freq = 55.0 * h, amp = 0.12 / h)
+    voices[i].init(freq = freq * h, amp = 0.12 / h)
 
-sample:
+def setFreq(voices, freq):
+  for i in 0..(voices.len()):
+    h = f32(i + 1)
+    voices[i].freq = freq * h
+
+def mixVoices(voices):
   mix = 0.0
   for i in 0..NumOsc:
     mix = mix + voices[i]()
-  out1 = mix 
+  return mix
+
+init:
+  voices: std::osc::Sine[NumOsc]
+  voices.initVoices(freq)
+
+block:
+  voices.setFreq(freq)
+  sample:
+    out1 = voices.mixVoices()

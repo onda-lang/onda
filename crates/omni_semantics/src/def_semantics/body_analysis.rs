@@ -52,6 +52,7 @@ pub(crate) struct DefStmtAnalysisCtx<'a> {
     pub locals: &'a HashSet<String>,
     pub declared_symbols: &'a DeclaredSymbolMap,
     pub param_structs: &'a HashMap<String, String>,
+    pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub state_scalars: &'a HashMap<String, PrimitiveType>,
     pub def_return_types: &'a HashMap<String, ReturnType>,
 }
@@ -75,6 +76,7 @@ pub(crate) fn analyze_def_stmt(
         let locals = ctx.locals;
         let declared_symbols = ctx.declared_symbols;
         let param_structs = ctx.param_structs;
+        let proc_array_roots = ctx.proc_array_roots;
         let state_scalars = ctx.state_scalars;
         let input_names = common.input_names;
         let output_names = common.output_names;
@@ -88,7 +90,6 @@ pub(crate) fn analyze_def_stmt(
         // visible to expression type inference, including indexed array field reads.
         let struct_instance_ctx = param_structs;
         let empty_outputs = HashSet::<String>::new();
-        let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
         let array_vars = merged_data_vars_for_runtime(&empty_data, local_array_aliases);
         let expr_inputs = build_scope_analysis_expr_inputs(
             common,
@@ -98,7 +99,7 @@ pub(crate) fn analyze_def_stmt(
             param_structs,
             struct_instance_ctx,
             &empty_outputs,
-            &empty_proc_array_roots,
+            proc_array_roots,
         );
         let stmt_expr_env = |scope| {
             let mut env = build_scope_stmt_expr_env(
@@ -215,7 +216,7 @@ pub(crate) fn analyze_def_stmt(
                                                 errors,
                                             );
                                             let value_ty =
-                                                infer_expr_type_for_semantics_with_local_data(
+                                                infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                                     value,
                                                     state_scalars,
                                                     declared_symbols,
@@ -228,6 +229,7 @@ pub(crate) fn analyze_def_stmt(
                                                     param_names,
                                                     struct_instance_ctx,
                                                     struct_defs,
+                                                    proc_array_roots,
                                                     errors,
                                                 );
                                             require_expr_assignable_type(
@@ -320,33 +322,16 @@ pub(crate) fn analyze_def_stmt(
                                 build_scope_expr_env(
                                     expr_inputs,
                                     known_scalars,
+                                    local_aliases,
                                     &array_vars,
                                     ScopeKind::Def,
                                 ),
                                 errors,
                             );
                         }
-                        let inferred_first = infer_expr_type_for_semantics_with_local_data(
-                            &values[0],
-                            state_scalars,
-                            declared_symbols,
-                            None,
-                            local_aliases,
-                            local_array_aliases,
-                            locals,
-                            input_names,
-                            output_names,
-                            param_names,
-                            struct_instance_ctx,
-                            struct_defs,
-                            errors,
-                        );
-                        let elem_ty = untyped_literal_type(&values[0])
-                            .or(inferred_first)
-                            .unwrap_or(PrimitiveType::F32);
-                        for (idx, value) in values.iter().enumerate() {
-                            let value_ty = infer_expr_type_for_semantics_with_local_data(
-                                value,
+                        let inferred_first =
+                            infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                &values[0],
                                 state_scalars,
                                 declared_symbols,
                                 None,
@@ -358,8 +343,30 @@ pub(crate) fn analyze_def_stmt(
                                 param_names,
                                 struct_instance_ctx,
                                 struct_defs,
+                                proc_array_roots,
                                 errors,
                             );
+                        let elem_ty = untyped_literal_type(&values[0])
+                            .or(inferred_first)
+                            .unwrap_or(PrimitiveType::F32);
+                        for (idx, value) in values.iter().enumerate() {
+                            let value_ty =
+                                infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                    value,
+                                    state_scalars,
+                                    declared_symbols,
+                                    None,
+                                    local_aliases,
+                                    local_array_aliases,
+                                    locals,
+                                    input_names,
+                                    output_names,
+                                    param_names,
+                                    struct_instance_ctx,
+                                    struct_defs,
+                                    proc_array_roots,
+                                    errors,
+                                );
                             require_expr_assignable_type(
                                 value,
                                 value_ty,
@@ -423,6 +430,7 @@ pub(crate) fn analyze_def_stmt(
                             build_scope_expr_env(
                                 expr_inputs,
                                 known_scalars,
+                                local_aliases,
                                 &array_vars,
                                 ScopeKind::Def,
                             ),
@@ -448,12 +456,13 @@ pub(crate) fn analyze_def_stmt(
                             build_scope_expr_env(
                                 expr_inputs,
                                 known_scalars,
+                                local_aliases,
                                 &array_vars,
                                 ScopeKind::Def,
                             ),
                             errors,
                         );
-                        let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                        let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             expr,
                             state_scalars,
                             declared_symbols,
@@ -466,6 +475,7 @@ pub(crate) fn analyze_def_stmt(
                             param_names,
                             struct_instance_ctx,
                             struct_defs,
+                            proc_array_roots,
                             errors,
                         );
                         require_expr_assignable_type(
@@ -535,26 +545,29 @@ pub(crate) fn analyze_def_stmt(
                                     build_scope_expr_env(
                                         expr_inputs,
                                         known_scalars,
+                                        local_aliases,
                                         &array_vars,
                                         ScopeKind::Def,
                                     ),
                                     errors,
                                 );
-                                let expr_ty = infer_expr_type_for_semantics_with_local_data(
-                                    &expr_for_validation,
-                                    state_scalars,
-                                    declared_symbols,
-                                    None,
-                                    local_aliases,
-                                    local_array_aliases,
-                                    locals,
-                                    input_names,
-                                    output_names,
-                                    param_names,
-                                    struct_instance_ctx,
-                                    struct_defs,
-                                    errors,
-                                );
+                                let expr_ty =
+                                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                        &expr_for_validation,
+                                        state_scalars,
+                                        declared_symbols,
+                                        None,
+                                        local_aliases,
+                                        local_array_aliases,
+                                        locals,
+                                        input_names,
+                                        output_names,
+                                        param_names,
+                                        struct_instance_ctx,
+                                        struct_defs,
+                                        proc_array_roots,
+                                        errors,
+                                    );
                                 let had_expr_validation_error =
                                     errors.len() > expr_error_count_before;
                                 let suppress_type_mismatch =
@@ -622,6 +635,7 @@ pub(crate) fn analyze_def_stmt(
                                 base,
                                 local_array_aliases,
                                 param_structs,
+                                proc_array_roots,
                                 state_scalars,
                                 struct_defs,
                                 errors,
@@ -631,26 +645,29 @@ pub(crate) fn analyze_def_stmt(
                                     build_scope_expr_env(
                                         expr_inputs,
                                         known_scalars,
+                                        local_aliases,
                                         &array_vars,
                                         ScopeKind::Def,
                                     ),
                                     errors,
                                 );
-                                let idx_ty = infer_expr_type_for_semantics_with_local_data(
-                                    index,
-                                    state_scalars,
-                                    declared_symbols,
-                                    None,
-                                    local_aliases,
-                                    local_array_aliases,
-                                    locals,
-                                    input_names,
-                                    output_names,
-                                    param_names,
-                                    struct_instance_ctx,
-                                    struct_defs,
-                                    errors,
-                                );
+                                let idx_ty =
+                                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                        index,
+                                        state_scalars,
+                                        declared_symbols,
+                                        None,
+                                        local_aliases,
+                                        local_array_aliases,
+                                        locals,
+                                        input_names,
+                                        output_names,
+                                        param_names,
+                                        struct_instance_ctx,
+                                        struct_defs,
+                                        proc_array_roots,
+                                        errors,
+                                    );
                                 require_expr_numeric_type(
                                     index,
                                     idx_ty,
@@ -744,13 +761,14 @@ pub(crate) fn analyze_def_stmt(
                         build_scope_expr_env(
                             expr_inputs,
                             known_scalars,
+                            local_aliases,
                             &array_vars,
                             ScopeKind::Def,
                         ),
                         errors,
                     );
                     let had_expr_validation_error = errors.len() > expr_error_count_before;
-                    let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                    let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         &expr_for_validation,
                         state_scalars,
                         declared_symbols,
@@ -763,6 +781,7 @@ pub(crate) fn analyze_def_stmt(
                         param_names,
                         struct_instance_ctx,
                         struct_defs,
+                        proc_array_roots,
                         errors,
                     );
                     let can_track_local = !input_names.contains(name)
@@ -844,6 +863,7 @@ pub(crate) fn analyze_def_stmt(
                             build_scope_expr_env(
                                 expr_inputs,
                                 known_scalars,
+                                local_aliases,
                                 &array_vars,
                                 ScopeKind::Def,
                             ),
@@ -854,33 +874,36 @@ pub(crate) fn analyze_def_stmt(
                             build_scope_expr_env(
                                 expr_inputs,
                                 known_scalars,
+                                local_aliases,
                                 &array_vars,
                                 ScopeKind::Def,
                             ),
                             errors,
                         );
-                        let index_ty = infer_expr_type_for_semantics_with_local_data(
-                            index,
-                            state_scalars,
-                            declared_symbols,
-                            None,
-                            local_aliases,
-                            local_array_aliases,
-                            locals,
-                            input_names,
-                            output_names,
-                            param_names,
-                            struct_instance_ctx,
-                            struct_defs,
-                            errors,
-                        );
+                        let index_ty =
+                            infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                index,
+                                state_scalars,
+                                declared_symbols,
+                                None,
+                                local_aliases,
+                                local_array_aliases,
+                                locals,
+                                input_names,
+                                output_names,
+                                param_names,
+                                struct_instance_ctx,
+                                struct_defs,
+                                proc_array_roots,
+                                errors,
+                            );
                         require_expr_numeric_type(
                             index,
                             index_ty,
                             "array index expression",
                             errors,
                         );
-                        let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                        let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             expr,
                             state_scalars,
                             declared_symbols,
@@ -893,6 +916,7 @@ pub(crate) fn analyze_def_stmt(
                             param_names,
                             struct_instance_ctx,
                             struct_defs,
+                            proc_array_roots,
                             errors,
                         );
                         require_expr_assignable_type(
@@ -919,6 +943,7 @@ pub(crate) fn analyze_def_stmt(
                             build_scope_expr_env(
                                 expr_inputs,
                                 known_scalars,
+                                local_aliases,
                                 &array_vars,
                                 ScopeKind::Def,
                             ),
@@ -929,33 +954,36 @@ pub(crate) fn analyze_def_stmt(
                             build_scope_expr_env(
                                 expr_inputs,
                                 known_scalars,
+                                local_aliases,
                                 &array_vars,
                                 ScopeKind::Def,
                             ),
                             errors,
                         );
-                        let index_ty = infer_expr_type_for_semantics_with_local_data(
-                            index,
-                            state_scalars,
-                            declared_symbols,
-                            None,
-                            local_aliases,
-                            local_array_aliases,
-                            locals,
-                            input_names,
-                            output_names,
-                            param_names,
-                            struct_instance_ctx,
-                            struct_defs,
-                            errors,
-                        );
+                        let index_ty =
+                            infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                index,
+                                state_scalars,
+                                declared_symbols,
+                                None,
+                                local_aliases,
+                                local_array_aliases,
+                                locals,
+                                input_names,
+                                output_names,
+                                param_names,
+                                struct_instance_ctx,
+                                struct_defs,
+                                proc_array_roots,
+                                errors,
+                            );
                         require_expr_numeric_type(
                             index,
                             index_ty,
                             "array index expression",
                             errors,
                         );
-                        let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                        let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             expr,
                             state_scalars,
                             declared_symbols,
@@ -968,6 +996,7 @@ pub(crate) fn analyze_def_stmt(
                             param_names,
                             struct_instance_ctx,
                             struct_defs,
+                            proc_array_roots,
                             errors,
                         );
                         let expected_ty = declared_symbol_scalar_type(&declared_symbols, base)
@@ -982,6 +1011,104 @@ pub(crate) fn analyze_def_stmt(
                         return;
                     }
                     if let Some((root, field)) = split_field_path(base, errors) {
+                        if let Some(proc_array) = proc_array_roots.get(root) {
+                            let Some(field_decl) = resolve_struct_field_decl(
+                                &proc_array.proc_name,
+                                field,
+                                struct_defs,
+                            ) else {
+                                push_semantic(
+                                    target_diag,
+                                    errors,
+                                    format!(
+                                        "processor array parameter '{}' (type '{}') has no field '{}'",
+                                        root, proc_array.proc_name, field
+                                    ),
+                                );
+                                return;
+                            };
+                            let TypedFieldType::Scalar(expected_ty) = field_decl.ty else {
+                                push_semantic(
+                                    target_diag,
+                                    errors,
+                                    format!(
+                                        "processor array field '{}.{}' must be scalar for indexed assignment; use an alias for non-scalar fields",
+                                        root, field
+                                    ),
+                                );
+                                return;
+                            };
+                            validate_expr(
+                                index,
+                                build_scope_expr_env(
+                                    expr_inputs,
+                                    known_scalars,
+                                    local_aliases,
+                                    &array_vars,
+                                    ScopeKind::Def,
+                                ),
+                                errors,
+                            );
+                            validate_expr(
+                                expr,
+                                build_scope_expr_env(
+                                    expr_inputs,
+                                    known_scalars,
+                                    local_aliases,
+                                    &array_vars,
+                                    ScopeKind::Def,
+                                ),
+                                errors,
+                            );
+                            let index_ty =
+                                infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                    index,
+                                    state_scalars,
+                                    declared_symbols,
+                                    None,
+                                    local_aliases,
+                                    local_array_aliases,
+                                    locals,
+                                    input_names,
+                                    output_names,
+                                    param_names,
+                                    struct_instance_ctx,
+                                    struct_defs,
+                                    proc_array_roots,
+                                    errors,
+                                );
+                            require_expr_numeric_type(
+                                index,
+                                index_ty,
+                                "array index expression",
+                                errors,
+                            );
+                            let expr_ty =
+                                infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                    expr,
+                                    state_scalars,
+                                    declared_symbols,
+                                    None,
+                                    local_aliases,
+                                    local_array_aliases,
+                                    locals,
+                                    input_names,
+                                    output_names,
+                                    param_names,
+                                    struct_instance_ctx,
+                                    struct_defs,
+                                    proc_array_roots,
+                                    errors,
+                                );
+                            require_expr_assignable_type(
+                                expr,
+                                expr_ty,
+                                expected_ty,
+                                "array/buffer write",
+                                errors,
+                            );
+                            return;
+                        }
                         let Some(struct_name) = param_structs.get(root) else {
                             push_semantic(
                                 target_diag,
@@ -1029,6 +1156,7 @@ pub(crate) fn analyze_def_stmt(
                             build_scope_expr_env(
                                 expr_inputs,
                                 known_scalars,
+                                local_aliases,
                                 &array_vars,
                                 ScopeKind::Def,
                             ),
@@ -1039,33 +1167,36 @@ pub(crate) fn analyze_def_stmt(
                             build_scope_expr_env(
                                 expr_inputs,
                                 known_scalars,
+                                local_aliases,
                                 &array_vars,
                                 ScopeKind::Def,
                             ),
                             errors,
                         );
-                        let index_ty = infer_expr_type_for_semantics_with_local_data(
-                            index,
-                            state_scalars,
-                            declared_symbols,
-                            None,
-                            local_aliases,
-                            local_array_aliases,
-                            locals,
-                            input_names,
-                            output_names,
-                            param_names,
-                            struct_instance_ctx,
-                            struct_defs,
-                            errors,
-                        );
+                        let index_ty =
+                            infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                index,
+                                state_scalars,
+                                declared_symbols,
+                                None,
+                                local_aliases,
+                                local_array_aliases,
+                                locals,
+                                input_names,
+                                output_names,
+                                param_names,
+                                struct_instance_ctx,
+                                struct_defs,
+                                proc_array_roots,
+                                errors,
+                            );
                         require_expr_numeric_type(
                             index,
                             index_ty,
                             "array index expression",
                             errors,
                         );
-                        let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                        let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             expr,
                             state_scalars,
                             declared_symbols,
@@ -1078,6 +1209,7 @@ pub(crate) fn analyze_def_stmt(
                             param_names,
                             struct_instance_ctx,
                             struct_defs,
+                            proc_array_roots,
                             errors,
                         );
                         let expected_elem_ty =
@@ -1128,31 +1260,34 @@ pub(crate) fn analyze_def_stmt(
                     let slice_env = build_scope_expr_env(
                         expr_inputs,
                         known_scalars,
+                        local_aliases,
                         &array_vars,
                         ScopeKind::Def,
                     );
                     if let Some(start) = start {
                         validate_expr(start, slice_env, errors);
-                        let start_ty = infer_expr_type_for_semantics_with_local_data(
-                            start,
-                            state_scalars,
-                            declared_symbols,
-                            None,
-                            local_aliases,
-                            local_array_aliases,
-                            locals,
-                            input_names,
-                            output_names,
-                            param_names,
-                            struct_instance_ctx,
-                            struct_defs,
-                            errors,
-                        );
+                        let start_ty =
+                            infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                start,
+                                state_scalars,
+                                declared_symbols,
+                                None,
+                                local_aliases,
+                                local_array_aliases,
+                                locals,
+                                input_names,
+                                output_names,
+                                param_names,
+                                struct_instance_ctx,
+                                struct_defs,
+                                proc_array_roots,
+                                errors,
+                            );
                         require_expr_numeric_type(start, start_ty, "slice start bound", errors);
                     }
                     if let Some(end) = end {
                         validate_expr(end, slice_env, errors);
-                        let end_ty = infer_expr_type_for_semantics_with_local_data(
+                        let end_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             end,
                             state_scalars,
                             declared_symbols,
@@ -1165,6 +1300,7 @@ pub(crate) fn analyze_def_stmt(
                             param_names,
                             struct_instance_ctx,
                             struct_defs,
+                            proc_array_roots,
                             errors,
                         );
                         require_expr_numeric_type(end, end_ty, "slice end bound", errors);
@@ -1197,7 +1333,7 @@ pub(crate) fn analyze_def_stmt(
                         }
                     } else {
                         validate_expr(expr, slice_env, errors);
-                        let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                        let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             expr,
                             state_scalars,
                             declared_symbols,
@@ -1210,6 +1346,7 @@ pub(crate) fn analyze_def_stmt(
                             param_names,
                             struct_instance_ctx,
                             struct_defs,
+                            proc_array_roots,
                             errors,
                         );
                         require_expr_assignable_type(

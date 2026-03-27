@@ -682,10 +682,28 @@ One inline dot is supported for data-struct arrays:
 
 ```omni
 val = voices[i].gain
+voices[i].gain = 0.5
 val = voices[i].taps[j]
 ```
 
 This works in executable scopes that can already access the underlying data, including `init`, `sample`, `block`, and `def`.
+
+Direct indexed assignment currently mirrors the scalar read form:
+- `base[idx].field = value`
+
+Inline array-field writes still require an intermediate alias:
+
+```omni
+v = voices[i]
+v.taps[j] = value
+```
+
+Non-indexed struct paths continue to allow deeper field chains for both reads and writes:
+
+```omni
+data.inner.value = 1.0
+val = data.inner.value
+```
 
 Inline chains with more than one dot are still **not supported**. Destructure into an intermediate alias instead:
 
@@ -713,7 +731,7 @@ But not deeper inline chains such as:
 - `base[idx].field.other`
 - `base[idx].field[fidx].other`
 
-Proc arrays keep their proc-specific indexed forms such as `voices[idx].gain`, `voices[idx].note_on(...)`, `voices[idx](...)`, and graph routing like `voices[idx].gain >> out1`.
+Proc arrays keep their proc-specific indexed forms such as `voices[idx].gain`, `voices[idx].gain = value`, `voices[idx].note_on(...)`, `voices[idx](...)`, and graph routing like `voices[idx].gain >> out1`.
 
 ## 8 Processors (`proc`)
 

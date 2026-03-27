@@ -609,6 +609,32 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
                 index: parse_expr(index_pair)?,
             })
         }
+        Rule::indexed_member_target => {
+            let loc = stmt_loc_from_pair(&pair);
+            let mut inner = pair.into_inner();
+            let Some(base_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing indexed member assignment base",
+                )]);
+            };
+            let Some(index_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing indexed member assignment index",
+                )]);
+            };
+            let Some(field_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing indexed member assignment field",
+                )]);
+            };
+            Ok(AssignTarget::Index {
+                base: format!("{}.{}", base_pair.as_str(), field_pair.as_str()),
+                index: parse_expr(index_pair)?,
+            })
+        }
         Rule::tuple_target => {
             let targets: Vec<String> = pair
                 .into_inner()

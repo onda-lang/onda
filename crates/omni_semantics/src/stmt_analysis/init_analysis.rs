@@ -668,6 +668,7 @@ fn analyze_assign_init(
                 build_scope_expr_env(
                     expr_inputs!(),
                     &st.known_scalars,
+                    &st.local_aliases,
                     &array_vars,
                     ScopeKind::Init,
                 ),
@@ -675,10 +676,16 @@ fn analyze_assign_init(
             );
             validate_expr(
                 expr,
-                build_scope_expr_env(expr_inputs!(), &st.known_scalars, &array_vars, scope),
+                build_scope_expr_env(
+                    expr_inputs!(),
+                    &st.known_scalars,
+                    &st.local_aliases,
+                    &array_vars,
+                    scope,
+                ),
                 errors,
             );
-            let idx_ty = infer_expr_type_for_semantics_with_local_data(
+            let idx_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 index,
                 &st.state_scalars,
                 &st.declared_symbols,
@@ -691,10 +698,11 @@ fn analyze_assign_init(
                 param_names,
                 &st.struct_instances,
                 struct_defs,
+                &st.nested_proc_arrays,
                 errors,
             );
             require_expr_numeric_type(index, idx_ty, "array index expression", errors);
-            let expr_ty = infer_expr_type_for_semantics_with_local_data(
+            let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 expr,
                 &st.state_scalars,
                 &st.declared_symbols,
@@ -707,6 +715,7 @@ fn analyze_assign_init(
                 param_names,
                 &st.struct_instances,
                 struct_defs,
+                &st.nested_proc_arrays,
                 errors,
             );
             let expected_ty = st
@@ -802,12 +811,13 @@ fn analyze_assign_init(
             let slice_env = build_scope_expr_env(
                 expr_inputs!(),
                 &st.known_scalars,
+                &st.local_aliases,
                 &array_vars,
                 ScopeKind::Init,
             );
             if let Some(start) = start {
                 validate_expr(start, slice_env, errors);
-                let start_ty = infer_expr_type_for_semantics_with_local_data(
+                let start_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     start,
                     &st.state_scalars,
                     &st.declared_symbols,
@@ -820,13 +830,14 @@ fn analyze_assign_init(
                     param_names,
                     &st.struct_instances,
                     struct_defs,
+                    &st.nested_proc_arrays,
                     errors,
                 );
                 require_expr_numeric_type(start, start_ty, "slice start bound", errors);
             }
             if let Some(end) = end {
                 validate_expr(end, slice_env, errors);
-                let end_ty = infer_expr_type_for_semantics_with_local_data(
+                let end_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     end,
                     &st.state_scalars,
                     &st.declared_symbols,
@@ -839,6 +850,7 @@ fn analyze_assign_init(
                     param_names,
                     &st.struct_instances,
                     struct_defs,
+                    &st.nested_proc_arrays,
                     errors,
                 );
                 require_expr_numeric_type(end, end_ty, "slice end bound", errors);
@@ -872,7 +884,7 @@ fn analyze_assign_init(
                 }
             } else {
                 validate_expr(expr, slice_env, errors);
-                let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     expr,
                     &st.state_scalars,
                     &st.declared_symbols,
@@ -885,6 +897,7 @@ fn analyze_assign_init(
                     param_names,
                     &st.struct_instances,
                     struct_defs,
+                    &st.nested_proc_arrays,
                     errors,
                 );
                 require_expr_assignable_type(
@@ -981,10 +994,16 @@ fn analyze_assign_init(
             if st.local_aliases.contains_key(name) {
                 validate_expr(
                     expr,
-                    build_scope_expr_env(expr_inputs!(), &st.known_scalars, &array_vars, scope),
+                    build_scope_expr_env(
+                        expr_inputs!(),
+                        &st.known_scalars,
+                        &st.local_aliases,
+                        &array_vars,
+                        scope,
+                    ),
                     errors,
                 );
-                let expr_ty = infer_expr_type_for_semantics_with_local_data(
+                let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     expr,
                     &st.state_scalars,
                     &st.declared_symbols,
@@ -997,6 +1016,7 @@ fn analyze_assign_init(
                     param_names,
                     &st.struct_instances,
                     struct_defs,
+                    &st.nested_proc_arrays,
                     errors,
                 );
                 require_expr_assignable_type(
@@ -1078,6 +1098,7 @@ fn analyze_assign_init(
                         build_scope_expr_env(
                             expr_inputs!(),
                             &st.known_scalars,
+                            &st.local_aliases,
                             &array_vars,
                             ScopeKind::Init,
                         ),
@@ -1087,7 +1108,7 @@ fn analyze_assign_init(
 
                 // Use backward-compatible literal type for the first element so
                 // that `a = [0, 1]` infers as I32[] not I64[].
-                let inferred_first = infer_expr_type_for_semantics_with_local_data(
+                let inferred_first = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     &values[0],
                     &st.state_scalars,
                     &st.declared_symbols,
@@ -1100,13 +1121,14 @@ fn analyze_assign_init(
                     param_names,
                     &st.struct_instances,
                     struct_defs,
+                    &st.nested_proc_arrays,
                     errors,
                 );
                 let elem_ty = untyped_literal_type(&values[0])
                     .or(inferred_first)
                     .unwrap_or(PrimitiveType::F32);
                 for (idx, value) in values.iter().enumerate() {
-                    let value_ty = infer_expr_type_for_semantics_with_local_data(
+                    let value_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         value,
                         &st.state_scalars,
                         &st.declared_symbols,
@@ -1119,6 +1141,7 @@ fn analyze_assign_init(
                         param_names,
                         &st.struct_instances,
                         struct_defs,
+                        &st.nested_proc_arrays,
                         errors,
                     );
                     require_expr_assignable_type(
@@ -1164,10 +1187,16 @@ fn analyze_assign_init(
                 for (idx, value) in values.iter().enumerate() {
                     validate_expr(
                         value,
-                        build_scope_expr_env(expr_inputs!(), &st.known_scalars, &array_vars, scope),
+                        build_scope_expr_env(
+                            expr_inputs!(),
+                            &st.known_scalars,
+                            &st.local_aliases,
+                            &array_vars,
+                            scope,
+                        ),
                         errors,
                     );
-                    let elem_ty = infer_expr_type_for_semantics_with_local_data(
+                    let elem_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         value,
                         &st.state_scalars,
                         &st.declared_symbols,
@@ -1180,6 +1209,7 @@ fn analyze_assign_init(
                         param_names,
                         &st.struct_instances,
                         struct_defs,
+                        &st.nested_proc_arrays,
                         errors,
                     )
                     .unwrap_or(PrimitiveType::F32);
@@ -1229,6 +1259,7 @@ fn analyze_assign_init(
                     build_scope_expr_env(
                         expr_inputs!(),
                         &st.known_scalars,
+                        &st.local_aliases,
                         &array_vars,
                         ScopeKind::Init,
                     ),
@@ -1770,26 +1801,29 @@ fn analyze_assign_init(
                                     build_scope_expr_env(
                                         expr_inputs!(),
                                         &st.known_scalars,
+                                        &st.local_aliases,
                                         &array_vars,
                                         scope,
                                     ),
                                     errors,
                                 );
-                                let value_ty = infer_expr_type_for_semantics_with_local_data(
-                                    value,
-                                    &st.state_scalars,
-                                    &st.declared_symbols,
-                                    None,
-                                    &st.local_aliases,
-                                    &st.local_array_aliases,
-                                    locals,
-                                    input_names,
-                                    output_names,
-                                    param_names,
-                                    &st.struct_instances,
-                                    struct_defs,
-                                    errors,
-                                );
+                                let value_ty =
+                                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                        value,
+                                        &st.state_scalars,
+                                        &st.declared_symbols,
+                                        None,
+                                        &st.local_aliases,
+                                        &st.local_array_aliases,
+                                        locals,
+                                        input_names,
+                                        output_names,
+                                        param_names,
+                                        &st.struct_instances,
+                                        struct_defs,
+                                        &st.nested_proc_arrays,
+                                        errors,
+                                    );
                                 require_expr_assignable_type(
                                     value,
                                     value_ty,
@@ -1850,12 +1884,13 @@ fn analyze_assign_init(
                             build_scope_expr_env(
                                 expr_inputs!(),
                                 &st.known_scalars,
+                                &st.local_aliases,
                                 &array_vars,
                                 scope,
                             ),
                             errors,
                         );
-                        let idx_ty = infer_expr_type_for_semantics_with_local_data(
+                        let idx_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             index,
                             &st.state_scalars,
                             &st.declared_symbols,
@@ -1868,6 +1903,7 @@ fn analyze_assign_init(
                             param_names,
                             &st.struct_instances,
                             struct_defs,
+                            &st.nested_proc_arrays,
                             errors,
                         );
                         require_expr_numeric_type(index, idx_ty, "array index expression", errors);
@@ -1918,13 +1954,14 @@ fn analyze_assign_init(
                 build_scope_expr_env(
                     expr_inputs!(),
                     &st.known_scalars,
+                    &st.local_aliases,
                     &array_vars,
                     ScopeKind::Init,
                 ),
                 errors,
             );
 
-            let expr_ty = infer_expr_type_for_semantics_with_local_data(
+            let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 expr,
                 &st.state_scalars,
                 &st.declared_symbols,
@@ -1937,6 +1974,7 @@ fn analyze_assign_init(
                 param_names,
                 &st.struct_instances,
                 struct_defs,
+                &st.nested_proc_arrays,
                 errors,
             );
             let existing_state = st.state_scalars.get(name).copied();

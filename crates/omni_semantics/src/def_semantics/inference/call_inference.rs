@@ -6,6 +6,7 @@ pub(super) fn infer_stmt_calls(
     stmt: &Stmt,
     struct_instances: &HashMap<String, String>,
     struct_array_roots: &HashMap<String, String>,
+    proc_array_roots: &HashMap<String, InferredProcArrayParam>,
     array_bindings: &mut HashMap<String, InferredArrayParam>,
     buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -20,6 +21,7 @@ pub(super) fn infer_stmt_calls(
                     index,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -31,6 +33,7 @@ pub(super) fn infer_stmt_calls(
                 expr,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -47,6 +50,7 @@ pub(super) fn infer_stmt_calls(
             expr,
             struct_instances,
             struct_array_roots,
+            proc_array_roots,
             array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -57,6 +61,7 @@ pub(super) fn infer_stmt_calls(
             expr,
             struct_instances,
             struct_array_roots,
+            proc_array_roots,
             array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -73,6 +78,7 @@ pub(super) fn infer_stmt_calls(
                 cond,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -85,6 +91,7 @@ pub(super) fn infer_stmt_calls(
                     nested,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     &mut then_arrays,
                     buffer_bindings,
                     fn_signatures,
@@ -98,6 +105,7 @@ pub(super) fn infer_stmt_calls(
                     nested,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     &mut else_arrays,
                     buffer_bindings,
                     fn_signatures,
@@ -119,6 +127,7 @@ pub(super) fn infer_stmt_calls(
                 start,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -129,6 +138,7 @@ pub(super) fn infer_stmt_calls(
                 end,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -140,6 +150,7 @@ pub(super) fn infer_stmt_calls(
                     step_expr,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -153,6 +164,7 @@ pub(super) fn infer_stmt_calls(
                     nested,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     &mut loop_arrays,
                     buffer_bindings,
                     fn_signatures,
@@ -167,6 +179,7 @@ pub(super) fn infer_stmt_calls(
                 cond,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -179,6 +192,7 @@ pub(super) fn infer_stmt_calls(
                     nested,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     &mut loop_arrays,
                     buffer_bindings,
                     fn_signatures,
@@ -196,6 +210,7 @@ fn infer_expr_calls(
     expr: &Expr,
     struct_instances: &HashMap<String, String>,
     struct_array_roots: &HashMap<String, String>,
+    proc_array_roots: &HashMap<String, InferredProcArrayParam>,
     array_bindings: &HashMap<String, InferredArrayParam>,
     buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -214,6 +229,7 @@ fn infer_expr_calls(
                     value,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -227,6 +243,7 @@ fn infer_expr_calls(
                 index,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -240,6 +257,7 @@ fn infer_expr_calls(
                     start,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -252,6 +270,7 @@ fn infer_expr_calls(
                     end,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -265,6 +284,7 @@ fn infer_expr_calls(
                 lhs,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -275,6 +295,7 @@ fn infer_expr_calls(
                 rhs,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -287,6 +308,7 @@ fn infer_expr_calls(
                 expr,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -299,6 +321,7 @@ fn infer_expr_calls(
                 lhs,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -309,6 +332,7 @@ fn infer_expr_calls(
                 rhs,
                 struct_instances,
                 struct_array_roots,
+                proc_array_roots,
                 array_bindings,
                 buffer_bindings,
                 fn_signatures,
@@ -322,6 +346,7 @@ fn infer_expr_calls(
                     arg,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,
@@ -350,6 +375,28 @@ fn infer_expr_calls(
                                     Expr::Var { name: v, .. } => {
                                         if let Some(struct_name) = struct_instances.get(v) {
                                             slot.saw_structs.insert(struct_name.clone());
+                                        } else if let Some(proc_array_info) =
+                                            proc_array_roots.get(v)
+                                        {
+                                            if !slot.saw_proc_arrays.iter().any(|seen| {
+                                                seen.proc_name == proc_array_info.proc_name
+                                                    && seen.len == proc_array_info.len
+                                            }) {
+                                                slot.saw_proc_arrays.push(proc_array_info.clone());
+                                            }
+                                        } else if let Some(struct_name) = struct_array_roots.get(v)
+                                        {
+                                            if !slot
+                                                .saw_struct_arrays
+                                                .iter()
+                                                .any(|seen| seen.struct_name == *struct_name)
+                                            {
+                                                slot.saw_struct_arrays.push(
+                                                    InferredStructArrayParam {
+                                                        struct_name: struct_name.clone(),
+                                                    },
+                                                );
+                                            }
                                         } else if let Some(array_info) = array_bindings.get(v) {
                                             if !slot.saw_arrays.iter().any(|seen| {
                                                 seen.elem_ty == array_info.elem_ty
@@ -445,6 +492,7 @@ fn infer_expr_calls(
                     &arg.expr,
                     struct_instances,
                     struct_array_roots,
+                    proc_array_roots,
                     array_bindings,
                     buffer_bindings,
                     fn_signatures,

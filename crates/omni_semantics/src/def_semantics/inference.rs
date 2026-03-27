@@ -18,7 +18,8 @@ use crate::builtins::{
 };
 use crate::{
     resolve_struct_field_decl, with_expr_diag_context, with_stmt_diag_context, AnalysisOptions,
-    FnSignature, TypedBufferChannels, TypedFieldType, TypedFnParam, TypedStructField,
+    FnSignature, ProcNestedArrayState, TypedBufferChannels, TypedFieldType, TypedFnParam,
+    TypedStructField,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +32,8 @@ enum StructFieldUsage {
 struct InferredFnParam {
     saw_scalar: bool,
     saw_structs: HashSet<String>,
+    saw_struct_arrays: Vec<InferredStructArrayParam>,
+    saw_proc_arrays: Vec<InferredProcArrayParam>,
     saw_arrays: Vec<InferredArrayParam>,
     saw_buffers: Vec<InferredBufferParam>,
     saw_seeded_buffer: bool,
@@ -49,6 +52,17 @@ pub(crate) struct InferredArrayParam {
     pub(crate) len: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InferredStructArrayParam {
+    pub(crate) struct_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InferredProcArrayParam {
+    pub(crate) proc_name: String,
+    pub(crate) len: usize,
+}
+
 fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
     errors.push(diag.semantic(message, 0, 0));
 }
@@ -60,6 +74,7 @@ pub(crate) fn infer_def_param_kinds(
     sample: &[Stmt],
     struct_instances: &HashMap<String, String>,
     struct_array_roots: &HashMap<String, String>,
+    proc_array_roots: &HashMap<String, InferredProcArrayParam>,
     array_bindings: &HashMap<String, InferredArrayParam>,
     buffer_bindings: &HashMap<String, Vec<InferredBufferParam>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -85,23 +100,6 @@ pub(crate) fn infer_def_param_kinds(
         );
     }
 
-    // Seed per-parameter indexable usage directly from def bodies so untyped params
-    // used as `x[i]` / `x[ch][i]` are treated as data-like even before call-graph
-    // propagation resolves concrete caller shapes.
-    for def in defs {
-        let param_index = def
-            .params
-            .iter()
-            .enumerate()
-            .map(|(idx, p)| (p.name.clone(), idx))
-            .collect::<HashMap<_, _>>();
-        if let Some(kinds_for_def) = kinds.get_mut(&def.name) {
-            for stmt in &def.body {
-                collect_stmt_indexable_param_usage(stmt, &param_index, kinds_for_def);
-            }
-        }
-    }
-
     for def in defs {
         if let Some(explicit) = declared_struct_params.get(&def.name) {
             if let Some(kinds_for_def) = kinds.get_mut(&def.name) {
@@ -122,6 +120,7 @@ pub(crate) fn infer_def_param_kinds(
             stmt,
             struct_instances,
             struct_array_roots,
+            proc_array_roots,
             &mut init_array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -135,6 +134,7 @@ pub(crate) fn infer_def_param_kinds(
             stmt,
             struct_instances,
             struct_array_roots,
+            proc_array_roots,
             &mut block_array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -148,6 +148,7 @@ pub(crate) fn infer_def_param_kinds(
             stmt,
             struct_instances,
             struct_array_roots,
+            proc_array_roots,
             &mut sample_array_bindings,
             buffer_bindings,
             fn_signatures,
@@ -180,6 +181,7 @@ pub(crate) fn infer_def_param_kinds(
 
             let mut local_struct_instances = HashMap::<String, String>::new();
             let mut local_struct_array_roots = HashMap::<String, String>::new();
+            let mut local_proc_array_roots = HashMap::<String, InferredProcArrayParam>::new();
             let mut local_array_bindings = HashMap::<String, InferredArrayParam>::new();
             let mut local_buffer_bindings = HashMap::<String, Vec<InferredBufferParam>>::new();
 
@@ -220,6 +222,25 @@ pub(crate) fn infer_def_param_kinds(
                     let Some(param) = def.params.get(idx) else {
                         continue;
                     };
+                    if let Some(inferred_struct_array) =
+                        infer_struct_array_observation_from_param_slot(
+                            inferred_kind,
+                            &def.name,
+                            &param.name,
+                            errors,
+                        )
+                    {
+                        local_struct_array_roots
+                            .insert(param.name.clone(), inferred_struct_array.struct_name);
+                    }
+                    if let Some(inferred_proc_array) = infer_proc_array_observation_from_param_slot(
+                        inferred_kind,
+                        &def.name,
+                        &param.name,
+                        errors,
+                    ) {
+                        local_proc_array_roots.insert(param.name.clone(), inferred_proc_array);
+                    }
                     if !inferred_kind.saw_arrays.is_empty() {
                         let inferred_array = infer_untyped_array_from_observations(
                             &def.name,
@@ -253,11 +274,14 @@ pub(crate) fn infer_def_param_kinds(
 
             let mut merged_struct_array_roots = struct_array_roots.clone();
             merged_struct_array_roots.extend(local_struct_array_roots);
+            let mut merged_proc_array_roots = proc_array_roots.clone();
+            merged_proc_array_roots.extend(local_proc_array_roots);
             for stmt in &def.body {
                 infer_stmt_calls(
                     stmt,
                     &local_struct_instances,
                     &merged_struct_array_roots,
+                    &merged_proc_array_roots,
                     &mut local_array_bindings,
                     &local_buffer_bindings,
                     fn_signatures,
@@ -310,9 +334,25 @@ pub(crate) fn infer_def_param_kinds(
             let usage_for_param = usage.get(idx).cloned().unwrap_or_default();
             let has_struct_usage =
                 !inferred_kind.saw_structs.is_empty() || !usage_for_param.is_empty();
+            let has_direct_struct_usage = !inferred_kind.saw_structs.is_empty()
+                || usage_for_param
+                    .values()
+                    .any(|usage| matches!(usage, StructFieldUsage::Scalar));
             let has_effective_buffer_usage = !inferred_kind.saw_arrays.is_empty()
                 || inferred_kind.saw_call_buffer
                 || (inferred_kind.saw_seeded_buffer && !has_struct_usage);
+            let inferred_struct_array = infer_struct_array_observation_from_param_slot(
+                &inferred_kind,
+                &def.name,
+                param_name,
+                errors,
+            );
+            let inferred_proc_array = infer_proc_array_observation_from_param_slot(
+                &inferred_kind,
+                &def.name,
+                param_name,
+                errors,
+            );
 
             // Handle explicitly typed tuple params (e.g. `(f32, i32)`)
             if let Some(FnParamType::Tuple(elem_tys)) =
@@ -537,6 +577,101 @@ pub(crate) fn infer_def_param_kinds(
                 continue;
             }
 
+            if let Some(inferred_struct_array) = inferred_struct_array {
+                if inferred_kind.saw_scalar {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' is used both as scalar and struct array",
+                            def.name, param_name
+                        ),
+                    );
+                }
+                if !inferred_kind.saw_arrays.is_empty() {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' is used both as primitive array and struct array",
+                            def.name, param_name
+                        ),
+                    );
+                }
+                if has_effective_buffer_usage {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' is used both as buffer and struct array",
+                            def.name, param_name
+                        ),
+                    );
+                }
+                if has_direct_struct_usage {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' is used both as struct and struct array",
+                            def.name, param_name
+                        ),
+                    );
+                }
+                typed.push(TypedFnParam::StructArray {
+                    struct_name: inferred_struct_array.struct_name,
+                });
+                continue;
+            }
+
+            if let Some(inferred_proc_array) = inferred_proc_array {
+                if inferred_kind.saw_scalar {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' is used both as scalar and processor array",
+                            def.name, param_name
+                        ),
+                    );
+                }
+                if !inferred_kind.saw_arrays.is_empty() {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' is used both as primitive array and processor array",
+                            def.name, param_name
+                        ),
+                    );
+                }
+                if has_effective_buffer_usage {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' is used both as buffer and processor array",
+                            def.name, param_name
+                        ),
+                    );
+                }
+                if has_direct_struct_usage {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "function '{}' parameter '{}' is used both as struct and processor array",
+                            def.name, param_name
+                        ),
+                    );
+                }
+                typed.push(TypedFnParam::ProcArray {
+                    proc_name: inferred_proc_array.proc_name,
+                    len: inferred_proc_array.len,
+                });
+                continue;
+            }
+
             if has_struct_usage {
                 if inferred_kind.saw_scalar {
                     push_semantic(
@@ -593,150 +728,55 @@ fn push_buffer_observation(slot: &mut InferredFnParam, obs: InferredBufferParam,
     slot.saw_buffers.push(obs);
 }
 
-fn mark_param_indexable_usage(
-    base: &str,
-    channels: TypedBufferChannels,
-    param_index: &HashMap<String, usize>,
-    kinds: &mut [InferredFnParam],
-) {
-    let Some(param_idx) = param_index.get(base).copied() else {
-        return;
-    };
-    let Some(slot) = kinds.get_mut(param_idx) else {
-        return;
-    };
-    push_buffer_observation(
-        slot,
-        InferredBufferParam {
-            elem_ty: PrimitiveType::F32,
-            channels,
-        },
-        false,
-    );
-}
-
-fn collect_stmt_indexable_param_usage(
-    stmt: &Stmt,
-    param_index: &HashMap<String, usize>,
-    kinds: &mut [InferredFnParam],
-) {
-    match stmt {
-        Stmt::Const { .. } => {}
-        Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { base, index } = target {
-                mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
-                collect_expr_indexable_param_usage(index, param_index, kinds);
-            }
-            collect_expr_indexable_param_usage(expr, param_index, kinds);
-        }
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            collect_expr_indexable_param_usage(expr, param_index, kinds);
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            collect_expr_indexable_param_usage(cond, param_index, kinds);
-            for nested in then_branch {
-                collect_stmt_indexable_param_usage(nested, param_index, kinds);
-            }
-            for nested in else_branch {
-                collect_stmt_indexable_param_usage(nested, param_index, kinds);
-            }
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            collect_expr_indexable_param_usage(start, param_index, kinds);
-            collect_expr_indexable_param_usage(end, param_index, kinds);
-            if let Some(step_expr) = step {
-                collect_expr_indexable_param_usage(step_expr, param_index, kinds);
-            }
-            for nested in body {
-                collect_stmt_indexable_param_usage(nested, param_index, kinds);
-            }
-        }
-        Stmt::While { cond, body, .. } => {
-            collect_expr_indexable_param_usage(cond, param_index, kinds);
-            for nested in body {
-                collect_stmt_indexable_param_usage(nested, param_index, kinds);
-            }
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
-    }
-}
-
-fn collect_expr_indexable_param_usage(
-    expr: &Expr,
-    param_index: &HashMap<String, usize>,
-    kinds: &mut [InferredFnParam],
-) {
-    match expr {
-        Expr::Number { .. }
-        | Expr::Int { .. }
-        | Expr::Bool { .. }
-        | Expr::Var { .. }
-        | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                collect_expr_indexable_param_usage(value, param_index, kinds);
-            }
-        }
-        Expr::Index { base, index, .. } => {
-            mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
-            collect_expr_indexable_param_usage(index, param_index, kinds);
-        }
-        Expr::Slice {
-            base, start, end, ..
-        } => {
-            mark_param_indexable_usage(base, TypedBufferChannels::Mono, param_index, kinds);
-            if let Some(start) = start {
-                collect_expr_indexable_param_usage(start, param_index, kinds);
-            }
-            if let Some(end) = end {
-                collect_expr_indexable_param_usage(end, param_index, kinds);
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. } => {
-            collect_expr_indexable_param_usage(lhs, param_index, kinds);
-            collect_expr_indexable_param_usage(rhs, param_index, kinds);
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_expr_indexable_param_usage(expr, param_index, kinds);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_expr_indexable_param_usage(arg, param_index, kinds);
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            if is_internal_buffer_2d_fn(name) {
-                if let Some(CallArg {
-                    expr: Expr::Var { name: base, .. },
-                    ..
-                }) = args.first()
-                {
-                    mark_param_indexable_usage(
-                        base,
-                        TypedBufferChannels::Dynamic,
-                        param_index,
-                        kinds,
-                    );
-                }
-            }
-            for arg in args {
-                collect_expr_indexable_param_usage(&arg.expr, param_index, kinds);
-            }
+fn infer_proc_array_observation_from_param_slot(
+    inferred_kind: &InferredFnParam,
+    def_name: &str,
+    param_name: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<InferredProcArrayParam> {
+    let first = inferred_kind.saw_proc_arrays.first()?.clone();
+    for observed in inferred_kind.saw_proc_arrays.iter().skip(1) {
+        if observed.proc_name != first.proc_name || observed.len != first.len {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
+                format!(
+                    "function '{}' parameter '{}' is called with incompatible processor arrays ('{}'[{}] vs '{}'[{}])",
+                    def_name,
+                    param_name,
+                    first.proc_name,
+                    first.len,
+                    observed.proc_name,
+                    observed.len
+                ),
+            );
+            break;
         }
     }
+    Some(first)
+}
+
+fn infer_struct_array_observation_from_param_slot(
+    inferred_kind: &InferredFnParam,
+    def_name: &str,
+    param_name: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<InferredStructArrayParam> {
+    let first = inferred_kind.saw_struct_arrays.first()?.clone();
+    for observed in inferred_kind.saw_struct_arrays.iter().skip(1) {
+        if observed.struct_name != first.struct_name {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
+                format!(
+                    "function '{}' parameter '{}' is called with incompatible struct arrays ('{}[]' vs '{}[]')",
+                    def_name, param_name, first.struct_name, observed.struct_name
+                ),
+            );
+            break;
+        }
+    }
+    Some(first)
 }
 
 fn callee_buffer_param_requirement(
@@ -1850,6 +1890,25 @@ pub(crate) fn param_struct_array_map_from_kinds(
     for (name, kind) in param_names.iter().zip(kinds.iter()) {
         if let TypedFnParam::StructArray { struct_name } = kind {
             out.insert(name.clone(), struct_name.clone());
+        }
+    }
+    out
+}
+
+pub(crate) fn param_proc_array_map_from_kinds(
+    param_names: &[String],
+    kinds: &[TypedFnParam],
+) -> HashMap<String, ProcNestedArrayState> {
+    let mut out = HashMap::new();
+    for (name, kind) in param_names.iter().zip(kinds.iter()) {
+        if let TypedFnParam::ProcArray { proc_name, len } = kind {
+            out.insert(
+                name.clone(),
+                ProcNestedArrayState {
+                    proc_name: proc_name.clone(),
+                    size_expr: Expr::int(*len as i64),
+                },
+            );
         }
     }
     out

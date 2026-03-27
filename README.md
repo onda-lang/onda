@@ -11,12 +11,12 @@
 - A daemon/editor core that powers LSP diagnostics and live preview sessions.
 - An in-repo VSCode extension under `editors/vscode/`.
 - Language support for overloaded top-level `def` functions and struct methods only; proc-local `def` blocks are not overloadable (arity/type-based dispatch with ambiguity diagnostics).
-- Processor-instance array dispatch with literal/runtime indices for calls, endpoint reads, statement calls, and proc-event forwarding (direct indexed instance access, with proc-slot buffer refs synced on `process_bound` for dynamic buffer-backed calls).
+- Processor-instance array dispatch with literal/runtime indices for calls, endpoint reads, scalar field assignment, statement calls, and proc-event forwarding (direct indexed instance access, with proc-slot buffer refs synced on `process_bound` for dynamic buffer-backed calls).
 - Every proc implicitly exposes a reserved builtin `init(...)` event that mirrors the proc params after specialization and assigns them into proc state, so calls such as `voice.init(...)` work for both plain and generic proc instances.
 - Graph routing/composition via `graph` blocks, with implicit proc scheduling, sample-delay cycle breaking via `>>[expr]` / `<<[expr]` compile-time nonnegative integer expressions, strict array shape checks, and graph inspection via CLI `--dump-graph`.
 - User-defined scalar compile-time constants via `const NAME = expr` / `const NAME: T = expr`, available at top-level, in namespaces, and in executable scopes.
 - Python-style slice expressions and writable slice assignment for primitive arrays/buffers (for example `a[1:-1]`, `a[:] = 0.0`, `dst[:] = src[:]`).
-- One-dot inline data-struct array access (`base[idx].field`, `base[idx].field[fidx]`) in executable scopes, while deeper inline chains still require an intermediate alias.
+- One-dot inline data-struct array access (`base[idx].field`, `base[idx].field[fidx]`) plus direct scalar field assignment (`base[idx].field = value`) in executable scopes, while deeper inline chains still require an intermediate alias.
 - Unified executable-scope scoping/storage rules across top-level code and procs:
   - top-level `init` assignments introduce persistent state
   - nested `init` assignments stay local to `init` flow

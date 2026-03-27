@@ -99,6 +99,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     return;
                 }
                 if !env.known_scalars.contains(&flat)
+                    && !env.local_aliases.contains_key(&flat)
                     && !env.locals.contains(&flat)
                     && !env.outputs.contains(&flat)
                 {
@@ -112,6 +113,9 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             }
 
             if env.param_structs.contains_key(name) {
+                if name == "self" {
+                    return;
+                }
                 push_expr_error(
                     errors,
                     expr,
@@ -647,19 +651,26 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             // Array and bare buffer params accept data-like args.
                             continue;
                         }
-                        if param_ty.is_none() {
-                            if let Expr::Var { name: v, .. } = arg {
-                                if has_declared_buffer_symbol_info(env.declared_symbols, v) {
-                                    continue;
-                                }
-                                if env.array_vars.contains_key(v) {
-                                    continue;
-                                }
+                        if param_ty.is_none() && is_by_ref_call_arg_expr(arg, env) {
+                            continue;
+                        }
+                        if let Expr::Var { name: v, .. } = arg {
+                            if (env.struct_instances.contains_key(v)
+                                || env.param_structs.contains_key(v))
+                                && matches!(param_ty, Some(FnParamType::Struct(_)))
+                            {
+                                continue;
                             }
                         }
                         if let Expr::Var { name: v, .. } = arg {
-                            if env.struct_instances.contains_key(v)
-                                || env.param_structs.contains_key(v)
+                            if v == "self" && matches!(param_ty, Some(FnParamType::Struct(_))) {
+                                continue;
+                            }
+                        }
+                        if let Expr::Var { name: v, .. } = arg {
+                            if (env.struct_instances.contains_key(v)
+                                || env.param_structs.contains_key(v))
+                                && is_internal_proc_helper_call(name)
                             {
                                 continue;
                             }
@@ -753,29 +764,45 @@ fn is_struct_array_root(declared_symbols: &DeclaredSymbolMap, name: &str) -> boo
 }
 
 fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    if env.array_vars.contains_key(base)
+    env.array_vars.contains_key(base)
         || has_declared_buffer_symbol_info(env.declared_symbols, base)
-        || is_declared_struct_array_root_symbol(env.declared_symbols, base)
-    {
-        return true;
-    }
-    if let Some((root, field)) = split_simple_field_path(base) {
-        let struct_name = env
-            .param_structs
-            .get(root)
-            .or_else(|| env.struct_instances.get(root));
-        if let Some(struct_name) = struct_name {
-            if let Some(field_decl) = resolve_struct_field_decl(struct_name, field, env.struct_defs)
-            {
-                return matches!(field_decl.ty, TypedFieldType::Array(_));
-            }
-        }
-    }
-    false
+        || is_builtin_array_like_receiver_with_resolver(
+            base,
+            env.declared_symbols,
+            env.struct_defs,
+            env.proc_array_roots,
+            |root| {
+                env.param_structs
+                    .get(root)
+                    .or_else(|| env.struct_instances.get(root))
+                    .map(String::as_str)
+            },
+        )
 }
 
 fn is_builtin_buffer_receiver(base: &str, env: ExprEnv<'_>) -> bool {
     has_declared_buffer_symbol_info(env.declared_symbols, base)
+}
+
+fn is_by_ref_call_arg_var(name: &str, env: ExprEnv<'_>) -> bool {
+    env.struct_instances.contains_key(name)
+        || env.param_structs.contains_key(name)
+        || env.array_vars.contains_key(name)
+        || has_declared_buffer_symbol_info(env.declared_symbols, name)
+        || is_declared_struct_array_root_symbol(env.declared_symbols, name)
+        || env.proc_array_roots.contains_key(name)
+}
+
+fn is_by_ref_call_arg_expr(expr: &Expr, env: ExprEnv<'_>) -> bool {
+    match expr {
+        Expr::Var { name, .. } => is_by_ref_call_arg_var(name, env),
+        Expr::Slice { base, .. } => {
+            env.array_vars.contains_key(base)
+                || has_declared_buffer_symbol_info(env.declared_symbols, base)
+                || is_declared_struct_array_root_symbol(env.declared_symbols, base)
+        }
+        _ => false,
+    }
 }
 
 fn is_builtin_unsafe_data_receiver(base: &str, env: ExprEnv<'_>) -> bool {
@@ -841,7 +868,18 @@ fn validate_data_len_builtin_call(
         true
     } else if has_declared_buffer_symbol_info(env.declared_symbols, base) {
         true
-    } else if is_declared_struct_array_root_symbol(env.declared_symbols, base) {
+    } else if is_builtin_array_like_receiver_with_resolver(
+        base,
+        env.declared_symbols,
+        env.struct_defs,
+        env.proc_array_roots,
+        |root| {
+            env.param_structs
+                .get(root)
+                .or_else(|| env.struct_instances.get(root))
+                .map(String::as_str)
+        },
+    ) {
         true
     } else if let Some((root, field)) = split_field_path(base, errors) {
         let struct_name = env
@@ -1386,7 +1424,11 @@ fn validate_internal_proc_index_call(
             Some(PROC_INDEX_BASE_ARG)
             | Some(PROC_INDEX_EXPR_ARG)
             | Some(PROC_FIELD_SENTINEL_ARG) => {}
-            _ => validate_expr(&arg.expr, env, errors),
+            _ => {
+                if !is_by_ref_call_arg_expr(&arg.expr, env) {
+                    validate_expr(&arg.expr, env, errors);
+                }
+            }
         }
     }
 }
