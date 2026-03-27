@@ -501,12 +501,11 @@ pub(crate) fn analyze_runtime_stmts<'a>(
         matches!(
             (ctx.common.scope_kind(), ctx.registration_mode),
             (ScopeKind::Sample, RuntimeRegistrationMode::None)
-                | (ScopeKind::Block, RuntimeRegistrationMode::Block)
-                | (ScopeKind::Sample, RuntimeRegistrationMode::Sample)
+                | (ScopeKind::Block, RuntimeRegistrationMode::BlockRoot)
         ),
         "runtime analysis scope and registration mode must stay aligned"
     );
-    analyze_runtime_scope(stmts, locals, state_scalars, ctx, state, 0, errors);
+    analyze_runtime_scope(stmts, locals, state_scalars, ctx, state, 0, 0, errors);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,29 +516,41 @@ fn analyze_runtime_scope<'a>(
     ctx: &RuntimeStmtAnalysisCtx<'_>,
     state: &mut RuntimeStmtAnalysisState,
     loop_depth: usize,
+    scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
     let stmts = stmts.into_iter().collect::<Vec<_>>();
-    register_scope_state(
-        stmts.iter().copied(),
-        state_scalars,
-        ctx.declared_symbols,
-        ctx.state_arrays,
-        ctx.state_array_struct_roots,
-        ctx.struct_instances,
-        ctx.registration_input_names,
-        ctx.registration_output_names,
-        ctx.registration_param_names,
-        ctx.common.struct_defs,
-        ctx.registration_mode,
-    );
+    if scope_depth == 0 {
+        register_scope_state(
+            stmts.iter().copied(),
+            state_scalars,
+            ctx.declared_symbols,
+            ctx.state_arrays,
+            ctx.state_array_struct_roots,
+            ctx.struct_instances,
+            ctx.registration_input_names,
+            ctx.registration_output_names,
+            ctx.registration_param_names,
+            ctx.common.struct_defs,
+            ctx.registration_mode,
+        );
+    }
     state.known_scalars.extend(state_scalars.keys().cloned());
     // Seed tuple_vars so expression validation allows pair[0] indexing
     state
         .tuple_vars
         .extend(ctx.state_tuples.iter().map(|(k, v)| (k.clone(), v.len())));
     for stmt in stmts {
-        analyze_runtime_stmt_inner(stmt, locals, state_scalars, ctx, state, loop_depth, errors);
+        analyze_runtime_stmt_inner(
+            stmt,
+            locals,
+            state_scalars,
+            ctx,
+            state,
+            loop_depth,
+            scope_depth,
+            errors,
+        );
     }
 }
 
@@ -551,6 +562,7 @@ fn analyze_runtime_stmt_inner(
     ctx: &RuntimeStmtAnalysisCtx<'_>,
     state: &mut RuntimeStmtAnalysisState,
     loop_depth: usize,
+    scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
     let common = ctx.common;
@@ -676,7 +688,13 @@ fn analyze_runtime_stmt_inner(
                     build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
-                let mut then_state = state.clone();
+                let mut then_state = fork_scope_flow_state_with_tuples(
+                    &state.known_scalars,
+                    &state.local_aliases,
+                    &state.local_array_aliases,
+                    &state.local_proc_aliases,
+                    &state.tuple_vars,
+                );
                 analyze_runtime_scope(
                     then_branch.iter(),
                     locals,
@@ -684,9 +702,16 @@ fn analyze_runtime_stmt_inner(
                     ctx,
                     &mut then_state,
                     loop_depth,
+                    scope_depth + 1,
                     errors,
                 );
-                let mut else_state = state.clone();
+                let mut else_state = fork_scope_flow_state_with_tuples(
+                    &state.known_scalars,
+                    &state.local_aliases,
+                    &state.local_array_aliases,
+                    &state.local_proc_aliases,
+                    &state.tuple_vars,
+                );
                 analyze_runtime_scope(
                     else_branch.iter(),
                     locals,
@@ -694,7 +719,16 @@ fn analyze_runtime_stmt_inner(
                     ctx,
                     &mut else_state,
                     loop_depth,
+                    scope_depth + 1,
                     errors,
+                );
+                merge_branch_scope_flow_state(
+                    &mut state.known_scalars,
+                    &mut state.local_aliases,
+                    &mut state.local_array_aliases,
+                    &mut state.local_proc_aliases,
+                    then_state,
+                    else_state,
                 );
             }
             Stmt::For {
@@ -730,7 +764,13 @@ fn analyze_runtime_stmt_inner(
                 );
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone());
-                let mut loop_state = state.clone();
+                let mut loop_state = fork_scope_flow_state_with_tuples(
+                    &state.known_scalars,
+                    &state.local_aliases,
+                    &state.local_array_aliases,
+                    &state.local_proc_aliases,
+                    &state.tuple_vars,
+                );
                 analyze_runtime_scope(
                     body.iter(),
                     &loop_locals,
@@ -738,7 +778,15 @@ fn analyze_runtime_stmt_inner(
                     ctx,
                     &mut loop_state,
                     loop_depth + 1,
+                    scope_depth + 1,
                     errors,
+                );
+                adopt_loop_scope_flow_state(
+                    &state.known_scalars,
+                    &mut state.local_aliases,
+                    &mut state.local_array_aliases,
+                    &mut state.local_proc_aliases,
+                    loop_state,
                 );
             }
             Stmt::While { cond, body, .. } => {
@@ -749,7 +797,13 @@ fn analyze_runtime_stmt_inner(
                     build_runtime_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
-                let mut loop_state = state.clone();
+                let mut loop_state = fork_scope_flow_state_with_tuples(
+                    &state.known_scalars,
+                    &state.local_aliases,
+                    &state.local_array_aliases,
+                    &state.local_proc_aliases,
+                    &state.tuple_vars,
+                );
                 analyze_runtime_scope(
                     body.iter(),
                     locals,
@@ -757,7 +811,15 @@ fn analyze_runtime_stmt_inner(
                     ctx,
                     &mut loop_state,
                     loop_depth + 1,
+                    scope_depth + 1,
                     errors,
+                );
+                adopt_loop_scope_flow_state(
+                    &state.known_scalars,
+                    &mut state.local_aliases,
+                    &mut state.local_array_aliases,
+                    &mut state.local_proc_aliases,
+                    loop_state,
                 );
             }
             Stmt::Break { .. } => require_loop_control_context("break", loop_depth, errors),

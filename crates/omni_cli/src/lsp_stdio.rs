@@ -1032,15 +1032,17 @@ fn build_block_scope_index(
         Block::Init(init) => {
             if let Some(scope_idx) = top_level_runtime_scope {
                 collect_runtime_state_symbols(&init.body, &mut index.scopes[scope_idx].scope);
-                build_const_only_stmt_scope(index, scope_idx, init.loc, &init.body);
+                build_stmt_scope(index, scope_idx, init.loc, &init.body);
             }
         }
         Block::Block(exec) => {
             if let Some(scope_idx) = top_level_runtime_scope {
+                collect_runtime_state_symbols(&exec.pre, &mut index.scopes[scope_idx].scope);
                 build_stmt_scope_from_body(index, scope_idx, &exec.pre);
                 if let Some(sample) = &exec.sample {
                     build_stmt_scope(index, scope_idx, sample.loc, &sample.body);
                 }
+                collect_runtime_state_symbols(&exec.post, &mut index.scopes[scope_idx].scope);
                 build_stmt_scope_from_body(index, scope_idx, &exec.post);
             }
         }
@@ -1101,9 +1103,11 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &omni_frontend::Pr
         collect_runtime_state_symbols(&proc_def.init.body, owner);
     }
 
-    build_const_only_stmt_scope(index, owner_idx, proc_def.init.loc, &proc_def.init.body);
+    build_stmt_scope(index, owner_idx, proc_def.init.loc, &proc_def.init.body);
+    collect_runtime_state_symbols(&proc_def.block_pre, &mut index.scopes[owner_idx].scope);
     build_stmt_scope_from_body(index, owner_idx, &proc_def.block_pre);
     build_stmt_scope_from_body(index, owner_idx, &proc_def.sample);
+    collect_runtime_state_symbols(&proc_def.block_post, &mut index.scopes[owner_idx].scope);
     build_stmt_scope_from_body(index, owner_idx, &proc_def.block_post);
 
     for event in &proc_def.events {
@@ -1176,18 +1180,6 @@ fn build_stmt_scope_from_body(index: &mut SemanticScopeIndex, parent: usize, stm
     }
 }
 
-fn build_const_only_stmt_scope(
-    index: &mut SemanticScopeIndex,
-    parent: usize,
-    span: Span,
-    stmts: &[Stmt],
-) {
-    let Some(scope_idx) = index.push_scope(Some(parent), span) else {
-        return;
-    };
-    collect_const_stmt_symbols(stmts, &mut index.scopes[scope_idx].scope);
-}
-
 fn span_for_stmt_body(stmts: &[Stmt]) -> Option<Span> {
     let first = stmts.first()?.loc().span();
     let last = stmts.last()?.loc().span();
@@ -1208,30 +1200,8 @@ fn span_for_event_scope(event: &omni_frontend::EventDef) -> Span {
 
 fn collect_runtime_state_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
     let mut collected = SemanticScope::default();
-    collect_state_stmt_symbols(stmts, &mut collected);
+    collect_state_stmt_symbols(stmts, &mut collected, 0);
     scope.state_variables.extend(collected.state_variables);
-}
-
-fn collect_const_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
-    for stmt in stmts {
-        match stmt {
-            Stmt::Const { decl, .. } => {
-                scope.consts.insert(decl.name.clone());
-            }
-            Stmt::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                collect_const_stmt_symbols(then_branch, scope);
-                collect_const_stmt_symbols(else_branch, scope);
-            }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                collect_const_stmt_symbols(body, scope);
-            }
-            _ => {}
-        }
-    }
 }
 
 fn prune_shadowed_variables(
@@ -1297,7 +1267,7 @@ fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
             }
         }
         Block::Init(init) => {
-            collect_state_stmt_symbols(&init.body, scope);
+            collect_state_stmt_symbols(&init.body, scope, 0);
         }
         Block::Block(exec) => {
             collect_stmt_symbols(&exec.pre, scope);
@@ -1347,7 +1317,7 @@ fn collect_proc_symbols(proc_def: &omni_frontend::ProcessorDef, scope: &mut Sema
     for buffer in &proc_def.buffers {
         scope.ports.insert(buffer.name.clone());
     }
-    collect_state_stmt_symbols(&proc_def.init.body, scope);
+    collect_state_stmt_symbols(&proc_def.init.body, scope, 0);
     collect_stmt_symbols(&proc_def.block_pre, scope);
     collect_stmt_symbols(&proc_def.sample, scope);
     collect_stmt_symbols(&proc_def.block_post, scope);
@@ -1403,29 +1373,30 @@ fn collect_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
     }
 }
 
-fn collect_state_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
+fn collect_state_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope, scope_depth: usize) {
     for stmt in stmts {
         match stmt {
             Stmt::Const { decl, .. } => {
                 scope.consts.insert(decl.name.clone());
             }
             Stmt::Assign { target, .. } => {
-                collect_state_target_symbols(target, scope);
+                if scope_depth == 0 {
+                    collect_state_target_symbols(target, scope);
+                }
             }
             Stmt::If {
                 then_branch,
                 else_branch,
                 ..
             } => {
-                collect_state_stmt_symbols(then_branch, scope);
-                collect_state_stmt_symbols(else_branch, scope);
+                collect_state_stmt_symbols(then_branch, scope, scope_depth + 1);
+                collect_state_stmt_symbols(else_branch, scope, scope_depth + 1);
             }
-            Stmt::For { var, body, .. } => {
-                scope.variables.insert(var.clone());
-                collect_state_stmt_symbols(body, scope);
+            Stmt::For { body, .. } => {
+                collect_state_stmt_symbols(body, scope, scope_depth + 1);
             }
             Stmt::While { body, .. } => {
-                collect_state_stmt_symbols(body, scope);
+                collect_state_stmt_symbols(body, scope, scope_depth + 1);
             }
             _ => {}
         }
@@ -3018,6 +2989,98 @@ mod tests {
                 .iter()
                 .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
             "src should be port everywhere: {src_tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_mark_nested_init_locals_as_state() {
+        let source = concat!(
+            "outs:\n",
+            "  out1\n",
+            "init:\n",
+            "  voices = 0.0\n",
+            "  for i in 0..4:\n",
+            "    h = f32(i + 1)\n",
+            "    voices = h\n",
+            "sample:\n",
+            "  out1 = voices\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        let h_tokens = find_tokens("h");
+        assert!(
+            h_tokens
+                .iter()
+                .any(|t| t.token_type == SEMANTIC_TOKEN_TYPE_VARIABLE),
+            "nested init local should be highlighted as local variable: {h_tokens:?}"
+        );
+        assert!(
+            h_tokens
+                .iter()
+                .all(|t| t.token_type != SEMANTIC_TOKEN_TYPE_STATE),
+            "nested init local should not be highlighted as state: {h_tokens:?}"
+        );
+
+        let voices_tokens = find_tokens("voices");
+        assert!(
+            voices_tokens
+                .iter()
+                .any(|t| t.line == 3 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "top-level init assignment should still be state: {voices_tokens:?}"
+        );
+        assert!(
+            voices_tokens
+                .iter()
+                .any(|t| t.line == 8 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "sample use should still see top-level init state: {voices_tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_block_pre_state_in_nested_sample() {
+        let source = concat!(
+            "outs:\n",
+            "  out1\n",
+            "block:\n",
+            "  acc = 0.0\n",
+            "  sample:\n",
+            "    out1 = acc\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        let acc_tokens = tokens
+            .iter()
+            .filter(|t| {
+                let line = t.line as usize;
+                let col = t.start as usize;
+                let len = t.length as usize;
+                source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some("acc")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            acc_tokens
+                .iter()
+                .any(|t| t.line == 3 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "block-pre declaration should be highlighted as state: {acc_tokens:?}"
+        );
+        assert!(
+            acc_tokens
+                .iter()
+                .any(|t| t.line == 5 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "nested sample should see block-pre carried state: {acc_tokens:?}"
         );
     }
 

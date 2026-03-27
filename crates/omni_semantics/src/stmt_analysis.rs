@@ -104,6 +104,8 @@ pub(crate) fn merge_branch_scope_flow_state(
     then_state: ScopeFlowState,
     else_state: ScopeFlowState,
 ) {
+    let base_array_aliases = local_array_aliases.clone();
+    let base_proc_aliases = local_proc_aliases.clone();
     let mut merged = known_scalars.clone();
     for name in &then_state.known_scalars {
         if else_state.known_scalars.contains(name) {
@@ -114,14 +116,42 @@ pub(crate) fn merge_branch_scope_flow_state(
     *local_aliases = then_state.local_aliases;
     local_aliases.extend(else_state.local_aliases);
     local_aliases.retain(|name, _| known_scalars.contains(name));
+    let then_array_names = then_state
+        .local_array_aliases
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let else_array_names = else_state
+        .local_array_aliases
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
     *local_array_aliases = then_state.local_array_aliases;
     for (k, v) in else_state.local_array_aliases {
         local_array_aliases.entry(k).or_insert(v);
     }
+    local_array_aliases.retain(|name, _| {
+        base_array_aliases.contains_key(name)
+            || (then_array_names.contains(name) && else_array_names.contains(name))
+    });
+    let then_proc_names = then_state
+        .local_proc_aliases
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let else_proc_names = else_state
+        .local_proc_aliases
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
     *local_proc_aliases = then_state.local_proc_aliases;
     for (k, v) in else_state.local_proc_aliases {
         local_proc_aliases.entry(k).or_insert(v);
     }
+    local_proc_aliases.retain(|name, _| {
+        base_proc_aliases.contains_key(name)
+            || (then_proc_names.contains(name) && else_proc_names.contains(name))
+    });
 }
 
 pub(crate) fn adopt_loop_scope_flow_state(
@@ -131,10 +161,14 @@ pub(crate) fn adopt_loop_scope_flow_state(
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
     loop_state: ScopeFlowState,
 ) {
+    let base_array_aliases = local_array_aliases.clone();
+    let base_proc_aliases = local_proc_aliases.clone();
     *local_aliases = loop_state.local_aliases;
     local_aliases.retain(|name, _| known_scalars.contains(name));
     *local_array_aliases = loop_state.local_array_aliases;
+    local_array_aliases.retain(|name, _| base_array_aliases.contains_key(name));
     *local_proc_aliases = loop_state.local_proc_aliases;
+    local_proc_aliases.retain(|name, _| base_proc_aliases.contains_key(name));
 }
 
 #[allow(clippy::too_many_arguments)]

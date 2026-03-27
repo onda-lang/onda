@@ -257,12 +257,10 @@ pub(crate) fn parse_numbered_port_index(name: &str, prefix: &str) -> Option<usiz
 /// Controls which runtime-scope assignments are promoted to state scalars.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RuntimeRegistrationMode {
-    /// Event-like scope: do not promote assignments to state.
+    /// Do not promote assignments to state.
     None,
-    /// Block scope: register all assigned scalars (type inferred from expression).
-    Block,
-    /// Sample scope: register only explicitly typed declarations.
-    Sample,
+    /// Register only fresh top-level scalar assignments in block-like scopes.
+    BlockRoot,
 }
 
 pub(crate) fn register_scope_state<'a>(
@@ -278,6 +276,9 @@ pub(crate) fn register_scope_state<'a>(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     registration_mode: RuntimeRegistrationMode,
 ) {
+    if matches!(registration_mode, RuntimeRegistrationMode::None) {
+        return;
+    }
     for stmt in stmts {
         register_scope_stmt_state(
             stmt,
@@ -314,17 +315,10 @@ fn register_scope_stmt_state(
             target,
             decl_ty,
             generic_decl_ty,
-            is_typed_decl,
+            is_typed_decl: _is_typed_decl,
             expr,
             ..
         } => {
-            if matches!(registration_mode, RuntimeRegistrationMode::None) {
-                return;
-            }
-            // Sample scope: only register explicitly typed declarations
-            if matches!(registration_mode, RuntimeRegistrationMode::Sample) && !*is_typed_decl {
-                return;
-            }
             if let AssignTarget::Var(name) = target {
                 if split_simple_field_path(name).is_none()
                     && !is_builtin_constant_name(name)
@@ -340,7 +334,7 @@ fn register_scope_stmt_state(
                 {
                     let resolved_ty = match registration_mode {
                         RuntimeRegistrationMode::None => return,
-                        RuntimeRegistrationMode::Block => {
+                        RuntimeRegistrationMode::BlockRoot => {
                             let inferred_ty = {
                                 let mut infer_errors = Vec::<Diagnostic>::new();
                                 let empty_locals = HashSet::<String>::new();
@@ -369,82 +363,12 @@ fn register_scope_stmt_state(
                             };
                             decl_ty.unwrap_or(inferred_ty)
                         }
-                        RuntimeRegistrationMode::Sample => decl_ty.unwrap_or(PrimitiveType::F32),
                     };
                     state_scalars.insert(name.clone(), resolved_ty);
                 }
             }
         }
-        Stmt::If {
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            for nested in then_branch {
-                register_scope_stmt_state(
-                    nested,
-                    state_scalars,
-                    declared_symbols,
-                    state_arrays,
-                    state_array_struct_roots,
-                    struct_instances,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_defs,
-                    registration_mode,
-                );
-            }
-            for nested in else_branch {
-                register_scope_stmt_state(
-                    nested,
-                    state_scalars,
-                    declared_symbols,
-                    state_arrays,
-                    state_array_struct_roots,
-                    struct_instances,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_defs,
-                    registration_mode,
-                );
-            }
-        }
-        Stmt::For { body, .. } => {
-            for nested in body {
-                register_scope_stmt_state(
-                    nested,
-                    state_scalars,
-                    declared_symbols,
-                    state_arrays,
-                    state_array_struct_roots,
-                    struct_instances,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_defs,
-                    registration_mode,
-                );
-            }
-        }
-        Stmt::While { body, .. } => {
-            for nested in body {
-                register_scope_stmt_state(
-                    nested,
-                    state_scalars,
-                    declared_symbols,
-                    state_arrays,
-                    state_array_struct_roots,
-                    struct_instances,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_defs,
-                    registration_mode,
-                );
-            }
-        }
+        Stmt::If { .. } | Stmt::For { .. } | Stmt::While { .. } => {}
         Stmt::Expr { .. } | Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }

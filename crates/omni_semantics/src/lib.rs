@@ -810,4 +810,112 @@ mod tests {
         assert_eq!((diag.line, diag.column), (5, 10));
         assert_eq!(diag.end_line, 5);
     }
+
+    #[test]
+    fn init_branch_local_can_feed_top_level_state_but_not_escape_to_sample() {
+        let src = "outs:\n  out1\ninit:\n  if true:\n    tmp = 1.0\n  else:\n    tmp = 2.0\n  carried = tmp\nsample:\n  out1 = carried\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("branch-local init value should feed later top-level init state");
+    }
+
+    #[test]
+    fn init_loop_local_does_not_escape_loop() {
+        let src = "outs:\n  out1\ninit:\n  for i in 0..2:\n    tmp = f32(i)\n  carried = tmp\nsample:\n  out1 = carried\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("loop-local init symbol should not escape");
+        assert!(
+            errors
+                .iter()
+                .any(|diag| diag.message.contains("unknown symbol 'tmp'")),
+            "missing unknown-symbol diagnostic for escaped init loop local: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn sample_typed_declaration_stays_local() {
+        let src = "outs:\n  out1\nsample:\n  tmp: f32 = 1.0\n  out1 = tmp\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("sample-local typed declaration should analyze");
+        assert!(
+            !typed.state_vars.iter().any(|name| name == "tmp"),
+            "sample local typed declaration unexpectedly became state"
+        );
+    }
+
+    #[test]
+    fn block_pre_top_level_state_is_visible_in_sample_and_post() {
+        let src = "outs:\n  out1\nblock:\n  pre_root = 1.0\n  sample:\n    mix = pre_root\n    out1 = mix\n  post_seen = pre_root\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("top-level block pre vars should be visible in sample and post");
+    }
+
+    #[test]
+    fn nested_block_local_is_not_visible_in_sample() {
+        let src =
+            "outs:\n  out1\nblock:\n  if true:\n    nested = 1.0\n  sample:\n    out1 = nested\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("nested block local should not escape into sample");
+        assert!(
+            errors
+                .iter()
+                .any(|diag| diag.message.contains("unknown symbol 'nested'")),
+            "missing unknown-symbol diagnostic for nested block local: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn proc_init_branch_local_can_feed_top_level_proc_state() {
+        let src = "proc Voice:\n  outs:\n    out1\n  init:\n    if true:\n      tmp = 1.0\n    else:\n      tmp = 2.0\n    carried = tmp\n  sample:\n    out1 = carried\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("proc init branch-local value should feed later proc state");
+    }
+
+    #[test]
+    fn proc_block_pre_top_level_state_is_visible_in_sample_and_post() {
+        let src = "proc Voice:\n  outs:\n    out1\n  block:\n    pre_root = 1.0\n    sample:\n      out1 = pre_root\n    post_seen = pre_root\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("proc block pre vars should be visible in sample and post");
+    }
+
+    #[test]
+    fn proc_nested_block_local_is_not_visible_in_sample() {
+        let src = "proc Voice:\n  outs:\n    out1\n  block:\n    if true:\n      nested = 1.0\n    sample:\n      out1 = nested\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("nested proc block local should not escape into sample");
+        assert!(
+            errors
+                .iter()
+                .any(|diag| diag.message.contains("unknown symbol 'nested'")),
+            "missing unknown-symbol diagnostic for nested proc block local: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn event_branch_local_can_feed_later_event_state_write() {
+        let src = "outs:\n  out1\ninit:\n  phase = 0.0\nevents:\n  ping():\n    if true:\n      tmp = 1.0\n    else:\n      tmp = 2.0\n    phase = tmp\nsample:\n  out1 = phase\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("event branch-local should feed later event state write");
+    }
+
+    #[test]
+    fn event_loop_local_does_not_escape_loop() {
+        let src = "outs:\n  out1\ninit:\n  phase = 0.0\nevents:\n  ping():\n    for i in 0..2:\n      tmp = f32(i)\n    phase = tmp\nsample:\n  out1 = phase\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("event loop-local symbol should not escape loop");
+        assert!(
+            errors
+                .iter()
+                .any(|diag| diag.message.contains("unknown symbol 'tmp'")),
+            "missing unknown-symbol diagnostic for escaped event loop local: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn proc_event_branch_local_can_feed_later_proc_state_write() {
+        let src = "proc Voice:\n  outs:\n    out1\n  init:\n    phase = 0.0\n  events:\n    ping():\n      if true:\n        tmp = 1.0\n      else:\n        tmp = 2.0\n      phase = tmp\n  sample:\n    out1 = phase\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("proc event branch-local should feed later proc state write");
+    }
 }

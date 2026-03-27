@@ -6026,14 +6026,16 @@ sample {
 
 const EVENT_WRITE_NON_INIT_STATE_ERROR_EXAMPLE: &str = r#"
 outs { out1 }
+block {
+  lfo = 0.0
+  sample {
+    out1 = lfo
+  }
+}
 events {
   ping() {
     lfo = 1.0
   }
-}
-sample {
-  lfo: f32 = 0.0
-  out1 = lfo
 }
 "#;
 
@@ -11710,18 +11712,12 @@ fn if_condition_must_be_bool() {
 }
 
 #[test]
-fn init_if_branches_cannot_introduce_conflicting_state_types() {
+fn init_if_branch_locals_do_not_introduce_state() {
     let parsed =
         parse_program(IF_BRANCH_TYPE_CONFLICT_ERROR_EXAMPLE).expect("parse should succeed");
-    let errs = analyze(parsed).expect_err("branch type conflict should be rejected");
     assert!(
-        errs.iter().any(|d| {
-            d.message.contains("state symbol 'x'")
-                && d.message.contains("conflicting types")
-                && d.message.contains("across branches")
-        }),
-        "expected branch type conflict diagnostic, got {:?}",
-        errs
+        analyze(parsed).is_ok(),
+        "branch-local init assignments should stay local and not introduce state"
     );
 }
 

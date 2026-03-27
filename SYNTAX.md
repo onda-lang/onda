@@ -303,6 +303,79 @@ Rules:
 - Reassignment is rejected.
 - Builtin compile-time constant names such as `SR` / `SAMPLE_RATE` / `BLOCK_SIZE` remain reserved.
 
+## 4.1 Executable-scope scoping and storage
+
+Omni separates two questions:
+- Is a name visible here?
+- Does that name become persistent owner state?
+
+The scoping/storage model is shared across top-level code and `proc` bodies.
+
+Lexical / flow rules:
+- `for` loop variables are local to the loop body.
+- A fresh variable created inside a loop does not escape the loop.
+- A fresh variable created in both `if` branches is available after the `if` only when it is definitely assigned on every branch.
+- Assigning to an existing visible variable updates that variable; it does not create a new one.
+- Declaration order is lexical: a symbol must be introduced before it is read.
+
+Storage rules by executable scope:
+- `init`
+  - a fresh top-level scalar assignment introduces persistent owner state
+  - a fresh nested assignment inside `if` / `for` / `while` creates a local, not persistent state
+  - nested `init` code may still assign to already-declared owner state
+- `sample`
+  - fresh assignments create locals
+  - `sample` does not introduce new owner state
+- `block`
+  - `block` runs in order: `block pre -> sample -> block post`
+  - a fresh top-level assignment in `block pre` introduces block-carried owner state visible to later `sample` and `block post`
+  - a fresh top-level assignment in `block post` is visible only after that point; it is not retroactively visible to `sample` in the same callback
+  - fresh nested assignments inside `if` / `for` / `while` stay local
+- `def`
+  - fresh assignments create locals
+  - `def` does not introduce owner state
+- `events`
+  - fresh assignments create locals unless they assign to already-existing mutable owner state
+  - events do not introduce new owner state
+
+Examples:
+
+```omni
+init:
+  if ready:
+    tmp = 1.0
+  else:
+    tmp = 2.0
+  carried = tmp
+
+sample:
+  out1 = carried
+```
+
+This is valid: `tmp` is local to `init`, but both branches assign it, so it is available later in the same `init` flow. Only `carried` becomes persistent state.
+
+```omni
+init:
+  for i in 0..4:
+    tmp = f32(i)
+  carried = tmp
+```
+
+This is invalid: a fresh loop-local `tmp` does not escape the loop.
+
+```omni
+block:
+  acc = 0.0
+  if gate:
+    tmp = 1.0
+  sample:
+    out1 = acc
+```
+
+This is valid for `acc` and invalid for `tmp`: top-level `block pre` assignments carry forward into `sample`, but nested block locals do not leak out of the nested scope.
+
+For the normative version of these rules, see [SCOPING.md](SCOPING.md).
+
 Compile-time assertions:
 
 ```omni
@@ -677,6 +750,13 @@ Single-out procs also support endpoint access forms (`p.out1` and named endpoint
 Processor constructors use named arguments for params/buffers.
 The builtin proc `init(...)` event exposes the proc params as event arguments in declaration order, using the concrete specialized param types.
 It is reserved and cannot be redefined in the proc `events` block.
+
+Scoping/storage rules for proc executable blocks are the same as top-level:
+- proc `init` top-level assignments introduce proc state
+- nested proc `init` assignments stay local to proc `init` flow
+- proc `sample` assignments create locals
+- proc `block pre` top-level assignments carry into later proc `sample` / `block post`
+- nested proc `block` assignments stay local
 
 Processor instance arrays are supported in `init` (top-level and proc-level), for example:
 

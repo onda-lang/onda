@@ -17,6 +17,11 @@
 - User-defined scalar compile-time constants via `const NAME = expr` / `const NAME: T = expr`, available at top-level, in namespaces, and in executable scopes.
 - Python-style slice expressions and writable slice assignment for primitive arrays/buffers (for example `a[1:-1]`, `a[:] = 0.0`, `dst[:] = src[:]`).
 - One-dot inline data-struct array access (`base[idx].field`, `base[idx].field[fidx]`) in executable scopes, while deeper inline chains still require an intermediate alias.
+- Unified executable-scope scoping/storage rules across top-level code and procs:
+  - top-level `init` assignments introduce persistent state
+  - nested `init` assignments stay local to `init` flow
+  - `sample` assignments create locals, not new state
+  - top-level `block` root assignments carry forward into later `sample` / `block post`, while nested block assignments stay local
   - Namespace consts are addressable from outside via qualified paths such as `std::convolution<8, 8>::HopSize` or `std::convolution::HopSize`.
   - For procs with a `block` section, dynamic indexed proc-array `()` calls trigger per-slot block hooks only for actually called slots:
     - `block pre` runs lazily on first `()` call for that slot in the current block.
@@ -29,6 +34,7 @@ Current execution backend target is ORC JIT only. The `compile` command can also
 ## Documentation
 
 - Language syntax and semantics: [SYNTAX.md](SYNTAX.md)
+- Executable-scope scoping/storage rules: [SCOPING.md](SCOPING.md)
 - Project structure and implementation notes: [INFO.md](INFO.md)
 
 ## Quick start

@@ -1,5 +1,27 @@
 use super::*;
 
+fn merge_branch_flow_map<T: Clone>(
+    base: &HashMap<String, T>,
+    then_map: HashMap<String, T>,
+    else_map: HashMap<String, T>,
+) -> HashMap<String, T> {
+    let mut merged = base.clone();
+    for (name, value) in then_map {
+        if else_map.contains_key(&name) {
+            merged.insert(name, value);
+        }
+    }
+    merged
+}
+
+fn adopt_loop_flow_map<T>(
+    base: &HashMap<String, T>,
+    mut loop_map: HashMap<String, T>,
+) -> HashMap<String, T> {
+    loop_map.retain(|name, _| base.contains_key(name));
+    loop_map
+}
+
 pub(super) unsafe fn lower_stmt(
     stmt: &Stmt,
     ctx: &mut LoweringCtx<'_>,
@@ -920,8 +942,11 @@ pub(super) unsafe fn lower_stmt(
                 lower_condition_common(cond_value, b"if_cond\0", &mut cast_value)
             };
             let ctx_ptr: *mut LoweringCtx<'_> = ctx;
-            let tuples_ptr: *mut HashMap<String, Vec<PrimitiveType>> = local_tuples;
-            lower_if_stmt_common(
+            let base_locals = locals.clone();
+            let base_aliases = local_aliases.clone();
+            let base_data_aliases = local_array_aliases.clone();
+            let base_tuples = local_tuples.clone();
+            let (then_flow, else_flow) = lower_if_stmt_common(
                 ctx.builder,
                 ctx.context,
                 ctx.fn_ref,
@@ -934,6 +959,7 @@ pub(super) unsafe fn lower_stmt(
                     let mut then_locals = locals.clone();
                     let mut then_aliases = local_aliases.clone();
                     let mut then_data_aliases = local_array_aliases.clone();
+                    let mut then_tuples = local_tuples.clone();
                     for nested in then_branch {
                         lower_stmt(
                             nested,
@@ -941,19 +967,20 @@ pub(super) unsafe fn lower_stmt(
                             &mut then_locals,
                             &mut then_aliases,
                             &mut then_data_aliases,
-                            &mut *tuples_ptr,
+                            &mut then_tuples,
                         )?;
                         if current_block_terminated(ctx.builder) {
                             break;
                         }
                     }
-                    Ok(())
+                    Ok((then_locals, then_aliases, then_data_aliases, then_tuples))
                 },
                 || unsafe {
                     let ctx = &mut *ctx_ptr;
                     let mut else_locals = locals.clone();
                     let mut else_aliases = local_aliases.clone();
                     let mut else_data_aliases = local_array_aliases.clone();
+                    let mut else_tuples = local_tuples.clone();
                     for nested in else_branch {
                         lower_stmt(
                             nested,
@@ -961,15 +988,20 @@ pub(super) unsafe fn lower_stmt(
                             &mut else_locals,
                             &mut else_aliases,
                             &mut else_data_aliases,
-                            &mut *tuples_ptr,
+                            &mut else_tuples,
                         )?;
                         if current_block_terminated(ctx.builder) {
                             break;
                         }
                     }
-                    Ok(())
+                    Ok((else_locals, else_aliases, else_data_aliases, else_tuples))
                 },
             )?;
+            *locals = merge_branch_flow_map(&base_locals, then_flow.0, else_flow.0);
+            *local_aliases = merge_branch_flow_map(&base_aliases, then_flow.1, else_flow.1);
+            *local_array_aliases =
+                merge_branch_flow_map(&base_data_aliases, then_flow.2, else_flow.2);
+            *local_tuples = merge_branch_flow_map(&base_tuples, then_flow.3, else_flow.3);
             Ok(())
         }
         Stmt::For {
@@ -1015,6 +1047,11 @@ pub(super) unsafe fn lower_stmt(
             };
 
             let ctx_ptr: *mut LoweringCtx<'_> = ctx;
+            let base_locals = locals.clone();
+            let base_aliases = local_aliases.clone();
+            let base_data_aliases = local_array_aliases.clone();
+            let base_tuples = local_tuples.clone();
+            let mut loop_flow = None;
             lower_for_stmt_common(
                 ctx.builder,
                 ctx.context,
@@ -1034,6 +1071,7 @@ pub(super) unsafe fn lower_stmt(
                     let mut loop_locals = locals.clone();
                     let mut loop_aliases = local_aliases.clone();
                     let mut loop_data_aliases = local_array_aliases.clone();
+                    let mut loop_tuples = local_tuples.clone();
                     loop_locals.insert(
                         var.clone(),
                         OrcValue {
@@ -1052,21 +1090,32 @@ pub(super) unsafe fn lower_stmt(
                             &mut loop_locals,
                             &mut loop_aliases,
                             &mut loop_data_aliases,
-                            local_tuples,
+                            &mut loop_tuples,
                         )?;
                         if current_block_terminated(ctx.builder) {
                             break;
                         }
                     }
                     let _ = ctx.loop_stack.pop();
+                    loop_flow = Some((loop_locals, loop_aliases, loop_data_aliases, loop_tuples));
                     Ok(())
                 },
             )?;
+            if let Some((loop_locals, loop_aliases, loop_data_aliases, loop_tuples)) = loop_flow {
+                *locals = adopt_loop_flow_map(&base_locals, loop_locals);
+                *local_aliases = adopt_loop_flow_map(&base_aliases, loop_aliases);
+                *local_array_aliases = adopt_loop_flow_map(&base_data_aliases, loop_data_aliases);
+                *local_tuples = adopt_loop_flow_map(&base_tuples, loop_tuples);
+            }
             Ok(())
         }
         Stmt::While { cond, body, .. } => {
             let ctx_ptr: *mut LoweringCtx<'_> = ctx;
-            let tuples_ptr: *mut HashMap<String, Vec<PrimitiveType>> = local_tuples;
+            let base_locals = locals.clone();
+            let base_aliases = local_aliases.clone();
+            let base_data_aliases = local_array_aliases.clone();
+            let base_tuples = local_tuples.clone();
+            let mut loop_flow = None;
             lower_while_stmt_common(
                 ctx.builder,
                 ctx.context,
@@ -1082,7 +1131,7 @@ pub(super) unsafe fn lower_stmt(
                         locals,
                         local_aliases,
                         local_array_aliases,
-                        &mut *tuples_ptr,
+                        local_tuples,
                     )?;
                     let mut cast_value = |value: OrcValue, to: PrimitiveType, name: &[u8]| {
                         cast_orc_value_to(ctx, value, to, name)
@@ -1098,6 +1147,7 @@ pub(super) unsafe fn lower_stmt(
                     let mut loop_locals = locals.clone();
                     let mut loop_aliases = local_aliases.clone();
                     let mut loop_data_aliases = local_array_aliases.clone();
+                    let mut loop_tuples = local_tuples.clone();
                     ctx.loop_stack.push(LoopControl {
                         break_bb: end_bb,
                         continue_bb: cond_bb,
@@ -1109,16 +1159,23 @@ pub(super) unsafe fn lower_stmt(
                             &mut loop_locals,
                             &mut loop_aliases,
                             &mut loop_data_aliases,
-                            &mut *tuples_ptr,
+                            &mut loop_tuples,
                         )?;
                         if current_block_terminated(ctx.builder) {
                             break;
                         }
                     }
                     let _ = ctx.loop_stack.pop();
+                    loop_flow = Some((loop_locals, loop_aliases, loop_data_aliases, loop_tuples));
                     Ok(())
                 },
             )?;
+            if let Some((loop_locals, loop_aliases, loop_data_aliases, loop_tuples)) = loop_flow {
+                *locals = adopt_loop_flow_map(&base_locals, loop_locals);
+                *local_aliases = adopt_loop_flow_map(&base_aliases, loop_aliases);
+                *local_array_aliases = adopt_loop_flow_map(&base_data_aliases, loop_data_aliases);
+                *local_tuples = adopt_loop_flow_map(&base_tuples, loop_tuples);
+            }
             Ok(())
         }
         Stmt::Break { .. } => {

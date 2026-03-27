@@ -134,6 +134,12 @@
   - slice copy: `dst[:] = src[:]`
   - slice copy writes `min(dst_len, src_len)` elements and preserves overlap semantics via temporary-copy lowering.
 - Scalar assignment typing follows first-assignment inference by default; explicit declaration typing (`x: i64 = ...`) pins the symbol type.
+- Executable-scope scoping/storage is now unified more explicitly across top-level code and procs:
+  - `init`: fresh top-level scalar assignments introduce owner state; nested control-flow assignments stay local to `init` flow
+  - `sample`: fresh assignments are locals only
+  - `block`: fresh top-level assignments in `block pre` carry into later `sample` / `block post`; nested control-flow assignments stay local
+  - `if` merges locals outward only when definitely assigned on all branches
+  - loop-created locals do not escape the loop unless the name already existed before the loop
 - Integer bitwise operators are supported in expressions: unary `~`, binary `&`, `|`, `^`, `<<`, `>>`.
   - Bitwise operators accept `i32`/`i64` operands only.
   - Mixed `i32`/`i64` operands widen to `i64`.

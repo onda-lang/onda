@@ -13,4 +13,4 @@ sample:
   mix = 0.0
   for i in 0..NumOsc:
     mix = mix + voices[i]()
-  out1 = mix
+  out1 = mix 

@@ -375,6 +375,7 @@ pub(super) fn compute_proc_shape(
             },
             &mut init_st,
             0,
+            0,
             errors,
         );
     }
@@ -665,17 +666,20 @@ pub(super) fn compute_proc_shape(
         }
     };
 
-    // Register + analyze block scope state
-    let mut block_known_scalars = reserved.clone();
-    extend_known_scalars(&mut block_known_scalars, proc_struct_instances_typed.keys());
-    extend_known_scalars(&mut block_known_scalars, state.nested_procs.keys());
-    extend_known_scalars(&mut block_known_scalars, proc_state_arrays.keys());
+    // Register + analyze block pre scope state
     let block_locals = HashSet::new();
     let empty_inputs = HashSet::new();
     let empty_outputs = HashSet::new();
     let block_forbidden = out_names.clone();
+    let mut block_pre_known_scalars = reserved.clone();
+    extend_known_scalars(
+        &mut block_pre_known_scalars,
+        proc_struct_instances_typed.keys(),
+    );
+    extend_known_scalars(&mut block_pre_known_scalars, state.nested_procs.keys());
+    extend_known_scalars(&mut block_pre_known_scalars, proc_state_arrays.keys());
     register_and_analyze_runtime_scope(
-        proc.block_pre.iter().chain(proc.block_post.iter()),
+        proc.block_pre.iter(),
         ScopeAnalysisCtx {
             policy: ScopePolicy::Runtime(ScopeKind::Block),
             input_names: &empty_inputs,
@@ -689,7 +693,7 @@ pub(super) fn compute_proc_shape(
             port_index_outs,
             port_index_params,
         },
-        RuntimeRegistrationMode::Block,
+        RuntimeRegistrationMode::BlockRoot,
         &mut proc_state_scalars,
         &proc_declared_symbols,
         &proc_state_arrays,
@@ -701,7 +705,7 @@ pub(super) fn compute_proc_shape(
         &out_names,
         &typed_param_names,
         &block_locals,
-        block_known_scalars,
+        block_pre_known_scalars,
         LocalAliasTypes::new(),
         HashMap::new(),
         &block_forbidden,
@@ -734,7 +738,7 @@ pub(super) fn compute_proc_shape(
             port_index_outs,
             port_index_params,
         },
-        RuntimeRegistrationMode::Sample,
+        RuntimeRegistrationMode::None,
         &mut proc_state_scalars,
         &proc_declared_symbols,
         &proc_state_arrays,
@@ -750,6 +754,48 @@ pub(super) fn compute_proc_shape(
         LocalAliasTypes::new(),
         HashMap::new(),
         &sample_forbidden,
+        &proc_state_tuples,
+        errors,
+    );
+
+    let mut block_post_known_scalars = reserved.clone();
+    extend_known_scalars(
+        &mut block_post_known_scalars,
+        proc_struct_instances_typed.keys(),
+    );
+    extend_known_scalars(&mut block_post_known_scalars, state.nested_procs.keys());
+    extend_known_scalars(&mut block_post_known_scalars, proc_state_arrays.keys());
+    register_and_analyze_runtime_scope(
+        proc.block_post.iter(),
+        ScopeAnalysisCtx {
+            policy: ScopePolicy::Runtime(ScopeKind::Block),
+            input_names: &empty_inputs,
+            output_names: &empty_outputs,
+            param_names: &typed_param_names,
+            struct_defs: &typed_struct_defs,
+            fn_signatures: &proc_fn_signatures,
+            fn_return_types,
+            options,
+            port_index_ins,
+            port_index_outs,
+            port_index_params,
+        },
+        RuntimeRegistrationMode::BlockRoot,
+        &mut proc_state_scalars,
+        &proc_declared_symbols,
+        &proc_state_arrays,
+        &proc_state_array_struct_roots,
+        &state.nested_procs,
+        &state.nested_proc_arrays,
+        &proc_struct_instances_typed,
+        &ins_names,
+        &out_names,
+        &typed_param_names,
+        &block_locals,
+        block_post_known_scalars,
+        LocalAliasTypes::new(),
+        HashMap::new(),
+        &block_forbidden,
         &proc_state_tuples,
         errors,
     );

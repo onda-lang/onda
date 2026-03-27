@@ -1582,6 +1582,7 @@ pub fn analyze_with_options(
             },
             &mut init_st,
             0,
+            0,
             &mut errors,
         );
     }
@@ -1661,17 +1662,17 @@ pub fn analyze_with_options(
         None
     };
 
-    let block_known_scalars = build_known_scalars_from_state(&param_names, &state_scalars);
     let block_locals = HashSet::new();
-    let mut block_local_data_aliases = HashMap::new();
-    seed_top_level_array_aliases(&mut block_local_data_aliases, &in_arrays, false);
-    seed_top_level_array_aliases(&mut block_local_data_aliases, &out_arrays, true);
-    seed_top_level_array_aliases(&mut block_local_data_aliases, &param_arrays, false);
     let empty_inputs = HashSet::new();
     let empty_outputs = HashSet::new();
     let block_forbidden_assigns = output_names.clone();
+    let block_pre_known_scalars = build_known_scalars_from_state(&param_names, &state_scalars);
+    let mut block_pre_local_data_aliases = HashMap::new();
+    seed_top_level_array_aliases(&mut block_pre_local_data_aliases, &in_arrays, false);
+    seed_top_level_array_aliases(&mut block_pre_local_data_aliases, &out_arrays, true);
+    seed_top_level_array_aliases(&mut block_pre_local_data_aliases, &param_arrays, false);
     register_and_analyze_runtime_scope(
-        block_pre.iter().chain(block_post.iter()),
+        block_pre.iter(),
         ScopeAnalysisCtx {
             policy: ScopePolicy::Runtime(ScopeKind::Block),
             input_names: &empty_inputs,
@@ -1685,7 +1686,7 @@ pub fn analyze_with_options(
             port_index_outs,
             port_index_params,
         },
-        RuntimeRegistrationMode::Block,
+        RuntimeRegistrationMode::BlockRoot,
         &mut state_scalars,
         &declared_symbols,
         &state_arrays,
@@ -1697,9 +1698,9 @@ pub fn analyze_with_options(
         &output_names,
         &param_names,
         &block_locals,
-        block_known_scalars,
+        block_pre_known_scalars,
         LocalAliasTypes::new(),
-        block_local_data_aliases,
+        block_pre_local_data_aliases,
         &block_forbidden_assigns,
         &state_tuples,
         &mut errors,
@@ -1729,7 +1730,7 @@ pub fn analyze_with_options(
             port_index_outs,
             port_index_params,
         },
-        RuntimeRegistrationMode::Sample,
+        RuntimeRegistrationMode::None,
         &mut state_scalars,
         &declared_symbols,
         &state_arrays,
@@ -1745,6 +1746,46 @@ pub fn analyze_with_options(
         LocalAliasTypes::new(),
         sample_local_data_aliases,
         &sample_forbidden_assigns,
+        &state_tuples,
+        &mut errors,
+    );
+
+    let block_post_known_scalars = build_known_scalars_from_state(&param_names, &state_scalars);
+    let mut block_post_local_data_aliases = HashMap::new();
+    seed_top_level_array_aliases(&mut block_post_local_data_aliases, &in_arrays, false);
+    seed_top_level_array_aliases(&mut block_post_local_data_aliases, &out_arrays, true);
+    seed_top_level_array_aliases(&mut block_post_local_data_aliases, &param_arrays, false);
+    register_and_analyze_runtime_scope(
+        block_post.iter(),
+        ScopeAnalysisCtx {
+            policy: ScopePolicy::Runtime(ScopeKind::Block),
+            input_names: &empty_inputs,
+            output_names: &empty_outputs,
+            param_names: &param_names,
+            struct_defs: &struct_defs,
+            fn_signatures: &fn_signatures,
+            fn_return_types: &def_return_types,
+            options,
+            port_index_ins,
+            port_index_outs,
+            port_index_params,
+        },
+        RuntimeRegistrationMode::BlockRoot,
+        &mut state_scalars,
+        &declared_symbols,
+        &state_arrays,
+        &state_array_struct_roots,
+        &empty_nested_proc_instances,
+        &nested_proc_arrays,
+        &struct_instances,
+        &input_names,
+        &output_names,
+        &param_names,
+        &block_locals,
+        block_post_known_scalars,
+        LocalAliasTypes::new(),
+        block_post_local_data_aliases,
+        &block_forbidden_assigns,
         &state_tuples,
         &mut errors,
     );

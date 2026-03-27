@@ -186,9 +186,15 @@ pub(crate) fn is_declared_proc_symbol(
     name: &str,
     reserved: &HashSet<String>,
     locals: &HashSet<String>,
+    local_aliases: &LocalAliasTypes,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     out: &ProcStateFields,
 ) -> bool {
-    reserved.contains(name) || locals.contains(name) || out.has_any(name)
+    reserved.contains(name)
+        || locals.contains(name)
+        || local_aliases.contains_key(name)
+        || local_array_aliases.contains_key(name)
+        || out.has_any(name)
 }
 
 pub(crate) fn has_use_before_declaration_error(errors: &[Diagnostic]) -> bool {
@@ -201,6 +207,8 @@ pub(crate) fn validate_proc_expr_decl_order(
     expr: &Expr,
     reserved: &HashSet<String>,
     locals: &HashSet<String>,
+    local_aliases: &LocalAliasTypes,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
     out: &ProcStateFields,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
@@ -213,7 +221,14 @@ pub(crate) fn validate_proc_expr_decl_order(
                 return true;
             }
             if let Some((base, _field)) = split_field_path(name, errors) {
-                if !is_declared_proc_symbol(base, reserved, locals, out) {
+                if !is_declared_proc_symbol(
+                    base,
+                    reserved,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    out,
+                ) {
                     push_semantic(
                         expr_diag,
                         errors,
@@ -221,7 +236,14 @@ pub(crate) fn validate_proc_expr_decl_order(
                     );
                     ok = false;
                 }
-            } else if !is_declared_proc_symbol(name, reserved, locals, out) {
+            } else if !is_declared_proc_symbol(
+                name,
+                reserved,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                out,
+            ) {
                 push_semantic(
                     expr_diag,
                     errors,
@@ -232,7 +254,14 @@ pub(crate) fn validate_proc_expr_decl_order(
         }
         Expr::Index { base, index, .. } => {
             if let Some((root, _field)) = split_field_path(base, errors) {
-                if !is_declared_proc_symbol(root, reserved, locals, out) {
+                if !is_declared_proc_symbol(
+                    root,
+                    reserved,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    out,
+                ) {
                     push_semantic(
                         expr_diag,
                         errors,
@@ -240,7 +269,14 @@ pub(crate) fn validate_proc_expr_decl_order(
                     );
                     ok = false;
                 }
-            } else if !is_declared_proc_symbol(base, reserved, locals, out) {
+            } else if !is_declared_proc_symbol(
+                base,
+                reserved,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                out,
+            ) {
                 push_semantic(
                     expr_diag,
                     errors,
@@ -248,13 +284,28 @@ pub(crate) fn validate_proc_expr_decl_order(
                 );
                 ok = false;
             }
-            ok &= validate_proc_expr_decl_order(index, reserved, locals, out, errors);
+            ok &= validate_proc_expr_decl_order(
+                index,
+                reserved,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                out,
+                errors,
+            );
         }
         Expr::Slice {
             base, start, end, ..
         } => {
             if let Some((root, _field)) = split_field_path(base, errors) {
-                if !is_declared_proc_symbol(root, reserved, locals, out) {
+                if !is_declared_proc_symbol(
+                    root,
+                    reserved,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    out,
+                ) {
                     push_semantic(
                         expr_diag,
                         errors,
@@ -262,7 +313,14 @@ pub(crate) fn validate_proc_expr_decl_order(
                     );
                     ok = false;
                 }
-            } else if !is_declared_proc_symbol(base, reserved, locals, out) {
+            } else if !is_declared_proc_symbol(
+                base,
+                reserved,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                out,
+            ) {
                 push_semantic(
                     expr_diag,
                     errors,
@@ -271,44 +329,124 @@ pub(crate) fn validate_proc_expr_decl_order(
                 ok = false;
             }
             if let Some(start) = start {
-                ok &= validate_proc_expr_decl_order(start, reserved, locals, out, errors);
+                ok &= validate_proc_expr_decl_order(
+                    start,
+                    reserved,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    out,
+                    errors,
+                );
             }
             if let Some(end) = end {
-                ok &= validate_proc_expr_decl_order(end, reserved, locals, out, errors);
+                ok &= validate_proc_expr_decl_order(
+                    end,
+                    reserved,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    out,
+                    errors,
+                );
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
-            ok &= validate_proc_expr_decl_order(&spec.size, reserved, locals, out, errors);
+            ok &= validate_proc_expr_decl_order(
+                &spec.size,
+                reserved,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                out,
+                errors,
+            );
             if let Some(values) = init {
                 for value in values {
-                    ok &= validate_proc_expr_decl_order(value, reserved, locals, out, errors);
+                    ok &= validate_proc_expr_decl_order(
+                        value,
+                        reserved,
+                        locals,
+                        local_aliases,
+                        local_array_aliases,
+                        out,
+                        errors,
+                    );
                 }
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            ok &= validate_proc_expr_decl_order(lhs, reserved, locals, out, errors);
-            ok &= validate_proc_expr_decl_order(rhs, reserved, locals, out, errors);
+            ok &= validate_proc_expr_decl_order(
+                lhs,
+                reserved,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                out,
+                errors,
+            );
+            ok &= validate_proc_expr_decl_order(
+                rhs,
+                reserved,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                out,
+                errors,
+            );
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                ok &= validate_proc_expr_decl_order(arg, reserved, locals, out, errors);
+                ok &= validate_proc_expr_decl_order(
+                    arg,
+                    reserved,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    out,
+                    errors,
+                );
             }
         }
         Expr::UserCall { args, .. } => {
             for arg in args {
-                ok &= validate_proc_expr_decl_order(&arg.expr, reserved, locals, out, errors);
+                ok &= validate_proc_expr_decl_order(
+                    &arg.expr,
+                    reserved,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    out,
+                    errors,
+                );
             }
         }
         Expr::Cast { expr: inner, .. }
         | Expr::UnaryNot { expr: inner, .. }
         | Expr::UnaryBitNot { expr: inner, .. } => {
-            ok &= validate_proc_expr_decl_order(inner, reserved, locals, out, errors);
+            ok &= validate_proc_expr_decl_order(
+                inner,
+                reserved,
+                locals,
+                local_aliases,
+                local_array_aliases,
+                out,
+                errors,
+            );
         }
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
-                ok &= validate_proc_expr_decl_order(value, reserved, locals, out, errors);
+                ok &= validate_proc_expr_decl_order(
+                    value,
+                    reserved,
+                    locals,
+                    local_aliases,
+                    local_array_aliases,
+                    out,
+                    errors,
+                );
             }
         }
     }

@@ -296,6 +296,7 @@ pub(crate) fn analyze_init_stmt(
     ctx: InitStmtAnalysisCtx<'_>,
     st: &mut InitAnalysisState,
     loop_depth: usize,
+    scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context(stmt, |stmt_diag| {
@@ -343,6 +344,7 @@ pub(crate) fn analyze_init_stmt(
                 expr,
                 ctx,
                 st,
+                scope_depth,
                 errors,
             ),
             Stmt::Expr { expr, .. } => {
@@ -390,13 +392,27 @@ pub(crate) fn analyze_init_stmt(
                 let base_flow = st.flow_state();
                 let mut then_st = st.clone();
                 for nested in then_branch {
-                    analyze_init_stmt(nested, ctx, &mut then_st, loop_depth, errors);
+                    analyze_init_stmt(
+                        nested,
+                        ctx,
+                        &mut then_st,
+                        loop_depth,
+                        scope_depth + 1,
+                        errors,
+                    );
                 }
                 let then_flow = then_st.flow_state();
 
                 let mut else_st = st.clone();
                 for nested in else_branch {
-                    analyze_init_stmt(nested, ctx, &mut else_st, loop_depth, errors);
+                    analyze_init_stmt(
+                        nested,
+                        ctx,
+                        &mut else_st,
+                        loop_depth,
+                        scope_depth + 1,
+                        errors,
+                    );
                 }
                 let else_flow = else_st.flow_state();
 
@@ -444,7 +460,14 @@ pub(crate) fn analyze_init_stmt(
                     ..ctx
                 };
                 for nested in body {
-                    analyze_init_stmt(nested, loop_ctx, &mut loop_st, loop_depth + 1, errors);
+                    analyze_init_stmt(
+                        nested,
+                        loop_ctx,
+                        &mut loop_st,
+                        loop_depth + 1,
+                        scope_depth + 1,
+                        errors,
+                    );
                 }
                 let loop_flow = loop_st.flow_state();
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
@@ -469,7 +492,14 @@ pub(crate) fn analyze_init_stmt(
                 let base_flow = st.flow_state();
                 let mut loop_st = st.clone();
                 for nested in body {
-                    analyze_init_stmt(nested, ctx, &mut loop_st, loop_depth + 1, errors);
+                    analyze_init_stmt(
+                        nested,
+                        ctx,
+                        &mut loop_st,
+                        loop_depth + 1,
+                        scope_depth + 1,
+                        errors,
+                    );
                 }
                 let loop_flow = loop_st.flow_state();
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
@@ -498,6 +528,7 @@ fn analyze_assign_init(
     expr: &Expr,
     ctx: InitStmtAnalysisCtx<'_>,
     st: &mut InitAnalysisState,
+    scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
     let stmt_ctx = ctx;
@@ -512,6 +543,7 @@ fn analyze_assign_init(
     let fn_signatures = common.fn_signatures;
     let options = common.options;
     let scope = common.scope_kind();
+    let allow_owner_state_intro = scope_depth == 0;
     let array_vars = merged_data_vars_for_runtime(&st.state_arrays, &st.local_array_aliases);
     let mut rewritten_expr = expr.clone();
     rewrite_struct_array_inline_field_expr(
@@ -573,11 +605,25 @@ fn analyze_assign_init(
                 let decl_state = build_decl_check_state(st);
                 let mut target_ok = true;
                 if let Some((root, _field)) = split_field_path(base, errors) {
-                    if !is_declared_proc_symbol(root, pctx.reserved, locals, &decl_state) {
+                    if !is_declared_proc_symbol(
+                        root,
+                        pctx.reserved,
+                        locals,
+                        &st.local_aliases,
+                        &st.local_array_aliases,
+                        &decl_state,
+                    ) {
                         target_error!(format!("symbol '{root}' used before declaration"),);
                         target_ok = false;
                     }
-                } else if !is_declared_proc_symbol(base, pctx.reserved, locals, &decl_state) {
+                } else if !is_declared_proc_symbol(
+                    base,
+                    pctx.reserved,
+                    locals,
+                    &st.local_aliases,
+                    &st.local_array_aliases,
+                    &decl_state,
+                ) {
                     target_error!(format!("symbol '{base}' used before declaration"),);
                     target_ok = false;
                 }
@@ -585,11 +631,20 @@ fn analyze_assign_init(
                     index,
                     pctx.reserved,
                     locals,
+                    &st.local_aliases,
+                    &st.local_array_aliases,
                     &decl_state,
                     errors,
                 );
-                target_ok &=
-                    validate_proc_expr_decl_order(expr, pctx.reserved, locals, &decl_state, errors);
+                target_ok &= validate_proc_expr_decl_order(
+                    expr,
+                    pctx.reserved,
+                    locals,
+                    &st.local_aliases,
+                    &st.local_array_aliases,
+                    &decl_state,
+                    errors,
+                );
                 if !target_ok {
                     return;
                 }
@@ -670,11 +725,25 @@ fn analyze_assign_init(
                 let decl_state = build_decl_check_state(st);
                 let mut target_ok = true;
                 if let Some((root, _field)) = split_field_path(base, errors) {
-                    if !is_declared_proc_symbol(root, pctx.reserved, locals, &decl_state) {
+                    if !is_declared_proc_symbol(
+                        root,
+                        pctx.reserved,
+                        locals,
+                        &st.local_aliases,
+                        &st.local_array_aliases,
+                        &decl_state,
+                    ) {
                         target_error!(format!("symbol '{root}' used before declaration"),);
                         target_ok = false;
                     }
-                } else if !is_declared_proc_symbol(base, pctx.reserved, locals, &decl_state) {
+                } else if !is_declared_proc_symbol(
+                    base,
+                    pctx.reserved,
+                    locals,
+                    &st.local_aliases,
+                    &st.local_array_aliases,
+                    &decl_state,
+                ) {
                     target_error!(format!("symbol '{base}' used before declaration"),);
                     target_ok = false;
                 }
@@ -683,6 +752,8 @@ fn analyze_assign_init(
                         start,
                         pctx.reserved,
                         locals,
+                        &st.local_aliases,
+                        &st.local_array_aliases,
                         &decl_state,
                         errors,
                     );
@@ -692,12 +763,21 @@ fn analyze_assign_init(
                         end,
                         pctx.reserved,
                         locals,
+                        &st.local_aliases,
+                        &st.local_array_aliases,
                         &decl_state,
                         errors,
                     );
                 }
-                target_ok &=
-                    validate_proc_expr_decl_order(expr, pctx.reserved, locals, &decl_state, errors);
+                target_ok &= validate_proc_expr_decl_order(
+                    expr,
+                    pctx.reserved,
+                    locals,
+                    &st.local_aliases,
+                    &st.local_array_aliases,
+                    &decl_state,
+                    errors,
+                );
                 if !target_ok {
                     return;
                 }
@@ -851,8 +931,15 @@ fn analyze_assign_init(
             // Proc mode: declaration-order validation
             if let Some(pctx) = ctx.proc_init_resolution() {
                 let decl_state = build_decl_check_state(st);
-                let decl_ok =
-                    validate_proc_expr_decl_order(expr, pctx.reserved, locals, &decl_state, errors);
+                let decl_ok = validate_proc_expr_decl_order(
+                    expr,
+                    pctx.reserved,
+                    locals,
+                    &st.local_aliases,
+                    &st.local_array_aliases,
+                    &decl_state,
+                    errors,
+                );
                 if !decl_ok {
                     // Register placeholder so downstream doesn't see undeclared symbol
                     if is_plain_symbol(name)
@@ -865,17 +952,24 @@ fn analyze_assign_init(
                         match expr {
                             Expr::ArrayCtor { .. } | Expr::UserCall { .. } => {}
                             _ => {
-                                st.state_scalars.entry(name.clone()).or_insert(
-                                    decl_ty
-                                        .or(ctx.init_default_ty)
-                                        .unwrap_or(PrimitiveType::F32),
-                                );
-                                insert_declared_symbol(
-                                    &mut st.state_scalars,
-                                    &mut st.declared_symbols,
-                                    name.clone(),
-                                    DeclaredSymbolInfo::InvalidPlaceholder,
-                                );
+                                let placeholder_ty = decl_ty
+                                    .or(ctx.init_default_ty)
+                                    .unwrap_or(PrimitiveType::F32);
+                                if allow_owner_state_intro {
+                                    st.state_scalars
+                                        .entry(name.clone())
+                                        .or_insert(placeholder_ty);
+                                    insert_declared_symbol(
+                                        &mut st.state_scalars,
+                                        &mut st.declared_symbols,
+                                        name.clone(),
+                                        DeclaredSymbolInfo::InvalidPlaceholder,
+                                    );
+                                } else {
+                                    st.local_aliases
+                                        .entry(name.clone())
+                                        .or_insert(placeholder_ty);
+                                }
                             }
                         }
                     }
@@ -1845,8 +1939,9 @@ fn analyze_assign_init(
                 struct_defs,
                 errors,
             );
-            let existing = st.state_scalars.get(name).copied();
-            if let (Some(declared), Some(existing)) = (declared_ty, existing) {
+            let existing_state = st.state_scalars.get(name).copied();
+            let existing_local = st.local_aliases.get(name).copied();
+            if let (Some(declared), Some(existing)) = (declared_ty, existing_state) {
                 if declared != existing {
                     target_error!(format!(
                         "{} state symbol '{name}' has conflicting types {:?} and {:?}",
@@ -1854,13 +1949,45 @@ fn analyze_assign_init(
                     ),);
                 }
             }
-            let effective_expr_ty = if declared_ty.is_none() && existing.is_none() {
+            let local_only_symbol = !allow_owner_state_intro
+                && existing_state.is_none()
+                && !st.state_arrays.contains_key(name)
+                && !st.state_array_struct_roots.contains_key(name)
+                && !st.struct_instances.contains_key(name)
+                && !input_names.contains(name)
+                && !output_names.contains(name)
+                && !param_names.contains(name)
+                && !st.local_array_aliases.contains_key(name)
+                && !is_builtin_constant_name(name);
+            if local_only_symbol || existing_local.is_some() {
+                let effective_expr_ty = if declared_ty.is_none() && existing_local.is_none() {
+                    effective_untyped_assignment_type(expr, expr_ty)
+                } else {
+                    expr_ty
+                };
+                let target_ty = existing_local
+                    .or(declared_ty)
+                    .or(effective_expr_ty)
+                    .or(ctx.init_default_ty)
+                    .unwrap_or(PrimitiveType::F32);
+                require_expr_assignable_type(
+                    expr,
+                    expr_ty,
+                    target_ty,
+                    &format!("init assignment to '{name}'"),
+                    errors,
+                );
+                st.local_aliases.entry(name.clone()).or_insert(target_ty);
+                st.known_scalars.insert(name.clone());
+                return;
+            }
+            let effective_expr_ty = if declared_ty.is_none() && existing_state.is_none() {
                 effective_untyped_assignment_type(expr, expr_ty)
             } else {
                 expr_ty
             };
             let target_ty = resolve_scalar_assignment_type(
-                existing,
+                existing_state,
                 declared_ty,
                 effective_expr_ty,
                 ctx.init_default_ty,
