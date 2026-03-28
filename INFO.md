@@ -76,11 +76,10 @@
   - `buffers N` -> `buf1..bufN`
 - For `ins` / `outs` / `params`, count prefix + explicit list is supported (`ins 2: ...`) and must match the explicit declaration count.
 - For `buffers`, explicit declarations and count shorthand still cannot be mixed in the same block.
-- Count shorthand for `ins` / `outs` / `params` also accepts compile-time constant expressions and namespace template parameters:
+- Count shorthand for `ins` / `outs` / `params` / `buffers` also accepts compile-time constant expressions and namespace template parameters:
   - `const N = 4; ins N` expands to `in1..in4`.
   - `outs (N + 1)` supports parenthesized arithmetic.
   - Namespace template params work inside proc definitions: `namespace Synth<Num = 2>: proc Voice: ins Num`.
-  - `buffers` count shorthand does not support const-expression counts (integer literals only).
 - Dynamic port indexing is supported for `ins`, `outs`, and `params` when declared with an explicit block:
   - `ins[i]`, `outs[i]`, `params[i]` use runtime 0-based integer indices.
   - Indices are clamped to the valid range at runtime.

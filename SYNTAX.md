@@ -1,43 +1,77 @@
-# Omni Syntax (Current)
+# Omni Syntax
 
 This document describes the syntax currently implemented in `omni-llvm`.
+It is organized from the simplest idea in Omni, the block, through reusable abstractions and multi-file programs.
 
-## 1 Program structure
+## 1. Reading an Omni file
 
 Omni supports both brace style and indentation style.
 
 ```omni
-outs { out1 }
-sample { out1 = 0.0 }
+outs { 
+  out1 
+}
+
+sample { 
+  out1 = 0.0
+}
 ```
 
 ```omni
 outs:
   out1
+
 sample:
   out1 = 0.0
 ```
 
-Statements can be separated by newline or `;`.
-Line comments use `#`.
+Basic syntax rules:
+- statements can be separated by newline or `;`
+- line comments use `#`
+- top-level declarations are read in lexical order
+- names must be introduced before they are used
 
-Top-level blocks:
+## 2. What is a block?
+
+An Omni program is mostly a collection of named blocks.
+A block is a section such as `params:`, `init:`, or `sample:` that groups related declarations or executable code.
+
+The main top-level blocks are:
 - `ins`
-- `outs`
 - `params`
-- `const`
 - `events`
 - `buffers`
+- `outs`
 - `init`
 - `block`
 - `sample`
 - `graph`
+- `const`
 - `def`
 - `struct`
 - `proc` / `processor`
 - `namespace`
 
-## 2 Types
+You will also see file-level declarations that are not blocks:
+- `import module/path`
+- `include "path.omni"`
+
+There are two big categories:
+
+- Declaration blocks
+  - `ins`, `params`, `events`, `buffers`, `outs`, `const`, `def`, `struct`, `proc`, `namespace`
+- Executable blocks
+  - `init`, `block`, `sample`, `graph`
+
+The executable model is:
+- `init` runs when an instance is created or reset
+- `block` runs once per host block and can contain a nested `sample`
+- `sample` runs once per sample
+- `graph` is an alternative to `sample` / `block` and lets you describe routing declaratively
+
+The same basic idea applies both at the top level and inside `proc` declarations.
+
+## 3. Types you will see in blocks
 
 Primitive types:
 - `f32`
@@ -46,166 +80,88 @@ Primitive types:
 - `i64`
 - `bool`
 
-Array type syntax:
-- `T[N]` (for example `f32[2]`, `i32[SR * 2]`)
+Compound types:
+- fixed arrays: `T[N]`
+- tuples: `(T1, T2, ...)`
+- buffers:
+  - `buffer[T]`
+  - `buffer[T[2]]`
+  - `buffer[T[]]`
 
-Tuple type syntax:
-- `(T1, T2, ...)` (for example `(f32, i32)`, `(f32, f32, bool)`)
-- Up to 16 elements
-
-Buffer declaration types:
-- `buffer[T]` (mono)
-- `buffer[T[2]]` (static channel count)
-- `buffer[T[]]` (dynamic channel count)
-
-Buffer method semantics:
-- `buf.len()` returns frame count
-- `buf.chans()` returns channel count
-- `buf.samplerate()` returns the per-buffer sample rate as `f32` (bound from the host via C API)
-- there is no public flattened-length/`totalLen` method
-
-### Buffer indexing
-
-Multi-channel buffers use `buf[channel][sample]` indexing — the first index selects the channel, the second selects the sample (frame) position:
+Examples:
 
 ```omni
+ins:
+  audio: f32[2]
+
+params:
+  mode: i32 = 0
+
+init:
+  taps: f32[8]
+  pair = (0.0, 1.0)
+
 buffers:
-  bus: buffer[f32[2]]
-
-sample:
-  left  = bus[0][i]   # channel 0, sample i
-  right = bus[1][i]   # channel 1, sample i
+  src: [f32]
+  bus: [f32[2]]
 ```
 
-For a stereo buffer with 4 frames of data `[1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0]`:
+## 4. The core blocks
 
-| Expression | Meaning | Value |
-|---|---|---|
-| `bus[0][0]` | channel 0, frame 0 | 1.0 |
-| `bus[1][0]` | channel 1, frame 0 | 10.0 |
-| `bus[0][1]` | channel 0, frame 1 | 2.0 |
-| `bus[1][1]` | channel 1, frame 1 | 20.0 |
+This section walks through the blocks in the order you asked for: `ins`, `params`, `events`, `buffers`, `outs`, `init`, `block`, `sample`, then `graph`.
 
-Inside `def` bodies, the same convention applies when a buffer is passed as a parameter:
+### 4.1 `ins`
 
-```omni
-def sum_stereo(buf: buffer[f32[2]]):
-  return buf[0][0] + buf[1][0]   # left + right of frame 0
-```
-
-Mono buffers (`buffer[f32]`) use single-index access `buf[sample]`.
-
-## 3 Ports, params, buffers
-
-Basic declarations:
+`ins` declares input ports.
 
 ```omni
 ins:
   in1
   side: f64
-
-outs:
-  out1
-  out2
-
-params:
-  gain = 1.0
-  mode: i32 = 0
-
-buffers:
-  ext: buffer[f32]
-  bus: buffer[f32[2]]
+  stereo: f32[2]
 ```
 
-Count shorthand:
+Count shorthand is supported:
 
 ```omni
 ins 2
-outs 2
-params 3
-buffers 2
 ```
 
-Count shorthand also accepts compile-time constant expressions and namespace template parameters:
+You can also combine a count with explicit declarations:
 
 ```omni
-const N = 1
-
-outs (N + 1)
-
-sample:
-  out1 = 5.0
-  out2 = 10.0
+ins 2:
+  left
+  right
 ```
 
-Rules:
-- The count expression must evaluate to a positive integer at compile time.
-- Supported forms: integer literals, const names, parenthesized arithmetic expressions (`outs (N + 1)`), and namespace template parameters.
-- If both a count and explicit declarations are provided, the count must match the declaration count exactly.
-- `buffers` count shorthand does not support const-expression counts (integer literals only).
-
-Count prefix with explicit declarations (`ins`/`outs`/`params`):
+Section default types are supported:
 
 ```omni
-params 2:
-  freq = 500 {8000}
-  mix = 0.5 {0.0, 1.0}
-```
-
-Section default type shorthand:
-
-```omni
-ins<f64> 2
-
-outs<f64>:
-  out1
+ins<f64>:
+  left
+  right
   meter: f32
-
-params<i32>:
-  mode
-
-buffers[f32]:
-  line
-```
-
-`init` also supports section default scalar type shorthand:
-
-```omni
-init<f64>:
-  phase = 0.0
-  last = 0.0
 ```
 
 Rules:
-- `init<T>` / `init<f64>` applies to untyped scalar declarations in `init`.
-- Explicit per-symbol declaration types still win (`x: i32 = ...`).
-- Non-scalar section defaults (for example `init<f32[4]>`) are invalid.
+- omitted input types default to `f32`
+- explicit entry types override the section default type
+- `ins N` expands to `in1..inN`
+- the count can be a compile-time integer expression
+- if both a count and an explicit declaration list are present, they must match exactly
+- if `inN` is used without an `ins` block, it is implicitly created as `f32`
+- compile-time count expressions can use ordinary `const` values and namespace integer template parameters
 
-Array-typed ports/params are supported:
+Scalar ranges are supported on scalar `ins` only:
 
 ```omni
 ins:
-  in_st: f32[2]
-
-outs:
-  out_st: f32[2]
-
-params:
-  gains: f32[2] = [1.0, 1.0]
+  freq = 440.0 {20.0, 20000.0}
+  drive: i32 = 2 {8}
 ```
 
-Rules:
-- Explicit entry type overrides section default type.
-- For `ins`/`outs`/`params`, count prefix must match explicit declaration count.
-- Ranges are supported on scalar `ins` and scalar `params` only:
-  - `name = default {min, max}`
-  - `name = default {max}` (max-only)
-- Ranges on arrays are rejected.
-- If `inN`/`outN` are used without declaration, they are implicitly created as `f32`.
-
-### Dynamic port indexing
-
-When `ins`, `outs`, or `params` are declared with an explicit block (count shorthand or explicit list), runtime indexed access is supported:
+Dynamic indexed access is supported when the inputs were declared explicitly:
 
 ```omni
 const N = 4
@@ -218,127 +174,245 @@ sample:
     outs[i] = ins[i] * 0.5
 ```
 
-Rules:
-- `ins[i]`, `outs[i]`, and `params[i]` use runtime integer indices (0-based).
-- Indices are clamped to the valid range (`0..count-1`) at runtime.
-- `outs[i] = expr` is a write; `ins[i]` and `params[i]` are reads.
-- Port indexing requires an explicit `ins`/`outs`/`params` declaration block. Implicit ports (e.g. using `in1` without an `ins` block) cannot be indexed.
-- Port indexing works at top-level and inside processors.
-- Combined with namespace-generic counts, this enables fully parametric processors:
+Dynamic input indexing rules:
+- `ins[i]` is 0-based
+- runtime indices are clamped to the valid range
+- dynamic indexing requires an explicit `ins` declaration block
+- implicit inputs created by using `in1`, `in2`, and so on cannot be indexed
+
+### 4.2 `params`
+
+`params` declares tweakable parameters.
 
 ```omni
-namespace Synth<N = 2>:
-  proc Voice:
-    ins N
-    outs N
-    sample:
-      for i in 0..N:
-        outs[i] = ins[i] * 2.0
+params:
+  gain = 1.0
+  mode: i32 = 0
+  spread: f32[2] = [0.25, 0.75]
 ```
 
-## 4 Variables, assignment, expressions
-
-First assignment infers type by default:
+Count shorthand and section default types work the same way as `ins`:
 
 ```omni
-sample:
-  x = 0
-  y = 0.0
+params 2
+
+params<i32>:
+  mode
+  octave = 0
 ```
 
-Explicit declaration pins type:
+Scalar ranges are supported:
 
 ```omni
-sample:
-  x: i64 = 0
-```
-
-Operators:
-- Arithmetic: `+`, `-`, `*`, `/`, `%`
-- Bitwise integer ops: `~`, `&`, `|`, `^`, `<<`, `>>`
-- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
-- Logical ops: `!`, `&&`, `||`
-
-Bitwise rules:
-- `~`, `&`, `|`, `^`, `<<`, and `>>` are integer-only.
-- Valid operand/result types are `i32` and `i64`.
-- Mixed `i32`/`i64` operands widen to `i64`.
-- `>>` is an arithmetic right shift.
-
-Precedence (low to high):
-- `||`
-- `&&`
-- `|`
-- `^`
-- `&`
-- comparisons
-- `<<`, `>>`
-- `+`, `-`
-- `*`, `/`, `%`
-
-Constants:
-- `PI` / `pi`
-- `TWO_PI` / `TWOPI` / `two_pi` / `twopi`
-- `SAMPLE_RATE` / `SAMPLERATE` / `SR` / `sample_rate` / `samplerate`
-- `BLOCK_SIZE` / `BLOCKSIZE` / `BS` / `block_size` / `blocksize`
-- Default constant types:
-  - `PI`/`TWO_PI`: `f64`
-  - `SAMPLE_RATE`: `f32`
-  - `BLOCK_SIZE`: `i32`
-
-User-defined compile-time constants:
-
-```omni
-const MAX_IR = 100000
-const HOP: i32 = BLOCK_SIZE / 2
+params:
+  freq = 440.0 {20.0, 20000.0}
+  feedback = 0.5 {0.0, 0.99}
+  voices: i32 = 4 {16}
 ```
 
 Rules:
-- `const NAME = expr` and `const NAME: T = expr` are supported.
-- `T` is primitive scalar only in the current implementation (`f32`, `f64`, `i32`, `i64`, `bool`).
-- `expr` must be compile-time evaluable.
-- `const` is supported at top-level, inside namespaces, and inside executable scopes (`init`, `block`, `sample`, `events`, `def`).
-- Namespace consts are accessible from outside via qualified paths such as `NS::VALUE` and instantiated namespace forms like `std::convolution<8, 8>::HopSize`.
-- Visibility is lexical and forward references are not supported in the current implementation.
-- Reassignment is rejected.
-- Builtin compile-time constant names such as `SR` / `SAMPLE_RATE` / `BLOCK_SIZE` remain reserved.
+- omitted parameter types default to `f32`
+- ranges are supported only on scalar params
+- arrays are supported, but array params cannot have ranges
+- `params[i]` is supported under the same dynamic-indexing rules as `ins[i]`
+- top-level params are readable in executable code but are not writable from top-level event handlers
+- proc constructor arguments for params are named-only
+- scalar parameter families can use count shorthand such as `params N`, while fixed-size parameter arrays can use types such as `T[N]`
 
-## 4.1 Executable-scope scoping and storage
+### 4.3 `events`
 
-Omni separates two questions:
-- Is a name visible here?
-- Does that name become persistent owner state?
+`events` declares callable event handlers.
+At the top level, events are host-triggered.
+Inside a `proc`, events are receiver-only commands that you call on a proc instance.
 
-The scoping/storage model is shared across top-level code and `proc` bodies.
+Top-level example:
 
-Lexical / flow rules:
-- `for` loop variables are local to the loop body.
-- A fresh variable created inside a loop does not escape the loop.
-- A fresh variable created in both `if` branches is available after the `if` only when it is definitely assigned on every branch.
-- Assigning to an existing visible variable updates that variable; it does not create a new one.
-- Declaration order is lexical: a symbol must be introduced before it is read.
+```omni
+events:
+  note_on(freq_hz = 440.0, amp = 1.0):
+    freq_state = freq_hz
+    amp_state = amp
+    gate = true
 
-Storage rules by executable scope:
-- `init`
-  - a fresh top-level scalar assignment introduces persistent owner state
-  - a fresh nested assignment inside `if` / `for` / `while` creates a local, not persistent state
-  - nested `init` code may still assign to already-declared owner state
-- `sample`
-  - fresh assignments create locals
-  - `sample` does not introduce new owner state
-- `block`
-  - `block` runs in order: `block pre -> sample -> block post`
-  - a fresh top-level assignment in `block pre` introduces block-carried owner state visible to later `sample` and `block post`
-  - a fresh top-level assignment in `block post` is visible only after that point; it is not retroactively visible to `sample` in the same callback
-  - fresh nested assignments inside `if` / `for` / `while` stay local
-- `def`
-  - fresh assignments create locals
-  - `def` does not introduce owner state
-- `events`
-  - fresh assignments create locals unless they assign to already-existing mutable owner state
-  - events do not introduce new owner state
+  note_off():
+    gate = false
+```
 
-Examples:
+Proc-level example:
+
+```omni
+proc Voice:
+  params:
+    amp = 0.0
+
+  events:
+    note_on(v: f32):
+      amp = v
+
+  sample:
+    out1 = amp
+```
+
+Supported event parameter types:
+- primitive scalars
+- fixed-size primitive arrays: `T[N]`
+- read-only primitive slices: `T[]`
+- for proc events only, generic primitive slices such as `T[]` when `T` is a proc generic parameter specialized to a primitive
+
+Rules:
+- event params without an explicit type default to `f32`
+- fixed-array and slice params are read-only in handlers
+- top-level events run immediately on the audio thread
+- proc events are reached through explicit receiver calls such as `voice.note_on(...)`
+- proc-event calls are statement-only, not expressions
+- unqualified calls never resolve to proc events
+- top-level handlers may write only to existing top-level state rooted in `init`
+- proc handlers may write proc state rooted in `init` declarations and proc params
+- handlers cannot write inputs or outputs
+- top-level event handlers cannot write top-level params
+- unknown top-level event indices are ignored
+- a known top-level event with the wrong payload size is a runtime error
+- for top-level host events with slice params, the payload layout is `i32 len` followed by contiguous element bytes
+
+Every proc also gets a builtin reserved `init(...)` event:
+- it mirrors the proc params in declaration order
+- it uses the concrete specialized param types
+- it cannot be redefined in the proc `events` block
+- it assigns the provided values into the proc params
+
+That makes calls such as these legal:
+
+```omni
+voice.init(0.5)
+voice.init(gain = 0.5)
+voices[i].init(freq = 220.0, amp = 0.1)
+```
+
+### 4.4 `buffers`
+
+`buffers` declares external host-bound buffers.
+
+```omni
+buffers:
+  src: buffer[f32]
+  bus: buffer[f32[2]]
+  any_bus: buffer[f32[]]
+```
+
+Inside a `buffers` block, shorthand forms are accepted:
+
+```omni
+buffers:
+  mono: f32
+  stereo: f32[2]
+  dyn: f32[]
+```
+
+Count shorthand is supported:
+
+```omni
+buffers 2
+```
+
+Section default type shorthand is also supported:
+
+```omni
+buffers[f32]:
+  delay
+  scratch
+```
+
+Buffer access:
+
+```omni
+sample:
+  mono0 = src[0]
+  left0 = bus[0][0]
+  right0 = bus[1][0]
+```
+
+Buffer methods:
+- `buf.len()` returns the frame count
+- `buf.chans()` returns the channel count
+- `buf.samplerate()` returns the bound buffer sample rate as `f32`
+
+There is currently no public flattened-length or `total_len` method.
+
+Other supported operations:
+- method-style and free-function unchecked access:
+  - `buf.unsafe_read(i)`
+  - `buf.unsafe_write(i, v)`
+  - `unsafe_read(buf, i)`
+  - `unsafe_write(buf, i, v)`
+- primitive buffer slicing, covered later in the arrays section
+
+Rules:
+- `buffers N` expands to `buf1..bufN`
+- explicit declarations and count shorthand cannot currently be mixed in the same `buffers` block
+- `buffers` count shorthand accepts the same compile-time integer expressions as other section counts, including `const` values and namespace integer template parameters
+- runtime binding validates element type and channel constraints
+
+### 4.5 `outs`
+
+`outs` declares output ports.
+
+```omni
+outs:
+  out1
+  stereo: f32[2]
+```
+
+Count shorthand and section default types work the same way as `ins`:
+
+```omni
+outs 2
+
+outs<f64>:
+  left
+  right
+```
+
+Rules:
+- omitted output types default to `f32`
+- `outs N` expands to `out1..outN`
+- if `outN` is used without an `outs` block, it is implicitly created as `f32`
+- `outs[i] = expr` is supported when outputs were declared explicitly and uses clamped 0-based runtime indexing
+
+### 4.6 `init`
+
+`init` is where persistent state is created and where structs and processors are usually constructed.
+It runs on instance creation and reset.
+
+```omni
+init:
+  phase = 0.0
+  gain = 0.5
+  taps: f32[8]
+```
+
+Typical uses:
+- create persistent scalar state
+- create arrays and tuples
+- construct structs
+- construct proc instances
+- perform one-time setup
+
+Section default scalar types are supported:
+
+```omni
+init<f64>:
+  phase = 0.0
+  last = 0.0
+```
+
+Rules:
+- a fresh top-level scalar assignment in `init` introduces persistent owner state
+- a fresh assignment inside nested control flow in `init` is local to that `init` flow, not persistent state
+- assigning to an already visible state symbol updates that state
+- `const` declarations are allowed inside `init`
+- declaration order is lexical
+
+Example:
 
 ```omni
 init:
@@ -347,239 +421,508 @@ init:
   else:
     tmp = 2.0
   carried = tmp
-
-sample:
-  out1 = carried
 ```
 
-This is valid: `tmp` is local to `init`, but both branches assign it, so it is available later in the same `init` flow. Only `carried` becomes persistent state.
+`tmp` is local to `init`, but because every branch assigns it, it is available later in the same `init` flow.
+`carried` becomes persistent state.
 
-```omni
-init:
-  for i in 0..4:
-    tmp = f32(i)
-  carried = tmp
-```
+For the normative storage/scoping rules, see [SCOPING.md](SCOPING.md).
 
-This is invalid: a fresh loop-local `tmp` does not escape the loop.
+### 4.7 `block`
+
+`block` is the per-audio-block executable scope.
+It is useful when a value should be computed once per host block rather than once per sample.
+
+Structure:
 
 ```omni
 block:
-  acc = 0.0
-  if gate:
-    tmp = 1.0
+  precomputed = freq * TWO_PI / SR
+
   sample:
-    out1 = acc
+    phase = phase + precomputed
+    out1 = sin(phase)
 ```
 
-This is valid for `acc` and invalid for `tmp`: top-level `block pre` assignments carry forward into `sample`, but nested block locals do not leak out of the nested scope.
-
-For the normative version of these rules, see [SCOPING.md](SCOPING.md).
-
-Compile-time assertions:
-
-```omni
-namespace Config:
-  assert(BLOCK_SIZE > 0)
-```
+You can think of it as:
+- `block pre`
+- nested `sample`
+- `block post`
 
 Rules:
-- `assert(expr)` is supported inside namespaces only.
-- `expr` must be a compile-time constant expression.
-- `expr` must evaluate to `bool`.
-- If the condition is `false`, compilation fails.
+- top-level statements before the nested `sample:` are block-pre code
+- statements after the nested `sample:` are block-post code
+- fresh top-level assignments in block-pre introduce block-carried owner state visible to later `sample` and block-post code
+- fresh top-level assignments in block-post are visible only after that point
+- fresh nested assignments inside `if`, `for`, and `while` stay local
+- `block` and `sample` are mutually exclusive with `graph` in the same owner
 
-## 5 Control flow
+This is the common pattern for derived per-block values:
 
-Supported:
-- `if (...) { ... } else { ... }`
-- `if (...) { ... } elif (...) { ... } else { ... }`
-- `for i in A..B { ... }` (exclusive end)
-- `for i in A..=B { ... }` (inclusive end)
-- `for i @ STEP in A..B { ... }` (`@ STEP` optional; default step is `1`)
-- Descending loops use a negative step (for example `for i @ -1 in 10..0`)
-- `@ 0` is invalid
-- `loop N { ... }` (sugar)
-- `while (...) { ... }`
-- `break`
-- `continue`
-- `return`
+```omni
+block:
+  incr = freq * TWO_PI / SR
 
-## 5.1 Sample oversampling (`sample N`)
+  sample:
+    phase = phase + incr
+    if phase > TWO_PI:
+      phase = phase - TWO_PI
+    out1 = sin(phase)
+```
 
-`sample` blocks support an optional oversampling factor:
+### 4.8 `sample`
+
+`sample` is the per-sample executable scope.
 
 ```omni
 sample:
-  out1 = in1
+  out1 = in1 * gain
+```
 
+Rules:
+- fresh assignments in `sample` create locals
+- `sample` does not introduce new persistent owner state
+- `return` is valid in `def` bodies, not in top-level `sample`
+
+Sample oversampling is supported:
+
+```omni
 sample 4:
   out1 = tanh(in1 * 8.0)
 ```
 
-The same syntax is supported inside processors:
-
-```omni
-proc Drive:
-  ins: in1
-  outs: out1
-  sample 8:
-    out1 = tanh(in1 * 12.0)
-```
-
-Rules:
-- Allowed factors: `1`, `2`, `4`, `8`, `16`, `32`, `64`
+Rules for oversampled `sample` blocks:
+- allowed factors are `1`, `2`, `4`, `8`, `16`, `32`, `64`
 - `sample:` is equivalent to `sample 1:`
-- Factor must be an integer literal
-- Invalid factors and non-literal factors are semantic errors
+- the factor must be an integer literal
+- invalid factors are semantic errors
 
-Runtime behavior:
+Runtime behavior of oversampling:
 - input reads are interpolated across oversample substeps
 - params are held within the base sample
-- outputs are filtered/decimated back to base rate by compiler-managed conversion
+- outputs are filtered and decimated back to the base rate
 
-## 5.2 Graph routing (`graph`)
+### 4.9 `graph`
 
-`graph` is supported at top-level and inside processors.
+`graph` describes routing declaratively.
+Use it when you want the compiler to wire together proc instances and signal flow for you.
 
 ```omni
-proc Main:
-  ins:
-    in_st: f32[2]
-  outs:
-    out_st: f32[2]
+proc GainProc:
   params:
-    mix = 0.25
+    gain = 1.0
 
-  init:
-    rev = Reverb()
+  sample:
+    out1 = in1 * gain
 
-  graph:
-    in_st[0] >> rev.inL
-    in_st[1] >> rev.inR
-    mix >> rev.mix
-    rev.outL >> out_st[0]
-    rev.outR >> out_st[1]
+init:
+  p = GainProc()
+
+graph:
+  in1 >> p.in1
+  3.0 >> p.gain
+  p.out1 >> out1
 ```
 
-Edge forms:
+`graph` is supported both at the top level and inside processors.
+
+Supported edge forms:
 
 ```omni
 src >> dst
 dst << src
 @block src >> dst
-@block dst << src
 @sample src >> dst
-@sample dst << src
 src >>[expr] dst
-dst <<[expr] src
-src >> { dst1, dst2 }
-{ dst1, dst2 } << src
+src >> { a, b }
+{ a, b } << src
 ```
 
-Rules:
-- `graph` is mutually exclusive with `sample` and `block` in the same owner.
-- `init` may still be used with `graph`.
-- Proc instances used as graph nodes are created in `init`.
-- Unannotated edges targeting proc `params` are inferred as `@block`.
-- Unannotated edges targeting other destinations are inferred as `@sample`.
-- `@sample` may override the default `@block` behavior for proc param destinations.
-- `>>[expr]` / `<<[expr]` use a compile-time nonnegative integer expression.
-- Delay expressions can use integer literals, arithmetic/bitwise constant expressions, ordinary `const` values, namespace consts, and namespace template parameters.
-- Delayed edges are sample-rate only.
-- `>>[0]` does not break cycles.
+Important rules:
+- `graph` is mutually exclusive with `sample` and `block` in the same owner
+- `init` may still be used together with `graph`
+- proc instances used as graph nodes are typically created in `init`
+- unannotated edges targeting proc params default to `@block`
+- unannotated edges targeting other destinations default to `@sample`
+- `@sample` can override the default `@block` behavior for proc param destinations
+- delayed edges use `>>[expr]` or `<<[expr]`, where `expr` must be a compile-time nonnegative integer expression
+- delayed edges are sample-rate only
+- `>>[0]` does not break a cycle
 
-Legal destinations:
+Current graph sources include:
+- top-level inputs and params
+- proc outputs
+- proc-array slot outputs
+- array literals such as `[a, b]`
+- indexed reads
+- sliced reads
+- whole-array reads
+- arithmetic and logical expressions built from supported graph sources
+- element-wise array expressions where the final shape matches the destination
+
+Current legal destinations include:
 - top-level outputs
-- proc inputs and params
-- proc-array slot inputs and params such as `voices[0].gain`
+- proc inputs
+- proc params
+- proc-array slot inputs and params
+
+Type and scheduling rules:
+- graph edges use strict shape matching
+- scalar-to-fixed-array broadcast is allowed
+- each destination has a single writer
+- fan-out is allowed
+- cycles are rejected unless a positive sample delay breaks the cycle
+- proc nodes are stepped implicitly according to graph reachability and topological order
+- graph lowering can be inspected with `omni compile <file> --dump-graph`
+
+Current graph limits:
+- user-defined function calls and proc calls are not supported inside graph source expressions
+- array-constructor expressions such as `f32[2](...)` are not graph sources
+- graph event propagation syntax does not exist; use ordinary `events` blocks for event routing
+
+Proc bundles can route directly into destination sets:
+
+```omni
+graph:
+  reverb >> { out1, out2 }
+  voices[0] >> { left, right }
+```
+
+Those forms:
+- zip by output order when the proc has the same number of outputs as the destination set
+- broadcast when the proc has exactly one output
+- otherwise produce a semantic error
+
+## 5. Common syntax inside executable code
+
+Once you know what the major blocks are, the rest of the language is mostly the syntax you use inside `init`, `block`, `sample`, `events`, and `def`.
+
+### 5.1 Variables, assignment, and typing
+
+First assignment infers a type by default:
+
+```omni
+sample:
+  x = 0
+  y = 0.0
+```
+
+Explicit declarations pin the type:
+
+```omni
+sample:
+  x: i64 = 0
+```
+
+Assignment rules:
+- assigning to an existing visible symbol updates it
+- assigning to a new symbol introduces a new symbol according to the storage/scope rules of the current executable scope
+- declaration order is lexical
+
+### 5.2 Operators and builtin constants
+
+Supported operators:
+- arithmetic: `+`, `-`, `*`, `/`, `%`
+- comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- logical: `!`, `&&`, `||`
+- bitwise integer ops: `~`, `&`, `|`, `^`, `<<`, `>>`
+
+Bitwise rules:
+- bitwise operators accept `i32` and `i64` only
+- mixed `i32` and `i64` operands widen to `i64`
+- `>>` is an arithmetic right shift
+
+Builtin compile-time constants:
+- `PI`, `pi`
+- `TWO_PI`, `TWOPI`, `two_pi`, `twopi`
+- `SAMPLE_RATE`, `SAMPLERATE`, `SR`, `sample_rate`, `samplerate`
+- `BLOCK_SIZE`, `BLOCKSIZE`, `BS`, `block_size`, `blocksize`
+
+Default builtin constant types:
+- `PI` and `TWO_PI` are `f64`
+- `SAMPLE_RATE` is `f32`
+- `BLOCK_SIZE` is `i32`
+
+### 5.2.1 Numeric literals, precision, and automatic narrowing
+
+Numeric literals in Omni have two related behaviors:
+- untyped first-assignment inference keeps the language's usual defaults
+- pure numeric literal expressions adapt automatically to the surrounding numeric context
+
+What that means in practice:
+- an untyped decimal literal such as `0.5` defaults to `f32` when it introduces a new symbol
+- an untyped integer literal such as `5` defaults to `i32` when it fits in `i32`, otherwise `i64`
+- builtin constants such as `PI` and `TWO_PI` are `f64`
+- pure numeric expressions such as `0.5 + 0.25`, `PI * 2.0`, or `TWO_PI / SR` can be narrowed automatically when used in an `f32` or `i32` context
 
 Examples:
 
 ```omni
-graph:
-  in1 >> g.in1
-  env.out1 >> g.gain
-  @sample lfo.out1 >> lp.cutoff
-  src.pair >> out_st
-  voices[0].pair[1] >> out1
-  osc.out1 * env.out1 >> { reverb.in1, reverb.in2 }
-  reverb >> { out1, out2 }
-  voices[0] >> { out3, out4 }
+sample:
+  x = 0.5        # x becomes f32
+  n = 5          # n becomes i32
 ```
 
-Current source support includes:
-- top-level inputs and params
-- proc outputs
-- proc-array slot outputs
-- array literals such as `[in1, in2]`
-- indexed reads such as `gains[1]` and `src.pair[1]`
-- sliced reads such as `in_bus[1:3]` and `src.pair[:-1]`
-- whole-array reads such as `src.pair` and `voices[0].pair`
-- pure arithmetic/logical expressions built from supported graph sources
-- element-wise array expressions such as `in_a + in_b`, `in_a * 0.5 + in_b * 0.5`, and array-plus-scalar forms where the final edge shape still matches the destination
+```omni
+init:
+  phase: f32 = 0.0
 
-Receiver syntax:
-- `dst << src` is exact graph sugar for `src >> dst`
-- all implemented rate/delay forms apply equally to receiver syntax
-- destination sets work in both forms, so `src >> { a, b }` and `{ a, b } << src` are equivalent
-- bare proc-instance and proc-array-slot sources can target destination sets:
-  - `proc >> { a, b }` zips output slots by order when arity matches
-  - `proc >> { a, b }` broadcasts when the proc exposes exactly one output slot
-  - the same rules apply to `proc_array[idx] >> { ... }`
-  - any other output-slot count is a semantic error
+block:
+  tau = TWO_PI          # tau becomes f32 here
+  incr = freq * TWO_PI / SR
+```
 
-Current MVP limits:
-- user-defined calls and proc calls are not supported inside graph source expressions
-- array-constructor expressions such as `f32[2](...)` are not supported as graph sources
-- graph event propagation syntax does not exist; use ordinary `events` blocks for control/event routing
+Because `TWO_PI` is part of a pure numeric literal expression, you usually do not need to write:
 
-Type and scheduling rules:
-- graph edges use strict shape matching
-- `f32[2] >> f32[2]` is allowed
-- scalar-to-fixed-array broadcast is allowed, so `f32 >> f32[2]` expands element-wise
-- `f32[2] >> f32[3]` is rejected
-- delayed edges use the same strict shape rules, so `f32[2] >>[1] f32[2]` is allowed and `f32[2] >>[1] f32[3]` is rejected
-- each destination has a single writer
-- fan-out is allowed
-- explicit fan-out syntax shares one lowered source evaluation for that edge instead of recomputing the source per destination
-- cycles are rejected unless at least one cycle edge has positive sample delay
-- proc nodes are stepped implicitly according to graph reachability and topological order
-- delayed edge state persists across blocks/process calls
-- `graph` lowering can be inspected with `omni compile <file> --dump-graph`
-- graph slice bounds must be compile-time integer expressions
+```omni
+tau = f32(TWO_PI)
+```
 
-For/loop bounds:
-- `A`, `B`, and `N` may be general expressions, including parenthesized forms like `0..(n - 1)`.
+The language already handles that narrowing in the common case.
 
-## 6 Functions (`def`)
+Explicit casts are still useful when you want to force a particular type on purpose, for example:
+- to pin a declaration as `f64` or `i64`
+- to make a mixed-type expression obvious
+- to disambiguate overload resolution
+- to deliberately opt out of the default literal behavior
 
-Supported:
-- Positional and named arguments
-- Default arguments
-- Early return
-- Top-level `def` and struct-method overloads only, by arity and/or parameter type
-- Method-style sugar for functions: `value.fn(a, b)` is rewritten as `fn(value, a, b)` when a matching function `fn` is in scope.
-- Def scope is lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not directly visible inside a `def`.
-- Call argument lists may span multiple lines, and a trailing comma is allowed in both function calls and method calls.
-- Return types: a `def` can return a primitive scalar (`f32`, `f64`, `i32`, `i64`, `bool`) or a tuple of primitives. Returning structs, arrays, or buffers is not supported.
+User-defined `const` values follow the same general rule:
+- untyped `const X = expr` uses the inferred type of the constant expression
+- typed `const X: T = expr` evaluates `expr` as `T`
+
+That means typed constants preserve the precision of their declared type, while untyped code still gets Omni's normal `f32` / `i32` defaults where appropriate.
+
+User-defined compile-time constants:
+
+```omni
+const MaxVoices = 8
+const Hop: i32 = BLOCK_SIZE / 2
+```
+
+Rules:
+- `const NAME = expr` and `const NAME: T = expr` are supported
+- `expr` must be compile-time evaluable
+- `const` is supported at top level, inside namespaces, and inside executable scopes
+- namespace consts can be referenced through qualified paths such as `NS::VALUE`
+- reassignment is rejected
+- forward references are not currently supported
+
+### 5.3 Control flow
+
+Supported forms:
+- `if (...)`
+- `if (...) elif (...) else`
+- `for i in A..B`
+- `for i in A..=B`
+- `for i @ STEP in A..B`
+- `loop N`
+- `while (...)`
+- `break`
+- `continue`
+- `return`
+
+Examples:
+
+```omni
+for i in 0..8:
+  sum = sum + taps[i]
+
+for i @ -1 in 10..0:
+  dst[i] = src[i]
+```
+
+Loop rules:
+- `@ STEP` defaults to `1`
+- `@ 0` is invalid
+- descending loops use a negative step
+- loop variables are local to the loop body
+- a fresh symbol created inside a loop does not escape the loop
+
+### 5.4 Arrays and slices
+
+Fixed-size arrays are supported in state and local scopes:
+
+```omni
+init:
+  taps: f32[8]
+
+sample:
+  coeffs = [0.5, 0.25, 0.125]
+```
+
+Untyped array literals are supported where executable-scope declarations are valid:
+
+```omni
+sample:
+  a = [0.5, 0.8]
+  b = [i64(0), 1]
+```
+
+Primitive array and buffer slices use Python-style syntax:
+
+```omni
+sample:
+  a = buf[:]
+  b = buf[2:]
+  c = buf[:-1]
+  d = buf[1:-2]
+```
+
+Rules:
+- slice forms are `a[:]`, `a[start:]`, `a[:end]`, `a[start:end]`
+- negative bounds are supported
+- slice expressions lower to primitive slice views of type `T[]`
+- buffer slicing also yields `T[]`
+
+Writable slice assignment is supported:
+
+```omni
+sample:
+  values[1:-1] = 0.5
+  dst[:] = src[:]
+```
+
+Rules:
+- slice assignment is statement-only
+- scalar fill writes the full target slice
+- slice copy writes `min(dst_len, src_len)` elements
+- overlapping slice copies behave as if they were copied through a temporary
+- event payload arrays and slices are read-only and cannot be writable slice targets
+- struct-element arrays are not sliceable in the current implementation
+
+### 5.5 Tuples
+
+Tuples are anonymous fixed-length heterogeneous compound values.
+
+```omni
+sample:
+  pair = (1.0, 2.0)
+  triple = (1.0, 42, true)
+```
+
+Tuple syntax and rules:
+- type syntax is `(T1, T2, ...)`
+- maximum arity is 16
+- nested tuples are not currently supported
+- tuple element access uses compile-time integer indices only
+
+```omni
+sample:
+  pair = (3.0, 7.0)
+  out1 = pair[0]
+  out2 = pair[1]
+```
+
+Tuple destructuring is supported:
+
+```omni
+sample:
+  (a, b) = (10.0, 20.0)
+```
+
+Tuples can appear:
+- in local variables
+- in `init` state
+- as `def` parameters
+- as `def` return values
+- as struct fields
+
+Tuples use a flattened ABI internally.
+
+## 6. Functions with `def`
+
+`def` declares reusable functions.
 
 ```omni
 def wrap_phase(p, upper = TWO_PI):
-  if (p > upper):
+  if p > upper:
     return p - upper
   return p
 ```
 
-Overload examples:
+Supported features:
+- positional arguments
+- named arguments
+- default values
+- early return
+- multi-line argument lists with an optional trailing comma
+
+Return types:
+- a `def` can return a primitive scalar
+- a `def` can return a tuple of primitives
+- returning structs, arrays, or buffers is not supported
+
+Top-level `def` bodies are lexical-local:
+- top-level runtime symbols such as `ins`, `outs`, `params`, `buffers`, and top-level `init` state are not in scope unless passed explicitly
+
+Method-style sugar is supported for ordinary defs:
 
 ```omni
-def mix(x):
-  return x
+def clamp01(x):
+  return clamp(x, 0.0, 1.0)
 
-def mix(x, y):
-  return x + y
+sample:
+  out1 = in1.clamp01()
 ```
+
+That rewrites to `clamp01(in1)`.
+
+### 6.1 `def` parameter kinds
+
+In addition to primitive scalars, `def` parameters support:
+- explicit struct types
+- typed arrays such as `arr: f32[]`
+- untyped arrays such as `arr: []`
+- typed buffers such as `buf: buffer[f32]`
+- bare buffers such as `buf: buffer`
+- generic struct and proc parameters specialized at the call site
+- typed tuple params such as `p: (f32, i32)`
+- untyped tuple params specialized from the call site
+
+Examples:
+
+```omni
+def sum(arr: f32[]):
+  total = 0.0
+  for i in 0..arr.len():
+    total = total + arr[i]
+  return total
+
+def first(arr: []):
+  return arr[0]
+
+def read_first(buf: buffer):
+  return buf[0]
+```
+
+Untyped parameters can also be specialized structurally from how they are used inside the `def`.
+That means a function like this is valid:
+
+```omni
+struct A:
+  x: f32
+  y: f32
+
+struct B:
+  x: f32
+
+def read_x(s):
+  return s.x
+```
+
+and can be called with both `A` and `B`:
+
+```omni
+sample:
+  out1 = read_x(a) + read_x(b)
+```
+
+The compiler monomorphizes `read_x` from the call sites and the way `s` is used in the body.
+In this example, `s.x` means the argument must provide an `x` field with a compatible type.
+
+### 6.2 Overloads and resolution
+
+Top-level defs and struct methods may be overloaded by arity and parameter types.
 
 ```omni
 def sat(x: f32):
@@ -589,62 +932,26 @@ def sat(x: f64):
   return f32(x)
 ```
 
-### Parameter types
+Resolution rules:
+- exact typed match wins first
+- if no exact typed match exists, numeric widening candidates may be used
+- explicit typed parameters outrank generic or duck-typed parameters
+- generic or duck-typed parameters outrank untyped parameters
+- default arguments participate in overload matching
+- return type is not part of overload selection
+- equally valid candidates are a semantic error
 
-In addition to primitive types and struct types, `def` parameters support:
+Current overload support:
+- top-level `def`
+- struct methods
 
-- **Typed array**: `arr: f32[]`, `arr: i64[]` — accepts an array of the given element type with any length. No monomorphization needed.
-- **Untyped array**: `arr: []` — accepts an array of any element type. Monomorphized at each call site based on the concrete element type.
-- **Typed buffer**: `buf: buffer[f32]`, `buf: buffer[f64[2]]` — accepts a buffer matching the given type/channels.
-- **Bare buffer**: `buf: buffer` — accepts any buffer. Monomorphized at each call site based on the concrete buffer type.
-- **Generic struct/proc**: `v: Voice` where `Voice<T>` is a generic struct or proc — monomorphized at each call site based on the concrete specialization passed.
-- **Typed tuple**: `p: (f32, i32)` — accepts a tuple with the specified element types.
-- **Inferred tuple**: untyped param `p` called with a tuple literal — monomorphized at each call site by inferred element types.
+Current non-support:
+- proc-local defs are not overloadable
+- explicit `def` type parameter syntax such as `def fn<T>` is intentionally unsupported
 
-```omni
-# typed array param
-def sum(arr: f32[]):
-  total = 0.0
-  for i in 0..arr.len():
-    total = total + arr[i]
-  return total
+## 7. Structs
 
-# untyped array param (monomorphized per call site)
-def first(arr: []):
-  return arr[0]
-
-# bare buffer param (monomorphized per call site)
-def read_first(buf: buffer):
-  return buf[0]
-
-# generic struct param (monomorphized per call site)
-struct Box<T>:
-  val: T = 0.0
-
-def unbox(b: Box):
-  return b.val
-```
-
-Method-style sugar works with generic params: `voice.process()` desugars to `process(voice)` and monomorphizes correctly.
-
-### Resolution rules
-
-- Exact typed match is preferred.
-- If no exact typed match exists, implicit widening candidates may be considered.
-- Untyped parameters are lower priority than typed parameters.
-- Default arguments participate in overload matching.
-- If multiple candidates are equally valid, the call is a semantic error (ambiguous overload).
-- Return type is not part of overload selection.
-- Overloading currently applies to top-level `def` and struct methods.
-- Proc-local defs still cannot be overloaded; duplicate names in the same processor are rejected.
-- For overloads involving generic params: explicit type > generic/duck-typed > untyped.
-
-Explicit `def` type parameters (`def fn<T>`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
-
-## 7 Structs
-
-Struct fields and methods are supported.
-Methods must have `self` as the first argument.
+`struct` declares nominal data types with fields and methods.
 
 ```omni
 struct Voice:
@@ -656,226 +963,284 @@ struct Voice:
     self.sig = sin(self.phase)
 ```
 
-Typed struct declarations in `init` can use constructor form or declaration-only form:
+Supported features:
+- field defaults
+- methods
+- overloaded methods
+- tuple fields
+- generic structs, covered later
+
+Method rules:
+- `self` must be the first method parameter
+- methods can read and write struct fields through `self`
+
+Construction:
 
 ```omni
-import std/data
-
 init:
-  # explicit constructor
-  a: std::data::Data<f32> = std::data::Data()
-  # declaration-only: auto-initializes with default ctor state
-  b: std::data::Data<f32>
-  # namespace-instantiated owner type works too
-  c: std::data<SR, 1>::Data
+  a = Voice()
 ```
 
-Rules:
-- Typed struct declarations are `init`-only.
-- Declaration-only form (`x: Type`) desugars to default constructor initialization.
-- Generic typed declarations require explicit type args (for example `x: Box<f32>`; `x: Box` is rejected for generic `Box<T>`).
-- For untyped constructor assignments (`x = Box()` / `p = Proc()`), unresolved generic constructor type parameters default to `f32`.
-
-### Indexed struct field access
-
-One inline dot is supported for data-struct arrays:
+Typed struct declarations are supported in `init`:
 
 ```omni
-val = voices[i].gain
-voices[i].gain = 0.5
-val = voices[i].taps[j]
+init:
+  a: Voice = Voice()
+  b: Voice
 ```
 
-This works in executable scopes that can already access the underlying data, including `init`, `sample`, `block`, and `def`.
+Rules for typed `init` declarations:
+- typed struct declarations are `init`-only
+- declaration-only form such as `b: Voice` desugars to default-constructor initialization
+- for generic structs, typed declarations require explicit type args when the type is still generic
 
-Direct indexed assignment currently mirrors the scalar read form:
-- `base[idx].field = value`
+### 7.1 Indexed struct-array field access
 
-Inline array-field writes still require an intermediate alias:
+For arrays of data structs, one inline field-access dot is supported:
 
 ```omni
-v = voices[i]
-v.taps[j] = value
+sample:
+  gain = voices[i].level
+  tap = voices[i].taps[j]
 ```
 
-Non-indexed struct paths continue to allow deeper field chains for both reads and writes:
-
-```omni
-data.inner.value = 1.0
-val = data.inner.value
-```
-
-Inline chains with more than one dot are still **not supported**. Destructure into an intermediate alias instead:
-
-```omni
-# Supported:
-val = voices[i].taps[j]
-
-# NOT supported:
-# val = banks[i].voice.gain
-# val = data[i].nodes[j].value
-
-# Use an intermediate alias for deeper chains:
-bank = banks[i]
-val = bank.voice.gain
-
-v = voices[i]
-val = v.taps[j]
-```
-
-So the accepted inline forms are:
+Accepted forms:
 - `base[idx].field`
 - `base[idx].field[fidx]`
 
-But not deeper inline chains such as:
+Rejected deeper inline chains:
 - `base[idx].field.other`
 - `base[idx].field[fidx].other`
 
-Proc arrays keep their proc-specific indexed forms such as `voices[idx].gain`, `voices[idx].gain = value`, `voices[idx].note_on(...)`, `voices[idx](...)`, and graph routing like `voices[idx].gain >> out1`.
+Use an intermediate alias when the chain is deeper:
 
-## 8 Processors (`proc`)
+```omni
+sample:
+  v = voices[i]
+  gain = v.settings.level
+```
 
-Processor blocks:
-- `init` (optional)
-- `sample` (required)
-- `events` (optional)
-- `def` (optional, proc-local helper functions — see section 8.2)
-- optional `block` wrapper with pre/sample/post sections
+Proc arrays keep their own proc-specific indexed forms such as `voices[i].gain`, `voices[i](...)`, and `voices[i].note_on(...)`.
+
+## 8. Generics
+
+Generics are supported for `struct` and `proc`.
+They are compile-time generics, not runtime generics.
+
+```omni
+struct Pair<T>:
+  a: T
+  b: T
+
+proc OnePole<T>:
+  ins<T> 1
+  outs<T> 1
+
+  init:
+    state: T = 0.0
+
+  sample:
+    state = state + (in1 - state) * 0.1
+    out1 = state
+```
+
+### 8.1 What "monomorphization" means
+
+Omni implements generics by monomorphization.
+That means the compiler creates a concrete specialized copy for each generic type combination that your program actually uses.
+
+For example, if you use both:
+
+```omni
+a = Pair<f32>()
+b = Pair<f64>()
+```
+
+the compiler treats those as two concrete specializations:
+- `Pair<f32>`
+- `Pair<f64>`
+
+Likewise, if you instantiate:
+- `OnePole<f32>()`
+- `OnePole<f64>()`
+
+the compiler lowers them as two separate concrete processors.
+
+There is no runtime generic dispatch layer here.
+By the time code generation happens, the generic owner has been specialized to concrete primitive types.
+
+### 8.2 Specializing generic structs and procs
+
+Type arguments can be:
+- explicit: `Pair<f64>()`
+- inferred in many constructor cases
+
+Rules:
+- generic type arguments are restricted to numeric primitives: `f32`, `f64`, `i32`, `i64`
+- `bool` is not allowed as a generic type argument
+- unresolved generic type parameters in declaration and type positions are errors
+- for untyped constructor assignments only, unresolved constructor type parameters default to `f32`
+
+Examples:
+
+```omni
+init:
+  a = Pair<f32>()
+  b = Pair<f64>()
+```
+
+```omni
+init:
+  lp = OnePole()       # unresolved generic constructor defaults to f32 here
+  hp = OnePole<f64>()  # explicit specialization
+```
+
+### 8.3 What can use the generic type parameter
+
+Inside a specialized generic owner:
+- `T(expr)` rewrites to the bound primitive cast
+- `T[]` is valid for method and `def` array parameters where a primitive slice would be valid
+- typed generic locals such as `x: T = ...` are supported in executable scopes
+
+Generic typed local declarations are supported in:
+- `init`
+- `sample`
+- `block`
+- struct methods
+- event handlers
+
+In other words, `T` must belong to the current generic owner.
+You use it inside the generic `struct` or `proc` that declared it, and after specialization it behaves like an ordinary primitive type.
+
+### 8.4 Generics and `def` monomorphization
+
+Top-level `def` does not use explicit type parameter syntax such as `def fn<T>`.
+Instead, polymorphism comes from call-site monomorphization of certain parameter kinds.
+
+These can be monomorphized at the call site:
+- untyped arrays such as `arr: []`
+- bare buffers such as `buf: buffer`
+- generic struct and proc params where the concrete specialization is supplied by the argument
+- untyped tuple parameters inferred from tuple literals
+- untyped structural params whose bodies access compatible fields or methods
+
+Example:
+
+```omni
+def first(arr: []):
+  return arr[0]
+
+sample:
+  a = [1.0, 2.0]
+  b = [1, 2]
+  x = first(a)
+  y = first(b)
+```
+
+The compiler monomorphizes `first` separately for the concrete argument shapes and element types it sees at the call sites.
+
+The same idea applies when a `def` accepts a generic struct or proc parameter:
+
+```omni
+struct Box<T>:
+  value: T
+
+def read_box(b: Box):
+  return b.value
+```
+
+If `read_box` is called with both `Box<f32>` and `Box<f64>`, Omni generates concrete specialized versions for those uses.
+
+The same idea also applies to structural untyped params:
+
+```omni
+struct A:
+  x: f32
+
+struct B:
+  x: f32
+
+def read_x(s):
+  return s.x
+```
+
+If `read_x` is called with both `A` and `B`, Omni resolves and specializes that `def` from the concrete argument shapes at the call sites.
+
+### 8.5 Practical rules of thumb
+
+In practice:
+- use generics when the same struct or proc should work over multiple numeric primitive types
+- think of each used specialization as its own concrete type
+- use explicit casts only when you want to force a type, not because builtin constants like `TWO_PI` need help
+
+## 9. Reusable processors with `proc`
+
+`proc` is Omni's reusable processing unit.
+Use it when you want stateful, composable DSP building blocks.
 
 ```omni
 proc Gain:
   ins:
     in1
+
   params:
     g = 1.0
+
   outs:
     out1
+
   sample:
     out1 = in1 * g
 ```
 
-Construction/calls:
-- Construct in `init`: `p = Gain(g = 0.5)`
-- Builtin proc init event: `p.init(0.5)` or `p.init(g = 0.5)`
-- Call in `sample`: `out1 = p(0.25)` (single-out scalar sugar)
-- Direct endpoint call read: `out1 = p(0.25).out1` (or endpoint name)
-- Endpoint read: `p.<endpointName>`
-- Ordinal endpoint alias: `p.outN` (1-based)
-- Statement call form is supported
+`processor` is an alias for `proc`.
 
-Single-out procs also support endpoint access forms (`p.out1` and named endpoint aliases).
+### 9.1 What a proc can contain
 
-Processor constructors use named arguments for params/buffers.
-The builtin proc `init(...)` event exposes the proc params as event arguments in declaration order, using the concrete specialized param types.
-It is reserved and cannot be redefined in the proc `events` block.
+A proc can contain:
+- `ins`
+- `params`
+- `events`
+- `buffers`
+- `outs`
+- `init`
+- `block`
+- `sample`
+- `graph`
+- proc-local `def` helpers
 
-Scoping/storage rules for proc executable blocks are the same as top-level:
-- proc `init` top-level assignments introduce proc state
-- nested proc `init` assignments stay local to proc `init` flow
-- proc `sample` assignments create locals
-- proc `block pre` top-level assignments carry into later proc `sample` / `block post`
-- nested proc `block` assignments stay local
+In practice:
+- `init` is optional
+- `events` is optional
+- `block` is optional
+- a proc normally has either `sample`, `block`, or `graph` as its execution body
 
-Processor instance arrays are supported in `init` (top-level and proc-level), for example:
+### 9.2 Constructing and calling procs
+
+Proc instances are usually created in `init`:
 
 ```omni
 init:
-  voices: Voice[2] = [Voice(), Voice()]
+  g = Gain(g = 0.5)
 ```
 
-Indexed proc-array dispatch supports literal and runtime indices:
-- Call/read: `voices[idx](...)`
-- Endpoint read from call: `voices[idx](...).outN` (or named endpoint)
-- Statement call: `voices[idx](...)`
-- Proc-event forwarding: `voices[idx].note_on(...)`
-- Proc aliasing: `a = voices[idx]`, then `a(...)` / `a.outN` (or named endpoint)
+Constructor rules:
+- proc constructor arguments for params and buffers are named-only
+- generic procs specialize on construction
 
-Runtime indices are clamped to the valid slot range during lowered dispatch.
-Ctor buffer bindings are established in `init`; dynamic indexed calls use per-slot buffer refs in runtime state (refreshed on `process_bound`).
+Call and access forms:
+- `p(...)`
+- `p(...).out1`
+- `p(...).endpointName`
+- `p.out1`
+- `p.endpointName`
+- statement call form: `p(...)`
 
-For procs that define a `block` section, proc-array `()` calls use active-slot block hook semantics:
-- Hook trigger is the proc `()` call itself (expression or statement form), not plain slot retrieval.
-- `block pre` runs lazily on the first `()` call to a given slot within the current block.
-- `block post` runs once at block end for each slot that was called in that block.
-- Dynamic indexed calls do not conservatively trigger hooks for all slots.
+For single-output procs, `p(...)` is scalar sugar for the first output.
 
-For procs without a `block` section, no active-slot hook tracking is emitted (fast path).
+### 9.3 Proc-local defs
 
-## 8.1 Events (`events`)
-
-Events are host-triggered handlers that run immediately on the audio thread when invoked.
-
-Top-level example:
-
-```omni
-outs { out1 }
-events {
-  note_on(note: i32, vel: i32) {
-    amp = f32(vel) / 127.0
-  }
-}
-init { amp = 0.0 }
-sample { out1 = amp }
-```
-
-Proc-level example with explicit forwarding:
-
-```omni
-proc Voice {
-  params { amp = 0.0 }
-  outs { out1 }
-  events {
-    note_on(v: f32) {
-      amp = v
-    }
-  }
-  sample { out1 = amp }
-}
-
-events {
-  note_on(v: f32) {
-    voice.note_on(v)
-  }
-}
-```
-
-Event parameter types:
-- Primitive scalars (`f32`, `f64`, `i32`, `i64`, `bool`)
-- Fixed-size primitive arrays (`T[N]`)
-- Read-only primitive slices (`T[]`)
-- Proc-event-only generic primitive slices (`U[]` where `U` is a proc generic type parameter specialized to a primitive)
-- Untyped scalar event params default to `f32` (for example `note_on(note)` -> `note: f32`)
-
-Rules:
-- Top-level events are host-entry handlers.
-- Proc events are receiver-only proc commands reached through explicit proc-instance calls (for example `voice.note_on(...)`).
-- Every proc also exposes a reserved builtin `init(...)` proc event whose arguments mirror the proc params after specialization.
-- The builtin proc `init(...)` event cannot be redefined in the proc `events` block.
-- Slice event params such as `f32[]` are allowed on both top-level host events and proc events.
-- Generic slice event params such as `U[]` are allowed on proc events only, and `U` must specialize to a primitive type before lowering.
-- Proc-event calls are statements, not expressions.
-- Unqualified calls never resolve to proc events.
-- Top-level event handlers may write only to top-level state rooted in `init` declarations.
-- Proc event handlers may write proc state rooted in `init` declarations and proc params.
-- Event handlers cannot write input symbols.
-- Event handlers cannot write output symbols (including `outN` aliases).
-- Top-level params are immutable in top-level event handlers.
-- Event parameters are immutable.
-- Array and slice event parameters are read-only references in handlers.
-- Event payload reads from fixed arrays and slices clamp the same way as other primitive array reads.
-- Fixed-array event params are lowered internally as array-typed params, not one scalar argument per element.
-- For event payload passing, prefer slices (`T[]`) over large fixed arrays (`T[N]`).
-- Keep fixed arrays for true fixed-size storage and fixed-shape interfaces where the compile-time size is part of the contract.
-- Proc event names must not collide with callable endpoint names in the same proc.
-- Proc event name `init` is reserved for the builtin proc initializer event.
-- A proc cannot instantiate its own type directly in its state/`init` (for example `other = Voice()` inside `proc Voice` is invalid).
-- Unknown host event indices are ignored.
-- Invalid payload size for a known event is a runtime error.
-- For top-level host events with slice params, payload bytes are encoded as `i32 len` followed by contiguous element bytes.
-
-## 8.2 Proc-local defs
-
-Processors can contain private `def` blocks that act as helper subroutines with implicit access to proc state. Unlike top-level `def` blocks, proc-local defs can read and write `init`-declared state, params, and other proc-scoped symbols directly — no `self` parameter is needed.
+Processors can declare private helper defs that implicitly see proc state.
 
 ```omni
 proc Filter<T>:
@@ -886,7 +1251,7 @@ proc Filter<T>:
     state: T = 0.0
     coeff: T = 0.5
 
-  def do_reset():
+  def reset_state():
     state = T(0.0)
 
   def apply(x: T):
@@ -895,254 +1260,146 @@ proc Filter<T>:
 
   events:
     reset():
-      do_reset()
+      reset_state()
 
   sample:
     out1 = apply(in1)
 ```
 
-Proc-local defs support:
-- Parameters (positional, named, defaults) — same as top-level `def`.
-- Return values via `return`.
-- Calling other proc-local defs.
-- Calling namespace-level `def` functions.
-- Access to proc generic type parameters (e.g. `T`).
-
 Rules:
-- Proc-local defs are always private to the enclosing processor.
-- They are callable from `init`, `sample`, `block`, `events`, and other proc-local defs.
-- State variables are accessed directly by name (no `self`).
-- Parameters and for-loop variables are local to the def; state variables pass through unchanged.
-- Recursive and mutually recursive calls are detected and rejected.
-- Internally, proc-local defs lower to hidden ordinary defs with an implicit proc receiver. Calls inside the proc are rewritten to those hidden defs, so proc-local defs follow the same normal argument binding/default/return semantics as regular `def` blocks.
-- Overloading of proc-local defs is not currently supported.
+- proc-local defs are private to the enclosing proc
+- they can be called from proc `init`, `block`, `sample`, `events`, and other proc-local defs
+- they can read and write proc state directly, without `self`
+- they support parameters, defaults, named arguments, and return values like normal defs
+- recursive and mutually recursive proc-local defs are rejected
+- proc-local defs are not overloadable
 
-## 9 Generics
+### 9.4 Proc arrays
 
-Supported for `struct` and `proc` with primitive specialization:
-
-```omni
-struct Pair<T>:
-  a: T
-  b: T
-
-proc OnePole<T>:
-  ins<T> 1
-  outs<T> 1
-  sample:
-    out1 = in1
-```
-
-Type arguments can be explicit (`Name<f64>(...)`) or inferred in many constructor cases.
-
-Generic type parameters are restricted to numeric primitives: `f32`, `f64`, `i32`, `i64`. Using `bool` as a generic type argument is a semantic error.
-
-Generic typed local declarations (`x: T = expr`) are supported in all executable scopes of a generic owner:
-- `init` (top-level and proc)
-- `sample` / `block`
-- `def` bodies (struct methods)
-- `events`
-
-Generic casts and generic array function params are also supported where the corresponding primitive forms are valid:
-- `T(expr)` rewrites to the bound primitive cast inside a specialized generic owner
-- `T[]` is valid for `def`/method array parameters
-
-```omni
-proc Filter<T>:
-  ins<T> 1
-  outs<T> 1
-  init:
-    state: T = 0.0
-  sample:
-    tmp: T = in1 * 0.5
-    state = state + tmp
-    out1 = state
-```
-
-Unresolved generic type parameters in declaration/type positions produce an error (no implicit defaulting there). This includes generic array function params such as `T[]`. For untyped constructor assignments only, unresolved constructor type parameters default to `f32`.
-
-Generic struct and proc types can be used as `def` parameter types for call-site monomorphization (see section 6).
-
-## 10 Tuples
-
-Tuples are anonymous, fixed-length, heterogeneous compound types with up to 16 elements.
-
-### Tuple literals
-
-```omni
-sample:
-  pair = (1.0, 2.0)
-  triple = (1.0, 42, true)
-```
-
-### Element access
-
-Access tuple elements with compile-time integer constant indices:
-
-```omni
-sample:
-  pair = (3.0, 7.0)
-  out1 = pair[0]    # 3.0
-  out2 = pair[1]    # 7.0
-```
-
-Rules:
-- Index must be a compile-time integer constant.
-- Dynamic indices (e.g. `pair[i]`) are rejected.
-- Out-of-bounds indices are compile-time errors.
-
-### Tuple destructuring
-
-```omni
-sample:
-  (a, b) = (10.0, 20.0)
-  (x, y) = getCoords()
-  (p, q) = existingTuple
-```
-
-Rules:
-- Target count must match the tuple arity.
-- RHS can be a tuple literal, a tuple-returning function call, or a tuple variable.
-
-### Tuple-returning functions
-
-Functions can return a tuple literal, a tuple-returning call, or a tuple variable:
-
-```omni
-def makePair():
-  return (1.0, 2.0)
-
-def swap(p: (f32, f32)):
-  return (p[1], p[0])
-
-def forward(x):
-  t = makePair()
-  return t
-```
-
-### Tuple parameters
-
-Explicit typed tuple parameters:
-
-```omni
-def dot(a: (f32, f32), b: (f32, f32)):
-  return a[0] * b[0] + a[1] * b[1]
-```
-
-Inferred (untyped) tuple parameters — monomorphized at call site:
-
-```omni
-def sumPair(p):
-  return p[0] + p[1]
-
-sample:
-  out1 = sumPair((10.0, 25.0))
-```
-
-### Tuple state variables
-
-Tuples can be stored in `init` state and persist across processing calls:
+Arrays of proc instances are supported in `init`.
 
 ```omni
 init:
-  pair = (0.0, 0.0)
-
-sample:
-  pair = (pair[0] + 1.0, pair[1] + 2.0)
-  out1 = pair[0]
+  voices: Voice[4] = Voice()
 ```
 
-### Tuple fields in structs
+Supported proc-array forms:
+- literal array construction: `voices: Voice[2] = [Voice(), Voice()]`
+- broadcast constructor sugar: `voices: Voice[4] = Voice()`
+- compile-time capacity expressions in the array length
+
+Indexed proc-array operations:
+- `voices[i](...)`
+- `voices[i](...).out1`
+- `voices[i].gain`
+- `voices[i].gain = value`
+- `voices[i].note_on(...)`
+- aliasing such as `v = voices[i]`, then `v(...)`
+
+Rules:
+- runtime indices are clamped to the valid slot range
+- proc-array buffer refs are refreshed on the safe `process_bound` path
+- a proc cannot directly instantiate its own type in its own state
+
+If the proc defines a `block` section, indexed proc-array calls use active-slot block-hook semantics:
+- `block pre` runs lazily on the first `()` call to that slot in the current block
+- `block post` runs once at block end for each slot that was called
+- plain slot retrieval alone does not trigger hooks
+
+### 9.5 Using procs in graphs
+
+Procs become especially powerful when combined with `graph`.
 
 ```omni
-struct Point:
-  pos: (f32, f32) = (0.0, 0.0)
+import std/osc
+
+proc StereoGain:
+  ins:
+    in: f32[2]
+
+  params:
+    gain: f32[2] = [1.0, 1.0]
+
+  outs:
+    out: f32[2]
+
+  sample:
+    out[0] = in[0] * gain[0]
+    out[1] = in[1] * gain[1]
+
+outs:
+  out: f32[2]
 
 init:
-  p = Point()
+  osc_l = std::osc::Sine<f32>(freq = 220.0)
+  osc_r = std::osc::Sine<f32>(freq = 330.0)
+  p = StereoGain(gain = [1.0, 0.1])
 
-sample:
-  out1 = p.pos[0]
+graph:
+  [osc_l.out1, osc_r.out1] >> p.in
+  p.out >> out
 ```
 
-### Tuple scopes
+Graph/proc integration rules:
+- proc inputs and params are legal graph destinations
+- proc outputs are legal graph sources
+- proc-array slot inputs, params, and outputs are supported
+- bare proc instances and proc-array slots can route into destination sets, using the zip or broadcast rules described in the graph section
 
-Tuple local variables are supported in all executable scopes:
-- `init`
-- `sample`
-- `block` (within the block pre/post scope)
-- `def` bodies
-- event handlers
+## 10. Modularity: namespaces, modules, and imports
 
-### Representation
+Once the core language is clear, the last big piece is how to split programs across files and build reusable modules.
 
-- Tuples use a flattened ABI: each element is an individual scalar LLVM parameter/return value.
-- Tuple state is stored as flattened scalar fields (e.g. `name.__0`, `name.__1`, ...).
-- Maximum 16 elements per tuple.
-- Nested tuples are not currently supported.
+### 10.1 `import`
 
-## 11 Arrays
-
-Fixed-size arrays are supported for state/local storage, including typed forms and capacity expressions.
-Array indexing and assignment are supported in `init`/`sample`/`def` where valid.
-
-Slice expressions are also supported on primitive arrays, slices, and primitive buffers/channels:
+Use `import` to load another module by path:
 
 ```omni
-sample:
-  a = buf[:]
-  b = buf[2:]
-  c = buf[:-1]
-  d = buf[1:-2]
-  last = buf[-1]
+import reverb
+import std/osc
+import std/filter
+```
+
+Resolution rules:
+- `import module/path` resolves as `module/path.omni`
+- each imported file is imported once
+- built-in std modules are available under `std/...`
+
+Current built-in std modules include:
+- `std/prelude`
+- `std/math`
+- `std/export_math`
+- `std/complex`
+- `std/osc`
+- `std/filter`
+- `std/env`
+- `std/delay`
+- `std/data`
+- `std/lookup`
+- `std/fft`
+- `std/convolution`
+
+`std/prelude` is auto-imported during semantic analysis.
+Today it brings in `std/math` and `std/lookup`.
+
+Current imported-file restriction:
+- declaration-only files are limited to `const`, `struct`, `def`, and `proc`
+
+### 10.2 `include`
+
+`include` inserts another `.omni` file by quoted path:
+
+```omni
+include "shared/reverb.omni"
 ```
 
 Rules:
-- Slice forms are `a[:]`, `a[start:]`, `a[:end]`, and `a[start:end]`.
-- Negative slice bounds are supported and are interpreted relative to the logical length.
-- Slice expressions lower to normal primitive slice views of type `T[]`.
-- Buffer slicing also yields `T[]`, not a new buffer type.
+- the path must be quoted
+- the path must end in `.omni`
 
-Writable slice assignment is supported for mutable primitive array/buffer targets:
+### 10.3 `namespace`
 
-```omni
-sample:
-  values[1:-1] = 0.5
-  dst[:] = src[:]
-  values[1:] = values[:-1]
-```
-
-Rules:
-- Slice assignment is statement-only.
-- Scalar fill writes the full target slice.
-- Slice copy writes `min(dst_len, src_len)` elements.
-- Overlapping slice copies are stable and behave as if the source region is copied through a temporary buffer first.
-- Event payload arrays/slices are read-only and cannot be used as writable slice targets.
-- Struct-element arrays are not sliceable in the current implementation.
-
-## 12 Imports and namespaces
-
-Imports:
-- `import module/path`
-- Built-in std modules include:
-  - `std/prelude`
-  - `std/math`
-  - `std/export_math`
-  - `std/complex`
-  - `std/osc`
-  - `std/filter`
-  - `std/env`
-  - `std/delay`
-  - `std/data`
-  - `std/lookup`
-  - `std/fft`
-  - `std/convolution`
-- `std/prelude` is auto-imported (explicit import is optional), and it currently re-exports `std/math` + `std/lookup`.
-
-Include:
-- `include "path.omni"`
-
-Namespaces:
+`namespace` groups declarations under a qualified path.
 
 ```omni
 namespace my::dsp:
@@ -1150,19 +1407,23 @@ namespace my::dsp:
     return clamp(x, -1.0, 1.0)
 ```
 
-Templated namespaces with compile-time int params are supported:
+Use sites access declarations with `::`:
 
 ```omni
-namespace Data<S = SR, C = 1>:
-  struct Data<T>:
-    storage: T[S * C]
+sample:
+  out1 = my::dsp::sat(in1)
 ```
 
-Syntax split:
-- `<>` is used for namespace instantiation, generic type specialization, and section default type modifiers on `ins` / `outs` / `params` / `init`.
-- `[]` is used for arrays, indexing, slices, and buffer/channel forms.
+Namespace-local compile-time constants are also supported:
 
-Namespace-local compile-time assertions are supported:
+```omni
+namespace Config:
+  const MaxVoices = 8
+```
+
+### 10.4 Templated namespaces
+
+Namespaces can also take compile-time integer parameters:
 
 ```omni
 namespace FFT<N = 256>:
@@ -1170,197 +1431,174 @@ namespace FFT<N = 256>:
   assert((N & (N - 1)) == 0)
 ```
 
-Use sites support inline instantiation and aliases:
+Rules:
+- namespace template params require defaults
+- args support positional and named forms
+- args are normalized as `i32(...)` at compile time
+- namespace-local `assert(expr)` is supported for compile-time checks
+
+Inline instantiation and aliases:
 
 ```omni
-namespace D = Data<SR, 1>
+namespace D = std::data<SR, 1>
 
 init:
-  a = Data<SR, 1>::Data<f64>()
+  a = std::data<SR, 1>::Data<f64>()
   b = D::Data<f64>()
 ```
 
-Rules:
-- Namespace template params require defaults.
-- Namespace template args support positional and named forms.
-- Args are normalized as `i32(...)` at compile time.
-- Alias declarations are declaration sugar and can appear at top-level or inside namespaces.
+Syntax split:
+- `<>` is used for namespace instantiation, generic specialization, and section default type modifiers
+- `[]` is used for arrays, indexing, slices, and buffer/channel forms
 
-`std/fft` currently provides a namespace-parameterized in-place complex FFT:
+### 10.5 Integer namespace params for sizes and arity
 
-```omni
-import std/fft
+Namespace template parameters are compile-time integers.
+They are the main way to make Omni libraries generic over counts, lengths, and arity.
 
-init:
-  fft: std::fft<256>::FFT<f32>
-```
+You can use a namespace integer parameter:
+- in fixed array sizes such as `T[N]`
+- in section counts such as `ins N`, `outs N`, `params N`, and `buffers N`
+- in `for` loop bounds
+- in compile-time expressions and namespace `assert(...)` checks
 
-Current API:
-- `std::fft<N>::FFT<T>`
-- `std::fft<N>::RealFFT<T>`
-- `std::fft<N>::RealIFFT<T>`
-- namespace contract: `N > 0` and `N` must be a power of two
-- `T` is intended for floating-point use (`f32` or `f64`)
-- internal storage: `re: T[N]`, `im: T[N]`
-- introspection helpers:
-  - `size() -> i32`
-  - `real_bin_count() -> i32` (`N / 2 + 1` unique bins for real-input spectra)
-- packed real-spectrum layout uses `N` scalars:
-  - `packed[0..N/2]` = real bins `0..N/2`
-  - `packed[N/2 + 1..N - 1]` = imaginary bins `1..N/2 - 1`
-- methods:
-  - `clear()`
-  - `load_real(input: T[])`
-  - `load_complex(real: T[], imag: T[])`
-  - `load_real_packed(input: T[])`
-  - `store_real(output: T[])`
-  - `store_imag(output: T[])`
-  - `store_magnitude(output: T[])`
-  - `store_power(output: T[])`
-  - `store_phase(output: T[])`
-  - `store_real_packed(output: T[])`
-  - `store_real_spectrum_magnitude(output: T[])`
-  - `store_real_spectrum_power(output: T[])`
-  - `store_real_spectrum_phase(output: T[])`
-  - `forward_real(input: T[])`
-  - `forward_real_packed(input: T[], output: T[])`
-  - `forward_real_magnitude(input: T[], output: T[])`
-  - `forward_real_power(input: T[], output: T[])`
-  - `forward_real_phase(input: T[], output: T[])`
-  - `forward_complex(real: T[], imag: T[])`
-  - `forward()`
-  - `inverse()`
-  - `inverse_real_packed(input: T[], output: T[])`
-  - bin accessors returning `T`:
-    - `real(i: i32)`
-    - `imag(i: i32)`
-    - `power(i: i32)`
-    - `magnitude(i: i32)`
-    - `phase(i: i32)`
+That means Omni has two complementary generic mechanisms:
+- type generics such as `T` control the numeric scalar type
+- namespace integer generics such as `N` control counts and sizes
 
-Streaming wrappers:
-- `std::fft<N>::RealFFT<T>`
-  - fields:
-    - `fft: FFT<T>`
-    - `packed: T[N]`
-    - `ready: bool`
-  - methods:
-    - `clear()`
-    - `size() -> i32`
-    - `real_bin_count() -> i32`
-    - `hop_size() -> i32`
-    - `set_rectangular()`
-    - `set_hann()`
-    - `push(x: T) -> bool`
-    - `is_ready() -> bool`
-    - `packed_value(i: i32) -> T`
-- `std::fft<N>::RealIFFT<T>`
-  - fields:
-    - `fft: FFT<T>`
-  - methods:
-    - `clear()`
-    - `size() -> i32`
-    - `hop_size() -> i32`
-    - `set_rectangular()`
-    - `set_hann()`
-    - `load_packed(input: T[])`
-    - `load_complex(real: T[], imag: T[])`
-    - `tick() -> T`
-    - `is_active() -> bool`
-
-`RealFFT` / `RealIFFT` are streaming STFT-style wrappers:
-- default window is Hann
-- default hop is `N / 2`
-- `RealFFT.push()` emits a new spectrum every hop after the first full frame
-- `RealIFFT` performs windowed overlap-add reconstruction and normalizes by the accumulated window power
-
-`std/complex` provides a simple generic complex-number struct for FFT-style arithmetic:
-
-```omni
-import std/complex
-
-init:
-  z: std::complex::Complex<f32>
-  w: std::complex::Complex<f32>
-  z.set(1.0, 2.0)
-  w.set(3.0, -4.0)
-  z.mul_assign(w)
-```
-
-Current API:
-- `std::complex::Complex<T>`
-- `T` is intended for floating-point use (`f32` or `f64`)
-- fields:
-  - `re: T`
-  - `im: T`
-- methods:
-  - `real()`
-  - `imag()`
-  - `set(re, im)`
-  - `clear()`
-  - `copy(other: Complex)`
-  - `set_polar(magnitude, phase)`
-  - `add_assign(other: Complex)`
-  - `add_parts(re, im)`
-  - `sub_assign(other: Complex)`
-  - `sub_parts(re, im)`
-  - `mul_assign(other: Complex)`
-  - `mul_parts(re, im)`
-  - `scale_assign(gain)`
-  - `conjugate()`
-  - `power()`
-  - `magnitude()`
-  - `phase()`
+Together they let you build reusable libraries that are generic over both type and channel/input count.
 
 Example:
 
 ```omni
-import std/fft
-import std/osc
+namespace DSP<Channels = 2>:
+  proc Gain<T>:
+    ins<T> Channels
+    outs<T> Channels
 
-params:
-  freq = 440.0
+    params:
+      gains: T[Channels]
 
-init:
-  saw = std::osc::Saw(freq = freq)
-  fwd = std::fft<64>::RealFFT()
-  inv = std::fft<64>::RealIFFT()
-  scratch_re: f32[64]
-  scratch_im: f32[64]
-
-sample:
-  saw.freq = freq
-
-  if (fwd.push(saw())):
-    for i in 0..64:
-      scratch_re[i] = 0.0
-      scratch_im[i] = 0.0
-
-    scratch_re[0] = fwd.fft.re[0]
-
-    half = 64 >> 1
-    for k in 1..half:
-      shifted = k + 1
-      if (shifted < half):
-        scratch_re[shifted] = fwd.fft.re[k]
-        scratch_im[shifted] = fwd.fft.im[k]
-        scratch_re[64 - shifted] = fwd.fft.re[64 - k]
-        scratch_im[64 - shifted] = fwd.fft.im[64 - k]
-
-    inv.load_complex(scratch_re, scratch_im)
-
-  out1 = inv.tick()
+    sample:
+      for i in 0..Channels:
+        outs[i] = ins[i] * gains[i]
 ```
 
-## 13 Example-driven starting points
+In that example:
+- `Channels` controls how many inputs and outputs the proc has
+- `Channels` also controls the fixed size of the `gains` parameter array
+- `T` controls the scalar type used by the ports and parameter array
 
-Useful examples in `examples/`:
-- Basic oscillator: `sine.omni`, `std_sine.omni`
-- Block/sample structure: `block_counter.omni`, `saw_blep.omni`
-- Buffer preview/lookup example: `buffer_looper_readl.omni`
-- Struct + methods: `cross_fm.omni`
-- Processor usage and output forms: `proc_gain.omni`, `proc_gain_graph.omni`, `proc_split.omni`, `proc_split_graph.omni`, `proc_array_stereo_sine.omni`, `proc_array_stereo_sine_graph.omni`, `std_one_pole.omni`, `std_one_pole_graph.omni`, `reverb.omni`, `reverb_sample.omni`, `reverb_graph.omni`
-- Graph feedback systems: `feedback_saturator_graph.omni`, `cybernetic_feedback_graph.omni`, `inspect_feedback_mix_graph.omni`, `stdlib_f32.omni`, `stdlib_f32_graph.omni`
-- Array-heavy DSP: `karplus_strong_data.omni`, `multitap_feedback_struct_data.omni`
-- Stdlib and generics: `stdlib_f32.omni`, `stdlib_f64.omni`, `fft_bin_shift.omni`
+This is the standard pattern for an Omni library that should work for "any `N` channels of `T`".
 
+At the top level, you use it by instantiating the namespace and then constructing the proc specialization you want:
+
+```omni
+outs:
+  out: f32[2]
+
+init:
+  g = DSP<2>::Gain<f32>(gains = [0.5, 0.25])
+
+graph:
+  [in1, in2] >> g
+  g.out >> out
+```
+
+You can also use a namespace alias when you want to fix the integer parameters once and reuse them:
+
+```omni
+namespace Stereo = DSP<2>
+
+init:
+  g = Stereo::Gain<f32>(gains = [0.5, 0.25])
+```
+
+Related notes:
+- ordinary `const` values can also be used in array sizes and section counts
+- namespace consts can be derived from namespace integer params and reused elsewhere
+
+## 11. Examples that put it all together
+
+These examples in `examples/` cover the language in progressively richer combinations.
+
+### 11.1 Small stateful patch
+
+`examples/sine.omni`
+
+Why it is useful:
+- simple `params`
+- persistent `init` state
+- `block` plus nested `sample`
+- direct output writing
+
+### 11.2 Structs plus reusable defs
+
+`examples/cross_fm.omni`
+
+Why it is useful:
+- top-level `def`
+- `struct` fields and methods
+- stateful objects in `init`
+- per-sample interaction between multiple voices
+
+### 11.3 Proc plus graph wiring
+
+`examples/proc_gain_graph.omni`
+
+Why it is useful:
+- small reusable `proc`
+- proc construction in `init`
+- `graph` routing into proc inputs and params
+- proc output routed to top-level outputs
+
+### 11.4 Proc arrays plus helper defs
+
+`examples/proc_array_init_harmonics.omni`
+
+Why it is useful:
+- arrays of proc instances
+- ordinary top-level defs that operate on proc arrays
+- builtin proc `init(...)`
+- `block` plus nested `sample`
+
+### 11.5 Modular multi-file patch
+
+`examples/reverb.omni` plus `examples/reverb_graph.omni`
+
+Why it is useful:
+- split code across modules
+- import a local reusable proc from another file
+- combine stdlib imports with local imports
+- drive a larger proc through `graph`
+
+### 11.6 Generic proc in a larger graph
+
+`examples/cybernetic_feedback_graph.omni`
+
+Why it is useful:
+- generic `proc`
+- proc specialization with `f64`
+- delayed graph edges
+- larger graph composition with multiple reusable nodes
+
+### 11.7 Event-driven patch
+
+`examples/preview_events.omni`
+
+Why it is useful:
+- top-level `events`
+- persistent state mutation from host events
+- proc use inside a playable patch
+
+## 12. Summary
+
+If you are new to Omni, the most useful learning order is:
+1. understand the block model: `ins`, `params`, `events`, `buffers`, `outs`, `init`, `block`, `sample`, `graph`
+2. learn the executable-scope rules for state and locals
+3. learn `def` and `struct`
+4. learn generics
+5. learn `proc` as the main reusable DSP abstraction
+6. finish with modules, namespaces, and imports
+
+That path matches how real Omni programs in this repository are structured.
