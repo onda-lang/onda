@@ -44,7 +44,7 @@ From `editors/vscode/`:
 ```bash
 npm install
 npm run compile
-npx @vscode/vsce package
+npx @vscode/vsce package --skip-license
 ```
 
 That produces a `.vsix` file in `editors/vscode/`, which you can then install with:

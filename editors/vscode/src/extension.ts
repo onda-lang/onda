@@ -40,6 +40,7 @@ interface PatchEventArgPayload {
   index: number;
   name: string;
   type: string;
+  default?: PatchScalarValue;
   value?: PatchScalarValue;
 }
 
@@ -733,9 +734,34 @@ function initialParamValue(param: Pick<PatchParamPayload, "type" | "value" | "de
   return 0;
 }
 
-function initialEventArgValue(
-  arg: Pick<PatchEventArgPayload, "type" | "value">,
+function declaredParamDefaultValue(
+  param: Pick<PatchParamPayload, "type" | "default" | "rangeMin">,
 ): PatchScalarValue {
+  if (param.type === "bool") {
+    if (param.default !== null && param.default !== undefined) {
+      return param.default !== 0;
+    }
+    return false;
+  }
+  if (param.default !== null && param.default !== undefined) {
+    return param.default;
+  }
+  if (param.rangeMin !== null && param.rangeMin !== undefined) {
+    return param.rangeMin;
+  }
+  return 0;
+}
+
+function initialEventArgValue(
+  arg: Pick<PatchEventArgPayload, "type" | "default" | "value">,
+): PatchScalarValue {
+  if (arg.default !== null && arg.default !== undefined) {
+    if (arg.type === "bool") {
+      return Boolean(arg.default);
+    }
+    const defaultValue = Number(arg.default);
+    return Number.isFinite(defaultValue) ? defaultValue : 0;
+  }
   if (arg.type === "bool") {
     if (arg.value !== null && arg.value !== undefined) {
       return arg.value !== 0;
@@ -749,7 +775,7 @@ function initialEventArgValue(
 }
 
 function patchParamDefaultValue(param: PatchParamState): PatchScalarValue {
-  return initialParamValue(param);
+  return declaredParamDefaultValue(param);
 }
 
 function queuePatchParamSend(name: string, value: PatchScalarValue): void {
@@ -856,6 +882,13 @@ function resetPatchParams(): void {
     params: patchPanelState.params.map((param) => ({
       ...param,
       value: patchParamDefaultValue(param),
+    })),
+    events: patchPanelState.events.map((event) => ({
+      ...event,
+      args: event.args.map((arg) => ({
+        ...arg,
+        value: initialEventArgValue(arg),
+      })),
     })),
   };
   postPatchPanelState();

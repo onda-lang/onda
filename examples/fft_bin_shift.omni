@@ -31,11 +31,13 @@ namespace BinShift<N = 512>:
       out1 = inv.tick()
 
 params:
-  freq = 440.0
+  freq = 20 {1, 1000}
 
 init:
   saw = std::osc::Saw(freq = freq)
   bin_shift = BinShift::Main()
 
-sample:
-  out1 = bin_shift(saw())
+block:
+  saw.freq = freq
+  sample:
+    out1 = bin_shift(saw())
