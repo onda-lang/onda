@@ -1249,6 +1249,7 @@ pub fn analyze_with_options(
             .any(|sig| sig.param_types.iter().any(|pt| pt.is_none()));
 
         if !mono_eligible.is_empty() || has_untyped_params {
+            let mut mono_return_types = infer_def_return_types(&defs, &fn_signatures, &struct_defs);
             let mut generated_defs = Vec::<FunctionDef>::new();
             let mut generated_sigs = HashMap::<String, FnSignature>::new();
             let mut mono_cache =
@@ -1267,6 +1268,7 @@ pub fn analyze_with_options(
                 &mut generated_defs,
                 &mut generated_sigs,
                 &mut mono_cache,
+                &mut mono_return_types,
                 &mut errors,
                 &[],
             );
@@ -1281,6 +1283,7 @@ pub fn analyze_with_options(
                 &mut generated_defs,
                 &mut generated_sigs,
                 &mut mono_cache,
+                &mut mono_return_types,
                 &mut errors,
                 &[],
             );
@@ -1295,6 +1298,7 @@ pub fn analyze_with_options(
                 &mut generated_defs,
                 &mut generated_sigs,
                 &mut mono_cache,
+                &mut mono_return_types,
                 &mut errors,
                 &[],
             );
@@ -1309,6 +1313,7 @@ pub fn analyze_with_options(
                 &mut generated_defs,
                 &mut generated_sigs,
                 &mut mono_cache,
+                &mut mono_return_types,
                 &mut errors,
                 &[],
             );
@@ -1324,6 +1329,7 @@ pub fn analyze_with_options(
                     &mut generated_defs,
                     &mut generated_sigs,
                     &mut mono_cache,
+                    &mut mono_return_types,
                     &mut errors,
                     &[],
                 );
@@ -1377,6 +1383,7 @@ pub fn analyze_with_options(
                     &mut generated_defs,
                     &mut generated_sigs,
                     &mut mono_cache,
+                    &mut mono_return_types,
                     &mut errors,
                     &def.type_params,
                 );
@@ -1413,6 +1420,7 @@ pub fn analyze_with_options(
                         &mut extra_defs,
                         &mut extra_sigs,
                         &mut mono_cache,
+                        &mut mono_return_types,
                         &mut errors,
                         &def.type_params,
                     );

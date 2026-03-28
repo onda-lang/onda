@@ -12538,6 +12538,41 @@ fn def_monomorphizes_from_call_arguments_compile_and_run() {
 }
 
 #[test]
+fn generic_def_infers_scalar_t_from_concrete_call_return_compile_and_run() {
+    let src = r#"
+outs:
+  out1: i64
+
+def make(flag: f32):
+  return i64(42)
+
+def id<T>(x: T):
+  return x
+
+sample:
+  out1 = id(make(0.0))
+"#;
+    let frames = 4;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 1);
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+    bind_output(
+        &mut instance,
+        0,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 42);
+    }
+}
+
+#[test]
 fn def_monomorphizes_multiple_specializations_compile_and_run() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) = compile_instance(
@@ -21010,6 +21045,39 @@ sample {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
     for s in &output {
         assert_near(*s, 10.0, 1e-6);
+    }
+}
+
+#[test]
+fn generic_def_t_slice_infers_from_slice_expression_compile_and_run() {
+    let src = r#"
+outs:
+  out1: i64
+
+def first<T>(arr: T[]):
+  return arr[0]
+
+sample:
+  vals: i64[3] = [11, 22, 33]
+  out1 = first(vals[1:])
+"#;
+    let frames = 4;
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+    assert_eq!(out_channels, 1);
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+    bind_output(
+        &mut instance,
+        0,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 22);
     }
 }
 

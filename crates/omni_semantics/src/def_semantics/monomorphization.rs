@@ -64,6 +64,7 @@ fn infer_mono_arg_key(
     param_ty: Option<&FnParamType>,
     env: &OverloadRewriteEnv,
     generic_templates: &HashSet<String>,
+    return_types: &HashMap<String, ReturnType>,
 ) -> Option<MonoParamKey> {
     match param_ty {
         Some(FnParamType::Struct(struct_name)) if generic_templates.contains(struct_name) => {
@@ -81,27 +82,21 @@ fn infer_mono_arg_key(
             None // Can't determine concrete struct type
         }
         Some(FnParamType::Array(None)) => {
-            if let Expr::Var { name: var_name, .. } = arg_expr {
-                if let Some(elem_ty) = env.array_elem_types.get(var_name) {
-                    return Some(MonoParamKey::ResolvedArray(*elem_ty));
-                }
+            if let Some(elem_ty) = infer_array_arg_elem_type(arg_expr, env, return_types) {
+                return Some(MonoParamKey::ResolvedArray(elem_ty));
             }
             // Default to f32 if we can't infer
             Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
         }
         Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
-            if let Expr::Var { name: var_name, .. } = arg_expr {
-                if let Some(elem_ty) = env.array_elem_types.get(var_name) {
-                    return Some(MonoParamKey::ResolvedArray(*elem_ty));
-                }
+            if let Some(elem_ty) = infer_array_arg_elem_type(arg_expr, env, return_types) {
+                return Some(MonoParamKey::ResolvedArray(elem_ty));
             }
             Some(MonoParamKey::ResolvedArray(PrimitiveType::F32))
         }
         Some(FnParamType::BareBuffer) => {
-            if let Expr::Var { name: var_name, .. } = arg_expr {
-                if let Some((elem_ty, channels)) = env.buffer_types.get(var_name) {
-                    return Some(MonoParamKey::ResolvedBuffer(*elem_ty, channels.clone()));
-                }
+            if let Some((elem_ty, channels)) = infer_buffer_arg_info(arg_expr, env) {
+                return Some(MonoParamKey::ResolvedBuffer(elem_ty, channels));
             }
             // Default to f32 mono
             Some(MonoParamKey::ResolvedBuffer(
@@ -121,6 +116,136 @@ fn infer_mono_arg_key(
             }
             Some(MonoParamKey::Passthrough)
         }
+    }
+}
+
+fn lookup_array_symbol_elem_type(name: &str, env: &OverloadRewriteEnv) -> Option<PrimitiveType> {
+    if let Some(elem_ty) = env.array_elem_types.get(name).copied() {
+        return Some(elem_ty);
+    }
+    split_simple_field_path(name).and_then(|(root, field)| {
+        let flat = format!("{root}.{field}");
+        env.array_elem_types.get(&flat).copied()
+    })
+}
+
+fn lookup_slice_base_elem_type(name: &str, env: &OverloadRewriteEnv) -> Option<PrimitiveType> {
+    lookup_array_symbol_elem_type(name, env).or_else(|| {
+        if let Some((elem_ty, _)) = env.buffer_types.get(name) {
+            return Some(*elem_ty);
+        }
+        split_simple_field_path(name).and_then(|(root, field)| {
+            let flat = format!("{root}.{field}");
+            env.buffer_types.get(&flat).map(|(elem_ty, _)| *elem_ty)
+        })
+    })
+}
+
+fn infer_buffer_arg_info(
+    expr: &Expr,
+    env: &OverloadRewriteEnv,
+) -> Option<(PrimitiveType, TypedBufferChannels)> {
+    let Expr::Var { name, .. } = expr else {
+        return None;
+    };
+    if let Some((elem_ty, channels)) = env.buffer_types.get(name) {
+        return Some((*elem_ty, channels.clone()));
+    }
+    split_simple_field_path(name).and_then(|(root, field)| {
+        let flat = format!("{root}.{field}");
+        env.buffer_types
+            .get(&flat)
+            .map(|(elem_ty, channels)| (*elem_ty, channels.clone()))
+    })
+}
+
+fn infer_array_arg_elem_type(
+    expr: &Expr,
+    env: &OverloadRewriteEnv,
+    return_types: &HashMap<String, ReturnType>,
+) -> Option<PrimitiveType> {
+    match expr {
+        Expr::Var { name, .. } => lookup_array_symbol_elem_type(name, env),
+        Expr::Slice { base, .. } => lookup_slice_base_elem_type(base, env),
+        Expr::ArrayLiteral { values, .. } => values
+            .first()
+            .and_then(|value| infer_expr_primitive_type(value, env, return_types)),
+        Expr::ArrayCtor { spec, .. } => match &spec.elem {
+            ArrayElemType::Primitive(elem_ty) => Some(*elem_ty),
+            ArrayElemType::Struct(_) => None,
+        },
+        _ => None,
+    }
+}
+
+fn refresh_monomorphized_return_types(
+    return_types: &mut HashMap<String, ReturnType>,
+    original_defs: &[FunctionDef],
+    generated_defs: &[FunctionDef],
+    fn_signatures: &HashMap<String, FnSignature>,
+    generated_sigs: &HashMap<String, FnSignature>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    let mut combined_defs = Vec::with_capacity(original_defs.len() + generated_defs.len());
+    combined_defs.extend_from_slice(original_defs);
+    combined_defs.extend_from_slice(generated_defs);
+
+    let mut combined_sigs = fn_signatures.clone();
+    for (name, sig) in generated_sigs {
+        combined_sigs.insert(name.clone(), sig.clone());
+    }
+
+    *return_types = infer_def_return_types(&combined_defs, &combined_sigs, struct_defs);
+}
+
+fn update_mono_env_after_assign(
+    target: &AssignTarget,
+    decl_ty: Option<PrimitiveType>,
+    expr: &Expr,
+    env: &mut OverloadRewriteEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    return_types: &HashMap<String, ReturnType>,
+) {
+    let AssignTarget::Var(name) = target else {
+        return;
+    };
+
+    if let Some(declared) = decl_ty {
+        env.scalar_types.insert(name.clone(), declared);
+        env.array_elem_types.remove(name);
+        env.struct_instances.remove(name);
+        return;
+    }
+
+    if let Some(elem_ty) = infer_array_arg_elem_type(expr, env, return_types) {
+        env.array_elem_types.insert(name.clone(), elem_ty);
+        env.scalar_types.remove(name);
+        env.struct_instances.remove(name);
+        return;
+    }
+
+    if let Expr::UserCall { name: callee, .. } = expr {
+        if struct_defs.contains_key(callee) {
+            env.struct_instances.insert(name.clone(), callee.clone());
+            env.scalar_types.remove(name);
+            env.array_elem_types.remove(name);
+            return;
+        }
+    }
+
+    if let Expr::Var { name: src, .. } = expr {
+        if let Some(struct_name) = env.struct_instances.get(src).cloned() {
+            env.struct_instances.insert(name.clone(), struct_name);
+            env.scalar_types.remove(name);
+            env.array_elem_types.remove(name);
+            return;
+        }
+    }
+
+    if let Some(ty) = infer_expr_primitive_type(expr, env, return_types) {
+        env.scalar_types.insert(name.clone(), ty);
+        env.array_elem_types.remove(name);
+        env.struct_instances.remove(name);
     }
 }
 
@@ -323,8 +448,7 @@ fn resolve_generic_def_type_bindings(
     type_args: &[CallTypeArg],
     args: &[CallArg],
     env: &OverloadRewriteEnv,
-    fn_signatures: &HashMap<String, FnSignature>,
-    generated_sigs: &HashMap<String, FnSignature>,
+    return_types: &HashMap<String, ReturnType>,
 ) -> HashMap<String, PrimitiveType> {
     let mut bindings = HashMap::new();
 
@@ -376,23 +500,13 @@ fn resolve_generic_def_type_bindings(
                 // For array/buffer params, infer from the arg's element type.
                 let inferred = match param_ty {
                     Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => {
-                        if let Expr::Var { name: var_name, .. } = arg_expr {
-                            env.array_elem_types.get(var_name).copied()
-                        } else {
-                            None
-                        }
+                        infer_array_arg_elem_type(arg_expr, env, return_types)
                     }
                     Some(FnParamType::Buffer(BufferType {
                         elem: BufferElemType::Generic(_),
                         ..
-                    })) => {
-                        if let Expr::Var { name: var_name, .. } = arg_expr {
-                            env.buffer_types.get(var_name).map(|(prim, _)| *prim)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => infer_expr_primitive_type(arg_expr, env, fn_signatures, generated_sigs),
+                    })) => infer_buffer_arg_info(arg_expr, env).map(|(prim, _)| prim),
+                    _ => infer_expr_primitive_type(arg_expr, env, return_types),
                 };
                 if let Some(prim) = inferred {
                     bindings.insert(name, prim);
@@ -408,36 +522,32 @@ fn resolve_generic_def_type_bindings(
 fn infer_expr_primitive_type(
     expr: &Expr,
     env: &OverloadRewriteEnv,
-    fn_signatures: &HashMap<String, FnSignature>,
-    generated_sigs: &HashMap<String, FnSignature>,
+    return_types: &HashMap<String, ReturnType>,
 ) -> Option<PrimitiveType> {
     match expr {
         Expr::Number { .. } => Some(PrimitiveType::F32),
         Expr::Int { .. } => Some(PrimitiveType::I32),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::Cast { to, .. } => Some(*to),
-        Expr::Var { name, .. } => env.scalar_types.get(name).copied(),
+        Expr::Var { name, .. } => builtin_constant_type(name)
+            .or_else(|| env.scalar_types.get(name).copied())
+            .or_else(|| {
+                split_simple_field_path(name).and_then(|(base, field)| {
+                    let flat = format!("{base}.{field}");
+                    env.scalar_types.get(&flat).copied()
+                })
+            }),
+        Expr::Index { base, .. } => lookup_slice_base_elem_type(base, env),
         Expr::UserCall { name, .. } => {
-            // Look up the callee in generated or existing signatures to infer return type.
-            let sig = generated_sigs
-                .get(name.as_str())
-                .or_else(|| fn_signatures.get(name.as_str()));
-            if let Some(sig) = sig {
-                if sig.type_params.is_empty() {
-                    // Concrete function — heuristic: return type matches first primitive param type.
-                    for pt in &sig.param_types {
-                        if let Some(FnParamType::Primitive(prim)) = pt {
-                            return Some(*prim);
-                        }
-                    }
-                }
+            if let Some(return_ty) = return_types.get(name.as_str()) {
+                return return_ty.scalar();
             }
             None
         }
         Expr::Binary { lhs, rhs, .. } => {
             // For binary ops, try to infer from either operand.
-            infer_expr_primitive_type(lhs, env, fn_signatures, generated_sigs)
-                .or_else(|| infer_expr_primitive_type(rhs, env, fn_signatures, generated_sigs))
+            infer_expr_primitive_type(lhs, env, return_types)
+                .or_else(|| infer_expr_primitive_type(rhs, env, return_types))
         }
         _ => None,
     }
@@ -451,24 +561,28 @@ pub(crate) fn monomorphize_calls_in_stmts(
     fn_signatures: &HashMap<String, FnSignature>,
     original_defs: &[FunctionDef],
     generic_templates: &HashSet<String>,
-    _struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     generated_defs: &mut Vec<FunctionDef>,
     generated_sigs: &mut HashMap<String, FnSignature>,
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
     enclosing_type_params: &[String],
 ) {
+    let mut local_env = env.clone();
     for stmt in stmts.iter_mut() {
         monomorphize_calls_in_stmt(
             stmt,
-            env,
+            &mut local_env,
             mono_eligible,
             fn_signatures,
             original_defs,
             generic_templates,
+            struct_defs,
             generated_defs,
             generated_sigs,
             mono_cache,
+            return_types,
             errors,
             enclosing_type_params,
         );
@@ -478,20 +592,27 @@ pub(crate) fn monomorphize_calls_in_stmts(
 #[allow(clippy::too_many_arguments)]
 fn monomorphize_calls_in_stmt(
     stmt: &mut Stmt,
-    env: &OverloadRewriteEnv,
+    env: &mut OverloadRewriteEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
     original_defs: &[FunctionDef],
     generic_templates: &HashSet<String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     generated_defs: &mut Vec<FunctionDef>,
     generated_sigs: &mut HashMap<String, FnSignature>,
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
     enclosing_type_params: &[String],
 ) {
     match stmt {
         Stmt::Const { .. } => {}
-        Stmt::Assign { expr, .. } => {
+        Stmt::Assign {
+            target,
+            decl_ty,
+            expr,
+            ..
+        } => {
             monomorphize_calls_in_expr(
                 expr,
                 env,
@@ -499,12 +620,15 @@ fn monomorphize_calls_in_stmt(
                 fn_signatures,
                 original_defs,
                 generic_templates,
+                struct_defs,
                 generated_defs,
                 generated_sigs,
                 mono_cache,
+                return_types,
                 errors,
                 enclosing_type_params,
             );
+            update_mono_env_after_assign(target, *decl_ty, expr, env, struct_defs, return_types);
         }
         Stmt::Expr { expr, .. } => {
             monomorphize_calls_in_expr(
@@ -514,9 +638,11 @@ fn monomorphize_calls_in_stmt(
                 fn_signatures,
                 original_defs,
                 generic_templates,
+                struct_defs,
                 generated_defs,
                 generated_sigs,
                 mono_cache,
+                return_types,
                 errors,
                 enclosing_type_params,
             );
@@ -529,9 +655,11 @@ fn monomorphize_calls_in_stmt(
                 fn_signatures,
                 original_defs,
                 generic_templates,
+                struct_defs,
                 generated_defs,
                 generated_sigs,
                 mono_cache,
+                return_types,
                 errors,
                 enclosing_type_params,
             );
@@ -549,55 +677,101 @@ fn monomorphize_calls_in_stmt(
                 fn_signatures,
                 original_defs,
                 generic_templates,
+                struct_defs,
                 generated_defs,
                 generated_sigs,
                 mono_cache,
+                return_types,
                 errors,
                 enclosing_type_params,
             );
+            let mut then_env = env.clone();
             for s in then_branch.iter_mut() {
                 monomorphize_calls_in_stmt(
                     s,
-                    env,
+                    &mut then_env,
                     mono_eligible,
                     fn_signatures,
                     original_defs,
                     generic_templates,
+                    struct_defs,
                     generated_defs,
                     generated_sigs,
                     mono_cache,
+                    return_types,
                     errors,
                     enclosing_type_params,
                 );
             }
+            let mut else_env = env.clone();
             for s in else_branch.iter_mut() {
                 monomorphize_calls_in_stmt(
                     s,
-                    env,
+                    &mut else_env,
                     mono_eligible,
                     fn_signatures,
                     original_defs,
                     generic_templates,
+                    struct_defs,
                     generated_defs,
                     generated_sigs,
                     mono_cache,
+                    return_types,
                     errors,
                     enclosing_type_params,
                 );
             }
+            env.scalar_types = then_env
+                .scalar_types
+                .iter()
+                .filter_map(|(name, ty)| {
+                    else_env
+                        .scalar_types
+                        .get(name)
+                        .copied()
+                        .filter(|other| other == ty)
+                        .map(|_| (name.clone(), *ty))
+                })
+                .collect::<HashMap<_, _>>();
+            env.struct_instances = then_env
+                .struct_instances
+                .iter()
+                .filter_map(|(name, ty)| {
+                    else_env
+                        .struct_instances
+                        .get(name)
+                        .filter(|other| *other == ty)
+                        .map(|_| (name.clone(), ty.clone()))
+                })
+                .collect::<HashMap<_, _>>();
+            env.array_elem_types = then_env
+                .array_elem_types
+                .iter()
+                .filter_map(|(name, ty)| {
+                    else_env
+                        .array_elem_types
+                        .get(name)
+                        .copied()
+                        .filter(|other| other == ty)
+                        .map(|_| (name.clone(), *ty))
+                })
+                .collect::<HashMap<_, _>>();
         }
         Stmt::For { body, .. } | Stmt::While { body, .. } => {
+            let mut body_env = env.clone();
             for s in body.iter_mut() {
                 monomorphize_calls_in_stmt(
                     s,
-                    env,
+                    &mut body_env,
                     mono_eligible,
                     fn_signatures,
                     original_defs,
                     generic_templates,
+                    struct_defs,
                     generated_defs,
                     generated_sigs,
                     mono_cache,
+                    return_types,
                     errors,
                     enclosing_type_params,
                 );
@@ -615,9 +789,11 @@ fn monomorphize_calls_in_expr(
     fn_signatures: &HashMap<String, FnSignature>,
     original_defs: &[FunctionDef],
     generic_templates: &HashSet<String>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     generated_defs: &mut Vec<FunctionDef>,
     generated_sigs: &mut HashMap<String, FnSignature>,
     mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
     enclosing_type_params: &[String],
 ) {
@@ -637,9 +813,11 @@ fn monomorphize_calls_in_expr(
                     fn_signatures,
                     original_defs,
                     generic_templates,
+                    struct_defs,
                     generated_defs,
                     generated_sigs,
                     mono_cache,
+                    return_types,
                     errors,
                     enclosing_type_params,
                 );
@@ -692,14 +870,8 @@ fn monomorphize_calls_in_expr(
                 }
             }
             let resolved_type_bindings: HashMap<String, PrimitiveType> = if has_def_type_params {
-                let mut bindings = resolve_generic_def_type_bindings(
-                    sig,
-                    type_args,
-                    args,
-                    env,
-                    fn_signatures,
-                    generated_sigs,
-                );
+                let mut bindings =
+                    resolve_generic_def_type_bindings(sig, type_args, args, env, return_types);
                 for tp in &sig.type_params {
                     bindings.entry(tp.clone()).or_insert(PrimitiveType::F32);
                 }
@@ -773,11 +945,7 @@ fn monomorphize_calls_in_expr(
                                     .get(idx)
                                     .and_then(|a| a.as_ref())
                                     .and_then(|arg| {
-                                        if let Expr::Var { name: var_name, .. } = arg {
-                                            env.buffer_types.get(var_name).map(|(_, ch)| ch.clone())
-                                        } else {
-                                            None
-                                        }
+                                        infer_buffer_arg_info(arg, env).map(|(_, ch)| ch)
                                     })
                                     .unwrap_or(TypedBufferChannels::Mono);
                                 keys.push(MonoParamKey::ResolvedBuffer(*prim, inferred_channels));
@@ -791,7 +959,7 @@ fn monomorphize_calls_in_expr(
                 let arg_expr = resolved_args.get(idx).and_then(|a| a.as_ref());
                 if let Some(arg_expr) = arg_expr {
                     if let Some(key) =
-                        infer_mono_arg_key(arg_expr, param_ty, env, generic_templates)
+                        infer_mono_arg_key(arg_expr, param_ty, env, generic_templates, return_types)
                     {
                         keys.push(key);
                     } else {
@@ -875,6 +1043,14 @@ fn monomorphize_calls_in_expr(
                     );
                     generated_defs.push(gen_def);
                     generated_sigs.insert(new_name.clone(), gen_sig);
+                    refresh_monomorphized_return_types(
+                        return_types,
+                        original_defs,
+                        generated_defs,
+                        fn_signatures,
+                        generated_sigs,
+                        struct_defs,
+                    );
                 }
 
                 mono_cache.insert(cache_key, new_name.clone());
@@ -895,9 +1071,11 @@ fn monomorphize_calls_in_expr(
                 fn_signatures,
                 original_defs,
                 generic_templates,
+                struct_defs,
                 generated_defs,
                 generated_sigs,
                 mono_cache,
+                return_types,
                 errors,
                 enclosing_type_params,
             );
@@ -908,9 +1086,11 @@ fn monomorphize_calls_in_expr(
                 fn_signatures,
                 original_defs,
                 generic_templates,
+                struct_defs,
                 generated_defs,
                 generated_sigs,
                 mono_cache,
+                return_types,
                 errors,
                 enclosing_type_params,
             );
@@ -924,9 +1104,11 @@ fn monomorphize_calls_in_expr(
                     fn_signatures,
                     original_defs,
                     generic_templates,
+                    struct_defs,
                     generated_defs,
                     generated_sigs,
                     mono_cache,
+                    return_types,
                     errors,
                     enclosing_type_params,
                 );
@@ -942,9 +1124,11 @@ fn monomorphize_calls_in_expr(
                 fn_signatures,
                 original_defs,
                 generic_templates,
+                struct_defs,
                 generated_defs,
                 generated_sigs,
                 mono_cache,
+                return_types,
                 errors,
                 enclosing_type_params,
             );
@@ -958,9 +1142,11 @@ fn monomorphize_calls_in_expr(
                     fn_signatures,
                     original_defs,
                     generic_templates,
+                    struct_defs,
                     generated_defs,
                     generated_sigs,
                     mono_cache,
+                    return_types,
                     errors,
                     enclosing_type_params,
                 );
