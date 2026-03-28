@@ -5,7 +5,15 @@ It is organized from the simplest idea in Omni, the block, through reusable abst
 
 ## 1. Reading an Omni file
 
-Omni supports both brace style and indentation style.
+Omni supports both indentation style and brace style syntax.
+
+```omni
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+```
 
 ```omni
 outs { 
@@ -15,14 +23,6 @@ outs {
 sample { 
   out1 = 0.0
 }
-```
-
-```omni
-outs:
-  out1
-
-sample:
-  out1 = 0.0
 ```
 
 Basic syntax rules:

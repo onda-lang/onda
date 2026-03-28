@@ -99,18 +99,26 @@
 
 - AOT follow-ups
   - Add a first-class `--emit wasm` convenience path that wraps the current object-emission + `wasm-ld` flow for single-module exports.
+    Current state:
+    wasm object emission already works through `omni compile --emit obj --target wasm32-unknown-unknown`
+    or `--target-spec targets/wasm32-unknown-unknown.toml` when LLVM was built with the `WebAssembly`
+    target enabled. The repo also includes a working example flow under
+    `examples/web/sine_wasm_worklet/` that links the emitted object with `wasm-ld`.
   - Decide whether `omni link` is worth adding as a low-level multi-object/native-link orchestration command, or whether that should stay external.
   - Decide whether metadata should remain sidecar-only or gain an optional embedded/exported form for host loaders.
   - Add a few more cross-target artifact smoke tests if we want broader confidence across ELF/COFF/Mach-O/WASM object formats.
 
-- WASM backend (`.wasm` export)
+- WASM productization / first-class `.wasm` export
+  - Current state:
+    - cross-target WebAssembly object emission is already available through the LLVM backend
+    - checked-in target spec: `targets/wasm32-unknown-unknown.toml`
+    - checked-in example/demo flow: `examples/web/sine_wasm_worklet/`
+    - this is currently an object-emission plus external-link step, not a first-class `--emit wasm` CLI product
   - Target: `wasm32-unknown-unknown` (pure compute module, no WASI dependency).
   - Two codegen strategies (not mutually exclusive):
     - **LLVM WebAssembly target** (native-hosted, reuses existing codegen):
-      - LLVM target initialization: `LLVMInitializeWebAssemblyTarget`, `LLVMInitializeWebAssemblyTargetInfo`,
-        `LLVMInitializeWebAssemblyTargetMC`, `LLVMInitializeWebAssemblyAsmPrinter`.
-      - Build system: add `webassembly` to the LLVM component link list alongside `native`
-        (conditional on a cargo feature flag, e.g. `wasm-backend`).
+      - This path already exists at the object-emission level when LLVM is built with the `WebAssembly` target.
+      - Remaining work is to turn that existing capability into a first-class `.wasm` output path and polished host workflow.
       - Reuses the existing LLVM IR generation from `orc_backend/` — same `build_*_ir` functions,
         just targeting a different triple and emitting an object instead of JIT-executing.
       - Benefits from the full LLVM O3 pipeline (loop vectorization, inlining, etc.).
