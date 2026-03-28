@@ -40,7 +40,7 @@ params_block = {
 buffers_block = {
   "buffers" ~ section_default_elem_type? ~ (
     (NEWLINE* ~ "{" ~ NEWLINE* ~ buffer_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
-    | (int_lit ~ NEWLINE*)
+    | (section_count ~ NEWLINE*)
   )
 }
 events_block = { "events" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ event_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }

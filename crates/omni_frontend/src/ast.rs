@@ -211,6 +211,8 @@ impl<'a> IntoIterator for &'a mut EventBlock {
 pub struct BufferBlock {
     pub loc: Span,
     pub decls: Vec<BufferDecl>,
+    pub deferred_count: Option<Expr>,
+    pub deferred_default_ty: Option<BufferType>,
 }
 
 impl Deref for BufferBlock {
@@ -428,6 +430,8 @@ pub struct ProcessorDef {
     pub params_deferred_default_ty: Option<DeclType>,
     pub events: Vec<EventDef>,
     pub buffers: Vec<BufferDecl>,
+    pub buffers_deferred_count: Option<Expr>,
+    pub buffers_deferred_default_ty: Option<BufferType>,
     pub has_init_block: bool,
     pub has_block_block: bool,
     pub has_sample_block: bool,

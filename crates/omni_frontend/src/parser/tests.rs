@@ -1723,6 +1723,66 @@ sample { out1 = 0.0 }
 }
 
 #[test]
+fn parses_top_level_buffers_count_shorthand_from_const() {
+    let src = r#"
+const N = 3
+buffers N
+sample { out1 = 0.0 }
+"#;
+    let program = parse_program(src).expect("parse_program should succeed");
+    let buffers = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Buffers(v) => Some(v),
+            _ => None,
+        })
+        .expect("buffers block");
+    assert_eq!(buffers.len(), 3);
+    assert_eq!(buffers[0].name, "buf1");
+    assert_eq!(buffers[1].name, "buf2");
+    assert_eq!(buffers[2].name, "buf3");
+}
+
+#[test]
+fn parses_proc_buffers_count_shorthand_from_namespace_param() {
+    let src = r#"
+namespace DSP<N = 2>:
+  proc Delay:
+    buffers[f32] N
+    outs 1
+    sample:
+      out1 = 0.0
+
+outs 1
+init:
+  d = DSP<3>::Delay()
+sample:
+  out1 = d()
+"#;
+    let program = parse_program(src).expect("parse_program should succeed");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert_eq!(proc.buffers.len(), 3);
+    assert!(proc.buffers.iter().enumerate().all(|(idx, b)| {
+        b.name == format!("buf{}", idx + 1)
+            && matches!(
+                b.ty.as_ref().map(|t| (&t.elem, &t.channels)),
+                Some((
+                    BufferElemType::Primitive(PrimitiveType::F32),
+                    crate::ast::BufferChannels::Mono
+                ))
+            )
+    }));
+}
+
+#[test]
 fn parses_proc_buffers_block() {
     let src = r#"
 proc Delay {

@@ -357,8 +357,8 @@ pub(super) fn parse_buffers_block(
     let mut out = Vec::<BufferDecl>::new();
     let mut seen = HashSet::<String>::new();
 
-    let mut has_list = false;
     let mut count_shorthand: Option<usize> = None;
+    let mut deferred_count: Option<Expr> = None;
     let mut default_ty: Option<BufferType> = None;
 
     for child in block_pair.into_inner() {
@@ -366,8 +366,36 @@ pub(super) fn parse_buffers_block(
             Rule::section_default_elem_type => {
                 default_ty = Some(parse_section_default_buffer_type(child, "buffers")?);
             }
+            Rule::section_count => {
+                let count_loc = stmt_loc_from_pair(&child);
+                if count_shorthand.is_some() || deferred_count.is_some() {
+                    return Err(vec![syntax_at_pair(
+                        &child,
+                        "buffers block count can only be specified once",
+                    )]);
+                }
+                match parse_section_count_inner(child)? {
+                    SectionCount::Literal(n) => {
+                        if n == 0 {
+                            return Err(vec![syntax_at_loc(
+                                count_loc.as_ref(),
+                                "buffers count shorthand must be greater than zero",
+                            )]);
+                        }
+                        count_shorthand = Some(n);
+                    }
+                    SectionCount::Deferred(expr) => {
+                        deferred_count = Some(expr);
+                    }
+                }
+            }
             Rule::buffer_list => {
-                has_list = true;
+                if count_shorthand.is_some() || deferred_count.is_some() {
+                    return Err(vec![syntax_at_pair(
+                        &child,
+                        "buffers block cannot mix explicit declarations and count shorthand",
+                    )]);
+                }
                 for item in child.into_inner() {
                     if item.as_rule() != Rule::buffer_decl {
                         continue;
@@ -402,27 +430,13 @@ pub(super) fn parse_buffers_block(
                     });
                 }
             }
-            Rule::int_lit => {
-                if has_list {
-                    return Err(vec![syntax_at_pair(
-                        &child,
-                        "buffers block cannot mix explicit declarations and count shorthand",
-                    )]);
-                }
-                let count_i = parse_int(child.as_str())?;
-                if count_i <= 0 {
-                    return Err(vec![syntax_at_pair(
-                        &child,
-                        "buffers count shorthand must be greater than zero",
-                    )]);
-                }
-                count_shorthand = Some(count_i as usize);
-            }
             _ => {}
         }
     }
 
-    if let Some(n) = count_shorthand {
+    if deferred_count.is_some() {
+        // Deferred count expansion happens in the namespace rewrite pass.
+    } else if let Some(n) = count_shorthand {
         for idx in 1..=n {
             out.push(BufferDecl {
                 loc: block_loc.clone(),
@@ -433,9 +447,17 @@ pub(super) fn parse_buffers_block(
         }
     }
 
+    let deferred_default_ty = if deferred_count.is_some() {
+        default_ty
+    } else {
+        None
+    };
+
     Ok(BufferBlock {
         loc: block_loc,
         decls: out,
+        deferred_count,
+        deferred_default_ty,
     })
 }
 
@@ -800,6 +822,8 @@ pub(super) fn parse_proc_block(
     let mut params_deferred_default_ty: Option<DeclType> = None;
     let mut events: Option<Vec<EventDef>> = None;
     let mut buffers = Vec::new();
+    let mut buffers_deferred_count: Option<Expr> = None;
+    let mut buffers_deferred_default_ty: Option<BufferType> = None;
     let mut init: Option<InitBlock> = None;
     let mut block_exec: Option<BlockExec> = None;
     let mut sample: Option<SampleBlock> = None;
@@ -865,10 +889,13 @@ pub(super) fn parse_proc_block(
                 events = Some(parse_events_block(child)?.events);
             }
             Rule::buffers_block => {
-                if !buffers.is_empty() {
+                if !buffers.is_empty() || buffers_deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(&child, "duplicate proc buffers block")]);
                 }
-                buffers = parse_buffers_block(child)?.decls;
+                let bb = parse_buffers_block(child)?;
+                buffers = bb.decls;
+                buffers_deferred_count = bb.deferred_count;
+                buffers_deferred_default_ty = bb.deferred_default_ty;
             }
             Rule::init_block => {
                 if init.is_some() {
@@ -953,12 +980,14 @@ pub(super) fn parse_proc_block(
         outs,
         outs_deferred_count,
         outs_deferred_default_ty,
-        params,
-        params_deferred_count,
-        params_deferred_default_ty,
-        events: events.unwrap_or_default(),
-        buffers,
-        has_init_block: init.is_some(),
+            params,
+            params_deferred_count,
+            params_deferred_default_ty,
+            events: events.unwrap_or_default(),
+            buffers,
+            buffers_deferred_count,
+            buffers_deferred_default_ty,
+            has_init_block: init.is_some(),
         has_block_block,
         has_sample_block,
         has_graph_block,

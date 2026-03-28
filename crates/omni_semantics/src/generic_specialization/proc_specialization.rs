@@ -844,6 +844,8 @@ pub(crate) fn specialize_generic_proc_template(
         params_deferred_default_ty: None,
         events,
         buffers,
+        buffers_deferred_count: None,
+        buffers_deferred_default_ty: None,
         has_init_block: template.has_init_block,
         has_block_block: template.has_block_block,
         has_sample_block: template.has_sample_block,

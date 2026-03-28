@@ -450,6 +450,45 @@ fn expand_deferred_param_count(
     Ok(())
 }
 
+fn expand_deferred_buffer_count(
+    buffer_block: &mut BufferBlock,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    let Some(mut count_expr) = buffer_block.deferred_count.take() else {
+        return Ok(());
+    };
+    rewrite_expr(&mut count_expr, current_ns, const_env, state, generated)?;
+    let Some(count) = try_eval_const_count_expr(&count_expr) else {
+        return Err(vec![Diagnostic::semantic_span(
+            "buffers count expression must evaluate to a positive integer constant",
+            count_expr.loc().span(),
+        )]);
+    };
+    let default_ty = buffer_block.deferred_default_ty.take();
+    if buffer_block.decls.is_empty() {
+        for idx in 1..=count {
+            buffer_block.decls.push(BufferDecl {
+                loc: buffer_block.loc.clone(),
+                name: format!("buf{idx}"),
+                ty: default_ty.clone(),
+                ty_loc: Span::ZERO,
+            });
+        }
+    } else if buffer_block.decls.len() != count {
+        return Err(vec![Diagnostic::semantic_span(
+            format!(
+                "buffers block count ({count}) does not match explicit declaration count ({})",
+                buffer_block.decls.len()
+            ),
+            buffer_block.loc.as_ref(),
+        )]);
+    }
+    Ok(())
+}
+
 fn expand_deferred_proc_port_count(
     decls: &mut Vec<PortDecl>,
     deferred_count: &mut Option<Expr>,
@@ -539,6 +578,48 @@ fn expand_deferred_proc_param_count(
     Ok(())
 }
 
+fn expand_deferred_proc_buffer_count(
+    decls: &mut Vec<BufferDecl>,
+    deferred_count: &mut Option<Expr>,
+    deferred_default_ty: &mut Option<BufferType>,
+    loc: &Span,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    let Some(mut count_expr) = deferred_count.take() else {
+        return Ok(());
+    };
+    rewrite_expr(&mut count_expr, current_ns, const_env, state, generated)?;
+    let Some(count) = try_eval_const_count_expr(&count_expr) else {
+        return Err(vec![Diagnostic::semantic_span(
+            "buffers count expression must evaluate to a positive integer constant",
+            count_expr.loc().span(),
+        )]);
+    };
+    let default_ty = deferred_default_ty.take();
+    if decls.is_empty() {
+        for idx in 1..=count {
+            decls.push(BufferDecl {
+                loc: loc.clone(),
+                name: format!("buf{idx}"),
+                ty: default_ty.clone(),
+                ty_loc: Span::ZERO,
+            });
+        }
+    } else if decls.len() != count {
+        return Err(vec![Diagnostic::semantic_span(
+            format!(
+                "buffers block count ({count}) does not match explicit declaration count ({})",
+                decls.len()
+            ),
+            loc.as_ref(),
+        )]);
+    }
+    Ok(())
+}
+
 pub(super) fn rewrite_block_namespace_refs(
     block: &mut Block,
     current_ns: &str,
@@ -556,8 +637,9 @@ pub(super) fn rewrite_block_namespace_refs(
             rewrite_param_decls(param_block, current_ns, const_env, state, generated)?;
         }
         Block::Const(_) => {}
-        Block::Buffers(decls) => {
-            for decl in decls {
+        Block::Buffers(buffer_block) => {
+            expand_deferred_buffer_count(buffer_block, current_ns, const_env, state, generated)?;
+            for decl in &mut buffer_block.decls {
                 if let Some(ty) = &mut decl.ty {
                     rewrite_buffer_type(
                         ty,
@@ -646,6 +728,16 @@ pub(super) fn rewrite_block_namespace_refs(
                 &mut p.params,
                 &mut p.params_deferred_count,
                 &mut p.params_deferred_default_ty,
+                &p.loc,
+                current_ns,
+                &proc_const_env,
+                state,
+                generated,
+            )?;
+            expand_deferred_proc_buffer_count(
+                &mut p.buffers,
+                &mut p.buffers_deferred_count,
+                &mut p.buffers_deferred_default_ty,
                 &p.loc,
                 current_ns,
                 &proc_const_env,
