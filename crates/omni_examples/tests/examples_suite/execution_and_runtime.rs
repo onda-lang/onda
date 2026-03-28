@@ -4858,6 +4858,27 @@ fn proc_sample_oversample_factor_64_compiles_and_runs_smoke() {
 
 #[test]
 
+fn sample_oversample_factor_512_compiles_and_runs_smoke() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_FACTOR_512_SMOKE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(output.iter().all(|v| v.is_finite()));
+
+    assert!(output[frames - 1] > output[0]);
+}
+
+#[test]
+
 fn sample_oversample_invalid_factor_is_rejected() {
     let parsed =
         parse_program(SAMPLE_OVERSAMPLE_INVALID_FACTOR_EXAMPLE).expect("parse should succeed");
@@ -4872,10 +4893,39 @@ fn sample_oversample_invalid_factor_is_rejected() {
     let diags = result.expect_err("expected semantic diagnostics");
 
     assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("{1,2,4,8,16,32,64}") && d.message.contains("got 3")),
+        diags.iter().any(|d| {
+            d.message.contains("{1,2,4,8,16,32,64,128,256,512}") && d.message.contains("got 3")
+        }),
         "expected explicit allowed-factor diagnostic, got: {diags:?}"
+    );
+}
+
+#[test]
+
+fn sample_oversample_const_expr_factor_is_accepted() {
+    let parsed =
+        parse_program(SAMPLE_OVERSAMPLE_CONST_EXPR_FACTOR_EXAMPLE).expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("const oversample factor should analyze");
+
+    assert_eq!(typed.sample_oversample_factor, 4);
+}
+
+#[test]
+
+fn proc_sample_oversample_namespace_factor_compiles_and_runs() {
+    let parsed = parse_program(PROC_SAMPLE_OVERSAMPLE_NAMESPACE_FACTOR_EXAMPLE)
+        .expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("namespace oversample factor should analyze");
+
+    assert!(
+        typed
+            .def_sample_oversample_factors
+            .values()
+            .any(|&factor| factor == 8),
+        "expected lowered proc oversample factor map to contain 8x specialization, got {:?}",
+        typed.def_sample_oversample_factors
     );
 }
 
@@ -4896,7 +4946,9 @@ fn sample_oversample_non_literal_factor_is_rejected() {
 
     assert!(
         diags.iter().any(|d| {
-            d.message.contains("integer literal") && d.message.contains("{1,2,4,8,16,32,64}")
+            d.message
+                .contains("compile-time integer constant expression")
+                && d.message.contains("{1,2,4,8,16,32,64,128,256,512}")
         }),
         "expected integer-literal diagnostic, got: {diags:?}"
     );

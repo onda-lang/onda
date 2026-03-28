@@ -4897,6 +4897,37 @@ sample n {
 }
 "#;
 
+const SAMPLE_OVERSAMPLE_CONST_EXPR_FACTOR_EXAMPLE: &str = r#"
+const OS = 2 * 2
+outs { out1 }
+sample OS {
+  out1 = 0.0
+}
+"#;
+
+const SAMPLE_OVERSAMPLE_FACTOR_512_SMOKE_EXAMPLE: &str = r#"
+outs { out1 }
+init { x = 0.0 }
+sample 512 {
+  x = x + 1.0
+  out1 = x
+}
+"#;
+
+const PROC_SAMPLE_OVERSAMPLE_NAMESPACE_FACTOR_EXAMPLE: &str = r#"
+namespace DSP<N = 2>:
+  proc Gain:
+    outs { out1 }
+    sample N * 2:
+      out1 = 0.5
+
+outs { out1 }
+init:
+  g = DSP<4>::Gain()
+sample:
+  out1 = g()
+"#;
+
 const SAMPLE_OVERSAMPLE_INPUT_INTERP_EXAMPLE: &str = r#"
 ins { in1 }
 outs { out1 }

@@ -301,7 +301,7 @@
   - Non-`block` procs do not allocate/use active-slot hook tracking and keep the lower-overhead call path.
   - Proc-slot buffer refs (`ptr`/`frames`/`channels`) are refreshed on the safe `process_bound` path; `process_unchecked` does not perform hidden refresh.
 - Sample oversampling is implemented for both top-level and proc sample blocks:
-  - syntax: `sample N:` where `N` is one of `{1,2,4,8,16,32,64}`.
+  - syntax: `sample N:` where `N` is any compile-time integer constant expression that resolves to one of `{1,2,4,8,16,32,64,128,256,512}`.
   - oversampling path is compiler-managed (input interpolation, held params, filtered decimation).
   - proc-level oversampling uses the same codegen-rate specialization model as top-level oversampling (unified behavior model, no source-level `SR` rewrite hack).
 

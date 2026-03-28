@@ -244,7 +244,7 @@ pub(crate) struct ProcessorDesugarResult {
     pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
 }
 
-const ALLOWED_SAMPLE_OVERSAMPLE_FACTORS: &[i64] = &[1, 2, 4, 8, 16, 32, 64];
+const ALLOWED_SAMPLE_OVERSAMPLE_FACTORS: &[i64] = &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
 
 fn sanitize_runtime_symbol_component(name: &str) -> String {
     name.chars()
@@ -267,6 +267,7 @@ pub(crate) fn runtime_proc_array_active_field_name(array_base: &str) -> String {
 
 pub(crate) fn validated_sample_oversample_factor(
     factor_expr: Option<&Expr>,
+    options: AnalysisOptions,
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> usize {
@@ -275,31 +276,37 @@ pub(crate) fn validated_sample_oversample_factor(
     };
     let expr_diag = DiagCtx::new(expr.loc());
 
-    match expr {
-        Expr::Int { value, .. } => {
-            if ALLOWED_SAMPLE_OVERSAMPLE_FACTORS.contains(value) {
-                *value as usize
-            } else {
-                push_semantic(
-                    expr_diag,
-                    errors,
-                    format!(
-                        "{context} oversampling factor must be one of {{1,2,4,8,16,32,64}}; got {value}"
-                    ),
-                );
-                1
-            }
-        }
-        _ => {
-            push_semantic(
-                expr_diag,
-                errors,
-                format!(
-                    "{context} oversampling factor must be an integer literal in {{1,2,4,8,16,32,64}}"
-                ),
-                );
-            1
-        }
+    if !can_eval_const_expr_exact_int(expr) {
+        push_semantic(
+            expr_diag,
+            errors,
+            format!(
+                "{context} oversampling factor must be a compile-time integer constant expression in {{1,2,4,8,16,32,64,128,256,512}}"
+            ),
+        );
+        return 1;
+    }
+
+    let Some(value) = eval_const_expr_i64_exact(
+        expr,
+        options,
+        &format!("{context} oversampling factor"),
+        errors,
+    ) else {
+        return 1;
+    };
+
+    if ALLOWED_SAMPLE_OVERSAMPLE_FACTORS.contains(&value) {
+        value as usize
+    } else {
+        push_semantic(
+            expr_diag,
+            errors,
+            format!(
+                "{context} oversampling factor must resolve to one of {{1,2,4,8,16,32,64,128,256,512}}; got {value}"
+            ),
+        );
+        1
     }
 }
 
@@ -653,6 +660,7 @@ fn build_proc_lowering_env(
     for proc in &mut proc_defs {
         let factor = validated_sample_oversample_factor(
             proc.sample_oversample_factor.as_ref(),
+            options,
             &format!("processor '{}' sample block", proc.name),
             errors,
         );

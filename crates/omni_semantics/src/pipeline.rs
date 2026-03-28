@@ -236,6 +236,7 @@ pub fn analyze_with_options(
     };
     let sample_oversample_factor = validated_sample_oversample_factor(
         sample_block.oversample_factor.as_ref(),
+        options,
         "sample block",
         &mut errors,
     );

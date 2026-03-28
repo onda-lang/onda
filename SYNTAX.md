@@ -492,9 +492,9 @@ sample 4:
 ```
 
 Rules for oversampled `sample` blocks:
-- allowed factors are `1`, `2`, `4`, `8`, `16`, `32`, `64`
+- allowed factors are `1`, `2`, `4`, `8`, `16`, `32`, `64`, `128`, `256`, `512`
 - `sample:` is equivalent to `sample 1:`
-- the factor must be an integer literal
+- the factor can be any compile-time integer constant expression that resolves to one of the supported factors
 - invalid factors are semantic errors
 
 Runtime behavior of oversampling:
