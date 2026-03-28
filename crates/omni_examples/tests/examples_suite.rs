@@ -8341,6 +8341,112 @@ sample:
 }
 
 #[test]
+fn def_struct_array_multi_layer_methods_and_nested_chain_compile_and_run() {
+    let src = r#"
+struct Tap:
+  gain: f32
+
+  def read(self):
+    return self.gain * 2.0
+
+struct Voice:
+  tap: Tap
+  bias: f32
+
+  def value(self):
+    return self.tap.read() + self.bias
+
+outs:
+  out1
+
+def read_voice(voice: Voice):
+  return voice.value()
+
+def read_outer(voices, idx: i32):
+  return read_voice(voices[idx]) + 1.0
+
+init:
+  voices: Voice[2]
+  voice0 = voices[0]
+  voice0.tap.gain = 1.5
+  voice0.bias = 0.5
+  voice1 = voices[1]
+  voice1.tap.gain = 2.0
+  voice1.bias = 1.0
+
+sample:
+  out1 = read_outer(voices, 1)
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 6.0, 1e-6);
+    }
+}
+
+#[test]
+fn def_struct_array_chain_of_structs_with_methods_compile_and_run() {
+    let src = r#"
+struct Tap:
+  gain: f32
+
+  def read(self):
+    return self.gain * 2.0
+
+struct Voice:
+  tap: Tap
+  bias: f32
+
+  def value(self):
+    return self.tap.read() + self.bias
+
+struct Rack:
+  voices: Voice[2]
+
+outs:
+  out1
+
+def read_voice(voice: Voice):
+  return voice.value()
+
+def read_rack(rack: Rack, idx: i32):
+  return read_voice(rack.voices[idx])
+
+def read_outer(racks, rack_idx: i32, voice_idx: i32):
+  return read_rack(racks[rack_idx], voice_idx)
+
+init:
+  racks: Rack[2]
+  rack0 = racks[0]
+  voice0 = rack0.voices[0]
+  voice0.tap.gain = 1.0
+  voice0.bias = 0.5
+  rack1 = racks[1]
+  voice1 = rack1.voices[1]
+  voice1.tap.gain = 2.0
+  voice1.bias = 1.0
+
+sample:
+  out1 = read_outer(racks, 1, 1)
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 5.0, 1e-6);
+    }
+}
+
+#[test]
 fn proc_array_init_event_compiles_and_runs() {
     let frames = 4;
     let (mut instance, in_channels, out_channels) =
@@ -8484,6 +8590,112 @@ sample:
 }
 
 #[test]
+fn proc_array_def_multi_layer_alias_init_and_call_compile_and_run() {
+    let src = r#"
+proc Voice:
+  params:
+    gain = 0.0
+    bias = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain + bias
+
+outs:
+  out1
+
+def seed_slot(voices, idx: i32, gain, bias):
+  voice = voices[idx]
+  voice.init(gain = gain, bias = bias)
+
+def seed_all(voices):
+  seed_slot(voices, 0, 2.0, 0.5)
+  seed_slot(voices, 1, 3.0, 1.0)
+
+def read_slot(voices, idx: i32):
+  return voices[idx]().out1
+
+def render_all(voices):
+  return read_slot(voices, 0) + read_slot(voices, 1)
+
+init:
+  voices: Voice[2] = Voice()
+  seed_all(voices)
+
+sample:
+  out1 = render_all(voices)
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 6.5, 1e-6);
+    }
+}
+
+#[test]
+fn def_owner_proc_chain_across_multiple_layers_compile_and_run() {
+    let src = r#"
+proc Voice:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+proc Bank:
+  params:
+    base = 0.0
+  outs:
+    out1
+  init:
+    voices: Voice[2] = Voice()
+    voices[0].init(gain = base + 1.0)
+    voices[1].init(gain = base + 2.0)
+  sample:
+    out1 = voices[1]()
+
+proc Rack:
+  outs:
+    out1
+  init:
+    banks: Bank[2] = [Bank(base = 0.0), Bank(base = 10.0)]
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+def read_bank(rack: Rack, bank_idx: i32):
+  return rack.banks[bank_idx]().out1
+
+def read_outer(rack: Rack):
+  return read_bank(rack, 1)
+
+init:
+  rack = Rack()
+
+sample:
+  out1 = read_outer(rack)
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in &output {
+        assert_near(*sample, 12.0, 1e-6);
+    }
+}
+
+#[test]
 fn top_level_def_nested_proc_array_dynamic_call_runs_block_hooks_only_for_active_slot_per_block() {
     let src = r#"
 proc Voice:
@@ -8572,6 +8784,63 @@ init:
 
 sample:
   x = run_selected(voices, idx)
+  v0 = voices[0]
+  v1 = voices[1]
+  out1 = x * 0.0 + v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post
+  idx = 1 - idx
+"#;
+    let frames = 1;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+    assert_near(out_b[0], 1110.0, 1e-6);
+}
+
+#[test]
+fn top_level_def_proc_array_multi_layer_dynamic_call_runs_block_hooks_only_for_active_slot_per_block(
+) {
+    let src = r#"
+proc Voice:
+  outs:
+    out1
+    pre
+    post
+  init:
+    pre_count = 0.0
+    post_count = 0.0
+  block:
+    pre_count = pre_count + 1.0
+    sample:
+      out1 = 0.0
+      pre = pre_count
+      post = post_count
+    post_count = post_count + 1.0
+
+outs:
+  out1
+
+def run_leaf(voices, idx: i32):
+  return voices[idx]().out1
+
+def run_mid(voices, idx: i32):
+  return run_leaf(voices, idx)
+
+def run_outer(voices, idx: i32):
+  return run_mid(voices, idx)
+
+init:
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 0
+
+sample:
+  x = run_outer(voices, idx)
   v0 = voices[0]
   v1 = voices[1]
   out1 = x * 0.0 + v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post

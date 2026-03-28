@@ -936,6 +936,29 @@ mod tests {
     }
 
     #[test]
+    fn def_forwards_proc_array_params_across_multiple_layers() {
+        let src = "import std/osc\nouts:\n  out1\ndef init_leaf(voices, freq):\n  for i in 0..2:\n    voice = voices[i]\n    voice.init(freq = freq * f32(i + 1))\ndef init_mid(voices, freq):\n  init_leaf(voices, freq)\ndef init_top(voices, freq):\n  init_mid(voices, freq)\ninit:\n  voices: std::osc::Sine[2]\n  init_top(voices, 110.0)\nsample:\n  out1 = voices[0]() + voices[1]()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("multi-layer proc-array forwarding should analyze");
+        for def_name in ["init_leaf", "init_mid", "init_top"] {
+            let def = typed
+                .defs
+                .iter()
+                .find(|def| def.name == def_name)
+                .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
+            assert!(
+                matches!(
+                    def.param_kinds.first(),
+                    Some(TypedFnParam::ProcArray { proc_name, len: 2 })
+                        if proc_name.starts_with("std::osc::Sine")
+                ),
+                "expected proc-array first param for '{def_name}', got {:#?}",
+                def.param_kinds
+            );
+        }
+    }
+
+    #[test]
     fn def_infers_struct_array_params_from_call_sites() {
         let src = "struct Pair:\n  x\nouts:\n  out1\ndef sum_pairs(pairs):\n  total = 0.0\n  for i in 0..2:\n    total = total + pairs[i].x\n  return total\ninit:\n  pairs: Pair[2]\n  for i in 0..2:\n    p = pairs[i]\n    p.x = f32(i + 1)\nsample:\n  out1 = sum_pairs(pairs)\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -1010,6 +1033,42 @@ mod tests {
                 matches!(
                     def.param_kinds.first(),
                     Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Pair"
+                ),
+                "expected struct-array first param for '{def_name}', got {:#?}",
+                def.param_kinds
+            );
+        }
+    }
+
+    #[test]
+    fn def_infers_struct_array_params_across_multiple_layers_with_methods() {
+        let src = "struct Tap:\n  gain: f32\n\n  def read(self):\n    return self.gain * 2.0\n\nstruct Voice:\n  tap: Tap\n  bias: f32\n\n  def value(self):\n    return self.tap.read() + self.bias\n\nouts:\n  out1\ndef read_leaf(voice: Voice):\n  return voice.value()\ndef read_mid(voices, idx: i32):\n  return read_leaf(voices[idx])\ndef read_top(voices, idx: i32):\n  return read_mid(voices, idx)\ninit:\n  voices: Voice[2]\n  v = voices[0]\n  v.tap.gain = 1.0\n  v.bias = 0.5\nsample:\n  out1 = read_top(voices, 0)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed =
+            analyze(program).expect("multi-layer struct-array method forwarding should analyze");
+        let read_leaf = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "read_leaf")
+            .expect("missing typed def 'read_leaf'");
+        assert!(
+            matches!(
+                read_leaf.param_kinds.first(),
+                Some(TypedFnParam::Struct { struct_name }) if struct_name == "Voice"
+            ),
+            "expected Voice owner param for 'read_leaf', got {:#?}",
+            read_leaf.param_kinds
+        );
+        for def_name in ["read_mid", "read_top"] {
+            let def = typed
+                .defs
+                .iter()
+                .find(|def| def.name == def_name)
+                .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
+            assert!(
+                matches!(
+                    def.param_kinds.first(),
+                    Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Voice"
                 ),
                 "expected struct-array first param for '{def_name}', got {:#?}",
                 def.param_kinds
@@ -1156,6 +1215,148 @@ sample:
             "expected Bank block_post to flush nested proc-array active slots: {:#?}",
             bank_block_post.body
         );
+    }
+
+    #[test]
+    fn def_multi_layer_proc_array_forwarding_preserves_block_hooks() {
+        let src = r#"
+proc Voice:
+  outs:
+    out1
+  block:
+    sample:
+      out1 = 0.25
+
+outs:
+  out1
+
+def leaf(voices, idx: i32):
+  return voices[idx]()
+
+def mid(voices, idx: i32):
+  return leaf(voices, idx)
+
+def outer(voices, idx: i32):
+  return mid(voices, idx)
+
+init:
+  voices: Voice[2] = Voice()
+  idx: i32 = 1
+
+sample:
+  out1 = outer(voices, idx)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed =
+            analyze(program).expect("multi-layer proc-array block-hook call should analyze");
+
+        for def_name in ["leaf", "mid", "outer"] {
+            let def = typed
+                .defs
+                .iter()
+                .find(|def| def.name == def_name)
+                .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
+            assert!(
+                matches!(
+                    def.param_kinds.first(),
+                    Some(TypedFnParam::ProcArray { proc_name, len: 2 }) if proc_name == "Voice"
+                ),
+                "expected proc-array first param for '{def_name}', got {:#?}",
+                def.param_kinds
+            );
+        }
+
+        assert!(
+            typed
+                .block_pre
+                .iter()
+                .any(|stmt| stmt_contains_assign_to_index_base(
+                    stmt,
+                    "__omni_proc_block_active_voices"
+                )),
+            "expected sample caller to reset top-level proc-array active slots in block_pre: {:#?}",
+            typed.block_pre
+        );
+        assert!(
+            typed
+                .block_post
+                .iter()
+                .any(|stmt| {
+                    stmt_contains_user_call_name(stmt, "Voice.__proc_block_post")
+                        || stmt_contains_index_base(stmt, "__omni_proc_block_active_voices")
+                }),
+            "expected sample caller to flush top-level proc-array active slots in block_post: {:#?}",
+            typed.block_post
+        );
+    }
+
+    #[test]
+    fn def_forwards_owner_proc_params_across_multiple_layers() {
+        let src = r#"
+proc Voice:
+  params:
+    gain = 0.0
+  outs:
+    out1
+  sample:
+    out1 = gain
+
+proc Bank:
+  params:
+    base = 0.0
+  outs:
+    out1
+  init:
+    voices: Voice[2] = Voice()
+    voices[0].init(gain = base + 1.0)
+    voices[1].init(gain = base + 2.0)
+  sample:
+    out1 = voices[1]()
+
+proc Rack:
+  outs:
+    out1
+  init:
+    banks: Bank[2] = [Bank(base = 0.0), Bank(base = 10.0)]
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+def read_leaf(rack: Rack, bank_idx: i32):
+  return rack.banks[bank_idx]().out1
+
+def read_mid(rack: Rack, bank_idx: i32):
+  return read_leaf(rack, bank_idx)
+
+def read_outer(rack: Rack):
+  return read_mid(rack, 1)
+
+init:
+  rack = Rack()
+
+sample:
+  out1 = read_outer(rack)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("multi-layer owner-proc forwarding should analyze");
+
+        for def_name in ["read_leaf", "read_mid", "read_outer"] {
+            let def = typed
+                .defs
+                .iter()
+                .find(|def| def.name == def_name)
+                .unwrap_or_else(|| panic!("missing typed def '{def_name}'"));
+            assert!(
+                matches!(
+                    def.param_kinds.first(),
+                    Some(TypedFnParam::Struct { struct_name }) if struct_name == "Rack"
+                ),
+                "expected Rack owner param for '{def_name}', got {:#?}",
+                def.param_kinds
+            );
+        }
     }
 
     #[test]
