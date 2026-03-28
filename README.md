@@ -3,8 +3,31 @@
 `omni-llvm` is the toolchain for the Omni audio DSL.
 It provides the compiler, runtime, CLI, language server, preview tooling, editor integrations, and a C API for embedding.
 
-If you want language syntax and semantics, start with [SYNTAX.md](SYNTAX.md).
 This README is the overview of the tools around the language.
+
+## Short Omni example
+
+For the actual language reference, see [SYNTAX.md](SYNTAX.md).
+As a minimal example for a sine wave:
+
+```omni
+params:
+  freq = 440.0 {20, 1000}
+
+init:
+  phase = 0.0
+
+block:
+  incr = freq * TWO_PI / SR
+
+  sample:
+    phase = phase + incr
+    if phase > TWO_PI:
+      phase = phase - TWO_PI
+    out1 = sin(phase)
+```
+
+Take a look at the `examples/` folder for more usage examples.
 
 ## What this repository provides
 
@@ -251,26 +274,3 @@ At a high level the flow is:
 
 This is the embedding surface for non-Rust hosts.
 
-## Short Omni example
-
-For the actual language reference, see [SYNTAX.md](SYNTAX.md).
-As a minimal example:
-
-```omni
-params:
-  freq = 440.0 {20, 1000}
-
-init:
-  phase = 0.0
-
-block:
-  incr = freq * TWO_PI / SR
-
-  sample:
-    phase = phase + incr
-    if phase > TWO_PI:
-      phase = phase - TWO_PI
-    out1 = sin(phase)
-```
-
-Take a look at the `examples/` folder for more usage examples.

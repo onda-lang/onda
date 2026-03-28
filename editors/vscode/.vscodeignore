@@ -1,3 +1,15 @@
 src/**
+.vscode/**
+.gitignore
 tsconfig.json
-README.md
+package-lock.json
+*.vsix
+node_modules/**/.github/**
+node_modules/**/test/**
+node_modules/**/tests/**
+node_modules/**/example/**
+node_modules/**/examples/**
+node_modules/**/docs/**
+node_modules/**/*.md
+node_modules/**/*.map
+node_modules/**/*.ts

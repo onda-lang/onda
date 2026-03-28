@@ -50,7 +50,7 @@ npx @vscode/vsce package
 That produces a `.vsix` file in `editors/vscode/`, which you can then install with:
 
 ```bash
-code --install-extension editors/vscode/omni-vscode-0.0.1.vsix
+code --install-extension ./omni-vscode-0.0.1.vsix
 ```
 
 If you prefer the UI, use `Extensions: Install from VSIX...` and select the generated file.

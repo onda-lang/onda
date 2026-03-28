@@ -5,6 +5,10 @@
   "version": "0.0.1",
   "publisher": "omni",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vitreo12/omni-llvm.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
