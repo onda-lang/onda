@@ -426,7 +426,7 @@
   - instance state lifecycle: `reset_instance_state`
   - inputs/outputs: pointer + byte-size binding
   - buffers: pointer + frames + channels + sample rate + element type binding
-  - outputs: `bind_output` and `copy_output`
+  - outputs: `bind_output`
 - Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
   - `omni_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
 - CLI (`omni`) supports:
