@@ -41,6 +41,19 @@ Take a look at the `examples/` folder for more usage examples.
 Current execution is LLVM ORC JIT.
 The CLI can also emit LLVM IR and native object files for AOT-style workflows.
 
+## Main components
+
+- `crates/omni_frontend`: parser, AST, diagnostics
+- `crates/omni_semantics`: semantic analysis and lowering rewrites
+- `crates/omni_codegen_llvm`: LLVM lowering and ORC JIT backend
+- `crates/omni_runtime`: runtime instance and processing APIs
+- `crates/omni_api`: C ABI
+- `crates/omni_daemon`: analysis and preview session engine
+- `crates/omni_cli`: CLI, LSP adapter, and preview control transport
+- `editors/vscode`: VSCode extension
+- `editors/nvim`: Neovim runtime support
+- `examples/`: Omni example programs
+
 ## Documentation
 
 - [SYNTAX.md](SYNTAX.md): language syntax and semantics
@@ -73,19 +86,19 @@ cargo check --workspace
 3. Compile an Omni file.
 
 ```bash
-cargo run -p omni_cli -- compile examples/sine.omni
+omni compile examples/sine.omni
 ```
 
 4. Render audio offline.
 
 ```bash
-cargo run -p omni_cli -- render examples/sine.omni --output ./omni_out.wav --dur 5
+omni render examples/sine.omni --output ./omni_out.wav --dur 5
 ```
 
 5. Start the language server.
 
 ```bash
-cargo run -p omni_cli -- lsp
+omni lsp
 ```
 
 ## The `omni` CLI
@@ -116,16 +129,16 @@ Typical uses:
 Examples:
 
 ```bash
-cargo run -p omni_cli -- compile examples/sine.omni
-cargo run -p omni_cli -- compile examples/proc_gain_graph.omni --dump-graph
-cargo run -p omni_cli -- compile examples/sine.omni --emit llvm-ir
-cargo run -p omni_cli -- compile examples/sine.omni --emit obj
+omni compile examples/sine.omni
+omni compile examples/proc_gain_graph.omni --dump-graph
+omni compile examples/sine.omni --emit llvm-ir
+omni compile examples/sine.omni --emit obj
 ```
 
 Cross-target IR and object emission is also supported:
 
 ```bash
-cargo run -p omni_cli -- compile examples/sine.omni --target-spec ./targets/arm64.toml --emit obj
+omni compile examples/sine.omni --target-spec ./targets/arm64.toml --emit obj
 ```
 
 ### `omni render`
@@ -133,7 +146,7 @@ cargo run -p omni_cli -- compile examples/sine.omni --target-spec ./targets/arm6
 Renders an Omni program to a WAV file offline.
 
 ```bash
-cargo run -p omni_cli -- render examples/sine.omni --output ./omni_out.wav --dur 5
+omni render examples/sine.omni --output ./omni_out.wav --dur 5
 ```
 
 Useful flags:
@@ -151,7 +164,7 @@ Opens the standalone patch preview window.
 This is the interactive path for listening to a patch, tweaking params, and inspecting buffers/devices.
 
 ```bash
-cargo run -p omni_cli -- preview examples/sine.omni
+omni preview examples/sine.omni
 ```
 
 Useful flags:
@@ -164,11 +177,10 @@ Useful flags:
 ### `omni preview play`
 
 Runs the real-time playback/control transport without opening the standalone UI.
-This is what editor integrations use under the hood.
 
 ```bash
-cargo run -p omni_cli -- preview play examples/sine.omni --dur 2
-cargo run -p omni_cli -- preview play examples/sine.omni --forever
+omni preview play examples/sine.omni --dur 2
+omni preview play examples/sine.omni --forever
 ```
 
 Useful flags:
@@ -187,7 +199,7 @@ Offline render through the preview pipeline.
 This is useful when you want the preview-oriented path, including `--set` parameter overrides, without running real-time playback.
 
 ```bash
-cargo run -p omni_cli -- preview render examples/sine.omni --output ./omni_out.wav --dur 5 --set freq=220
+omni preview render examples/sine.omni --output ./omni_out.wav --dur 5 --set freq=220
 ```
 
 ### `omni lsp`
@@ -195,7 +207,7 @@ cargo run -p omni_cli -- preview render examples/sine.omni --output ./omni_out.w
 Starts the Omni language server over stdio.
 
 ```bash
-cargo run -p omni_cli -- lsp
+omni lsp
 ```
 
 Current LSP support includes:
@@ -208,7 +220,7 @@ Current LSP support includes:
 Runs daemon-backed analysis for a file and reports diagnostics.
 
 ```bash
-cargo run -p omni_cli -- daemon diagnose examples/sine.omni
+omni daemon diagnose examples/sine.omni
 ```
 
 ### `omni daemon stdio`
@@ -217,8 +229,32 @@ Starts the daemon control transport over stdio.
 This is intended for tool/editor integration rather than everyday manual use.
 
 ```bash
-cargo run -p omni_cli -- daemon stdio
+omni daemon stdio
 ```
+
+## Building `omni_api`
+
+To build the C API as a static library:
+
+```bash
+cargo build -p omni_api --release
+```
+
+This produces the `omni_api` static library in `target/release/` along with the public header in `include/omni_llvm.h`.
+
+## C API
+
+The C API is exposed through `include/omni_llvm.h`.
+At a high level the flow is:
+
+1. compile source
+2. create an instance
+3. bind inputs, outputs, params, and buffers
+4. process audio
+5. optionally trigger events
+6. destroy the instance
+
+This is the embedding surface for non-Rust hosts.
 
 ## Editor support
 
@@ -246,31 +282,3 @@ It provides:
 - regex syntax highlighting
 - builtin LSP startup through `omni lsp`
 - `:OmniRunPatch` for launching the standalone preview window
-
-## Main components
-
-- `crates/omni_frontend`: parser, AST, diagnostics
-- `crates/omni_semantics`: semantic analysis and lowering rewrites
-- `crates/omni_codegen_llvm`: LLVM lowering and ORC JIT backend
-- `crates/omni_runtime`: runtime instance and processing APIs
-- `crates/omni_api`: C ABI
-- `crates/omni_daemon`: analysis and preview session engine
-- `crates/omni_cli`: CLI, LSP adapter, and preview control transport
-- `editors/vscode`: VSCode extension
-- `editors/nvim`: Neovim runtime support
-- `examples/`: Omni example programs
-
-## C API
-
-The C API is exposed through `include/omni_llvm.h`.
-At a high level the flow is:
-
-1. compile source
-2. create an instance
-3. bind inputs, outputs, params, and buffers
-4. process audio
-5. optionally trigger events
-6. destroy the instance
-
-This is the embedding surface for non-Rust hosts.
-
