@@ -31,6 +31,7 @@ use omni_frontend::{
     Diagnostic, EventParamType, Expr, FieldType, FunctionDef, InitBlock, LogicalOp, PrimitiveType,
     ProcessorDef, Program, SampleBlock, Stmt, StructDef,
 };
+use omni_preview::{available_audio_devices, PreviewHostOptions};
 use omni_runtime::{bind_output, create_instance, process_bound, InstanceConfig};
 use omni_semantics::{
     analyze_with_options, lower_graphs_for_inspection_with_options, AnalysisOptions,
@@ -50,7 +51,7 @@ const USAGE: &str = r#"Usage:
   omni compile <input.omni> [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>] [--dump-graph] [--ir] [--meta] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--target <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <feature-list>] [--target-abi <name>] [--reloc-model <default|static|pic|dynamic-no-pic>] [--code-model <default|small|kernel|medium|large>] [--opt-level <0|1|2|3>]
   omni render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
   omni lsp
-  omni preview <input.omni> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>]
+  omni preview <input.omni> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>] [--egui | --no-egui]
   omni preview play <input.omni> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>] [--control-json] [--input-device <name>] [--output-device <name>]
   omni preview render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
   omni daemon diagnose <input.omni> [--sample-rate <hz>] [--block <frames>]
@@ -77,6 +78,8 @@ Options:
   --control-json Emit preview control handshake on stdout and serve param control over localhost
   --input-device Select audio input device by exact name for preview playback
   --output-device Select audio output device by exact name for preview playback
+  --egui         Force the egui preview host
+  --no-egui      Force the webview preview host
   --fast-math    Enable LLVM fast-math flags for floating-point operations
   --help, -h     Show this help
 "#;
@@ -146,7 +149,15 @@ enum PreviewCommand {
         input_device: Option<String>,
         output_device: Option<String>,
         fast_math: bool,
+        host: PreviewHostKind,
     },
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum PreviewHostKind {
+    Auto,
+    Egui,
+    Webview,
 }
 
 enum DaemonCommand {
@@ -242,6 +253,45 @@ fn main() {
         eprintln!("{err}");
         process::exit(1);
     }
+}
+
+fn run_preview_host(
+    host: PreviewHostKind,
+    input: &Path,
+    options: PreviewHostOptions,
+) -> Result<(), String> {
+    match resolve_preview_host_kind(host) {
+        PreviewHostKind::Egui => omni_egui::run_preview_egui(input, options),
+        PreviewHostKind::Webview => run_webview_preview(input, options),
+        PreviewHostKind::Auto => unreachable!("preview host should be resolved before launch"),
+    }
+}
+
+fn resolve_preview_host_kind(host: PreviewHostKind) -> PreviewHostKind {
+    match host {
+        PreviewHostKind::Auto => default_preview_host_kind(),
+        other => other,
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn default_preview_host_kind() -> PreviewHostKind {
+    PreviewHostKind::Egui
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn default_preview_host_kind() -> PreviewHostKind {
+    PreviewHostKind::Webview
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn run_webview_preview(input: &Path, options: PreviewHostOptions) -> Result<(), String> {
+    omni_webview::run_preview_window(input, options)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn run_webview_preview(_input: &Path, _options: PreviewHostOptions) -> Result<(), String> {
+    Err("webview preview host is unavailable on this platform/build; use --egui".to_owned())
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -792,6 +842,7 @@ fn parse_preview_window_args(
     let mut input_device = None;
     let mut output_device = None;
     let mut fast_math = false;
+    let mut host = PreviewHostKind::Auto;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -819,6 +870,8 @@ fn parse_preview_window_args(
                 };
                 output_device = Some(value);
             }
+            "--egui" => host = PreviewHostKind::Egui,
+            "--no-egui" => host = PreviewHostKind::Webview,
             "--fast-math" => fast_math = true,
             "--help" | "-h" => return Err(USAGE.to_owned()),
             _ if arg.starts_with("--sample-rate=") => {
@@ -836,6 +889,12 @@ fn parse_preview_window_args(
             _ if arg.starts_with("--output-device=") => {
                 output_device = Some(arg["--output-device=".len()..].to_owned());
             }
+            _ if arg == "--egui=true" => {
+                host = PreviewHostKind::Egui;
+            }
+            _ if arg == "--egui=false" => {
+                host = PreviewHostKind::Webview;
+            }
             _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
         }
     }
@@ -847,6 +906,7 @@ fn parse_preview_window_args(
         input_device,
         output_device,
         fast_math,
+        host,
     })
 }
 
@@ -1391,13 +1451,15 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             input_device,
             output_device,
             fast_math,
+            host,
         } => {
             let omni_bin = env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "omni".to_owned());
-            omni_window::run_preview_window(
+            run_preview_host(
+                host,
                 &input,
-                omni_window::PreviewWindowOptions {
+                PreviewHostOptions {
                     sample_rate_hz,
                     block_frames,
                     input_device,
@@ -1978,24 +2040,6 @@ fn find_output_device(
     }
 }
 
-fn list_input_devices(host: &cpal::Host) -> Vec<String> {
-    host.input_devices()
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|device| device.name().ok())
-        .collect()
-}
-
-fn list_output_devices(host: &cpal::Host) -> Vec<String> {
-    host.output_devices()
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|device| device.name().ok())
-        .collect()
-}
-
 fn find_input_device(
     host: &cpal::Host,
     requested_name: Option<&str>,
@@ -2053,6 +2097,9 @@ enum PlaybackControlCommand {
     },
     GetEvents {
         reply: mpsc::Sender<Result<Vec<PreviewEventInfo>, String>>,
+    },
+    GetDevices {
+        reply: mpsc::Sender<Result<(Vec<String>, Vec<String>), String>>,
     },
     SetParam {
         name: String,
@@ -2197,16 +2244,8 @@ fn spawn_preview_render_thread(
             } else {
                 Vec::new()
             };
-            let input_devices = if launch.control_json {
-                list_input_devices(&cpal::default_host())
-            } else {
-                Vec::new()
-            };
-            let output_devices = if launch.control_json {
-                list_output_devices(&cpal::default_host())
-            } else {
-                Vec::new()
-            };
+            let input_devices = Vec::new();
+            let output_devices = Vec::new();
             let input_channels = preview.input_channel_count();
             let output_channels = preview.output_channel_count();
             let path = preview.path().to_path_buf();
@@ -2308,6 +2347,9 @@ fn spawn_preview_render_thread(
                                 .map(|preview| preview.event_info())
                                 .ok_or_else(|| "preview is not active".to_owned());
                             let _ = reply.send(result);
+                        }
+                        PlaybackControlCommand::GetDevices { reply } => {
+                            let _ = reply.send(Ok(available_audio_devices()));
                         }
                         PlaybackControlCommand::SetParam { name, value, reply } => {
                             let entry = pending_param_updates.entry(name).or_insert_with(|| {
@@ -2704,6 +2746,34 @@ fn preview_control_response(
                         "error": err,
                     }),
                 }))
+            }
+            "getDevices" => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::GetDevices { reply: reply_tx })
+                    .map_err(|_| "preview control channel closed".to_owned())
+                    .and_then(|_| {
+                        reply_rx
+                            .recv()
+                            .map_err(|_| "preview control reply channel closed".to_owned())
+                    })
+                    .map(|result| {
+                        Some(match result {
+                            Ok((input_devices, output_devices)) => json!({
+                                "id": request_id,
+                                "ok": true,
+                                "result": {
+                                    "inputDevices": input_devices,
+                                    "outputDevices": output_devices,
+                                }
+                            }),
+                            Err(err) => json!({
+                                "id": request_id,
+                                "ok": false,
+                                "error": err,
+                            }),
+                        })
+                    })
             }
             "setParam" => {
                 let result = (|| -> Result<Option<Value>, String> {
@@ -4425,7 +4495,7 @@ mod tests {
     use super::{
         format_diag_snippet, format_expr, format_program, parse_args, preview_control_response,
         Command, CompileEmit, DaemonCommand, PlaybackControlCommand, PlaybackControlRequest,
-        PreviewCommand, PreviewEventValue, ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES,
+        PreviewCommand, PreviewEventValue, PreviewHostKind, ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES,
     };
     use omni_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
     use omni_frontend::{
@@ -4829,6 +4899,38 @@ reloc_model = "default"
                 assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
             }
             _ => panic!("expected preview render command"),
+        }
+    }
+
+    #[test]
+    fn parse_preview_window_accepts_egui_flag() {
+        let cmd = parse_args(
+            ["omni", "preview", "x.omni", "--egui"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("preview window args should parse");
+        match cmd {
+            Command::Preview(PreviewCommand::Window { host, .. }) => {
+                assert_eq!(host, PreviewHostKind::Egui);
+            }
+            _ => panic!("expected preview window command"),
+        }
+    }
+
+    #[test]
+    fn parse_preview_window_accepts_no_egui_flag() {
+        let cmd = parse_args(
+            ["omni", "preview", "x.omni", "--no-egui"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("preview window args should parse");
+        match cmd {
+            Command::Preview(PreviewCommand::Window { host, .. }) => {
+                assert_eq!(host, PreviewHostKind::Webview);
+            }
+            _ => panic!("expected preview window command"),
         }
     }
 

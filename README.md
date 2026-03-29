@@ -49,7 +49,10 @@ The CLI can also emit LLVM IR and native object files for AOT-style workflows.
 - `crates/omni_runtime`: runtime instance and processing APIs
 - `crates/omni_api`: C ABI
 - `crates/omni_daemon`: analysis and preview session engine
+- `crates/omni_preview`: shared preview controller/runtime
 - `crates/omni_cli`: CLI, LSP adapter, and preview control transport
+- `crates/omni_egui`: native egui preview host
+- `crates/omni_webview`: native webview preview host
 - `editors/vscode`: VSCode extension
 - `editors/nvim`: Neovim runtime support
 - `examples/`: Omni example programs
@@ -134,23 +137,6 @@ Cross-target IR and object emission is also supported:
 omni compile examples/sine.omni --target-spec ./targets/arm64.toml --emit obj
 ```
 
-### `omni render`
-
-Renders an Omni program to a WAV file offline.
-
-```bash
-omni render examples/sine.omni --output ./omni_out.wav --dur 5
-```
-
-Useful flags:
-- `--output`
-- `--dur`
-- `--sample-rate`
-- `--block`
-- `--dump-graph`
-- `--ir`
-- `--fast-math`
-
 ### `omni preview`
 
 Opens the standalone patch preview window.
@@ -194,6 +180,23 @@ This is useful when you want the preview-oriented path, including `--set` parame
 ```bash
 omni preview render examples/sine.omni --output ./omni_out.wav --dur 5 --set freq=220
 ```
+
+### `omni render`
+
+Renders an Omni program to a WAV file offline.
+
+```bash
+omni render examples/sine.omni --output ./omni_out.wav --dur 5
+```
+
+Useful flags:
+- `--output`
+- `--dur`
+- `--sample-rate`
+- `--block`
+- `--dump-graph`
+- `--ir`
+- `--fast-math`
 
 ### `omni lsp`
 

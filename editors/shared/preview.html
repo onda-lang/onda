@@ -317,6 +317,7 @@
           <button class="primary" id="start">Start</button>
           <button class="secondary" id="stop">Stop</button>
           <button class="secondary" id="reset">Reset</button>
+          <button class="secondary" id="refresh-devices">Refresh Devices</button>
         </div>
         <div class="error" id="error"></div>
         <div class="io-settings" id="io-settings">
@@ -428,6 +429,7 @@
       const startButton = document.getElementById("start");
       const stopButton = document.getElementById("stop");
       const resetButton = document.getElementById("reset");
+      const refreshDevicesButton = document.getElementById("refresh-devices");
       const pathNode = document.getElementById("path");
       const statusNode = document.getElementById("status");
       const errorNode = document.getElementById("error");
@@ -468,6 +470,9 @@
       });
       resetButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "reset" });
+      });
+      refreshDevicesButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "refreshDevices" });
       });
       inputDeviceNode.addEventListener("change", () => {
         hostBridge.postMessage({ type: "setInputDevice", name: inputDeviceNode.value || null });

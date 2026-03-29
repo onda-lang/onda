@@ -1017,6 +1017,26 @@ async function updatePatchDeviceSelection(
   await runPatch(patchPanelState.path, { restart: true });
 }
 
+async function refreshPatchDevices(): Promise<void> {
+  try {
+    const result = await sendPatchControlRequest<{ inputDevices: string[]; outputDevices: string[] }>("getDevices");
+    patchPanelState = {
+      ...patchPanelState,
+      inputDevices: result.inputDevices ?? [],
+      outputDevices: result.outputDevices ?? [],
+      error: undefined,
+    };
+    postPatchPanelState();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    patchPanelState = {
+      ...patchPanelState,
+      error: message,
+    };
+    postPatchPanelState();
+  }
+}
+
 function sendPatchControlRequest<T>(command: string, payload?: Record<string, unknown>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (!patchControlSocket || patchControlSocket.destroyed) {
@@ -1099,6 +1119,9 @@ function ensurePatchPanel(): void {
         break;
       case "reset":
         resetPatchParams();
+        break;
+      case "refreshDevices":
+        await refreshPatchDevices();
         break;
       case "setParam":
         if (typeof payload.name === "string") {

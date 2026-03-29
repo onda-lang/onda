@@ -7,7 +7,9 @@ members = [
   "crates/omni_codegen_llvm",
   "crates/omni_runtime",
   "crates/omni_api",
-  "crates/omni_window",
+  "crates/omni_preview",
+  "crates/omni_egui",
+  "crates/omni_webview",
   "crates/omni_examples",
 ]
 resolver = "2"
