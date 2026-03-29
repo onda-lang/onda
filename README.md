@@ -59,7 +59,7 @@ The CLI can also emit LLVM IR and native object files for AOT-style workflows.
 - [SYNTAX.md](SYNTAX.md): language syntax and semantics
 - [INFO.md](INFO.md): project structure and implementation notes
 
-## Quick start
+## Building `omni`
 
 1. Bootstrap LLVM.
 
@@ -75,29 +75,24 @@ macOS/Linux:
 bash ./scripts/bootstrap-llvm.sh
 ```
 
-2. Check the workspace.
+2. Build the CLI:
 
 ```bash
-cargo check --workspace
+cargo build -p omni_cli --release
 ```
 
-3. Compile an Omni file.
+This produces the `omni` executable in `target/release/`.
+
+3. Build the static and shared libraries if needed:
+
+To build the C API in release mode:
 
 ```bash
-omni compile examples/sine.omni
+cargo build -p omni_api --release
 ```
 
-4. Render audio offline.
-
-```bash
-omni render examples/sine.omni --output ./omni_out.wav --dur 5
-```
-
-5. Start the language server.
-
-```bash
-omni lsp
-```
+This produces the `omni_api` artifacts in `target/release/` along with the public header in `include/omni_llvm.h`.
+Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
 
 ## The `omni` CLI
 
@@ -229,27 +224,6 @@ This is intended for tool/editor integration rather than everyday manual use.
 ```bash
 omni daemon stdio
 ```
-
-## Building `omni`
-
-To build the CLI in release mode:
-
-```bash
-cargo build -p omni_cli --release
-```
-
-This produces the `omni` executable in `target/release/`.
-
-## Building `omni_api`
-
-To build the C API in release mode:
-
-```bash
-cargo build -p omni_api --release
-```
-
-This produces the `omni_api` artifacts in `target/release/` along with the public header in `include/omni_llvm.h`.
-Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
 
 ## C API
 
