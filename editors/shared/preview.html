@@ -555,6 +555,37 @@
         return dot === -1 ? 0 : text.length - dot - 1;
       }
 
+      function scalarStepForParam(param) {
+        if (param.type === "i32" || param.type === "i64") {
+          return 1;
+        }
+        const min = Number(param.rangeMin);
+        const max = Number(param.rangeMax);
+        if (Number.isFinite(min) && Number.isFinite(max)) {
+          const span = Math.abs(max - min);
+          if (Number.isFinite(span) && span > 0) {
+            const rawStep = Math.max(span / 2000, 0.0001);
+            const exponent = Math.floor(Math.log10(rawStep));
+            return Math.pow(10, exponent);
+          }
+        }
+        return 0.001;
+      }
+
+      function formatNumberForInput(value, step) {
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue)) {
+          return "0";
+        }
+        const places = Math.min(decimalPlaces(step), 8);
+        if (places === 0) {
+          return String(Math.round(numericValue));
+        }
+        return numericValue
+          .toFixed(places)
+          .replace(/\.?0+$/, "");
+      }
+
       function quantizeToStep(value, min, step) {
         if (!Number.isFinite(step) || step <= 0) {
           return value;
@@ -1005,7 +1036,8 @@
             controls.appendChild(label);
           } else {
             const hasRange = Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax);
-            const step = param.type === "i32" || param.type === "i64" ? "1" : "0.001";
+            const stepValue = scalarStepForParam(param);
+            const step = String(stepValue);
             const currentValue = typeof param.value === "number" ? param.value : 0;
 
             if (hasRange) {
@@ -1015,7 +1047,7 @@
               number.min = String(param.rangeMin);
               number.max = String(param.rangeMax);
               number.step = step;
-              number.value = String(currentValue);
+              number.value = formatNumberForInput(currentValue, stepValue);
               number.disabled = !state.connected;
               controls.appendChild(number);
 
@@ -1024,12 +1056,12 @@
                 currentValue,
                 step,
                 (nextValue) => {
-                  const nextText = String(nextValue);
+                  const nextText = formatNumberForInput(nextValue, stepValue);
                   number.value = nextText;
                   scheduleParamMessage(param.name, nextValue);
                 },
                 (nextValue) => {
-                  const nextText = String(nextValue);
+                  const nextText = formatNumberForInput(nextValue, stepValue);
                   number.value = nextText;
                   commitParamMessage(param.name, nextValue);
                 },
@@ -1041,8 +1073,13 @@
                 if (!Number.isFinite(parsed)) {
                   return;
                 }
-                sliderControl.setValue(parsed);
-                number.value = String(parsed);
+                const quantized = clamp(
+                  quantizeToStep(parsed, Number(param.rangeMin), stepValue),
+                  Number(param.rangeMin),
+                  Number(param.rangeMax),
+                );
+                sliderControl.setValue(quantized);
+                number.value = formatNumberForInput(quantized, stepValue);
               };
 
               number.addEventListener("change", () => {
@@ -1054,10 +1091,16 @@
               number.className = "param-number";
               number.type = "number";
               number.step = step;
-              number.value = String(currentValue);
+              number.value = formatNumberForInput(currentValue, stepValue);
               number.disabled = !state.connected;
               number.addEventListener("change", () => {
-                hostBridge.postMessage({ type: "setParam", name: param.name, value: Number(number.value) });
+                const parsed = Number(number.value);
+                if (!Number.isFinite(parsed)) {
+                  return;
+                }
+                const quantized = quantizeToStep(parsed, 0, stepValue);
+                number.value = formatNumberForInput(quantized, stepValue);
+                hostBridge.postMessage({ type: "setParam", name: param.name, value: quantized });
               });
               controls.appendChild(number);
             }
