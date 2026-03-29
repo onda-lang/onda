@@ -109,6 +109,7 @@ require("omni").setup({
   server_args = {},
   preview_path = nil,
   preview_args = {},
+  preview_host = nil,
   root_markers = { "Cargo.toml", ".git" },
 })
 ```
@@ -118,7 +119,18 @@ Notes:
 - `server_path` is used for `omni lsp`
 - `preview_path` defaults to `server_path`
 - `preview_args` are appended to `omni preview <file>`
+- `preview_host = "egui"` adds `--egui` to `:OmniRunPatch`
+- `preview_host = "webview"` adds `--no-egui` to `:OmniRunPatch`
+- `preview_host = nil` leaves host selection to the CLI default
 - `root_markers` controls project root detection for the builtin LSP startup
+
+Example:
+
+```lua
+require("omni").setup({
+  preview_host = "webview",
+})
+```
 
 If the plugin is on your runtimepath, it auto-calls `require("omni").setup()` with defaults.
 Providing your own `setup(...)` call overrides those defaults.

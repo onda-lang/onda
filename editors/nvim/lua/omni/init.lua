@@ -5,6 +5,7 @@ local defaults = {
   server_args = {},
   preview_path = nil,
   preview_args = {},
+  preview_host = nil,
   root_markers = { "Cargo.toml", ".git" },
 }
 
@@ -66,6 +67,11 @@ end
 
 local function omni_preview_cmd(path)
   local cmd = { state.opts.preview_path or state.opts.server_path, "preview", path }
+  if state.opts.preview_host == "egui" then
+    table.insert(cmd, "--egui")
+  elseif state.opts.preview_host == "webview" then
+    table.insert(cmd, "--no-egui")
+  end
   vim.list_extend(cmd, state.opts.preview_args)
   return cmd
 end
@@ -227,6 +233,13 @@ end
 
 function M.setup(opts)
   state.opts = vim.tbl_deep_extend("force", vim.deepcopy(defaults), state.opts, opts or {})
+  if state.opts.preview_host ~= nil
+    and state.opts.preview_host ~= "egui"
+    and state.opts.preview_host ~= "webview"
+  then
+    notify("Invalid Omni preview_host; expected 'egui', 'webview', or nil.", vim.log.levels.ERROR)
+    state.opts.preview_host = nil
+  end
   if state.initialized then
     return
   end
