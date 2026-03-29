@@ -39,7 +39,7 @@ done
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../../.." && pwd)"
-source_file="$repo_root/examples/sine_wasm.omni"
+source_file="$script_dir/sine_wasm.omni"
 object_file="$script_dir/sine_wasm.o"
 meta_file="$script_dir/sine_wasm.omni.json"
 wasm_file="$script_dir/sine_wasm.wasm"

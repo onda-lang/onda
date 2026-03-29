@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 
 $demoDir = Resolve-Path $PSScriptRoot
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
-$sourceFile = Join-Path $repoRoot "examples\sine_wasm.omni"
+$sourceFile = Join-Path $demoDir "sine_wasm.omni"
 $objectFile = Join-Path $demoDir "sine_wasm.o"
 $metaFile = Join-Path $demoDir "sine_wasm.omni.json"
 $wasmFile = Join-Path $demoDir "sine_wasm.wasm"

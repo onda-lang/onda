@@ -45,8 +45,4 @@ If script execution is blocked, use:
 powershell.exe -ExecutionPolicy Bypass -File .\examples\web\sine_wasm_worklet\build-demo.ps1
 ```
 
-The page uses `OfflineAudioContext` plus `AudioWorkletNode` and reports a JSON summary with `ok`, `maxAbs`, `meanAbs`, and `estimatedHz`.
-
-For automation, the page also POSTs its final render summary to `./__result`, and the local server exposes that value at `GET /__result`.
-
-For audible playback, open `http://127.0.0.1:8787/live.html` and click `Start Audio`. That page uses the same `omni-sine-processor.js` worklet, but drives it from a real `AudioContext` with live frequency and gain controls.
+Open `http://127.0.0.1:8787/` and click `Start Audio`. The page loads the same `omni-sine-processor.js` worklet and runs the Omni patch in a real `AudioContext` with live frequency and gain controls.
