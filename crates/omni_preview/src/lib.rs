@@ -1,12 +1,10 @@
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::TcpStream;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,6 +19,12 @@ const SCOPE_POLL_INTERVAL_MS: u64 = 50;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -151,6 +155,12 @@ pub struct PreviewController {
     last_scope_poll: Instant,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PollResult {
+    pub state_changed: bool,
+    pub scope_changed: bool,
+}
+
 impl PreviewController {
     pub fn new(omni_path: &Path, options: PreviewHostOptions) -> Result<Self, String> {
         let omni_path = std::fs::canonicalize(omni_path)
@@ -194,12 +204,12 @@ impl PreviewController {
         &self.omni_path
     }
 
-    pub fn poll(&mut self) -> bool {
-        let mut changed = false;
+    pub fn poll(&mut self) -> PollResult {
+        let mut result = PollResult::default();
 
         if let Some((code, error)) = self.child.try_take_exit() {
             self.handle_child_exited(code, error);
-            changed = true;
+            result.state_changed = true;
         }
 
         if self.scope_polling_active
@@ -213,17 +223,24 @@ impl PreviewController {
         }
 
         while let Ok(event) = self.events_rx.try_recv() {
-            changed = true;
             match event {
-                ControllerEvent::ChildReady(ready) => self.handle_child_ready(ready),
-                ControllerEvent::TcpResponse(line) => self.handle_tcp_response(&line),
+                ControllerEvent::ChildReady(ready) => {
+                    self.handle_child_ready(ready);
+                    result.state_changed = true;
+                }
+                ControllerEvent::TcpResponse(line) => {
+                    if self.handle_tcp_response(&line) {
+                        result.scope_changed = true;
+                    }
+                }
                 ControllerEvent::FileChanged => {
                     let _ = self.restart_with_status("Restarting...");
+                    result.state_changed = true;
                 }
             }
         }
 
-        changed
+        result
     }
 
     pub fn start(&mut self) -> Result<(), String> {
@@ -429,7 +446,7 @@ impl PreviewController {
         self.state.scope_samples.clear();
     }
 
-    fn handle_tcp_response(&mut self, line: &str) {
+    fn handle_tcp_response(&mut self, line: &str) -> bool {
         if let Ok(resp) = serde_json::from_str::<Value>(line) {
             if let Some(result) = resp.get("result") {
                 let channels = result.get("channels").and_then(Value::as_u64);
@@ -442,9 +459,11 @@ impl PreviewController {
                         .filter_map(Value::as_f64)
                         .map(|value| value as f32)
                         .collect();
+                    return true;
                 }
             }
         }
+        false
     }
 }
 

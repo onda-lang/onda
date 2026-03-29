@@ -33,6 +33,7 @@ pub fn run_preview_egui(omni_path: &Path, options: PreviewHostOptions) -> Result
 struct PreviewApp {
     controller: PreviewController,
     event_inputs: HashMap<String, Vec<Value>>,
+    number_drafts: HashMap<String, f64>,
 }
 
 impl PreviewApp {
@@ -40,6 +41,7 @@ impl PreviewApp {
         let mut app = Self {
             controller,
             event_inputs: HashMap::new(),
+            number_drafts: HashMap::new(),
         };
         app.sync_event_inputs();
         app
@@ -72,6 +74,15 @@ impl PreviewApp {
             .collect::<Vec<_>>();
         self.event_inputs
             .retain(|name, _| valid_names.iter().any(|valid| valid == name));
+        let valid_params = self
+            .controller
+            .state()
+            .params
+            .iter()
+            .filter_map(|param| param_name(param).map(str::to_owned))
+            .collect::<Vec<_>>();
+        self.number_drafts
+            .retain(|name, _| valid_params.iter().any(|valid| valid == name));
     }
 
     fn reset_event_inputs(&mut self) {
@@ -82,7 +93,8 @@ impl PreviewApp {
 
 impl eframe::App for PreviewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.controller.poll() {
+        let poll = self.controller.poll();
+        if poll.state_changed {
             self.sync_event_inputs();
         }
         ctx.request_repaint_after(Duration::from_millis(16));
@@ -257,15 +269,29 @@ impl eframe::App for PreviewApp {
                                 let ty = param_type(&param);
                                 let min = param.get("rangeMin").and_then(Value::as_f64);
                                 let max = param.get("rangeMax").and_then(Value::as_f64);
-                                let mut value = param
+                                let value = param
                                     .get("value")
                                     .cloned()
                                     .unwrap_or_else(|| default_value_for_type(ty));
-                                let changed =
-                                    render_scalar_value_editor(ui, &name, ty, min, max, &mut value);
-                                if changed {
-                                    set_param_value(&mut param, value.clone());
-                                    self.controller.set_param(&name, value);
+                                let number_draft = self.number_drafts.get(&name).copied();
+                                match render_param_value_editor(
+                                    ui,
+                                    &name,
+                                    ty,
+                                    min,
+                                    max,
+                                    &value,
+                                    number_draft,
+                                ) {
+                                    ParamEditOutcome::None => {}
+                                    ParamEditOutcome::NumberDraft(next_value) => {
+                                        self.number_drafts.insert(name.clone(), next_value);
+                                    }
+                                    ParamEditOutcome::Commit(next_value) => {
+                                        self.number_drafts.remove(&name);
+                                        set_param_value(&mut param, next_value.clone());
+                                        self.controller.set_param(&name, next_value);
+                                    }
                                 }
                                 if index + 1 < param_count {
                                     ui.add_space(6.0);
@@ -383,6 +409,98 @@ fn render_scalar_value_editor(
         *value = json_number(number);
     }
     changed
+}
+
+enum ParamEditOutcome {
+    None,
+    NumberDraft(f64),
+    Commit(Value),
+}
+
+fn render_param_value_editor(
+    ui: &mut egui::Ui,
+    label: &str,
+    ty: &str,
+    min: Option<f64>,
+    max: Option<f64>,
+    value: &Value,
+    number_draft: Option<f64>,
+) -> ParamEditOutcome {
+    if ty == "bool" {
+        let mut checked = value.as_bool().unwrap_or(false);
+        if ui.checkbox(&mut checked, label).changed() {
+            return ParamEditOutcome::Commit(Value::Bool(checked));
+        }
+        return ParamEditOutcome::None;
+    }
+
+    let committed_number = value.as_f64().unwrap_or(0.0);
+    let displayed_number = number_draft.unwrap_or(committed_number);
+    let step = scalar_step(ty, min, max);
+    let mut outcome = ParamEditOutcome::None;
+
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(label).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut number = displayed_number;
+                let drag = if let (Some(min), Some(max)) = (min, max) {
+                    egui::DragValue::new(&mut number)
+                        .speed(step / 16.0)
+                        .range(min..=max)
+                        .max_decimals(slider_decimals(step).max(6))
+                } else {
+                    egui::DragValue::new(&mut number)
+                        .speed(0.01)
+                        .max_decimals(8)
+                };
+                let response = ui.add_sized([120.0, 26.0], drag);
+                let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
+                let editing_finished = response.drag_stopped() || response.lost_focus() || enter_pressed;
+                let number_changed = response.changed();
+                let dragging = response.dragged();
+
+                if number_changed {
+                    if dragging || editing_finished {
+                        outcome = ParamEditOutcome::Commit(json_number(number));
+                    } else {
+                        outcome = ParamEditOutcome::NumberDraft(number);
+                    }
+                } else if editing_finished && number_draft.is_some() {
+                    outcome = ParamEditOutcome::Commit(json_number(displayed_number));
+                }
+            });
+        });
+
+        if let (Some(min), Some(max)) = (min, max) {
+            ui.add_space(2.0);
+            let mut slider_value = committed_number;
+            let slider_response = ui
+                .scope(|ui| {
+                    ui.spacing_mut().interact_size.y = 24.0;
+                    ui.spacing_mut().slider_width = ui.available_width();
+                    let slider = if matches!(ty, "i32" | "i64") {
+                        egui::Slider::new(&mut slider_value, min..=max)
+                            .integer()
+                            .step_by(1.0)
+                            .show_value(false)
+                            .trailing_fill(true)
+                    } else {
+                        egui::Slider::new(&mut slider_value, min..=max)
+                            .show_value(false)
+                            .trailing_fill(true)
+                    };
+                    ui.add_sized([ui.available_width(), 24.0], slider)
+                })
+                .inner;
+
+            if slider_response.changed() {
+                outcome = ParamEditOutcome::Commit(json_number(slider_value));
+            }
+        }
+    });
+
+    outcome
 }
 
 fn scalar_step(ty: &str, min: Option<f64>, max: Option<f64>) -> f64 {

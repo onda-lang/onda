@@ -1,5 +1,7 @@
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
 use omni_preview::PreviewHostOptions;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -63,13 +65,18 @@ mod platform {
 
         let mut controller = PreviewController::new(omni_path, options)?;
         let mut pending_state_sync = true;
+        let mut pending_scope_sync = true;
 
         event_loop.run(move |event, _target, control_flow| {
             *control_flow =
                 ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_millis(16));
 
-            if controller.poll() {
+            let poll = controller.poll();
+            if poll.state_changed {
                 pending_state_sync = true;
+            }
+            if poll.scope_changed {
+                pending_scope_sync = true;
             }
 
             match event {
@@ -92,8 +99,9 @@ mod platform {
                 }
                 Event::UserEvent(UserEvent::WebviewMessage(raw)) => {
                     if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&raw) {
-                        handle_webview_message(&msg, &webview, &mut controller, &proxy);
-                        pending_state_sync = true;
+                        if handle_webview_message(&msg, &webview, &mut controller, &proxy) {
+                            pending_state_sync = true;
+                        }
                     }
                 }
                 Event::UserEvent(UserEvent::FileDialogResult { buffer_name, path }) => {
@@ -109,6 +117,10 @@ mod platform {
             if pending_state_sync {
                 sync_panel_state(&webview, controller.state());
                 pending_state_sync = false;
+                pending_scope_sync = false;
+            } else if pending_scope_sync {
+                sync_scope_state(&webview, controller.state());
+                pending_scope_sync = false;
             }
         });
     }
@@ -118,19 +130,32 @@ mod platform {
         webview: &wry::WebView,
         controller: &mut PreviewController,
         proxy: &tao::event_loop::EventLoopProxy<UserEvent>,
-    ) {
+    ) -> bool {
         let msg_type = msg
             .get("type")
             .and_then(|value| value.as_str())
             .unwrap_or("");
         match msg_type {
-            "webviewReady" => sync_panel_state(webview, controller.state()),
+            "webviewReady" => {
+                sync_panel_state(webview, controller.state());
+                false
+            }
             "start" => {
                 let _ = controller.start();
+                true
             }
-            "stop" => controller.stop(),
-            "reset" => controller.reset(),
-            "refreshDevices" => controller.refresh_devices(),
+            "stop" => {
+                controller.stop();
+                true
+            }
+            "reset" => {
+                controller.reset();
+                true
+            }
+            "refreshDevices" => {
+                controller.refresh_devices();
+                true
+            }
             "setParam" => {
                 if let (Some(name), Some(value)) = (
                     msg.get("name").and_then(|value| value.as_str()),
@@ -138,6 +163,7 @@ mod platform {
                 ) {
                     controller.set_param(name, value.clone());
                 }
+                false
             }
             "triggerEvent" => {
                 if let Some(name) = msg.get("name").and_then(|value| value.as_str()) {
@@ -148,14 +174,17 @@ mod platform {
                         .unwrap_or_default();
                     controller.trigger_event(name, values);
                 }
+                false
             }
             "setInputDevice" => {
                 let _ =
                     controller.set_input_device(msg.get("name").and_then(|value| value.as_str()));
+                true
             }
             "setOutputDevice" => {
                 let _ =
                     controller.set_output_device(msg.get("name").and_then(|value| value.as_str()));
+                true
             }
             "chooseBufferFile" => {
                 if let Some(name) = msg.get("name").and_then(|value| value.as_str()) {
@@ -170,6 +199,7 @@ mod platform {
                             .send_event(UserEvent::FileDialogResult { buffer_name, path });
                     });
                 }
+                false
             }
             "bindBufferFile" => {
                 if let (Some(name), Some(file_path)) = (
@@ -178,13 +208,15 @@ mod platform {
                 ) {
                     controller.bind_buffer_file(name, file_path);
                 }
+                true
             }
             "clearBuffer" => {
                 if let Some(name) = msg.get("name").and_then(|value| value.as_str()) {
                     controller.clear_buffer(name);
                 }
+                true
             }
-            _ => {}
+            _ => false,
         }
     }
 
@@ -206,6 +238,10 @@ mod platform {
         });
         send_to_webview(webview, "state", &panel_state);
 
+        sync_scope_state(webview, state);
+    }
+
+    fn sync_scope_state(webview: &wry::WebView, state: &PreviewState) {
         let scope_message = serde_json::json!({
             "type": "scopeData",
             "channels": state.scope_channels,
@@ -236,7 +272,7 @@ mod platform {
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use platform::run_preview_window;
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "linux")]
 pub fn run_preview_window(_omni_path: &Path, _options: PreviewHostOptions) -> Result<(), String> {
     Err("webview preview host is unavailable on this platform/build".to_owned())
 }
