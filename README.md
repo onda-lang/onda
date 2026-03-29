@@ -146,6 +146,11 @@ This is the interactive path for listening to a patch, tweaking params, and insp
 omni preview examples/sine.omni
 ```
 
+Preview host selection:
+- `--egui` forces the egui preview host
+- `--no-egui` forces the webview preview host
+- Note: Linux is currently egui-only. Windows and macOS default to the webview preview host instead.
+
 Useful flags:
 - `--sample-rate`
 - `--block`
