@@ -66,15 +66,13 @@ The CLI can also emit LLVM IR and native object files for AOT-style workflows.
 Windows PowerShell:
 
 ```powershell
-pwsh ./scripts/bootstrap-llvm-source.ps1
-pwsh ./scripts/use-llvm-env.ps1
+pwsh ./scripts/bootstrap-llvm.ps1
 ```
 
 macOS/Linux:
 
 ```bash
-bash ./scripts/bootstrap-llvm-source.sh
-source ./scripts/use-llvm-env.sh
+bash ./scripts/bootstrap-llvm.sh
 ```
 
 2. Check the workspace.
@@ -232,15 +230,26 @@ This is intended for tool/editor integration rather than everyday manual use.
 omni daemon stdio
 ```
 
+## Building `omni`
+
+To build the CLI in release mode:
+
+```bash
+cargo build -p omni_cli --release
+```
+
+This produces the `omni` executable in `target/release/`.
+
 ## Building `omni_api`
 
-To build the C API as a static library:
+To build the C API in release mode:
 
 ```bash
 cargo build -p omni_api --release
 ```
 
-This produces the `omni_api` static library in `target/release/` along with the public header in `include/omni_llvm.h`.
+This produces the `omni_api` artifacts in `target/release/` along with the public header in `include/omni_llvm.h`.
+Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
 
 ## C API
 

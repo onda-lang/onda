@@ -11,7 +11,8 @@ Usage: scripts/bootstrap-llvm.sh [--version <x.y.z>] [--asset <release-asset-nam
 Downloads and installs a prebuilt LLVM release into:
   .deps/llvm/<version>
 
-If --asset is omitted, the script chooses a default asset by OS/arch.
+If --asset is omitted, the script chooses a default asset from the
+vitreo12/llvm-bootstrap release by OS/arch.
 EOF
 }
 
@@ -56,26 +57,20 @@ if [[ -z "$ASSET" ]]; then
   arch="$(uname -m)"
   case "$os/$arch" in
     Linux/x86_64|Linux/amd64)
-      ASSET="clang+llvm-$VERSION-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
-      ;;
-    Linux/aarch64|Linux/arm64)
-      ASSET="clang+llvm-$VERSION-aarch64-linux-gnu.tar.xz"
-      ;;
-    Darwin/x86_64)
-      ASSET="clang+llvm-$VERSION-x86_64-apple-darwin.tar.xz"
+      ASSET="llvm-$VERSION-linux-x64-static.tar.xz"
       ;;
     Darwin/arm64|Darwin/aarch64)
-      ASSET="clang+llvm-$VERSION-arm64-apple-darwin.tar.xz"
+      ASSET="llvm-$VERSION-macos-arm64-static.tar.xz"
       ;;
     *)
-      echo "No default prebuilt LLVM asset mapping for platform '$os/$arch'." >&2
+      echo "No default vitreo12/llvm-bootstrap asset mapping for platform '$os/$arch'." >&2
       echo "Pass --asset explicitly, or use scripts/bootstrap-llvm-source.sh." >&2
       exit 1
       ;;
   esac
 fi
 
-url="https://github.com/llvm/llvm-project/releases/download/llvmorg-$VERSION/$ASSET"
+url="https://github.com/vitreo12/llvm-bootstrap/releases/download/llvm-$VERSION/$ASSET"
 archive="$dist_root/$ASSET"
 temp_extract_root="$dist_root/extract-$VERSION"
 
@@ -95,16 +90,22 @@ mkdir -p "$temp_extract_root"
 echo "Extracting archive..."
 tar -xf "$archive" -C "$temp_extract_root"
 
-extracted_dir="$(find "$temp_extract_root" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"
-if [[ -z "$extracted_dir" ]]; then
-  echo "Extraction failed: no directory found in archive" >&2
+if [[ -z "$(find "$temp_extract_root" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+  echo "Extraction failed: archive produced no files" >&2
   exit 1
+fi
+
+content_root="$temp_extract_root"
+dir_count="$(find "$temp_extract_root" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d '[:space:]')"
+entry_count="$(find "$temp_extract_root" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')"
+if [[ "$entry_count" == "1" && "$dir_count" == "1" ]]; then
+  content_root="$(find "$temp_extract_root" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 fi
 
 rm -rf "$version_root"
 mkdir -p "$version_root"
 shopt -s dotglob nullglob
-mv "$extracted_dir"/* "$version_root"/
+mv "$content_root"/* "$version_root"/
 shopt -u dotglob nullglob
 
 if [[ ! -x "$version_root/bin/llvm-config" && ! -f "$version_root/bin/llvm-config" ]]; then

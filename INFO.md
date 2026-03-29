@@ -448,7 +448,10 @@
   - Useful graph examples: `examples/proc_gain_graph.omni`, `examples/proc_split_graph.omni`, `examples/proc_array_stereo_sine_graph.omni`, `examples/std_one_pole_graph.omni`, `examples/stdlib_f32_graph.omni`, `examples/feedback_saturator_graph.omni`, `examples/cybernetic_feedback_graph.omni`, `examples/reverb_graph.omni`.
 
 ## LLVM dependency strategy
-- Prebuilt LLVM is vendored under `.deps/llvm/21.1.2`.
+- Preferred LLVM bootstrap downloads prebuilt static archives from `vitreo12/llvm-bootstrap` release tag `llvm-21.1.2` into `.deps/llvm/21.1.2`.
+  - Linux x64: `llvm-21.1.2-linux-x64-static.tar.xz`
+  - macOS arm64: `llvm-21.1.2-macos-arm64-static.tar.xz`
+  - Windows x64: `llvm-21.1.2-windows-x64-static.zip`
 - Source bootstrap supports linkage modes:
   - static install: `.deps/llvm-src/21.1.2-static` (`scripts/bootstrap-llvm-source.ps1 -Linkage Static` or `scripts/bootstrap-llvm-source.sh --linkage Static`)
   - shared install: `.deps/llvm-src/21.1.2-shared` (`scripts/bootstrap-llvm-source.ps1 -Linkage Shared` or `scripts/bootstrap-llvm-source.sh --linkage Shared`)

@@ -1,5 +1,6 @@
 param(
-    [string]$Version = "21.1.2"
+    [string]$Version = "21.1.2",
+    [string]$Asset = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,9 +11,12 @@ $llvmRoot = Join-Path $depsRoot "llvm"
 $versionRoot = Join-Path $llvmRoot $Version
 $distRoot = Join-Path $depsRoot "dist"
 
-$asset = "clang+llvm-$Version-x86_64-pc-windows-msvc.tar.xz"
-$url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$Version/$asset"
-$archive = Join-Path $distRoot $asset
+$releaseTag = "llvm-$Version"
+if ([string]::IsNullOrWhiteSpace($Asset)) {
+    $Asset = "llvm-$Version-windows-x64-static.zip"
+}
+$url = "https://github.com/vitreo12/llvm-bootstrap/releases/download/$releaseTag/$Asset"
+$archive = Join-Path $distRoot $Asset
 $tempExtractRoot = Join-Path $distRoot ("extract-" + $Version)
 
 New-Item -ItemType Directory -Force -Path $depsRoot | Out-Null
@@ -35,9 +39,14 @@ New-Item -ItemType Directory -Force -Path $tempExtractRoot | Out-Null
 Write-Host "Extracting archive..."
 tar -xf $archive -C $tempExtractRoot
 
-$extractedDir = Get-ChildItem -Path $tempExtractRoot -Directory | Select-Object -First 1
-if (-not $extractedDir) {
-    throw "Extraction failed: no directory found in archive"
+$topLevelEntries = Get-ChildItem -Path $tempExtractRoot -Force
+if (-not $topLevelEntries) {
+    throw "Extraction failed: archive produced no files"
+}
+
+$contentRoot = $tempExtractRoot
+if ($topLevelEntries.Count -eq 1 -and $topLevelEntries[0].PSIsContainer) {
+    $contentRoot = $topLevelEntries[0].FullName
 }
 
 if (Test-Path $versionRoot) {
@@ -45,7 +54,7 @@ if (Test-Path $versionRoot) {
 }
 New-Item -ItemType Directory -Force -Path $versionRoot | Out-Null
 
-Get-ChildItem -Path $extractedDir.FullName -Force | ForEach-Object {
+Get-ChildItem -Path $contentRoot -Force | ForEach-Object {
     Move-Item -Path $_.FullName -Destination $versionRoot
 }
 

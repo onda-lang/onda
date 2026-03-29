@@ -28,11 +28,11 @@ function Set-LlvmEnv {
     }
 
     $fallbackPrefixes = @(
+        (Join-Path $repoRoot ".deps\llvm\21.1.2"),
         (Join-Path $repoRoot ".deps\llvm-src\21.1.2-static"),
         (Join-Path $repoRoot ".deps\llvm-src\21.1.2-shared"),
         (Join-Path $repoRoot ".deps\build-llvm-21.1.2-static\Release"),
-        (Join-Path $repoRoot ".deps\build-llvm-21.1.2-shared\Release"),
-        (Join-Path $repoRoot ".deps\llvm\21.1.2")
+        (Join-Path $repoRoot ".deps\build-llvm-21.1.2-shared\Release")
     )
 
     foreach ($prefix in $fallbackPrefixes) {
@@ -51,7 +51,7 @@ function Set-LlvmEnv {
         return
     }
 
-    throw "LLVM not found. Run scripts/bootstrap-llvm-source.ps1 or scripts/bootstrap-llvm.ps1 first."
+    throw "LLVM not found. Run scripts/bootstrap-llvm.ps1 or scripts/bootstrap-llvm-source.ps1 first."
 }
 
 function Get-WasmLd {
