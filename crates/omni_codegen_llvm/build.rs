@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::env;
+#[cfg(target_os = "windows")]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -119,6 +120,16 @@ fn link_static_llvm_components(prefix_path: &Path) {
     for name in system_link_libs {
         println!("cargo:rustc-link-lib=dylib={name}");
     }
+
+    link_cpp_runtime_for_static_llvm();
+}
+
+fn link_cpp_runtime_for_static_llvm() {
+    #[cfg(target_os = "linux")]
+    println!("cargo:rustc-link-lib=dylib=stdc++");
+
+    #[cfg(target_os = "macos")]
+    println!("cargo:rustc-link-lib=dylib=c++");
 }
 
 fn static_llvm_components(llvm_config: &Path) -> Vec<String> {
