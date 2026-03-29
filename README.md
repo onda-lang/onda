@@ -147,9 +147,9 @@ omni preview examples/sine.omni
 ```
 
 Preview host selection:
-- `--egui` forces the egui preview host
-- `--no-egui` forces the webview preview host
-- Note: Linux is currently egui-only. Windows and macOS default to the webview preview host instead.
+- `--egui` selects the egui preview host
+- Linux defaults to the egui preview host, as it has no support for the webview preview host
+- Windows and macOS default to the webview preview host
 
 Useful flags:
 - `--sample-rate`

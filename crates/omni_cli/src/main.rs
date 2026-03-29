@@ -51,7 +51,7 @@ const USAGE: &str = r#"Usage:
   omni compile <input.omni> [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>] [--dump-graph] [--ir] [--meta] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--target <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <feature-list>] [--target-abi <name>] [--reloc-model <default|static|pic|dynamic-no-pic>] [--code-model <default|small|kernel|medium|large>] [--opt-level <0|1|2|3>]
   omni render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
   omni lsp
-  omni preview <input.omni> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>] [--egui | --no-egui]
+  omni preview <input.omni> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>] [--egui]
   omni preview play <input.omni> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>] [--control-json] [--input-device <name>] [--output-device <name>]
   omni preview render <input.omni> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
   omni daemon diagnose <input.omni> [--sample-rate <hz>] [--block <frames>]
@@ -78,8 +78,7 @@ Options:
   --control-json Emit preview control handshake on stdout and serve param control over localhost
   --input-device Select audio input device by exact name for preview playback
   --output-device Select audio output device by exact name for preview playback
-  --egui         Force the egui preview host
-  --no-egui      Force the webview preview host
+  --egui         Use the egui preview host instead of the platform default
   --fast-math    Enable LLVM fast-math flags for floating-point operations
   --help, -h     Show this help
 "#;
@@ -871,7 +870,6 @@ fn parse_preview_window_args(
                 output_device = Some(value);
             }
             "--egui" => host = PreviewHostKind::Egui,
-            "--no-egui" => host = PreviewHostKind::Webview,
             "--fast-math" => fast_math = true,
             "--help" | "-h" => return Err(USAGE.to_owned()),
             _ if arg.starts_with("--sample-rate=") => {
@@ -888,12 +886,6 @@ fn parse_preview_window_args(
             }
             _ if arg.starts_with("--output-device=") => {
                 output_device = Some(arg["--output-device=".len()..].to_owned());
-            }
-            _ if arg == "--egui=true" => {
-                host = PreviewHostKind::Egui;
-            }
-            _ if arg == "--egui=false" => {
-                host = PreviewHostKind::Webview;
             }
             _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
         }
@@ -4913,22 +4905,6 @@ reloc_model = "default"
         match cmd {
             Command::Preview(PreviewCommand::Window { host, .. }) => {
                 assert_eq!(host, PreviewHostKind::Egui);
-            }
-            _ => panic!("expected preview window command"),
-        }
-    }
-
-    #[test]
-    fn parse_preview_window_accepts_no_egui_flag() {
-        let cmd = parse_args(
-            ["omni", "preview", "x.omni", "--no-egui"]
-                .into_iter()
-                .map(str::to_owned),
-        )
-        .expect("preview window args should parse");
-        match cmd {
-            Command::Preview(PreviewCommand::Window { host, .. }) => {
-                assert_eq!(host, PreviewHostKind::Webview);
             }
             _ => panic!("expected preview window command"),
         }
