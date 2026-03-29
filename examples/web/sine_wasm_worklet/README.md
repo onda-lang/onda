@@ -1,12 +1,23 @@
 # Sine Wasm AudioWorklet Demo
 
-Build the wasm artifact directly into this folder:
+Build the wasm artifact directly into this folder.
+
+Windows PowerShell:
 
 ```powershell
 .\examples\web\sine_wasm_worklet\build-demo.ps1
 ```
 
-The script auto-detects common repo-local LLVM prefixes and sets the needed LLVM env vars for that run, so you do not need to call `scripts/use-llvm-env.ps1` first.
+macOS/Linux:
+
+```bash
+bash ./examples/web/sine_wasm_worklet/build-demo.sh
+```
+
+The script is just a thin wrapper around the Omni CLI:
+- it prefers `target/release/omni(.exe)`
+- then falls back to `target/debug/omni(.exe)`
+- otherwise it runs `cargo run -p omni_cli -- ...`
 
 Build and serve in one command:
 
@@ -14,10 +25,18 @@ Build and serve in one command:
 .\examples\web\sine_wasm_worklet\build-demo.ps1 -Serve
 ```
 
+```bash
+bash ./examples/web/sine_wasm_worklet/build-demo.sh --serve
+```
+
 Optional knobs:
 
 ```powershell
 .\examples\web\sine_wasm_worklet\build-demo.ps1 -SampleRate 48000 -BlockSize 128
+```
+
+```bash
+bash ./examples/web/sine_wasm_worklet/build-demo.sh --sample-rate 48000 --block-size 128
 ```
 
 If script execution is blocked, use:
