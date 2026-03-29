@@ -66,13 +66,13 @@ The CLI can also emit LLVM IR and native object files for AOT-style workflows.
 Windows PowerShell:
 
 ```powershell
-pwsh ./scripts/bootstrap-llvm.ps1
+./scripts/bootstrap-llvm.ps1
 ```
 
 macOS/Linux:
 
 ```bash
-bash ./scripts/bootstrap-llvm.sh
+./scripts/bootstrap-llvm.sh
 ```
 
 2. Build the CLI:
