@@ -361,25 +361,43 @@ fn render_scalar_value_editor(
         return changed;
     }
 
+    let is_integer = is_integer_type(ty);
     let mut number = value.as_f64().unwrap_or(0.0);
     let step = scalar_step(ty, min, max);
     let changed = ui
         .vertical(|ui| {
             let header_drag_changed = ui
                 .horizontal(|ui| {
-                    ui.label(egui::RichText::new(label).strong());
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(label).strong());
+                        ui.label(egui::RichText::new(ty).size(12.0).weak());
+                    });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let drag = if let (Some(min), Some(max)) = (min, max) {
-                            egui::DragValue::new(&mut number)
-                                .speed(step / 4.0)
-                                .range(min..=max)
-                                .max_decimals(slider_decimals(step))
+                        if is_integer {
+                            let mut integer = number.round() as i64;
+                            let drag = if let (Some(min), Some(max)) = (min, max) {
+                                egui::DragValue::new(&mut integer)
+                                    .speed(0.25)
+                                    .range((min.ceil() as i64)..=(max.floor() as i64))
+                            } else {
+                                egui::DragValue::new(&mut integer).speed(0.25)
+                            };
+                            let changed = ui.add_sized([120.0, 26.0], drag).changed();
+                            number = integer as f64;
+                            changed
                         } else {
-                            egui::DragValue::new(&mut number)
-                                .speed(step / 4.0)
-                                .max_decimals(slider_decimals(step))
-                        };
-                        ui.add_sized([120.0, 26.0], drag).changed()
+                            let drag = if let (Some(min), Some(max)) = (min, max) {
+                                egui::DragValue::new(&mut number)
+                                    .speed(step / 4.0)
+                                    .range(min..=max)
+                                    .max_decimals(slider_decimals(step))
+                            } else {
+                                egui::DragValue::new(&mut number)
+                                    .speed(step / 4.0)
+                                    .max_decimals(slider_decimals(step))
+                            };
+                            ui.add_sized([120.0, 26.0], drag).changed()
+                        }
                     })
                     .inner
                 })
@@ -391,10 +409,18 @@ fn render_scalar_value_editor(
                     .scope(|ui| {
                         ui.spacing_mut().interact_size.y = slider_height;
                         ui.spacing_mut().slider_width = ui.available_width();
-                        let slider = egui::Slider::new(&mut number, min..=max)
-                            .step_by(step)
-                            .show_value(false)
-                            .trailing_fill(true);
+                        let slider = if is_integer {
+                            egui::Slider::new(&mut number, min..=max)
+                                .integer()
+                                .step_by(1.0)
+                                .show_value(false)
+                                .trailing_fill(true)
+                        } else {
+                            egui::Slider::new(&mut number, min..=max)
+                                .step_by(step)
+                                .show_value(false)
+                                .trailing_fill(true)
+                        };
                         ui.add_sized([ui.available_width(), slider_height], slider)
                             .changed()
                     })
@@ -436,38 +462,71 @@ fn render_param_value_editor(
 
     let committed_number = value.as_f64().unwrap_or(0.0);
     let displayed_number = number_draft.unwrap_or(committed_number);
+    let is_integer = is_integer_type(ty);
     let step = scalar_step(ty, min, max);
     let mut outcome = ParamEditOutcome::None;
 
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(label).strong());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(label).strong());
+                ui.label(egui::RichText::new(ty).size(12.0).weak());
+            });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut number = displayed_number;
-                let drag = if let (Some(min), Some(max)) = (min, max) {
-                    egui::DragValue::new(&mut number)
-                        .speed(step / 16.0)
-                        .range(min..=max)
-                        .max_decimals(slider_decimals(step).max(6))
-                } else {
-                    egui::DragValue::new(&mut number)
-                        .speed(0.01)
-                        .max_decimals(8)
-                };
-                let response = ui.add_sized([120.0, 26.0], drag);
-                let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
-                let editing_finished = response.drag_stopped() || response.lost_focus() || enter_pressed;
-                let number_changed = response.changed();
-                let dragging = response.dragged();
-
-                if number_changed {
-                    if dragging || editing_finished {
-                        outcome = ParamEditOutcome::Commit(json_number(number));
+                if is_integer {
+                    let mut integer = displayed_number.round() as i64;
+                    let drag = if let (Some(min), Some(max)) = (min, max) {
+                        egui::DragValue::new(&mut integer)
+                            .speed(0.25)
+                            .range((min.ceil() as i64)..=(max.floor() as i64))
                     } else {
-                        outcome = ParamEditOutcome::NumberDraft(number);
+                        egui::DragValue::new(&mut integer).speed(0.25)
+                    };
+                    let response = ui.add_sized([120.0, 26.0], drag);
+                    let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    let editing_finished =
+                        response.drag_stopped() || response.lost_focus() || enter_pressed;
+                    let number_changed = response.changed();
+                    let dragging = response.dragged();
+
+                    if number_changed {
+                        let next = integer as f64;
+                        if dragging || editing_finished {
+                            outcome = ParamEditOutcome::Commit(json_number(next));
+                        } else {
+                            outcome = ParamEditOutcome::NumberDraft(next);
+                        }
+                    } else if editing_finished && number_draft.is_some() {
+                        outcome = ParamEditOutcome::Commit(json_number(displayed_number.round()));
                     }
-                } else if editing_finished && number_draft.is_some() {
-                    outcome = ParamEditOutcome::Commit(json_number(displayed_number));
+                } else {
+                    let mut number = displayed_number;
+                    let drag = if let (Some(min), Some(max)) = (min, max) {
+                        egui::DragValue::new(&mut number)
+                            .speed(step / 16.0)
+                            .range(min..=max)
+                            .max_decimals(slider_decimals(step).max(6))
+                    } else {
+                        egui::DragValue::new(&mut number)
+                            .speed(0.01)
+                            .max_decimals(8)
+                    };
+                    let response = ui.add_sized([120.0, 26.0], drag);
+                    let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    let editing_finished =
+                        response.drag_stopped() || response.lost_focus() || enter_pressed;
+                    let number_changed = response.changed();
+                    let dragging = response.dragged();
+
+                    if number_changed {
+                        if dragging || editing_finished {
+                            outcome = ParamEditOutcome::Commit(json_number(number));
+                        } else {
+                            outcome = ParamEditOutcome::NumberDraft(number);
+                        }
+                    } else if editing_finished && number_draft.is_some() {
+                        outcome = ParamEditOutcome::Commit(json_number(displayed_number));
+                    }
                 }
             });
         });
@@ -479,7 +538,7 @@ fn render_param_value_editor(
                 .scope(|ui| {
                     ui.spacing_mut().interact_size.y = 24.0;
                     ui.spacing_mut().slider_width = ui.available_width();
-                    let slider = if matches!(ty, "i32" | "i64") {
+                    let slider = if is_integer {
                         egui::Slider::new(&mut slider_value, min..=max)
                             .integer()
                             .step_by(1.0)
@@ -504,7 +563,7 @@ fn render_param_value_editor(
 }
 
 fn scalar_step(ty: &str, min: Option<f64>, max: Option<f64>) -> f64 {
-    if matches!(ty, "i32" | "i64") {
+    if is_integer_type(ty) {
         return 1.0;
     }
     if let (Some(min), Some(max)) = (min, max) {
@@ -522,6 +581,10 @@ fn slider_decimals(step: f64) -> usize {
     }
     let decimals = (-step.log10()).ceil() as usize + 1;
     decimals.min(6)
+}
+
+fn is_integer_type(ty: &str) -> bool {
+    matches!(ty, "i32" | "i64")
 }
 
 fn draw_scope(ui: &mut egui::Ui, channels: usize, samples: &[f32], size: egui::Vec2) {
