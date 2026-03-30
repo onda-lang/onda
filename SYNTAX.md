@@ -211,7 +211,11 @@ params:
 ```
 
 Rules:
-- omitted parameter types default to `f32`
+- omitted parameter types without a default value default to `f32`
+- omitted parameter types with a default value infer from the default using the same untyped-literal rules as ordinary assignments:
+  - `gain = 0.5` -> `f32`
+  - `mode = 0` -> `i32`
+  - pure numeric constant expressions also follow the usual untyped-assignment narrowing rules
 - ranges are supported only on scalar params
 - arrays are supported, but array params cannot have ranges
 - `params[i]` is supported under the same dynamic-indexing rules as `ins[i]`
@@ -661,6 +665,7 @@ Examples:
 sample:
   x = 0.5        # x becomes f32
   n = 5          # n becomes i32
+  wide = f64(PI * 2.0)  # wide becomes f64
 ```
 
 ```omni
@@ -685,6 +690,15 @@ Explicit casts are still useful when you want to force a particular type on purp
 - to make a mixed-type expression obvious
 - to disambiguate overload resolution
 - to deliberately opt out of the default literal behavior
+
+For example:
+
+```omni
+sample:
+  a = PI * 2.0        # a becomes f32
+  b = f64(PI * 2.0)   # b becomes f64
+  c = i64(0)          # c becomes i64
+```
 
 User-defined `const` values follow the same general rule:
 - untyped `const X = expr` uses the inferred type of the constant expression

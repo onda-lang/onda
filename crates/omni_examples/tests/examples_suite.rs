@@ -1956,7 +1956,7 @@ const STD_ONE_POLE_GRAPH_FILE_EXAMPLE: &str =
     include_str!("../../../examples/std_one_pole_graph.omni");
 const STDLIB_F32_FILE_EXAMPLE: &str = include_str!("../../../examples/stdlib_f32.omni");
 const STDLIB_F32_GRAPH_FILE_EXAMPLE: &str = include_str!("../../../examples/stdlib_f32_graph.omni");
-const SINE_WASM_FILE_EXAMPLE: &str = include_str!("../../../examples/sine_wasm.omni");
+const SINE_WASM_FILE_EXAMPLE: &str = include_str!("../../../examples/web/sine_wasm_worklet/sine_wasm.omni");
 
 const STRUCT_DATA_EXAMPLE: &str = r#"
 outs { out1 }

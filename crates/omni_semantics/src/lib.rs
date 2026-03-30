@@ -717,6 +717,101 @@ mod tests {
     }
 
     #[test]
+    fn untyped_top_level_params_infer_type_from_const_defaults() {
+        let src = r#"
+outs:
+  out1
+params:
+  bare
+  float_default = 0.0
+  int_default = 0
+  int_expr = 1 + 2
+  float_expr = PI * 2.0
+  explicit_f64: f64 = 0.0
+  explicit_i64: i64 = 0
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("param defaults should infer");
+
+        assert_eq!(typed.param_types.get("bare"), Some(&PrimitiveType::F32));
+        assert_eq!(
+            typed.param_types.get("float_default"),
+            Some(&PrimitiveType::F32)
+        );
+        assert_eq!(typed.param_types.get("int_default"), Some(&PrimitiveType::I32));
+        assert_eq!(typed.param_types.get("int_expr"), Some(&PrimitiveType::I32));
+        assert_eq!(typed.param_types.get("float_expr"), Some(&PrimitiveType::F32));
+        assert_eq!(typed.param_types.get("explicit_f64"), Some(&PrimitiveType::F64));
+        assert_eq!(typed.param_types.get("explicit_i64"), Some(&PrimitiveType::I64));
+    }
+
+    #[test]
+    fn untyped_proc_params_infer_type_from_const_defaults() {
+        let src = r#"
+proc Voice:
+  params:
+    bare
+    float_default = 0.0
+    int_default = 0
+    int_expr = 1 + 2
+    float_expr = PI * 2.0
+    explicit_f64: f64 = 0.0
+    explicit_i64: i64 = 0
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("proc param defaults should infer");
+        let voice = typed
+            .structs
+            .iter()
+            .find(|s| s.name == "Voice")
+            .expect("missing lowered Voice struct");
+
+        let param_tys = voice
+            .fields
+            .iter()
+            .filter_map(|field| {
+                let ty = match field.ty {
+                    TypedFieldType::Scalar(ty) => ty,
+                    _ => return None,
+                };
+                match field.name.as_str() {
+                    "bare" => Some(("bare", ty)),
+                    "float_default" => Some(("float_default", ty)),
+                    "int_default" => Some(("int_default", ty)),
+                    "int_expr" => Some(("int_expr", ty)),
+                    "float_expr" => Some(("float_expr", ty)),
+                    "explicit_f64" => Some(("explicit_f64", ty)),
+                    "explicit_i64" => Some(("explicit_i64", ty)),
+                    _ => None,
+                }
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(param_tys.get("bare"), Some(&PrimitiveType::F32));
+        assert_eq!(param_tys.get("float_default"), Some(&PrimitiveType::F32));
+        assert_eq!(param_tys.get("int_default"), Some(&PrimitiveType::I32));
+        assert_eq!(param_tys.get("int_expr"), Some(&PrimitiveType::I32));
+        assert_eq!(param_tys.get("float_expr"), Some(&PrimitiveType::F32));
+        assert_eq!(param_tys.get("explicit_f64"), Some(&PrimitiveType::F64));
+        assert_eq!(param_tys.get("explicit_i64"), Some(&PrimitiveType::I64));
+    }
+
+    #[test]
     fn declaration_only_library_file_does_not_require_sample_block() {
         let src = "proc Mix:\n  ins:\n    dry\n    fb\n  sample:\n    out1 = (dry + fb) * 0.5\n\ndef clip(x) {\n  return x\n}\nconst SCALE = 0.5\n";
         let program = parse_program(src).expect("parse should succeed");

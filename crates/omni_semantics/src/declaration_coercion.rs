@@ -482,6 +482,21 @@ pub(crate) fn coerce_params(
             None | Some(DeclType::Scalar(_)) => {
                 let ty = match param.ty.as_ref() {
                     Some(DeclType::Scalar(ty)) => *ty,
+                    None => param
+                        .default
+                        .as_ref()
+                        .and_then(|expr| {
+                            with_loc_diag_context(param_loc, |_diag| {
+                                let expr_ty = infer_const_expr_type(
+                                    expr,
+                                    options,
+                                    &format!("param '{}.{}' default", "<top-level>", param.name),
+                                    errors,
+                                );
+                                effective_untyped_assignment_type(expr, expr_ty)
+                            })
+                        })
+                        .unwrap_or(PrimitiveType::F32),
                     _ => PrimitiveType::F32,
                 };
                 let raw_default = match &param.default {

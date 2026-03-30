@@ -1033,6 +1033,24 @@ pub(super) fn expand_proc_param_specs(
             None | Some(DeclType::Scalar(_)) => {
                 let ty = match param.ty.as_ref() {
                     Some(DeclType::Scalar(ty)) => *ty,
+                    None => param
+                        .default
+                        .as_ref()
+                        .and_then(|expr| {
+                            with_expr_diag_context(expr, |_diag| {
+                                let expr_ty = infer_const_expr_type(
+                                    expr,
+                                    options,
+                                    &format!(
+                                        "processor '{proc_name}' param '{}' default",
+                                        param.name
+                                    ),
+                                    errors,
+                                );
+                                effective_untyped_assignment_type(expr, expr_ty)
+                            })
+                        })
+                        .unwrap_or(PrimitiveType::F32),
                     _ => PrimitiveType::F32,
                 };
                 let raw_default = match &param.default {
