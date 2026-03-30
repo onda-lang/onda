@@ -2158,6 +2158,73 @@ fn stdlib_math_auto_import_allows_local_symbol_override() {
 }
 
 #[test]
+fn stdlib_random_generic_rng_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_RANDOM_GENERIC_RNG_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 3);
+
+    let mut out1_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out2_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out3_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    bind_output(&mut instance, 0, out1_bytes.as_mut_ptr(), out1_bytes.len()).expect("bind out1");
+    bind_output(&mut instance, 1, out2_bytes.as_mut_ptr(), out2_bytes.len()).expect("bind out2");
+    bind_output(&mut instance, 2, out3_bytes.as_mut_ptr(), out3_bytes.len()).expect("bind out3");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out1 = decode_planar_f64(&out1_bytes);
+    let out2 = decode_planar_f64(&out2_bytes);
+    let out3 = decode_planar_f64(&out3_bytes);
+
+    let next_state = |state: i64| -> i64 {
+        (state
+            .wrapping_mul(1_103_515_245_i64)
+            .wrapping_add(12_345_i64))
+            & 2_147_483_647_i64
+    };
+    let next_unit = |state: i64| -> f64 { ((state as i32 & 2147483647) as f64) / 2147483647.0_f64 };
+
+    let mut state = 123_i64;
+    let mut expected = Vec::with_capacity(frames);
+    for _ in 0..frames {
+        state = next_state(state);
+        let v1 = next_unit(state);
+        state = next_state(state);
+        let v2 = next_unit(state) * 2.0 - 1.0;
+        state = next_state(state);
+        let v3 = -2.0 + 4.0 * next_unit(state);
+        expected.push((v1, v2, v3));
+    }
+
+    for frame in 0..frames {
+        assert!(
+            (out1[frame] - expected[frame].0).abs() <= 1e-6,
+            "expected {} ~= {}",
+            out1[frame],
+            expected[frame].0
+        );
+        assert!(
+            (out2[frame] - expected[frame].1).abs() <= 1e-6,
+            "expected {} ~= {}",
+            out2[frame],
+            expected[frame].1
+        );
+        assert!(
+            (out3[frame] - expected[frame].2).abs() <= 1e-6,
+            "expected {} ~= {}",
+            out3[frame],
+            expected[frame].2
+        );
+    }
+}
+
+#[test]
 
 fn stdlib_buffer_read_mono_compiles_and_runs() {
     let frames = 4;

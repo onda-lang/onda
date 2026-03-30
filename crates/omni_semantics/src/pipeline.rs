@@ -1030,9 +1030,11 @@ pub fn analyze_with_options(
                     def_env.scalar_types.insert(param.name.clone(), *prim);
                 }
                 Some(FnParamType::Struct(struct_name)) => {
-                    def_env
-                        .struct_instances
-                        .insert(param.name.clone(), struct_name.clone());
+                    if !def.type_params.contains(struct_name) {
+                        def_env
+                            .struct_instances
+                            .insert(param.name.clone(), struct_name.clone());
+                    }
                 }
                 Some(FnParamType::Buffer(buffer_ty)) => {
                     let channels = match &buffer_ty.channels {

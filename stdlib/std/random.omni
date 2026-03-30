@@ -1,0 +1,29 @@
+namespace std::random:
+  const RNG_MASK: i64 = 2147483647
+  const RNG_MULT: i64 = 1103515245
+  const RNG_INC: i64 = 12345
+
+  def seed_state(seed: i64):
+    return (seed ^ (seed >> 32)) & RNG_MASK
+
+  def step_state(state: i64):
+    return (state * RNG_MULT + RNG_INC) & RNG_MASK
+
+  struct Rng<T>:
+    state: i64 = 1
+
+    def reseed(self, seed: i64):
+      self.state = seed_state(seed)
+
+    def next_u31(self):
+      self.state = step_state(self.state)
+      return i32(self.state) & i32(RNG_MASK)
+
+    def next(self):
+      return T(self.next_u31()) / T(RNG_MASK)
+
+    def bipolar(self):
+      return self.next() * T(2.0) - T(1.0)
+
+    def range(self, lo: T, hi: T):
+      return lo + (hi - lo) * self.next()

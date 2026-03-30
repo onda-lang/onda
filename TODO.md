@@ -76,7 +76,7 @@
 
 - Standard library follow-ups
   - Keep the built-in module inventory synced across `README.md`, `INFO.md`, and `SYNTAX.md`:
-    `std/prelude`, `std/math`, `std/export_math`, `std/complex`, `std/osc`, `std/filter`, `std/env`,
+    `std/prelude`, `std/math`, `std/random`, `std/export_math`, `std/complex`, `std/osc`, `std/filter`, `std/env`,
     `std/delay`, `std/data`, `std/lookup`, `std/fft`, `std/convolution`.
   - Decide which stdlib modules are considered stable MVP surface versus still-evolving API.
   - Plan the next expansion/versioning pass beyond the current shipped module set.

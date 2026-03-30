@@ -44,6 +44,7 @@ pub(super) fn builtin_std_module_source(module: &str) -> Option<&'static str> {
         "std/fft" => Some(include_str!("../../../../stdlib/std/fft.omni")),
         "std/convolution" => Some(include_str!("../../../../stdlib/std/convolution.omni")),
         "std/lookup" => Some(include_str!("../../../../stdlib/std/lookup.omni")),
+        "std/random" => Some(include_str!("../../../../stdlib/std/random.omni")),
         "std/prelude" => Some(include_str!("../../../../stdlib/std/prelude.omni")),
         _ => None,
     }

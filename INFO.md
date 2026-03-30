@@ -160,11 +160,12 @@
   - Visibility is lexical; forward references and cycles are not part of the current implementation.
   - Reassignment is rejected.
 - `std/prelude` is auto-imported during semantic analysis.
-- `std/prelude` currently imports `std/math` and `std/lookup`.
-- Local symbols with the same name take precedence over auto-imported unqualified std helpers; qualified calls remain available via `std::math::...` and `std::lookup::...`.
+- `std/prelude` currently imports `std/math`, `std/lookup`, and `std/random`.
+- Local symbols with the same name take precedence over auto-imported unqualified std helpers; qualified calls remain available via `std::math::...`, `std::lookup::...`, and `std::random::...`.
 - `std/export_math` is available as `import std/export_math` and provides namespace-qualified pure-Omni approximations for freestanding/export-oriented transcendental math (`sin`, `cos`, `tan`, `tanh`, `atan`, `atan2`, `exp`, `log`, `pow`).
   - It is opt-in and does not replace the existing builtin math lowering path.
 - `std/lookup` exposes duck-typed overloaded helpers `read`, `write`, `readL`, and `readC` (mono and channel-explicit forms) that specialize from both primitive arrays and buffers.
+- `std/random` provides a generic `std::random::Rng<T>` helper for stateful pseudo-random streams.
 - `std/complex` is available as `import std/complex` and provides `std::complex::Complex<T>` for method-based complex arithmetic in Omni code.
   - Intended `T` specializations are `f32` and `f64`.
   - Current surface includes `real`, `imag`, `set`, `clear`, `copy`, `set_polar`, `add_assign`, `add_parts`, `sub_assign`, `sub_parts`, `mul_assign`, `mul_parts`, `scale_assign`, `conjugate`, `power`, `magnitude`, and `phase`.

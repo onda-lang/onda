@@ -1382,6 +1382,7 @@ Resolution rules:
 Current built-in std modules include:
 - `std/prelude`
 - `std/math`
+- `std/random`
 - `std/export_math`
 - `std/complex`
 - `std/osc`
@@ -1394,7 +1395,7 @@ Current built-in std modules include:
 - `std/convolution`
 
 `std/prelude` is auto-imported during semantic analysis.
-Today it brings in `std/math` and `std/lookup`.
+Today it brings in `std/math`, `std/lookup`, and `std/random`.
 
 Current imported-file restriction:
 - declaration-only files are limited to `const`, `struct`, `def`, and `proc`

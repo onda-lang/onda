@@ -2097,6 +2097,18 @@ sample {
 }
 "#;
 
+const STDLIB_RANDOM_GENERIC_RNG_EXAMPLE: &str = r#"
+outs { out1: f64, out2: f64, out3: f64 }
+init {
+  rng = std::random::Rng<f64>(state = 123)
+}
+sample {
+  out1 = rng.next()
+  out2 = rng.bipolar()
+  out3 = rng.range(f64(-2.0), f64(2.0))
+}
+"#;
+
 const STDLIB_BUFFER_READ_MONO_EXAMPLE: &str = r#"
 import std/lookup
 buffers { b: buffer[f32] }
