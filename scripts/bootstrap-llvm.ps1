@@ -5,6 +5,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if (-not $env:CI) {
+    Write-Host "CI not detected; building LLVM from source via deps/llvm-bootstrap."
+    & (Join-Path $PSScriptRoot "bootstrap-llvm-source.ps1") -Version $Version -Linkage Static
+    exit $LASTEXITCODE
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $depsRoot = Join-Path $repoRoot ".deps"
 $llvmRoot = Join-Path $depsRoot "llvm"
@@ -28,7 +34,7 @@ if (Test-Path (Join-Path $versionRoot "bin/llvm-config.exe")) {
     exit 0
 }
 
-Write-Host "Downloading $url"
+Write-Host "CI detected; downloading prebuilt LLVM package from $url"
 Invoke-WebRequest -Uri $url -OutFile $archive
 
 if (Test-Path $tempExtractRoot) {
@@ -63,5 +69,3 @@ if (-not (Test-Path (Join-Path $versionRoot "bin/llvm-config.exe"))) {
 }
 
 Write-Host "LLVM bootstrapped to $versionRoot"
-Write-Host "Set env in your shell if needed:"
-Write-Host "`$env:LLVM_SYS_211_PREFIX = '$versionRoot'"

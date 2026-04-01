@@ -8,11 +8,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/bootstrap-llvm.sh [--version <x.y.z>] [--asset <release-asset-name>]
 
-Downloads and installs a prebuilt LLVM release into:
-  .deps/llvm/<version>
-
-If --asset is omitted, the script chooses a default asset from the
-vitreo12/llvm-bootstrap release by OS/arch.
+Local builds default to building LLVM from source via deps/llvm-bootstrap.
+CI builds may download a prebuilt LLVM package instead.
 EOF
 }
 
@@ -40,6 +37,12 @@ done
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
+
+if [[ -z "${CI:-}" ]]; then
+  echo "CI not detected; building LLVM from source via deps/llvm-bootstrap."
+  exec "$script_dir/bootstrap-llvm-source.sh" --version "$VERSION" --linkage Static
+fi
+
 deps_root="$repo_root/.deps"
 llvm_root="$deps_root/llvm"
 version_root="$llvm_root/$VERSION"
@@ -63,8 +66,8 @@ if [[ -z "$ASSET" ]]; then
       ASSET="llvm-$VERSION-macos-arm64-static.tar.xz"
       ;;
     *)
-      echo "No default vitreo12/llvm-bootstrap asset mapping for platform '$os/$arch'." >&2
-      echo "Pass --asset explicitly, or use scripts/bootstrap-llvm-source.sh." >&2
+      echo "No default llvm-bootstrap asset mapping for platform '$os/$arch'." >&2
+      echo "Pass --asset explicitly." >&2
       exit 1
       ;;
   esac
@@ -74,7 +77,7 @@ url="https://github.com/vitreo12/llvm-bootstrap/releases/download/llvm-$VERSION/
 archive="$dist_root/$ASSET"
 temp_extract_root="$dist_root/extract-$VERSION"
 
-echo "Downloading $url"
+echo "CI detected; downloading $url"
 if command -v curl >/dev/null 2>&1; then
   curl -fL "$url" -o "$archive"
 elif command -v wget >/dev/null 2>&1; then
@@ -114,5 +117,3 @@ if [[ ! -x "$version_root/bin/llvm-config" && ! -f "$version_root/bin/llvm-confi
 fi
 
 echo "LLVM bootstrapped to $version_root"
-echo "Set env in your shell if needed:"
-echo "  export LLVM_SYS_211_PREFIX=\"$version_root\""

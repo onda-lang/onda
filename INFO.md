@@ -449,13 +449,13 @@
   - Useful graph examples: `examples/proc_gain_graph.omni`, `examples/proc_split_graph.omni`, `examples/proc_array_stereo_sine_graph.omni`, `examples/std_one_pole_graph.omni`, `examples/stdlib_f32_graph.omni`, `examples/feedback_saturator_graph.omni`, `examples/cybernetic_feedback_graph.omni`, `examples/reverb_graph.omni`.
 
 ## LLVM dependency strategy
-- Preferred LLVM bootstrap downloads prebuilt static archives from `vitreo12/llvm-bootstrap` release tag `llvm-21.1.2` into `.deps/llvm/21.1.2`.
-  - Linux x64: `llvm-21.1.2-linux-x64-static.tar.xz`
-  - macOS arm64: `llvm-21.1.2-macos-arm64-static.tar.xz`
-  - Windows x64: `llvm-21.1.2-windows-x64-static.zip`
-- Source bootstrap supports linkage modes:
+- The repo now carries `deps/llvm-bootstrap` as a git submodule.
+- Local developer builds bootstrap LLVM from source on all platforms through that submodule's build recipe.
+- The source-bootstrap wrappers download `llvm-project` source and install into:
   - static install: `.deps/llvm-src/21.1.2-static` (`scripts/bootstrap-llvm-source.ps1 -Linkage Static` or `scripts/bootstrap-llvm-source.sh --linkage Static`)
   - shared install: `.deps/llvm-src/21.1.2-shared` (`scripts/bootstrap-llvm-source.ps1 -Linkage Shared` or `scripts/bootstrap-llvm-source.sh --linkage Shared`)
+- Default source-bootstrap target set is `X86;AArch64;WebAssembly`.
+- CI-oriented prebuilt bootstrap is still available through `scripts/bootstrap-llvm.ps1` / `scripts/bootstrap-llvm.sh` when `CI` is set, downloading release assets from `vitreo12/llvm-bootstrap` into `.deps/llvm/21.1.2`.
 - LLVM env-selection scripts can select flavor (`auto`, `prebuilt`, `source-static`, `source-shared`, `source`):
   - PowerShell: `scripts/use-llvm-env.ps1`
   - bash: `scripts/use-llvm-env.sh` (source it in the current shell)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FLAVOR="prebuilt"
+FLAVOR="source-static"
 VERSION="21.1.2"
 
 usage() {
@@ -87,14 +87,14 @@ elif [[ "$FLAVOR" == "source" ]]; then
     prefix="$source_legacy_prefix"
   fi
 else
-  if test_llvm_prefix "$prebuilt_prefix"; then
-    prefix="$prebuilt_prefix"
-  elif test_llvm_prefix "$source_static_prefix"; then
+  if test_llvm_prefix "$source_static_prefix"; then
     prefix="$source_static_prefix"
   elif test_llvm_prefix "$source_shared_prefix"; then
     prefix="$source_shared_prefix"
   elif test_llvm_prefix "$source_legacy_prefix"; then
     prefix="$source_legacy_prefix"
+  elif test_llvm_prefix "$prebuilt_prefix"; then
+    prefix="$prebuilt_prefix"
   fi
 fi
 

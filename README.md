@@ -64,7 +64,13 @@ The CLI can also emit LLVM IR and native object files for AOT-style workflows.
 
 ## Building `omni`
 
-1. Bootstrap LLVM.
+1. Initialize submodules.
+
+```bash
+git submodule update --init --recursive
+```
+
+2. Bootstrap LLVM.
 
 Windows PowerShell:
 
@@ -78,7 +84,10 @@ macOS/Linux:
 ./scripts/bootstrap-llvm.sh
 ```
 
-2. Build the CLI:
+Local builds use `deps/llvm-bootstrap` to build LLVM from source on all platforms.
+When `CI` is set, the bootstrap scripts may download a matching prebuilt LLVM package instead.
+
+3. Build the CLI:
 
 ```bash
 cargo build -p omni_cli --release
@@ -86,7 +95,7 @@ cargo build -p omni_cli --release
 
 This produces the `omni` executable in `target/release/`.
 
-3. Build the static and shared libraries if needed:
+4. Build the static and shared libraries if needed:
 
 To build the C API in release mode:
 

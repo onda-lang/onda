@@ -1,6 +1,6 @@
 param(
     [ValidateSet("auto", "prebuilt", "source-static", "source-shared", "source")]
-    [string]$Flavor = "prebuilt",
+    [string]$Flavor = "source-static",
     [string]$Version = "21.1.2"
 )
 
@@ -55,14 +55,14 @@ if ($Flavor -eq "prebuilt") {
         $prefix = $sourceLegacyPrefix
     }
 } else {
-    if (Test-LlvmPrefix $prebuiltPrefix) {
-        $prefix = $prebuiltPrefix
-    } elseif (Test-LlvmPrefix $sourceStaticPrefix) {
+    if (Test-LlvmPrefix $sourceStaticPrefix) {
         $prefix = $sourceStaticPrefix
     } elseif (Test-LlvmPrefix $sourceSharedPrefix) {
         $prefix = $sourceSharedPrefix
     } elseif (Test-LlvmPrefix $sourceLegacyPrefix) {
         $prefix = $sourceLegacyPrefix
+    } elseif (Test-LlvmPrefix $prebuiltPrefix) {
+        $prefix = $prebuiltPrefix
     }
 }
 
