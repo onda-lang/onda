@@ -1,0 +1,242 @@
+name: Build Omni Releases
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  OMNI_VERSION: 21.1.2
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish archives to a GitHub release"
+        required: true
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "v*"
+      - "[0-9]*.[0-9]*.[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            runner: windows-2022
+            platform: windows
+            arch: x64
+            archive_ext: zip
+          - name: linux-x64
+            runner: ubuntu-22.04
+            platform: linux
+            arch: x64
+            archive_ext: tar.xz
+          - name: macos-arm64
+            runner: macos-14
+            platform: macos
+            arch: arm64
+            archive_ext: tar.xz
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libasound2-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up MSVC developer command prompt
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Read workspace version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "$version" ]]; then
+            echo "failed to read workspace version from Cargo.toml" >&2
+            exit 1
+          fi
+          tag_name="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap LLVM on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/bootstrap-llvm.ps1 -Version "${{ env.OMNI_VERSION }}"
+
+      - name: Bootstrap LLVM on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./scripts/bootstrap-llvm.sh --version "${{ env.OMNI_VERSION }}"
+
+      - name: Build omni and omni_api on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          . .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version "${{ env.OMNI_VERSION }}"
+          cargo build --release -p omni_cli -p omni_api
+
+      - name: Build omni and omni_api on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.OMNI_VERSION }}"
+          cargo build --release -p omni_cli -p omni_api
+
+      - name: Package release on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $packageRoot = Join-Path $PWD ("dist/omni-" + $version + "-windows-x64")
+          $binDir = Join-Path $packageRoot "bin"
+          $libDir = Join-Path $packageRoot "lib"
+          $includeDir = Join-Path $packageRoot "include"
+
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $libDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
+
+          Copy-Item target\release\omni.exe $binDir
+          Copy-Item target\release\omni_api.dll $binDir
+          if (Test-Path target\release\omni_api.lib) {
+            Copy-Item target\release\omni_api.lib $libDir
+          }
+          if (Test-Path target\release\omni_api.dll.lib) {
+            Copy-Item target\release\omni_api.dll.lib $libDir
+          }
+          if (Test-Path target\release\omni_api.exp) {
+            Copy-Item target\release\omni_api.exp $libDir
+          }
+          Copy-Item include\omni_llvm.h $includeDir
+          Copy-Item README.md $packageRoot
+          Copy-Item INFO.md $packageRoot
+
+          $archive = Join-Path $PWD ("dist/omni-" + $version + "-windows-x64.zip")
+          if (Test-Path $archive) {
+            Remove-Item $archive -Force
+          }
+          Compress-Archive -Path "$packageRoot\*" -DestinationPath $archive
+
+      - name: Package release on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          package_root="$PWD/dist/omni-$version-${{ matrix.platform }}-${{ matrix.arch }}"
+          bin_dir="$package_root/bin"
+          lib_dir="$package_root/lib"
+          include_dir="$package_root/include"
+
+          mkdir -p "$bin_dir" "$lib_dir" "$include_dir"
+
+          cp target/release/omni "$bin_dir/"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            cp target/release/libomni_api.dylib "$lib_dir/"
+            cp target/release/libomni_api.a "$lib_dir/"
+          else
+            cp target/release/libomni_api.so "$lib_dir/"
+            cp target/release/libomni_api.a "$lib_dir/"
+          fi
+          cp include/omni_llvm.h "$include_dir/"
+          cp README.md "$package_root/"
+          cp INFO.md "$package_root/"
+
+          archive="$PWD/dist/omni-$version-${{ matrix.platform }}-${{ matrix.arch }}.tar.xz"
+          tar -C "$PWD/dist" -cJf "$archive" "$(basename "$package_root")"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*.${{ matrix.archive_ext }}
+
+  release:
+    name: Publish Release
+    if: ${{ github.event_name == 'push' || inputs.publish_release }}
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Read workspace version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "$version" ]]; then
+            echo "failed to read workspace version from Cargo.toml" >&2
+            exit 1
+          fi
+          tag_name="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+
+      - name: Validate pushed tag matches workspace version
+        if: ${{ github.event_name == 'push' }}
+        shell: bash
+        run: |
+          pushed_tag="${GITHUB_REF_NAME}"
+          expected_v_tag="${{ steps.version.outputs.tag_name }}"
+          expected_plain_tag="${{ steps.version.outputs.version }}"
+          if [[ "$pushed_tag" != "$expected_v_tag" && "$pushed_tag" != "$expected_plain_tag" ]]; then
+            echo "pushed tag '$pushed_tag' does not match workspace version '${{ steps.version.outputs.version }}'" >&2
+            exit 1
+          fi
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          find dist -type f \( -name '*.tar.xz' -o -name '*.zip' \) -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > dist/SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || steps.version.outputs.tag_name }}
+          name: Omni ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            dist/**/*.tar.xz
+            dist/**/*.zip
+            dist/SHA256SUMS.txt
