@@ -179,7 +179,7 @@ jobs:
           tar -C "$PWD/dist" -cJf "$archive" "$(basename "$package_root")"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: omni-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*.${{ matrix.archive_ext }}
@@ -220,7 +220,7 @@ jobs:
           fi
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
 
