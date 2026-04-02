@@ -15,9 +15,9 @@ bash ./examples/web/sine_wasm_worklet/build-demo.sh
 ```
 
 The script is just a thin wrapper around the Omni CLI:
-- it prefers `target/release/omni(.exe)`
-- then falls back to `target/debug/omni(.exe)`
-- otherwise it runs `cargo run -p omni_cli -- ...`
+- it first looks for `bin/omni(.exe)` in the release/package root
+- then falls back to `omni` on `PATH`
+- otherwise, in a source checkout, it runs `cargo build --release -p omni_cli` and then uses `target/release/omni(.exe)`
 
 Build and serve in one command:
 

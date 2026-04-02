@@ -45,20 +45,36 @@ meta_file="$script_dir/sine_wasm.omni.json"
 wasm_file="$script_dir/sine_wasm.wasm"
 
 invoke_omni() {
+  local packaged_omni="$repo_root/bin/omni"
   local release_omni="$repo_root/target/release/omni"
-  local debug_omni="$repo_root/target/debug/omni"
+
+  if [[ -x "$packaged_omni" ]]; then
+    "$packaged_omni" "$@"
+    return
+  fi
+
+  if command -v omni >/dev/null 2>&1; then
+    "$(command -v omni)" "$@"
+    return
+  fi
 
   if [[ -x "$release_omni" ]]; then
     "$release_omni" "$@"
     return
   fi
 
-  if [[ -x "$debug_omni" ]]; then
-    "$debug_omni" "$@"
-    return
+  if [[ ! -f "$repo_root/Cargo.toml" ]]; then
+    echo "omni not found in bin/ or PATH, and this demo is not running from a source checkout with Cargo.toml." >&2
+    exit 1
   fi
 
-  cargo run -p omni_cli -- "$@"
+  if [[ -f "$repo_root/scripts/use-llvm-env.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$repo_root/scripts/use-llvm-env.sh" --flavor auto --version 21.1.2
+  fi
+
+  cargo build --release -p omni_cli
+  "$release_omni" "$@"
 }
 
 get_wasm_ld() {

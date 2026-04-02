@@ -19,20 +19,36 @@ function Invoke-Omni {
         [string[]]$Args
     )
 
+    $packagedOmni = Join-Path $repoRoot "bin\omni.exe"
     $releaseOmni = Join-Path $repoRoot "target\release\omni.exe"
-    $debugOmni = Join-Path $repoRoot "target\debug\omni.exe"
+
+    if (Test-Path $packagedOmni) {
+        & $packagedOmni @Args
+        return
+    }
+
+    $pathOmni = Get-Command omni.exe -ErrorAction SilentlyContinue
+    if ($pathOmni) {
+        & $pathOmni.Source @Args
+        return
+    }
 
     if (Test-Path $releaseOmni) {
         & $releaseOmni @Args
         return
     }
 
-    if (Test-Path $debugOmni) {
-        & $debugOmni @Args
-        return
+    if (-not (Test-Path (Join-Path $repoRoot "Cargo.toml"))) {
+        throw "omni not found in bin/ or PATH, and this demo is not running from a source checkout with Cargo.toml."
     }
 
-    cargo run -p omni_cli -- @Args
+    $useLlvmEnv = Join-Path $repoRoot "scripts\use-llvm-env.ps1"
+    if (Test-Path $useLlvmEnv) {
+        . $useLlvmEnv -Flavor auto -Version "21.1.2"
+    }
+
+    cargo build --release -p omni_cli
+    & $releaseOmni @Args
 }
 
 function Get-WasmLd {
