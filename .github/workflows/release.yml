@@ -71,12 +71,6 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up MSVC developer command prompt
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
       - name: Read workspace version
         id: version
         shell: bash
@@ -104,8 +98,35 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          . .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version "${{ env.OMNI_VERSION }}"
-          cargo build --release -p omni_cli -p omni_api
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe not found at $vswhere"
+          }
+
+          $vsInstallPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsInstallPath) {
+            throw "Visual Studio with MSVC tools not found"
+          }
+
+          $devCmd = Join-Path $vsInstallPath "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path $devCmd)) {
+            throw "VsDevCmd.bat not found at $devCmd"
+          }
+
+          $command = @(
+            "`"$devCmd`"",
+            "-arch=x64",
+            "-host_arch=x64",
+            "&&",
+            "powershell",
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-Command",
+            "`. .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version '${{ env.OMNI_VERSION }}'; cargo build --release -p omni_cli -p omni_api`"
+          ) -join " "
+
+          cmd.exe /d /s /c $command
 
       - name: Build omni and omni_api on Unix
         if: runner.os != 'Windows'
@@ -232,7 +253,7 @@ jobs:
             | xargs -0 sha256sum > dist/SHA256SUMS.txt
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.5.0
         with:
           tag_name: ${{ github.ref_name || steps.version.outputs.tag_name }}
           name: ${{ steps.version.outputs.version }}
