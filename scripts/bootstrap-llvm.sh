@@ -73,7 +73,7 @@ if [[ -z "$ASSET" ]]; then
   esac
 fi
 
-url="https://github.com/vitreo12/llvm-bootstrap/releases/download/llvm-$VERSION/$ASSET"
+url="https://github.com/onda-lang/llvm-bootstrap/releases/download/llvm-$VERSION/$ASSET"
 archive="$dist_root/$ASSET"
 temp_extract_root="$dist_root/extract-$VERSION"
 

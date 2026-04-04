@@ -455,7 +455,7 @@
   - static install: `.deps/llvm-src/21.1.2-static` (`scripts/bootstrap-llvm-source.ps1 -Linkage Static` or `scripts/bootstrap-llvm-source.sh --linkage Static`)
   - shared install: `.deps/llvm-src/21.1.2-shared` (`scripts/bootstrap-llvm-source.ps1 -Linkage Shared` or `scripts/bootstrap-llvm-source.sh --linkage Shared`)
 - Default source-bootstrap target set is `X86;AArch64;WebAssembly`.
-- CI-oriented prebuilt bootstrap is still available through `scripts/bootstrap-llvm.ps1` / `scripts/bootstrap-llvm.sh` when `CI` is set, downloading release assets from `vitreo12/llvm-bootstrap` into `.deps/llvm/21.1.2`.
+- CI-oriented prebuilt bootstrap is still available through `scripts/bootstrap-llvm.ps1` / `scripts/bootstrap-llvm.sh` when `CI` is set, downloading release assets from `onda-lang/llvm-bootstrap` into `.deps/llvm/21.1.2`.
 - LLVM env-selection scripts can select flavor (`auto`, `prebuilt`, `source-static`, `source-shared`, `source`):
   - PowerShell: `scripts/use-llvm-env.ps1`
   - bash: `scripts/use-llvm-env.sh` (source it in the current shell)

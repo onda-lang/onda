@@ -21,7 +21,7 @@ $releaseTag = "llvm-$Version"
 if ([string]::IsNullOrWhiteSpace($Asset)) {
     $Asset = "llvm-$Version-windows-x64-static.zip"
 }
-$url = "https://github.com/vitreo12/llvm-bootstrap/releases/download/$releaseTag/$Asset"
+$url = "https://github.com/onda-lang/llvm-bootstrap/releases/download/$releaseTag/$Asset"
 $archive = Join-Path $distRoot $Asset
 $tempExtractRoot = Join-Path $distRoot ("extract-" + $Version)
 
