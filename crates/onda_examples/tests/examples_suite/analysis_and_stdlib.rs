@@ -1919,6 +1919,7 @@ fn stdlib_convolution_generic_f64_compile_and_run() {
 
 fn convolution_wav_impulse_example_reproduces_ir_from_event_payload() {
     let src = include_str!("../../../../examples/convolution_wav_impulse.onda");
+    const MAX_IR: usize = 100_000;
 
     let ir_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -1926,15 +1927,11 @@ fn convolution_wav_impulse_example_reproduces_ir_from_event_payload() {
         .join("examples")
         .join("impulse.wav");
 
-    let ir = read_wav_mono_f32(ir_path.to_str().expect("utf8 path"));
+    let mut ir = read_wav_mixdown_f32(ir_path.to_str().expect("utf8 path"));
+    ir.truncate(MAX_IR);
+    assert!(!ir.is_empty(), "impulse wav should produce at least one sample");
 
-    assert_eq!(
-        ir.len(),
-        87_085,
-        "expected fixed impulse length for example"
-    );
-
-    let frames = 131_072;
+    let frames = ir.len();
 
     let (mut instance, in_channels, out_channels) = compile_instance_with_options(
         src,

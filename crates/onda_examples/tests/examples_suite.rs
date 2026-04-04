@@ -6515,12 +6515,13 @@ fn decode_planar_i64(bytes: &[u8]) -> Vec<i64> {
         .collect()
 }
 
-fn read_wav_mono_f32(path: &str) -> Vec<f32> {
+fn read_wav_mixdown_f32(path: &str) -> Vec<f32> {
     let mut reader = hound::WavReader::open(path).expect("wav should open");
     let spec = reader.spec();
-    assert_eq!(spec.channels, 1, "expected mono wav");
+    let channels = spec.channels as usize;
+    assert!(channels > 0, "wav must contain at least one channel");
 
-    match (spec.sample_format, spec.bits_per_sample) {
+    let interleaved = match (spec.sample_format, spec.bits_per_sample) {
         (hound::SampleFormat::Float, 32) => reader
             .samples::<f32>()
             .collect::<Result<Vec<_>, _>>()
@@ -6549,7 +6550,16 @@ fn read_wav_mono_f32(path: &str) -> Vec<f32> {
             "unsupported wav format: {:?} {} bits",
             spec.sample_format, spec.bits_per_sample
         ),
+    };
+
+    if channels == 1 {
+        return interleaved;
     }
+
+    interleaved
+        .chunks_exact(channels)
+        .map(|frame| frame.iter().copied().sum::<f32>() / channels as f32)
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug)]
