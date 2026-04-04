@@ -1,0 +1,12 @@
+[package]
+name = "onda_egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+eframe = "0.31"
+onda_preview = { path = "../onda_preview" }
+rfd = "0.15"
+serde_json = "1.0"

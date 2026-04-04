@@ -28,7 +28,7 @@ async function loadAssets() {
   setStatus("Loading assets...");
   const [wasmResponse, metaResponse] = await Promise.all([
     fetch("./sine_wasm.wasm"),
-    fetch("./sine_wasm.omni.json"),
+    fetch("./sine_wasm.onda.json"),
   ]);
   if (!wasmResponse.ok) {
     throw new Error(`failed to load wasm: ${wasmResponse.status}`);
@@ -65,9 +65,9 @@ async function startAudio() {
   setStatus("Starting audio...");
   const sampleRate = Number(metadata.compile?.sample_rate ?? 48_000);
   context = new AudioContext({ sampleRate });
-  await context.audioWorklet.addModule("./omni-sine-processor.js");
+  await context.audioWorklet.addModule("./onda-sine-processor.js");
 
-  node = new AudioWorkletNode(context, "omni-sine-processor", {
+  node = new AudioWorkletNode(context, "onda-sine-processor", {
     numberOfInputs: 0,
     numberOfOutputs: 1,
     outputChannelCount: [1],

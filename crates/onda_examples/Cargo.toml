@@ -1,0 +1,24 @@
+[package]
+name = "onda_examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+llvm-orc = ["onda_codegen_llvm/llvm-orc"]
+
+[dependencies]
+onda_frontend = { path = "../onda_frontend" }
+onda_semantics = { path = "../onda_semantics" }
+onda_codegen_llvm = { path = "../onda_codegen_llvm" }
+onda_runtime = { path = "../onda_runtime" }
+hound = "3.5.1"
+
+[dev-dependencies]
+onda_frontend = { path = "../onda_frontend" }
+onda_semantics = { path = "../onda_semantics" }
+onda_codegen_llvm = { path = "../onda_codegen_llvm" }
+onda_runtime = { path = "../onda_runtime" }
+hound = "3.5.1"

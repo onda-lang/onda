@@ -1,0 +1,13 @@
+[package]
+name = "onda_runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+onda_codegen_llvm = { path = "../onda_codegen_llvm" }
+onda_frontend = { path = "../onda_frontend" }
+
+[lib]
+path = "src/lib.rs"

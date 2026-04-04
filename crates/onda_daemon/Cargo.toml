@@ -1,0 +1,13 @@
+[package]
+name = "onda_daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+hound = "3.5.1"
+onda_codegen_llvm = { path = "../onda_codegen_llvm" }
+onda_frontend = { path = "../onda_frontend" }
+onda_runtime = { path = "../onda_runtime" }
+onda_semantics = { path = "../onda_semantics" }

@@ -1,13 +1,13 @@
-# omni-llvm Project Info
+# onda Project Info
 
 ## Overview
-`omni-llvm` is a Rust compiler/runtime for an Omni-syntax audio DSL, targeting LLVM ORC JIT for host embedding (C ABI first-class).
+`onda` is a Rust compiler/runtime for an Onda-syntax audio DSL, targeting LLVM ORC JIT for host embedding (C ABI first-class).
 
 ### Code navigation
 
 - Always use `ripgrep` (via `rg`) to navigate the repository whenever possible.
 
-### Module map: semantics (`crates/omni_semantics/src`)
+### Module map: semantics (`crates/onda_semantics/src`)
 - Entry:
   - `lib.rs` (public types + orchestration wiring)
 - Key analysis/lowering modules:
@@ -25,7 +25,7 @@
   - `processor_lowering/global_proc_rewrite.rs`
   - `processor_lowering/generated_blocks.rs`
 
-### Module map: codegen (`crates/omni_codegen_llvm/src`)
+### Module map: codegen (`crates/onda_codegen_llvm/src`)
 - Entry:
   - `lib.rs` (public JIT API + metadata extraction)
   - `orc_backend.rs` (backend assembly/wiring)
@@ -42,11 +42,11 @@
     - `orc_backend/def_lowering/struct_helpers.rs`
 
 ### Practical navigation entrypoints
-- Language/front-end behavior: `omni_frontend/src/parser/*`, `omni_semantics/src/lib.rs`
+- Language/front-end behavior: `onda_frontend/src/parser/*`, `onda_semantics/src/lib.rs`
 - Proc lowering path: `processor_lowering.rs` -> `processor_lowering/*` -> `proc_call_rewrite.rs`
 - ORC lowering path: `orc_backend.rs` -> `{proc_ir,user_fn_ir}` -> `{orc_expr_stmt,def_lowering}` -> `{data_access,call_helpers}`
-- Runtime API usage: `omni_runtime/src/lib.rs`
-- C ABI surface: `omni_api/src/lib.rs`
+- Runtime API usage: `onda_runtime/src/lib.rs`
+- C ABI surface: `onda_api/src/lib.rs`
 
 ## Current implementation snapshot (2026-03)
 
@@ -55,8 +55,8 @@
 - Both brace and indentation syntaxes are supported.
 - Statement separators support both newline and `;`.
 - Import system is implemented:
-  - `include "path.omni"` (quoted, `.omni` suffix required).
-  - `import module/path` (resolved as `module/path.omni`, imported once, declaration-only files limited to `const` / `struct` / `def` / `proc`).
+  - `include "path.onda"` (quoted, `.onda` suffix required).
+  - `import module/path` (resolved as `module/path.onda`, imported once, declaration-only files limited to `const` / `struct` / `def` / `proc`).
   - Built-in std modules via `import std/...` are supported from both file and in-memory source compilation paths.
 - Namespaces with `::` are supported.
 - Namespace templates are supported (`namespace Name<S = ...>: ...`) with compile-time int args, inline instantiation (`Name<...>::...`), and namespace aliases (`namespace Alias = Name<...>`).
@@ -162,11 +162,11 @@
 - `std/prelude` is auto-imported during semantic analysis.
 - `std/prelude` currently imports `std/math`, `std/lookup`, and `std/random`.
 - Local symbols with the same name take precedence over auto-imported unqualified std helpers; qualified calls remain available via `std::math::...`, `std::lookup::...`, and `std::random::...`.
-- `std/export_math` is available as `import std/export_math` and provides namespace-qualified pure-Omni approximations for freestanding/export-oriented transcendental math (`sin`, `cos`, `tan`, `tanh`, `atan`, `atan2`, `exp`, `log`, `pow`).
+- `std/export_math` is available as `import std/export_math` and provides namespace-qualified pure-Onda approximations for freestanding/export-oriented transcendental math (`sin`, `cos`, `tan`, `tanh`, `atan`, `atan2`, `exp`, `log`, `pow`).
   - It is opt-in and does not replace the existing builtin math lowering path.
 - `std/lookup` exposes duck-typed overloaded helpers `read`, `write`, `readL`, and `readC` (mono and channel-explicit forms) that specialize from both primitive arrays and buffers.
 - `std/random` provides a generic `std::random::Rng<T>` helper for stateful pseudo-random streams.
-- `std/complex` is available as `import std/complex` and provides `std::complex::Complex<T>` for method-based complex arithmetic in Omni code.
+- `std/complex` is available as `import std/complex` and provides `std::complex::Complex<T>` for method-based complex arithmetic in Onda code.
   - Intended `T` specializations are `f32` and `f64`.
   - Current surface includes `real`, `imag`, `set`, `clear`, `copy`, `set_polar`, `add_assign`, `add_parts`, `sub_assign`, `sub_parts`, `mul_assign`, `mul_parts`, `scale_assign`, `conjugate`, `power`, `magnitude`, and `phase`.
 - `std/fft` is available as `import std/fft` and currently provides `std::fft<N>::FFT<T>`, an internal-buffer complex FFT specialized by namespace integer `N` and numeric type `T`.
@@ -326,7 +326,7 @@
   - There is currently no public `total_len` / flattened-length method on arrays or buffers.
 - Runtime binding validates element type and channel constraints.
 
-### Daemon (`crates/omni_daemon`)
+### Daemon (`crates/onda_daemon`)
 - The daemon is a stateful session manager between the CLI/LSP and the compiler/runtime. It manages two session types:
 - **Analysis sessions**:
   - In-memory document overlays (`open` / `update` / `close`) for open files.
@@ -342,7 +342,7 @@
   - `clear_buffer(name)` replaces a buffer binding with a zero-filled placeholder.
   - Configurable: `sample_rate`, `block_size`, `fast_math`, `backend`.
 
-### LSP (`omni lsp`)
+### LSP (`onda lsp`)
 - A hand-rolled JSON-RPC 2.0 LSP server over stdio, backed by the daemon analysis session.
 - Supported methods:
   - `initialize` / `initialized` / `shutdown` / `exit`
@@ -363,9 +363,9 @@
 - Semantic tokens are computed from the parsed AST (not the typed AST), so they work even when the file has semantic errors. A regex-based fallback provides `const` highlighting when parsing fails entirely.
 
 ### Preview transport
-- `omni preview <file>` opens the standalone preview window.
-  - Internally it launches `omni preview play <file> --forever --control-json` and connects the native webview to that control socket.
-- `omni preview play` is the real-time preview transport on top of the daemon preview session.
+- `onda preview <file>` opens the standalone preview window.
+  - Internally it launches `onda preview play <file> --forever --control-json` and connects the native webview to that control socket.
+- `onda preview play` is the real-time preview transport on top of the daemon preview session.
   - Audio playback is in-process via `cpal`.
   - Rendering runs on a background thread, outputting interleaved samples into a lock-free SPSC ring buffer that the cpal audio callback drains.
   - When `--control-json` is enabled:
@@ -377,20 +377,20 @@
       - `setParam {name, value}` — updates a scalar param.
       - `bindBufferWav {name, path}` — loads a WAV and rebinds a buffer.
       - `clearBuffer {name}` — zeros a buffer.
-- `omni preview render` renders offline to WAV via the daemon preview pipeline.
-- `omni daemon stdio` is a JSON-over-stdio daemon transport for non-LSP clients, supporting `ping`, `initialize`, `open`, `update`, `close`, `diagnose`, `preview_start`, `preview_stop`, `preview_params`, `preview_set_param`, and `preview_render` commands.
+- `onda preview render` renders offline to WAV via the daemon preview pipeline.
+- `onda daemon stdio` is a JSON-over-stdio daemon transport for non-LSP clients, supporting `ping`, `initialize`, `open`, `update`, `close`, `diagnose`, `preview_start`, `preview_stop`, `preview_params`, `preview_set_param`, and `preview_render` commands.
 
 ### VSCode extension (`editors/vscode`)
 - Language registration with TextMate grammar for syntax highlighting.
-- LSP client wiring: spawns `omni lsp` as a child process over stdio, using `vscode-languageclient`.
+- LSP client wiring: spawns `onda lsp` as a child process over stdio, using `vscode-languageclient`.
 - Semantic-token-backed highlighting for constants, params, ports, and init vars (layered on top of TextMate).
 - Settings:
-  - `omni.server.path` — path to the `omni` binary (default `"omni"`).
-  - `omni.server.args` — extra args prepended before the `lsp` subcommand.
+  - `onda.server.path` — path to the `onda` binary (default `"onda"`).
+  - `onda.server.args` — extra args prepended before the `lsp` subcommand.
 - Commands:
-  - `Omni: Run Patch` — compiles and starts `omni preview play --forever --control-json` for the active `.omni` file; opens the Patch panel.
-  - `Omni: Stop Patch` — kills the running patch process.
-  - `Omni: Restart Language Server` — stops and restarts the LSP client.
+  - `Onda: Run Patch` — compiles and starts `onda preview play --forever --control-json` for the active `.onda` file; opens the Patch panel.
+  - `Onda: Stop Patch` — kills the running patch process.
+  - `Onda: Restart Language Server` — stops and restarts the LSP client.
 - **Patch panel** (webview):
   - Header with patch file path, status, Start/Stop/Reset buttons, and input/output device selectors.
   - **Buffers section**: one card per `buffer[...]` declaration with "Choose File", loaded file path display, and "Clear" button.
@@ -399,16 +399,16 @@
     - Numeric params with range: synchronized range slider + number input.
     - Numeric params without range: number input only.
   - Param/buffer state is preserved across patch restarts for the same file.
-  - Auto-restart on `.omni` file save when a patch is running for that file.
+  - Auto-restart on `.onda` file save when a patch is running for that file.
 
 ### Neovim runtime (`editors/nvim`)
-- `.omni` filetype detection and regex syntax highlighting.
-- builtin LSP client startup via `omni lsp`.
-- `:OmniRunPatch` launches `omni preview <file>` in the standalone preview window.
+- `.onda` filetype detection and regex syntax highlighting.
+- builtin LSP client startup via `onda lsp`.
+- `:OndaRunPatch` launches `onda preview <file>` in the standalone preview window.
 
 ## Runtime and codegen
 - ORC JIT remains the only execution backend (`Auto` routes to ORC).
-- `omni compile` can now emit target-aware LLVM IR and native object files through the shared LLVM lowering path.
+- `onda compile` can now emit target-aware LLVM IR and native object files through the shared LLVM lowering path.
 - Optimized LLVM pipeline is used (`default<O3>` style pass pipeline + host-target settings).
 - Fixed compile-time block size per program/instance.
 - No callback-time allocations for compiler-managed DSP state; allocations happen during setup/init.
@@ -429,8 +429,8 @@
   - buffers: pointer + frames + channels + sample rate + element type binding
   - outputs: `bind_output`
 - Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
-  - `omni_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
-- CLI (`omni`) supports:
+  - `onda_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
+- CLI (`onda`) supports:
   - `compile <file> [--emit check|llvm-ir|obj] [--output] [--meta-out] [--target <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <csv>] [--target-abi <name>] [--reloc-model <mode>] [--code-model <mode>] [--opt-level <0|1|2|3>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--meta]`
   - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--dump-graph] [--ir]`
   - `lsp [--stdio]`
@@ -446,7 +446,7 @@
   - `compile` remains host-native by default; cross-target AOT requires `--target` or `--target-spec`.
   - `compile --target-spec <path>` loads a small TOML codegen preset; direct CLI flags override spec values.
   - checked-in example target specs live under the repo-root `targets/` folder.
-  - Useful graph examples: `examples/proc_gain_graph.omni`, `examples/proc_split_graph.omni`, `examples/proc_array_stereo_sine_graph.omni`, `examples/std_one_pole_graph.omni`, `examples/stdlib_f32_graph.omni`, `examples/feedback_saturator_graph.omni`, `examples/cybernetic_feedback_graph.omni`, `examples/reverb_graph.omni`.
+  - Useful graph examples: `examples/proc_gain_graph.onda`, `examples/proc_split_graph.onda`, `examples/proc_array_stereo_sine_graph.onda`, `examples/std_one_pole_graph.onda`, `examples/stdlib_f32_graph.onda`, `examples/feedback_saturator_graph.onda`, `examples/cybernetic_feedback_graph.onda`, `examples/reverb_graph.onda`.
 
 ## LLVM dependency strategy
 - The repo now carries `deps/llvm-bootstrap` as a git submodule.

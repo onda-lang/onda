@@ -1,8 +1,8 @@
-name: Build Omni Releases
+name: Build Onda Releases
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  OMNI_VERSION: 21.1.2
+  ONDA_VERSION: 21.1.2
 
 on:
   workflow_dispatch:
@@ -87,14 +87,14 @@ jobs:
       - name: Bootstrap LLVM on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/bootstrap-llvm.ps1 -Version "${{ env.OMNI_VERSION }}"
+        run: ./scripts/bootstrap-llvm.ps1 -Version "${{ env.ONDA_VERSION }}"
 
       - name: Bootstrap LLVM on Unix
         if: runner.os != 'Windows'
         shell: bash
-        run: ./scripts/bootstrap-llvm.sh --version "${{ env.OMNI_VERSION }}"
+        run: ./scripts/bootstrap-llvm.sh --version "${{ env.ONDA_VERSION }}"
 
-      - name: Build omni and omni_api on Windows
+      - name: Build onda and onda_api on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -123,24 +123,24 @@ jobs:
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
             "-Command",
-            "`. .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version '${{ env.OMNI_VERSION }}'; cargo build --release -p omni_cli -p omni_api`"
+            "`. .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version '${{ env.ONDA_VERSION }}'; cargo build --release -p onda_cli -p onda_api`"
           ) -join " "
 
           cmd.exe /d /s /c $command
 
-      - name: Build omni and omni_api on Unix
+      - name: Build onda and onda_api on Unix
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.OMNI_VERSION }}"
-          cargo build --release -p omni_cli -p omni_api
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.ONDA_VERSION }}"
+          cargo build --release -p onda_cli -p onda_api
 
       - name: Package release on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          $packageRoot = Join-Path $PWD ("dist/omni-" + $version + "-windows-x64")
+          $packageRoot = Join-Path $PWD ("dist/onda-" + $version + "-windows-x64")
           $binDir = Join-Path $packageRoot "bin"
           $libDir = Join-Path $packageRoot "lib"
           $includeDir = Join-Path $packageRoot "include"
@@ -149,23 +149,23 @@ jobs:
           New-Item -ItemType Directory -Force -Path $libDir | Out-Null
           New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
 
-          Copy-Item target\release\omni.exe $binDir
-          Copy-Item target\release\omni_api.dll $libDir
-          if (Test-Path target\release\omni_api.lib) {
-            Copy-Item target\release\omni_api.lib $libDir
+          Copy-Item target\release\onda.exe $binDir
+          Copy-Item target\release\onda_api.dll $libDir
+          if (Test-Path target\release\onda_api.lib) {
+            Copy-Item target\release\onda_api.lib $libDir
           }
-          if (Test-Path target\release\omni_api.dll.lib) {
-            Copy-Item target\release\omni_api.dll.lib $libDir
+          if (Test-Path target\release\onda_api.dll.lib) {
+            Copy-Item target\release\onda_api.dll.lib $libDir
           }
-          if (Test-Path target\release\omni_api.exp) {
-            Copy-Item target\release\omni_api.exp $libDir
+          if (Test-Path target\release\onda_api.exp) {
+            Copy-Item target\release\onda_api.exp $libDir
           }
-          Copy-Item include\omni_llvm.h $includeDir
+          Copy-Item include\onda_llvm.h $includeDir
           Copy-Item README.md $packageRoot
           Copy-Item SYNTAX.md $packageRoot
           Copy-Item examples $packageRoot -Recurse
 
-          $archive = Join-Path $PWD ("dist/omni-" + $version + "-windows-x64.zip")
+          $archive = Join-Path $PWD ("dist/onda-" + $version + "-windows-x64.zip")
           if (Test-Path $archive) {
             Remove-Item $archive -Force
           }
@@ -176,33 +176,33 @@ jobs:
         shell: bash
         run: |
           version="${{ steps.version.outputs.version }}"
-          package_root="$PWD/dist/omni-$version-${{ matrix.platform }}-${{ matrix.arch }}"
+          package_root="$PWD/dist/onda-$version-${{ matrix.platform }}-${{ matrix.arch }}"
           bin_dir="$package_root/bin"
           lib_dir="$package_root/lib"
           include_dir="$package_root/include"
 
           mkdir -p "$bin_dir" "$lib_dir" "$include_dir"
 
-          cp target/release/omni "$bin_dir/"
+          cp target/release/onda "$bin_dir/"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
-            cp target/release/libomni_api.dylib "$lib_dir/"
-            cp target/release/libomni_api.a "$lib_dir/"
+            cp target/release/libonda_api.dylib "$lib_dir/"
+            cp target/release/libonda_api.a "$lib_dir/"
           else
-            cp target/release/libomni_api.so "$lib_dir/"
-            cp target/release/libomni_api.a "$lib_dir/"
+            cp target/release/libonda_api.so "$lib_dir/"
+            cp target/release/libonda_api.a "$lib_dir/"
           fi
-          cp include/omni_llvm.h "$include_dir/"
+          cp include/onda_llvm.h "$include_dir/"
           cp README.md "$package_root/"
           cp SYNTAX.md "$package_root/"
           cp -R examples "$package_root/"
 
-          archive="$PWD/dist/omni-$version-${{ matrix.platform }}-${{ matrix.arch }}.tar.xz"
+          archive="$PWD/dist/onda-$version-${{ matrix.platform }}-${{ matrix.arch }}.tar.xz"
           tar -C "$PWD/dist" -cJf "$archive" "$(basename "$package_root")"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: omni-${{ matrix.platform }}-${{ matrix.arch }}
+          name: onda-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*.${{ matrix.archive_ext }}
 
   release:

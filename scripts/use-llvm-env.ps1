@@ -84,7 +84,7 @@ if ($Flavor -eq "source-static") {
 }
 
 $env:LLVM_SYS_211_PREFIX = $prefix
-$env:OMNI_LLVM_LINK_MODE = $linkMode
+$env:ONDA_LLVM_LINK_MODE = $linkMode
 $env:PATH = (Join-Path $prefix "bin") + ";" + $env:PATH
 Write-Host "LLVM env configured for this shell: $prefix"
-Write-Host "OMNI_LLVM_LINK_MODE = $linkMode"
+Write-Host "ONDA_LLVM_LINK_MODE = $linkMode"

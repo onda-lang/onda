@@ -1,13 +1,13 @@
-# Omni Syntax
+# Onda Syntax
 
-This document describes the syntax currently implemented in `omni-llvm`.
-It is organized from the simplest idea in Omni, the block, through reusable abstractions and multi-file programs.
+This document describes the syntax currently implemented in `onda`.
+It is organized from the simplest idea in Onda, the block, through reusable abstractions and multi-file programs.
 
-## 1. Reading an Omni file
+## 1. Reading an Onda file
 
-Omni supports both indentation style and brace style syntax.
+Onda supports both indentation style and brace style syntax.
 
-```omni
+```onda
 outs:
   out1
 
@@ -15,7 +15,7 @@ sample:
   out1 = 0.0
 ```
 
-```omni
+```onda
 outs { 
   out1 
 }
@@ -33,7 +33,7 @@ Basic syntax rules:
 
 ## 2. What is a block?
 
-An Omni program is mostly a collection of named blocks.
+An Onda program is mostly a collection of named blocks.
 A block is a section such as `params:`, `init:`, or `sample:` that groups related declarations or executable code.
 
 The main top-level blocks are:
@@ -54,7 +54,7 @@ The main top-level blocks are:
 
 You will also see file-level declarations that are not blocks:
 - `import module/path`
-- `include "path.omni"`
+- `include "path.onda"`
 
 There are two big categories:
 
@@ -90,7 +90,7 @@ Compound types:
 
 Examples:
 
-```omni
+```onda
 ins:
   audio: f32[2]
 
@@ -114,7 +114,7 @@ This section walks through the blocks in the order you asked for: `ins`, `params
 
 `ins` declares input ports.
 
-```omni
+```onda
 ins:
   in1
   side: f64
@@ -123,13 +123,13 @@ ins:
 
 Count shorthand is supported:
 
-```omni
+```onda
 ins 2
 ```
 
 You can also combine a count with explicit declarations:
 
-```omni
+```onda
 ins 2:
   left
   right
@@ -137,7 +137,7 @@ ins 2:
 
 Section default types are supported:
 
-```omni
+```onda
 ins<f64>:
   left
   right
@@ -155,7 +155,7 @@ Rules:
 
 Scalar ranges are supported on scalar `ins` only:
 
-```omni
+```onda
 ins:
   freq = 440.0 {20.0, 20000.0}
   drive: i32 = 2 {8}
@@ -163,7 +163,7 @@ ins:
 
 Dynamic indexed access is supported when the inputs were declared explicitly:
 
-```omni
+```onda
 const N = 4
 
 ins N
@@ -184,7 +184,7 @@ Dynamic input indexing rules:
 
 `params` declares tweakable parameters.
 
-```omni
+```onda
 params:
   gain = 1.0
   mode: i32 = 0
@@ -193,7 +193,7 @@ params:
 
 Count shorthand and section default types work the same way as `ins`:
 
-```omni
+```onda
 params 2
 
 params<i32>:
@@ -203,7 +203,7 @@ params<i32>:
 
 Scalar ranges are supported:
 
-```omni
+```onda
 params:
   freq = 440.0 {20.0, 20000.0}
   feedback = 0.5 {0.0, 0.99}
@@ -231,7 +231,7 @@ Inside a `proc`, events are receiver-only commands that you call on a proc insta
 
 Top-level example:
 
-```omni
+```onda
 events:
   note_on(freq_hz = 440.0, amp = 1.0):
     freq_state = freq_hz
@@ -244,7 +244,7 @@ events:
 
 Proc-level example:
 
-```omni
+```onda
 proc Voice:
   params:
     amp = 0.0
@@ -286,7 +286,7 @@ Every proc also gets a builtin reserved `init(...)` event:
 
 That makes calls such as these legal:
 
-```omni
+```onda
 voice.init(0.5)
 voice.init(gain = 0.5)
 voices[i].init(freq = 220.0, amp = 0.1)
@@ -296,7 +296,7 @@ voices[i].init(freq = 220.0, amp = 0.1)
 
 `buffers` declares external host-bound buffers.
 
-```omni
+```onda
 buffers:
   src: buffer[f32]
   bus: buffer[f32[2]]
@@ -305,7 +305,7 @@ buffers:
 
 Inside a `buffers` block, shorthand forms are accepted:
 
-```omni
+```onda
 buffers:
   mono: f32
   stereo: f32[2]
@@ -314,13 +314,13 @@ buffers:
 
 Count shorthand is supported:
 
-```omni
+```onda
 buffers 2
 ```
 
 Section default type shorthand is also supported:
 
-```omni
+```onda
 buffers[f32]:
   delay
   scratch
@@ -328,7 +328,7 @@ buffers[f32]:
 
 Buffer access:
 
-```omni
+```onda
 sample:
   mono0 = src[0]
   left0 = bus[0][0]
@@ -360,7 +360,7 @@ Rules:
 
 `outs` declares output ports.
 
-```omni
+```onda
 outs:
   out1
   stereo: f32[2]
@@ -368,7 +368,7 @@ outs:
 
 Count shorthand and section default types work the same way as `ins`:
 
-```omni
+```onda
 outs 2
 
 outs<f64>:
@@ -387,7 +387,7 @@ Rules:
 `init` is where persistent state is created and where structs and processors are usually constructed.
 It runs on instance creation and reset.
 
-```omni
+```onda
 init:
   phase = 0.0
   gain = 0.5
@@ -403,7 +403,7 @@ Typical uses:
 
 Section default scalar types are supported:
 
-```omni
+```onda
 init<f64>:
   phase = 0.0
   last = 0.0
@@ -418,7 +418,7 @@ Rules:
 
 Example:
 
-```omni
+```onda
 init:
   if ready:
     tmp = 1.0
@@ -439,7 +439,7 @@ It is useful when a value should be computed once per host block rather than onc
 
 Structure:
 
-```omni
+```onda
 block:
   precomputed = freq * TWO_PI / SR
 
@@ -463,7 +463,7 @@ Rules:
 
 This is the common pattern for derived per-block values:
 
-```omni
+```onda
 block:
   incr = freq * TWO_PI / SR
 
@@ -478,7 +478,7 @@ block:
 
 `sample` is the per-sample executable scope.
 
-```omni
+```onda
 sample:
   out1 = in1 * gain
 ```
@@ -490,7 +490,7 @@ Rules:
 
 Sample oversampling is supported:
 
-```omni
+```onda
 sample 4:
   out1 = tanh(in1 * 8.0)
 ```
@@ -511,7 +511,7 @@ Runtime behavior of oversampling:
 `graph` describes routing declaratively.
 Use it when you want the compiler to wire together proc instances and signal flow for you.
 
-```omni
+```onda
 proc GainProc:
   params:
     gain = 1.0
@@ -532,7 +532,7 @@ graph:
 
 Supported edge forms:
 
-```omni
+```onda
 src >> dst
 dst << src
 @block src >> dst
@@ -577,7 +577,7 @@ Type and scheduling rules:
 - fan-out is allowed
 - cycles are rejected unless a positive sample delay breaks the cycle
 - proc nodes are stepped implicitly according to graph reachability and topological order
-- graph lowering can be inspected with `omni compile <file> --dump-graph`
+- graph lowering can be inspected with `onda compile <file> --dump-graph`
 
 Current graph limits:
 - user-defined function calls and proc calls are not supported inside graph source expressions
@@ -586,7 +586,7 @@ Current graph limits:
 
 Proc bundles can route directly into destination sets:
 
-```omni
+```onda
 graph:
   reverb >> { out1, out2 }
   voices[0] >> { left, right }
@@ -605,7 +605,7 @@ Once you know what the major blocks are, the rest of the language is mostly the 
 
 First assignment infers a type by default:
 
-```omni
+```onda
 sample:
   x = 0
   y = 0.0
@@ -613,7 +613,7 @@ sample:
 
 Explicit declarations pin the type:
 
-```omni
+```onda
 sample:
   x: i64 = 0
 ```
@@ -649,7 +649,7 @@ Default builtin constant types:
 
 ### 5.2.1 Numeric literals, precision, and automatic narrowing
 
-Numeric literals in Omni have two related behaviors:
+Numeric literals in Onda have two related behaviors:
 - untyped first-assignment inference keeps the language's usual defaults
 - pure numeric literal expressions adapt automatically to the surrounding numeric context
 
@@ -661,14 +661,14 @@ What that means in practice:
 
 Examples:
 
-```omni
+```onda
 sample:
   x = 0.5        # x becomes f32
   n = 5          # n becomes i32
   wide = f64(PI * 2.0)  # wide becomes f64
 ```
 
-```omni
+```onda
 init:
   phase: f32 = 0.0
 
@@ -679,7 +679,7 @@ block:
 
 Because `TWO_PI` is part of a pure numeric literal expression, you usually do not need to write:
 
-```omni
+```onda
 tau = f32(TWO_PI)
 ```
 
@@ -693,7 +693,7 @@ Explicit casts are still useful when you want to force a particular type on purp
 
 For example:
 
-```omni
+```onda
 sample:
   a = PI * 2.0        # a becomes f32
   b = f64(PI * 2.0)   # b becomes f64
@@ -704,11 +704,11 @@ User-defined `const` values follow the same general rule:
 - untyped `const X = expr` uses the inferred type of the constant expression
 - typed `const X: T = expr` evaluates `expr` as `T`
 
-That means typed constants preserve the precision of their declared type, while untyped code still gets Omni's normal `f32` / `i32` defaults where appropriate.
+That means typed constants preserve the precision of their declared type, while untyped code still gets Onda's normal `f32` / `i32` defaults where appropriate.
 
 User-defined compile-time constants:
 
-```omni
+```onda
 const MaxVoices = 8
 const Hop: i32 = BLOCK_SIZE / 2
 ```
@@ -737,7 +737,7 @@ Supported forms:
 
 Examples:
 
-```omni
+```onda
 for i in 0..8:
   sum = sum + taps[i]
 
@@ -756,7 +756,7 @@ Loop rules:
 
 Fixed-size arrays are supported in state and local scopes:
 
-```omni
+```onda
 init:
   taps: f32[8]
 
@@ -766,7 +766,7 @@ sample:
 
 Untyped array literals are supported where executable-scope declarations are valid:
 
-```omni
+```onda
 sample:
   a = [0.5, 0.8]
   b = [i64(0), 1]
@@ -774,7 +774,7 @@ sample:
 
 Primitive array and buffer slices use Python-style syntax:
 
-```omni
+```onda
 sample:
   a = buf[:]
   b = buf[2:]
@@ -790,7 +790,7 @@ Rules:
 
 Writable slice assignment is supported:
 
-```omni
+```onda
 sample:
   values[1:-1] = 0.5
   dst[:] = src[:]
@@ -808,7 +808,7 @@ Rules:
 
 Tuples are anonymous fixed-length heterogeneous compound values.
 
-```omni
+```onda
 sample:
   pair = (1.0, 2.0)
   triple = (1.0, 42, true)
@@ -820,7 +820,7 @@ Tuple syntax and rules:
 - nested tuples are not currently supported
 - tuple element access uses compile-time integer indices only
 
-```omni
+```onda
 sample:
   pair = (3.0, 7.0)
   out1 = pair[0]
@@ -829,7 +829,7 @@ sample:
 
 Tuple destructuring is supported:
 
-```omni
+```onda
 sample:
   (a, b) = (10.0, 20.0)
 ```
@@ -847,7 +847,7 @@ Tuples use a flattened ABI internally.
 
 `def` declares reusable functions.
 
-```omni
+```onda
 def wrap_phase(p, upper = TWO_PI):
   if p > upper:
     return p - upper
@@ -871,7 +871,7 @@ Top-level `def` bodies are lexical-local:
 
 Method-style sugar is supported for ordinary defs:
 
-```omni
+```onda
 def clamp01(x):
   return clamp(x, 0.0, 1.0)
 
@@ -895,7 +895,7 @@ In addition to primitive scalars, `def` parameters support:
 
 Examples:
 
-```omni
+```onda
 def sum(arr: f32[]):
   total = 0.0
   for i in 0..arr.len():
@@ -912,7 +912,7 @@ def read_first(buf: buffer):
 Untyped parameters can also be specialized structurally from how they are used inside the `def`.
 That means a function like this is valid:
 
-```omni
+```onda
 struct A:
   x: f32
   y: f32
@@ -926,7 +926,7 @@ def read_x(s):
 
 and can be called with both `A` and `B`:
 
-```omni
+```onda
 sample:
   out1 = read_x(a) + read_x(b)
 ```
@@ -938,7 +938,7 @@ In this example, `s.x` means the argument must provide an `x` field with a compa
 
 Top-level defs and struct methods may be overloaded by arity and parameter types.
 
-```omni
+```onda
 def sat(x: f32):
   return x
 
@@ -967,7 +967,7 @@ Current non-support:
 
 `struct` declares nominal data types with fields and methods.
 
-```omni
+```onda
 struct Voice:
   phase: f32
   sig: f32
@@ -990,14 +990,14 @@ Method rules:
 
 Construction:
 
-```omni
+```onda
 init:
   a = Voice()
 ```
 
 Typed struct declarations are supported in `init`:
 
-```omni
+```onda
 init:
   a: Voice = Voice()
   b: Voice
@@ -1012,7 +1012,7 @@ Rules for typed `init` declarations:
 
 For arrays of data structs, one inline field-access dot is supported:
 
-```omni
+```onda
 sample:
   gain = voices[i].level
   tap = voices[i].taps[j]
@@ -1028,7 +1028,7 @@ Rejected deeper inline chains:
 
 Use an intermediate alias when the chain is deeper:
 
-```omni
+```onda
 sample:
   v = voices[i]
   gain = v.settings.level
@@ -1041,7 +1041,7 @@ Proc arrays keep their own proc-specific indexed forms such as `voices[i].gain`,
 Generics are supported for `struct` and `proc`.
 They are compile-time generics, not runtime generics.
 
-```omni
+```onda
 struct Pair<T>:
   a: T
   b: T
@@ -1060,12 +1060,12 @@ proc OnePole<T>:
 
 ### 8.1 What "monomorphization" means
 
-Omni implements generics by monomorphization.
+Onda implements generics by monomorphization.
 That means the compiler creates a concrete specialized copy for each generic type combination that your program actually uses.
 
 For example, if you use both:
 
-```omni
+```onda
 a = Pair<f32>()
 b = Pair<f64>()
 ```
@@ -1097,13 +1097,13 @@ Rules:
 
 Examples:
 
-```omni
+```onda
 init:
   a = Pair<f32>()
   b = Pair<f64>()
 ```
 
-```omni
+```onda
 init:
   lp = OnePole()       # unresolved generic constructor defaults to f32 here
   hp = OnePole<f64>()  # explicit specialization
@@ -1140,7 +1140,7 @@ These can be monomorphized at the call site:
 
 Example:
 
-```omni
+```onda
 def first(arr: []):
   return arr[0]
 
@@ -1155,7 +1155,7 @@ The compiler monomorphizes `first` separately for the concrete argument shapes a
 
 The same idea applies when a `def` accepts a generic struct or proc parameter:
 
-```omni
+```onda
 struct Box<T>:
   value: T
 
@@ -1163,11 +1163,11 @@ def read_box(b: Box):
   return b.value
 ```
 
-If `read_box` is called with both `Box<f32>` and `Box<f64>`, Omni generates concrete specialized versions for those uses.
+If `read_box` is called with both `Box<f32>` and `Box<f64>`, Onda generates concrete specialized versions for those uses.
 
 The same idea also applies to structural untyped params:
 
-```omni
+```onda
 struct A:
   x: f32
 
@@ -1178,7 +1178,7 @@ def read_x(s):
   return s.x
 ```
 
-If `read_x` is called with both `A` and `B`, Omni resolves and specializes that `def` from the concrete argument shapes at the call sites.
+If `read_x` is called with both `A` and `B`, Onda resolves and specializes that `def` from the concrete argument shapes at the call sites.
 
 ### 8.5 Practical rules of thumb
 
@@ -1189,10 +1189,10 @@ In practice:
 
 ## 9. Reusable processors with `proc`
 
-`proc` is Omni's reusable processing unit.
+`proc` is Onda's reusable processing unit.
 Use it when you want stateful, composable DSP building blocks.
 
-```omni
+```onda
 proc Gain:
   ins:
     in1
@@ -1233,7 +1233,7 @@ In practice:
 
 Proc instances are usually created in `init`:
 
-```omni
+```onda
 init:
   g = Gain(g = 0.5)
 ```
@@ -1256,7 +1256,7 @@ For single-output procs, `p(...)` is scalar sugar for the first output.
 
 Processors can declare private helper defs that implicitly see proc state.
 
-```omni
+```onda
 proc Filter<T>:
   ins<T> 1
   outs<T> 1
@@ -1292,7 +1292,7 @@ Rules:
 
 Arrays of proc instances are supported in `init`.
 
-```omni
+```onda
 init:
   voices: Voice[4] = Voice()
 ```
@@ -1324,7 +1324,7 @@ If the proc defines a `block` section, indexed proc-array calls use active-slot 
 
 Procs become especially powerful when combined with `graph`.
 
-```omni
+```onda
 import std/osc
 
 proc StereoGain:
@@ -1368,14 +1368,14 @@ Once the core language is clear, the last big piece is how to split programs acr
 
 Use `import` to load another module by path:
 
-```omni
+```onda
 import reverb
 import std/osc
 import std/filter
 ```
 
 Resolution rules:
-- `import module/path` resolves as `module/path.omni`
+- `import module/path` resolves as `module/path.onda`
 - each imported file is imported once
 - built-in std modules are available under `std/...`
 
@@ -1402,21 +1402,21 @@ Current imported-file restriction:
 
 ### 10.2 `include`
 
-`include` inserts another `.omni` file by quoted path:
+`include` inserts another `.onda` file by quoted path:
 
-```omni
-include "shared/reverb.omni"
+```onda
+include "shared/reverb.onda"
 ```
 
 Rules:
 - the path must be quoted
-- the path must end in `.omni`
+- the path must end in `.onda`
 
 ### 10.3 `namespace`
 
 `namespace` groups declarations under a qualified path.
 
-```omni
+```onda
 namespace my::dsp:
   def sat(x):
     return clamp(x, -1.0, 1.0)
@@ -1424,14 +1424,14 @@ namespace my::dsp:
 
 Use sites access declarations with `::`:
 
-```omni
+```onda
 sample:
   out1 = my::dsp::sat(in1)
 ```
 
 Namespace-local compile-time constants are also supported:
 
-```omni
+```onda
 namespace Config:
   const MaxVoices = 8
 ```
@@ -1440,7 +1440,7 @@ namespace Config:
 
 Namespaces can also take compile-time integer parameters:
 
-```omni
+```onda
 namespace FFT<N = 256>:
   assert(N > 0)
   assert((N & (N - 1)) == 0)
@@ -1454,7 +1454,7 @@ Rules:
 
 Inline instantiation and aliases:
 
-```omni
+```onda
 namespace D = std::data<SR, 1>
 
 init:
@@ -1469,7 +1469,7 @@ Syntax split:
 ### 10.5 Integer namespace params for sizes and arity
 
 Namespace template parameters are compile-time integers.
-They are the main way to make Omni libraries generic over counts, lengths, and arity.
+They are the main way to make Onda libraries generic over counts, lengths, and arity.
 
 You can use a namespace integer parameter:
 - in fixed array sizes such as `T[N]`
@@ -1477,7 +1477,7 @@ You can use a namespace integer parameter:
 - in `for` loop bounds
 - in compile-time expressions and namespace `assert(...)` checks
 
-That means Omni has two complementary generic mechanisms:
+That means Onda has two complementary generic mechanisms:
 - type generics such as `T` control the numeric scalar type
 - namespace integer generics such as `N` control counts and sizes
 
@@ -1485,7 +1485,7 @@ Together they let you build reusable libraries that are generic over both type a
 
 Example:
 
-```omni
+```onda
 namespace DSP<Channels = 2>:
   proc Gain<T>:
     ins<T> Channels
@@ -1504,11 +1504,11 @@ In that example:
 - `Channels` also controls the fixed size of the `gains` parameter array
 - `T` controls the scalar type used by the ports and parameter array
 
-This is the standard pattern for an Omni library that should work for "any `N` channels of `T`".
+This is the standard pattern for an Onda library that should work for "any `N` channels of `T`".
 
 At the top level, you use it by instantiating the namespace and then constructing the proc specialization you want:
 
-```omni
+```onda
 outs:
   out: f32[2]
 
@@ -1522,7 +1522,7 @@ graph:
 
 You can also use a namespace alias when you want to fix the integer parameters once and reuse them:
 
-```omni
+```onda
 namespace Stereo = DSP<2>
 
 init:
@@ -1539,7 +1539,7 @@ These examples in `examples/` cover the language in progressively richer combina
 
 ### 11.1 Small stateful patch
 
-`examples/sine.omni`
+`examples/sine.onda`
 
 Why it is useful:
 - simple `params`
@@ -1549,7 +1549,7 @@ Why it is useful:
 
 ### 11.2 Structs plus reusable defs
 
-`examples/cross_fm.omni`
+`examples/cross_fm.onda`
 
 Why it is useful:
 - top-level `def`
@@ -1559,7 +1559,7 @@ Why it is useful:
 
 ### 11.3 Proc plus graph wiring
 
-`examples/proc_gain_graph.omni`
+`examples/proc_gain_graph.onda`
 
 Why it is useful:
 - small reusable `proc`
@@ -1569,7 +1569,7 @@ Why it is useful:
 
 ### 11.4 Proc arrays plus helper defs
 
-`examples/proc_array_init_harmonics.omni`
+`examples/proc_array_init_harmonics.onda`
 
 Why it is useful:
 - arrays of proc instances
@@ -1579,7 +1579,7 @@ Why it is useful:
 
 ### 11.5 Modular multi-file patch
 
-`examples/reverb.omni` plus `examples/reverb_graph.omni`
+`examples/reverb.onda` plus `examples/reverb_graph.onda`
 
 Why it is useful:
 - split code across modules
@@ -1589,7 +1589,7 @@ Why it is useful:
 
 ### 11.6 Generic proc in a larger graph
 
-`examples/cybernetic_feedback_graph.omni`
+`examples/cybernetic_feedback_graph.onda`
 
 Why it is useful:
 - generic `proc`
@@ -1599,7 +1599,7 @@ Why it is useful:
 
 ### 11.7 Event-driven patch
 
-`examples/preview_events.omni`
+`examples/preview_events.onda`
 
 Why it is useful:
 - top-level `events`
@@ -1608,7 +1608,7 @@ Why it is useful:
 
 ## 12. Summary
 
-If you are new to Omni, the most useful learning order is:
+If you are new to Onda, the most useful learning order is:
 1. understand the block model: `ins`, `params`, `events`, `buffers`, `outs`, `init`, `block`, `sample`, `graph`
 2. learn the executable-scope rules for state and locals
 3. learn `def` and `struct`
@@ -1616,4 +1616,4 @@ If you are new to Omni, the most useful learning order is:
 5. learn `proc` as the main reusable DSP abstraction
 6. finish with modules, namespaces, and imports
 
-That path matches how real Omni programs in this repository are structured.
+That path matches how real Onda programs in this repository are structured.

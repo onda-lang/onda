@@ -1,16 +1,16 @@
-# omni-llvm
+# onda
 
-`omni-llvm` is the toolchain for the Omni audio DSL.
+`onda` is the toolchain for the Onda audio DSL.
 It provides the compiler, runtime, CLI, language server, preview tooling, editor integrations, and a C API for embedding.
 
 This README is the overview of the tools around the language.
 
-## Short Omni example
+## Short Onda example
 
 For the actual language reference, see [SYNTAX.md](SYNTAX.md).
 As a minimal example for a sine wave:
 
-```omni
+```onda
 params:
   freq = 440.0 {20, 1000}
 
@@ -31,38 +31,38 @@ Take a look at the `examples/` folder for more usage examples.
 
 ## What this repository provides
 
-- `omni` CLI for compile, render, preview, diagnostics, and language-server workflows
-- LLVM-backed compiler and JIT runtime for Omni programs
+- `onda` CLI for compile, render, preview, diagnostics, and language-server workflows
+- LLVM-backed compiler and JIT runtime for Onda programs
 - stdio LSP server for diagnostics and semantic tokens
 - preview tooling for offline render and real-time playback
 - editor integrations for VSCode and Neovim
-- C API in `include/omni_llvm.h` for non-Rust hosts
+- C API in `include/onda_llvm.h` for non-Rust hosts
 
 Current execution is LLVM ORC JIT.
 The CLI can also emit LLVM IR and native object files for AOT-style workflows.
 
 ## Main components
 
-- `crates/omni_frontend`: parser, AST, diagnostics
-- `crates/omni_semantics`: semantic analysis and lowering rewrites
-- `crates/omni_codegen_llvm`: LLVM lowering and ORC JIT backend
-- `crates/omni_runtime`: runtime instance and processing APIs
-- `crates/omni_api`: C ABI
-- `crates/omni_daemon`: analysis and preview session engine
-- `crates/omni_preview`: shared preview controller/runtime
-- `crates/omni_cli`: CLI, LSP adapter, and preview control transport
-- `crates/omni_egui`: native egui preview host
-- `crates/omni_webview`: native webview preview host
+- `crates/onda_frontend`: parser, AST, diagnostics
+- `crates/onda_semantics`: semantic analysis and lowering rewrites
+- `crates/onda_codegen_llvm`: LLVM lowering and ORC JIT backend
+- `crates/onda_runtime`: runtime instance and processing APIs
+- `crates/onda_api`: C ABI
+- `crates/onda_daemon`: analysis and preview session engine
+- `crates/onda_preview`: shared preview controller/runtime
+- `crates/onda_cli`: CLI, LSP adapter, and preview control transport
+- `crates/onda_egui`: native egui preview host
+- `crates/onda_webview`: native webview preview host
 - `editors/vscode`: VSCode extension
 - `editors/nvim`: Neovim runtime support
-- `examples/`: Omni example programs
+- `examples/`: Onda example programs
 
 ## Documentation
 
 - [SYNTAX.md](SYNTAX.md): language syntax and semantics
 - [INFO.md](INFO.md): project structure and implementation notes
 
-## Building `omni`
+## Building `onda`
 
 1. Initialize submodules.
 
@@ -90,40 +90,40 @@ When `CI` is set, the bootstrap scripts may download a matching prebuilt LLVM pa
 3. Build the CLI:
 
 ```bash
-cargo build -p omni_cli --release
+cargo build -p onda_cli --release
 ```
 
-This produces the `omni` executable in `target/release/`.
+This produces the `onda` executable in `target/release/`.
 
 4. Build the static and shared libraries if needed:
 
 To build the C API in release mode:
 
 ```bash
-cargo build -p omni_api --release
+cargo build -p onda_api --release
 ```
 
-This produces the `omni_api` artifacts in `target/release/` along with the public header in `include/omni_llvm.h`.
+This produces the `onda_api` artifacts in `target/release/` along with the public header in `include/onda_llvm.h`.
 Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
 
-## The `omni` CLI
+## The `onda` CLI
 
 The CLI surface is:
 
 ```text
-omni compile <input.omni>
-omni render <input.omni>
-omni lsp
-omni preview <input.omni>
-omni preview play <input.omni>
-omni preview render <input.omni>
-omni daemon diagnose <input.omni>
-omni daemon stdio
+onda compile <input.onda>
+onda render <input.onda>
+onda lsp
+onda preview <input.onda>
+onda preview play <input.onda>
+onda preview render <input.onda>
+onda daemon diagnose <input.onda>
+onda daemon stdio
 ```
 
-### `omni compile`
+### `onda compile`
 
-Compiles an Omni file and optionally emits IR or an object file.
+Compiles an Onda file and optionally emits IR or an object file.
 
 Typical uses:
 - syntax and semantic checking
@@ -134,25 +134,25 @@ Typical uses:
 Examples:
 
 ```bash
-omni compile examples/sine.omni
-omni compile examples/proc_gain_graph.omni --dump-graph
-omni compile examples/sine.omni --emit llvm-ir
-omni compile examples/sine.omni --emit obj
+onda compile examples/sine.onda
+onda compile examples/proc_gain_graph.onda --dump-graph
+onda compile examples/sine.onda --emit llvm-ir
+onda compile examples/sine.onda --emit obj
 ```
 
 Cross-target IR and object emission is also supported:
 
 ```bash
-omni compile examples/sine.omni --target-spec ./targets/arm64.toml --emit obj
+onda compile examples/sine.onda --target-spec ./targets/arm64.toml --emit obj
 ```
 
-### `omni preview`
+### `onda preview`
 
 Opens the standalone patch preview window.
 This is the interactive path for listening to a patch, tweaking params, and inspecting buffers/devices.
 
 ```bash
-omni preview examples/sine.omni
+onda preview examples/sine.onda
 ```
 
 Preview host selection:
@@ -167,13 +167,13 @@ Useful flags:
 - `--input-device`
 - `--output-device`
 
-### `omni preview play`
+### `onda preview play`
 
 Runs the real-time playback/control transport without opening the standalone UI.
 
 ```bash
-omni preview play examples/sine.omni --dur 2
-omni preview play examples/sine.omni --forever
+onda preview play examples/sine.onda --dur 2
+onda preview play examples/sine.onda --forever
 ```
 
 Useful flags:
@@ -184,23 +184,23 @@ Useful flags:
 - `--input-device`
 - `--output-device`
 
-With `--control-json`, `omni preview play` prints a control handshake on stdout and serves a localhost control socket for preview clients.
+With `--control-json`, `onda preview play` prints a control handshake on stdout and serves a localhost control socket for preview clients.
 
-### `omni preview render`
+### `onda preview render`
 
 Offline render through the preview pipeline.
 This is useful when you want the preview-oriented path, including `--set` parameter overrides, without running real-time playback.
 
 ```bash
-omni preview render examples/sine.omni --output ./omni_out.wav --dur 5 --set freq=220
+onda preview render examples/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
 ```
 
-### `omni render`
+### `onda render`
 
-Renders an Omni program to a WAV file offline.
+Renders an Onda program to a WAV file offline.
 
 ```bash
-omni render examples/sine.omni --output ./omni_out.wav --dur 5
+onda render examples/sine.onda --output ./onda_out.wav --dur 5
 ```
 
 Useful flags:
@@ -212,12 +212,12 @@ Useful flags:
 - `--ir`
 - `--fast-math`
 
-### `omni lsp`
+### `onda lsp`
 
-Starts the Omni language server over stdio.
+Starts the Onda language server over stdio.
 
 ```bash
-omni lsp
+onda lsp
 ```
 
 Current LSP support includes:
@@ -225,26 +225,26 @@ Current LSP support includes:
 - diagnostics on open and save
 - semantic tokens for constants, params, ports, and init-scoped variables
 
-### `omni daemon diagnose`
+### `onda daemon diagnose`
 
 Runs daemon-backed analysis for a file and reports diagnostics.
 
 ```bash
-omni daemon diagnose examples/sine.omni
+onda daemon diagnose examples/sine.onda
 ```
 
-### `omni daemon stdio`
+### `onda daemon stdio`
 
 Starts the daemon control transport over stdio.
 This is intended for tool/editor integration rather than everyday manual use.
 
 ```bash
-omni daemon stdio
+onda daemon stdio
 ```
 
 ## C API
 
-The C API is exposed through `include/omni_llvm.h`.
+The C API is exposed through `include/onda_llvm.h`.
 At a high level the flow is:
 
 1. compile source
@@ -262,13 +262,13 @@ This is the embedding surface for non-Rust hosts.
 
 The extension lives in `editors/vscode`.
 It provides:
-- `.omni` language registration
+- `.onda` language registration
 - syntax highlighting plus LSP semantic tokens
-- `Omni: Run Patch`
-- `Omni: Stop Patch`
-- `Omni: Restart Language Server`
+- `Onda: Run Patch`
+- `Onda: Stop Patch`
+- `Onda: Restart Language Server`
 
-`Omni: Run Patch` launches the preview transport and opens a patch UI with:
+`Onda: Run Patch` launches the preview transport and opens a patch UI with:
 - start, stop, and reset controls
 - scalar param controls
 - input and output device selectors
@@ -278,7 +278,7 @@ It provides:
 
 The runtime lives in `editors/nvim`.
 It provides:
-- `.omni` filetype detection
+- `.onda` filetype detection
 - regex syntax highlighting
-- builtin LSP startup through `omni lsp`
-- `:OmniRunPatch` for launching the standalone preview window
+- builtin LSP startup through `onda lsp`
+- `:OndaRunPatch` for launching the standalone preview window

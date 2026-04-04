@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Omni Extension",
+      "name": "Run Onda Extension",
       "type": "extensionHost",
       "request": "launch",
       "args": [

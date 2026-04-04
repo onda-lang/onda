@@ -10,7 +10,7 @@ Usage: source scripts/use-llvm-env.sh [--flavor <auto|prebuilt|source-static|sou
 
 Configures LLVM environment variables for the current shell:
   LLVM_SYS_211_PREFIX
-  OMNI_LLVM_LINK_MODE
+  ONDA_LLVM_LINK_MODE
   PATH (prepends <prefix>/bin)
 EOF
 }
@@ -118,11 +118,11 @@ else
 fi
 
 export LLVM_SYS_211_PREFIX="$prefix"
-export OMNI_LLVM_LINK_MODE="$link_mode"
+export ONDA_LLVM_LINK_MODE="$link_mode"
 export PATH="$prefix/bin:$PATH"
 
 echo "LLVM env configured for this shell: $prefix"
-echo "OMNI_LLVM_LINK_MODE = $link_mode"
+echo "ONDA_LLVM_LINK_MODE = $link_mode"
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   echo "Note: run with 'source scripts/use-llvm-env.sh ...' to persist env vars in your current shell." >&2

@@ -1,0 +1,6831 @@
+use super::*;
+
+#[test]
+
+fn stdlib_f32_graph_example_matches_sample_version() {
+    let frames = 256;
+
+    let (mut sample_instance, sample_in_channels, sample_out_channels) =
+        compile_instance(STDLIB_F32_FILE_EXAMPLE, frames);
+
+    let (mut graph_instance, graph_in_channels, graph_out_channels) =
+        compile_instance(STDLIB_F32_GRAPH_FILE_EXAMPLE, frames);
+
+    assert_eq!(sample_in_channels, graph_in_channels);
+
+    assert_eq!(sample_out_channels, graph_out_channels);
+
+    let mut sample_output = vec![0.0_f32; frames * sample_out_channels];
+
+    let mut graph_output = vec![0.0_f32; frames * graph_out_channels];
+
+    process_interleaved(&mut sample_instance, &[], &mut sample_output, frames)
+        .expect("sample version should run");
+
+    process_interleaved(&mut graph_instance, &[], &mut graph_output, frames)
+        .expect("graph version should run");
+
+    for (sample, graph) in sample_output.iter().zip(&graph_output) {
+        assert_near(*graph, *sample, 1e-5);
+    }
+}
+
+#[test]
+
+fn sine_wasm_example_runs_with_bounded_output() {
+    let frames = 128;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SINE_WASM_FILE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| sample.abs() > 0.05),
+        "expected sine_wasm example to produce audible output, got {output:?}"
+    );
+
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 1.1),
+        "expected sine_wasm example to remain bounded, got {output:?}"
+    );
+}
+
+#[test]
+
+fn graph_nodes_remain_addressable_from_top_level_events() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GRAPH_EVENT_ROUTING_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(output.iter().all(|sample| (*sample).abs() <= 1e-6));
+
+    let idx = instance
+        .event_index("set_gain")
+        .expect("top-level graph event must exist");
+
+    trigger_event_by_index(&mut instance, idx, &0.75_f32.to_ne_bytes())
+        .expect("event trigger should succeed");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(output.iter().all(|sample| (*sample - 0.75).abs() <= 1e-6));
+}
+
+#[test]
+
+fn bound_io_writes_directly_for_f32_arrays() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_INPUT_ARRAY_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 2);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.input_index("in1"), Some(0));
+
+    assert_eq!(instance.output_index("out1"), Some(0));
+
+    let in_bytes = encode_planar_f32(&[vec![1.0, 2.0, -1.0, 0.25], vec![0.5, 1.0, 2.0, -0.5]]);
+
+    bind_input(&mut instance, 0, in_bytes.as_ptr(), in_bytes.len()).expect("bind input");
+
+    let mut bound_out = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, bound_out.as_mut_ptr(), bound_out.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let copied_bound = decode_planar_f32(&bound_out);
+
+    let expected = [2.5_f32, 5.0, 0.0, 0.0];
+
+    for (sample, target) in copied_bound.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn bound_io_writes_directly_for_f64_declared_types() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_IO_F64_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 2);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.input_type(0).as_deref(), Some("f64[2]"));
+
+    assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
+
+    let in_bytes = encode_planar_f64(&[vec![1.0, 2.0, 4.0, 0.0], vec![0.5, 2.0, -2.0, 1.0]]);
+
+    bind_input(&mut instance, 0, in_bytes.as_ptr(), in_bytes.len()).expect("bind input");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f64(&out_bytes);
+
+    let expected = [1.25_f64, 3.0, 3.0, 0.5];
+
+    for (sample, target) in out.iter().zip(expected) {
+        let delta = (*sample - target).abs();
+
+        assert!(
+            delta <= 1e-9,
+            "expected {sample} ~= {target}, delta={delta}"
+        );
+    }
+}
+
+#[test]
+
+fn top_level_params_respect_f64_and_i64_declared_types() {
+    let src = r#"
+
+params {
+
+  gain: f64 = 1.234567890123
+
+  count: i64 = 9007199254740993
+
+}
+
+outs {
+
+  out1: f64
+
+  out2: i64
+
+}
+
+sample {
+
+  out1 = gain
+
+  out2 = count
+
+}
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(out_channels, 2);
+
+    assert_eq!(instance.param_type(0).as_deref(), Some("f64"));
+
+    assert_eq!(instance.param_type(1).as_deref(), Some("i64"));
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_f64(&out_f64_bytes) {
+        assert!(
+            (sample - 1.234567890123_f64).abs() <= 1e-12,
+            "expected exact f64 param default, got {sample}"
+        );
+    }
+
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 9007199254740993_i64);
+    }
+
+    set_param_by_index(&mut instance, 0, &9.876543210987_f64.to_ne_bytes()).expect("set f64 param");
+
+    set_param_by_index(&mut instance, 1, &9007199254740995_i64.to_ne_bytes())
+        .expect("set i64 param");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_f64(&out_f64_bytes) {
+        assert!(
+            (sample - 9.876543210987_f64).abs() <= 1e-12,
+            "expected exact updated f64 param, got {sample}"
+        );
+    }
+
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 9007199254740995_i64);
+    }
+}
+
+#[test]
+
+fn top_level_inputs_respect_f64_and_i64_declared_types() {
+    let src = r#"
+
+ins {
+
+  in1: f64
+
+  in2: i64
+
+}
+
+outs {
+
+  out1: f64
+
+  out2: i64
+
+}
+
+sample {
+
+  out1 = in1
+
+  out2 = in2
+
+}
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(in_channels, 2);
+
+    assert_eq!(out_channels, 2);
+
+    assert_eq!(instance.input_type(0).as_deref(), Some("f64"));
+
+    assert_eq!(instance.input_type(1).as_deref(), Some("i64"));
+
+    let in_f64 = encode_planar_f64(&[vec![
+        1.234567890123_f64,
+        -2.5_f64,
+        0.125_f64,
+        42.000000000001_f64,
+    ]]);
+
+    let in_i64 = encode_planar_i64(&[vec![
+        9007199254740993_i64,
+        -17_i64,
+        0_i64,
+        9007199254740995_i64,
+    ]]);
+
+    bind_input(&mut instance, 0, in_f64.as_ptr(), in_f64.len()).expect("bind f64 input");
+
+    bind_input(&mut instance, 1, in_i64.as_ptr(), in_i64.len()).expect("bind i64 input");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out_f64 = decode_planar_f64(&out_f64_bytes);
+
+    let out_i64 = decode_planar_i64(&out_i64_bytes);
+
+    let expected_f64 = [1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+
+    let expected_i64 = [9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+
+    for (sample, expected) in out_f64.iter().zip(expected_f64) {
+        assert!(
+            (*sample - expected).abs() <= 1e-12,
+            "expected exact f64 input sample {expected}, got {sample}"
+        );
+    }
+
+    assert_eq!(out_i64.as_slice(), expected_i64.as_slice());
+}
+
+#[test]
+
+fn top_level_event_arguments_respect_f64_and_i64_declared_types() {
+    let src = r#"
+
+outs {
+
+  out1: f64
+
+  out2: i64
+
+}
+
+events {
+
+  set(value: f64, count: i64) {
+
+    level = value
+
+    total = count
+
+  }
+
+}
+
+init {
+
+  level: f64 = 0.0
+
+  total: i64 = 0
+
+}
+
+sample {
+
+  out1 = level
+
+  out2 = total
+
+}
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(out_channels, 2);
+
+    assert_eq!(instance.event_count(), 1);
+
+    assert_eq!(instance.event_payload_bytes(0), Some(16));
+
+    let mut payload = Vec::new();
+
+    payload.extend_from_slice(&1.234567890123_f64.to_ne_bytes());
+
+    payload.extend_from_slice(&9007199254740993_i64.to_ne_bytes());
+
+    trigger_event_by_index(&mut instance, 0, &payload).expect("trigger event");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_f64(&out_f64_bytes) {
+        assert!(
+            (sample - 1.234567890123_f64).abs() <= 1e-12,
+            "expected exact f64 event payload, got {sample}"
+        );
+    }
+
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 9007199254740993_i64);
+    }
+}
+
+#[test]
+
+fn top_level_buffers_respect_f64_and_i64_declared_types() {
+    let src = r#"
+
+buffers {
+
+  buf1: buffer[f64]
+
+  buf2: buffer[i64]
+
+}
+
+outs {
+
+  out1: f64
+
+  out2: i64
+
+}
+
+init {
+
+  idx: i32 = 0
+
+}
+
+sample {
+
+  out1 = buf1[idx]
+
+  out2 = buf2[idx]
+
+  idx = idx + 1
+
+}
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(out_channels, 2);
+
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[f64]"));
+
+    assert_eq!(instance.buffer_type(1).as_deref(), Some("buffer[i64]"));
+
+    assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
+
+    assert_eq!(instance.output_type(1).as_deref(), Some("i64"));
+
+    let mut buf_f64 = vec![1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+
+    let mut buf_i64 = vec![9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf_f64.as_mut_ptr().cast::<u8>(),
+        buf_f64.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F64,
+    )
+    .expect("bind f64 buffer");
+
+    bind_buffer(
+        &mut instance,
+        1,
+        buf_i64.as_mut_ptr().cast::<u8>(),
+        buf_i64.len(),
+        1,
+        48_000.0,
+        PrimitiveType::I64,
+    )
+    .expect("bind i64 buffer");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out_f64 = decode_planar_f64(&out_f64_bytes);
+
+    let out_i64 = decode_planar_i64(&out_i64_bytes);
+
+    let expected_f64 = [1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+
+    let expected_i64 = [9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+
+    for (sample, expected) in out_f64.iter().zip(expected_f64) {
+        assert!(
+            (*sample - expected).abs() <= 1e-12,
+            "expected exact f64 buffer sample {expected}, got {sample}"
+        );
+    }
+
+    assert_eq!(out_i64.as_slice(), expected_i64.as_slice());
+}
+
+#[test]
+
+fn proc_params_inputs_and_outputs_respect_f64_and_i64_declared_types() {
+    let src = r#"
+
+ins {
+
+  in1: f64
+
+  in2: i64
+
+}
+
+proc Voice {
+
+  ins {
+
+    in1: f64
+
+    in2: i64
+
+  }
+
+  params {
+
+    gain: f64 = 0.0
+
+    count: i64 = 0
+
+  }
+
+  outs {
+
+    out1: f64
+
+    out2: i64
+
+  }
+
+  sample {
+
+    out1 = in1 + gain
+
+    out2 = in2 + count
+
+  }
+
+}
+
+outs {
+
+  out1: f64
+
+  out2: i64
+
+}
+
+init {
+
+  voice = Voice(gain = 1.234567890123, count = 9007199254740993)
+
+}
+
+sample {
+
+  voice(in1, in2)
+
+  out1 = voice.out1
+
+  out2 = voice.out2
+
+}
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(in_channels, 2);
+
+    assert_eq!(out_channels, 2);
+
+    assert_eq!(instance.input_type(0).as_deref(), Some("f64"));
+
+    assert_eq!(instance.input_type(1).as_deref(), Some("i64"));
+
+    assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
+
+    assert_eq!(instance.output_type(1).as_deref(), Some("i64"));
+
+    let in_f64 = encode_planar_f64(&[vec![0.0_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64]]);
+
+    let in_i64 = encode_planar_i64(&[vec![0_i64, -17_i64, 0_i64, 2_i64]]);
+
+    bind_input(&mut instance, 0, in_f64.as_ptr(), in_f64.len()).expect("bind f64 input");
+
+    bind_input(&mut instance, 1, in_i64.as_ptr(), in_i64.len()).expect("bind i64 input");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out_f64 = decode_planar_f64(&out_f64_bytes);
+
+    let out_i64 = decode_planar_i64(&out_i64_bytes);
+
+    let expected_f64 = [
+        1.234567890123_f64,
+        -1.265432109877_f64,
+        1.359567890123_f64,
+        43.234567890124_f64,
+    ];
+
+    let expected_i64 = [
+        9007199254740993_i64,
+        9007199254740976_i64,
+        9007199254740993_i64,
+        9007199254740995_i64,
+    ];
+
+    for (sample, expected) in out_f64.iter().zip(expected_f64) {
+        assert!(
+            (*sample - expected).abs() <= 1e-12,
+            "expected exact proc f64 sample {expected}, got {sample}"
+        );
+    }
+
+    assert_eq!(out_i64.as_slice(), expected_i64.as_slice());
+}
+
+#[test]
+
+fn proc_event_arguments_and_outputs_respect_f64_and_i64_declared_types() {
+    let src = r#"
+
+proc Voice {
+
+  outs {
+
+    out1: f64
+
+    out2: i64
+
+  }
+
+  events {
+
+    set(value: f64, count: i64) {
+
+      level = value
+
+      total = count
+
+    }
+
+  }
+
+  init {
+
+    level: f64 = 0.0
+
+    total: i64 = 0
+
+  }
+
+  sample {
+
+    out1 = level
+
+    out2 = total
+
+  }
+
+}
+
+outs {
+
+  out1: f64
+
+  out2: i64
+
+}
+
+events {
+
+  set(value: f64, count: i64) {
+
+    voice.set(value, count)
+
+  }
+
+}
+
+init {
+
+  voice = Voice()
+
+}
+
+sample {
+
+  voice()
+
+  out1 = voice.out1
+
+  out2 = voice.out2
+
+}
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(out_channels, 2);
+
+    assert_eq!(instance.event_count(), 1);
+
+    assert_eq!(instance.event_payload_bytes(0), Some(16));
+
+    assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
+
+    assert_eq!(instance.output_type(1).as_deref(), Some("i64"));
+
+    let mut payload = Vec::new();
+
+    payload.extend_from_slice(&1.234567890123_f64.to_ne_bytes());
+
+    payload.extend_from_slice(&9007199254740993_i64.to_ne_bytes());
+
+    trigger_event_by_index(&mut instance, 0, &payload).expect("trigger event");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_f64(&out_f64_bytes) {
+        assert!(
+            (sample - 1.234567890123_f64).abs() <= 1e-12,
+            "expected exact proc event f64 payload, got {sample}"
+        );
+    }
+
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 9007199254740993_i64);
+    }
+}
+
+#[test]
+
+fn proc_buffers_and_outputs_respect_f64_and_i64_declared_types() {
+    let src = r#"
+
+buffers {
+
+  buf1: buffer[f64]
+
+  buf2: buffer[i64]
+
+}
+
+proc Reader {
+
+  buffers {
+
+    line1: buffer[f64]
+
+    line2: buffer[i64]
+
+  }
+
+  outs {
+
+    out1: f64
+
+    out2: i64
+
+  }
+
+  init {
+
+    idx: i32 = 0
+
+  }
+
+  sample {
+
+    out1 = line1[idx]
+
+    out2 = line2[idx]
+
+    idx = idx + 1
+
+  }
+
+}
+
+outs {
+
+  out1: f64
+
+  out2: i64
+
+}
+
+init {
+
+  reader = Reader(line1 = buf1, line2 = buf2)
+
+}
+
+sample {
+
+  reader()
+
+  out1 = reader.out1
+
+  out2 = reader.out2
+
+}
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(out_channels, 2);
+
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[f64]"));
+
+    assert_eq!(instance.buffer_type(1).as_deref(), Some("buffer[i64]"));
+
+    assert_eq!(instance.output_type(0).as_deref(), Some("f64"));
+
+    assert_eq!(instance.output_type(1).as_deref(), Some("i64"));
+
+    let mut buf_f64 = vec![1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+
+    let mut buf_i64 = vec![9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf_f64.as_mut_ptr().cast::<u8>(),
+        buf_f64.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F64,
+    )
+    .expect("bind proc f64 buffer");
+
+    bind_buffer(
+        &mut instance,
+        1,
+        buf_i64.as_mut_ptr().cast::<u8>(),
+        buf_i64.len(),
+        1,
+        48_000.0,
+        PrimitiveType::I64,
+    )
+    .expect("bind proc i64 buffer");
+
+    let mut out_f64_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+
+    bind_output(
+        &mut instance,
+        0,
+        out_f64_bytes.as_mut_ptr(),
+        out_f64_bytes.len(),
+    )
+    .expect("bind f64 output");
+
+    bind_output(
+        &mut instance,
+        1,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out_f64 = decode_planar_f64(&out_f64_bytes);
+
+    let out_i64 = decode_planar_i64(&out_i64_bytes);
+
+    let expected_f64 = [1.234567890123_f64, -2.5_f64, 0.125_f64, 42.000000000001_f64];
+
+    let expected_i64 = [9007199254740993_i64, -17_i64, 0_i64, 9007199254740995_i64];
+
+    for (sample, expected) in out_f64.iter().zip(expected_f64) {
+        assert!(
+            (*sample - expected).abs() <= 1e-12,
+            "expected exact proc buffer f64 sample {expected}, got {sample}"
+        );
+    }
+
+    assert_eq!(out_i64.as_slice(), expected_i64.as_slice());
+}
+
+#[test]
+
+fn buffer_mono_read_uses_clamped_index_path() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_MONO_CLAMP_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 1);
+
+    assert_eq!(instance.buffer_name(0), Some("buf1"));
+
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[f32]"));
+
+    assert_eq!(instance.buffer_index("buf1"), Some(0));
+
+    let mut buf = vec![10.0_f32, 20.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    let expected = [10.0_f32, 20.0, 20.0, 20.0];
+
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn buffer_i32_mono_read_uses_clamped_index_path() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_MONO_I32_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[i32]"));
+
+    let mut buf = vec![10_i32, 20_i32];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::I32,
+    )
+    .expect("bind buffer");
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let expected = [10.0_f32, 20.0, 20.0, 20.0];
+
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn buffer_i64_mono_read_uses_clamped_index_path() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_MONO_I64_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[i64]"));
+
+    let mut buf = vec![10_i64, 20_i64];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::I64,
+    )
+    .expect("bind buffer");
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let expected = [10.0_f32, 20.0, 20.0, 20.0];
+
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn buffer_bool_mono_read_uses_clamped_index_path() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_MONO_BOOL_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_type(0).as_deref(), Some("buffer[bool]"));
+
+    let mut buf = vec![1_u8, 0_u8];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::Bool,
+    )
+    .expect("bind buffer");
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let expected = [1.0_f32, 0.0, 0.0, 0.0];
+
+    for (sample, target) in output.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn unsafe_builtins_support_mono_buffers() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_MONO_UNSAFE_RW_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![1.0_f32, 2.0, 3.0, 4.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 7.0, 1e-6);
+    }
+
+    assert_near(buf[1], 7.0, 1e-6);
+}
+
+#[test]
+
+fn validate_bindings_and_process_unchecked_work() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_MONO_CLAMP_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![10.0_f32, 20.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    validate_bindings(&mut instance).expect("validate bindings should succeed");
+
+    unsafe {
+        process_unchecked(&mut instance).expect("unchecked process should succeed");
+    }
+
+    let out = decode_planar_f32(&out_bytes);
+
+    let expected = [10.0_f32, 20.0, 20.0, 20.0];
+
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn validate_bindings_rejects_missing_required_bindings() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_MONO_CLAMP_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![10.0_f32, 20.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let result = validate_bindings(&mut instance);
+
+    assert!(
+        result.is_err(),
+        "validate_bindings should reject missing required output binding"
+    );
+}
+
+#[test]
+
+fn validate_domains_allow_partial_revalidation() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_MONO_CLAMP_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf_a = vec![10.0_f32, 20.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf_a.as_mut_ptr().cast::<u8>(),
+        buf_a.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer A");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    validate_buffers(&mut instance).expect("validate buffers should succeed");
+
+    validate_outputs(&mut instance).expect("validate outputs should succeed");
+
+    unsafe {
+        process_unchecked(&mut instance).expect("unchecked process should succeed");
+    }
+
+    let out_a = decode_planar_f32(&out_bytes);
+
+    let expected_a = [10.0_f32, 20.0, 20.0, 20.0];
+
+    for (sample, target) in out_a.iter().zip(expected_a) {
+        assert_near(*sample, target, 1e-6);
+    }
+
+    let mut buf_b = vec![3.0_f32, 4.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf_b.as_mut_ptr().cast::<u8>(),
+        buf_b.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer B");
+
+    validate_buffers(&mut instance).expect("validate buffers after rebind should succeed");
+
+    unsafe {
+        process_unchecked(&mut instance).expect("unchecked process should succeed");
+    }
+
+    let out_b = decode_planar_f32(&out_bytes);
+
+    let expected_b = [4.0_f32, 4.0, 4.0, 4.0];
+
+    for (sample, target) in out_b.iter().zip(expected_b) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn buffer_stereo_two_dim_read_and_clamp_work() {
+    let frames = 6;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_STEREO_2D_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    let expected = [10.0_f32, 20.0, 30.0, 40.0, 40.0, 40.0];
+
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn buffer_stereo_two_dim_write_works() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_STEREO_2D_WRITE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 7.0, 1e-6);
+    }
+
+    assert_near(buf[1], 7.0, 1e-6);
+}
+
+#[test]
+
+fn buffer_stereo_rejects_one_dim_indexing() {
+    let parsed = parse_program(BUFFER_STEREO_1D_INDEX_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject one-dimensional indexing on multichannel buffers"
+    );
+}
+
+#[test]
+
+fn buffer_static_chans_returns_declared_channel_count() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_STATIC_CHANS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn buffer_dynamic_chans_returns_runtime_channel_count() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_DYNAMIC_CHANS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, 100.0, //
+        2.0, 20.0, 200.0, //
+        3.0, 30.0, 300.0, //
+        4.0, 40.0, 400.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        3,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn buffer_dynamic_len_returns_runtime_frame_count() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_DYNAMIC_LEN_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        3,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_can_take_mono_buffer_typed_param() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_BUFFER_MONO_PARAM_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![10.0_f32, 20.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    let expected = [10.0_f32, 20.0, 20.0, 20.0];
+
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_dynamic_buffer_len_returns_runtime_frame_count() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_BUFFER_DYNAMIC_LEN_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        3,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in output {
+        assert_near(sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_can_take_stereo_buffer_typed_param() {
+    let frames = 6;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_BUFFER_STEREO_PARAM_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    let expected = [10.0_f32, 20.0, 30.0, 40.0, 40.0, 40.0];
+
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_buffer_typed_param_rejects_element_type_mismatch() {
+    let parsed =
+        parse_program(DEF_BUFFER_PARAM_TYPE_MISMATCH_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject def buffer typed param element type mismatch"
+    );
+}
+
+#[test]
+
+fn unsafe_builtins_support_top_level_arrays() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(UNSAFE_TOP_LEVEL_ARRAY_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for frame in 0..frames {
+        let base = frame * out_channels;
+
+        assert_near(output[base], 2.0, 1e-6);
+
+        assert_near(output[base + 1], 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn multitap_feedback_struct_data_example_compiles_and_runs() {
+    let frames = 128;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(MULTITAP_FEEDBACK_STRUCT_DATA_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().all(|v| v.is_finite()),
+        "multitap example output should be finite"
+    );
+}
+
+#[test]
+
+fn struct_data_field_clamps_and_truncates() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(STRUCT_DATA_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 6.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn struct_data_is_per_instance() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STRUCT_DATA_IS_PER_INSTANCE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 4.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn struct_data_field_non_indexed_write_is_rejected() {
+    let parsed = parse_program(STRUCT_DATA_FIELD_NON_INDEXED_WRITE_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject non-indexed write to Data struct field"
+    );
+}
+
+#[test]
+
+fn implicit_io_infers_and_fills_gaps() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(IMPLICIT_IO_GAPPED_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 3);
+
+    assert_eq!(out_channels, 2);
+
+    let mut input = vec![0.0_f32; frames * in_channels];
+
+    for frame in 0..frames {
+        input[frame * in_channels] = 10.0;
+
+        input[frame * in_channels + 1] = 20.0;
+
+        input[frame * in_channels + 2] = (frame + 1) as f32;
+    }
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for frame in 0..frames {
+        assert_near(output[frame * out_channels], 0.0, 1e-6);
+
+        assert_near(
+            output[frame * out_channels + 1],
+            ((frame + 1) as f32) * 0.5,
+            1e-6,
+        );
+    }
+}
+
+#[test]
+
+fn sparse_declared_io_is_expanded() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SPARSE_DECLARED_IO_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 3);
+
+    assert_eq!(out_channels, 3);
+
+    let mut input = vec![0.0_f32; frames * in_channels];
+
+    for frame in 0..frames {
+        input[frame * in_channels + 2] = (frame + 1) as f32;
+    }
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for frame in 0..frames {
+        assert_near(output[frame * out_channels], 0.0, 1e-6);
+
+        assert_near(output[frame * out_channels + 1], 0.0, 1e-6);
+
+        assert_near(output[frame * out_channels + 2], (frame + 1) as f32, 1e-6);
+    }
+}
+
+#[test]
+
+fn builtin_consts_compile_and_run() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUILTIN_CONSTS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let expected = std::f32::consts::PI + 2.0 * std::f32::consts::PI;
+
+    for sample in &output {
+        assert_near(*sample, expected, 2e-3);
+    }
+}
+
+#[test]
+
+fn builtin_consts_support_lowercase_aliases() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUILTIN_CONSTS_LOWERCASE_ALIASES_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let expected = 5.0 * std::f32::consts::PI;
+
+    for sample in &output {
+        assert_near(*sample, expected, 2e-3);
+    }
+}
+
+#[test]
+
+fn builtin_consts_use_compile_time_sample_rate() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        BUILTIN_CONSTS_SR_ALIAS_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 4.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-5);
+
+    assert_near(output[1], 0.0, 1e-5);
+
+    assert_near(output[2], -1.0, 1e-5);
+
+    assert_near(output[3], 0.0, 1e-5);
+}
+
+#[test]
+
+fn builtin_consts_support_samplerate_alias() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        BUILTIN_CONSTS_SAMPLERATE_ALIAS_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 4.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-5);
+
+    assert_near(output[1], 0.0, 1e-5);
+
+    assert_near(output[2], -1.0, 1e-5);
+
+    assert_near(output[3], 0.0, 1e-5);
+}
+
+#[test]
+
+fn builtin_consts_support_lowercase_samplerate_alias() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        BUILTIN_CONSTS_LOWERCASE_SR_ALIAS_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 4.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-5);
+
+    assert_near(output[1], 0.0, 1e-5);
+
+    assert_near(output[2], -1.0, 1e-5);
+
+    assert_near(output[3], 0.0, 1e-5);
+}
+
+#[test]
+
+fn export_math_typed_overloads_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(EXPORT_MATH_TYPED_OVERLOADS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for frame in 0..frames {
+        let base = frame * out_channels;
+
+        assert_near(output[base], 2.0, 1e-4);
+
+        assert_near(output[base + 1], 2.0, 1e-4);
+    }
+}
+
+#[test]
+
+fn builtin_intrinsics_compile_and_run() {
+    let frames = 2;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUILTIN_INTRINSICS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let x = (-0.5_f32).abs()
+        + (0.0_f32).cos()
+        + (4.0_f32).sqrt()
+        + (0.0_f32).exp()
+        + (1.0_f32).exp().ln();
+
+    let y = 2.0_f32.powf(3.0) + 3.0_f32.min(4.0) + 3.0_f32.max(4.0) + (2.0_f32).mul_add(3.0, 4.0);
+
+    let z = (1.8_f32).floor() + (1.2_f32).ceil() + (1.6_f32).round() + (1.6_f32).trunc();
+
+    let expected = x + y + z;
+
+    for sample in &output {
+        assert_near(*sample, expected, 1e-4);
+    }
+}
+
+#[test]
+
+fn stdlib_math_is_auto_imported() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_MATH_AUTO_IMPORT_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn stdlib_math_auto_import_allows_local_symbol_override() {
+    let frames = 2;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_MATH_LOCAL_SYMBOL_WINS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 6.0, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_random_generic_rng_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_RANDOM_GENERIC_RNG_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 3);
+
+    let mut out1_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out2_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+    let mut out3_bytes = vec![0_u8; frames * std::mem::size_of::<f64>()];
+
+    bind_output(&mut instance, 0, out1_bytes.as_mut_ptr(), out1_bytes.len()).expect("bind out1");
+    bind_output(&mut instance, 1, out2_bytes.as_mut_ptr(), out2_bytes.len()).expect("bind out2");
+    bind_output(&mut instance, 2, out3_bytes.as_mut_ptr(), out3_bytes.len()).expect("bind out3");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out1 = decode_planar_f64(&out1_bytes);
+    let out2 = decode_planar_f64(&out2_bytes);
+    let out3 = decode_planar_f64(&out3_bytes);
+
+    let next_state = |state: i64| -> i64 {
+        (state
+            .wrapping_mul(1_103_515_245_i64)
+            .wrapping_add(12_345_i64))
+            & 2_147_483_647_i64
+    };
+    let next_unit = |state: i64| -> f64 { ((state as i32 & 2147483647) as f64) / 2147483647.0_f64 };
+
+    let mut state = 123_i64;
+    let mut expected = Vec::with_capacity(frames);
+    for _ in 0..frames {
+        state = next_state(state);
+        let v1 = next_unit(state);
+        state = next_state(state);
+        let v2 = next_unit(state) * 2.0 - 1.0;
+        state = next_state(state);
+        let v3 = -2.0 + 4.0 * next_unit(state);
+        expected.push((v1, v2, v3));
+    }
+
+    for frame in 0..frames {
+        assert!(
+            (out1[frame] - expected[frame].0).abs() <= 1e-6,
+            "expected {} ~= {}",
+            out1[frame],
+            expected[frame].0
+        );
+        assert!(
+            (out2[frame] - expected[frame].1).abs() <= 1e-6,
+            "expected {} ~= {}",
+            out2[frame],
+            expected[frame].1
+        );
+        assert!(
+            (out3[frame] - expected[frame].2).abs() <= 1e-6,
+            "expected {} ~= {}",
+            out3[frame],
+            expected[frame].2
+        );
+    }
+}
+
+#[test]
+
+fn stdlib_buffer_read_mono_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_BUFFER_READ_MONO_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![1.0_f32, 2.0, 3.0, 4.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in &out {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn stdlib_buffer_read_linear_and_cubic_with_channel_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_BUFFER_INTERP_STEREO_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in &out {
+        assert_near(*sample, 37.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn stdlib_buffer_is_auto_imported_for_arrays_and_buffers() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_BUFFER_AUTO_IMPORT_ARRAY_AND_BUFFER_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![10.0_f32, 20.0, 30.0, 40.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in &out {
+        assert_near(*sample, 34.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn stdlib_lookup_write_array_and_buffer_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_LOOKUP_WRITE_ARRAY_AND_BUFFER_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![0.0_f32; 4];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in &out {
+        assert_near(*sample, 6.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn floor_fract_wrap_numeric_behavior_is_stable() {
+    let frames = 2;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(FLOOR_FRACT_WRAP_NUMERIC_BEHAVIOR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn builtin_int_intrinsics_compile_and_run() {
+    let frames = 2;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUILTIN_INT_INTRINSICS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 17.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn float_only_builtin_rejects_integer_arguments() {
+    let parsed =
+        parse_program(BUILTIN_FLOAT_ONLY_TYPE_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject integer argument for float-only builtin"
+    );
+}
+
+#[test]
+
+fn data_capacity_supports_compile_time_constants() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        DATA_CONST_CAPACITY_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 16_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn data_ctor_capacity_supports_compile_time_constants() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        DATA_CTOR_CONST_CAPACITY_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[test]
+
+fn block_size_constant_is_available_in_init_and_block() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        BLOCK_SIZE_CONST_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, (frames as f32) * 2.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn block_size_aliases_are_available() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        BLOCK_SIZE_ALIASES_CONST_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, frames as f32, 1e-6);
+    }
+}
+
+#[test]
+
+fn block_executes_once_per_process_call() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BLOCK_EXEC_ONCE_PER_PROCESS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("first process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("second process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn block_assigned_scalar_is_visible_in_nested_sample() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BLOCK_SCALAR_VISIBLE_IN_SAMPLE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    // We only need to assert the program compiles/runs and generates non-zero audio.
+
+    assert!(output.iter().any(|v| v.abs() > 1e-6));
+}
+
+#[test]
+
+fn block_cannot_access_outputs() {
+    let parsed = parse_program(BLOCK_IO_FORBIDDEN_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject output access in block"
+    );
+}
+
+#[test]
+
+fn builtin_const_assignment_is_rejected() {
+    let parsed = parse_program(BUILTIN_CONST_ASSIGN_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject builtin constant assignment"
+    );
+}
+
+#[test]
+
+fn builtin_const_lowercase_assignment_is_rejected() {
+    let parsed =
+        parse_program(BUILTIN_CONST_ASSIGN_LOWERCASE_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject lowercase builtin constant assignment"
+    );
+}
+
+#[test]
+
+fn typed_narrowing_assignment_is_rejected() {
+    let parsed =
+        parse_program(TYPED_NARROWING_ASSIGNMENT_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject implicit i64->f32 narrowing"
+    );
+}
+
+#[test]
+
+fn if_condition_must_be_bool() {
+    let parsed = parse_program(IF_CONDITION_BOOL_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject non-bool if condition"
+    );
+}
+
+#[test]
+
+fn init_if_branch_locals_do_not_introduce_state() {
+    let parsed =
+        parse_program(IF_BRANCH_TYPE_CONFLICT_ERROR_EXAMPLE).expect("parse should succeed");
+
+    assert!(
+        analyze(parsed).is_ok(),
+        "branch-local init assignments should stay local and not introduce state"
+    );
+}
+
+#[test]
+
+fn typed_data_primitive_elements_compile_and_run() {
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_DATA_ELEM_PRIMITIVES_OK_EXAMPLE, 1);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut out = vec![0.0_f32; out_channels];
+
+    process_interleaved(&mut instance, &[], &mut out, 1).expect("processing should succeed");
+
+    assert!(
+        (out[0] - 6.5).abs() < 1.0e-6,
+        "typed array elements should preserve runtime values across primitive types"
+    );
+}
+
+#[test]
+
+fn typed_data_struct_scalar_primitives_compile_and_run() {
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_DATA_STRUCT_SCALAR_PRIMITIVES_OK_EXAMPLE, 1);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut out = vec![0.0_f32; out_channels];
+
+    process_interleaved(&mut instance, &[], &mut out, 1).expect("processing should succeed");
+
+    assert!(
+        (out[0] - 6.5).abs() < 1.0e-6,
+        "Struct[N] should support all primitive scalar field types"
+    );
+}
+
+#[test]
+
+fn data_index_must_be_numeric() {
+    let parsed = parse_program(DATA_BOOL_INDEX_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject bool array index"
+    );
+}
+
+#[test]
+
+fn data_constant_out_of_range_index_is_rejected_in_codegen() {
+    let parsed = parse_program(DATA_CONST_OOB_INDEX_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("semantic analysis should succeed");
+
+    let result = onda_codegen_llvm::lower_and_jit_with_options(
+        typed,
+        CompileOptions {
+            backend: ExecutionBackend::Auto,
+
+            sample_rate: 48_000.0,
+
+            block_size: 64,
+
+            fast_math: false,
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "codegen should reject out-of-range constant array index"
+    );
+}
+
+#[test]
+
+fn def_return_type_is_inferred_from_return_expression() {
+    let parsed = parse_program(DEF_RETURN_F64_INFERENCE_EXAMPLE).expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("semantic analysis should succeed");
+
+    let mydef = typed
+        .defs
+        .iter()
+        .find(|d| d.name == "mydef")
+        .expect("mydef should be present");
+
+    assert_eq!(
+        mydef.return_ty,
+        onda_semantics::ReturnType::Scalar(PrimitiveType::F64)
+    );
+}
+
+#[test]
+
+fn def_monomorphizes_from_call_arguments_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_MONOMORPHIZES_FROM_CALL_ARGUMENTS_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_def_infers_scalar_t_from_concrete_call_return_compile_and_run() {
+    let src = r#"
+
+outs:
+
+  out1: i64
+
+
+
+def make(flag: f32):
+
+  return i64(42)
+
+
+
+def id<T>(x: T):
+
+  return x
+
+
+
+sample:
+
+  out1 = id(make(0.0))
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, _, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(out_channels, 1);
+
+    let mut out_i64_bytes = vec![0_u8; frames * std::mem::size_of::<i64>()];
+
+    bind_output(
+        &mut instance,
+        0,
+        out_i64_bytes.as_mut_ptr(),
+        out_i64_bytes.len(),
+    )
+    .expect("bind i64 output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    for sample in decode_planar_i64(&out_i64_bytes) {
+        assert_eq!(sample, 42);
+    }
+}
+
+#[test]
+
+fn def_monomorphizes_multiple_specializations_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        DEF_MONOMORPHIZES_MULTIPLE_SPECIALIZATIONS_OK_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 7.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn non_generic_def_rejects_type_args() {
+    let parsed =
+        parse_program(NON_GENERIC_DEF_WITH_TYPE_ARGS_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject explicit type arguments for non-generic defs"
+    );
+}
+
+#[test]
+
+fn generic_def_parses_successfully() {
+    let parsed = parse_program(
+        r#"
+
+outs { out1 }
+
+def identity<T>(x: T) {
+
+  return x
+
+}
+
+sample { out1 = identity(1.5) }
+
+"#,
+    );
+
+    assert!(
+        parsed.is_ok(),
+        "parser should accept generic type params on defs"
+    );
+}
+
+#[test]
+
+fn generic_struct_ctor_with_explicit_type_args_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_STRUCT_EXPLICIT_TYPE_ARGS_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_struct_ctor_infers_type_args_from_arguments() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_STRUCT_MISSING_TYPE_ARGS_ERROR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_struct_ctor_infers_type_args_from_variable_arguments() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_STRUCT_INFER_FROM_VAR_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_struct_ctor_defaults_unresolved_inference_to_f32() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_STRUCT_UNRESOLVED_INFERENCE_ERROR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_struct_ctor_rejects_type_arg_arity_mismatch() {
+    let parsed =
+        parse_program(GENERIC_STRUCT_TYPE_ARG_ARITY_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject generic struct ctor calls with wrong type argument count"
+    );
+}
+
+#[test]
+
+fn non_generic_struct_ctor_rejects_type_args() {
+    let parsed = parse_program(NON_GENERIC_STRUCT_WITH_TYPE_ARGS_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject explicit type arguments for non-generic struct ctors"
+    );
+}
+
+#[test]
+
+fn generic_struct_multiple_specializations_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_STRUCT_MULTIPLE_SPECIALIZATIONS_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_struct_array_field_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_STRUCT_ARRAY_FIELD_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_struct_method_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_STRUCT_METHOD_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn struct_method_local_int_inference_matches_def_for_bitwise_ops() {
+    let src = r#"
+
+struct Bits<T>:
+
+  def run(self, n: i32):
+
+    bits = 0
+
+    value = n
+
+    while (value > 1):
+
+      value = value >> 1
+
+      bits = bits + 1
+
+    return f32(bits)
+
+outs { out1 }
+
+init:
+
+  b = Bits<f32>()
+
+sample:
+
+  out1 = b.run(8)
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, _, _) = compile_instance(src, frames);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn struct_method_untyped_numeric_calls_compile_and_run() {
+    let src = r#"
+
+struct Math:
+
+  def mix(self, x, y):
+
+    return x * y + x
+
+
+
+outs { out1 }
+
+init:
+
+  m = Math()
+
+sample:
+
+  a = m.mix(f32(1.5), f32(2.0))
+
+  b = f32(m.mix(f64(1.25), f64(4.0)))
+
+  out1 = a + b
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, _, _) = compile_instance(src, frames);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 10.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_proc_ctor_with_explicit_type_args_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_EXPLICIT_TYPE_ARGS_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_proc_ctor_infers_type_args_from_arguments() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_MISSING_TYPE_ARGS_ERROR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_proc_ctor_infers_type_args_from_defaults() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_DEFAULT_ONLY_INFERENCE_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_proc_ctor_infers_array_generic_type_from_array_variable() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_ARRAY_INFER_FROM_ARRAY_VAR_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_proc_ctor_defaults_unresolved_inference_to_f32() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_UNRESOLVED_INFERENCE_ERROR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_proc_ctor_rejects_type_arg_arity_mismatch() {
+    let parsed =
+        parse_program(GENERIC_PROC_TYPE_ARG_ARITY_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject generic proc ctor calls with wrong type argument count"
+    );
+}
+
+#[test]
+
+fn non_generic_proc_ctor_rejects_type_args() {
+    let parsed =
+        parse_program(NON_GENERIC_PROC_WITH_TYPE_ARGS_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject explicit type arguments for non-generic proc ctors"
+    );
+}
+
+#[test]
+
+fn generic_proc_multiple_specializations_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_MULTIPLE_SPECIALIZATIONS_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_proc_array_decl_types_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_ARRAY_DECL_TYPES_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 4.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_proc_init_typed_array_generic_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(GENERIC_PROC_INIT_TYPED_ARRAY_GENERIC_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn generic_proc_buffer_decl_type_analyzes_and_codegen_compiles() {
+    let parsed = parse_program(GENERIC_PROC_BUFFER_DECL_TYPE_COMPILES_EXAMPLE)
+        .expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("semantic analysis should succeed");
+
+    let result = onda_codegen_llvm::lower_and_jit_with_options(
+        typed,
+        CompileOptions {
+            backend: ExecutionBackend::Auto,
+
+            sample_rate: 48_000.0,
+
+            block_size: 64,
+
+            fast_math: false,
+        },
+    );
+
+    assert!(
+        result.is_ok(),
+        "codegen should succeed for generic proc buffer<T> specialization"
+    );
+}
+
+#[test]
+
+fn proc_state_struct_ctor_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_STATE_STRUCT_CTOR_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_state_generic_struct_ctor_with_explicit_type_args_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_STATE_GENERIC_STRUCT_CTOR_EXPLICIT_TYPE_ARGS_OK_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_state_generic_struct_ctor_infers_type_args_compile_and_run() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_STATE_GENERIC_STRUCT_CTOR_INFERRED_TYPE_ARGS_OK_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn first_assignment_uses_def_return_type_and_alias_keeps_type() {
+    let parsed = parse_program(FIRST_ASSIGNMENT_FROM_DEF_RETURN_AND_ALIAS_EXAMPLE)
+        .expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("semantic analysis should succeed");
+
+    assert_eq!(state_type_of(&typed, "x"), Some(PrimitiveType::F64));
+
+    assert_eq!(state_type_of(&typed, "z"), Some(PrimitiveType::F64));
+
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(FIRST_ASSIGNMENT_FROM_DEF_RETURN_AND_ALIAS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[test]
+
+fn first_assignment_from_int_literal_stays_i32() {
+    let parsed =
+        parse_program(FIRST_ASSIGNMENT_INT_IS_STICKY_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject implicit f32 assignment after x = 0 infers i32"
+    );
+}
+
+#[test]
+
+fn proc_first_assignment_uses_def_return_type() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_FIRST_ASSIGNMENT_FROM_DEF_RETURN_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_widening_assignment_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_WIDENING_ASSIGNMENT_OK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_init_f64_state_preserves_precision() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_INIT_F64_PRESERVES_PRECISION_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_init_i64_state_preserves_value() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_INIT_I64_PRESERVES_VALUE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn struct_default_i64_preserves_large_value() {
+    let src = r#"
+
+struct Box {
+
+  x: i64 = 9007199254740993
+
+}
+
+outs { out1 }
+
+init {
+
+  b = Box()
+
+}
+
+sample {
+
+  if (b.x == i64(9007199254740993)) { out1 = 1.0 } else { out1 = 0.0 }
+
+}
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_default_i64_preserves_large_value() {
+    let src = r#"
+
+outs { out1 }
+
+def exact(x: i64 = 9007199254740993) {
+
+  if (x == i64(9007199254740993)) {
+
+    return 1.0
+
+  } else {
+
+    return 0.0
+
+  }
+
+}
+
+sample {
+
+  out1 = exact()
+
+}
+
+"#;
+
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_block_declaration_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_BLOCK_DECLARATION_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_sample_declaration_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_SAMPLE_DECLARATION_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 7.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_def_declaration_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_DEF_DECLARATION_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_i32_declarations_work_in_init_block_sample_and_def() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_I32_DECLARATIONS_ALL_PATHS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 100.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_f64_declarations_work_in_init_block_sample_and_def() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_F64_DECLARATIONS_ALL_PATHS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 10.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_i64_declarations_work_in_init_block_sample_and_def() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_I64_DECLARATIONS_ALL_PATHS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 100.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn typed_bool_declarations_work_in_init_block_sample_and_def() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TYPED_BOOL_DECLARATIONS_ALL_PATHS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_can_infer_duck_typed_mono_buffer_param() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_BUFFER_DUCK_PARAM_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![2.0_f32, 4.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    let expected = [2.0_f32, 4.0, 4.0, 4.0];
+
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_duck_typed_buffer_inference_propagates_through_def_calls() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_BUFFER_DUCK_PROPAGATION_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![1.5_f32, 3.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    let expected = [1.5_f32, 3.0, 3.0, 3.0];
+
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_duck_typed_buffer_param_allows_mixed_element_types() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_BUFFER_DUCK_MIXED_ELEM_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 2);
+
+    let mut a = vec![1.0_f32];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        a.as_mut_ptr().cast::<u8>(),
+        a.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind f32 buffer");
+
+    let mut b = vec![2.0_f64];
+
+    bind_buffer(
+        &mut instance,
+        1,
+        b.as_mut_ptr().cast::<u8>(),
+        b.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F64,
+    )
+    .expect("bind f64 buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_indexable_param_accepts_array_and_buffer_call_sites() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_INDEXABLE_ARG_ARRAY_AND_BUFFER_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![10.0_f32, 20.0, 30.0, 40.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 22.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn def_indexable_param_supports_two_dimensional_buffer_indexing() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(DEF_INDEXABLE_ARG_STEREO_BUFFER_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 30.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_single_out_call_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_SINGLE_OUT_CALL_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_single_out_field_access_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_SINGLE_OUT_FIELD_ACCESS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_multi_out_call_field_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_MULTI_OUT_CALL_FIELD_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_multi_out_field_alias_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_MULTI_OUT_FIELD_ALIAS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_param_mutation_is_immediate() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_PARAM_MUTATION_IMMEDIATE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 8.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_init_block_is_optional() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_OPTIONAL_INIT_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_state_typed_in_init_keeps_type_in_sample() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_TYPED_STATE_PRESERVED_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-6);
+
+    assert_near(output[1], 2.0, 1e-6);
+
+    assert_near(output[2], 3.0, 1e-6);
+
+    assert_near(output[3], 4.0, 1e-6);
+}
+
+#[test]
+
+fn proc_i32_array_increment_keeps_integer_inference() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_I32_ARRAY_INCREMENT_PRESERVED_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-6);
+
+    assert_near(output[1], 2.0, 1e-6);
+
+    assert_near(output[2], 3.0, 1e-6);
+
+    assert_near(output[3], 4.0, 1e-6);
+}
+
+#[test]
+
+fn proc_data_len_method_matches_top_level_behavior() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_DATA_LEN_METHOD_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 8.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_block_wraps_sample_once_per_block() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_BLOCK_WRAPS_SAMPLE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output_a = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output_a, frames).expect("process should succeed");
+
+    for sample in &output_a {
+        assert_near(*sample, 6.0, 1e-6);
+    }
+
+    let mut output_b = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output_b, frames).expect("process should succeed");
+
+    for sample in &output_b {
+        assert_near(*sample, 6.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_without_block_has_only_step_entrypoint() {
+    let parsed = parse_program(PROC_OPTIONAL_INIT_EXAMPLE).expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("semantic analysis should succeed");
+
+    let def_names = typed
+        .defs
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    assert!(def_names.contains("NoInitProc.__proc_step"));
+
+    assert!(!def_names.contains("NoInitProc.__proc_block_pre"));
+
+    assert!(!def_names.contains("NoInitProc.__proc_block_post"));
+}
+
+#[test]
+
+fn proc_nested_block_runs_when_outer_has_no_block() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_NESTED_BLOCK_WITHOUT_OUTER_BLOCK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_outer_without_user_block_gets_effective_block_entrypoints_when_needed() {
+    let parsed =
+        parse_program(PROC_NESTED_BLOCK_WITHOUT_OUTER_BLOCK_EXAMPLE).expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("semantic analysis should succeed");
+
+    let def_names = typed
+        .defs
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    assert!(def_names.contains("OuterProc.__proc_block_pre"));
+
+    assert!(def_names.contains("OuterProc.__proc_block_post"));
+}
+
+#[test]
+
+fn proc_array_dynamic_index_runs_block_hooks_only_for_active_slot_per_block() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+
+    assert_near(out_b[0], 1110.0, 1e-6);
+}
+
+#[test]
+
+fn proc_array_dynamic_index_assignment_call_runs_block_hooks_only_for_active_slot_per_block() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_ASSIGN_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+
+    assert_near(out_b[0], 1110.0, 1e-6);
+}
+
+#[test]
+
+fn nested_proc_array_dynamic_index_assignment_call_runs_block_hooks_only_for_active_slot_per_block()
+{
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        NESTED_PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_ACTIVE_SLOT_ONLY_ASSIGN_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+
+    assert_near(out_a[0], 1000.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+
+    assert_near(out_b[0], 1110.0, 1e-6);
+}
+
+#[test]
+
+fn proc_array_dynamic_index_block_hooks_use_same_clamped_slot_for_guard_and_call() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_BLOCK_HOOKS_CLAMPED_INDEX_CONSISTENCY_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+
+    assert_near(out_a[0], 100.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+
+    assert_near(out_b[0], 201.0, 1e-6);
+}
+
+#[test]
+
+fn proc_array_init_harmonics_example_is_not_silent() {
+    let frames = 256;
+
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/proc_array_init_harmonics.onda"
+    );
+
+    let (mut instance, in_channels, out_channels) = compile_instance_file(path, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_non_silent(&output, "examples/proc_array_init_harmonics.onda");
+}
+
+#[test]
+
+fn proc_array_dynamic_loop_scalar_sugar_into_block_proc_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"sample {
+
+  mix = 0.0
+
+  for i in 0..10 {
+
+    mix = mix + voices[i]()
+
+  }
+
+  out1 = mix
+
+}"#,
+    );
+
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_non_silent(&output, "dynamic loop scalar sugar");
+}
+
+#[test]
+
+fn proc_array_dynamic_loop_explicit_out1_into_block_proc_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"sample {
+
+  mix = 0.0
+
+  for i in 0..10 {
+
+    mix = mix + voices[i]().out1
+
+  }
+
+  out1 = mix
+
+}"#,
+    );
+
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_non_silent(&output, "dynamic loop explicit out1");
+}
+
+#[test]
+
+fn proc_array_dynamic_loop_statement_call_then_field_read_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"sample {
+
+  mix = 0.0
+
+  for i in 0..10 {
+
+    voices[i]()
+
+    mix = mix + voices[i].out1
+
+  }
+
+  out1 = mix
+
+}"#,
+    );
+
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_non_silent(&output, "dynamic loop statement call then field read");
+}
+
+#[test]
+
+fn proc_array_dynamic_loop_alias_call_into_block_proc_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"sample {
+
+  mix = 0.0
+
+  for i in 0..10 {
+
+    v = voices[i]
+
+    mix = mix + v()
+
+  }
+
+  out1 = mix
+
+}"#,
+    );
+
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_non_silent(&output, "dynamic loop alias call");
+}
+
+#[test]
+
+fn proc_array_dynamic_loop_inside_explicit_top_level_block_is_not_silent() {
+    let src = proc_array_harmonics_block_voice_program(
+        r#"block {
+
+  sample {
+
+    mix = 0.0
+
+    for i in 0..10 {
+
+      mix = mix + voices[i]()
+
+    }
+
+    out1 = mix
+
+  }
+
+}"#,
+    );
+
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(&src, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_non_silent(&output, "dynamic loop explicit top-level block");
+}
+
+#[test]
+
+fn proc_array_dynamic_multi_call_expression_preserves_left_to_right_call_eval_order() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_INDEX_MULTI_CALL_EXPR_EVAL_ORDER_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+
+    assert_near(out_a[0], 12.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+
+    assert_near(out_b[0], 34.0, 1e-6);
+}
+
+#[test]
+
+fn proc_array_dynamic_five_call_expression_preserves_left_to_right_eval_order() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_ARRAY_DYNAMIC_INDEX_FIVE_CALL_EXPR_EVAL_ORDER_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut out_a = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
+
+    assert_near(out_a[0], 12345.0, 1e-6);
+
+    let mut out_b = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
+
+    assert_near(out_b[0], 67900.0, 1e-6);
+}
+
+#[test]
+
+fn proc_can_bind_and_read_top_level_buffer() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_BUFFER_MONO_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![10.0_f32, 20.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    let expected = [10.0_f32, 20.0, 20.0, 20.0];
+
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_buffer_missing_ctor_arg_is_rejected() {
+    let parsed =
+        parse_program(PROC_BUFFER_MISSING_CTOR_ARG_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject proc ctor missing required buffer arg"
+    );
+}
+
+#[test]
+
+fn proc_ctor_positional_args_are_rejected() {
+    let parsed =
+        parse_program(PROC_CTOR_POSITIONAL_ARG_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject positional proc constructor arguments"
+    );
+}
+
+#[test]
+
+fn nested_proc_ctor_positional_args_are_rejected() {
+    let parsed =
+        parse_program(PROC_NESTED_CTOR_POSITIONAL_ARG_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject positional nested proc constructor arguments"
+    );
+}
+
+#[test]
+
+fn sample_oversample_factor_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE, frames);
+
+    let (mut proc_instance, proc_in_channels, proc_out_channels) =
+        compile_instance(PROC_EQUIV_SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(proc_in_channels, 0);
+
+    assert_eq!(proc_out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    let mut proc_output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    process_interleaved(&mut proc_instance, &[], &mut proc_output, frames)
+        .expect("proc process should succeed");
+
+    for (actual, expected) in output.iter().zip(proc_output.iter()) {
+        assert_near(*actual, *expected, 1e-6);
+    }
+}
+
+#[test]
+
+fn sample_oversample_factor_is_recorded_in_typed_program() {
+    let parsed = parse_program(SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE).expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("semantic analysis should succeed");
+
+    assert_eq!(typed.sample_oversample_factor, 4);
+}
+
+#[test]
+
+fn proc_sample_oversample_factor_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_SAMPLE_OVERSAMPLE_FACTOR_EXAMPLE, frames);
+
+    let (mut top_level_instance, top_in_channels, top_out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_FACTOR_2_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(top_in_channels, 0);
+
+    assert_eq!(top_out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    let mut top_level_output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    process_interleaved(&mut top_level_instance, &[], &mut top_level_output, frames)
+        .expect("top-level process should succeed");
+
+    for (actual, expected) in output.iter().zip(top_level_output.iter()) {
+        assert_near(*actual, *expected, 1e-6);
+    }
+}
+
+#[test]
+
+fn sample_oversample_factor_32_compiles_and_runs_smoke() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_FACTOR_32_SMOKE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(output.iter().all(|v| v.is_finite()));
+
+    assert!(output[frames - 1] > output[0]);
+}
+
+#[test]
+
+fn proc_sample_oversample_factor_64_compiles_and_runs_smoke() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_SAMPLE_OVERSAMPLE_FACTOR_64_SMOKE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(output.iter().all(|v| v.is_finite()));
+
+    assert!(output[frames - 1] > output[0]);
+}
+
+#[test]
+
+fn sample_oversample_factor_512_compiles_and_runs_smoke() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_FACTOR_512_SMOKE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(output.iter().all(|v| v.is_finite()));
+
+    assert!(output[frames - 1] > output[0]);
+}
+
+#[test]
+
+fn sample_oversample_invalid_factor_is_rejected() {
+    let parsed =
+        parse_program(SAMPLE_OVERSAMPLE_INVALID_FACTOR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "invalid oversample factor should be rejected"
+    );
+
+    let diags = result.expect_err("expected semantic diagnostics");
+
+    assert!(
+        diags.iter().any(|d| {
+            d.message.contains("{1,2,4,8,16,32,64,128,256,512}") && d.message.contains("got 3")
+        }),
+        "expected explicit allowed-factor diagnostic, got: {diags:?}"
+    );
+}
+
+#[test]
+
+fn sample_oversample_const_expr_factor_is_accepted() {
+    let parsed =
+        parse_program(SAMPLE_OVERSAMPLE_CONST_EXPR_FACTOR_EXAMPLE).expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("const oversample factor should analyze");
+
+    assert_eq!(typed.sample_oversample_factor, 4);
+}
+
+#[test]
+
+fn proc_sample_oversample_namespace_factor_compiles_and_runs() {
+    let parsed = parse_program(PROC_SAMPLE_OVERSAMPLE_NAMESPACE_FACTOR_EXAMPLE)
+        .expect("parse should succeed");
+
+    let typed = analyze(parsed).expect("namespace oversample factor should analyze");
+
+    assert!(
+        typed
+            .def_sample_oversample_factors
+            .values()
+            .any(|&factor| factor == 8),
+        "expected lowered proc oversample factor map to contain 8x specialization, got {:?}",
+        typed.def_sample_oversample_factors
+    );
+}
+
+#[test]
+
+fn sample_oversample_non_literal_factor_is_rejected() {
+    let parsed =
+        parse_program(SAMPLE_OVERSAMPLE_NON_LITERAL_FACTOR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "non-literal oversample factor should be rejected"
+    );
+
+    let diags = result.expect_err("expected semantic diagnostics");
+
+    assert!(
+        diags.iter().any(|d| {
+            d.message
+                .contains("compile-time integer constant expression")
+                && d.message.contains("{1,2,4,8,16,32,64,128,256,512}")
+        }),
+        "expected integer-literal diagnostic, got: {diags:?}"
+    );
+}
+
+#[test]
+
+fn sample_oversample_interpolates_input_reads() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_INPUT_INTERP_EXAMPLE, frames);
+
+    let (mut proc_instance, proc_in_channels, proc_out_channels) =
+        compile_instance(PROC_EQUIV_SAMPLE_OVERSAMPLE_INPUT_INTERP_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 1);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(proc_in_channels, 1);
+
+    assert_eq!(proc_out_channels, 1);
+
+    let input = vec![0.0_f32, 1.0, 2.0, 3.0];
+
+    let mut output = vec![0.0_f32; frames];
+
+    let mut proc_output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    process_interleaved(&mut proc_instance, &input, &mut proc_output, frames)
+        .expect("proc process should succeed");
+
+    for (actual, expected) in output.iter().zip(proc_output.iter()) {
+        assert_near(*actual, *expected, 1e-6);
+    }
+}
+
+#[test]
+
+fn sample_oversample_passthrough_preserves_more_high_band_level() {
+    let frames = 4096;
+
+    let sample_rate = 48_000.0_f32;
+
+    let freq = sample_rate * 0.2;
+
+    let (mut base_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_PASSTHROUGH_1X_EXAMPLE, frames);
+
+    let (mut over_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_PASSTHROUGH_4X_EXAMPLE, frames);
+
+    let input = (0..frames)
+        .map(|idx| (f32::sin(2.0 * std::f32::consts::PI * freq * idx as f32 / sample_rate)))
+        .collect::<Vec<_>>();
+
+    let mut base_output = vec![0.0_f32; frames];
+
+    let mut over_output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut base_instance, &input, &mut base_output, frames)
+        .expect("base passthrough should succeed");
+
+    process_interleaved(&mut over_instance, &input, &mut over_output, frames)
+        .expect("oversampled passthrough should succeed");
+
+    let base_rms = rms_after_skip(&base_output, 512);
+
+    let over_rms = rms_after_skip(&over_output, 512);
+
+    let attenuation_db = 20.0 * f32::log10(over_rms / base_rms);
+
+    assert!(
+
+        attenuation_db > -3.0,
+
+        "expected 4x oversampled passthrough to stay within 3 dB at 9.6 kHz, got {attenuation_db} dB"
+
+    );
+}
+
+#[test]
+
+fn sample_oversample_reduces_high_frequency_energy_on_nonlinear_patch() {
+    let frames = 64;
+
+    let (mut base_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_ALIAS_BASELINE_EXAMPLE, frames);
+
+    let (mut over_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_ALIAS_FILTERED_EXAMPLE, frames);
+
+    let input = (0..frames)
+        .map(|idx| if idx % 2 == 0 { 1.0_f32 } else { -1.0_f32 })
+        .collect::<Vec<_>>();
+
+    let mut base_output = vec![0.0_f32; frames];
+
+    let mut over_output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut base_instance, &input, &mut base_output, frames)
+        .expect("baseline process should succeed");
+
+    process_interleaved(&mut over_instance, &input, &mut over_output, frames)
+        .expect("oversampled process should succeed");
+
+    let high_freq_energy = |samples: &[f32]| -> f32 {
+        samples
+            .windows(2)
+            .map(|w| {
+                let d = w[1] - w[0];
+
+                d * d
+            })
+            .sum::<f32>()
+    };
+
+    let base_energy = high_freq_energy(&base_output);
+
+    let over_energy = high_freq_energy(&over_output);
+
+    assert!(
+
+        over_energy < base_energy * 0.5,
+
+        "expected oversampling to reduce high-frequency energy, base={base_energy}, oversampled={over_energy}"
+
+    );
+}
+
+#[test]
+
+fn sample_oversample_proc_and_top_level_match_on_nonlinear_patch() {
+    let frames = 64;
+
+    let (mut top_level_instance, _, _) =
+        compile_instance(SAMPLE_OVERSAMPLE_ALIAS_FILTERED_EXAMPLE, frames);
+
+    let (mut proc_instance, _, _) =
+        compile_instance(PROC_EQUIV_SAMPLE_OVERSAMPLE_ALIAS_FILTERED_EXAMPLE, frames);
+
+    let input = (0..frames)
+        .map(|idx| if idx % 2 == 0 { 1.0_f32 } else { -1.0_f32 })
+        .collect::<Vec<_>>();
+
+    let mut top_level_output = vec![0.0_f32; frames];
+
+    let mut proc_output = vec![0.0_f32; frames];
+
+    process_interleaved(
+        &mut top_level_instance,
+        &input,
+        &mut top_level_output,
+        frames,
+    )
+    .expect("top-level oversampled process should succeed");
+
+    process_interleaved(&mut proc_instance, &input, &mut proc_output, frames)
+        .expect("proc oversampled process should succeed");
+
+    for (actual, expected) in top_level_output.iter().zip(proc_output.iter()) {
+        assert_near(*actual, *expected, 1e-6);
+    }
+}
+
+#[test]
+
+fn sample_oversample_keeps_proc_sine_pitch_constant() {
+    let frames = 48_000;
+
+    let sample_rate = 48_000.0_f32;
+
+    let (mut base_instance, _, _) = compile_instance(SAMPLE_OVERSAMPLE_STD_SINE_1X_EXAMPLE, frames);
+
+    let (mut os2_instance, _, _) = compile_instance(SAMPLE_OVERSAMPLE_STD_SINE_2X_EXAMPLE, frames);
+
+    let (mut os4_instance, _, _) = compile_instance(SAMPLE_OVERSAMPLE_STD_SINE_4X_EXAMPLE, frames);
+
+    let mut out_1x = vec![0.0_f32; frames];
+
+    let mut out_2x = vec![0.0_f32; frames];
+
+    let mut out_4x = vec![0.0_f32; frames];
+
+    process_interleaved(&mut base_instance, &[], &mut out_1x, frames)
+        .expect("1x process should succeed");
+
+    process_interleaved(&mut os2_instance, &[], &mut out_2x, frames)
+        .expect("2x process should succeed");
+
+    process_interleaved(&mut os4_instance, &[], &mut out_4x, frames)
+        .expect("4x process should succeed");
+
+    let f1 = estimate_positive_zero_cross_frequency(&out_1x, sample_rate);
+
+    let f2 = estimate_positive_zero_cross_frequency(&out_2x, sample_rate);
+
+    let f4 = estimate_positive_zero_cross_frequency(&out_4x, sample_rate);
+
+    assert!(
+        (f1 - 50.0).abs() < 1.5,
+        "expected ~50 Hz at 1x, got {f1} Hz"
+    );
+
+    assert!(
+        (f2 - f1).abs() < 1.5,
+        "expected 2x oversampling pitch to match 1x, got f1={f1}, f2={f2}"
+    );
+
+    assert!(
+        (f4 - f1).abs() < 1.5,
+        "expected 4x oversampling pitch to match 1x, got f1={f1}, f4={f4}"
+    );
+}
+
+#[test]
+
+fn proc_sample_oversample_keeps_local_sine_pitch_constant() {
+    let frames = 48_000;
+
+    let sample_rate = 48_000.0_f32;
+
+    let (mut base_instance, _, _) =
+        compile_instance(PROC_SAMPLE_OVERSAMPLE_LOCAL_SINE_1X_EXAMPLE, frames);
+
+    let (mut os8_instance, _, _) =
+        compile_instance(PROC_SAMPLE_OVERSAMPLE_LOCAL_SINE_8X_EXAMPLE, frames);
+
+    let mut out_1x = vec![0.0_f32; frames];
+
+    let mut out_8x = vec![0.0_f32; frames];
+
+    process_interleaved(&mut base_instance, &[], &mut out_1x, frames)
+        .expect("1x process should succeed");
+
+    process_interleaved(&mut os8_instance, &[], &mut out_8x, frames)
+        .expect("8x process should succeed");
+
+    let f1 = estimate_positive_zero_cross_frequency(&out_1x, sample_rate);
+
+    let f8 = estimate_positive_zero_cross_frequency(&out_8x, sample_rate);
+
+    assert!(
+        (f1 - 50.0).abs() < 1.5,
+        "expected ~50 Hz at 1x, got {f1} Hz"
+    );
+
+    assert!(
+        (f8 - f1).abs() < 1.5,
+        "expected proc sample 8 pitch to match 1x, got f1={f1}, f8={f8}"
+    );
+}
+
+#[test]
+#[ignore = "perf benchmark; run manually"]
+
+fn sample_oversample_n4_performance_budget_benchmark() {
+    const FRAMES: usize = 128;
+
+    const WARMUP_ITERS: usize = 256;
+
+    const TIMED_ITERS: usize = 4096;
+
+    const TARGET_RATIO: f64 = 2.5;
+
+    let (mut baseline, baseline_in_channels, baseline_out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_PERF_BASELINE_EXAMPLE, FRAMES);
+
+    let (mut oversampled, os_in_channels, os_out_channels) =
+        compile_instance(SAMPLE_OVERSAMPLE_PERF_N4_EXAMPLE, FRAMES);
+
+    assert_eq!(baseline_in_channels, 1);
+
+    assert_eq!(baseline_out_channels, 1);
+
+    assert_eq!(os_in_channels, 1);
+
+    assert_eq!(os_out_channels, 1);
+
+    let input = (0..FRAMES)
+        .map(|idx| ((idx % 97) as f32 / 48.0) - 1.0)
+        .collect::<Vec<_>>();
+
+    let mut baseline_output = vec![0.0_f32; FRAMES];
+
+    let mut os_output = vec![0.0_f32; FRAMES];
+
+    let baseline_secs = benchmark_process_runtime(
+        &mut baseline,
+        &input,
+        &mut baseline_output,
+        FRAMES,
+        WARMUP_ITERS,
+        TIMED_ITERS,
+    );
+
+    let os_secs = benchmark_process_runtime(
+        &mut oversampled,
+        &input,
+        &mut os_output,
+        FRAMES,
+        WARMUP_ITERS,
+        TIMED_ITERS,
+    );
+
+    let ratio = os_secs / baseline_secs.max(f64::EPSILON);
+
+    eprintln!(
+        "oversample N=4 runtime ratio: {:.3}x (baseline={:.6}s, os4={:.6}s, frames={}, iters={})",
+        ratio, baseline_secs, os_secs, FRAMES, TIMED_ITERS
+    );
+
+    if std::env::var("ONDA_ENFORCE_OVERSAMPLE_PERF_BUDGET")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        assert!(
+            ratio <= TARGET_RATIO,
+            "oversample N=4 runtime ratio {:.3}x exceeded target {:.3}x",
+            ratio,
+            TARGET_RATIO
+        );
+    }
+}
+
+#[test]
+
+fn proc_array_input_call_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_INPUT_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_array_input_from_local_array_symbol_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_INPUT_VAR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.3, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_array_output_field_read_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_OUTPUT_INDEXED_CALL_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_array_param_constructor_args_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_PARAM_CTOR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_array_dynamic_index_reads_use_clamped_path() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_DYNAMIC_INDEX_CLAMP_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_array_dynamic_unsafe_read_bypasses_clamp_path() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_DYNAMIC_UNSAFE_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_array_dynamic_unsafe_write_bypasses_clamp_path() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_DYNAMIC_UNSAFE_WRITE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_array_dynamic_unsafe_oob_compiles() {
+    let frames = 4;
+
+    let (_instance, in_channels, out_channels) =
+        compile_instance(PROC_ARRAY_DYNAMIC_UNSAFE_OOB_COMPILES_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+}
+
+#[test]
+
+fn proc_array_constant_index_out_of_range_is_rejected() {
+    let parsed = parse_program(PROC_ARRAY_CONSTANT_INDEX_OOB_REJECTED_EXAMPLE)
+        .expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject out-of-range constant proc-array indexing"
+    );
+}
+
+#[test]
+
+fn proc_instance_array_indexed_call_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_INDEXED_CALL_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_instance_array_indexed_field_call_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_INDEXED_FIELD_CALL_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_instance_array_indexed_call_dynamic_index_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_instance_array_indexed_call_dynamic_index_with_oversampled_callee_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_OVERSAMPLED_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert!(
+            sample.is_finite() && *sample > 0.0 && *sample < 2.0,
+            "expected finite oversampled dynamic dispatch output in (0,2), got {}",
+            sample
+        );
+    }
+}
+
+#[test]
+
+fn proc_instance_array_indexed_field_call_dynamic_index_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_FIELD_DYNAMIC_INDEX_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_instance_array_indexed_call_dynamic_index_selects_slot_buffer_binding() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_BUFFER_BINDING_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 2);
+
+    let mut buf1 = vec![0.25_f32; frames];
+
+    let mut buf2 = vec![0.75_f32; frames];
+
+    let buf1_idx = instance.buffer_index("buf1").expect("buf1 index");
+
+    let buf2_idx = instance.buffer_index("buf2").expect("buf2 index");
+
+    bind_buffer(
+        &mut instance,
+        buf1_idx,
+        buf1.as_mut_ptr().cast::<u8>(),
+        buf1.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf1");
+
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2.as_mut_ptr().cast::<u8>(),
+        buf2.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_instance_array_indexed_alias_call_dynamic_index_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_ALIAS_CALL_DYNAMIC_INDEX_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_instance_array_indexed_alias_out_read_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_INDEXED_ALIAS_OUT_READ_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn nested_proc_instance_array_indexed_alias_call_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        NESTED_PROC_INSTANCE_ARRAY_INDEXED_ALIAS_CALL_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_instance_array_len_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_LEN_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 3.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process_bound() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_BUFFER_BINDING_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 2);
+
+    let mut buf1 = vec![0.25_f32; frames];
+
+    let mut buf2_old = vec![0.75_f32; frames];
+
+    let buf1_idx = instance.buffer_index("buf1").expect("buf1 index");
+
+    let buf2_idx = instance.buffer_index("buf2").expect("buf2 index");
+
+    bind_buffer(
+        &mut instance,
+        buf1_idx,
+        buf1.as_mut_ptr().cast::<u8>(),
+        buf1.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf1");
+
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_old.as_mut_ptr().cast::<u8>(),
+        buf2_old.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 old");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound with old buf2");
+
+    let out_old = decode_planar_f32(&out_bytes);
+
+    for sample in out_old {
+        assert_near(sample, 0.75, 1e-6);
+    }
+
+    let mut buf2_new = vec![0.5_f32; frames];
+
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_new.as_mut_ptr().cast::<u8>(),
+        buf2_new.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 new");
+
+    process_bound(&mut instance, frames).expect("process bound with new buf2");
+
+    let out_new = decode_planar_f32(&out_bytes);
+
+    for sample in out_new {
+        assert_near(sample, 0.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_process_unchecked()
+{
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_BUFFER_BINDING_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 2);
+
+    let mut buf1 = vec![0.25_f32; frames];
+
+    let mut buf2_old = vec![0.75_f32; frames];
+
+    let buf1_idx = instance.buffer_index("buf1").expect("buf1 index");
+
+    let buf2_idx = instance.buffer_index("buf2").expect("buf2 index");
+
+    bind_buffer(
+        &mut instance,
+        buf1_idx,
+        buf1.as_mut_ptr().cast::<u8>(),
+        buf1.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf1");
+
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_old.as_mut_ptr().cast::<u8>(),
+        buf2_old.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 old");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound to seed proc-slot refs");
+
+    let out_seed = decode_planar_f32(&out_bytes);
+
+    for sample in out_seed {
+        assert_near(sample, 0.75, 1e-6);
+    }
+
+    let mut buf2_new = vec![0.5_f32; frames];
+
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_new.as_mut_ptr().cast::<u8>(),
+        buf2_new.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 new");
+
+    validate_buffers(&mut instance).expect("validate buffers after rebind");
+
+    validate_outputs(&mut instance).expect("validate outputs");
+
+    unsafe {
+        process_unchecked(&mut instance).expect("unchecked process after rebind");
+    }
+
+    let out_unchecked = decode_planar_f32(&out_bytes);
+
+    for sample in out_unchecked {
+        assert_near(sample, 0.75, 1e-6);
+    }
+
+    process_bound(&mut instance, frames).expect("process bound refreshes refs");
+
+    let out_refreshed = decode_planar_f32(&out_bytes);
+
+    for sample in out_refreshed {
+        assert_near(sample, 0.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn nested_proc_instance_array_indexed_call_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(NESTED_PROC_INSTANCE_ARRAY_INDEXED_CALL_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn deep_nested_proc_instance_array_dynamic_index_chain_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        DEEP_NESTED_PROC_INSTANCE_ARRAY_DYNAMIC_INDEX_CHAIN_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 50.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn deeper_nested_proc_instance_array_dynamic_index_chain_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        DEEPER_NESTED_PROC_INSTANCE_ARRAY_DYNAMIC_INDEX_CHAIN_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 55.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn top_level_proc_instance_array_broadcast_ctor_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_INSTANCE_ARRAY_BROADCAST_CTOR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn top_level_proc_instance_array_broadcast_ctor_array_literal_arg_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_BROADCAST_CTOR_ARRAY_LITERAL_ARG_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.8, 1e-6);
+    }
+}
+
+#[test]
+
+fn top_level_proc_instance_array_broadcast_ctor_array_symbol_arg_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_BROADCAST_CTOR_ARRAY_SYMBOL_ARG_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.8, 1e-6);
+    }
+}
+
+#[test]
+
+fn untyped_init_array_first_element_type_is_enforced() {
+    let parsed = parse_program(UNTYPED_INIT_ARRAY_FIRST_ELEMENT_TYPE_MISMATCH_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+
+        result.is_err(),
+
+        "semantic analysis should reject untyped init array literals whose later elements are not assignable to the first element type"
+
+    );
+}
+
+#[test]
+
+fn top_level_proc_instance_array_broadcast_ctor_mixed_buffer_array_arg_analyzes() {
+    let parsed = parse_program(PROC_INSTANCE_ARRAY_BROADCAST_CTOR_MIXED_BUFFER_ARRAY_ARG_EXAMPLE)
+        .expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+
+        result.is_ok(),
+
+        "semantic analysis should allow broadcast processor-array ctor with scalar and per-slot buffer arguments"
+
+    );
+}
+
+#[test]
+
+fn nested_proc_init_untyped_array_symbol_arg_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(NESTED_PROC_INIT_UNTYPED_ARRAY_SYMBOL_ARG_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.6, 1e-6);
+    }
+}
+
+#[test]
+
+fn top_level_proc_instance_array_const_expr_size_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_PROC_INSTANCE_ARRAY_CONST_EXPR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[test]
+
+fn nested_proc_instance_array_const_expr_size_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(NESTED_PROC_INSTANCE_ARRAY_CONST_EXPR_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.5, 1e-6);
+    }
+}
+
+#[test]
+
+fn top_level_proc_instance_array_initializer_arity_is_rejected() {
+    let parsed = parse_program(TOP_LEVEL_PROC_INSTANCE_ARRAY_INIT_ARITY_ERROR_EXAMPLE)
+        .expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+
+        result.is_err(),
+
+        "semantic analysis should reject mismatched constructor count for top-level processor arrays"
+
+    );
+}
+
+#[test]
+
+fn proc_nested_state_persists_across_samples() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_NESTED_STATE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 0.25, 1e-6);
+
+    assert_near(output[1], 0.5, 1e-6);
+
+    assert_near(output[2], 0.75, 1e-6);
+
+    assert_near(output[3], 1.0, 1e-6);
+}
+
+#[test]
+
+fn proc_deep_nested_state_persists_across_samples() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_DEEP_NESTED_STATE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 0.5, 1e-6);
+
+    assert_near(output[1], 1.0, 1e-6);
+
+    assert_near(output[2], 1.5, 1e-6);
+
+    assert_near(output[3], 2.0, 1e-6);
+}
+
+#[test]
+
+fn proc_deep_nested_buffer_binding_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(PROC_DEEP_NESTED_BUFFER_BIND_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    assert_eq!(instance.buffer_count(), 1);
+
+    let mut buf = vec![3.0_f32, 4.0];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        buf.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_bound(&mut instance, frames).expect("process bound");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    let expected = [3.0_f32, 4.0, 4.0, 4.0];
+
+    for (sample, target) in out.iter().zip(expected) {
+        assert_near(*sample, target, 1e-6);
+    }
+}
+
+#[test]
+
+fn top_level_init_block_is_optional() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(TOP_LEVEL_OPTIONAL_INIT_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn struct_method_compiles_and_runs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(STRUCT_METHOD_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-5);
+
+    assert_near(output[1], 0.0, 1e-5);
+
+    assert_near(output[2], -1.0, 1e-5);
+
+    assert_near(output[3], 0.0, 1e-5);
+}
+
+#[test]
+
+fn struct_method_data_write_compiles_and_runs() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STRUCT_METHOD_DATA_WRITE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.75, 1e-6);
+    }
+}
+
+#[test]
+
+fn struct_method_requires_self_param() {
+    let parsed =
+        parse_program(STRUCT_METHOD_SELF_REQUIRED_ERROR_EXAMPLE).expect("parse should succeed");
+
+    let result = analyze(parsed);
+
+    assert!(
+        result.is_err(),
+        "semantic analysis should reject struct method without self first parameter"
+    );
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_orc_gain_compiles_and_runs() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        GAIN,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    set_param_f32(&mut instance, "gain", 0.5);
+
+    assert_eq!(in_channels, 1);
+
+    assert_eq!(out_channels, 1);
+
+    let input: Vec<f32> = (0..frames).map(|n| (n + 1) as f32).collect();
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    for (idx, out) in output.iter().enumerate() {
+        assert_near(*out, input[idx] * 0.5, 1e-6);
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_orc_sine_compiles_and_runs() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        SINE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let input = Vec::<f32>::new();
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    let phase_step = 440.0_f32 * 6.2831855_f32 / 48_000.0_f32;
+
+    for (idx, sample) in output.iter().enumerate() {
+        let expected = ((idx + 1) as f32 * phase_step).sin();
+
+        assert_near(*sample, expected, 1e-6);
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_orc_one_pole_compiles_and_runs() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        ONE_POLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 1);
+
+    assert_eq!(out_channels, 1);
+
+    let input = vec![1.0_f32; frames];
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process should succeed");
+
+    assert_near(output[0], 0.1, 1e-6);
+
+    assert!(output[frames - 1] > output[0]);
+
+    assert!(output[frames - 1] < 1.0);
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_orc_if_compiles_and_runs() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        IF_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.25, 1e-6);
+    }
+
+    set_param_f32(&mut instance, "gate", 0.0);
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, -0.25, 1e-6);
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_orc_for_compiles_and_runs() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        FOR_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 0.6, 1e-6);
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_orc_def_call_compiles_and_runs() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        DEF_CALL_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_orc_def_return_exits_early() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        DEF_EARLY_RETURN_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.0, 1e-6);
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_orc_struct_compiles_and_runs() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        STRUCT_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 1.25, 1e-6);
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+#[test]
+
+fn explicit_orc_struct_reserved_method_names_compile_and_run() {
+    let frames = 8;
+
+    let (mut instance, in_channels, out_channels) = compile_instance_with_options(
+        RESERVED_METHOD_NAMES_EXAMPLE,
+        frames,
+        CompileOptions {
+            backend: ExecutionBackend::OrcJit,
+
+            sample_rate: 48_000.0,
+
+            block_size: frames,
+
+            fast_math: false,
+        },
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 5.0, 1e-6);
+    }
+}
+
+#[test]
+
+fn analyze_supports_typed_init_generic_struct_ctor_decl() {
+    let src = r#"
+
+import std/data
+
+outs { out1 }
+
+init {
+
+  line: std::data::Data<f32> = std::data::Data()
+
+}
+
+sample {
+
+  out1 = line.read(0)
+
+}
+
+"#;
+
+    let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
+
+    let result = analyze(parsed);
+
+    assert!(result.is_ok(), "semantic analysis should succeed");
+}
+
+#[test]
+
+fn analyze_supports_typed_init_generic_struct_default_ctor_decl() {
+    let src = r#"
+
+import std/data
+
+outs { out1 }
+
+init {
+
+  line: std::data::Data<f32>
+
+}
+
+sample {
+
+  out1 = line.read(0)
+
+}
+
+"#;
+
+    let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
+
+    let result = analyze(parsed);
+
+    assert!(result.is_ok(), "semantic analysis should succeed");
+}
+
+#[test]
+
+fn analyze_rejects_typed_init_generic_struct_default_ctor_decl_without_type_args() {
+    let src = r#"
+
+import std/data
+
+outs { out1 }
+
+init {
+
+  line: std::data::Data
+
+}
+
+sample {
+
+  out1 = line.read(0)
+
+}
+
+"#;
+
+    let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
+
+    let result = analyze(parsed);
+
+    assert!(
+
+        result.is_err(),
+
+        "semantic analysis should reject generic struct ctor without type args when inference cannot resolve"
+
+    );
+}
+
+#[test]
+
+fn analyze_rejects_typed_init_namespace_instantiated_struct_default_ctor_decl_without_type_args() {
+    let src = r#"
+
+import std/data
+
+outs { out1 }
+
+init {
+
+  line: std::data<SR, 1>::Data
+
+}
+
+sample {
+
+  out1 = line.read(0)
+
+}
+
+"#;
+
+    let parsed = parse_program(src).expect("parser should accept typed generic init declaration");
+
+    let result = analyze(parsed);
+
+    assert!(
+
+        result.is_err(),
+
+        "semantic analysis should reject generic struct ctor without type args when inference cannot resolve"
+
+    );
+}

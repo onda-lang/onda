@@ -8,38 +8,38 @@ $ErrorActionPreference = "Stop"
 
 $demoDir = Resolve-Path $PSScriptRoot
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..")
-$sourceFile = Join-Path $demoDir "sine_wasm.omni"
+$sourceFile = Join-Path $demoDir "sine_wasm.onda"
 $objectFile = Join-Path $demoDir "sine_wasm.o"
-$metaFile = Join-Path $demoDir "sine_wasm.omni.json"
+$metaFile = Join-Path $demoDir "sine_wasm.onda.json"
 $wasmFile = Join-Path $demoDir "sine_wasm.wasm"
 
-function Invoke-Omni {
+function Invoke-Onda {
     param(
         [Parameter(ValueFromRemainingArguments = $true)]
         [string[]]$Args
     )
 
-    $packagedOmni = Join-Path $repoRoot "bin\omni.exe"
-    $releaseOmni = Join-Path $repoRoot "target\release\omni.exe"
+    $packagedOnda = Join-Path $repoRoot "bin\onda.exe"
+    $releaseOnda = Join-Path $repoRoot "target\release\onda.exe"
 
-    if (Test-Path $packagedOmni) {
-        & $packagedOmni @Args
+    if (Test-Path $packagedOnda) {
+        & $packagedOnda @Args
         return
     }
 
-    $pathOmni = Get-Command omni.exe -ErrorAction SilentlyContinue
-    if ($pathOmni) {
-        & $pathOmni.Source @Args
+    $pathOnda = Get-Command onda.exe -ErrorAction SilentlyContinue
+    if ($pathOnda) {
+        & $pathOnda.Source @Args
         return
     }
 
-    if (Test-Path $releaseOmni) {
-        & $releaseOmni @Args
+    if (Test-Path $releaseOnda) {
+        & $releaseOnda @Args
         return
     }
 
     if (-not (Test-Path (Join-Path $repoRoot "Cargo.toml"))) {
-        throw "omni not found in bin/ or PATH, and this demo is not running from a source checkout with Cargo.toml."
+        throw "onda not found in bin/ or PATH, and this demo is not running from a source checkout with Cargo.toml."
     }
 
     $useLlvmEnv = Join-Path $repoRoot "scripts\use-llvm-env.ps1"
@@ -47,8 +47,8 @@ function Invoke-Omni {
         . $useLlvmEnv -Flavor auto -Version "21.1.2"
     }
 
-    cargo build --release -p omni_cli
-    & $releaseOmni @Args
+    cargo build --release -p onda_cli
+    & $releaseOnda @Args
 }
 
 function Get-WasmLd {
@@ -68,13 +68,13 @@ function Get-WasmLd {
 
 Push-Location $repoRoot
 try {
-    Invoke-Omni compile $sourceFile --emit obj --target wasm32-unknown-unknown --sample-rate $SampleRate --block $BlockSize --output $objectFile --meta-out $metaFile
+    Invoke-Onda compile $sourceFile --emit obj --target wasm32-unknown-unknown --sample-rate $SampleRate --block $BlockSize --output $objectFile --meta-out $metaFile
 
     $wasmLd = Get-WasmLd
     & $wasmLd $objectFile `
         --no-entry `
-        --export=omni_init `
-        --export=omni_process `
+        --export=onda_init `
+        --export=onda_process `
         --export=__heap_base `
         --export-memory `
         --initial-memory=131072 `

@@ -1,0 +1,16 @@
+[package]
+name = "onda_api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+onda_frontend = { path = "../onda_frontend" }
+onda_semantics = { path = "../onda_semantics" }
+onda_codegen_llvm = { path = "../onda_codegen_llvm" }
+onda_runtime = { path = "../onda_runtime" }

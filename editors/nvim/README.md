@@ -1,45 +1,45 @@
-# Omni Neovim Support
+# Onda Neovim Support
 
-This directory contains the Neovim plugin for Omni.
+This directory contains the Neovim plugin for Onda.
 
 It provides:
 
-- `.omni` filetype detection
+- `.onda` filetype detection
 - regex syntax highlighting
-- builtin LSP startup through `omni lsp`
-- `:OmniRunPatch`, which launches the standalone preview window with `omni preview <file>`
+- builtin LSP startup through `onda lsp`
+- `:OndaRunPatch`, which launches the standalone preview window with `onda preview <file>`
 
 ## Requirements
 
 - Neovim 0.10 or newer
-- an `omni` executable available on `PATH`, or an explicit configured path
+- an `onda` executable available on `PATH`, or an explicit configured path
 
 If you need to build the CLI locally:
 
 ```bash
-cargo build -p omni_cli --release
+cargo build -p onda_cli --release
 ```
 
 That produces the binary at:
-- Windows: `target/release/omni.exe`
-- macOS/Linux: `target/release/omni`
+- Windows: `target/release/onda.exe`
+- macOS/Linux: `target/release/onda`
 
 ## Install
 
-Because this plugin lives inside the `omni-llvm` repo, the normal installation pattern is:
+Because this plugin lives inside the `onda` repo, the normal installation pattern is:
 1. keep a local checkout of the repo
 2. add `editors/nvim` to your Neovim plugin/runtime path
-3. point the plugin at your `omni` binary if it is not already on `PATH`
+3. point the plugin at your `onda` binary if it is not already on `PATH`
 
 ### `lazy.nvim`
 
 ```lua
 {
-  dir = "C:/path/to/omni-llvm/editors/nvim",
-  name = "omni.nvim",
+  dir = "C:/path/to/onda/editors/nvim",
+  name = "onda.nvim",
   config = function()
-    require("omni").setup({
-      server_path = "C:/path/to/omni.exe",
+    require("onda").setup({
+      server_path = "C:/path/to/onda.exe",
     })
   end,
 }
@@ -49,11 +49,11 @@ macOS/Linux example:
 
 ```lua
 {
-  dir = "/path/to/omni-llvm/editors/nvim",
-  name = "omni.nvim",
+  dir = "/path/to/onda/editors/nvim",
+  name = "onda.nvim",
   config = function()
-    require("omni").setup({
-      server_path = "/path/to/omni",
+    require("onda").setup({
+      server_path = "/path/to/onda",
     })
   end,
 }
@@ -80,32 +80,32 @@ For example, copying the contents of `editors/nvim/` into `~/.config/nvim/` will
 macOS/Linux example:
 
 ```bash
-mkdir -p ~/.local/share/nvim/site/pack/omni/start
-ln -s /path/to/omni-llvm/editors/nvim ~/.local/share/nvim/site/pack/omni/start/omni.nvim
+mkdir -p ~/.local/share/nvim/site/pack/onda/start
+ln -s /path/to/onda/editors/nvim ~/.local/share/nvim/site/pack/onda/start/onda.nvim
 ```
 
 Windows PowerShell example:
 
 ```powershell
-New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\nvim-data\site\pack\omni\start" | Out-Null
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\nvim-data\site\pack\onda\start" | Out-Null
 New-Item -ItemType SymbolicLink `
-  -Path "$env:LOCALAPPDATA\nvim-data\site\pack\omni\start\omni.nvim" `
-  -Target "C:\path\to\omni-llvm\editors\nvim"
+  -Path "$env:LOCALAPPDATA\nvim-data\site\pack\onda\start\onda.nvim" `
+  -Target "C:\path\to\onda\editors\nvim"
 ```
 
 Then add your configuration in `init.lua`:
 
 ```lua
-require("omni").setup({
-  server_path = "omni",
+require("onda").setup({
+  server_path = "onda",
 })
 ```
 
 ## Configuration
 
 ```lua
-require("omni").setup({
-  server_path = "omni",
+require("onda").setup({
+  server_path = "onda",
   server_args = {},
   preview_path = nil,
   preview_args = {},
@@ -116,43 +116,43 @@ require("omni").setup({
 
 Notes:
 
-- `server_path` is used for `omni lsp`
+- `server_path` is used for `onda lsp`
 - `preview_path` defaults to `server_path`
-- `preview_args` are appended to `omni preview <file>`
-- `preview_host = "egui"` adds `--egui` to `:OmniRunPatch`
-- `preview_host = "webview"` adds `--no-egui` to `:OmniRunPatch`
+- `preview_args` are appended to `onda preview <file>`
+- `preview_host = "egui"` adds `--egui` to `:OndaRunPatch`
+- `preview_host = "webview"` adds `--no-egui` to `:OndaRunPatch`
 - `preview_host = nil` leaves host selection to the CLI default
 - `root_markers` controls project root detection for the builtin LSP startup
 
 Example:
 
 ```lua
-require("omni").setup({
+require("onda").setup({
   preview_host = "webview",
 })
 ```
 
-If the plugin is on your runtimepath, it auto-calls `require("omni").setup()` with defaults.
+If the plugin is on your runtimepath, it auto-calls `require("onda").setup()` with defaults.
 Providing your own `setup(...)` call overrides those defaults.
 
 ## Commands
 
-- `:OmniRunPatch` saves the current `.omni` buffer and opens the standalone preview window
+- `:OndaRunPatch` saves the current `.onda` buffer and opens the standalone preview window
 
 ## What happens automatically
 
 Once installed, the plugin:
 
-- detects `.omni` files
-- starts `omni lsp` when you open an Omni buffer
-- applies Omni syntax highlighting
+- detects `.onda` files
+- starts `onda lsp` when you open an Onda buffer
+- applies Onda syntax highlighting
 
 ## Troubleshooting
 
 If the LSP does not start:
-- check that `omni` runs in a terminal
+- check that `onda` runs in a terminal
 - set `server_path` explicitly to the built binary
 
-If `:OmniRunPatch` does not launch:
-- check that `preview_path` or `server_path` points to a working `omni` binary
+If `:OndaRunPatch` does not launch:
+- check that `preview_path` or `server_path` points to a working `onda` binary
 - make sure the current buffer is saved to disk

@@ -1,13 +1,13 @@
 {
-  "name": "omni-vscode",
-  "displayName": "Omni",
-  "description": "VSCode support for the Omni audio DSL",
+  "name": "onda-vscode",
+  "displayName": "Onda",
+  "description": "VSCode support for the Onda audio DSL",
   "version": "0.0.1",
-  "publisher": "omni",
+  "publisher": "onda",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vitreo12/omni-llvm.git"
+    "url": "https://github.com/vitreo12/onda.git"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -16,48 +16,48 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:omni",
-    "onCommand:omni.restartLanguageServer",
-    "onCommand:omni.runPatch",
-    "onCommand:omni.stopPatch"
+    "onLanguage:onda",
+    "onCommand:onda.restartLanguageServer",
+    "onCommand:onda.runPatch",
+    "onCommand:onda.stopPatch"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
-        "id": "omni",
+        "id": "onda",
         "aliases": [
-          "Omni",
-          "omni"
+          "Onda",
+          "onda"
         ],
         "extensions": [
-          ".omni"
+          ".onda"
         ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "omni",
-        "scopeName": "source.omni",
-        "path": "./syntaxes/omni.tmLanguage.json"
+        "language": "onda",
+        "scopeName": "source.onda",
+        "path": "./syntaxes/onda.tmLanguage.json"
       }
     ],
     "semanticTokenTypes": [
       {
         "id": "port",
         "superType": "variable",
-        "description": "Omni audio input, output, or buffer symbol"
+        "description": "Onda audio input, output, or buffer symbol"
       },
       {
         "id": "state",
         "superType": "variable",
-        "description": "Omni init-declared state symbol"
+        "description": "Onda init-declared state symbol"
       }
     ],
     "semanticTokenScopes": [
       {
-        "language": "omni",
+        "language": "onda",
         "scopes": {
           "enumMember": [
             "variable.other.constant"
@@ -82,27 +82,27 @@
     ],
     "commands": [
       {
-        "command": "omni.runPatch",
-        "title": "Omni: Run Patch"
+        "command": "onda.runPatch",
+        "title": "Onda: Run Patch"
       },
       {
-        "command": "omni.stopPatch",
-        "title": "Omni: Stop Patch"
+        "command": "onda.stopPatch",
+        "title": "Onda: Stop Patch"
       },
       {
-        "command": "omni.restartLanguageServer",
-        "title": "Omni: Restart Language Server"
+        "command": "onda.restartLanguageServer",
+        "title": "Onda: Restart Language Server"
       }
     ],
     "configuration": {
-      "title": "Omni",
+      "title": "Onda",
       "properties": {
-        "omni.server.path": {
+        "onda.server.path": {
           "type": "string",
-          "default": "omni",
-          "description": "Executable used to start the Omni language server."
+          "default": "onda",
+          "description": "Executable used to start the Onda language server."
         },
-        "omni.server.args": {
+        "onda.server.args": {
           "type": "array",
           "default": [],
           "items": {

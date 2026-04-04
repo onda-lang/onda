@@ -1,0 +1,26 @@
+[package]
+name = "onda_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "onda"
+path = "src/main.rs"
+
+[dependencies]
+cpal = "0.16"
+hound = "3.5.1"
+onda_daemon = { path = "../onda_daemon" }
+onda_codegen_llvm = { path = "../onda_codegen_llvm" }
+onda_egui = { path = "../onda_egui" }
+onda_frontend = { path = "../onda_frontend" }
+onda_preview = { path = "../onda_preview" }
+onda_runtime = { path = "../onda_runtime" }
+onda_semantics = { path = "../onda_semantics" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+onda_webview = { path = "../onda_webview" }

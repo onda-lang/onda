@@ -1,16 +1,16 @@
 [workspace]
 members = [
-  "crates/omni_cli",
-  "crates/omni_daemon",
-  "crates/omni_frontend",
-  "crates/omni_semantics",
-  "crates/omni_codegen_llvm",
-  "crates/omni_runtime",
-  "crates/omni_api",
-  "crates/omni_preview",
-  "crates/omni_egui",
-  "crates/omni_webview",
-  "crates/omni_examples",
+  "crates/onda_cli",
+  "crates/onda_daemon",
+  "crates/onda_frontend",
+  "crates/onda_semantics",
+  "crates/onda_codegen_llvm",
+  "crates/onda_runtime",
+  "crates/onda_api",
+  "crates/onda_preview",
+  "crates/onda_egui",
+  "crates/onda_webview",
+  "crates/onda_examples",
 ]
 resolver = "2"
 
@@ -18,7 +18,7 @@ resolver = "2"
 edition = "2021"
 license = "MIT"
 version = "0.1.0"
-authors = ["omni-llvm contributors"]
+authors = ["onda contributors"]
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

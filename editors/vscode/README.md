@@ -1,28 +1,28 @@
-# Omni VSCode Extension
+# Onda VSCode Extension
 
-This extension adds VSCode support for Omni:
+This extension adds VSCode support for Onda:
 
-- `.omni` language registration
+- `.onda` language registration
 - syntax highlighting
-- semantic tokens from `omni lsp`
-- `Omni: Run Patch`
-- `Omni: Stop Patch`
-- `Omni: Restart Language Server`
+- semantic tokens from `onda lsp`
+- `Onda: Run Patch`
+- `Onda: Stop Patch`
+- `Onda: Restart Language Server`
 
 ## Requirements
 
 - VSCode 1.90 or newer
-- an `omni` executable available on `PATH`, or an explicit configured path
+- an `onda` executable available on `PATH`, or an explicit configured path
 
 If you need to build the CLI locally:
 
 ```bash
-cargo build -p omni_cli --release
+cargo build -p onda_cli --release
 ```
 
 That produces the binary at:
-- Windows: `target/release/omni.exe`
-- macOS/Linux: `target/release/omni`
+- Windows: `target/release/onda.exe`
+- macOS/Linux: `target/release/onda`
 
 ## Install
 
@@ -34,7 +34,7 @@ If you already have a packaged `.vsix`, install it with one of these:
 - CLI:
 
 ```bash
-code --install-extension omni-vscode-0.0.1.vsix
+code --install-extension onda-vscode-0.0.1.vsix
 ```
 
 ### Option 2: build a `.vsix` locally from this repo
@@ -50,7 +50,7 @@ npx @vscode/vsce package --skip-license
 That produces a `.vsix` file in `editors/vscode/`, which you can then install with:
 
 ```bash
-code --install-extension ./omni-vscode-0.0.1.vsix
+code --install-extension ./onda-vscode-0.0.1.vsix
 ```
 
 If you prefer the UI, use `Extensions: Install from VSIX...` and select the generated file.
@@ -60,20 +60,20 @@ If you prefer the UI, use `Extensions: Install from VSIX...` and select the gene
 By default the extension starts:
 
 ```text
-omni lsp
+onda lsp
 ```
 
 You can override the executable and prepend extra args in VSCode settings:
 
-- `omni.server.path`
-- `omni.server.args`
+- `onda.server.path`
+- `onda.server.args`
 
 Example settings:
 
 ```json
 {
-  "omni.server.path": "C:/path/to/omni.exe",
-  "omni.server.args": []
+  "onda.server.path": "C:/path/to/onda.exe",
+  "onda.server.args": []
 }
 ```
 
@@ -81,21 +81,21 @@ Or on macOS/Linux:
 
 ```json
 {
-  "omni.server.path": "/path/to/omni",
-  "omni.server.args": []
+  "onda.server.path": "/path/to/onda",
+  "onda.server.args": []
 }
 ```
 
 ## Using the extension
 
-Open an `.omni` file and the extension will activate automatically.
+Open an `.onda` file and the extension will activate automatically.
 
 Available commands:
-- `Omni: Run Patch`
-- `Omni: Stop Patch`
-- `Omni: Restart Language Server`
+- `Onda: Run Patch`
+- `Onda: Stop Patch`
+- `Onda: Restart Language Server`
 
-`Omni: Run Patch` starts the preview transport and opens the patch UI.
+`Onda: Run Patch` starts the preview transport and opens the patch UI.
 
 ## Development
 

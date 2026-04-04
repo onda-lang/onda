@@ -3,7 +3,7 @@
 ## Next Features
 
 - Editor / daemon follow-ups
-  - Expand `omni lsp` beyond diagnostics + semantic tokens:
+  - Expand `onda lsp` beyond diagnostics + semantic tokens:
     add hover, go-to-definition, document symbols, completion, and cancellation-aware analysis scheduling.
   - Improve diagnostic cadence:
     evaluate publish-on-change/debounced diagnostics in addition to the current open/save flow.
@@ -11,7 +11,7 @@
     decide which preview-control pieces stay private versus becoming a documented protocol.
   - Keep VSCode syntax highlighting and semantic tokens aligned as the language grows.
   - Add an extension smoke-test path or automation for:
-    `omni lsp`, `Omni: Run Patch`, semantic tokens, and preview webview controls.
+    `onda lsp`, `Onda: Run Patch`, semantic tokens, and preview webview controls.
   - Improve preview panel UX:
     better knob/slider affordances, richer status/errors, and explicit device/runtime state display.
   - Broaden preview buffer ingestion beyond current WAV-only `hound` path if warranted.
@@ -34,7 +34,7 @@
   - Evaluate opt-in graph-edge coercions/broadcasting:
     endpoint-family expansion for proc arrays and broader numeric coercion rules.
     Example endpoint-family expansion:
-    ```omni
+    ```onda
     init:
       voices: Voice[4] = Voice()
 
@@ -42,7 +42,7 @@
       env.out1 >> voices.gain
     ```
     which would expand to:
-    ```omni
+    ```onda
     graph:
       env.out1 >> voices[0].gain
       env.out1 >> voices[1].gain
@@ -50,7 +50,7 @@
       env.out1 >> voices[3].gain
     ```
     Example broader numeric coercion:
-    ```omni
+    ```onda
     params:
       mode: i32 = 0
 
@@ -58,7 +58,7 @@
       gate >> mode
     ```
     where today an explicit cast would still be preferred:
-    ```omni
+    ```onda
     graph:
       i32(gate) >> mode
     ```
@@ -100,11 +100,11 @@
 - AOT follow-ups
   - Add a first-class `--emit wasm` convenience path that wraps the current object-emission + `wasm-ld` flow for single-module exports.
     Current state:
-    wasm object emission already works through `omni compile --emit obj --target wasm32-unknown-unknown`
+    wasm object emission already works through `onda compile --emit obj --target wasm32-unknown-unknown`
     or `--target-spec targets/wasm32-unknown-unknown.toml` when LLVM was built with the `WebAssembly`
     target enabled. The repo also includes a working example flow under
     `examples/web/sine_wasm_worklet/` that links the emitted object with `wasm-ld`.
-  - Decide whether `omni link` is worth adding as a low-level multi-object/native-link orchestration command, or whether that should stay external.
+  - Decide whether `onda link` is worth adding as a low-level multi-object/native-link orchestration command, or whether that should stay external.
   - Decide whether metadata should remain sidecar-only or gain an optional embedded/exported form for host loaders.
   - Add a few more cross-target artifact smoke tests if we want broader confidence across ELF/COFF/Mach-O/WASM object formats.
 
@@ -124,7 +124,7 @@
       - Benefits from the full LLVM O3 pipeline (loop vectorization, inlining, etc.).
       - Only runs where LLVM is available (native host). Cannot run inside WASM itself.
     - **Binaryen codegen backend** (lightweight, WASM-native, embeddable):
-      - New codegen crate (e.g. `omni_codegen_binaryen`) that emits Binaryen IR directly
+      - New codegen crate (e.g. `onda_codegen_binaryen`) that emits Binaryen IR directly
         from `TypedProgram`, bypassing LLVM entirely.
       - Uses the Binaryen C API (`binaryen-c.h`) to construct modules, functions, and expressions.
       - Binaryen's own optimizer handles WASM-specific passes (dead code, coalescing, reordering, etc.).
@@ -144,14 +144,14 @@
       - State blob layout (`layout.rs`) is portable — primitive sizes are identical, pointer-width fields
         (if any are introduced) need to use explicit i32 widths rather than `isize`/`usize`.
     - Exported WASM functions:
-      - `omni_init(state_ptr)` — initialize state blob at the given offset.
-      - `omni_process(state_ptr, frames, ins_ptr, outs_ptr, params_ptr, bufs_ptr, buf_frames_ptr, buf_channels_ptr, buf_samplerates_ptr)`
-        — same signature shape as the current ORC `omni_process`, with pointers as i32 memory offsets.
-      - `omni_event_N(state_ptr, payload_ptr, payload_len)` — per-event dispatch.
-      - `omni_alloc(bytes) -> ptr` / `omni_free(ptr)` — optional bump/arena allocator exported from the
+      - `onda_init(state_ptr)` — initialize state blob at the given offset.
+      - `onda_process(state_ptr, frames, ins_ptr, outs_ptr, params_ptr, bufs_ptr, buf_frames_ptr, buf_channels_ptr, buf_samplerates_ptr)`
+        — same signature shape as the current ORC `onda_process`, with pointers as i32 memory offsets.
+      - `onda_event_N(state_ptr, payload_ptr, payload_len)` — per-event dispatch.
+      - `onda_alloc(bytes) -> ptr` / `onda_free(ptr)` — optional bump/arena allocator exported from the
         module so the host can request linear memory regions without linking a full allocator.
-      - `omni_state_size() -> i32` — return required state blob size for host-side allocation.
-      - `omni_metadata()` — optional: return a pointer to a static descriptor blob with
+      - `onda_state_size() -> i32` — return required state blob size for host-side allocation.
+      - `onda_metadata()` — optional: return a pointer to a static descriptor blob with
         input/output/param/buffer/event counts, names, types, and byte sizes.
     - Optimization:
       - LLVM path: `default<O3>` pipeline + optional `wasm-opt` post-pass.
@@ -166,8 +166,8 @@
         (same as current approach, just verify emission works for wasm target).
   - AudioWorklet glue (JS/TS runtime):
     - Ship a JS/TS helper module that loads the `.wasm`, allocates linear memory regions for
-      state/IO/params/buffers, and bridges `AudioWorkletProcessor.process()` to `omni_process`.
-    - The glue layer handles interleaved↔planar conversion if needed (or document that Omni
+      state/IO/params/buffers, and bridges `AudioWorkletProcessor.process()` to `onda_process`.
+    - The glue layer handles interleaved↔planar conversion if needed (or document that Onda
       uses planar layout matching `AudioWorkletProcessor` conventions).
     - Param changes and event dispatch go through the glue layer via `MessagePort`.
   - Host-side hot-swap (daemon-served live preview):
@@ -184,29 +184,29 @@
       - State is reset on swap (matches current native preview behavior on recompile).
       - Param values and buffer bindings are re-applied from the client-side shadow state
         (same pattern as the current daemon preview session rebuild).
-    - Decide whether to extend `omni preview play --target wasm32` to spawn a local HTTP server +
-      WebSocket bridge, or keep WASM preview as a separate `omni preview web` subcommand.
+    - Decide whether to extend `onda preview play --target wasm32` to spawn a local HTTP server +
+      WebSocket bridge, or keep WASM preview as a separate `onda preview web` subcommand.
     - Evaluate whether the VSCode extension's Patch panel can reuse this path
       (webview already runs in a browser-like context; could load the AudioWorklet directly).
   - In-browser compiler (zero-install web playground):
-    - Compile the Omni frontend (`omni_frontend`) + semantics (`omni_semantics`) +
-      Binaryen codegen backend (`omni_codegen_binaryen`) to `wasm32-unknown-unknown` via
+    - Compile the Onda frontend (`onda_frontend`) + semantics (`onda_semantics`) +
+      Binaryen codegen backend (`onda_codegen_binaryen`) to `wasm32-unknown-unknown` via
       `cargo build --target wasm32-unknown-unknown`.
     - The frontend and semantics crates are pure Rust with no OS dependencies — should
       cross-compile cleanly. Verify no transitive dependency pulls in `std::fs`/`std::net`/etc.
     - Binaryen itself is compiled to WASM (it supports this) and linked into the codegen crate.
-    - Result: a single WASM module (~3-8MB estimated) that takes Omni source text as input
+    - Result: a single WASM module (~3-8MB estimated) that takes Onda source text as input
       and returns `.wasm` bytes as output — the full compiler running in the browser.
-    - The web playground then: user edits Omni source → compiler WASM produces DSP WASM →
+    - The web playground then: user edits Onda source → compiler WASM produces DSP WASM →
       DSP WASM is loaded into AudioWorklet → audio plays. All client-side, no server.
     - Latency budget: Binaryen codegen is fast enough for interactive use (~10-50ms for typical
-      Omni programs); LLVM would be too slow inside WASM.
+      Onda programs); LLVM would be too slow inside WASM.
     - The playground UI can reuse the AudioWorklet glue layer and param/buffer control surface
       from the daemon-served path.
   - CLI integration:
-    - `omni compile foo.omni --target wasm32` emits `foo.wasm`.
-    - `omni compile foo.omni --target wasm32 --emit js` also emits the AudioWorklet glue module.
-    - `omni compile foo.omni --target wasm32 --meta` emits a JSON descriptor alongside the `.wasm`.
+    - `onda compile foo.onda --target wasm32` emits `foo.wasm`.
+    - `onda compile foo.onda --target wasm32 --emit js` also emits the AudioWorklet glue module.
+    - `onda compile foo.onda --target wasm32 --meta` emits a JSON descriptor alongside the `.wasm`.
     - `--wasm-backend binaryen|llvm` selects the codegen strategy (default: `binaryen`).
   - Testing:
     - Run existing integration-test suite cross-compiled to WASM via a lightweight WASM runtime
@@ -218,7 +218,7 @@
       verify output samples match the native reference.
 
 - C++ backend (`.hpp` export)
-  - Add a backend that exports Omni programs to a single-file, self-contained C++ header class.
+  - Add a backend that exports Onda programs to a single-file, self-contained C++ header class.
   - Generate deterministic `init`/`process` methods with no dynamic allocation in the audio callback.
   - Keep generated API compatible with current channel/state/data model for easy host embedding.
 

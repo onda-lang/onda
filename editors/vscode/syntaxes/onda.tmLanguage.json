@@ -1,0 +1,203 @@
+{
+  "name": "Onda",
+  "scopeName": "source.onda",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#section-headers"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#imports"
+    },
+    {
+      "include": "#keyword-operators"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#numbers"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.onda",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.onda",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.onda",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "section-headers": {
+      "patterns": [
+        {
+          "name": "meta.section.header.onda",
+          "match": "^(\\s*)(ins|outs|params|const|events|buffers|init|block|sample|graph)(?=\\s*(?:<|\\d|[:{(A-Za-z_]))(\\s*<[^>\\n]+>)?(\\s+\\d+)?(\\s*(?::|\\{))?",
+          "captures": {
+            "2": {
+              "name": "storage.type.block.onda"
+            },
+            "4": {
+              "name": "constant.numeric.onda"
+            },
+            "5": {
+              "name": "punctuation.separator.key-value.onda"
+            }
+          }
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "name": "meta.declaration.namespace.onda",
+          "match": "^(\\s*)(namespace)\\b",
+          "captures": {
+            "2": {
+              "name": "storage.type.block.onda"
+            }
+          }
+        },
+        {
+          "name": "meta.declaration.type.onda",
+          "match": "^(\\s*)(proc|processor|struct)(\\s+)([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "2": {
+              "name": "storage.type.block.onda"
+            },
+            "4": {
+              "name": "entity.name.type.onda"
+            }
+          }
+        },
+        {
+          "name": "meta.declaration.function.onda",
+          "match": "^(\\s*)(def)(\\s+)([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "2": {
+              "name": "storage.type.block.onda"
+            },
+            "4": {
+              "name": "entity.name.function.onda"
+            }
+          }
+        },
+        {
+          "name": "meta.declaration.const.onda",
+          "match": "\\b(const)\\b",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.const.onda"
+            }
+          }
+        }
+      ]
+    },
+    "imports": {
+      "patterns": [
+        {
+          "name": "meta.import.onda",
+          "match": "^(\\s*)(import)(\\s+)([A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z_][A-Za-z0-9_]*)*)",
+          "captures": {
+            "2": {
+              "name": "keyword.control.import.onda"
+            },
+            "4": {
+              "name": "string.unquoted.import-path.onda"
+            }
+          }
+        },
+        {
+          "name": "meta.include.onda",
+          "match": "^(\\s*)(include)(\\s+)(\"[^\"]+\")",
+          "captures": {
+            "2": {
+              "name": "keyword.control.import.onda"
+            },
+            "4": {
+              "name": "string.quoted.double.onda"
+            }
+          }
+        }
+      ]
+    },
+    "keyword-operators": {
+      "patterns": [
+        {
+          "name": "keyword.control.graph.onda",
+          "match": "(>>\\[[^\\]\\n]+\\]|<<\\[[^\\]\\n]+\\]|>>|<<)"
+        },
+        {
+          "name": "keyword.operator.range.onda",
+          "match": "(\\.\\.=|\\.\\.)"
+        },
+        {
+          "name": "keyword.operator.logical.onda",
+          "match": "(==|!=|<=|>=|<|>|&&|\\|\\|)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.onda",
+          "match": "(::|[+\\-*/%=&|^~!])"
+        },
+        {
+          "name": "keyword.other.rate.onda",
+          "match": "@(sample|block)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.onda",
+          "match": "\\b(if|elif|else|for|in|while|loop|break|continue|return|assert)\\b"
+        },
+        {
+          "name": "constant.language.onda",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.onda",
+          "match": "\\b(f32|f64|i32|i64|bool|buffer)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.onda",
+          "match": "\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b"
+        }
+      ]
+    }
+  }
+}

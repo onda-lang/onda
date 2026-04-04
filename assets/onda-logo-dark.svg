@@ -1,0 +1,21 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Onda Logo Dark</title>
+  <desc id="desc">A light blue fluid wave inside a circular O on a deep dark blue background.</desc>
+  
+  <!-- Deep Dark Blue Background -->
+  <rect width="512" height="512" rx="112" fill="#0C1E33"/>
+  
+  <!-- The 'O' Circle -->
+  <circle cx="256" cy="256" r="156" stroke="#C9DBF2" stroke-width="24"/>
+  
+  <!-- The 'n' Wave Path -->
+  <path
+    d="M175 295 
+       C 200 180, 235 180, 255 255 
+       S 310 330, 335 215"
+    stroke="#C9DBF2"
+    stroke-width="22"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

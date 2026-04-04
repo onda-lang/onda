@@ -1,3 +1,3 @@
 [env]
 LLVM_SYS_211_PREFIX = { value = ".deps/llvm-src/21.1.2-static", relative = true }
-OMNI_LLVM_LINK_MODE = { value = "static" }
+ONDA_LLVM_LINK_MODE = { value = "static" }

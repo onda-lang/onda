@@ -129,22 +129,22 @@ let patchPanelState: PatchPanelState = {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   extensionContext = context;
-  patchOutput = vscode.window.createOutputChannel("Omni Patch");
-  serverOutput = vscode.window.createOutputChannel("Omni Language Server");
+  patchOutput = vscode.window.createOutputChannel("Onda Patch");
+  serverOutput = vscode.window.createOutputChannel("Onda Language Server");
   context.subscriptions.push(patchOutput, serverOutput);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("omni.restartLanguageServer", async () => {
+    vscode.commands.registerCommand("onda.restartLanguageServer", async () => {
       await restartClient();
     }),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand("omni.runPatch", async () => {
+    vscode.commands.registerCommand("onda.runPatch", async () => {
       await runPatch();
     }),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand("omni.stopPatch", async () => {
+    vscode.commands.registerCommand("onda.stopPatch", async () => {
       await stopPatch();
     }),
   );
@@ -178,7 +178,7 @@ export async function deactivate(): Promise<void> {
 async function restartClient(): Promise<void> {
   await deactivate();
   if (!extensionContext) {
-    throw new Error("Omni extension context is not initialized");
+    throw new Error("Onda extension context is not initialized");
   }
   await startClient(extensionContext);
 }
@@ -218,7 +218,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
 
   await stopPatch({ silent: true, preservePath: fsPath });
 
-  const { command, extraArgs } = omniExecutableConfig();
+  const { command, extraArgs } = ondaExecutableConfig();
   const args = [...extraArgs, "preview", "play", fsPath, "--forever", "--control-json"];
   if (patchPanelState.currentInputDevice) {
     args.push("--input-device", patchPanelState.currentInputDevice);
@@ -265,7 +265,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
     postPatchPanelState();
     patchOutput?.show(true);
     void vscode.window.showErrorMessage(
-      `Failed to start Omni patch${failedPath ? ` (${path.basename(failedPath)})` : ""}: ${error.message}`,
+      `Failed to start Onda patch${failedPath ? ` (${path.basename(failedPath)})` : ""}: ${error.message}`,
     );
   });
   child.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
@@ -296,7 +296,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
     const reason = exitError ?? (signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`);
     patchOutput?.show(true);
     void vscode.window.showWarningMessage(
-      `Omni patch stopped${finishedPath ? ` (${path.basename(finishedPath)})` : ""}: ${reason}`,
+      `Onda patch stopped${finishedPath ? ` (${path.basename(finishedPath)})` : ""}: ${reason}`,
     );
   });
 }
@@ -304,7 +304,7 @@ async function runPatch(preferredPath?: string, options?: { restart?: boolean })
 async function stopPatch(options?: { silent?: boolean; preservePath?: string }): Promise<void> {
   if (!patchProcess) {
     if (!options?.silent) {
-      void vscode.window.showInformationMessage("No Omni patch is currently running.");
+      void vscode.window.showInformationMessage("No Onda patch is currently running.");
     }
     patchPanelState = {
       ...patchPanelState,
@@ -333,7 +333,7 @@ async function stopPatch(options?: { silent?: boolean; preservePath?: string }):
   postPatchPanelState();
 
   if (!options?.silent && runningPath) {
-    void vscode.window.showInformationMessage(`Stopped Omni patch: ${path.basename(runningPath)}`);
+    void vscode.window.showInformationMessage(`Stopped Onda patch: ${path.basename(runningPath)}`);
   }
 }
 
@@ -348,7 +348,7 @@ async function restartPatchForSavedDocument(document: vscode.TextDocument): Prom
   if (!patchProcess || !patchPath) {
     return;
   }
-  if (document.languageId !== "omni" || document.uri.scheme !== "file") {
+  if (document.languageId !== "onda" || document.uri.scheme !== "file") {
     return;
   }
   if (path.resolve(document.uri.fsPath) !== path.resolve(patchPath)) {
@@ -369,7 +369,7 @@ async function resolvePatchPath(preferredPath?: string): Promise<string | undefi
   if (document.isDirty) {
     const saved = await document.save();
     if (!saved) {
-      void vscode.window.showErrorMessage("Omni patch must be saved before playback starts.");
+      void vscode.window.showErrorMessage("Onda patch must be saved before playback starts.");
       return undefined;
     }
   }
@@ -380,21 +380,21 @@ async function resolvePatchPath(preferredPath?: string): Promise<string | undefi
 async function currentPatchDocument(): Promise<vscode.TextDocument | undefined> {
   const editor = vscode.window.activeTextEditor;
   const document = editor?.document;
-  if (!document || document.languageId !== "omni") {
-    void vscode.window.showErrorMessage("Open an Omni file to run a patch.");
+  if (!document || document.languageId !== "onda") {
+    void vscode.window.showErrorMessage("Open an Onda file to run a patch.");
     return undefined;
   }
   if (document.uri.scheme !== "file") {
-    void vscode.window.showErrorMessage("Omni patch playback currently requires a saved file on disk.");
+    void vscode.window.showErrorMessage("Onda patch playback currently requires a saved file on disk.");
     return undefined;
   }
   return document;
 }
 
-function omniExecutableConfig(): { command: string; extraArgs: string[] } {
-  const config = vscode.workspace.getConfiguration("omni");
+function ondaExecutableConfig(): { command: string; extraArgs: string[] } {
+  const config = vscode.workspace.getConfiguration("onda");
   return {
-    command: config.get<string>("server.path", "omni"),
+    command: config.get<string>("server.path", "onda"),
     extraArgs: config.get<string[]>("server.args", []),
   };
 }
@@ -1078,8 +1078,8 @@ function ensurePatchPanel(): void {
   }
 
   patchPanel = vscode.window.createWebviewPanel(
-    "omniPatch",
-    "Omni Patch",
+    "ondaPatch",
+    "Onda Patch",
     vscode.ViewColumn.Beside,
     {
       enableScripts: true,
@@ -1261,9 +1261,9 @@ function renderSharedPreviewHtml(webview: vscode.Webview): string {
 }
 
 async function startClient(context: vscode.ExtensionContext): Promise<void> {
-  const { command, extraArgs } = omniExecutableConfig();
+  const { command, extraArgs } = ondaExecutableConfig();
   const args = [...extraArgs, "lsp"];
-  const fileWatcher = vscode.workspace.createFileSystemWatcher("**/*.omni");
+  const fileWatcher = vscode.workspace.createFileSystemWatcher("**/*.onda");
   context.subscriptions.push(fileWatcher);
 
   const serverOptions: ServerOptions = {
@@ -1280,7 +1280,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   };
 
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: "file", language: "omni" }],
+    documentSelector: [{ scheme: "file", language: "onda" }],
     synchronize: {
       fileEvents: fileWatcher,
     },
@@ -1288,6 +1288,6 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     traceOutputChannel: serverOutput,
   };
 
-  client = new LanguageClient("omni-lsp", "Omni Language Server", serverOptions, clientOptions);
+  client = new LanguageClient("onda-lsp", "Onda Language Server", serverOptions, clientOptions);
   await client.start();
 }

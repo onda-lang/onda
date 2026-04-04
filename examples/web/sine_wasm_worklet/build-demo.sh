@@ -39,32 +39,32 @@ done
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../../.." && pwd)"
-source_file="$script_dir/sine_wasm.omni"
+source_file="$script_dir/sine_wasm.onda"
 object_file="$script_dir/sine_wasm.o"
-meta_file="$script_dir/sine_wasm.omni.json"
+meta_file="$script_dir/sine_wasm.onda.json"
 wasm_file="$script_dir/sine_wasm.wasm"
 
-invoke_omni() {
-  local packaged_omni="$repo_root/bin/omni"
-  local release_omni="$repo_root/target/release/omni"
+invoke_onda() {
+  local packaged_onda="$repo_root/bin/onda"
+  local release_onda="$repo_root/target/release/onda"
 
-  if [[ -x "$packaged_omni" ]]; then
-    "$packaged_omni" "$@"
+  if [[ -x "$packaged_onda" ]]; then
+    "$packaged_onda" "$@"
     return
   fi
 
-  if command -v omni >/dev/null 2>&1; then
-    "$(command -v omni)" "$@"
+  if command -v onda >/dev/null 2>&1; then
+    "$(command -v onda)" "$@"
     return
   fi
 
-  if [[ -x "$release_omni" ]]; then
-    "$release_omni" "$@"
+  if [[ -x "$release_onda" ]]; then
+    "$release_onda" "$@"
     return
   fi
 
   if [[ ! -f "$repo_root/Cargo.toml" ]]; then
-    echo "omni not found in bin/ or PATH, and this demo is not running from a source checkout with Cargo.toml." >&2
+    echo "onda not found in bin/ or PATH, and this demo is not running from a source checkout with Cargo.toml." >&2
     exit 1
   fi
 
@@ -73,8 +73,8 @@ invoke_omni() {
     source "$repo_root/scripts/use-llvm-env.sh" --flavor auto --version 21.1.2
   fi
 
-  cargo build --release -p omni_cli
-  "$release_omni" "$@"
+  cargo build --release -p onda_cli
+  "$release_onda" "$@"
 }
 
 get_wasm_ld() {
@@ -98,7 +98,7 @@ get_wasm_ld() {
 }
 
 pushd "$repo_root" >/dev/null
-invoke_omni compile "$source_file" \
+invoke_onda compile "$source_file" \
   --emit obj \
   --target wasm32-unknown-unknown \
   --sample-rate "$sample_rate" \
@@ -110,8 +110,8 @@ popd >/dev/null
 wasm_ld="$(get_wasm_ld)"
 "$wasm_ld" "$object_file" \
   --no-entry \
-  --export=omni_init \
-  --export=omni_process \
+  --export=onda_init \
+  --export=onda_process \
   --export=__heap_base \
   --export-memory \
   --initial-memory=131072 \
