@@ -1263,8 +1263,11 @@ function renderSharedPreviewHtml(webview: vscode.Webview): string {
 async function startClient(context: vscode.ExtensionContext): Promise<void> {
   const { command, extraArgs } = ondaExecutableConfig();
   const args = [...extraArgs, "lsp"];
-  const fileWatcher = vscode.workspace.createFileSystemWatcher("**/*.onda");
-  context.subscriptions.push(fileWatcher);
+  const fileWatchers = [
+    vscode.workspace.createFileSystemWatcher("**/*.onda"),
+    vscode.workspace.createFileSystemWatcher("**/*.on"),
+  ];
+  context.subscriptions.push(...fileWatchers);
 
   const serverOptions: ServerOptions = {
     run: {
@@ -1282,7 +1285,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "onda" }],
     synchronize: {
-      fileEvents: fileWatcher,
+      fileEvents: fileWatchers,
     },
     outputChannel: serverOutput,
     traceOutputChannel: serverOutput,

@@ -32,6 +32,85 @@ fn write_file(path: &Path, text: &str) {
 }
 
 #[test]
+fn parse_program_file_supports_on_imports_and_includes() {
+    let dir = mk_temp_dir("on_imports_and_includes");
+    let main = dir.join("main.on");
+    let dep = dir.join("dep.on");
+    let lib = dir.join("lib.on");
+
+    write_file(
+        &main,
+        r#"
+include "./dep.on"
+import lib
+outs:
+  out1
+sample:
+  out1 = dep_value + lib_value
+"#,
+    );
+    write_file(
+        &dep,
+        r#"
+const dep_value = 1.0
+"#,
+    );
+    write_file(
+        &lib,
+        r#"
+const lib_value = 2.0
+"#,
+    );
+
+    let program = parse_program_file(&main).expect(".on program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign { expr, .. } = &sample[0] else {
+        panic!("expected sample assignment");
+    };
+    let Expr::Binary { lhs, rhs, .. } = expr else {
+        panic!("expected folded binary expression");
+    };
+    assert!(matches!(
+        lhs.as_ref(),
+        Expr::Number { value, .. } if (*value - 1.0).abs() < 1e-9
+    ));
+    assert!(matches!(
+        rhs.as_ref(),
+        Expr::Number { value, .. } if (*value - 2.0).abs() < 1e-9
+    ));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn parse_program_rejects_import_suffix_for_on_modules() {
+    let err = parse_program("import lib.on\n")
+        .expect_err("import with .on suffix should be rejected");
+    assert!(
+        err.iter().any(|diag| diag
+            .message
+            .contains("import expects module path without '.onda' or '.on' suffix"))
+    );
+}
+
+#[test]
+fn parse_program_rejects_non_onda_or_on_include_suffix() {
+    let err = parse_program("include \"./lib.txt\"\n")
+        .expect_err("include with unsupported suffix should be rejected");
+    assert!(
+        err.iter().any(|diag| diag
+            .message
+            .contains("include path must end with '.onda' or '.on'"))
+    );
+}
+
+#[test]
 fn parses_gain_program() {
     let src = r#"
 ins {

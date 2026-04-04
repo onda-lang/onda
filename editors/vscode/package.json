@@ -31,7 +31,8 @@
           "onda"
         ],
         "extensions": [
-          ".onda"
+          ".onda",
+          ".on"
         ],
         "configuration": "./language-configuration.json"
       }

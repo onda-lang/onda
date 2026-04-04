@@ -7,6 +7,8 @@ use crate::diagnostics::Diagnostic;
 use super::preprocess::split_comment;
 use super::STDLIB_MODULE_PREFIX;
 
+const ONDA_SOURCE_EXTENSIONS: &[&str] = &["onda", "on"];
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(super) enum FileLoadMode {
     Entry,
@@ -163,19 +165,27 @@ pub(super) fn resolve_import_path(
     current_file: &Path,
     module_path: &str,
 ) -> Result<PathBuf, String> {
-    let mut module_file = PathBuf::from(format!("{module_path}.onda"));
-    if !module_file.is_absolute() {
-        module_file = current_file
+    let base = if Path::new(module_path).is_absolute() {
+        PathBuf::from(module_path)
+    } else {
+        current_file
             .parent()
             .unwrap_or_else(|| Path::new("."))
-            .join(module_file);
+            .join(module_path)
+    };
+
+    for ext in ONDA_SOURCE_EXTENSIONS {
+        let candidate = base.with_extension(ext);
+        if let Ok(canonical) = fs::canonicalize(&candidate) {
+            return Ok(canonical);
+        }
     }
-    fs::canonicalize(&module_file).map_err(|err| {
-        format!(
-            "failed to resolve import '{}': {err}",
-            module_file.display()
-        )
-    })
+
+    Err(format!(
+        "failed to resolve import '{}.{{{}}}'",
+        base.display(),
+        ONDA_SOURCE_EXTENSIONS.join(",")
+    ))
 }
 
 pub(super) fn validate_file_mode_transition(
@@ -251,9 +261,12 @@ fn parse_top_level_directive(
                 1,
             )]);
         }
-        if module.ends_with(".onda") {
+        if ONDA_SOURCE_EXTENSIONS
+            .iter()
+            .any(|ext| module.ends_with(&format!(".{ext}")))
+        {
             return Err(vec![Diagnostic::syntax(
-                "import expects module path without '.onda' suffix",
+                "import expects module path without '.onda' or '.on' suffix",
                 line_no,
                 1,
             )]);
@@ -288,9 +301,12 @@ fn parse_top_level_directive(
                 1,
             )]);
         }
-        if !include_path.ends_with(".onda") {
+        if !ONDA_SOURCE_EXTENSIONS
+            .iter()
+            .any(|ext| include_path.ends_with(&format!(".{ext}")))
+        {
             return Err(vec![Diagnostic::syntax(
-                "include path must end with '.onda'",
+                "include path must end with '.onda' or '.on'",
                 line_no,
                 1,
             )]);
