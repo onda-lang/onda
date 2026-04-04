@@ -113,20 +113,27 @@ jobs:
             throw "VsDevCmd.bat not found at $devCmd"
           }
 
-          $command = @(
-            "`"$devCmd`"",
-            "-arch=x64",
-            "-host_arch=x64",
-            "&&",
-            "powershell",
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-Command",
-            "`. .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version '${{ env.ONDA_VERSION }}'; cargo build --release -p onda_cli -p onda_api`"
-          ) -join " "
+          $captureEnvScript = Join-Path $env:RUNNER_TEMP "capture-msvc-env.cmd"
+          @"
+          @echo off
+          call "$devCmd" -arch=x64 -host_arch=x64 >nul
+          if errorlevel 1 exit /b %errorlevel%
+          set
+          "@ | Set-Content -Path $captureEnvScript -Encoding ascii
 
-          cmd.exe /d /s /c $command
+          $msvcEnv = cmd.exe /d /c $captureEnvScript
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to initialize MSVC build environment via VsDevCmd.bat"
+          }
+
+          foreach ($line in $msvcEnv) {
+            if ($line -match '^(.*?)=(.*)$') {
+              [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2])
+            }
+          }
+
+          . .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version "${{ env.ONDA_VERSION }}"
+          cargo build --release -p onda_cli -p onda_api
 
       - name: Build onda and onda_api on Unix
         if: runner.os != 'Windows'
