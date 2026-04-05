@@ -1,11 +1,11 @@
 <h1>
-  <img src="assets/svg/onda-logo-alt-dark.svg" alt="onda logo" width="40" align="absmiddle" /> onda
+  onda <img src="assets/svg/onda-logo-alt-dark.svg" alt="onda logo" width="40" align="absmiddle" />
 </h1>
 
 `onda` is a DSL for low-level audio programming.
 This repository provides the compiler, runtime, CLI, language server, preview tooling, editor integrations, and a C API for embedding the JIT compiler.
 
-## Short Onda example
+## Short example
 
 For the actual language reference, see [SYNTAX.md](SYNTAX.md).
 As a minimal example for a sine wave:
