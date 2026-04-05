@@ -53,8 +53,6 @@ The CLI can also emit LLVM IR and native object files for AOT-style workflows.
 - `crates/onda_cli`: CLI, LSP adapter, and preview control transport
 - `crates/onda_egui`: native egui preview host
 - `crates/onda_webview`: native webview preview host
-- `editors/vscode`: VSCode extension
-- `editors/nvim`: Neovim runtime support
 - `examples/`: Onda example programs
 
 ## Documentation
@@ -259,9 +257,9 @@ This is the embedding surface for non-Rust hosts.
 
 ### VSCode
 
-The extension lives in `editors/vscode`.
+The VSCode extension lives in the standalone `onda-lang/onda-vscode` repository.
 It provides:
-- `.onda` language registration
+- `.onda` and `.on` language registration
 - syntax highlighting plus LSP semantic tokens
 - `Onda: Run Patch`
 - `Onda: Stop Patch`
@@ -275,9 +273,9 @@ It provides:
 
 ### Neovim
 
-The runtime lives in `editors/nvim`.
+The Neovim plugin lives in the standalone `onda-lang/onda-nvim` repository.
 It provides:
-- `.onda` filetype detection
+- `.onda` and `.on` filetype detection
 - regex syntax highlighting
 - builtin LSP startup through `onda lsp`
 - `:OndaRunPatch` for launching the standalone preview window

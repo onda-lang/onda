@@ -380,7 +380,7 @@
 - `onda preview render` renders offline to WAV via the daemon preview pipeline.
 - `onda daemon stdio` is a JSON-over-stdio daemon transport for non-LSP clients, supporting `ping`, `initialize`, `open`, `update`, `close`, `diagnose`, `preview_start`, `preview_stop`, `preview_params`, `preview_set_param`, and `preview_render` commands.
 
-### VSCode extension (`editors/vscode`)
+### VSCode extension (`onda-lang/onda-vscode`)
 - Language registration with TextMate grammar for syntax highlighting.
 - LSP client wiring: spawns `onda lsp` as a child process over stdio, using `vscode-languageclient`.
 - Semantic-token-backed highlighting for constants, params, ports, and init vars (layered on top of TextMate).
@@ -401,8 +401,8 @@
   - Param/buffer state is preserved across patch restarts for the same file.
   - Auto-restart on `.onda` file save when a patch is running for that file.
 
-### Neovim runtime (`editors/nvim`)
-- `.onda` filetype detection and regex syntax highlighting.
+### Neovim runtime (`onda-lang/onda-nvim`)
+- `.onda` and `.on` filetype detection and regex syntax highlighting.
 - builtin LSP client startup via `onda lsp`.
 - `:OndaRunPatch` launches `onda preview <file>` in the standalone preview window.
 
