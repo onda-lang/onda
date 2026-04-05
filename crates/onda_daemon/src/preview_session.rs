@@ -157,7 +157,11 @@ impl PreviewSession {
         let mut instance =
             create_instance(jit.clone(), config).map_err(PreviewBuildError::Runtime)?;
 
-        let mut input_buffers = vec![vec![0.0_f32; options.block_size]; jit.input_count()];
+        let mut input_buffers = jit
+            .inputs()
+            .iter()
+            .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
+            .collect::<Vec<_>>();
         for (index, buffer) in input_buffers.iter_mut().enumerate() {
             bind_input(
                 &mut instance,
@@ -168,7 +172,11 @@ impl PreviewSession {
             .map_err(PreviewBuildError::Runtime)?;
         }
 
-        let mut output_buffers = vec![vec![0.0_f32; options.block_size]; jit.output_count()];
+        let mut output_buffers = jit
+            .outputs()
+            .iter()
+            .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
+            .collect::<Vec<_>>();
         for (index, buffer) in output_buffers.iter_mut().enumerate() {
             bind_output(
                 &mut instance,
@@ -215,11 +223,11 @@ impl PreviewSession {
     }
 
     pub fn output_channel_count(&self) -> usize {
-        self.output_buffers.len()
+        self.jit.required_out_channels()
     }
 
     pub fn input_channel_count(&self) -> usize {
-        self.input_buffers.len()
+        self.jit.required_in_channels()
     }
 
     pub fn param_info(&self) -> Vec<PreviewParamInfo> {
@@ -363,7 +371,15 @@ impl PreviewSession {
             buffer.fill(0.0);
         }
         process_bound(&mut self.instance, self.options.block_size)?;
-        Ok(self.output_buffers.clone())
+        let mut rendered = Vec::with_capacity(self.jit.required_out_channels());
+        for (buffer, desc) in self.output_buffers.iter().zip(self.jit.outputs()) {
+            for ch in 0..desc.array_len() {
+                let start = ch.saturating_mul(self.options.block_size);
+                let end = start.saturating_add(self.options.block_size);
+                rendered.push(buffer[start..end].to_vec());
+            }
+        }
+        Ok(rendered)
     }
 
     pub fn set_input_block(&mut self, interleaved: &[f32], source_channels: usize) {
@@ -378,13 +394,16 @@ impl PreviewSession {
             .options
             .block_size
             .min(interleaved.len() / source_channels);
-        for frame in 0..frames {
-            let base = frame * source_channels;
-            for (channel_index, buffer) in self.input_buffers.iter_mut().enumerate() {
-                if channel_index >= source_channels {
-                    break;
+        for (buffer, desc) in self.input_buffers.iter_mut().zip(self.jit.inputs()) {
+            for ch in 0..desc.array_len() {
+                let src_channel = desc.slot_offset().saturating_add(ch);
+                if src_channel >= source_channels {
+                    continue;
                 }
-                buffer[frame] = interleaved[base + channel_index];
+                let dst_base = ch.saturating_mul(self.options.block_size);
+                for frame in 0..frames {
+                    buffer[dst_base + frame] = interleaved[frame * source_channels + src_channel];
+                }
             }
         }
     }

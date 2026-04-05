@@ -414,6 +414,34 @@ mod tests {
     }
 
     #[test]
+    fn preview_renders_single_stereo_output_port() {
+        let dir = mk_temp_dir("preview_stereo_output_port");
+        let main = dir.join("main.onda");
+
+        write_file(
+            &main,
+            "outs:\n  out: f32[2]\nsample:\n  out[0] = 0.25\n  out[1] = 0.5\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_preview(&main)
+            .expect("preview should compile and start");
+
+        let preview = session.preview(&main).expect("active preview");
+        assert_eq!(preview.output_channel_count(), 2);
+
+        let rendered = session
+            .render_preview_block(&main)
+            .expect("preview render with stereo output port should succeed");
+        assert_eq!(rendered.len(), 2);
+        assert!(rendered[0].iter().all(|sample| (*sample - 0.25).abs() < 1e-6));
+        assert!(rendered[1].iter().all(|sample| (*sample - 0.5).abs() < 1e-6));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn preview_rebuilds_instance_when_buffer_binding_changes() {
         let dir = mk_temp_dir("preview_buffer_rebuild");
         let main = dir.join("main.onda");
