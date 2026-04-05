@@ -67,10 +67,8 @@ end
 
 local function onda_preview_cmd(path)
   local cmd = { state.opts.preview_path or state.opts.server_path, "preview", path }
-  if state.opts.preview_host == "egui" then
-    table.insert(cmd, "--egui")
-  elseif state.opts.preview_host == "webview" then
-    table.insert(cmd, "--no-egui")
+  if state.opts.preview_host == "webview" then
+    table.insert(cmd, "--webview")
   end
   vim.list_extend(cmd, state.opts.preview_args)
   return cmd

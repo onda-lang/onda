@@ -51,7 +51,7 @@ const USAGE: &str = r#"Usage:
   onda compile <input.onda> [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>] [--dump-graph] [--ir] [--meta] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--target <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <feature-list>] [--target-abi <name>] [--reloc-model <default|static|pic|dynamic-no-pic>] [--code-model <default|small|kernel|medium|large>] [--opt-level <0|1|2|3>]
   onda render <input.onda> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
   onda lsp
-  onda preview <input.onda> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>] [--egui]
+  onda preview <input.onda> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>] [--webview]
   onda preview play <input.onda> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>] [--control-json] [--input-device <name>] [--output-device <name>]
   onda preview render <input.onda> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
   onda daemon diagnose <input.onda> [--sample-rate <hz>] [--block <frames>]
@@ -78,7 +78,7 @@ Options:
   --control-json Emit preview control handshake on stdout and serve param control over localhost
   --input-device Select audio input device by exact name for preview playback
   --output-device Select audio output device by exact name for preview playback
-  --egui         Use the egui preview host instead of the platform default
+  --webview      Use the webview preview host instead of egui
   --fast-math    Enable LLVM fast-math flags for floating-point operations
   --help, -h     Show this help
 "#;
@@ -273,14 +273,8 @@ fn resolve_preview_host_kind(host: PreviewHostKind) -> PreviewHostKind {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn default_preview_host_kind() -> PreviewHostKind {
     PreviewHostKind::Egui
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn default_preview_host_kind() -> PreviewHostKind {
-    PreviewHostKind::Webview
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -290,7 +284,7 @@ fn run_webview_preview(input: &Path, options: PreviewHostOptions) -> Result<(), 
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn run_webview_preview(_input: &Path, _options: PreviewHostOptions) -> Result<(), String> {
-    Err("webview preview host is unavailable on this platform/build; use --egui".to_owned())
+    Err("webview preview host is unavailable on this platform/build".to_owned())
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -869,7 +863,7 @@ fn parse_preview_window_args(
                 };
                 output_device = Some(value);
             }
-            "--egui" => host = PreviewHostKind::Egui,
+            "--webview" => host = PreviewHostKind::Webview,
             "--fast-math" => fast_math = true,
             "--help" | "-h" => return Err(USAGE.to_owned()),
             _ if arg.starts_with("--sample-rate=") => {
@@ -4895,16 +4889,16 @@ reloc_model = "default"
     }
 
     #[test]
-    fn parse_preview_window_accepts_egui_flag() {
+    fn parse_preview_window_accepts_webview_flag() {
         let cmd = parse_args(
-            ["onda", "preview", "x.onda", "--egui"]
+            ["onda", "preview", "x.onda", "--webview"]
                 .into_iter()
                 .map(str::to_owned),
         )
         .expect("preview window args should parse");
         match cmd {
             Command::Preview(PreviewCommand::Window { host, .. }) => {
-                assert_eq!(host, PreviewHostKind::Egui);
+                assert_eq!(host, PreviewHostKind::Webview);
             }
             _ => panic!("expected preview window command"),
         }

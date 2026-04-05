@@ -119,9 +119,9 @@ Notes:
 - `server_path` is used for `onda lsp`
 - `preview_path` defaults to `server_path`
 - `preview_args` are appended to `onda preview <file>`
-- `preview_host = "egui"` adds `--egui` to `:OndaRunPatch`
-- `preview_host = "webview"` adds `--no-egui` to `:OndaRunPatch`
-- `preview_host = nil` leaves host selection to the CLI default
+- `preview_host = "egui"` keeps the default egui preview host
+- `preview_host = "webview"` adds `--webview` to `:OndaRunPatch`
+- `preview_host = nil` leaves host selection at the default egui preview host
 - `root_markers` controls project root detection for the builtin LSP startup
 
 Example:

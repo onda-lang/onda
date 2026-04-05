@@ -156,9 +156,8 @@ onda preview examples/sine.onda
 ```
 
 Preview host selection:
-- `--egui` selects the egui preview host
-- Linux defaults to the egui preview host, as it has no support for the webview preview host
-- Windows and macOS default to the webview preview host
+- egui is the default preview host
+- `--webview` selects the webview preview host explicitly
 
 Useful flags:
 - `--sample-rate`
