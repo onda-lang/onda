@@ -1,9 +1,9 @@
-# onda
+<h1>
+  <img src="assets/svg/onda-logo-alt-dark.svg" alt="onda logo" width="40" align="absmiddle" /> onda
+</h1>
 
-`onda` is the toolchain for the Onda audio DSL.
-It provides the compiler, runtime, CLI, language server, preview tooling, editor integrations, and a C API for embedding.
-
-This README is the overview of the tools around the language.
+`onda` is a DSL for low-level audio programming.
+This repository provides the compiler, runtime, CLI, language server, preview tooling, editor integrations, and a C API for embedding the JIT compiler.
 
 ## Short Onda example
 
