@@ -1225,11 +1225,11 @@ function renderSharedPreviewHtml(webview: vscode.Webview): string {
 
   // Locate the shared preview HTML.
   // In a packaged extension it lives at <extensionPath>/out/preview.html (copied at build time).
-  // During development it also exists at <extensionPath>/../shared/preview.html.
+  // During development in the monorepo it also exists at <repoRoot>/ui/preview/preview.html.
   const extRoot = extensionContext?.extensionPath ?? __dirname;
   const candidates = [
     path.join(extRoot, "out", "preview.html"),
-    path.join(extRoot, "..", "shared", "preview.html"),
+    path.join(extRoot, "..", "..", "ui", "preview", "preview.html"),
   ];
   let html: string | undefined;
   let resolvedPath = "";

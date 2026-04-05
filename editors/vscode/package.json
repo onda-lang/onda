@@ -115,7 +115,7 @@
     }
   },
   "scripts": {
-    "copy-preview": "node -e \"require('fs').cpSync('../shared/preview.html','./out/preview.html')\"",
+    "copy-preview": "node -e \"require('fs').cpSync('../../ui/preview/preview.html','./out/preview.html')\"",
     "compile": "tsc -p ./ && npm run copy-preview",
     "watch": "tsc -watch -p ./"
   },

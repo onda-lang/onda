@@ -15,7 +15,7 @@ mod platform {
     use tao::window::WindowBuilder;
     use wry::{Rect, WebViewBuilder};
 
-    const PREVIEW_HTML: &str = include_str!("../../../editors/shared/preview.html");
+    const PREVIEW_HTML: &str = include_str!("../../../ui/preview/preview.html");
 
     #[derive(Debug)]
     enum UserEvent {
