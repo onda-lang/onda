@@ -257,7 +257,7 @@ This is the embedding surface for non-Rust hosts.
 
 ### VSCode
 
-The VSCode extension lives in the standalone `onda-lang/onda-vscode` repository.
+The VSCode extension lives in the standalone [`onda-lang/onda-vscode`](https://github.com/onda-lang/onda-vscode) repository.
 It provides:
 - `.onda` and `.on` language registration
 - syntax highlighting plus LSP semantic tokens
@@ -273,7 +273,7 @@ It provides:
 
 ### Neovim
 
-The Neovim plugin lives in the standalone `onda-lang/onda-nvim` repository.
+The Neovim plugin lives in the standalone [`onda-lang/onda-nvim`](https://github.com/onda-lang/onda-nvim) repository.
 It provides:
 - `.onda` and `.on` filetype detection
 - regex syntax highlighting
