@@ -262,12 +262,25 @@ jobs:
             | xargs -0 sha256sum > dist/SHA256SUMS.txt
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2.5.0
-        with:
-          tag_name: ${{ github.ref_name || steps.version.outputs.tag_name }}
-          name: ${{ steps.version.outputs.version }}
-          overwrite_files: true
-          files: |
-            dist/**/*.tar.xz
-            dist/**/*.zip
-            dist/SHA256SUMS.txt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name || steps.version.outputs.tag_name }}
+          RELEASE_NAME: ${{ steps.version.outputs.version }}
+        run: |
+          mapfile -t release_files < <(
+            find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name 'SHA256SUMS.txt' \) \
+              | sort
+          )
+
+          if [[ "${#release_files[@]}" -eq 0 ]]; then
+            echo "no release artifacts found under dist/" >&2
+            exit 1
+          fi
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_NAME"
+            gh release upload "$RELEASE_TAG" "${release_files[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${release_files[@]}" --title "$RELEASE_NAME" --notes ""
+          fi
