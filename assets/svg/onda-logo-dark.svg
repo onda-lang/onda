@@ -4,7 +4,7 @@
   <g transform="translate(256 256) scale(1.30) translate(-256 -256)">
     <circle cx="256" cy="256" r="156" stroke="#C9DBF2" stroke-width="24"/>
     <path
-      d="M163 256C185 252 197 214 225 214C257 214 255 298 287 298C315 298 327 260 349 256"
+      d="M167 256C188 253 198 214 225 214C257 214 255 298 287 298C314 298 324 259 345 256"
       stroke="#C9DBF2"
       stroke-width="22"
       stroke-linecap="round"
