@@ -103,6 +103,7 @@ cargo build -p onda_api --release
 
 This produces the `onda` C API library artifacts in `target/release/` along with the public header in `include/onda.h`.
 Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
+On Windows, the shipped static `onda.lib` is built with the static MSVC CRT (`/MT`), so hosts linking that library should use a compatible runtime choice.
 
 ## The `onda` CLI
 
