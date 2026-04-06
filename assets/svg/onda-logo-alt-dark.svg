@@ -1,10 +1,17 @@
-<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">Onda logo dark variant</title>
-  <desc id="desc">A simple light blue circular O mark with a flowing sound-wave line on a dark blue background.</desc>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Onda Logo Dark</title>
+  
+  <!-- Deep Dark Blue Background -->
   <rect width="512" height="512" rx="112" fill="#0C1E33"/>
+  
+  <!-- The 'O' Circle -->
   <circle cx="256" cy="256" r="156" stroke="#C9DBF2" stroke-width="24"/>
+  
+  <!-- The 'n' Wave Path -->
   <path
-    d="M163 256C185 252 197 214 225 214C257 214 255 298 287 298C315 298 327 252 349 256"
+    d="M175 295 
+       C 200 180, 235 180, 255 255 
+       S 310 330, 335 215"
     stroke="#C9DBF2"
     stroke-width="22"
     stroke-linecap="round"

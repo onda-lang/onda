@@ -1,10 +1,22 @@
-<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">Onda logo concept</title>
-  <desc id="desc">A simple dark blue circular O mark with a flowing sound-wave line through its center.</desc>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Onda Logo</title>
+  
+  <!-- Background -->
   <rect width="512" height="512" rx="112" fill="#F5F9FF"/>
+  
+  <!-- The 'O' Circle -->
   <circle cx="256" cy="256" r="156" stroke="#143A63" stroke-width="24"/>
+  
+  <!-- The 'n' Wave Path -->
+  <!-- 
+    M: Move to start (lower left)
+    C: First hump (peak)
+    S: Smooth transition to the second hump/flick 
+  -->
   <path
-    d="M163 256C185 252 197 214 225 214C257 214 255 298 287 298C315 298 327 252 349 256"
+    d="M175 295 
+       C 200 180, 235 180, 255 255 
+       S 310 330, 335 215"
     stroke="#143A63"
     stroke-width="22"
     stroke-linecap="round"

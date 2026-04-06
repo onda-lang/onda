@@ -1,18 +1,18 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">Onda Logo Dark</title>
+  <title id="title">Onda Logo - Dark Version</title>
   
-  <!-- Deep Dark Blue Background -->
-  <rect width="512" height="512" fill="#0C1E33"/>
+  <!-- Dark Background -->
+  <rect width="512" height="512" fill="#143A63"/>
   
-  <!-- The 'O' Circle -->
-  <circle cx="256" cy="256" r="156" stroke="#C9DBF2" stroke-width="24"/>
+  <!-- The 'O' Circle (Light Stroke) -->
+  <circle cx="256" cy="256" r="156" stroke="#F5F9FF" stroke-width="24"/>
   
-  <!-- The 'n' Wave Path -->
+  <!-- The 'n' Wave Path (Light Stroke) -->
   <path
     d="M175 295 
        C 200 180, 235 180, 255 255 
        S 310 330, 335 215"
-    stroke="#C9DBF2"
+    stroke="#F5F9FF"
     stroke-width="22"
     stroke-linecap="round"
     stroke-linejoin="round"

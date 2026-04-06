@@ -1,5 +1,5 @@
 <h1>
-  onda <img src="assets/svg/onda-logo-alt-dark.svg" alt="onda logo" width="40" align="absmiddle" />
+  onda <img src="assets/svg/onda-logo-dark.svg" alt="onda logo" width="40" align="absmiddle" />
 </h1>
 
 `onda` is a DSL for low-level audio programming.
