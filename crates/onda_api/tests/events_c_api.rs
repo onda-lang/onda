@@ -1,6 +1,6 @@
 use std::ffi::{c_void, CStr, CString};
 
-use onda_api::*;
+use onda::*;
 
 fn diag_message(diag: &onda_diag_t) -> String {
     if diag.message.is_null() {
