@@ -3,18 +3,19 @@
   
   <!-- Dark Background -->
   <rect width="512" height="512" rx="112" fill="#143A63"/>
-  
-  <!-- The 'O' Circle (Light Stroke) -->
-  <circle cx="256" cy="256" r="156" stroke="#F5F9FF" stroke-width="24"/>
-  
-  <!-- The 'n' Wave Path (Light Stroke) -->
-  <path
-    d="M175 295 
-       C 200 180, 235 180, 255 255 
-       S 310 330, 335 215"
-    stroke="#F5F9FF"
-    stroke-width="22"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+  <g transform="translate(256 256) scale(1.30) translate(-256 -256)">
+    <!-- The 'O' Circle (Light Stroke) -->
+    <circle cx="256" cy="256" r="156" stroke="#F5F9FF" stroke-width="24"/>
+    
+    <!-- The 'n' Wave Path (Light Stroke) -->
+    <path
+      d="M175 295 
+         C 200 180, 235 180, 255 255 
+         S 310 330, 335 215"
+      stroke="#F5F9FF"
+      stroke-width="22"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </g>
 </svg>

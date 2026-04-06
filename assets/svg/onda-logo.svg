@@ -1,12 +1,14 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
   <title id="title">Onda logo concept</title>
   <rect width="512" height="512" rx="112" fill="#F5F9FF"/>
-  <circle cx="256" cy="256" r="156" stroke="#143A63" stroke-width="24"/>
-  <path
-    d="M163 256C185 252 197 214 225 214C257 214 255 298 287 298C315 298 327 260 349 256"
-    stroke="#143A63"
-    stroke-width="22"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+  <g transform="translate(256 256) scale(1.30) translate(-256 -256)">
+    <circle cx="256" cy="256" r="156" stroke="#143A63" stroke-width="24"/>
+    <path
+      d="M163 256C185 252 197 214 225 214C257 214 255 298 287 298C315 298 327 260 349 256"
+      stroke="#143A63"
+      stroke-width="22"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </g>
 </svg>
