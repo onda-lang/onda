@@ -36,7 +36,7 @@ Take a look at the `examples/` folder for more usage examples.
 - stdio LSP server for diagnostics and semantic tokens
 - preview tooling for offline render and real-time playback
 - editor integrations for VSCode and Neovim
-- C API in `include/onda_llvm.h` for non-Rust hosts
+- C API in `include/onda.h` for non-Rust hosts
 
 Current execution is LLVM ORC JIT.
 The CLI can also emit LLVM IR and native object files for AOT-style workflows.
@@ -101,7 +101,7 @@ To build the C API in release mode:
 cargo build -p onda_api --release
 ```
 
-This produces the `onda_api` artifacts in `target/release/` along with the public header in `include/onda_llvm.h`.
+This produces the `onda` C API library artifacts in `target/release/` along with the public header in `include/onda.h`.
 Depending on platform/toolchain, that includes the static library and the shared library import/runtime pair.
 
 ## The `onda` CLI
@@ -241,7 +241,7 @@ onda daemon stdio
 
 ## C API
 
-The C API is exposed through `include/onda_llvm.h`.
+The C API is exposed through `include/onda.h`.
 At a high level the flow is:
 
 1. compile source

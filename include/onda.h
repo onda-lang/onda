@@ -1,5 +1,5 @@
-#ifndef ONDA_LLVM_H
-#define ONDA_LLVM_H
+#ifndef ONDA_H
+#define ONDA_H
 
 #ifdef __cplusplus
 extern "C" {

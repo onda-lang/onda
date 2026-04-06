@@ -157,17 +157,17 @@ jobs:
           New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
 
           Copy-Item target\release\onda.exe $binDir
-          Copy-Item target\release\onda_api.dll $libDir
-          if (Test-Path target\release\onda_api.lib) {
-            Copy-Item target\release\onda_api.lib $libDir
+          Copy-Item target\release\onda.dll $libDir
+          if (Test-Path target\release\onda.lib) {
+            Copy-Item target\release\onda.lib $libDir
           }
-          if (Test-Path target\release\onda_api.dll.lib) {
-            Copy-Item target\release\onda_api.dll.lib $libDir
+          if (Test-Path target\release\onda.dll.lib) {
+            Copy-Item target\release\onda.dll.lib $libDir
           }
-          if (Test-Path target\release\onda_api.exp) {
-            Copy-Item target\release\onda_api.exp $libDir
+          if (Test-Path target\release\onda.exp) {
+            Copy-Item target\release\onda.exp $libDir
           }
-          Copy-Item include\onda_llvm.h $includeDir
+          Copy-Item include\onda.h $includeDir
           Copy-Item README.md $packageRoot
           Copy-Item SYNTAX.md $packageRoot
           Copy-Item examples $packageRoot -Recurse
@@ -192,13 +192,13 @@ jobs:
 
           cp target/release/onda "$bin_dir/"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
-            cp target/release/libonda_api.dylib "$lib_dir/"
-            cp target/release/libonda_api.a "$lib_dir/"
+            cp target/release/libonda.dylib "$lib_dir/"
+            cp target/release/libonda.a "$lib_dir/"
           else
-            cp target/release/libonda_api.so "$lib_dir/"
-            cp target/release/libonda_api.a "$lib_dir/"
+            cp target/release/libonda.so "$lib_dir/"
+            cp target/release/libonda.a "$lib_dir/"
           fi
-          cp include/onda_llvm.h "$include_dir/"
+          cp include/onda.h "$include_dir/"
           cp README.md "$package_root/"
           cp SYNTAX.md "$package_root/"
           cp -R examples "$package_root/"

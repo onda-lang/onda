@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [lib]
+name = "onda"
 crate-type = ["cdylib", "staticlib", "rlib"]
 path = "src/lib.rs"
 
