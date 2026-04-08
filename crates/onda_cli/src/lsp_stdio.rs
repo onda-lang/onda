@@ -673,6 +673,7 @@ fn is_reserved_word(name: &str) -> bool {
             | "params"
             | "buffers"
             | "init"
+            | "event"
             | "events"
             | "sample"
             | "block"
@@ -1565,6 +1566,14 @@ fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
             continue;
         }
 
+        // event Name(params):
+        if trimmed.starts_with("event ") {
+            extract_event_symbols(trimmed, scope);
+            section = SourceSection::EventHandler;
+            section_indent = indent;
+            continue;
+        }
+
         // Section headers: ins/outs/params/buffers/init/events/sample/block/graph
         if let Some(new_section) = detect_section_header(trimmed) {
             section = new_section;
@@ -1755,6 +1764,18 @@ fn extract_def_symbols(trimmed: &str, scope: &mut SemanticScope) {
         // Extract params from parens
         if let Some(paren_start) = after_generics.find('(') {
             extract_params_from_parens(&after_generics[paren_start..], scope);
+        }
+    }
+}
+
+/// Extract function name and params from `event name(param: Type, ...)`.
+fn extract_event_symbols(trimmed: &str, scope: &mut SemanticScope) {
+    let rest = trimmed.strip_prefix("event ").unwrap_or(trimmed).trim_start();
+    if let Some(name) = extract_leading_ident(rest) {
+        scope.functions.insert(name.to_owned());
+        let after_name = &rest[name.len()..];
+        if let Some(paren_start) = after_name.find('(') {
+            extract_params_from_parens(&after_name[paren_start..], scope);
         }
     }
 }
@@ -2162,11 +2183,12 @@ fn invalid_params(message: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_const_names, diagnostic_message, file_uri_to_path, latest_full_text,
-        lsp_document_path, path_to_file_uri, semantic_tokens_for_document, LspServer,
+        collect_const_names, collect_symbols_from_source, diagnostic_message, file_uri_to_path,
+        latest_full_text, is_reserved_word, lsp_document_path, path_to_file_uri,
+        semantic_tokens_for_document, LspServer, SemanticScope,
         TextDocumentContentChangeEvent, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
-        SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT, SEMANTIC_TOKEN_TYPE_STATE,
-        SEMANTIC_TOKEN_TYPE_VARIABLE,
+        SEMANTIC_TOKEN_TYPE_FUNCTION, SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT,
+        SEMANTIC_TOKEN_TYPE_STATE, SEMANTIC_TOKEN_TYPE_VARIABLE,
     };
     use onda_frontend::{DiagCode, Diagnostic};
     use serde_json::json;
@@ -2215,6 +2237,44 @@ mod tests {
             },
         ];
         assert_eq!(latest_full_text(&changes), Some("full".to_owned()));
+    }
+
+    #[test]
+    fn reserved_words_include_singular_event_keyword() {
+        assert!(is_reserved_word("event"));
+        assert!(is_reserved_word("events"));
+    }
+
+    #[test]
+    fn source_fallback_collects_singular_event_symbols_like_defs() {
+        let source = concat!(
+            "proc Env:\n",
+            "  init:\n",
+            "    phase = 0.0\n",
+            "\n",
+            "  event note_on(freq = 440.0):\n",
+            "    local = freq\n",
+            "    phase = local\n",
+        );
+        let mut scope = SemanticScope::default();
+        collect_symbols_from_source(source, &mut scope);
+
+        assert_eq!(
+            scope.token_type_for_source_fallback("note_on"),
+            Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
+        );
+        assert_eq!(
+            scope.token_type_for_source_fallback("freq"),
+            Some(SEMANTIC_TOKEN_TYPE_PARAMETER)
+        );
+        assert_eq!(
+            scope.token_type_for_source_fallback("local"),
+            Some(SEMANTIC_TOKEN_TYPE_VARIABLE)
+        );
+        assert_eq!(
+            scope.token_type_for_source_fallback("phase"),
+            Some(SEMANTIC_TOKEN_TYPE_STATE)
+        );
     }
 
     #[test]
