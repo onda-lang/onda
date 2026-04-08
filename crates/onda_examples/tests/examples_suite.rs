@@ -1956,7 +1956,8 @@ const STD_ONE_POLE_GRAPH_FILE_EXAMPLE: &str =
     include_str!("../../../examples/std_one_pole_graph.onda");
 const STDLIB_F32_FILE_EXAMPLE: &str = include_str!("../../../examples/stdlib_f32.onda");
 const STDLIB_F32_GRAPH_FILE_EXAMPLE: &str = include_str!("../../../examples/stdlib_f32_graph.onda");
-const SINE_WASM_FILE_EXAMPLE: &str = include_str!("../../../examples/web/sine_wasm_worklet/sine_wasm.onda");
+const SINE_WASM_FILE_EXAMPLE: &str =
+    include_str!("../../../examples/web/sine_wasm_worklet/sine_wasm.onda");
 
 const STRUCT_DATA_EXAMPLE: &str = r#"
 outs { out1 }
@@ -6293,9 +6294,8 @@ sample {
 
 #[test]
 fn polyphonic_saw_file_example_analyzes() {
-    let parsed =
-        parse_program_file(std::path::Path::new("../../examples/polyphonic_saw.onda"))
-            .expect("parse should succeed");
+    let parsed = parse_program_file(std::path::Path::new("../../examples/polyphonic_saw.onda"))
+        .expect("parse should succeed");
     analyze(parsed).expect("analysis should succeed");
 }
 

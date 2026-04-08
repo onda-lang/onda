@@ -435,8 +435,12 @@ mod tests {
             .render_preview_block(&main)
             .expect("preview render with stereo output port should succeed");
         assert_eq!(rendered.len(), 2);
-        assert!(rendered[0].iter().all(|sample| (*sample - 0.25).abs() < 1e-6));
-        assert!(rendered[1].iter().all(|sample| (*sample - 0.5).abs() < 1e-6));
+        assert!(rendered[0]
+            .iter()
+            .all(|sample| (*sample - 0.25).abs() < 1e-6));
+        assert!(rendered[1]
+            .iter()
+            .all(|sample| (*sample - 0.5).abs() < 1e-6));
 
         fs::remove_dir_all(&dir).ok();
     }

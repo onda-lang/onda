@@ -1929,7 +1929,10 @@ fn convolution_wav_impulse_example_reproduces_ir_from_event_payload() {
 
     let mut ir = read_wav_mixdown_f32(ir_path.to_str().expect("utf8 path"));
     ir.truncate(MAX_IR);
-    assert!(!ir.is_empty(), "impulse wav should produce at least one sample");
+    assert!(
+        !ir.is_empty(),
+        "impulse wav should produce at least one sample"
+    );
 
     let frames = ir.len();
 
