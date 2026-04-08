@@ -59,6 +59,17 @@ proc Allpass:
       idx = 0.0
     out1 = y
 
+proc Impulse:
+  event bang():
+    x = 1.0
+
+  init:
+    x = 0.0
+
+  sample:
+    out1 = x
+    x = 0.0
+
 proc SchroederReverb:
   ins:
     in1
@@ -67,10 +78,10 @@ proc SchroederReverb:
     out1
 
   init:
-    c1 = Comb(delay = 1695.0, feedback = 0.925, damp = 0.28)
-    c2 = Comb(delay = 1760.0, feedback = 0.937, damp = 0.30)
-    c3 = Comb(delay = 1624.0, feedback = 0.915, damp = 0.27)
-    c4 = Comb(delay = 1548.0, feedback = 0.905, damp = 0.26)
+    c1 = Comb(delay = 1695, feedback = 0.925, damp = 0.28)
+    c2 = Comb(delay = 1760, feedback = 0.937, damp = 0.30)
+    c3 = Comb(delay = 1624, feedback = 0.915, damp = 0.27)
+    c4 = Comb(delay = 1548, feedback = 0.905, damp = 0.26)
     a1 = Allpass(delay = 245.0, feedback = 0.70)
     a2 = Allpass(delay = 605.0, feedback = 0.70)
 
@@ -82,13 +93,12 @@ proc SchroederReverb:
 outs:
   out1
 
+event bang():
+  impulse.bang()
+
 init:
+  impulse = Impulse()
   rev = SchroederReverb()
-  n: i32 = 0
 
 sample:
-  imp: f32 = 0.0
-  if (n == 0):
-    imp = 1.0
-  n = n + 1
-  out1 = rev(imp)
+  out1 = rev(impulse())
