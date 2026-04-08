@@ -3,7 +3,7 @@
 </h1>
 
 `onda` is a DSL for low-level audio programming.
-This repository provides the compiler, runtime, CLI, language server, preview tooling, editor integrations, and a C API for embedding the JIT compiler.
+This repository provides the compiler, runtime, CLI, language server, preview tooling and a C API for embedding the JIT compiler.
 
 ## Short example
 
