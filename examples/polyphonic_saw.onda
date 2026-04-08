@@ -18,11 +18,10 @@ proc Voice:
     lpf = std::filter::OnePole(cutoff = cutoff)
     env = std::env::DecayEnv(decay_s = decay_s, trigger = trig)
 
-  events:
-    bang(freq_hz, cutoff_hz):
-      freq = freq_hz
-      cutoff = cutoff_hz
-      trig = 1.0
+  event bang(freq_hz, cutoff_hz):
+    freq = freq_hz
+    cutoff = cutoff_hz
+    trig = 1.0
 
   sample:
     osc.freq = freq
@@ -55,21 +54,20 @@ init:
   next_voice: i32 = 0
   rng = std::random::Rng<f32>()
 
-events:
-  bang():
-    lo_freq = min(freq_min, freq_max)
-    hi_freq = max(freq_min, freq_max)
-    lo_cutoff = min(cutoff_min, cutoff_max)
-    hi_cutoff = max(cutoff_min, cutoff_max)
+event bang():
+  lo_freq = min(freq_min, freq_max)
+  hi_freq = max(freq_min, freq_max)
+  lo_cutoff = min(cutoff_min, cutoff_max)
+  hi_cutoff = max(cutoff_min, cutoff_max)
 
-    voices[next_voice].decay_s = decay_s
-    voices[next_voice].amp = amp
-    voices[next_voice].bang(
-      freq_hz = rng.range(lo_freq, hi_freq),
-      cutoff_hz = rng.range(lo_cutoff, hi_cutoff),
-    )
+  voices[next_voice].decay_s = decay_s
+  voices[next_voice].amp = amp
+  voices[next_voice].bang(
+    freq_hz = rng.range(lo_freq, hi_freq),
+    cutoff_hz = rng.range(lo_cutoff, hi_cutoff),
+  )
 
-    next_voice = (next_voice + 1) % NumVoices
+  next_voice = (next_voice + 1) % NumVoices
 
 sample:
   mix = 0.0

@@ -6291,6 +6291,14 @@ sample {
 }
 "#;
 
+#[test]
+fn polyphonic_saw_file_example_analyzes() {
+    let parsed =
+        parse_program_file(std::path::Path::new("../../examples/polyphonic_saw.onda"))
+            .expect("parse should succeed");
+    analyze(parsed).expect("analysis should succeed");
+}
+
 fn compile_instance(src: &str, frames: usize) -> (onda_runtime::Instance, usize, usize) {
     compile_instance_with_options(
         src,

@@ -51,7 +51,7 @@
 ## Current implementation snapshot (2026-03)
 
 ### Language and parser
-- Top-level and proc blocks: `ins`, `outs`, `params`, `const`, `events`, `buffers`, `init`, `block`, `sample`, `graph`, `def`, `struct`, `proc`/`processor`, `namespace`.
+- Top-level and proc blocks: `ins`, `outs`, `params`, `events` / `event`, `const`, `buffers`, `init`, `block`, `sample`, `graph`, `def`, `struct`, `proc`/`processor`, `namespace`.
 - Both brace and indentation syntaxes are supported.
 - Statement separators support both newline and `;`.
 - Import system is implemented:
@@ -194,6 +194,8 @@
     - `for i @ STEP in A..B` (`@ STEP` optional, defaults to `1`; use negative step for descending)
 - Events:
   - Top-level and proc-level `events` blocks are supported.
+  - Singular event-declaration sugar is also supported at both levels:
+    `event name(...): ...` is equivalent to adding that handler inside `events:`.
 - Top-level event params support primitive scalars and fixed-size primitive arrays.
 - Event params support read-only primitive slice forms such as `f32[]` for both top-level and proc events.
 - Proc events also support generic primitive slices such as `T[]` when `T` is a proc generic type parameter that specializes to a primitive.
@@ -257,7 +259,7 @@
 - `proc`/`processor` declarations lower to internal struct + helper defs.
 - generic processors are supported and specialized/monomorphized on constructor use.
 - `sample` is required; `init` is optional (top-level `init` is also optional).
-- `events` is optional inside `proc`.
+- `events` is optional inside `proc`, and singular `event ...` declarations can be mixed with it.
 - In addition to user-declared proc events, every proc gets the builtin reserved `init(...)` event.
   - The builtin event is created after generic specialization, so `Filter<i64>().init(...)` uses `i64` arguments instead of unresolved generic placeholders.
 - proc-local `def` blocks are supported inside `proc` bodies. They act as private helper subroutines with implicit state access (no `self`), callable from `init`, `sample`, `block`, `events`, and other proc-local defs. They support parameters, return values, and transitive calls. Recursive/mutually recursive calls are rejected. Implementation lowers them to hidden ordinary defs with an implicit proc receiver, so argument binding/defaults/return behavior follow the normal `def` pipeline rather than a bespoke inline-only model.

@@ -3,7 +3,7 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 
 program = { SOI ~ NEWLINE* ~ block* ~ EOI }
-block = _{ ins_block | outs_block | params_block | const_block | events_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | init_block | block_exec_block | sample_block | graph_block }
+block = _{ ins_block | outs_block | params_block | const_block | events_block | event_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | init_block | block_exec_block | sample_block | graph_block }
 
 namespace_block = { "namespace" ~ namespace_decl_head ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 namespace_alias_decl = { "namespace" ~ ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ namespace_any_ref ~ NEWLINE* }
@@ -44,13 +44,14 @@ buffers_block = {
   )
 }
 events_block = { "events" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ event_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+event_block = { "event" ~ event_decl ~ NEWLINE* }
 event_list = { event_decl ~ (stmt_sep+ ~ event_decl)* ~ stmt_sep* }
 event_decl = { ident ~ "(" ~ event_param_list? ~ ")" ~ NEWLINE* ~ stmt_block }
 event_param_list = { event_param_decl ~ ("," ~ event_param_decl)* }
 event_param_decl = { ident ~ (":" ~ event_param_type)? ~ ("=" ~ expr)? }
 event_param_type = { array_type | fn_typed_array_param | type_name }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
-proc_item = _{ ins_block | outs_block | params_block | const_block | events_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
+proc_item = _{ ins_block | outs_block | params_block | const_block | events_block | event_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 def_block = { "def" ~ ident ~ generic_param_list? ~ "(" ~ fn_param_list? ~ ")" ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }

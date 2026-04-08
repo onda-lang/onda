@@ -90,24 +90,20 @@ const lib_value = 2.0
 
 #[test]
 fn parse_program_rejects_import_suffix_for_on_modules() {
-    let err = parse_program("import lib.on\n")
-        .expect_err("import with .on suffix should be rejected");
-    assert!(
-        err.iter().any(|diag| diag
-            .message
-            .contains("import expects module path without '.onda' or '.on' suffix"))
-    );
+    let err =
+        parse_program("import lib.on\n").expect_err("import with .on suffix should be rejected");
+    assert!(err.iter().any(|diag| diag
+        .message
+        .contains("import expects module path without '.onda' or '.on' suffix")));
 }
 
 #[test]
 fn parse_program_rejects_non_onda_or_on_include_suffix() {
     let err = parse_program("include \"./lib.txt\"\n")
         .expect_err("include with unsupported suffix should be rejected");
-    assert!(
-        err.iter().any(|diag| diag
-            .message
-            .contains("include path must end with '.onda' or '.on'"))
-    );
+    assert!(err.iter().any(|diag| diag
+        .message
+        .contains("include path must end with '.onda' or '.on'")));
 }
 
 #[test]
@@ -4334,6 +4330,37 @@ sample { out1 = gate }
 }
 
 #[test]
+fn parses_top_level_individual_event_syntax_and_merges_with_events_block() {
+    let src = r#"
+outs { out1 }
+event note_on(note: i32) {
+  gate = f32(note)
+}
+events:
+  note_off():
+    gate = 0.0
+init:
+  gate = 0.0
+sample:
+  out1 = gate
+"#;
+
+    let program = parse_program(src).expect("individual event syntax should parse");
+    let events = program
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Events(v) => Some(v),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 1, "expected merged top-level events block");
+    assert_eq!(events[0].len(), 2);
+    assert_eq!(events[0][0].name, "note_on");
+    assert_eq!(events[0][1].name, "note_off");
+}
+
+#[test]
 fn parses_proc_events_block_indentation_syntax() {
     let src = r#"
 proc Voice:
@@ -4361,6 +4388,38 @@ sample:
     assert_eq!(proc.events.len(), 1);
     assert_eq!(proc.events[0].name, "note_on");
     assert_eq!(proc.events[0].params.len(), 1);
+}
+
+#[test]
+fn parses_proc_individual_event_syntax_and_merges_with_events_block() {
+    let src = r#"
+proc Voice:
+  outs 1
+  event note_on(note: i32):
+    gate = f32(note)
+  events:
+    note_off():
+      gate = 0.0
+  init:
+    gate = 0.0
+  sample:
+    out1 = gate
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("individual proc event syntax should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert_eq!(proc.events.len(), 2);
+    assert_eq!(proc.events[0].name, "note_on");
+    assert_eq!(proc.events[1].name, "note_off");
 }
 
 #[test]

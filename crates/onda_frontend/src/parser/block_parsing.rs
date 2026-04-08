@@ -466,7 +466,6 @@ pub(super) fn parse_events_block(
 ) -> Result<EventBlock, Vec<Diagnostic>> {
     let block_loc = stmt_loc_from_pair(&block_pair);
     let mut events = Vec::<EventDef>::new();
-    let mut seen = HashSet::<String>::new();
 
     for child in block_pair.into_inner() {
         if child.as_rule() != Rule::event_list {
@@ -476,90 +475,131 @@ pub(super) fn parse_events_block(
             if item.as_rule() != Rule::event_decl {
                 continue;
             }
-            let event_loc = stmt_loc_from_pair(&item);
-            let mut name: Option<String> = None;
-            let mut params = Vec::<EventParamDecl>::new();
-            let mut body = None;
-            for part in item.into_inner() {
-                match part.as_rule() {
-                    Rule::ident => {
-                        if name.is_none() {
-                            name = Some(part.as_str().to_owned());
-                        }
-                    }
-                    Rule::event_param_list => {
-                        for event_param in part.into_inner() {
-                            if event_param.as_rule() != Rule::event_param_decl {
-                                continue;
-                            }
-                            let param_loc = stmt_loc_from_pair(&event_param);
-                            let mut param_inner = event_param.into_inner();
-                            let Some(param_name_pair) = param_inner.next() else {
-                                return Err(vec![syntax_at_loc(
-                                    param_loc.as_ref(),
-                                    "missing event parameter name",
-                                )]);
-                            };
-                            let mut ty = EventParamType::Scalar(PrimitiveType::F32);
-                            let mut ty_loc = Span::ZERO;
-                            let mut default = None;
-                            for item in param_inner {
-                                match item.as_rule() {
-                                    Rule::event_param_type => {
-                                        ty_loc = stmt_loc_from_pair(&item);
-                                        ty = parse_event_param_type(item)?;
-                                    }
-                                    Rule::expr => {
-                                        default = Some(parse_expr_inner(item));
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            params.push(EventParamDecl {
-                                loc: param_loc,
-                                name: param_name_pair.as_str().to_owned(),
-                                ty,
-                                ty_loc,
-                                default,
-                            });
-                        }
-                    }
-                    Rule::stmt_block => {
-                        body = Some(parse_stmt_block(part)?);
-                    }
-                    _ => {}
-                }
-            }
-            let Some(name) = name else {
-                return Err(vec![syntax_at_loc(
-                    event_loc.as_ref(),
-                    "missing event name",
-                )]);
-            };
-            if !seen.insert(name.clone()) {
-                return Err(vec![syntax_at_loc(
-                    event_loc.as_ref(),
-                    format!("duplicate event declaration '{name}'"),
-                )]);
-            }
-            let Some(body) = body else {
-                return Err(vec![syntax_at_loc(
-                    event_loc.as_ref(),
-                    format!("missing handler body for event '{name}'"),
-                )]);
-            };
-            events.push(EventDef {
-                loc: event_loc,
-                name,
-                params,
-                body,
-            });
+            merge_event_defs(&mut events, vec![parse_event_decl(item)?])?;
         }
     }
 
     Ok(EventBlock {
         loc: block_loc,
         events,
+    })
+}
+
+pub(super) fn parse_event_block(block_pair: Pair<'_, Rule>) -> Result<EventBlock, Vec<Diagnostic>> {
+    if block_pair.as_rule() != Rule::event_block {
+        return Err(vec![syntax_at_pair(
+            &block_pair,
+            "internal parser error: expected event block",
+        )]);
+    }
+
+    let block_loc = stmt_loc_from_pair(&block_pair);
+    let mut inner = block_pair.into_inner();
+    let Some(event_decl) = inner.next() else {
+        return Err(vec![syntax_at_loc(
+            block_loc.as_ref(),
+            "missing event declaration",
+        )]);
+    };
+
+    Ok(EventBlock {
+        loc: block_loc,
+        events: vec![parse_event_decl(event_decl)?],
+    })
+}
+
+pub(super) fn merge_event_defs(
+    existing: &mut Vec<EventDef>,
+    incoming: Vec<EventDef>,
+) -> Result<(), Vec<Diagnostic>> {
+    let mut seen = existing
+        .iter()
+        .map(|event| event.name.clone())
+        .collect::<HashSet<_>>();
+    for event in incoming {
+        if !seen.insert(event.name.clone()) {
+            return Err(vec![syntax_at_loc(
+                event.loc.as_ref(),
+                format!("duplicate event declaration '{}'", event.name),
+            )]);
+        }
+        existing.push(event);
+    }
+    Ok(())
+}
+
+fn parse_event_decl(item: Pair<'_, Rule>) -> Result<EventDef, Vec<Diagnostic>> {
+    let event_loc = stmt_loc_from_pair(&item);
+    let mut name: Option<String> = None;
+    let mut params = Vec::<EventParamDecl>::new();
+    let mut body = None;
+    for part in item.into_inner() {
+        match part.as_rule() {
+            Rule::ident => {
+                if name.is_none() {
+                    name = Some(part.as_str().to_owned());
+                }
+            }
+            Rule::event_param_list => {
+                for event_param in part.into_inner() {
+                    if event_param.as_rule() != Rule::event_param_decl {
+                        continue;
+                    }
+                    let param_loc = stmt_loc_from_pair(&event_param);
+                    let mut param_inner = event_param.into_inner();
+                    let Some(param_name_pair) = param_inner.next() else {
+                        return Err(vec![syntax_at_loc(
+                            param_loc.as_ref(),
+                            "missing event parameter name",
+                        )]);
+                    };
+                    let mut ty = EventParamType::Scalar(PrimitiveType::F32);
+                    let mut ty_loc = Span::ZERO;
+                    let mut default = None;
+                    for item in param_inner {
+                        match item.as_rule() {
+                            Rule::event_param_type => {
+                                ty_loc = stmt_loc_from_pair(&item);
+                                ty = parse_event_param_type(item)?;
+                            }
+                            Rule::expr => {
+                                default = Some(parse_expr_inner(item));
+                            }
+                            _ => {}
+                        }
+                    }
+                    params.push(EventParamDecl {
+                        loc: param_loc,
+                        name: param_name_pair.as_str().to_owned(),
+                        ty,
+                        ty_loc,
+                        default,
+                    });
+                }
+            }
+            Rule::stmt_block => {
+                body = Some(parse_stmt_block(part)?);
+            }
+            _ => {}
+        }
+    }
+    let Some(name) = name else {
+        return Err(vec![syntax_at_loc(
+            event_loc.as_ref(),
+            "missing event name",
+        )]);
+    };
+    let Some(body) = body else {
+        return Err(vec![syntax_at_loc(
+            event_loc.as_ref(),
+            format!("missing handler body for event '{name}'"),
+        )]);
+    };
+    Ok(EventDef {
+        loc: event_loc,
+        name,
+        params,
+        body,
     })
 }
 
@@ -820,7 +860,7 @@ pub(super) fn parse_proc_block(
     let mut params = Vec::new();
     let mut params_deferred_count: Option<Expr> = None;
     let mut params_deferred_default_ty: Option<DeclType> = None;
-    let mut events: Option<Vec<EventDef>> = None;
+    let mut events = Vec::<EventDef>::new();
     let mut buffers = Vec::new();
     let mut buffers_deferred_count: Option<Expr> = None;
     let mut buffers_deferred_default_ty: Option<BufferType> = None;
@@ -883,10 +923,12 @@ pub(super) fn parse_proc_block(
                 params_deferred_default_ty = pb.deferred_default_ty;
             }
             Rule::events_block => {
-                if events.is_some() {
-                    return Err(vec![syntax_at_pair(&child, "duplicate proc events block")]);
-                }
-                events = Some(parse_events_block(child)?.events);
+                let block = parse_events_block(child)?;
+                merge_event_defs(&mut events, block.events)?;
+            }
+            Rule::event_block => {
+                let block = parse_event_block(child)?;
+                merge_event_defs(&mut events, block.events)?;
             }
             Rule::buffers_block => {
                 if !buffers.is_empty() || buffers_deferred_count.is_some() {
@@ -983,7 +1025,7 @@ pub(super) fn parse_proc_block(
         params,
         params_deferred_count,
         params_deferred_default_ty,
-        events: events.unwrap_or_default(),
+        events,
         buffers,
         buffers_deferred_count,
         buffers_deferred_default_ty,

@@ -740,11 +740,23 @@ sample:
             typed.param_types.get("float_default"),
             Some(&PrimitiveType::F32)
         );
-        assert_eq!(typed.param_types.get("int_default"), Some(&PrimitiveType::I32));
+        assert_eq!(
+            typed.param_types.get("int_default"),
+            Some(&PrimitiveType::I32)
+        );
         assert_eq!(typed.param_types.get("int_expr"), Some(&PrimitiveType::I32));
-        assert_eq!(typed.param_types.get("float_expr"), Some(&PrimitiveType::F32));
-        assert_eq!(typed.param_types.get("explicit_f64"), Some(&PrimitiveType::F64));
-        assert_eq!(typed.param_types.get("explicit_i64"), Some(&PrimitiveType::I64));
+        assert_eq!(
+            typed.param_types.get("float_expr"),
+            Some(&PrimitiveType::F32)
+        );
+        assert_eq!(
+            typed.param_types.get("explicit_f64"),
+            Some(&PrimitiveType::F64)
+        );
+        assert_eq!(
+            typed.param_types.get("explicit_i64"),
+            Some(&PrimitiveType::I64)
+        );
     }
 
     #[test]
@@ -2018,6 +2030,16 @@ sample:
     }
 
     #[test]
+    fn individual_event_syntax_merges_with_events_block_during_analysis() {
+        let src = "outs:\n  out1\nevent ping(x: i32):\n  phase = f32(x)\nevents:\n  reset():\n    phase = 0.0\ninit:\n  phase = 0.0\nsample:\n  out1 = phase\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("merged event syntax should analyze");
+        assert_eq!(typed.events.len(), 2);
+        assert_eq!(typed.events[0].name, "ping");
+        assert_eq!(typed.events[1].name, "reset");
+    }
+
+    #[test]
     fn event_loop_local_does_not_escape_loop() {
         let src = "outs:\n  out1\ninit:\n  phase = 0.0\nevents:\n  ping():\n    for i in 0..2:\n      tmp = f32(i)\n    phase = tmp\nsample:\n  out1 = phase\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -2035,5 +2057,12 @@ sample:
         let src = "proc Voice:\n  outs:\n    out1\n  init:\n    phase = 0.0\n  events:\n    ping():\n      if true:\n        tmp = 1.0\n      else:\n        tmp = 2.0\n      phase = tmp\n  sample:\n    out1 = phase\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
         let program = parse_program(src).expect("parse should succeed");
         analyze(program).expect("proc event branch-local should feed later proc state write");
+    }
+
+    #[test]
+    fn individual_proc_event_syntax_merges_with_proc_events_block_during_analysis() {
+        let src = "proc Voice:\n  outs:\n    out1\n  event ping(x: i32):\n    phase = f32(x)\n  events:\n    reset():\n      phase = 0.0\n  init:\n    phase = 0.0\n  sample:\n    out1 = phase\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("merged proc event syntax should analyze");
     }
 }

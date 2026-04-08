@@ -40,6 +40,7 @@ The main top-level blocks are:
 - `ins`
 - `params`
 - `events`
+- `event`
 - `buffers`
 - `outs`
 - `init`
@@ -59,7 +60,7 @@ You will also see file-level declarations that are not blocks:
 There are two big categories:
 
 - Declaration blocks
-  - `ins`, `params`, `events`, `buffers`, `outs`, `const`, `def`, `struct`, `proc`, `namespace`
+  - `ins`, `params`, `events` / `event`, `buffers`, `outs`, `const`, `def`, `struct`, `proc`, `namespace`
 - Executable blocks
   - `init`, `block`, `sample`, `graph`
 
@@ -108,7 +109,7 @@ buffers:
 
 ## 4. The core blocks
 
-This section walks through the blocks in the order you asked for: `ins`, `params`, `events`, `buffers`, `outs`, `init`, `block`, `sample`, then `graph`.
+This section walks through the blocks in the order you asked for: `ins`, `params`, `events` / `event`, `buffers`, `outs`, `init`, `block`, `sample`, then `graph`.
 
 ### 4.1 `ins`
 
@@ -228,6 +229,23 @@ Rules:
 `events` declares callable event handlers.
 At the top level, events are host-triggered.
 Inside a `proc`, events are receiver-only commands that you call on a proc instance.
+
+There is also singular sugar:
+
+```onda
+event note_on(freq_hz = 440.0):
+  gate = true
+```
+
+That is exactly equivalent to:
+
+```onda
+events:
+  note_on(freq_hz = 440.0):
+    gate = true
+```
+
+You can mix `event ...` declarations with an `events:` block in the same owner; they are merged into one event set.
 
 Top-level example:
 
@@ -582,7 +600,7 @@ Type and scheduling rules:
 Current graph limits:
 - user-defined function calls and proc calls are not supported inside graph source expressions
 - array-constructor expressions such as `f32[2](...)` are not graph sources
-- graph event propagation syntax does not exist; use ordinary `events` blocks for event routing
+- graph event propagation syntax does not exist; use ordinary `events` blocks or singular `event ...` declarations for event routing
 
 Proc bundles can route directly into destination sets:
 
@@ -1215,6 +1233,7 @@ A proc can contain:
 - `ins`
 - `params`
 - `events`
+- `event`
 - `buffers`
 - `outs`
 - `init`
@@ -1225,7 +1244,7 @@ A proc can contain:
 
 In practice:
 - `init` is optional
-- `events` is optional
+- `events` is optional, and singular `event ...` declarations can be mixed with it
 - `block` is optional
 - a proc normally has either `sample`, `block`, or `graph` as its execution body
 
@@ -1609,7 +1628,7 @@ Why it is useful:
 ## 12. Summary
 
 If you are new to Onda, the most useful learning order is:
-1. understand the block model: `ins`, `params`, `events`, `buffers`, `outs`, `init`, `block`, `sample`, `graph`
+1. understand the block model: `ins`, `params`, `events` / `event`, `buffers`, `outs`, `init`, `block`, `sample`, `graph`
 2. learn the executable-scope rules for state and locals
 3. learn `def` and `struct`
 4. learn generics

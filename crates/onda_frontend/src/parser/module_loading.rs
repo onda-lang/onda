@@ -87,6 +87,21 @@ fn merge_blocks_preferring_existing(existing: &mut Vec<Block>, incoming: Vec<Blo
     }
 }
 
+fn append_or_merge_event_block(
+    blocks: &mut Vec<Block>,
+    incoming: EventBlock,
+) -> Result<(), Vec<Diagnostic>> {
+    for block in blocks.iter_mut() {
+        if let Block::Events(existing) = block {
+            existing.loc = Span::spanning(existing.loc, incoming.loc);
+            merge_event_defs(&mut existing.events, incoming.events)?;
+            return Ok(());
+        }
+    }
+    blocks.push(Block::Events(incoming));
+    Ok(())
+}
+
 pub fn parse_program(source: &str) -> Result<Program, Vec<Diagnostic>> {
     let virtual_path = PathBuf::from("<memory>");
     let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(source)
@@ -256,7 +271,12 @@ fn parse_program_preprocessed(
                     top_level_consts.insert(decl.name.clone(), value);
                     state.top_level_const_values = top_level_consts.clone();
                 }
-                Rule::events_block => blocks.push(Block::Events(parse_events_block(pair)?)),
+                Rule::events_block => {
+                    append_or_merge_event_block(&mut blocks, parse_events_block(pair)?)?
+                }
+                Rule::event_block => {
+                    append_or_merge_event_block(&mut blocks, parse_event_block(pair)?)?
+                }
                 Rule::buffers_block => blocks.push(Block::Buffers(parse_buffers_block(pair)?)),
                 Rule::assert_block => blocks.push(Block::Assert(parse_assert_decl(pair)?)),
                 Rule::proc_block => blocks.push(Block::Proc(parse_proc_block(pair)?)),
