@@ -29,6 +29,14 @@ use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum PreviewThemeMode {
+    #[default]
+    Auto,
+    Dark,
+    Light,
+}
+
 #[derive(Clone, Debug)]
 pub struct PreviewHostOptions {
     pub sample_rate_hz: u32,
@@ -36,6 +44,7 @@ pub struct PreviewHostOptions {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub fast_math: bool,
+    pub theme: PreviewThemeMode,
     pub onda_bin: String,
 }
 
@@ -47,6 +56,7 @@ impl Default for PreviewHostOptions {
             input_device: None,
             output_device: None,
             fast_math: false,
+            theme: PreviewThemeMode::Auto,
             onda_bin: "onda".to_owned(),
         }
     }

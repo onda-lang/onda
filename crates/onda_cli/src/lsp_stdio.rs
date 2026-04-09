@@ -1770,7 +1770,10 @@ fn extract_def_symbols(trimmed: &str, scope: &mut SemanticScope) {
 
 /// Extract function name and params from `event name(param: Type, ...)`.
 fn extract_event_symbols(trimmed: &str, scope: &mut SemanticScope) {
-    let rest = trimmed.strip_prefix("event ").unwrap_or(trimmed).trim_start();
+    let rest = trimmed
+        .strip_prefix("event ")
+        .unwrap_or(trimmed)
+        .trim_start();
     if let Some(name) = extract_leading_ident(rest) {
         scope.functions.insert(name.to_owned());
         let after_name = &rest[name.len()..];
@@ -2184,11 +2187,11 @@ fn invalid_params(message: String) -> String {
 mod tests {
     use super::{
         collect_const_names, collect_symbols_from_source, diagnostic_message, file_uri_to_path,
-        latest_full_text, is_reserved_word, lsp_document_path, path_to_file_uri,
-        semantic_tokens_for_document, LspServer, SemanticScope,
-        TextDocumentContentChangeEvent, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
-        SEMANTIC_TOKEN_TYPE_FUNCTION, SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT,
-        SEMANTIC_TOKEN_TYPE_STATE, SEMANTIC_TOKEN_TYPE_VARIABLE,
+        is_reserved_word, latest_full_text, lsp_document_path, path_to_file_uri,
+        semantic_tokens_for_document, LspServer, SemanticScope, TextDocumentContentChangeEvent,
+        SEMANTIC_TOKEN_TYPE_ENUM_MEMBER, SEMANTIC_TOKEN_TYPE_FUNCTION,
+        SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT, SEMANTIC_TOKEN_TYPE_STATE,
+        SEMANTIC_TOKEN_TYPE_VARIABLE,
     };
     use onda_frontend::{DiagCode, Diagnostic};
     use serde_json::json;

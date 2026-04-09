@@ -31,7 +31,7 @@ use onda_frontend::{
     Diagnostic, EventParamType, Expr, FieldType, FunctionDef, InitBlock, LogicalOp, PrimitiveType,
     ProcessorDef, Program, SampleBlock, Stmt, StructDef,
 };
-use onda_preview::{available_audio_devices, PreviewHostOptions};
+use onda_preview::{available_audio_devices, PreviewHostOptions, PreviewThemeMode};
 use onda_runtime::{bind_output, create_instance, process_bound, InstanceConfig};
 use onda_semantics::{
     analyze_with_options, lower_graphs_for_inspection_with_options, AnalysisOptions,
@@ -51,7 +51,7 @@ const USAGE: &str = r#"Usage:
   onda compile <input.onda> [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>] [--dump-graph] [--ir] [--meta] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--target <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <feature-list>] [--target-abi <name>] [--reloc-model <default|static|pic|dynamic-no-pic>] [--code-model <default|small|kernel|medium|large>] [--opt-level <0|1|2|3>]
   onda render <input.onda> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
   onda lsp
-  onda preview <input.onda> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>] [--webview]
+  onda preview <input.onda> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>] [--theme <auto|dark|light>] [--webview]
   onda preview play <input.onda> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>] [--control-json] [--input-device <name>] [--output-device <name>]
   onda preview render <input.onda> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
   onda daemon diagnose <input.onda> [--sample-rate <hz>] [--block <frames>]
@@ -78,6 +78,7 @@ Options:
   --control-json Emit preview control handshake on stdout and serve param control over localhost
   --input-device Select audio input device by exact name for preview playback
   --output-device Select audio output device by exact name for preview playback
+  --theme        Preview window theme: `auto`, `dark`, or `light` (default: auto)
   --webview      Use the webview preview host instead of egui
   --fast-math    Enable LLVM fast-math flags for floating-point operations
   --help, -h     Show this help
@@ -148,6 +149,7 @@ enum PreviewCommand {
         input_device: Option<String>,
         output_device: Option<String>,
         fast_math: bool,
+        theme: PreviewThemeMode,
         host: PreviewHostKind,
     },
 }
@@ -835,6 +837,7 @@ fn parse_preview_window_args(
     let mut input_device = None;
     let mut output_device = None;
     let mut fast_math = false;
+    let mut theme = PreviewThemeMode::Auto;
     let mut host = PreviewHostKind::Auto;
 
     while let Some(arg) = args.next() {
@@ -863,6 +866,12 @@ fn parse_preview_window_args(
                 };
                 output_device = Some(value);
             }
+            "--theme" => {
+                let Some(value) = args.next() else {
+                    return Err("--theme requires one of: auto, dark, light".to_owned());
+                };
+                theme = parse_preview_theme_mode(&value)?;
+            }
             "--webview" => host = PreviewHostKind::Webview,
             "--fast-math" => fast_math = true,
             "--help" | "-h" => return Err(USAGE.to_owned()),
@@ -881,6 +890,9 @@ fn parse_preview_window_args(
             _ if arg.starts_with("--output-device=") => {
                 output_device = Some(arg["--output-device=".len()..].to_owned());
             }
+            _ if arg.starts_with("--theme=") => {
+                theme = parse_preview_theme_mode(&arg["--theme=".len()..])?;
+            }
             _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
         }
     }
@@ -892,8 +904,20 @@ fn parse_preview_window_args(
         input_device,
         output_device,
         fast_math,
+        theme,
         host,
     })
+}
+
+fn parse_preview_theme_mode(value: &str) -> Result<PreviewThemeMode, String> {
+    match value {
+        "auto" => Ok(PreviewThemeMode::Auto),
+        "dark" => Ok(PreviewThemeMode::Dark),
+        "light" => Ok(PreviewThemeMode::Light),
+        _ => Err(format!(
+            "invalid --theme value '{value}'; expected auto, dark, or light"
+        )),
+    }
 }
 
 fn parse_preview_play_args(
@@ -1437,6 +1461,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             input_device,
             output_device,
             fast_math,
+            theme,
             host,
         } => {
             let onda_bin = env::current_exe()
@@ -1451,6 +1476,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
                     input_device,
                     output_device,
                     fast_math,
+                    theme,
                     onda_bin,
                 },
             )
@@ -4487,6 +4513,7 @@ mod tests {
     use onda_frontend::{
         Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
     };
+    use onda_preview::PreviewThemeMode;
     use serde_json::Value;
     use std::path::{Path, PathBuf};
     use std::sync::{mpsc, Arc, Mutex};
@@ -4899,6 +4926,22 @@ reloc_model = "default"
         match cmd {
             Command::Preview(PreviewCommand::Window { host, .. }) => {
                 assert_eq!(host, PreviewHostKind::Webview);
+            }
+            _ => panic!("expected preview window command"),
+        }
+    }
+
+    #[test]
+    fn parse_preview_window_accepts_theme_flag() {
+        let cmd = parse_args(
+            ["onda", "preview", "x.onda", "--theme", "dark"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("preview window args should parse");
+        match cmd {
+            Command::Preview(PreviewCommand::Window { theme, .. }) => {
+                assert_eq!(theme, PreviewThemeMode::Dark);
             }
             _ => panic!("expected preview window command"),
         }

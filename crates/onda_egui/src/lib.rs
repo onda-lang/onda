@@ -1,12 +1,21 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
+use std::sync::Arc;
 
 use eframe::egui;
-use onda_preview::{PreviewController, PreviewHostOptions};
+use onda_preview::{PreviewController, PreviewHostOptions, PreviewThemeMode};
 use serde_json::{Number, Value};
 
+const LOGO_DARK_URI: &str = "bytes://onda-logo-dark-rect.svg";
+const LOGO_LIGHT_URI: &str = "bytes://onda-logo-rect.svg";
+const LOGO_DARK_BYTES: &[u8] = include_bytes!("../../../assets/svg/onda-logo-dark-rect.svg");
+const LOGO_LIGHT_BYTES: &[u8] = include_bytes!("../../../assets/svg/onda-logo-rect.svg");
+const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo-dark-rect.png");
+const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo-rect.png");
+
 pub fn run_preview_egui(onda_path: &Path, options: PreviewHostOptions) -> Result<(), String> {
+    let theme_mode = options.theme;
     let controller = PreviewController::new(onda_path, options)?;
     let title = format!(
         "Onda - {}",
@@ -18,30 +27,72 @@ pub fn run_preview_egui(onda_path: &Path, options: PreviewHostOptions) -> Result
     );
 
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([680.0, 820.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([680.0, 820.0])
+            .with_icon(load_app_icon(startup_icon_is_dark(theme_mode))?),
         ..Default::default()
     };
 
     eframe::run_native(
         &title,
         native_options,
-        Box::new(move |_cc| Ok(Box::new(PreviewApp::new(controller)))),
+        Box::new(move |cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            match theme_mode {
+                PreviewThemeMode::Auto => {}
+                PreviewThemeMode::Dark => cc.egui_ctx.set_visuals(egui::Visuals::dark()),
+                PreviewThemeMode::Light => cc.egui_ctx.set_visuals(egui::Visuals::light()),
+            }
+            let initial_icon_dark = resolved_theme_is_dark(&cc.egui_ctx, theme_mode);
+            if let Ok(icon) = load_app_icon(initial_icon_dark) {
+                cc.egui_ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
+            }
+            Ok(Box::new(PreviewApp::new(controller, Some(initial_icon_dark))))
+        }),
     )
     .map_err(|err| format!("failed to start egui preview: {err}"))
+}
+
+fn load_app_icon(is_dark: bool) -> Result<egui::IconData, String> {
+    let png_bytes = if is_dark {
+        APP_ICON_DARK_PNG
+    } else {
+        APP_ICON_LIGHT_PNG
+    };
+    eframe::icon_data::from_png_bytes(png_bytes)
+        .map_err(|err| format!("failed to decode preview app icon: {err}"))
+}
+
+fn startup_icon_is_dark(theme_mode: PreviewThemeMode) -> bool {
+    !matches!(theme_mode, PreviewThemeMode::Light)
+}
+
+fn resolved_theme_is_dark(ctx: &egui::Context, theme_mode: PreviewThemeMode) -> bool {
+    match theme_mode {
+        PreviewThemeMode::Dark => true,
+        PreviewThemeMode::Light => false,
+        PreviewThemeMode::Auto => ctx
+            .system_theme()
+            .unwrap_or_else(|| ctx.theme())
+            == egui::Theme::Dark,
+    }
 }
 
 struct PreviewApp {
     controller: PreviewController,
     event_inputs: HashMap<String, Vec<Value>>,
     number_drafts: HashMap<String, f64>,
+    current_icon_dark: Option<bool>,
 }
 
 impl PreviewApp {
-    fn new(controller: PreviewController) -> Self {
+    fn new(controller: PreviewController, current_icon_dark: Option<bool>) -> Self {
         let mut app = Self {
             controller,
             event_inputs: HashMap::new(),
             number_drafts: HashMap::new(),
+            current_icon_dark,
         };
         app.sync_event_inputs();
         app
@@ -89,6 +140,16 @@ impl PreviewApp {
         self.event_inputs.clear();
         self.sync_event_inputs();
     }
+
+    fn sync_window_icon(&mut self, ctx: &egui::Context, is_dark: bool) {
+        if self.current_icon_dark == Some(is_dark) {
+            return;
+        }
+        if let Ok(icon) = load_app_icon(is_dark) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
+            self.current_icon_dark = Some(is_dark);
+        }
+    }
 }
 
 impl eframe::App for PreviewApp {
@@ -98,207 +159,280 @@ impl eframe::App for PreviewApp {
             self.sync_event_inputs();
         }
         ctx.request_repaint_after(Duration::from_millis(16));
-
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            let state = self.controller.state().clone();
-            ui.heading("Onda Preview");
-            ui.label(egui::RichText::new(state.path).monospace().size(14.0));
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(format!("Status: {}", state.status)).size(13.0));
-                let button_size = [120.0, 30.0];
-                if ui
-                    .add_sized(button_size, egui::Button::new("Start"))
-                    .clicked()
-                {
-                    let _ = self.controller.start();
-                }
-                if ui
-                    .add_sized(button_size, egui::Button::new("Stop"))
-                    .clicked()
-                {
-                    self.controller.stop();
-                }
-                if ui
-                    .add_sized(button_size, egui::Button::new("Reset"))
-                    .clicked()
-                {
-                    self.controller.reset();
-                    self.reset_event_inputs();
-                }
-                if ui
-                    .add_sized([138.0, 30.0], egui::Button::new("Refresh Devices"))
-                    .clicked()
-                {
-                    self.controller.refresh_devices();
-                }
-            });
-            if let Some(error) = state.error {
-                ui.colored_label(egui::Color32::from_rgb(220, 96, 96), error);
-            }
-        });
-
+        let theme = PreviewTheme::from_dark_mode(ctx.style().visuals.dark_mode);
+        self.sync_window_icon(ctx, theme.is_dark);
+        apply_preview_theme(ctx, &theme);
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let state = self.controller.state().clone();
 
+                    section_box(ui, "", |ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), 190.0),
+                            egui::Layout::top_down(egui::Align::Center),
+                            |ui| {
+                                let logo = if theme.is_dark {
+                                    egui::Image::from_bytes(LOGO_DARK_URI, LOGO_DARK_BYTES)
+                                } else {
+                                    egui::Image::from_bytes(LOGO_LIGHT_URI, LOGO_LIGHT_BYTES)
+                                };
+                                ui.add(
+                                    logo.fit_to_exact_size(egui::vec2(68.0, 68.0))
+                                        .maintain_aspect_ratio(true)
+                                        .texture_options(egui::TextureOptions::LINEAR),
+                                );
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new(&state.path).monospace().size(14.0));
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new(format!("Status: {}", state.status))
+                                        .size(13.0),
+                                );
+                                ui.add_space(10.0);
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(ui.available_width(), 30.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        let button_width = 120.0;
+                                        let button_gap = 10.0;
+                                        let total_width = button_width * 3.0 + button_gap * 2.0;
+                                        let leading_space =
+                                            ((ui.available_width() - total_width) * 0.5).max(0.0);
+                                        ui.add_space(leading_space);
+                                        ui.spacing_mut().item_spacing.x = button_gap;
+                                        let button_size = [button_width, 30.0];
+                                        if ui
+                                            .add_sized(button_size, egui::Button::new("Start"))
+                                            .clicked()
+                                        {
+                                            let _ = self.controller.start();
+                                        }
+                                        if ui
+                                            .add_sized(button_size, egui::Button::new("Stop"))
+                                            .clicked()
+                                        {
+                                            self.controller.stop();
+                                        }
+                                        if ui
+                                            .add_sized(button_size, egui::Button::new("Reset"))
+                                            .clicked()
+                                        {
+                                            self.controller.reset();
+                                            self.reset_event_inputs();
+                                        }
+                                    },
+                                );
+                                if let Some(error) = state.error {
+                                    ui.add_space(8.0);
+                                    ui.colored_label(theme.error, error);
+                                }
+                            },
+                        );
+                    });
+
                     if !state.input_devices.is_empty() || !state.output_devices.is_empty() {
-                        section_box(ui, "Devices", |ui| {
-                            ui.horizontal(|ui| {
-                                render_device_combo(
-                                    ui,
-                                    "Input Device",
-                                    &state.input_devices,
-                                    state.current_input_device.as_deref(),
-                                    |selection| {
-                                        let _ = self.controller.set_input_device(selection);
-                                    },
-                                );
-                                render_device_combo(
-                                    ui,
-                                    "Output Device",
-                                    &state.output_devices,
-                                    state.current_output_device.as_deref(),
-                                    |selection| {
-                                        let _ = self.controller.set_output_device(selection);
-                                    },
-                                );
-                            });
+                        ui.add_space(12.0);
+                        section_box(ui, "", |ui| {
+                            egui::CollapsingHeader::new("Devices")
+                                .default_open(false)
+                                .show_unindented(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        ui.vertical(|ui| {
+                                            ui.add_space(10.0);
+                                            if ui
+                                                .add_sized(
+                                                    [122.0, 26.0],
+                                                    egui::Button::new("Refresh"),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.controller.refresh_devices();
+                                            }
+                                        });
+                                        render_device_combo(
+                                            ui,
+                                            "Input Device",
+                                            &state.input_devices,
+                                            state.current_input_device.as_deref(),
+                                            |selection| {
+                                                let _ = self.controller.set_input_device(selection);
+                                            },
+                                        );
+                                        render_device_combo(
+                                            ui,
+                                            "Output Device",
+                                            &state.output_devices,
+                                            state.current_output_device.as_deref(),
+                                            |selection| {
+                                                let _ =
+                                                    self.controller.set_output_device(selection);
+                                            },
+                                        );
+                                    });
+                                });
                         });
                     }
 
-                    ui.add_space(8.0);
-                    section_box(ui, "Scope", |ui| {
-                        draw_scope(
-                            ui,
-                            state.scope_channels,
-                            &state.scope_samples,
-                            egui::vec2(ui.available_width(), 140.0),
-                        );
+                    ui.add_space(12.0);
+                    section_box(ui, "", |ui| {
+                        egui::CollapsingHeader::new("Scope")
+                            .default_open(true)
+                            .show_unindented(ui, |ui| {
+                                draw_scope(
+                                    ui,
+                                    state.scope_channels,
+                                    &state.scope_samples,
+                                    egui::vec2(ui.available_width(), 140.0),
+                                    &theme,
+                                );
+                            });
                     });
 
                     if !state.buffers.is_empty() {
                         ui.add_space(12.0);
-                        section_box(ui, "Buffers", |ui| {
-                            for (index, buffer) in state.buffers.iter().enumerate() {
-                                let name = buffer_name(buffer).unwrap_or("buffer");
-                                let loaded_path = buffer.get("loadedPath").and_then(Value::as_str);
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(name).strong());
-                                    ui.label(buffer_type_summary(buffer));
-                                });
-                                ui.label(loaded_path.unwrap_or("No file loaded"));
-                                ui.horizontal(|ui| {
-                                    if ui.button("Choose File").clicked() {
-                                        if let Some(path) = rfd::FileDialog::new()
-                                            .add_filter("Wave Audio", &["wav"])
-                                            .set_title(format!("Bind '{name}' buffer"))
-                                            .pick_file()
-                                        {
-                                            if let Some(file_path) = path.to_str() {
-                                                self.controller.bind_buffer_file(name, file_path);
+                        section_box(ui, "", |ui| {
+                            egui::CollapsingHeader::new("Buffers")
+                                .default_open(true)
+                                .show_unindented(ui, |ui| {
+                                    for (index, buffer) in state.buffers.iter().enumerate() {
+                                        let name = buffer_name(buffer).unwrap_or("buffer");
+                                        let loaded_path =
+                                            buffer.get("loadedPath").and_then(Value::as_str);
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new(name).strong());
+                                            ui.label(buffer_type_summary(buffer));
+                                        });
+                                        ui.label(loaded_path.unwrap_or("No file loaded"));
+                                        ui.horizontal(|ui| {
+                                            if ui.button("Choose File").clicked() {
+                                                if let Some(path) = rfd::FileDialog::new()
+                                                    .add_filter("Wave Audio", &["wav"])
+                                                    .set_title(format!("Bind '{name}' buffer"))
+                                                    .pick_file()
+                                                {
+                                                    if let Some(file_path) = path.to_str() {
+                                                        self.controller
+                                                            .bind_buffer_file(name, file_path);
+                                                    }
+                                                }
                                             }
+                                            if ui.button("Clear").clicked() {
+                                                self.controller.clear_buffer(name);
+                                            }
+                                        });
+                                        if index + 1 < state.buffers.len() {
+                                            ui.add_space(6.0);
+                                            ui.separator();
+                                            ui.add_space(6.0);
                                         }
                                     }
-                                    if ui.button("Clear").clicked() {
-                                        self.controller.clear_buffer(name);
-                                    }
                                 });
-                                if index + 1 < state.buffers.len() {
-                                    ui.add_space(6.0);
-                                    ui.separator();
-                                    ui.add_space(6.0);
-                                }
-                            }
                         });
                     }
 
                     if !state.events.is_empty() {
                         ui.add_space(12.0);
-                        section_box(ui, "Events", |ui| {
-                            for (event_index, event) in state.events.iter().enumerate() {
-                                let Some(name) = event_name(event) else {
-                                    continue;
-                                };
-                                let args = event_args(event);
-                                let values =
-                                    self.event_inputs.entry(name.to_owned()).or_insert_with(|| {
-                                        args.iter()
-                                            .map(|arg| {
-                                                arg_value(arg).unwrap_or_else(|| {
-                                                    default_value_for_type(arg_type(arg))
-                                                })
-                                            })
-                                            .collect()
-                                    });
+                        section_box(ui, "", |ui| {
+                            egui::CollapsingHeader::new("Events")
+                                .default_open(true)
+                                .show_unindented(ui, |ui| {
+                                    for (event_index, event) in state.events.iter().enumerate() {
+                                        let Some(name) = event_name(event) else {
+                                            continue;
+                                        };
+                                        let args = event_args(event);
+                                        let values = self
+                                            .event_inputs
+                                            .entry(name.to_owned())
+                                            .or_insert_with(|| {
+                                                args.iter()
+                                                    .map(|arg| {
+                                                        arg_value(arg).unwrap_or_else(|| {
+                                                            default_value_for_type(arg_type(arg))
+                                                        })
+                                                    })
+                                                    .collect()
+                                            });
 
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(name).strong());
-                                    if ui.button("Trigger").clicked() {
-                                        self.controller.trigger_event(name, values.clone());
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new(name).strong());
+                                            if ui.button("Trigger").clicked() {
+                                                self.controller.trigger_event(name, values.clone());
+                                            }
+                                        });
+                                        for (index, arg) in args.iter().enumerate() {
+                                            render_scalar_value_editor(
+                                                ui,
+                                                arg_name(arg).unwrap_or("arg"),
+                                                arg_type(arg),
+                                                None,
+                                                None,
+                                                &mut values[index],
+                                            );
+                                        }
+                                        if event_index + 1 < state.events.len() {
+                                            ui.add_space(6.0);
+                                            ui.separator();
+                                            ui.add_space(6.0);
+                                        }
                                     }
                                 });
-                                for (index, arg) in args.iter().enumerate() {
-                                    render_scalar_value_editor(
-                                        ui,
-                                        arg_name(arg).unwrap_or("arg"),
-                                        arg_type(arg),
-                                        None,
-                                        None,
-                                        &mut values[index],
-                                    );
-                                }
-                                if event_index + 1 < state.events.len() {
-                                    ui.add_space(6.0);
-                                    ui.separator();
-                                    ui.add_space(6.0);
-                                }
-                            }
                         });
                     }
 
                     if !state.params.is_empty() {
                         ui.add_space(12.0);
-                        section_box(ui, "Params", |ui| {
-                            let param_count = state.params.len();
-                            for (index, mut param) in state.params.into_iter().enumerate() {
-                                let Some(name) = param_name(&param).map(str::to_owned) else {
-                                    continue;
-                                };
-                                let ty = param_type(&param);
-                                let min = param.get("rangeMin").and_then(Value::as_f64);
-                                let max = param.get("rangeMax").and_then(Value::as_f64);
-                                let value = param
-                                    .get("value")
-                                    .cloned()
-                                    .unwrap_or_else(|| default_value_for_type(ty));
-                                let number_draft = self.number_drafts.get(&name).copied();
-                                match render_param_value_editor(
-                                    ui,
-                                    &name,
-                                    ty,
-                                    min,
-                                    max,
-                                    &value,
-                                    number_draft,
-                                ) {
-                                    ParamEditOutcome::None => {}
-                                    ParamEditOutcome::NumberDraft(next_value) => {
-                                        self.number_drafts.insert(name.clone(), next_value);
+                        section_box(ui, "", |ui| {
+                            egui::CollapsingHeader::new("Params")
+                                .default_open(true)
+                                .show_unindented(ui, |ui| {
+                                    let param_count = state.params.len();
+                                    for (index, mut param) in state.params.into_iter().enumerate() {
+                                        let Some(name) = param_name(&param).map(str::to_owned)
+                                        else {
+                                            continue;
+                                        };
+                                        let ty = param_type(&param);
+                                        let min = param.get("rangeMin").and_then(Value::as_f64);
+                                        let max = param.get("rangeMax").and_then(Value::as_f64);
+                                        let value = param
+                                            .get("value")
+                                            .cloned()
+                                            .unwrap_or_else(|| default_value_for_type(ty));
+                                        let number_draft = self.number_drafts.get(&name).copied();
+                                        match render_param_value_editor(
+                                            ui,
+                                            &name,
+                                            ty,
+                                            min,
+                                            max,
+                                            &value,
+                                            number_draft,
+                                        ) {
+                                            ParamEditOutcome::None => {}
+                                            ParamEditOutcome::NumberDraft(next_value) => {
+                                                self.number_drafts.insert(name.clone(), next_value);
+                                            }
+                                            ParamEditOutcome::Commit(next_value) => {
+                                                self.number_drafts.remove(&name);
+                                                set_param_value(&mut param, next_value.clone());
+                                                self.controller.set_param(&name, next_value);
+                                            }
+                                        }
+                                        if index + 1 < param_count {
+                                            ui.add_space(6.0);
+                                            ui.separator();
+                                            ui.add_space(6.0);
+                                        }
                                     }
-                                    ParamEditOutcome::Commit(next_value) => {
-                                        self.number_drafts.remove(&name);
-                                        set_param_value(&mut param, next_value.clone());
-                                        self.controller.set_param(&name, next_value);
-                                    }
-                                }
-                                if index + 1 < param_count {
-                                    ui.add_space(6.0);
-                                    ui.separator();
-                                    ui.add_space(6.0);
-                                }
-                            }
+                                });
                         });
                     }
                 });
@@ -308,10 +442,20 @@ impl eframe::App for PreviewApp {
 
 fn section_box(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::group(ui.style())
+        .fill(ui.visuals().widgets.inactive.weak_bg_fill)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(12.0)
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(title).strong().size(15.0));
-            ui.add_space(8.0);
+            if !title.is_empty() {
+                ui.label(
+                    egui::RichText::new(title)
+                        .strong()
+                        .size(15.0)
+                        .color(ui.visuals().strong_text_color()),
+                );
+                ui.add_space(8.0);
+            }
             add_contents(ui);
         });
 }
@@ -587,20 +731,21 @@ fn is_integer_type(ty: &str) -> bool {
     matches!(ty, "i32" | "i64")
 }
 
-fn draw_scope(ui: &mut egui::Ui, channels: usize, samples: &[f32], size: egui::Vec2) {
+fn draw_scope(
+    ui: &mut egui::Ui,
+    channels: usize,
+    samples: &[f32],
+    size: egui::Vec2,
+    theme: &PreviewTheme,
+) {
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 6.0, egui::Color32::from_rgb(18, 18, 20));
+    painter.rect_filled(rect, 10.0, theme.scope_background);
     if channels == 0 || samples.is_empty() {
         return;
     }
 
-    let colors = [
-        egui::Color32::from_rgb(34, 197, 94),
-        egui::Color32::from_rgb(59, 130, 246),
-        egui::Color32::from_rgb(245, 158, 11),
-        egui::Color32::from_rgb(239, 68, 68),
-    ];
+    let stroke_color = theme.scope_strokes[0];
     let frames = samples.len() / channels;
     if frames == 0 {
         return;
@@ -614,7 +759,7 @@ fn draw_scope(ui: &mut egui::Ui, channels: usize, samples: &[f32], size: egui::V
                 egui::pos2(rect.left(), center_y),
                 egui::pos2(rect.right(), center_y),
             ],
-            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(24)),
+            egui::Stroke::new(1.0, theme.scope_grid),
         );
 
         let mut points = Vec::with_capacity(frames);
@@ -627,9 +772,109 @@ fn draw_scope(ui: &mut egui::Ui, channels: usize, samples: &[f32], size: egui::V
         }
         painter.add(egui::Shape::line(
             points,
-            egui::Stroke::new(1.5, colors[ch % colors.len()]),
+            egui::Stroke::new(1.5, stroke_color),
         ));
     }
+}
+
+#[derive(Clone, Copy)]
+struct PreviewTheme {
+    is_dark: bool,
+    accent: egui::Color32,
+    accent_soft: egui::Color32,
+    accent_hover: egui::Color32,
+    border: egui::Color32,
+    panel_fill: egui::Color32,
+    panel_tint: egui::Color32,
+    menu_fill: egui::Color32,
+    error: egui::Color32,
+    scope_background: egui::Color32,
+    scope_grid: egui::Color32,
+    scope_strokes: [egui::Color32; 4],
+}
+
+impl PreviewTheme {
+    fn from_dark_mode(is_dark: bool) -> Self {
+        if is_dark {
+            Self {
+                is_dark: true,
+                accent: egui::Color32::from_rgb(201, 219, 242),
+                accent_soft: egui::Color32::from_rgb(35, 61, 92),
+                accent_hover: egui::Color32::from_rgb(224, 235, 250),
+                border: egui::Color32::from_rgb(53, 78, 109),
+                panel_fill: egui::Color32::from_rgb(13, 24, 39),
+                panel_tint: egui::Color32::from_rgb(18, 31, 49),
+                menu_fill: egui::Color32::from_rgb(16, 28, 44),
+                error: egui::Color32::from_rgb(255, 126, 126),
+                scope_background: egui::Color32::from_rgb(10, 22, 36),
+                scope_grid: egui::Color32::from_rgba_unmultiplied(201, 219, 242, 36),
+                scope_strokes: [
+                    egui::Color32::from_rgb(201, 219, 242),
+                    egui::Color32::from_rgb(123, 173, 230),
+                    egui::Color32::from_rgb(122, 215, 186),
+                    egui::Color32::from_rgb(243, 181, 123),
+                ],
+            }
+        } else {
+            Self {
+                is_dark: false,
+                accent: egui::Color32::from_rgb(20, 58, 99),
+                accent_soft: egui::Color32::from_rgb(219, 232, 247),
+                accent_hover: egui::Color32::from_rgb(10, 33, 59),
+                border: egui::Color32::from_rgb(190, 209, 229),
+                panel_fill: egui::Color32::from_rgb(238, 245, 252),
+                panel_tint: egui::Color32::from_rgb(244, 249, 255),
+                menu_fill: egui::Color32::from_rgb(246, 250, 255),
+                error: egui::Color32::from_rgb(181, 51, 51),
+                scope_background: egui::Color32::from_rgb(236, 244, 253),
+                scope_grid: egui::Color32::from_rgba_unmultiplied(20, 58, 99, 28),
+                scope_strokes: [
+                    egui::Color32::from_rgb(20, 58, 99),
+                    egui::Color32::from_rgb(47, 118, 197),
+                    egui::Color32::from_rgb(33, 149, 110),
+                    egui::Color32::from_rgb(191, 121, 37),
+                ],
+            }
+        }
+    }
+}
+
+fn apply_preview_theme(ctx: &egui::Context, theme: &PreviewTheme) {
+    let mut style = (*ctx.style()).clone();
+    let visuals = &mut style.visuals;
+
+    visuals.panel_fill = theme.panel_fill;
+    visuals.window_fill = theme.panel_fill;
+    visuals.faint_bg_color = theme.panel_tint;
+    visuals.extreme_bg_color = theme.menu_fill;
+    visuals.code_bg_color = theme.menu_fill;
+    visuals.selection.bg_fill = theme.accent;
+    visuals.selection.stroke = egui::Stroke::new(1.0, theme.accent_hover);
+    visuals.widgets.noninteractive.bg_fill = theme.panel_fill;
+    visuals.widgets.inactive.bg_fill = theme.accent_soft;
+    visuals.widgets.inactive.weak_bg_fill = theme.panel_tint;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, theme.border);
+    visuals.widgets.hovered.bg_fill = theme.accent;
+    visuals.widgets.hovered.weak_bg_fill = theme.accent_soft;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, theme.accent_hover);
+    visuals.widgets.active.bg_fill = theme.accent_hover;
+    visuals.widgets.active.weak_bg_fill = theme.accent;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, theme.accent);
+    visuals.widgets.open.bg_fill = theme.menu_fill;
+    visuals.widgets.open.weak_bg_fill = theme.menu_fill;
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, theme.border);
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, theme.border);
+    visuals.widgets.noninteractive.weak_bg_fill = theme.panel_tint;
+    visuals.window_corner_radius = 14.0.into();
+    visuals.menu_corner_radius = 12.0.into();
+    visuals.widgets.noninteractive.corner_radius = 10.0.into();
+    visuals.widgets.inactive.corner_radius = 10.0.into();
+    visuals.widgets.hovered.corner_radius = 10.0.into();
+    visuals.widgets.active.corner_radius = 10.0.into();
+    visuals.widgets.open.corner_radius = 10.0.into();
+    style.spacing.slider_width = 220.0;
+
+    ctx.set_style(style);
 }
 
 fn event_name(event: &Value) -> Option<&str> {
