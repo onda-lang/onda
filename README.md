@@ -113,7 +113,7 @@ The CLI surface is:
 onda compile <input.onda>
 onda render <input.onda>
 onda lsp
-onda preview <input.onda>
+onda preview <input.onda> [--theme <auto|dark|light>]
 onda preview play <input.onda>
 onda preview render <input.onda>
 onda daemon diagnose <input.onda>
@@ -164,6 +164,7 @@ Useful flags:
 - `--fast-math`
 - `--input-device`
 - `--output-device`
+- `--theme`
 
 ### `onda preview play`
 
