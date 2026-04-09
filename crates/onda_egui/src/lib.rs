@@ -170,7 +170,7 @@ impl eframe::App for PreviewApp {
 
                     section_box(ui, "", |ui| {
                         ui.allocate_ui_with_layout(
-                            egui::vec2(ui.available_width(), 190.0),
+                            egui::vec2(ui.available_width(), 236.0),
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| {
                                 let logo = if theme.is_dark {
@@ -201,20 +201,28 @@ impl eframe::App for PreviewApp {
                                     |ui| {
                                         let button_width = 120.0;
                                         let button_gap = 10.0;
-                                        let total_width = button_width * 3.0 + button_gap * 2.0;
+                                        let total_width = button_width * 4.0 + button_gap * 3.0;
                                         let leading_space =
                                             ((ui.available_width() - total_width) * 0.5).max(0.0);
                                         ui.add_space(leading_space);
                                         ui.spacing_mut().item_spacing.x = button_gap;
                                         let button_size = [button_width, 30.0];
                                         if ui
-                                            .add_sized(button_size, egui::Button::new("Start"))
+                                            .add_enabled(
+                                                !state.running,
+                                                egui::Button::new("Start")
+                                                    .min_size(egui::vec2(button_width, 30.0)),
+                                            )
                                             .clicked()
                                         {
                                             let _ = self.controller.start();
                                         }
                                         if ui
-                                            .add_sized(button_size, egui::Button::new("Stop"))
+                                            .add_enabled(
+                                                state.running,
+                                                egui::Button::new("Stop")
+                                                    .min_size(egui::vec2(button_width, 30.0)),
+                                            )
                                             .clicked()
                                         {
                                             self.controller.stop();
@@ -226,8 +234,82 @@ impl eframe::App for PreviewApp {
                                             self.controller.reset();
                                             self.reset_event_inputs();
                                         }
+                                        if ui
+                                            .add_sized(
+                                                button_size,
+                                                egui::Button::new("Refresh Devices"),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.controller.refresh_devices();
+                                        }
                                     },
                                 );
+                                if !state.input_devices.is_empty() || !state.output_devices.is_empty() {
+                                    ui.add_space(12.0);
+                                    let combo_width = 140.0;
+                                    let combo_gap = 12.0;
+                                    let combo_count =
+                                        (!state.input_devices.is_empty() as usize)
+                                            + (!state.output_devices.is_empty() as usize);
+                                    let total_width = combo_width * combo_count as f32
+                                        + combo_gap * combo_count.saturating_sub(1) as f32;
+                                    ui.with_layout(
+                                        egui::Layout::top_down(egui::Align::Center),
+                                        |ui| {
+                                            ui.allocate_ui(
+                                                egui::vec2(total_width, 56.0),
+                                                |ui| {
+                                                    ui.spacing_mut().item_spacing.x = combo_gap;
+                                                    ui.horizontal(|ui| {
+                                                        if !state.input_devices.is_empty() {
+                                                            ui.allocate_ui(
+                                                                egui::vec2(combo_width, 56.0),
+                                                                |ui| {
+                                                                    render_device_combo(
+                                                                        ui,
+                                                                        "Input Device",
+                                                                        &state.input_devices,
+                                                                        state.current_input_device
+                                                                            .as_deref(),
+                                                                        |selection| {
+                                                                            let _ = self
+                                                                                .controller
+                                                                                .set_input_device(
+                                                                                    selection,
+                                                                                );
+                                                                        },
+                                                                    );
+                                                                },
+                                                            );
+                                                        }
+                                                        if !state.output_devices.is_empty() {
+                                                            ui.allocate_ui(
+                                                                egui::vec2(combo_width, 56.0),
+                                                                |ui| {
+                                                                    render_device_combo(
+                                                                        ui,
+                                                                        "Output Device",
+                                                                        &state.output_devices,
+                                                                        state.current_output_device
+                                                                            .as_deref(),
+                                                                        |selection| {
+                                                                            let _ = self
+                                                                                .controller
+                                                                                .set_output_device(
+                                                                                    selection,
+                                                                                );
+                                                                        },
+                                                                    );
+                                                                },
+                                                            );
+                                                        }
+                                                    });
+                                                },
+                                            );
+                                        },
+                                    );
+                                }
                                 if let Some(error) = state.error {
                                     ui.add_space(8.0);
                                     ui.colored_label(theme.error, error);
@@ -236,64 +318,22 @@ impl eframe::App for PreviewApp {
                         );
                     });
 
-                    if !state.input_devices.is_empty() || !state.output_devices.is_empty() {
+                    if state.running {
                         ui.add_space(12.0);
                         section_box(ui, "", |ui| {
-                            egui::CollapsingHeader::new("Devices")
-                                .default_open(false)
+                            egui::CollapsingHeader::new("Scope")
+                                .default_open(true)
                                 .show_unindented(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 8.0;
-                                        ui.vertical(|ui| {
-                                            ui.add_space(10.0);
-                                            if ui
-                                                .add_sized(
-                                                    [122.0, 26.0],
-                                                    egui::Button::new("Refresh"),
-                                                )
-                                                .clicked()
-                                            {
-                                                self.controller.refresh_devices();
-                                            }
-                                        });
-                                        render_device_combo(
-                                            ui,
-                                            "Input Device",
-                                            &state.input_devices,
-                                            state.current_input_device.as_deref(),
-                                            |selection| {
-                                                let _ = self.controller.set_input_device(selection);
-                                            },
-                                        );
-                                        render_device_combo(
-                                            ui,
-                                            "Output Device",
-                                            &state.output_devices,
-                                            state.current_output_device.as_deref(),
-                                            |selection| {
-                                                let _ =
-                                                    self.controller.set_output_device(selection);
-                                            },
-                                        );
-                                    });
+                                    draw_scope(
+                                        ui,
+                                        state.scope_channels,
+                                        &state.scope_samples,
+                                        egui::vec2(ui.available_width(), 140.0),
+                                        &theme,
+                                    );
                                 });
                         });
                     }
-
-                    ui.add_space(12.0);
-                    section_box(ui, "", |ui| {
-                        egui::CollapsingHeader::new("Scope")
-                            .default_open(true)
-                            .show_unindented(ui, |ui| {
-                                draw_scope(
-                                    ui,
-                                    state.scope_channels,
-                                    &state.scope_samples,
-                                    egui::vec2(ui.available_width(), 140.0),
-                                    &theme,
-                                );
-                            });
-                    });
 
                     if !state.buffers.is_empty() {
                         ui.add_space(12.0);
@@ -467,11 +507,12 @@ fn render_device_combo(
     current: Option<&str>,
     mut on_change: impl FnMut(Option<&str>),
 ) {
-    ui.vertical(|ui| {
+    ui.vertical_centered(|ui| {
         ui.label(label);
         let selected = current.unwrap_or("Default");
         egui::ComboBox::from_id_salt(label)
-            .selected_text(selected)
+            .width(ui.available_width())
+            .selected_text(ellipsize_middle(selected, 18))
             .show_ui(ui, |ui| {
                 if ui.selectable_label(current.is_none(), "Default").clicked() {
                     on_change(None);
@@ -486,6 +527,19 @@ fn render_device_combo(
                 }
             });
     });
+}
+
+fn ellipsize_middle(text: &str, max_chars: usize) -> String {
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.len() <= max_chars || max_chars <= 3 {
+        return text.to_owned();
+    }
+
+    let head_len = (max_chars - 3) / 2;
+    let tail_len = max_chars - 3 - head_len;
+    let head = chars[..head_len].iter().collect::<String>();
+    let tail = chars[chars.len() - tail_len..].iter().collect::<String>();
+    format!("{head}...{tail}")
 }
 
 fn render_scalar_value_editor(
@@ -848,8 +902,8 @@ fn apply_preview_theme(ctx: &egui::Context, theme: &PreviewTheme) {
     visuals.faint_bg_color = theme.panel_tint;
     visuals.extreme_bg_color = theme.menu_fill;
     visuals.code_bg_color = theme.menu_fill;
-    visuals.selection.bg_fill = theme.accent;
-    visuals.selection.stroke = egui::Stroke::new(1.0, theme.accent_hover);
+    visuals.selection.bg_fill = theme.accent_soft;
+    visuals.selection.stroke = egui::Stroke::new(1.0, theme.accent);
     visuals.widgets.noninteractive.bg_fill = theme.panel_fill;
     visuals.widgets.inactive.bg_fill = theme.accent_soft;
     visuals.widgets.inactive.weak_bg_fill = theme.panel_tint;
@@ -857,8 +911,8 @@ fn apply_preview_theme(ctx: &egui::Context, theme: &PreviewTheme) {
     visuals.widgets.hovered.bg_fill = theme.accent;
     visuals.widgets.hovered.weak_bg_fill = theme.accent_soft;
     visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, theme.accent_hover);
-    visuals.widgets.active.bg_fill = theme.accent_hover;
-    visuals.widgets.active.weak_bg_fill = theme.accent;
+    visuals.widgets.active.bg_fill = theme.accent_soft;
+    visuals.widgets.active.weak_bg_fill = theme.accent_soft;
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, theme.accent);
     visuals.widgets.open.bg_fill = theme.menu_fill;
     visuals.widgets.open.weak_bg_fill = theme.menu_fill;

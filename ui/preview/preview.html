@@ -6,30 +6,78 @@
     <title>Onda Patch</title>
     <style>
       :root {
-        color-scheme: dark;
-        --bg: #15171b;
-        --panel: #1f2329;
-        --panel-strong: #282d35;
-        --text: #f3f5f7;
-        --muted: #9ba6b2;
-        --accent: #7fd1b9;
-        --accent-strong: #57b89b;
-        --danger: #e07a7a;
-        --border: #353c46;
+        color-scheme: dark light;
+        --bg-top: #08111d;
+        --bg-bottom: #111e31;
+        --shell-glow: rgba(201, 219, 242, 0.08);
+        --panel: rgba(13, 24, 39, 0.92);
+        --panel-strong: #122134;
+        --panel-soft: #16273d;
+        --text: #d8e5f3;
+        --muted: #92a8bf;
+        --accent: #c9dbf2;
+        --accent-strong: #e0ebfa;
+        --accent-soft: #233d5c;
+        --border: #354e6d;
+        --danger: #ff7e7e;
+        --button-text: #08111d;
+        --field-bg: #0d1827;
+        --scope-bg: #0a1624;
+        --scope-grid: rgba(201, 219, 242, 0.14);
+        --scope-1: #c9dbf2;
+        --scope-2: #7bade6;
+        --scope-3: #7ad7ba;
+        --scope-4: #f3b57b;
+        --shadow: 0 20px 60px rgba(3, 10, 18, 0.34);
+      }
+
+      :root[data-theme="light"] {
+        color-scheme: light;
+        --bg-top: #edf4fb;
+        --bg-bottom: #dbe8f7;
+        --shell-glow: rgba(20, 58, 99, 0.08);
+        --panel: rgba(238, 245, 252, 0.96);
+        --panel-strong: #f4f9ff;
+        --panel-soft: #eaf2fb;
+        --text: #143a63;
+        --muted: #4e6a86;
+        --accent: #143a63;
+        --accent-strong: #0a213b;
+        --accent-soft: #dbe8f7;
+        --border: #bed1e5;
+        --danger: #b53333;
+        --button-text: #edf4fb;
+        --field-bg: #ffffff;
+        --scope-bg: #ecf4fd;
+        --scope-grid: rgba(20, 58, 99, 0.12);
+        --scope-1: #143a63;
+        --scope-2: #2f76c5;
+        --scope-3: #21956e;
+        --scope-4: #bf7925;
+        --shadow: 0 18px 44px rgba(76, 109, 145, 0.18);
       }
 
       * { box-sizing: border-box; }
+      html {
+        min-height: 100%;
+        background:
+          radial-gradient(circle at top, var(--shell-glow), transparent 42%),
+          linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+      }
       body {
         margin: 0;
+        min-height: 100vh;
         padding: 18px;
-        background: #1b1d21;
+        background: transparent;
         color: var(--text);
-        font: 13px/1.45 ui-sans-serif, system-ui, sans-serif;
+        font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
       }
 
       .shell {
         display: grid;
         gap: 16px;
+        width: 100%;
+        margin: 0 auto;
       }
 
       .header, .buffers, .events, .params, .scope-section {
@@ -37,30 +85,53 @@
         border: 1px solid var(--border);
         border-radius: 14px;
         padding: 14px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(8px);
+      }
+
+      .hero {
+        display: grid;
+        justify-items: center;
+        gap: 10px;
+        text-align: center;
+        min-height: 176px;
+      }
+
+      .hero-logo {
+        width: 68px;
+        height: 68px;
+        display: block;
+      }
+
+      .hero-rule {
+        width: 100%;
+        height: 1px;
+        background: var(--border);
+        opacity: 0.9;
       }
 
       .title {
-        font-size: 16px;
+        font-size: 17px;
         font-weight: 700;
+        letter-spacing: 0.01em;
       }
 
       .meta {
-        margin-top: 6px;
         color: var(--muted);
         word-break: break-word;
+        font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
 
       .status {
-        margin-top: 6px;
         color: var(--accent);
+        font-weight: 600;
       }
 
       .error {
-        margin-top: 10px;
         padding: 10px 12px;
         border-radius: 10px;
-        border: 1px solid rgba(255, 107, 107, 0.55);
-        background: #080909;
+        border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
+        background: color-mix(in srgb, var(--panel-strong) 84%, black 16%);
         color: var(--danger);
         font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         white-space: pre-wrap;
@@ -69,30 +140,31 @@
       }
 
       .actions {
-        margin-top: 12px;
         display: flex;
+        justify-content: center;
+        flex-wrap: wrap;
         gap: 10px;
       }
 
       .io-settings {
-        margin-top: 12px;
         display: none;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
         gap: 10px;
       }
 
       button {
-        border: 0;
-        border-radius: 999px;
-        padding: 10px 16px;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: 8px 16px;
         font: inherit;
         font-weight: 700;
         cursor: pointer;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }
 
       button.primary {
         background: var(--accent);
-        color: #0b1713;
+        color: var(--button-text);
       }
 
       button.primary:hover {
@@ -100,19 +172,20 @@
       }
 
       button.secondary {
-        background: var(--panel-strong);
+        background: var(--accent-soft);
         color: var(--text);
+        border-color: var(--border);
       }
 
       button.event-trigger {
         background: transparent;
         color: var(--accent);
-        border: 1px solid rgba(127, 209, 185, 0.8);
-        box-shadow: inset 0 0 0 1px rgba(127, 209, 185, 0.12);
+        border-color: var(--border);
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
       }
 
       button.event-trigger:hover:not(:disabled) {
-        background: rgba(127, 209, 185, 0.08);
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
         border-color: var(--accent);
       }
 
@@ -126,7 +199,44 @@
         justify-content: space-between;
         align-items: baseline;
         gap: 12px;
-        margin-bottom: 12px;
+      }
+
+      .section-toggle {
+        width: 100%;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 0;
+        margin: 0;
+        background: transparent;
+        border: 0;
+        color: inherit;
+        text-align: left;
+      }
+
+      .section-toggle:hover:not(:disabled) {
+        background: transparent;
+      }
+
+      .section-toggle::after {
+        content: "▾";
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1;
+        transition: transform 120ms ease;
+      }
+
+      .section-toggle[aria-expanded="false"]::after {
+        transform: rotate(-90deg);
+      }
+
+      .section-body {
+        margin-top: 12px;
+      }
+
+      .section-body[hidden] {
+        display: none !important;
       }
 
       .buffers-list {
@@ -135,7 +245,7 @@
       }
 
       .buffer-card {
-        background: var(--panel-strong);
+        background: var(--panel-soft);
         border: 1px solid var(--border);
         border-radius: 12px;
         padding: 12px;
@@ -174,7 +284,7 @@
       }
 
       .param {
-        background: var(--panel-strong);
+        background: var(--panel-soft);
         border: 1px solid var(--border);
         border-radius: 12px;
         padding: 12px;
@@ -222,7 +332,7 @@
         height: 22px;
         border: 1px solid var(--border);
         border-radius: 999px;
-        background: #111418;
+        background: var(--field-bg);
         cursor: pointer;
         touch-action: none;
       }
@@ -239,7 +349,7 @@
         top: 50%;
         height: 4px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.08);
+        background: color-mix(in srgb, var(--text) 10%, transparent);
         transform: translateY(-50%);
       }
 
@@ -260,7 +370,7 @@
         height: 14px;
         border-radius: 999px;
         background: var(--text);
-        box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 78%, transparent);
         transform: translate(-50%, -50%);
       }
 
@@ -268,7 +378,7 @@
         width: 100%;
         border: 1px solid var(--border);
         border-radius: 10px;
-        background: #111418;
+        background: var(--field-bg);
         color: var(--text);
         padding: 8px 10px;
         font: inherit;
@@ -278,7 +388,7 @@
         width: 100%;
         border: 1px solid var(--border);
         border-radius: 10px;
-        background: #111418;
+        background: var(--field-bg);
         color: var(--text);
         padding: 8px 10px;
         font: inherit;
@@ -301,62 +411,86 @@
       .scope-canvas {
         width: 100%;
         height: 140px;
-        border-radius: 6px;
-        background: #0a0a0a;
+        border-radius: 10px;
+        background: var(--scope-bg);
         display: block;
+      }
+
+      @media (max-width: 640px) {
+        body {
+          padding: 12px;
+        }
+
+        .header, .buffers, .events, .params, .scope-section {
+          padding: 12px;
+          border-radius: 12px;
+        }
+
+        .hero {
+          min-height: 160px;
+        }
       }
     </style>
   </head>
   <body>
     <div class="shell">
       <section class="header">
-        <div class="title">Onda Patch</div>
-        <div class="meta" id="path"></div>
-        <div class="status" id="status"></div>
-        <div class="actions">
-          <button class="primary" id="start">Start</button>
-          <button class="secondary" id="stop">Stop</button>
-          <button class="secondary" id="reset">Reset</button>
-          <button class="secondary" id="refresh-devices">Refresh Devices</button>
-        </div>
-        <div class="error" id="error"></div>
-        <div class="io-settings" id="io-settings">
-          <div class="param-setting">
-            <div class="param-setting-label">Input Device</div>
-            <select class="param-select" id="input-device"></select>
+        <div class="hero">
+          <img class="hero-logo" id="hero-logo" alt="Onda logo" />
+          <div class="hero-rule"></div>
+          <div class="meta" id="path"></div>
+          <div class="hero-rule"></div>
+          <div class="status" id="status"></div>
+          <div class="actions">
+            <button class="primary" id="start">Start</button>
+            <button class="secondary" id="stop">Stop</button>
+            <button class="secondary" id="reset">Reset</button>
+            <button class="secondary" id="refresh-devices">Refresh Devices</button>
           </div>
-          <div class="param-setting">
-            <div class="param-setting-label">Output Device</div>
-            <select class="param-select" id="output-device"></select>
+          <div class="error" id="error"></div>
+          <div class="io-settings" id="io-settings">
+            <div class="param-setting">
+              <div class="param-setting-label">Input Device</div>
+              <select class="param-select" id="input-device"></select>
+            </div>
+            <div class="param-setting">
+              <div class="param-setting-label">Output Device</div>
+              <select class="param-select" id="output-device"></select>
+            </div>
           </div>
         </div>
       </section>
       <section class="scope-section" id="scope-section">
-        <div class="params-header">
+        <button class="params-header section-toggle" id="scope-toggle" type="button" aria-expanded="true">
           <div class="params-title">Scope</div>
+        </button>
+        <div class="section-body" id="scope-body">
+          <canvas class="scope-canvas" id="scope-canvas"></canvas>
         </div>
-        <canvas class="scope-canvas" id="scope-canvas"></canvas>
       </section>
       <section class="buffers" id="buffers-section">
-        <div class="params-header">
+        <button class="params-header section-toggle" id="buffers-toggle" type="button" aria-expanded="true">
           <div class="params-title">Buffers</div>
-          <div class="params-subtitle" id="buffers-summary"></div>
+        </button>
+        <div class="section-body buffers-list" id="buffers-body">
+          <div class="buffers-list" id="buffers"></div>
         </div>
-        <div class="buffers-list" id="buffers"></div>
       </section>
       <section class="events" id="events-section">
-        <div class="params-header">
+        <button class="params-header section-toggle" id="events-toggle" type="button" aria-expanded="true">
           <div class="params-title">Events</div>
-          <div class="params-subtitle" id="events-summary"></div>
+        </button>
+        <div class="section-body" id="events-body">
+          <div class="param-list" id="events"></div>
         </div>
-        <div class="param-list" id="events"></div>
       </section>
       <section class="params" id="params-section">
-        <div class="params-header">
+        <button class="params-header section-toggle" id="params-toggle" type="button" aria-expanded="true">
           <div class="params-title">Params</div>
-          <div class="params-subtitle" id="params-summary"></div>
+        </button>
+        <div class="section-body" id="params-body">
+          <div class="param-list" id="params"></div>
         </div>
-        <div class="param-list" id="params"></div>
       </section>
     </div>
     <script>
@@ -410,7 +544,40 @@
       // State and DOM refs
       // ---------------------------------------------------------------------------
 
-      const SCOPE_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#a855f7", "#ec4899", "#14b8a6", "#f97316"];
+      const THEME_LOGOS = {
+        dark: toSvgDataUri(`
+          <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+            <title id="title">Onda logo dark variant</title>
+            <rect width="512" height="512" fill="#0D1827"/>
+            <g transform="translate(256 256) scale(1.30) translate(-256 -256)">
+              <circle cx="256" cy="256" r="156" stroke="#C9DBF2" stroke-width="24"/>
+              <path
+                d="M167 256C188 253 198 214 225 214C257 214 255 298 287 298C314 298 324 259 345 256"
+                stroke="#C9DBF2"
+                stroke-width="22"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </g>
+          </svg>
+        `),
+        light: toSvgDataUri(`
+          <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+            <title id="title">Onda logo concept</title>
+            <rect width="512" height="512" fill="#EEF5FC"/>
+            <g transform="translate(256 256) scale(1.30) translate(-256 -256)">
+              <circle cx="256" cy="256" r="156" stroke="#143A63" stroke-width="24"/>
+              <path
+                d="M167 256C188 253 198 214 225 214C257 214 255 298 287 298C314 298 324 259 345 256"
+                stroke="#143A63"
+                stroke-width="22"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </g>
+          </svg>
+        `),
+      };
       const state = {
         running: false,
         connected: false,
@@ -437,21 +604,45 @@
       const inputDeviceNode = document.getElementById("input-device");
       const outputDeviceNode = document.getElementById("output-device");
       const buffersSection = document.getElementById("buffers-section");
-      const buffersSummaryNode = document.getElementById("buffers-summary");
       const buffersNode = document.getElementById("buffers");
       const eventsSection = document.getElementById("events-section");
-      const eventsSummaryNode = document.getElementById("events-summary");
       const eventsNode = document.getElementById("events");
       const paramsSection = document.getElementById("params-section");
-      const paramsSummaryNode = document.getElementById("params-summary");
       const paramsNode = document.getElementById("params");
       const scopeSection = document.getElementById("scope-section");
+      const scopeToggle = document.getElementById("scope-toggle");
+      const scopeBody = document.getElementById("scope-body");
       const scopeCanvas = document.getElementById("scope-canvas");
       const scopeCtx = scopeCanvas.getContext("2d");
+      const buffersToggle = document.getElementById("buffers-toggle");
+      const buffersBody = document.getElementById("buffers-body");
+      const eventsToggle = document.getElementById("events-toggle");
+      const eventsBody = document.getElementById("events-body");
+      const paramsToggle = document.getElementById("params-toggle");
+      const paramsBody = document.getElementById("params-body");
+      const logoNode = document.getElementById("hero-logo");
       const pendingParamMessages = new Map();
       let pendingParamFrame = 0;
       let pendingScopeFrame = 0;
       let latestScopeData = { channels: 0, samples: [] };
+      let currentTheme = "";
+      const sectionState = {
+        scope: true,
+        buffers: true,
+        events: true,
+        params: true,
+      };
+
+      let bridgeThemePreference =
+        typeof window.__ondaForcedTheme === "string" && window.__ondaForcedTheme
+          ? window.__ondaForcedTheme
+          : window.__hostBridge && typeof window.__hostBridge.theme === "string"
+          ? window.__hostBridge.theme
+          : "auto";
+      const mediaThemeQuery =
+        typeof window.matchMedia === "function"
+          ? window.matchMedia("(prefers-color-scheme: light)")
+          : null;
 
       // ---------------------------------------------------------------------------
       // Host communication
@@ -503,13 +694,15 @@
           return;
         }
 
+        const computed = getComputedStyle(document.documentElement);
+        const gridColor = computed.getPropertyValue("--scope-grid").trim();
         const chHeight = h / channels;
         for (let ch = 0; ch < channels; ch++) {
           const yCenter = chHeight * ch + chHeight / 2;
           const amplitude = chHeight / 2 * 0.85;
-          const color = SCOPE_COLORS[ch % SCOPE_COLORS.length];
+          const color = computed.getPropertyValue("--scope-1").trim();
 
-          scopeCtx.strokeStyle = "rgba(255,255,255,0.06)";
+          scopeCtx.strokeStyle = gridColor;
           scopeCtx.lineWidth = 1;
           scopeCtx.beginPath();
           scopeCtx.moveTo(0, yCenter);
@@ -542,6 +735,73 @@
         pendingScopeFrame = window.requestAnimationFrame(() => {
           pendingScopeFrame = 0;
           drawScope(latestScopeData.channels, latestScopeData.samples);
+        });
+      }
+
+      function toSvgDataUri(svg) {
+        return "data:image/svg+xml;utf8," + encodeURIComponent(svg.trim());
+      }
+
+      function resolvedTheme() {
+        if (bridgeThemePreference === "dark") {
+          return "dark";
+        }
+        if (bridgeThemePreference === "light") {
+          return "light";
+        }
+        return mediaThemeQuery && mediaThemeQuery.matches ? "light" : "dark";
+      }
+
+      function applyTheme() {
+        const nextTheme = resolvedTheme();
+        document.documentElement.dataset.theme = nextTheme;
+        document.body.dataset.theme = nextTheme;
+        if (currentTheme === nextTheme) {
+          return;
+        }
+        currentTheme = nextTheme;
+        if (logoNode) {
+          logoNode.src = THEME_LOGOS[nextTheme];
+        }
+        scheduleScopeDraw(latestScopeData.channels, latestScopeData.samples);
+      }
+
+      function setSectionOpen(name, isOpen) {
+        sectionState[name] = isOpen;
+        const toggle = {
+          scope: scopeToggle,
+          buffers: buffersToggle,
+          events: eventsToggle,
+          params: paramsToggle,
+        }[name];
+        const body = {
+          scope: scopeBody,
+          buffers: buffersBody,
+          events: eventsBody,
+          params: paramsBody,
+        }[name];
+        if (toggle) {
+          toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        }
+        if (body) {
+          body.hidden = !isOpen;
+        }
+      }
+
+      function setupCollapsibleSections() {
+        [
+          ["scope", scopeToggle],
+          ["buffers", buffersToggle],
+          ["events", eventsToggle],
+          ["params", paramsToggle],
+        ].forEach(([name, toggle]) => {
+          if (!toggle) {
+            return;
+          }
+          toggle.addEventListener("click", () => {
+            setSectionOpen(name, !sectionState[name]);
+          });
+          setSectionOpen(name, sectionState[name]);
         });
       }
 
@@ -834,6 +1094,9 @@
           return;
         }
         const incoming = message.state || {};
+        if (typeof incoming.themeMode === "string" && incoming.themeMode) {
+          bridgeThemePreference = incoming.themeMode;
+        }
         // Hydrate params with defaults if the host did not already do so.
         if (incoming.params) {
           incoming.params = hydrateParams(incoming.params);
@@ -850,6 +1113,7 @@
       // ---------------------------------------------------------------------------
 
       function render() {
+        applyTheme();
         pathNode.textContent = state.path ? state.path : "No patch selected";
         statusNode.textContent = state.connected ? state.status : state.running ? state.status + " (connecting controls...)" : state.status;
         errorNode.textContent = state.error || "";
@@ -863,10 +1127,6 @@
         eventsSection.style.display = hasEvents ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
         ioSettingsNode.style.display = hasIoSettings ? "grid" : "none";
-        buffersSummaryNode.textContent = hasBuffers ? state.buffers.length + " buffer" + (state.buffers.length === 1 ? "" : "s") : "";
-        eventsSummaryNode.textContent = hasEvents ? state.events.length + " event" + (state.events.length === 1 ? "" : "s") : "";
-        paramsSummaryNode.textContent = hasParams ? state.params.length + " control" + (state.params.length === 1 ? "" : "s") : "";
-
         startButton.disabled = !state.path || state.running;
         stopButton.disabled = !state.running;
         resetButton.disabled = !hasParams && !hasEvents;
@@ -1147,6 +1407,22 @@
         node.disabled = !enabled;
       }
 
+      if (mediaThemeQuery && typeof mediaThemeQuery.addEventListener === "function") {
+        mediaThemeQuery.addEventListener("change", () => {
+          if (bridgeThemePreference === "auto") {
+            applyTheme();
+          }
+        });
+      } else if (mediaThemeQuery && typeof mediaThemeQuery.addListener === "function") {
+        mediaThemeQuery.addListener(() => {
+          if (bridgeThemePreference === "auto") {
+            applyTheme();
+          }
+        });
+      }
+
+      setupCollapsibleSections();
+      applyTheme();
       render();
     </script>
   </body>
