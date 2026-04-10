@@ -21,6 +21,8 @@
   - Evaluate extending overloads from top-level `def` and struct methods to proc-local defs.
   - Clarify current exclusions in docs: proc-local defs are still not overloadable.
   - Clarify/document overload behavior for complex untyped array/buffer inference-heavy call sites.
+  - Evaluate banning recursion and mutual recursion for ordinary top-level `def` and struct methods, then marking lowered user defs/methods `alwaysinline` once the user-def call graph is guaranteed acyclic.
+  - If we take the no-recursion route, add an explicit semantic cycle check for ordinary `def`/method call graphs rather than relying on LLVM `alwaysinline` failures for diagnostics.
 
 - `const` follow-ups
   - Evaluate extending `const` beyond scalar primitives to arrays/structural compile-time values where justified.
