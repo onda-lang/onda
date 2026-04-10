@@ -14,8 +14,8 @@ namespace std::complex:
       self.im = im
 
     def clear(self):
-      self.re = T(0.0)
-      self.im = T(0.0)
+      self.re = 0.0
+      self.im = 0.0
 
     def copy(self, other: Complex):
       self.re = other.re

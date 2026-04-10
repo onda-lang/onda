@@ -22,7 +22,7 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
       write: i32 = 0
 
     def clear_state():
-      delay[:] = T(0.0)
+      delay[:] = 0.0
       write = 0
 
     events:
@@ -34,7 +34,7 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
         if (active_taps > MaxImpulseLen):
           active_taps = MaxImpulseLen
 
-        impulse[:] = T(0.0)
+        impulse[:] = 0.0
         impulse[:] = values[:MaxImpulseLen]
 
         clear_state()
@@ -45,11 +45,11 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
 
     sample:
       if (active_taps <= 0):
-        out1 = T(0.0)
+        out1 = 0.0
       else:
         delay[write] = in1
 
-        y = T(0.0)
+        y: T = 0.0
         read = write
         for i in 0..active_taps:
           y = y + delay[read] * impulse[i]
@@ -88,12 +88,12 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
       current_partition = 0
 
     def clear_buffers():
-      pending[:] = T(0.0)
-      output[:] = T(0.0)
-      overlap[:] = T(0.0)
+      pending[:] = 0.0
+      output[:] = 0.0
+      overlap[:] = 0.0
 
-      block_time[:] = T(0.0)
-      time_domain[:] = T(0.0)
+      block_time[:] = 0.0
+      time_domain[:] = 0.0
       for i in 0..FFTSize:
         spectrum[i].clear()
       for i in 0..FFTStorageSize:
@@ -133,7 +133,7 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
 
         for part in 0..active_partitions:
           start = part * HopSize
-          block_time[:HopSize] = T(0.0)
+          block_time[:HopSize] = 0.0
           block_time[:HopSize] = values[start:start + HopSize]
 
           fwd.forward_real(block_time)
@@ -149,7 +149,7 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
         reset_counters()
 
     sample:
-      y = T(0.0)
+      y: T = 0.0
       if (output_idx < HopSize):
         y = output[output_idx]
         output_idx = output_idx + 1
@@ -189,7 +189,7 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
         for i in 0..HopSize:
           output[i] = time_domain[i] + overlap[i]
           overlap[i] = time_domain[HopSize + i]
-          pending[i] = T(0.0)
+          pending[i] = 0.0
 
         pending_count = 0
         output_idx = 0

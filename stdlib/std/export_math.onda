@@ -1,3 +1,5 @@
+# This module can be used for common math operations when targeting platforms that do not have LLVM-native support for them, like WebAssembly.
+
 import std/math
 
 namespace std::export_math:

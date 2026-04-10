@@ -9,11 +9,11 @@ namespace std::osc:
       phase = 0.0
 
     block:
-      incr: T = freq / T(SR)
+      incr: T = freq / SR
       sample:
         phase = phase + incr
-        if (phase >= T(1.0)):
-          phase = phase - T(1.0)
+        if (phase >= 1.0):
+          phase = phase - 1.0
         out1 = phase
         
   proc Sine<T>:
@@ -29,7 +29,7 @@ namespace std::osc:
     block:
       phasor.freq = freq
       sample:
-        out1 = sin(phasor() * T(TWO_PI)) * amp
+        out1 = sin(phasor() * TWO_PI) * amp
   
   def poly_blep(t, dt):
     zero = dt - dt
@@ -56,8 +56,8 @@ namespace std::osc:
 
     block:
       phasor.freq = freq
-      dt: T = freq / T(SR)
+      dt: T = freq / SR
       sample:
         phase = phasor()
-        base = phase + phase - T(1.0)
+        base = phase + phase - 1.0
         out1 = base - std::osc::poly_blep(phase, dt) * amp

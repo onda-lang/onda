@@ -61,7 +61,7 @@ namespace std::fft<N = 256>:
       self.clear()
       count = _min_i(input.len(), N)
       for i in 0..count:
-        self.bins[i].set(input[i], T(0.0))
+        self.bins[i].set(input[i], 0.0)
 
     def load_complex(self, real: T[], imag: T[]):
       self.clear()
@@ -99,7 +99,7 @@ namespace std::fft<N = 256>:
       half = N >> 1
       count = _min_i(output.len(), N)
       for i in 0..count:
-        output[i] = T(0.0)
+        output[i] = 0.0
       real_count = _min_i(count, half + 1)
       for i in 0..real_count:
         output[i] = self.bins[i].real()
@@ -113,10 +113,10 @@ namespace std::fft<N = 256>:
       count = _min_i(input.len(), N)
 
       if (count > 0):
-        self.set_bin(0, input[0], T(0.0))
+        self.set_bin(0, input[0], 0.0)
 
       if (count > half):
-        self.set_bin(half, input[half], T(0.0))
+        self.set_bin(half, input[half], 0.0)
 
       imag_count = _min_i(count - (half + 1), half - 1)
       if (imag_count < 0):
@@ -124,8 +124,8 @@ namespace std::fft<N = 256>:
 
       real_count = _min_i(count, half)
       for i in 1..real_count:
-        self.set_bin(i, input[i], T(0.0))
-        self.set_bin(N - i, input[i], T(0.0))
+        self.set_bin(i, input[i], 0.0)
+        self.set_bin(N - i, input[i], 0.0)
 
       for i in 0..imag_count:
         imag_v = input[half + 1 + i]
@@ -203,14 +203,14 @@ namespace std::fft<N = 256>:
     def _ensure_tables(self):
       if (!self.prepared):
         _build_bitrev(self.bitrev, N)
-        angle_step: T = T(TWO_PI) / T(N)
+        angle_step: T = TWO_PI / T(N)
         step_r = cos(angle_step)
         step_i = sin(angle_step)
         half = N >> 1
         if (half > 0):
-          self.twiddles[0].set(T(1.0), T(0.0))
-          wr = T(1.0)
-          wi = T(0.0)
+          self.twiddles[0].set(1.0, 0.0)
+          wr: T = 1.0
+          wi: T = 0.0
           for i in 1..half:
             next_wr = wr * step_r - wi * step_i
             next_wi = wr * step_i + wi * step_r
@@ -264,7 +264,7 @@ namespace std::fft<N = 256>:
         stage = stage << 1
 
       if (inverse):
-        inverse_scale = T(1.0) / T(N)
+        inverse_scale: T = 1.0 / T(N)
         for i in 0..N:
           self.bins[i].set(self.bins[i].real() * inverse_scale, self.bins[i].imag() * inverse_scale)
 
@@ -294,7 +294,7 @@ namespace std::fft<N = 256>:
 
     def set_rectangular(self):
       for i in 0..N:
-        self.window[i] = T(1.0)
+        self.window[i] = 1.0
       self.window_ready = true
 
     def set_hann(self):
@@ -303,8 +303,8 @@ namespace std::fft<N = 256>:
       else:
         denom: T = self._window_denominator()
         for i in 0..N:
-          phase: T = T(TWO_PI) * T(i) / denom
-          self.window[i] = T(0.5) - T(0.5) * cos(phase)
+          phase: T = TWO_PI * T(i) / denom
+          self.window[i] = 0.5 - 0.5 * cos(phase)
         self.window_ready = true
 
     def set_hamming(self):
@@ -313,8 +313,8 @@ namespace std::fft<N = 256>:
       else:
         denom: T = self._window_denominator()
         for i in 0..N:
-          phase: T = T(TWO_PI) * T(i) / denom
-          self.window[i] = T(0.54) - T(0.46) * cos(phase)
+          phase: T = TWO_PI * T(i) / denom
+          self.window[i] = 0.54 - 0.46 * cos(phase)
         self.window_ready = true
 
     def set_blackman(self):
@@ -323,8 +323,8 @@ namespace std::fft<N = 256>:
       else:
         denom: T = self._window_denominator()
         for i in 0..N:
-          phase: T = T(TWO_PI) * T(i) / denom
-          self.window[i] = T(0.42) - T(0.5) * cos(phase) + T(0.08) * cos(T(2.0) * phase)
+          phase: T = TWO_PI * T(i) / denom
+          self.window[i] = 0.42 - 0.5 * cos(phase) + 0.08 * cos(2.0 * phase)
         self.window_ready = true
 
     def window_value(self, i: i32):
@@ -372,7 +372,7 @@ namespace std::fft<N = 256>:
       self.fft.clear()
       count = _min_i(input.len(), N)
       for i in 0..count:
-        self.fft.set_bin(i, input[i] * self.window[i], T(0.0))
+        self.fft.set_bin(i, input[i] * self.window[i], 0.0)
 
     def forward_real(self, input: T[]):
       self._load_windowed_real(input)
@@ -429,7 +429,7 @@ namespace std::fft<N = 256>:
 
     def set_rectangular(self):
       for i in 0..N:
-        self.window[i] = T(1.0)
+        self.window[i] = 1.0
       self.window_ready = true
 
     def set_hann(self):
@@ -438,8 +438,8 @@ namespace std::fft<N = 256>:
       else:
         denom: T = self._window_denominator()
         for i in 0..N:
-          phase: T = T(TWO_PI) * T(i) / denom
-          self.window[i] = T(0.5) - T(0.5) * cos(phase)
+          phase: T = TWO_PI * T(i) / denom
+          self.window[i] = 0.5 - 0.5 * cos(phase)
         self.window_ready = true
 
     def clear(self):
@@ -449,8 +449,8 @@ namespace std::fft<N = 256>:
       self.since_hop = 0
       self.ready = false
       for i in 0..N:
-        self.input[i] = T(0.0)
-        self.packed[i] = T(0.0)
+        self.input[i] = 0.0
+        self.packed[i] = 0.0
 
     def push(self, x: T):
       self.input[self.write] = x
@@ -470,13 +470,13 @@ namespace std::fft<N = 256>:
         self.fft.clear()
         for i in 0..N:
           idx = _wrap_add(self.write, i, N)
-          self.fft.set_bin(i, self.input[idx] * self.window[i], T(0.0))
+          self.fft.set_bin(i, self.input[idx] * self.window[i], 0.0)
         self.fft.forward()
         half = N >> 1
         real_count = half + 1
         imag_bins = half - 1
         for i in 0..N:
-          self.packed[i] = T(0.0)
+          self.packed[i] = 0.0
         for i in 0..real_count:
           self.packed[i] = self.fft.real(i)
         for i in 0..imag_bins:
@@ -522,7 +522,7 @@ namespace std::fft<N = 256>:
 
     def set_rectangular(self):
       for i in 0..N:
-        self.window[i] = T(1.0)
+        self.window[i] = 1.0
       self.window_ready = true
 
     def set_hann(self):
@@ -531,8 +531,8 @@ namespace std::fft<N = 256>:
       else:
         denom: T = self._window_denominator()
         for i in 0..N:
-          phase: T = T(TWO_PI) * T(i) / denom
-          self.window[i] = T(0.5) - T(0.5) * cos(phase)
+          phase: T = TWO_PI * T(i) / denom
+          self.window[i] = 0.5 - 0.5 * cos(phase)
         self.window_ready = true
 
     def clear(self):
@@ -540,8 +540,8 @@ namespace std::fft<N = 256>:
       self.frame = 0
       self.pending = 0
       for i in 0..N:
-        self.output[i] = T(0.0)
-        self.norm[i] = T(0.0)
+        self.output[i] = 0.0
+        self.norm[i] = 0.0
 
     def load_packed(self, input: T[]):
       self.fft.clear()
@@ -549,10 +549,10 @@ namespace std::fft<N = 256>:
       count = _min_i(input.len(), N)
 
       if (count > 0):
-        self.fft.set_bin(0, input[0], T(0.0))
+        self.fft.set_bin(0, input[0], 0.0)
 
       if (count > half):
-        self.fft.set_bin(half, input[half], T(0.0))
+        self.fft.set_bin(half, input[half], 0.0)
 
       imag_count = _min_i(count - (half + 1), half - 1)
       if (imag_count < 0):
@@ -560,8 +560,8 @@ namespace std::fft<N = 256>:
 
       real_count = _min_i(count, half)
       for i in 1..real_count:
-        self.fft.set_bin(i, input[i], T(0.0))
-        self.fft.set_bin(N - i, input[i], T(0.0))
+        self.fft.set_bin(i, input[i], 0.0)
+        self.fft.set_bin(N - i, input[i], 0.0)
 
       for i in 0..imag_count:
         imag_v = input[half + 1 + i]
@@ -592,11 +592,11 @@ namespace std::fft<N = 256>:
 
       y = self.output[self.frame]
       denom = self.norm[self.frame]
-      if (denom > T(0.0)):
+      if (denom > 0.0):
         y = y / denom
 
-      self.output[self.frame] = T(0.0)
-      self.norm[self.frame] = T(0.0)
+      self.output[self.frame] = 0.0
+      self.norm[self.frame] = 0.0
       self.frame = self.frame + 1
       if (self.frame >= N):
         self.frame = 0

@@ -23,7 +23,7 @@ namespace std::random:
       return T(self.next_u31()) / T(RNG_MASK)
 
     def bipolar(self):
-      return self.next() * T(2.0) - T(1.0)
+      return self.next() * 2.0 - 1.0
 
     def range(self, lo: T, hi: T):
       return lo + (hi - lo) * self.next()

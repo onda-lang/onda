@@ -10,7 +10,43 @@ namespace std::filter:
       z = 0.0
 
     block:
-      a: T = T(1.0) - exp(-T(TWO_PI) * cutoff / T(SR))
+      a: T = 1.0 - exp(-TWO_PI * cutoff / SR)
       sample:
         z = z + a * (in1 - z)
         out1 = z
+
+  proc Svf<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      cutoff = 1000.0
+      q = 0.707107
+      mode: i32 = 0
+
+    init<T>:
+      z1 = 0.0
+      z2 = 0.0
+
+    block:
+      c: T = clamp(cutoff, 0.0, SR * 0.48)
+      qv: T = max(q, 0.01)
+      f: T = tan(PI * c / SR)
+      inv_q: T = 1.0 / qv
+      d: T = 1.0 / (1.0 + inv_q * f + f * f)
+      g1: T = f + inv_q
+
+      sample:
+        high: T = (in1 - g1 * z1 - z2) * d
+        band: T = f * high + z1
+        low: T = f * band + z2
+
+        z1 = f * high + band
+        z2 = f * band + low
+
+        if (mode <= 0):
+          out1 = low
+        elif (mode == 1):
+          out1 = high
+        else:
+          out1 = band
