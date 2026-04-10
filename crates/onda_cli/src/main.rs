@@ -7,6 +7,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::LazyLock;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -17,8 +18,7 @@ mod lsp_stdio;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use onda_codegen_llvm::{
-    lower_and_jit_with_options, lower_to_llvm_ir_with_options, lower_to_object_with_options,
-    lower_to_target_llvm_ir_with_options, CodegenOptions, CompileOptions, ExecutionBackend,
+    lower_to_object_with_options, lower_to_target_llvm_ir_with_options, CodegenOptions,
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
 };
 use onda_daemon::{
@@ -32,7 +32,6 @@ use onda_frontend::{
     ProcessorDef, Program, SampleBlock, Stmt, StructDef,
 };
 use onda_preview::{available_audio_devices, PreviewHostOptions, PreviewThemeMode};
-use onda_runtime::{bind_output, create_instance, process_bound, InstanceConfig};
 use onda_semantics::{
     analyze_with_options, lower_graphs_for_inspection_with_options, AnalysisOptions,
     TypedArrayInfo, TypedProgram,
@@ -47,42 +46,134 @@ const DEFAULT_BLOCK_FRAMES: usize = 512;
 const DEFAULT_PLAY_BLOCK_FRAMES: usize = 128;
 const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
 
-const USAGE: &str = r#"Usage:
-  onda compile <input.onda> [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>] [--dump-graph] [--ir] [--meta] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--target <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <feature-list>] [--target-abi <name>] [--reloc-model <default|static|pic|dynamic-no-pic>] [--code-model <default|small|kernel|medium|large>] [--opt-level <0|1|2|3>]
-  onda render <input.onda> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--fast-math]
-  onda lsp
-  onda preview <input.onda> [--sample-rate <hz>] [--block <frames>] [--fast-math] [--input-device <name>] [--output-device <name>] [--theme <auto|dark|light>] [--webview]
-  onda preview play <input.onda> [--dur <seconds> | --forever] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>] [--control-json] [--input-device <name>] [--output-device <name>]
-  onda preview render <input.onda> [--output <path>] [--dur <seconds>] [--sample-rate <hz>] [--block <frames>] [--fast-math] [--meta] [--set <name=value>]
-  onda daemon diagnose <input.onda> [--sample-rate <hz>] [--block <frames>]
-  onda daemon stdio
+const USAGE_BODY: &str = r#"Commands:
+  
+  onda compile <input.onda>          Check, inspect, or emit compile artifacts
+    
+    [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
+    [--sample-rate <hz>] [--block <frames>]
+    [--opt-level <0|1|2|3>] [--fast-math]  
+    [--dump-graph] [--ir] [--meta] 
+    [--target-spec <path>] [--target-features <feature-list>] 
+    [--target-triple <triple>] [--target-cpu <name|host>] [--target-abi <name>] 
+    [--reloc-model <default|static|pic|dynamic-no-pic>] 
+    [--code-model <default|small|kernel|medium|large>] 
+  
+  onda preview <input.onda>          Open the interactive preview window
+    
+    [--sample-rate <hz>] [--block <frames>]
+    [--opt-level <0|1|2|3>] [--fast-math] 
+    [--input-device <name>] [--output-device <name>]
+    [--theme <auto|dark|light>] [--webview] [--meta]
+  
+  onda preview play <input.onda>     Run realtime preview playback without the UI
+    
+    [--dur <seconds> | --forever]
+    [--sample-rate <hz>] [--block <frames>]
+    [--opt-level <0|1|2|3>] [--fast-math]
+    [--input-device <name>] [--output-device <name>]
+    [--set <name=value>] [--control-json] [--meta]
+  
+  onda preview render <input.onda>   Render offline through the preview pipeline
+    
+    [--output <path>] [--dur <seconds>]
+    [--sample-rate <hz>] [--block <frames>]
+    [--opt-level <0|1|2|3>] [--fast-math]
+    [--set <name=value>] [--meta] 
+  
+  onda daemon diagnose <input.onda>  Run daemon-backed analysis and diagnostics
+    
+    [--sample-rate <hz>] [--block <frames>]
 
-Options:
-  --output, -o   Output wav path (default: ./onda_out.wav)
-  --emit         Compile artifact for `onda compile`: `check`, `llvm-ir`, or `obj`
-  --meta-out     Write AOT sidecar metadata JSON for `onda compile --emit obj`
-  --dur, -d      Render duration in seconds (default: 5)
-  --sample-rate, --sr  Compile/render/output sample rate in Hz (default: 48000)
-  --block, -b    Compile/render block size in frames (default: 512; preview play: 128)
-  --dump-graph   Print program after graph lowering, before proc desugaring/codegen
-  --ir           Alias for `onda compile --emit llvm-ir` and render IR dumping
-  --meta         Print declared ins/outs/params metadata
-  --target       LLVM target triple for compile-time IR emission
-  --target-spec  TOML target spec for compile-time IR/object emission
-  --target-cpu   Target CPU name, or 'host' for the native host CPU
-  --target-features  Comma-separated LLVM target feature string
-  --target-abi   Optional target ABI name forwarded to LLVM target machine creation
-  --reloc-model  Target relocation model for compile-time IR emission
-  --code-model   Target code model for compile-time IR emission
-  --opt-level    LLVM optimization level for compile-time IR emission (default: 3)
-  --control-json Emit preview control handshake on stdout and serve param control over localhost
-  --input-device Select audio input device by exact name for preview playback
-  --output-device Select audio output device by exact name for preview playback
-  --theme        Preview window theme: `auto`, `dark`, or `light` (default: auto)
-  --webview      Use the webview preview host instead of egui
-  --fast-math    Enable LLVM fast-math flags for floating-point operations
-  --help, -h     Show this help
+  onda lsp                           Start the language server over stdio
+  
+  onda daemon stdio                  Start the daemon transport over stdio
+
+Shared Options:
+  
+  --sample-rate, --sr    Sample rate in Hz (default: 48000)
+  --block, -b            Block size in frames (default: 512; preview play: 128)
+  --opt-level            LLVM optimization level (default: 3)
+  --fast-math            Enable LLVM fast-math flags for floating-point operations
+  --meta                 Print available metadata for the selected command
+  --help, -h             Show this help
+
+Compile Options:
+  
+  --emit                 Compile artifact for `onda compile`: `check`, `llvm-ir`, or `obj`
+  --output, -o           Output path for `llvm-ir` or `obj`
+  --meta-out             Write AOT sidecar metadata JSON for `onda compile --emit obj`
+  --dump-graph           Print program after graph lowering, before proc desugaring/codegen
+  --ir                   Alias for `onda compile --emit llvm-ir`
+  --target-triple        LLVM target triple for compile-time IR emission
+  --target-spec          TOML target spec for compile-time IR/object emission
+  --target-cpu           Target CPU name, or 'host' for the native host CPU
+  --target-features      Comma-separated LLVM target feature string
+  --target-abi           Optional target ABI name forwarded to LLVM target machine creation
+  --reloc-model          Target relocation model for compile-time IR emission
+  --code-model           Target code model for compile-time IR emission
+
+Preview Options:
+  
+  --dur, -d              Render/play duration in seconds (default: 5)
+  --forever              Render/play with infinite duration
+  --output, -o           Output WAV path for `onda preview render`
+  --input-device         Select audio input device by exact name for preview playback
+  --output-device        Select audio output device by exact name for preview playback
+  --set                  Override a scalar preview param with `name=value`
+  --control-json         Emit preview control handshake on stdout and serve param control over localhost
+  --theme                Preview window theme: `auto`, `dark`, or `light` (default: auto)
+  --webview              Use the webview preview host instead of egui
 "#;
+
+const USAGE_BANNER: &[&str] = &[
+    ":-====-:",
+    ":+#@@@@@@@@@@@@#+:",
+    "+@@@%+=-:.  .:-=+@@@@+",
+    "=@@@*.              .*@@@=",
+    ".#@@-                    -@@#.",
+    ".@@#                        #@@.",
+    "@@#                          #@@",
+    "+@@        -#@#-               @@+",
+    "%@*      =@@*-*@#              *@%",
+    "@@=    =@@#.   *@#       +=:   =@@",
+    "@@=    +=:      #@*   .@@#=    =@@",
+    "%@#              %@*-*@@=      #@#",
+    "-@@.              -#@#-       .@@-",
+    "%@%                          %@#",
+    "@@#                        #@%",
+    ".#@@-                    -@@#",
+    "=@@@*.              .*@@@=",
+    "+@@@%+=-:.  .:-=+@@@@+",
+    ":+#@@@@@@@@@@@@#+:",
+    ":-====-:",
+];
+
+static USAGE: LazyLock<String> = LazyLock::new(build_usage);
+
+fn usage() -> &'static str {
+    USAGE.as_str()
+}
+
+fn build_usage() -> String {
+    let commands_width = USAGE_BODY
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = String::new();
+    out.push('\n');
+    for line in USAGE_BANNER {
+        let pad = commands_width.saturating_sub(line.chars().count()) / 2;
+        out.push_str(&" ".repeat(pad));
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(USAGE_BODY);
+    out
+}
 
 enum Command {
     Compile {
@@ -96,16 +187,6 @@ enum Command {
         show_meta: bool,
         fast_math: bool,
         target: TargetConfig,
-    },
-    Render {
-        input: PathBuf,
-        output: PathBuf,
-        dur_seconds: u32,
-        sample_rate_hz: u32,
-        block_frames: usize,
-        dump_graph: bool,
-        dump_ir: bool,
-        fast_math: bool,
     },
     Lsp,
     Preview(PreviewCommand),
@@ -125,6 +206,7 @@ enum PreviewCommand {
         dur_seconds: Option<u32>,
         sample_rate_hz: u32,
         block_frames: usize,
+        opt_level: TargetOptLevel,
         input_device: Option<String>,
         output_device: Option<String>,
         fast_math: bool,
@@ -138,6 +220,7 @@ enum PreviewCommand {
         dur_seconds: u32,
         sample_rate_hz: u32,
         block_frames: usize,
+        opt_level: TargetOptLevel,
         fast_math: bool,
         show_meta: bool,
         param_sets: Vec<(String, f64)>,
@@ -146,9 +229,11 @@ enum PreviewCommand {
         input: PathBuf,
         sample_rate_hz: u32,
         block_frames: usize,
+        opt_level: TargetOptLevel,
         input_device: Option<String>,
         output_device: Option<String>,
         fast_math: bool,
+        show_meta: bool,
         theme: PreviewThemeMode,
         host: PreviewHostKind,
     },
@@ -226,25 +311,6 @@ fn main() {
             fast_math,
             target,
         ),
-        Command::Render {
-            input,
-            output,
-            dur_seconds,
-            sample_rate_hz,
-            block_frames,
-            dump_graph,
-            dump_ir,
-            fast_math,
-        } => run_render(
-            &input,
-            &output,
-            dur_seconds,
-            sample_rate_hz,
-            block_frames,
-            dump_graph,
-            dump_ir,
-            fast_math,
-        ),
         Command::Lsp => lsp_stdio::run_stdio_loop(),
         Command::Preview(cmd) => run_preview(cmd),
         Command::Daemon(cmd) => run_daemon(cmd),
@@ -292,19 +358,18 @@ fn run_webview_preview(_input: &Path, _options: PreviewHostOptions) -> Result<()
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut args = args.skip(1);
     let Some(cmd) = args.next() else {
-        return Err(USAGE.to_owned());
+        return Err(usage().to_owned());
     };
     if cmd == "--help" || cmd == "-h" || cmd == "help" {
-        return Err(USAGE.to_owned());
+        return Err(usage().to_owned());
     }
 
     match cmd.as_str() {
         "compile" => parse_compile_args(args),
-        "render" => parse_render_args(args),
         "lsp" => parse_lsp_args(args),
         "preview" => parse_preview_args(args),
         "daemon" => parse_daemon_args(args),
-        _ => Err(format!("unknown command '{cmd}'\n\n{USAGE}")),
+        _ => Err(format!("unknown command '{cmd}'\n\n{}", usage())),
     }
 }
 
@@ -312,8 +377,8 @@ fn parse_lsp_args(args: impl Iterator<Item = String>) -> Result<Command, String>
     for arg in args {
         match arg.as_str() {
             "--stdio" => {}
-            "--help" | "-h" => return Err(USAGE.to_owned()),
-            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+            "--help" | "-h" => return Err(usage().to_owned()),
+            _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
     Ok(Command::Lsp)
@@ -322,7 +387,8 @@ fn parse_lsp_args(args: impl Iterator<Item = String>) -> Result<Command, String>
 fn parse_preview_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(subcommand) = args.next() else {
         return Err(format!(
-            "preview requires a subcommand or input file\n\n{USAGE}"
+            "preview requires a subcommand or input file\n\n{}",
+            usage()
         ));
     };
     let preview = match subcommand.as_str() {
@@ -331,7 +397,10 @@ fn parse_preview_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         _ => {
             // Treat as `onda preview <file.onda>` — the windowed preview.
             if subcommand.starts_with('-') {
-                return Err(format!("unknown preview option '{subcommand}'\n\n{USAGE}"));
+                return Err(format!(
+                    "unknown preview option '{subcommand}'\n\n{}",
+                    usage()
+                ));
             }
             parse_preview_window_args(subcommand, args)?
         }
@@ -341,24 +410,27 @@ fn parse_preview_args(mut args: impl Iterator<Item = String>) -> Result<Command,
 
 fn parse_daemon_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(subcommand) = args.next() else {
-        return Err(format!("daemon requires a subcommand\n\n{USAGE}"));
+        return Err(format!("daemon requires a subcommand\n\n{}", usage()));
     };
     let daemon = match subcommand.as_str() {
         "stdio" => DaemonCommand::Stdio,
         "diagnose" => parse_daemon_diagnose_args(args)?,
         "play" => {
             return Err(format!(
-                "daemon play was renamed to 'onda preview play'\n\n{USAGE}"
+                "daemon play was renamed to 'onda preview play'\n\n{}",
+                usage()
             ))
         }
         "preview" => {
             return Err(format!(
-                "daemon preview was renamed to 'onda preview render'\n\n{USAGE}"
+                "daemon preview was renamed to 'onda preview render'\n\n{}",
+                usage()
             ))
         }
         _ => {
             return Err(format!(
-                "unknown daemon subcommand '{subcommand}'\n\n{USAGE}"
+                "unknown daemon subcommand '{subcommand}'\n\n{}",
+                usage()
             ))
         }
     };
@@ -367,7 +439,7 @@ fn parse_daemon_args(mut args: impl Iterator<Item = String>) -> Result<Command, 
 
 fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(input) = args.next() else {
-        return Err(format!("compile requires an input file\n\n{USAGE}"));
+        return Err(format!("compile requires an input file\n\n{}", usage()));
     };
     let mut emit = CompileEmit::Check;
     let mut emit_explicit = false;
@@ -431,9 +503,9 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
             }
             "--meta" => show_meta = true,
             "--fast-math" => fast_math = true,
-            "--target" => {
+            "--target-triple" => {
                 let Some(value) = args.next() else {
-                    return Err("--target requires a target triple".to_owned());
+                    return Err("--target-triple requires a target triple".to_owned());
                 };
                 target_triple_override = Some(value);
             }
@@ -481,7 +553,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 };
                 opt_level_override = Some(parse_target_opt_level(&value)?);
             }
-            "--help" | "-h" => return Err(USAGE.to_owned()),
+            "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--sample-rate=") => {
                 let value = &arg["--sample-rate=".len()..];
                 sample_rate_hz = parse_sample_rate_hz(value)?;
@@ -516,10 +588,10 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 let value = &arg["--block=".len()..];
                 block_frames = parse_block_frames(value)?;
             }
-            _ if arg.starts_with("--target=") => {
-                let value = &arg["--target=".len()..];
+            _ if arg.starts_with("--target-triple=") => {
+                let value = &arg["--target-triple=".len()..];
                 if value.is_empty() {
-                    return Err("--target requires a target triple".to_owned());
+                    return Err("--target-triple requires a target triple".to_owned());
                 }
                 target_triple_override = Some(value.to_owned());
             }
@@ -557,7 +629,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 let value = &arg["--opt-level=".len()..];
                 opt_level_override = Some(parse_target_opt_level(value)?);
             }
-            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+            _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
     let LoadedTargetSpec {
@@ -614,99 +686,14 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     })
 }
 
-fn parse_render_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
-    let Some(input) = args.next() else {
-        return Err(format!("render requires an input file\n\n{USAGE}"));
-    };
-
-    let mut output = PathBuf::from("./onda_out.wav");
-    let mut dur_seconds = DEFAULT_DUR_SECONDS;
-    let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
-    let mut block_frames = DEFAULT_BLOCK_FRAMES;
-    let mut dump_graph = false;
-    let mut dump_ir = false;
-    let mut fast_math = false;
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--output" | "-o" => {
-                let Some(value) = args.next() else {
-                    return Err("--output requires a file path".to_owned());
-                };
-                output = PathBuf::from(value);
-            }
-            "--dur" | "-d" => {
-                let Some(value) = args.next() else {
-                    return Err("--dur requires a positive integer value".to_owned());
-                };
-                dur_seconds = parse_dur_seconds(&value)?;
-            }
-            "--sample-rate" | "--sr" => {
-                let Some(value) = args.next() else {
-                    return Err("--sample-rate/--sr requires a positive integer value".to_owned());
-                };
-                sample_rate_hz = parse_sample_rate_hz(&value)?;
-            }
-            "--block" | "-b" => {
-                let Some(value) = args.next() else {
-                    return Err("--block requires a positive integer value".to_owned());
-                };
-                block_frames = parse_block_frames(&value)?;
-            }
-            "--dump-graph" => {
-                dump_graph = true;
-            }
-            "--ir" => {
-                dump_ir = true;
-            }
-            "--fast-math" => {
-                fast_math = true;
-            }
-            "--help" | "-h" => return Err(USAGE.to_owned()),
-            _ if arg.starts_with("--output=") => {
-                let value = &arg["--output=".len()..];
-                if value.is_empty() {
-                    return Err("--output requires a file path".to_owned());
-                }
-                output = PathBuf::from(value);
-            }
-            _ if arg.starts_with("--dur=") => {
-                let value = &arg["--dur=".len()..];
-                dur_seconds = parse_dur_seconds(value)?;
-            }
-            _ if arg.starts_with("--sample-rate=") => {
-                let value = &arg["--sample-rate=".len()..];
-                sample_rate_hz = parse_sample_rate_hz(value)?;
-            }
-            _ if arg.starts_with("--sr=") => {
-                let value = &arg["--sr=".len()..];
-                sample_rate_hz = parse_sample_rate_hz(value)?;
-            }
-            _ if arg.starts_with("--block=") => {
-                let value = &arg["--block=".len()..];
-                block_frames = parse_block_frames(value)?;
-            }
-            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
-        }
-    }
-
-    Ok(Command::Render {
-        input: PathBuf::from(input),
-        output,
-        dur_seconds,
-        sample_rate_hz,
-        block_frames,
-        dump_graph,
-        dump_ir,
-        fast_math,
-    })
-}
-
 fn parse_daemon_diagnose_args(
     mut args: impl Iterator<Item = String>,
 ) -> Result<DaemonCommand, String> {
     let Some(input) = args.next() else {
-        return Err(format!("daemon diagnose requires an input file\n\n{USAGE}"));
+        return Err(format!(
+            "daemon diagnose requires an input file\n\n{}",
+            usage()
+        ));
     };
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
@@ -724,7 +711,7 @@ fn parse_daemon_diagnose_args(
                 };
                 block_frames = parse_block_frames(&value)?;
             }
-            "--help" | "-h" => return Err(USAGE.to_owned()),
+            "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--sample-rate=") => {
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sample-rate=".len()..])?;
             }
@@ -734,7 +721,7 @@ fn parse_daemon_diagnose_args(
             _ if arg.starts_with("--block=") => {
                 block_frames = parse_block_frames(&arg["--block=".len()..])?;
             }
-            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+            _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
     Ok(DaemonCommand::Diagnose {
@@ -748,13 +735,17 @@ fn parse_preview_render_args(
     mut args: impl Iterator<Item = String>,
 ) -> Result<PreviewCommand, String> {
     let Some(input) = args.next() else {
-        return Err(format!("preview render requires an input file\n\n{USAGE}"));
+        return Err(format!(
+            "preview render requires an input file\n\n{}",
+            usage()
+        ));
     };
 
     let mut output = PathBuf::from(DEFAULT_DAEMON_OUTPUT);
     let mut dur_seconds = DEFAULT_DUR_SECONDS;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut opt_level = TargetOptLevel::O3;
     let mut fast_math = false;
     let mut show_meta = false;
     let mut param_sets = Vec::new();
@@ -785,6 +776,12 @@ fn parse_preview_render_args(
                 };
                 block_frames = parse_block_frames(&value)?;
             }
+            "--opt-level" => {
+                let Some(value) = args.next() else {
+                    return Err("--opt-level requires a value".to_owned());
+                };
+                opt_level = parse_target_opt_level(&value)?;
+            }
             "--set" => {
                 let Some(value) = args.next() else {
                     return Err("--set requires a name=value pair".to_owned());
@@ -793,7 +790,7 @@ fn parse_preview_render_args(
             }
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
-            "--help" | "-h" => return Err(USAGE.to_owned()),
+            "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--output=") => {
                 output = PathBuf::from(&arg["--output=".len()..]);
             }
@@ -809,10 +806,13 @@ fn parse_preview_render_args(
             _ if arg.starts_with("--block=") => {
                 block_frames = parse_block_frames(&arg["--block=".len()..])?;
             }
+            _ if arg.starts_with("--opt-level=") => {
+                opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
+            }
             _ if arg.starts_with("--set=") => {
                 param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
             }
-            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+            _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
 
@@ -822,6 +822,7 @@ fn parse_preview_render_args(
         dur_seconds,
         sample_rate_hz,
         block_frames,
+        opt_level,
         fast_math,
         show_meta,
         param_sets,
@@ -834,9 +835,11 @@ fn parse_preview_window_args(
 ) -> Result<PreviewCommand, String> {
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_PLAY_BLOCK_FRAMES;
+    let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
     let mut output_device = None;
     let mut fast_math = false;
+    let mut show_meta = false;
     let mut theme = PreviewThemeMode::Auto;
     let mut host = PreviewHostKind::Auto;
 
@@ -853,6 +856,12 @@ fn parse_preview_window_args(
                     return Err("--block requires a positive integer value".to_owned());
                 };
                 block_frames = parse_block_frames(&value)?;
+            }
+            "--opt-level" => {
+                let Some(value) = args.next() else {
+                    return Err("--opt-level requires a value".to_owned());
+                };
+                opt_level = parse_target_opt_level(&value)?;
             }
             "--input-device" => {
                 let Some(value) = args.next() else {
@@ -874,7 +883,8 @@ fn parse_preview_window_args(
             }
             "--webview" => host = PreviewHostKind::Webview,
             "--fast-math" => fast_math = true,
-            "--help" | "-h" => return Err(USAGE.to_owned()),
+            "--meta" => show_meta = true,
+            "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--sample-rate=") => {
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sample-rate=".len()..])?;
             }
@@ -883,6 +893,9 @@ fn parse_preview_window_args(
             }
             _ if arg.starts_with("--block=") => {
                 block_frames = parse_block_frames(&arg["--block=".len()..])?;
+            }
+            _ if arg.starts_with("--opt-level=") => {
+                opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
             }
             _ if arg.starts_with("--input-device=") => {
                 input_device = Some(arg["--input-device=".len()..].to_owned());
@@ -893,7 +906,7 @@ fn parse_preview_window_args(
             _ if arg.starts_with("--theme=") => {
                 theme = parse_preview_theme_mode(&arg["--theme=".len()..])?;
             }
-            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+            _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
 
@@ -901,9 +914,11 @@ fn parse_preview_window_args(
         input: PathBuf::from(input),
         sample_rate_hz,
         block_frames,
+        opt_level,
         input_device,
         output_device,
         fast_math,
+        show_meta,
         theme,
         host,
     })
@@ -924,12 +939,16 @@ fn parse_preview_play_args(
     mut args: impl Iterator<Item = String>,
 ) -> Result<PreviewCommand, String> {
     let Some(input) = args.next() else {
-        return Err(format!("preview play requires an input file\n\n{USAGE}"));
+        return Err(format!(
+            "preview play requires an input file\n\n{}",
+            usage()
+        ));
     };
 
     let mut dur_seconds = Some(DEFAULT_DUR_SECONDS);
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_PLAY_BLOCK_FRAMES;
+    let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
     let mut output_device = None;
     let mut fast_math = false;
@@ -961,6 +980,12 @@ fn parse_preview_play_args(
                 };
                 block_frames = parse_block_frames(&value)?;
             }
+            "--opt-level" => {
+                let Some(value) = args.next() else {
+                    return Err("--opt-level requires a value".to_owned());
+                };
+                opt_level = parse_target_opt_level(&value)?;
+            }
             "--set" => {
                 let Some(value) = args.next() else {
                     return Err("--set requires a name=value pair".to_owned());
@@ -989,7 +1014,7 @@ fn parse_preview_play_args(
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--control-json" => control_json = true,
-            "--help" | "-h" => return Err(USAGE.to_owned()),
+            "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--dur=") => {
                 if forever {
                     return Err("--dur cannot be combined with --forever".to_owned());
@@ -1005,6 +1030,9 @@ fn parse_preview_play_args(
             _ if arg.starts_with("--block=") => {
                 block_frames = parse_block_frames(&arg["--block=".len()..])?;
             }
+            _ if arg.starts_with("--opt-level=") => {
+                opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
+            }
             _ if arg.starts_with("--input-device=") => {
                 input_device = Some(arg["--input-device=".len()..].to_owned());
             }
@@ -1014,7 +1042,7 @@ fn parse_preview_play_args(
             _ if arg.starts_with("--set=") => {
                 param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
             }
-            _ => return Err(format!("unknown option '{arg}'\n\n{USAGE}")),
+            _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
 
@@ -1023,6 +1051,7 @@ fn parse_preview_play_args(
         dur_seconds,
         sample_rate_hz,
         block_frames,
+        opt_level,
         input_device,
         output_device,
         fast_math,
@@ -1417,6 +1446,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             dur_seconds,
             sample_rate_hz,
             block_frames,
+            opt_level,
             input_device,
             output_device,
             fast_math,
@@ -1428,6 +1458,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             dur_seconds,
             sample_rate_hz,
             block_frames,
+            opt_level,
             input_device.as_deref(),
             output_device.as_deref(),
             fast_math,
@@ -1441,6 +1472,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             dur_seconds,
             sample_rate_hz,
             block_frames,
+            opt_level,
             fast_math,
             show_meta,
             param_sets,
@@ -1450,6 +1482,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             dur_seconds,
             sample_rate_hz,
             block_frames,
+            opt_level,
             fast_math,
             show_meta,
             &param_sets,
@@ -1458,9 +1491,11 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             input,
             sample_rate_hz,
             block_frames,
+            opt_level,
             input_device,
             output_device,
             fast_math,
+            show_meta,
             theme,
             host,
         } => {
@@ -1473,9 +1508,11 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
                 PreviewHostOptions {
                     sample_rate_hz,
                     block_frames,
+                    opt_level: opt_level.as_str().to_owned(),
                     input_device,
                     output_device,
                     fast_math,
+                    show_meta,
                     theme,
                     onda_bin,
                 },
@@ -1517,6 +1554,7 @@ fn run_daemon_preview(
     dur_seconds: u32,
     sample_rate_hz: u32,
     block_frames: usize,
+    opt_level: TargetOptLevel,
     fast_math: bool,
     show_meta: bool,
     param_sets: &[(String, f64)],
@@ -1530,6 +1568,7 @@ fn run_daemon_preview(
             sample_rate: sample_rate_hz as f32,
             block_size: block_frames,
             fast_math,
+            opt_level,
             ..PreviewOptions::default()
         },
     });
@@ -1599,6 +1638,7 @@ fn run_daemon_play(
     dur_seconds: Option<u32>,
     sample_rate_hz: u32,
     block_frames: usize,
+    opt_level: TargetOptLevel,
     input_device: Option<&str>,
     output_device: Option<&str>,
     fast_math: bool,
@@ -1611,6 +1651,7 @@ fn run_daemon_play(
         dur_seconds,
         sample_rate_hz,
         block_frames,
+        opt_level,
         input_device: input_device.map(str::to_owned),
         output_device: output_device.map(str::to_owned),
         fast_math,
@@ -2079,6 +2120,7 @@ struct PlaybackLaunch {
     dur_seconds: Option<u32>,
     sample_rate_hz: u32,
     block_frames: usize,
+    opt_level: TargetOptLevel,
     input_device: Option<String>,
     output_device: Option<String>,
     fast_math: bool,
@@ -2229,6 +2271,7 @@ fn spawn_preview_render_thread(
                 sample_rate: launch.sample_rate_hz as f32,
                 block_size: launch.block_frames,
                 fast_math: launch.fast_math,
+                opt_level: launch.opt_level,
                 ..PreviewOptions::default()
             },
         });
@@ -3343,191 +3386,6 @@ fn print_program_meta(typed: &TypedProgram) {
     print_declared_table("params", &params);
 }
 
-fn run_render(
-    input: &Path,
-    output: &Path,
-    dur_seconds: u32,
-    sample_rate_hz: u32,
-    block_frames: usize,
-    dump_graph: bool,
-    dump_ir: bool,
-    fast_math: bool,
-) -> Result<(), String> {
-    if dump_graph {
-        let lowered = parse_and_lower_graphs(input, sample_rate_hz as f32, block_frames)?;
-        print!("{}", format_program(&lowered));
-    }
-    let typed = parse_and_analyze(input, sample_rate_hz as f32, block_frames)?;
-    let declared_outs = build_declared_ports(&typed.outs, &typed.out_types, &typed.out_arrays);
-    if dump_ir {
-        let ir = lower_to_llvm_ir_with_options(
-            typed.clone(),
-            CompileOptions {
-                backend: ExecutionBackend::OrcJit,
-                sample_rate: sample_rate_hz as f32,
-                block_size: block_frames,
-                fast_math,
-            },
-        )
-        .map_err(|diags| format_diagnostics("IR lowering failed", &diags))?;
-        println!("{ir}");
-    }
-
-    let in_channels = typed.ins.len();
-    let out_channels = typed.outs.len();
-    if out_channels == 0 {
-        return Err("render requires at least one output channel".to_owned());
-    }
-
-    let jit = lower_and_jit_with_options(
-        typed,
-        CompileOptions {
-            backend: ExecutionBackend::OrcJit,
-            sample_rate: sample_rate_hz as f32,
-            block_size: block_frames,
-            fast_math,
-        },
-    )
-    .map_err(|diags| format_diagnostics("ORC JIT lowering failed", &diags))?;
-
-    let mut instance = create_instance(
-        jit,
-        InstanceConfig {
-            sample_rate: sample_rate_hz as f32,
-            frames_per_block: block_frames,
-            in_channels,
-            out_channels,
-        },
-    )
-    .map_err(|diag| format_single_diagnostic("instance creation failed", &diag))?;
-
-    let total_frames = sample_rate_hz as usize * dur_seconds as usize;
-    let full_blocks = total_frames / block_frames;
-    let tail_frames = total_frames % block_frames;
-
-    let mut bound_out_buffers = Vec::with_capacity(declared_outs.len());
-    for out_idx in 0..declared_outs.len() {
-        let entry = &declared_outs[out_idx];
-        let bytes = primitive_type_bytes(entry.elem_ty)
-            .saturating_mul(entry.array_len)
-            .saturating_mul(block_frames);
-        let mut buf = vec![0_u8; bytes];
-        bind_output(&mut instance, out_idx, buf.as_mut_ptr(), buf.len())
-            .map_err(|diag| format_single_diagnostic("bind_output failed", &diag))?;
-        bound_out_buffers.push(buf);
-    }
-
-    let mut rendered = Vec::with_capacity(total_frames * out_channels);
-    for _ in 0..full_blocks {
-        process_bound(&mut instance, block_frames)
-            .map_err(|diag| format_single_diagnostic("render failed", &diag))?;
-        let out_block = decode_bound_outputs_to_interleaved_f32(
-            &declared_outs,
-            &bound_out_buffers,
-            block_frames,
-            out_channels,
-        )?;
-        rendered.extend(out_block);
-    }
-    if tail_frames > 0 {
-        process_bound(&mut instance, block_frames)
-            .map_err(|diag| format_single_diagnostic("render failed", &diag))?;
-        let out_block = decode_bound_outputs_to_interleaved_f32(
-            &declared_outs,
-            &bound_out_buffers,
-            block_frames,
-            out_channels,
-        )?;
-        rendered.extend_from_slice(&out_block[..tail_frames * out_channels]);
-    }
-
-    write_wav_interleaved_i16(output, out_channels, sample_rate_hz, &rendered)?;
-    println!(
-        "Rendered {}s @ {} Hz (block {}) to {}",
-        dur_seconds,
-        sample_rate_hz,
-        block_frames,
-        output.display()
-    );
-    Ok(())
-}
-
-fn decode_bound_outputs_to_interleaved_f32(
-    declared_outs: &[CliDeclaredIo],
-    bound_out_buffers: &[Vec<u8>],
-    frames: usize,
-    out_channels: usize,
-) -> Result<Vec<f32>, String> {
-    if declared_outs.len() != bound_out_buffers.len() {
-        return Err("output binding metadata/buffer count mismatch".to_owned());
-    }
-    let mut out_interleaved = vec![0.0_f32; frames.saturating_mul(out_channels)];
-    for out_idx in 0..declared_outs.len() {
-        let entry = &declared_outs[out_idx];
-        let buf = &bound_out_buffers[out_idx];
-        let elem_bytes = primitive_type_bytes(entry.elem_ty);
-        let expected = elem_bytes
-            .saturating_mul(entry.array_len)
-            .saturating_mul(frames);
-        if buf.len() != expected {
-            return Err(format!(
-                "output '{}' buffer size {} does not match expected {}",
-                entry.name,
-                buf.len(),
-                expected
-            ));
-        }
-        for ch in 0..entry.array_len {
-            let dst_channel = entry.offset.saturating_add(ch);
-            if dst_channel >= out_channels {
-                continue;
-            }
-            for frame in 0..frames {
-                let src_idx = (ch * frames + frame) * elem_bytes;
-                let sample =
-                    decode_value_to_f32(entry.elem_ty, &buf[src_idx..src_idx + elem_bytes])?;
-                out_interleaved[frame * out_channels + dst_channel] = sample;
-            }
-        }
-    }
-    Ok(out_interleaved)
-}
-
-fn decode_value_to_f32(ty: PrimitiveType, bytes: &[u8]) -> Result<f32, String> {
-    match ty {
-        PrimitiveType::F32 => {
-            let arr: [u8; 4] = bytes
-                .try_into()
-                .map_err(|_| "invalid f32 width in output buffer".to_owned())?;
-            Ok(f32::from_ne_bytes(arr))
-        }
-        PrimitiveType::F64 => {
-            let arr: [u8; 8] = bytes
-                .try_into()
-                .map_err(|_| "invalid f64 width in output buffer".to_owned())?;
-            Ok(f64::from_ne_bytes(arr) as f32)
-        }
-        PrimitiveType::I32 => {
-            let arr: [u8; 4] = bytes
-                .try_into()
-                .map_err(|_| "invalid i32 width in output buffer".to_owned())?;
-            Ok(i32::from_ne_bytes(arr) as f32)
-        }
-        PrimitiveType::I64 => {
-            let arr: [u8; 8] = bytes
-                .try_into()
-                .map_err(|_| "invalid i64 width in output buffer".to_owned())?;
-            Ok(i64::from_ne_bytes(arr) as f32)
-        }
-        PrimitiveType::Bool => {
-            let b = *bytes
-                .first()
-                .ok_or_else(|| "invalid bool width in output buffer".to_owned())?;
-            Ok(if b == 0 { 0.0 } else { 1.0 })
-        }
-    }
-}
-
 fn parse_and_analyze(
     input: &Path,
     sample_rate: f32,
@@ -4557,7 +4415,7 @@ mod tests {
                 "44100",
                 "--block",
                 "256",
-                "--target",
+                "--target-triple",
                 "aarch64-unknown-linux-gnu",
                 "--target-cpu",
                 "cortex-a72",
@@ -4604,7 +4462,7 @@ mod tests {
                 "onda",
                 "compile",
                 "x.onda",
-                "--target",
+                "--target-triple",
                 "aarch64-unknown-linux-gnu",
             ]
             .into_iter()
@@ -4761,20 +4619,6 @@ reloc_model = "default"
     }
 
     #[test]
-    fn parse_render_accepts_dump_graph() {
-        let cmd = parse_args(
-            ["onda", "render", "x.onda", "--dump-graph"]
-                .into_iter()
-                .map(str::to_owned),
-        )
-        .expect("render args should parse");
-        match cmd {
-            Command::Render { dump_graph, .. } => assert!(dump_graph),
-            _ => panic!("expected render command"),
-        }
-    }
-
-    #[test]
     fn parse_daemon_diagnose_accepts_block_and_sample_rate() {
         let cmd = parse_args(
             [
@@ -4916,6 +4760,48 @@ reloc_model = "default"
     }
 
     #[test]
+    fn parse_preview_commands_accept_opt_level() {
+        let window = parse_args(
+            ["onda", "preview", "x.onda", "--opt-level", "1"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("preview window args should parse");
+        match window {
+            Command::Preview(PreviewCommand::Window { opt_level, .. }) => {
+                assert_eq!(opt_level, TargetOptLevel::O1);
+            }
+            _ => panic!("expected preview window command"),
+        }
+
+        let play = parse_args(
+            ["onda", "preview", "play", "x.onda", "--opt-level", "2"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("preview play args should parse");
+        match play {
+            Command::Preview(PreviewCommand::Play { opt_level, .. }) => {
+                assert_eq!(opt_level, TargetOptLevel::O2);
+            }
+            _ => panic!("expected preview play command"),
+        }
+
+        let render = parse_args(
+            ["onda", "preview", "render", "x.onda", "--opt-level", "0"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("preview render args should parse");
+        match render {
+            Command::Preview(PreviewCommand::Render { opt_level, .. }) => {
+                assert_eq!(opt_level, TargetOptLevel::O0);
+            }
+            _ => panic!("expected preview render command"),
+        }
+    }
+
+    #[test]
     fn parse_preview_window_accepts_webview_flag() {
         let cmd = parse_args(
             ["onda", "preview", "x.onda", "--webview"]
@@ -4942,6 +4828,22 @@ reloc_model = "default"
         match cmd {
             Command::Preview(PreviewCommand::Window { theme, .. }) => {
                 assert_eq!(theme, PreviewThemeMode::Dark);
+            }
+            _ => panic!("expected preview window command"),
+        }
+    }
+
+    #[test]
+    fn parse_preview_window_accepts_meta_flag() {
+        let cmd = parse_args(
+            ["onda", "preview", "x.onda", "--meta"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("preview window args should parse");
+        match cmd {
+            Command::Preview(PreviewCommand::Window { show_meta, .. }) => {
+                assert!(show_meta);
             }
             _ => panic!("expected preview window command"),
         }

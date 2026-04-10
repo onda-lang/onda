@@ -3,7 +3,9 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use onda_codegen_llvm::{lower_and_jit_with_options, CompileOptions, ExecutionBackend};
+use onda_codegen_llvm::{
+    lower_and_jit_with_options, CompileOptions, ExecutionBackend, TargetOptLevel,
+};
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::{bind_output, create_instance, process_bound, InstanceConfig};
 use onda_semantics::{analyze_with_options, AnalysisOptions};
@@ -59,6 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             sample_rate: SAMPLE_RATE as f32,
             block_size: BLOCK_FRAMES,
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     )
     .map_err(|d| format_diagnostics("ORC JIT lowering failed", &d))?;

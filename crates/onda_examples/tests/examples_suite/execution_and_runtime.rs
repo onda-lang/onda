@@ -1965,6 +1965,7 @@ fn builtin_consts_use_compile_time_sample_rate() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -2001,6 +2002,7 @@ fn builtin_consts_support_samplerate_alias() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -2037,6 +2039,7 @@ fn builtin_consts_support_lowercase_samplerate_alias() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -2461,6 +2464,7 @@ fn data_capacity_supports_compile_time_constants() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -2493,6 +2497,7 @@ fn data_ctor_capacity_supports_compile_time_constants() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -2525,6 +2530,7 @@ fn block_size_constant_is_available_in_init_and_block() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -2557,6 +2563,7 @@ fn block_size_aliases_are_available() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -2772,6 +2779,7 @@ fn data_constant_out_of_range_index_is_rejected_in_codegen() {
             block_size: 64,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -3412,6 +3420,7 @@ fn generic_proc_buffer_decl_type_analyzes_and_codegen_compiles() {
             block_size: 64,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -6393,6 +6402,7 @@ fn explicit_orc_gain_compiles_and_runs() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -6431,6 +6441,7 @@ fn explicit_orc_sine_compiles_and_runs() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -6471,6 +6482,7 @@ fn explicit_orc_one_pole_compiles_and_runs() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -6509,6 +6521,7 @@ fn explicit_orc_if_compiles_and_runs() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -6550,6 +6563,7 @@ fn explicit_orc_for_compiles_and_runs() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -6583,6 +6597,7 @@ fn explicit_orc_def_call_compiles_and_runs() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -6616,6 +6631,7 @@ fn explicit_orc_def_return_exits_early() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -6649,6 +6665,7 @@ fn explicit_orc_struct_compiles_and_runs() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 
@@ -6682,6 +6699,7 @@ fn explicit_orc_struct_reserved_method_names_compile_and_run() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 

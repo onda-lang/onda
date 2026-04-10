@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 use eframe::egui;
 use onda_preview::{PreviewController, PreviewHostOptions, PreviewThemeMode};
@@ -48,7 +48,10 @@ pub fn run_preview_egui(onda_path: &Path, options: PreviewHostOptions) -> Result
                 cc.egui_ctx
                     .send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
             }
-            Ok(Box::new(PreviewApp::new(controller, Some(initial_icon_dark))))
+            Ok(Box::new(PreviewApp::new(
+                controller,
+                Some(initial_icon_dark),
+            )))
         }),
     )
     .map_err(|err| format!("failed to start egui preview: {err}"))
@@ -72,10 +75,9 @@ fn resolved_theme_is_dark(ctx: &egui::Context, theme_mode: PreviewThemeMode) -> 
     match theme_mode {
         PreviewThemeMode::Dark => true,
         PreviewThemeMode::Light => false,
-        PreviewThemeMode::Auto => ctx
-            .system_theme()
-            .unwrap_or_else(|| ctx.theme())
-            == egui::Theme::Dark,
+        PreviewThemeMode::Auto => {
+            ctx.system_theme().unwrap_or_else(|| ctx.theme()) == egui::Theme::Dark
+        }
     }
 }
 
@@ -245,68 +247,68 @@ impl eframe::App for PreviewApp {
                                         }
                                     },
                                 );
-                                if !state.input_devices.is_empty() || !state.output_devices.is_empty() {
+                                if !state.input_devices.is_empty()
+                                    || !state.output_devices.is_empty()
+                                {
                                     ui.add_space(12.0);
                                     let combo_width = 140.0;
                                     let combo_gap = 12.0;
-                                    let combo_count =
-                                        (!state.input_devices.is_empty() as usize)
-                                            + (!state.output_devices.is_empty() as usize);
+                                    let combo_count = (!state.input_devices.is_empty() as usize)
+                                        + (!state.output_devices.is_empty() as usize);
                                     let total_width = combo_width * combo_count as f32
                                         + combo_gap * combo_count.saturating_sub(1) as f32;
                                     ui.with_layout(
                                         egui::Layout::top_down(egui::Align::Center),
                                         |ui| {
-                                            ui.allocate_ui(
-                                                egui::vec2(total_width, 56.0),
-                                                |ui| {
-                                                    ui.spacing_mut().item_spacing.x = combo_gap;
-                                                    ui.horizontal(|ui| {
-                                                        if !state.input_devices.is_empty() {
-                                                            ui.allocate_ui(
-                                                                egui::vec2(combo_width, 56.0),
-                                                                |ui| {
-                                                                    render_device_combo(
-                                                                        ui,
-                                                                        "Input Device",
-                                                                        &state.input_devices,
-                                                                        state.current_input_device
-                                                                            .as_deref(),
-                                                                        |selection| {
-                                                                            let _ = self
-                                                                                .controller
-                                                                                .set_input_device(
-                                                                                    selection,
-                                                                                );
-                                                                        },
-                                                                    );
-                                                                },
-                                                            );
-                                                        }
-                                                        if !state.output_devices.is_empty() {
-                                                            ui.allocate_ui(
-                                                                egui::vec2(combo_width, 56.0),
-                                                                |ui| {
-                                                                    render_device_combo(
-                                                                        ui,
-                                                                        "Output Device",
-                                                                        &state.output_devices,
-                                                                        state.current_output_device
-                                                                            .as_deref(),
-                                                                        |selection| {
-                                                                            let _ = self
-                                                                                .controller
-                                                                                .set_output_device(
-                                                                                    selection,
-                                                                                );
-                                                                        },
-                                                                    );
-                                                                },
-                                                            );
-                                                        }
-                                                    });
-                                                },
-                                            );
+                                            ui.allocate_ui(egui::vec2(total_width, 56.0), |ui| {
+                                                ui.spacing_mut().item_spacing.x = combo_gap;
+                                                ui.horizontal(|ui| {
+                                                    if !state.input_devices.is_empty() {
+                                                        ui.allocate_ui(
+                                                            egui::vec2(combo_width, 56.0),
+                                                            |ui| {
+                                                                render_device_combo(
+                                                                    ui,
+                                                                    "Input Device",
+                                                                    &state.input_devices,
+                                                                    state
+                                                                        .current_input_device
+                                                                        .as_deref(),
+                                                                    |selection| {
+                                                                        let _ = self
+                                                                            .controller
+                                                                            .set_input_device(
+                                                                                selection,
+                                                                            );
+                                                                    },
+                                                                );
+                                                            },
+                                                        );
+                                                    }
+                                                    if !state.output_devices.is_empty() {
+                                                        ui.allocate_ui(
+                                                            egui::vec2(combo_width, 56.0),
+                                                            |ui| {
+                                                                render_device_combo(
+                                                                    ui,
+                                                                    "Output Device",
+                                                                    &state.output_devices,
+                                                                    state
+                                                                        .current_output_device
+                                                                        .as_deref(),
+                                                                    |selection| {
+                                                                        let _ = self
+                                                                            .controller
+                                                                            .set_output_device(
+                                                                                selection,
+                                                                            );
+                                                                    },
+                                                                );
+                                                            },
+                                                        );
+                                                    }
+                                                });
+                                            });
                                         },
                                     );
                                 }

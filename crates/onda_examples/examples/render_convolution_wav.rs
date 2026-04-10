@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use onda_codegen_llvm::{CompileOptions, ExecutionBackend};
+use onda_codegen_llvm::{CompileOptions, ExecutionBackend, TargetOptLevel};
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::{
     bind_output, create_instance, process_bound, trigger_event_by_index, InstanceConfig,
@@ -94,6 +94,7 @@ fn main() -> Result<(), Diagnostic> {
             sample_rate,
             block_size: frames,
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     )
     .expect("jit lowering should succeed");

@@ -3,7 +3,7 @@ use std::{collections::HashMap, mem};
 
 use onda_codegen_llvm::{
     lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, DeclaredEvent,
-    DeclaredEventParam, ExecutionBackend, JitProgram,
+    DeclaredEventParam, ExecutionBackend, JitProgram, TargetOptLevel,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_runtime::{
@@ -20,6 +20,7 @@ pub struct PreviewOptions {
     pub block_size: usize,
     pub float_param_smoothing_ms: f64,
     pub fast_math: bool,
+    pub opt_level: TargetOptLevel,
     pub backend: ExecutionBackend,
 }
 
@@ -30,6 +31,7 @@ impl Default for PreviewOptions {
             block_size: 512,
             float_param_smoothing_ms: 20.0,
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
             backend: ExecutionBackend::Auto,
         }
     }
@@ -49,6 +51,7 @@ impl PreviewOptions {
             sample_rate: self.sample_rate,
             block_size: self.block_size,
             fast_math: self.fast_math,
+            opt_level: self.opt_level,
         }
     }
 }

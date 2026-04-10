@@ -140,6 +140,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 block_size: block_frames.unwrap_or(current.preview.block_size),
                 float_param_smoothing_ms: current.preview.float_param_smoothing_ms,
                 fast_math: fast_math.unwrap_or(current.preview.fast_math),
+                opt_level: current.preview.opt_level,
                 backend: current.preview.backend,
             };
             let config = DaemonConfig {

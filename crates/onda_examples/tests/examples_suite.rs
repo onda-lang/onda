@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use onda_codegen_llvm::{CompileOptions, ExecutionBackend};
+use onda_codegen_llvm::{CompileOptions, ExecutionBackend, TargetOptLevel};
 use onda_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
@@ -6308,6 +6308,7 @@ fn compile_instance(src: &str, frames: usize) -> (onda_runtime::Instance, usize,
             sample_rate: 48_000.0,
             block_size: frames,
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     )
 }
@@ -6321,6 +6322,7 @@ fn compile_instance_file(path: &str, frames: usize) -> (onda_runtime::Instance, 
             sample_rate: 48_000.0,
             block_size: frames,
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     )
 }
@@ -6399,6 +6401,7 @@ fn emit_ir(src: &str) -> String {
             sample_rate: 48_000.0,
             block_size: 4,
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     )
     .expect("IR emission should succeed")

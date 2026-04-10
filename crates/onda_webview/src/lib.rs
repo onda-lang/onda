@@ -43,7 +43,9 @@ mod platform {
                     .unwrap_or_default()
             ))
             .with_inner_size(tao::dpi::LogicalSize::new(480.0_f64, 720.0))
-            .with_window_icon(Some(load_app_icon(startup_window_icon_is_dark(preview_theme))?))
+            .with_window_icon(Some(load_app_icon(startup_window_icon_is_dark(
+                preview_theme,
+            ))?))
             .build(&event_loop)
             .map_err(|e| format!("failed to create window: {e}"))?;
         if let Ok(icon) = load_app_icon(resolved_window_icon_is_dark(&window, preview_theme)) {
@@ -119,9 +121,7 @@ mod platform {
                     ..
                 } => {
                     if matches!(preview_theme, PreviewThemeMode::Auto) {
-                        if let Ok(icon) =
-                            load_app_icon(matches!(theme, tao::window::Theme::Dark))
-                        {
+                        if let Ok(icon) = load_app_icon(matches!(theme, tao::window::Theme::Dark)) {
                             window.set_window_icon(Some(icon));
                         }
                     }
@@ -331,10 +331,7 @@ mod platform {
         }
     }
 
-    fn resolved_window_icon_is_dark(
-        window: &tao::window::Window,
-        theme: PreviewThemeMode,
-    ) -> bool {
+    fn resolved_window_icon_is_dark(window: &tao::window::Window, theme: PreviewThemeMode) -> bool {
         match theme {
             PreviewThemeMode::Dark => true,
             PreviewThemeMode::Light => false,

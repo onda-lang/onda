@@ -111,7 +111,6 @@ The CLI surface is:
 
 ```text
 onda compile <input.onda>
-onda render <input.onda>
 onda lsp
 onda preview <input.onda> [--theme <auto|dark|light>]
 onda preview play <input.onda>
@@ -137,6 +136,7 @@ onda compile examples/sine.onda
 onda compile examples/proc_gain_graph.onda --dump-graph
 onda compile examples/sine.onda --emit llvm-ir
 onda compile examples/sine.onda --emit obj
+onda compile examples/sine.onda --target-triple aarch64-unknown-linux-gnu --emit obj
 ```
 
 Cross-target IR and object emission is also supported:
@@ -161,7 +161,9 @@ Preview host selection:
 Useful flags:
 - `--sample-rate`
 - `--block`
+- `--opt-level`
 - `--fast-math`
+- `--meta`
 - `--input-device`
 - `--output-device`
 - `--theme`
@@ -177,6 +179,7 @@ onda preview play examples/sine.onda --forever
 
 Useful flags:
 - `--dur` or `--forever`
+- `--opt-level`
 - `--set name=value`
 - `--meta`
 - `--control-json`
@@ -194,22 +197,14 @@ This is useful when you want the preview-oriented path, including `--set` parame
 onda preview render examples/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
 ```
 
-### `onda render`
-
-Renders an Onda program to a WAV file offline.
-
-```bash
-onda render examples/sine.onda --output ./onda_out.wav --dur 5
-```
-
 Useful flags:
 - `--output`
 - `--dur`
 - `--sample-rate`
 - `--block`
-- `--dump-graph`
-- `--ir`
-- `--fast-math`
+- `--opt-level`
+- `--set name=value`
+- `--meta`
 
 ### `onda lsp`
 

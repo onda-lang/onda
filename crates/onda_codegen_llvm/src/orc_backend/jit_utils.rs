@@ -11,8 +11,9 @@ pub(super) struct ResolvedTargetMachineConfig {
 }
 
 pub(super) unsafe fn create_aggressive_jit_target_machine_builder(
+    opt_level: crate::TargetOptLevel,
 ) -> Result<LLVMOrcJITTargetMachineBuilderRef, Diagnostic> {
-    let tm = create_host_target_machine_aggressive()?;
+    let tm = create_host_target_machine(opt_level)?;
     let jtmb = LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine(tm);
     if jtmb.is_null() {
         return Err(Diagnostic::internal(
@@ -69,7 +70,8 @@ pub(super) unsafe fn llvm_module_to_string(module: LLVMModuleRef) -> Result<Stri
     Ok(ir)
 }
 
-pub(super) unsafe fn create_host_target_machine_aggressive(
+pub(super) unsafe fn create_host_target_machine(
+    opt_level: crate::TargetOptLevel,
 ) -> Result<LLVMTargetMachineRef, Diagnostic> {
     let triple = LLVMGetDefaultTargetTriple();
     if triple.is_null() {
@@ -113,7 +115,7 @@ pub(super) unsafe fn create_host_target_machine_aggressive(
         triple as *const i8,
         cpu as *const i8,
         features as *const i8,
-        LLVMCodeGenOptLevel::LLVMCodeGenLevelAggressive,
+        map_opt_level(opt_level),
         LLVMRelocMode::LLVMRelocDefault,
         LLVMCodeModel::LLVMCodeModelJITDefault,
     );
@@ -339,7 +341,7 @@ unsafe fn llvm_owned_message_to_string(what: &str, ptr: *mut i8) -> Result<Strin
     Ok(value)
 }
 
-fn map_opt_level(level: crate::TargetOptLevel) -> LLVMCodeGenOptLevel {
+pub(super) fn map_opt_level(level: crate::TargetOptLevel) -> LLVMCodeGenOptLevel {
     match level {
         crate::TargetOptLevel::O0 => LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
         crate::TargetOptLevel::O1 => LLVMCodeGenOptLevel::LLVMCodeGenLevelLess,

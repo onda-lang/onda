@@ -41,9 +41,11 @@ pub enum PreviewThemeMode {
 pub struct PreviewHostOptions {
     pub sample_rate_hz: u32,
     pub block_frames: usize,
+    pub opt_level: String,
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub fast_math: bool,
+    pub show_meta: bool,
     pub theme: PreviewThemeMode,
     pub onda_bin: String,
 }
@@ -53,9 +55,11 @@ impl Default for PreviewHostOptions {
         Self {
             sample_rate_hz: 48_000,
             block_frames: 128,
+            opt_level: "3".to_owned(),
             input_device: None,
             output_device: None,
             fast_math: false,
+            show_meta: false,
             theme: PreviewThemeMode::Auto,
             onda_bin: "onda".to_owned(),
         }
@@ -504,7 +508,9 @@ impl ChildSession {
             .arg("--sample-rate")
             .arg(options.sample_rate_hz.to_string())
             .arg("--block")
-            .arg(options.block_frames.to_string());
+            .arg(options.block_frames.to_string())
+            .arg("--opt-level")
+            .arg(options.opt_level.as_str());
 
         if let Some(input_device) = &options.input_device {
             cmd.arg("--input-device").arg(input_device);
@@ -514,6 +520,9 @@ impl ChildSession {
         }
         if options.fast_math {
             cmd.arg("--fast-math");
+        }
+        if options.show_meta {
+            cmd.arg("--meta");
         }
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());

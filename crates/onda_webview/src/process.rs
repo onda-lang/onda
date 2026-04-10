@@ -62,7 +62,9 @@ impl ChildSession {
             .arg("--sample-rate")
             .arg(options.sample_rate_hz.to_string())
             .arg("--block")
-            .arg(options.block_frames.to_string());
+            .arg(options.block_frames.to_string())
+            .arg("--opt-level")
+            .arg(options.opt_level.as_str());
 
         if let Some(input_device) = &options.input_device {
             cmd.arg("--input-device").arg(input_device);

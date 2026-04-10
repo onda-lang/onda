@@ -433,8 +433,7 @@
 - Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
   - `onda_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
 - CLI (`onda`) supports:
-  - `compile <file> [--emit check|llvm-ir|obj] [--output] [--meta-out] [--target <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <csv>] [--target-abi <name>] [--reloc-model <mode>] [--code-model <mode>] [--opt-level <0|1|2|3>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--meta]`
-  - `render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--dump-graph] [--ir]`
+  - `compile <file> [--emit check|llvm-ir|obj] [--output] [--meta-out] [--target-triple <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <csv>] [--target-abi <name>] [--reloc-model <mode>] [--code-model <mode>] [--opt-level <0|1|2|3>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--meta]`
   - `lsp [--stdio]`
   - `preview <file> [--sr|--sample-rate] [--block] [--fast-math] [--input-device <name>] [--output-device <name>]`
   - `preview render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value]`
@@ -445,7 +444,7 @@
   - `preview play` defaults to a `128`-frame render/device block size.
   - `preview render` keeps the offline render default block size (`512`).
   - `compile --emit obj` writes a native object file plus a JSON metadata sidecar.
-  - `compile` remains host-native by default; cross-target AOT requires `--target` or `--target-spec`.
+  - `compile` remains host-native by default; cross-target AOT requires `--target-triple` or `--target-spec`.
   - `compile --target-spec <path>` loads a small TOML codegen preset; direct CLI flags override spec values.
   - checked-in example target specs live under the repo-root `targets/` folder.
   - Useful graph examples: `examples/proc_gain_graph.onda`, `examples/proc_split_graph.onda`, `examples/proc_array_stereo_sine_graph.onda`, `examples/std_one_pole_graph.onda`, `examples/stdlib_f32_graph.onda`, `examples/feedback_saturator_graph.onda`, `examples/cybernetic_feedback_graph.onda`, `examples/reverb_graph.onda`.

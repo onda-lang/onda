@@ -1947,6 +1947,7 @@ fn convolution_wav_impulse_example_reproduces_ir_from_event_payload() {
             block_size: frames,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     );
 

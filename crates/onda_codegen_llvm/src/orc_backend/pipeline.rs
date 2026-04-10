@@ -11,6 +11,7 @@ pub(crate) fn compile_orc(
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
+    opt_level: crate::TargetOptLevel,
 ) -> Result<OrcProcess, Diagnostic> {
     initialize_native_target()?;
     let layouts = prepare_codegen_layouts(typed)?;
@@ -21,7 +22,7 @@ pub(crate) fn compile_orc(
             return Err(Diagnostic::internal("failed to create LLJIT builder"));
         }
 
-        let jtmb = match create_aggressive_jit_target_machine_builder() {
+        let jtmb = match create_aggressive_jit_target_machine_builder(opt_level) {
             Ok(v) => v,
             Err(diag) => {
                 LLVMOrcDisposeLLJITBuilder(builder);
@@ -56,6 +57,7 @@ pub(crate) fn compile_orc(
             sample_rate,
             block_size,
             fast_math,
+            opt_level,
             &layouts.top_level_oversampling_layout,
             &layouts.proc_slot_buffer_ref_layouts,
         ) {
@@ -90,6 +92,7 @@ pub(crate) fn emit_optimized_ir(
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
+    opt_level: crate::TargetOptLevel,
 ) -> Result<String, Diagnostic> {
     initialize_native_target()?;
     let layouts = prepare_codegen_layouts(typed)?;
@@ -99,7 +102,7 @@ pub(crate) fn emit_optimized_ir(
         if builder.is_null() {
             return Err(Diagnostic::internal("failed to create LLJIT builder"));
         }
-        let jtmb = match create_aggressive_jit_target_machine_builder() {
+        let jtmb = match create_aggressive_jit_target_machine_builder(opt_level) {
             Ok(v) => v,
             Err(diag) => {
                 LLVMOrcDisposeLLJITBuilder(builder);
@@ -135,6 +138,7 @@ pub(crate) fn emit_optimized_ir(
                 sample_rate,
                 block_size,
                 fast_math,
+                opt_level,
                 &layouts.top_level_oversampling_layout,
                 &layouts.proc_slot_buffer_ref_layouts,
             )?;
@@ -295,6 +299,7 @@ unsafe fn compile_module_into_jit(
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
+    opt_level: crate::TargetOptLevel,
     top_level_oversampling_layout: &TopLevelOversamplingLayout,
     proc_slot_buffer_ref_layouts: &[ProcSlotBufferRefLayout],
 ) -> Result<(OrcProcessFn, OrcInitFn, Vec<OrcEventFn>), Diagnostic> {
@@ -304,6 +309,7 @@ unsafe fn compile_module_into_jit(
         sample_rate,
         block_size,
         fast_math,
+        opt_level,
         top_level_oversampling_layout,
         proc_slot_buffer_ref_layouts,
     )?;
@@ -362,6 +368,7 @@ unsafe fn build_optimized_module_for_jit(
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
+    opt_level: crate::TargetOptLevel,
     top_level_oversampling_layout: &TopLevelOversamplingLayout,
     proc_slot_buffer_ref_layouts: &[ProcSlotBufferRefLayout],
 ) -> Result<(LLVMModuleRef, LLVMContextRef), Diagnostic> {
@@ -377,7 +384,7 @@ unsafe fn build_optimized_module_for_jit(
     }
     let data_layout = CStr::from_ptr(datalayout).to_string_lossy().to_string();
 
-    let opt_tm = create_host_target_machine_aggressive()?;
+    let opt_tm = create_host_target_machine(opt_level)?;
     let result = build_optimized_module(
         typed,
         sample_rate,
@@ -388,7 +395,7 @@ unsafe fn build_optimized_module_for_jit(
         &target_triple,
         &data_layout,
         opt_tm,
-        LLVMCodeGenOptLevel::LLVMCodeGenLevelAggressive,
+        map_opt_level(opt_level),
     );
     LLVMDisposeTargetMachine(opt_tm);
     result

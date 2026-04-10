@@ -29,6 +29,7 @@ pub struct CompileOptions {
     pub sample_rate: f32,
     pub block_size: usize,
     pub fast_math: bool,
+    pub opt_level: TargetOptLevel,
 }
 
 impl Default for CompileOptions {
@@ -38,6 +39,7 @@ impl Default for CompileOptions {
             sample_rate: 48_000.0,
             block_size: 512,
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         }
     }
 }
@@ -126,6 +128,7 @@ pub fn lower_and_jit_with_options(
             options.sample_rate,
             options.block_size,
             options.fast_math,
+            options.opt_level,
         ),
     }
 }
@@ -141,6 +144,7 @@ pub fn lower_to_llvm_ir_with_options(
             options.sample_rate,
             options.block_size,
             options.fast_math,
+            options.opt_level,
         ),
     }
 }
@@ -179,8 +183,9 @@ fn build_orc_program(
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
+    opt_level: TargetOptLevel,
 ) -> Result<JitProgram, Vec<Diagnostic>> {
-    let compiled = orc_backend::compile_orc(&typed, sample_rate, block_size, fast_math)
+    let compiled = orc_backend::compile_orc(&typed, sample_rate, block_size, fast_math, opt_level)
         .map_err(|diag| vec![diag])?;
     let metadata = metadata::build_program_metadata(&typed);
 
@@ -208,8 +213,9 @@ fn emit_orc_ir(
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
+    opt_level: TargetOptLevel,
 ) -> Result<String, Vec<Diagnostic>> {
-    orc_backend::emit_optimized_ir(&typed, sample_rate, block_size, fast_math)
+    orc_backend::emit_optimized_ir(&typed, sample_rate, block_size, fast_math, opt_level)
         .map_err(|diag| vec![diag])
 }
 
@@ -243,6 +249,7 @@ fn emit_orc_ir(
     _sample_rate: f32,
     _block_size: usize,
     _fast_math: bool,
+    _opt_level: TargetOptLevel,
 ) -> Result<String, Vec<Diagnostic>> {
     Err(vec![Diagnostic::internal(
         "ORC backend is required but onda_codegen_llvm was built without 'llvm-orc' feature",
@@ -281,6 +288,7 @@ fn build_orc_program(
     _sample_rate: f32,
     _block_size: usize,
     _fast_math: bool,
+    _opt_level: TargetOptLevel,
 ) -> Result<JitProgram, Vec<Diagnostic>> {
     Err(vec![Diagnostic::internal(
         "ORC backend is required but onda_codegen_llvm was built without 'llvm-orc' feature",

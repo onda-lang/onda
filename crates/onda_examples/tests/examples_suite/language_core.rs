@@ -3456,6 +3456,7 @@ sample {
             block_size: 64,
 
             fast_math: false,
+            opt_level: TargetOptLevel::O3,
         },
     )
     .expect("jit lowering");
