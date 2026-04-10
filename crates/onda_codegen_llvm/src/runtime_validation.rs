@@ -1,4 +1,4 @@
-use onda_frontend::Diagnostic;
+﻿use onda_frontend::Diagnostic;
 
 use crate::primitives::{append_typed_const_bytes, primitive_type_bytes};
 use crate::{CodegenOptions, CompileOptions, DeclaredEvent, JitProgram, RuntimeState, TargetCpu};

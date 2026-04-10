@@ -1,4 +1,4 @@
-import std/complex
+﻿import std/complex
 import std/fft
 
 namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:

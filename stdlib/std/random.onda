@@ -1,4 +1,4 @@
-namespace std::random:
+﻿namespace std::random:
   const RNG_MASK: i64 = 2147483647
   const RNG_MULT: i64 = 1103515245
   const RNG_INC: i64 = 12345

@@ -1,4 +1,4 @@
-namespace std::delay:
+﻿namespace std::delay:
   proc Delay<T>:
     ins<T> 1
     outs<T> 1

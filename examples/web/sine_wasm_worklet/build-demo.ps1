@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$SampleRate = 48000,
     [int]$BlockSize = 128,
     [switch]$Serve

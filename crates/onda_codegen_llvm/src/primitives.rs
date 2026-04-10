@@ -1,4 +1,4 @@
-use onda_frontend::PrimitiveType;
+﻿use onda_frontend::PrimitiveType;
 use onda_semantics::TypedConstValue;
 
 pub(crate) fn primitive_type_name(ty: PrimitiveType) -> &'static str {

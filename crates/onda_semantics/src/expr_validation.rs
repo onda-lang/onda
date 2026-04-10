@@ -1,4 +1,4 @@
-use crate::*;
+﻿use crate::*;
 
 fn push_expr_error(errors: &mut Vec<Diagnostic>, expr: &Expr, message: impl Into<String>) {
     errors.push(Diagnostic::semantic_span(message, expr.loc()));

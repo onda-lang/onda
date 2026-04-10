@@ -1,4 +1,4 @@
-import std/math
+﻿import std/math
 import std/complex
 
 namespace std::fft<N = 256>:

@@ -1,4 +1,4 @@
-use crate::ast::{SourceLoc, Span};
+﻿use crate::ast::{SourceLoc, Span};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DiagCode {

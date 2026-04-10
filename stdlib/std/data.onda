@@ -1,4 +1,4 @@
-import std/math
+﻿import std/math
 
 namespace std::data<S = SR, C = 1>:
   struct Data<T>:

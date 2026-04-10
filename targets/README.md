@@ -1,4 +1,4 @@
-# Target Specs
+﻿# Target Specs
 
 This folder contains checked-in example target-spec TOML files for `onda compile --target-spec`.
 

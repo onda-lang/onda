@@ -1,4 +1,4 @@
-namespace std::filter:
+﻿namespace std::filter:
   proc OnePole<T>:
     ins<T> 1
     outs<T> 1

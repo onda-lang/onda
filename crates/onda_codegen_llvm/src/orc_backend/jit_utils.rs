@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 pub(super) struct ResolvedTargetMachineConfig {
     pub(super) normalized_triple: String,

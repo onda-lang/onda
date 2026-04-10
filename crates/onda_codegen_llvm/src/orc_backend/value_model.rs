@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 pub(super) fn merge_numeric_primitive(
     lhs: PrimitiveType,

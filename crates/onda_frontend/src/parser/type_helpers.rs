@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 pub(super) fn parse_section_default_decl_type(
     pair: Pair<'_, Rule>,

@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "llvm-orc"), allow(dead_code))]
+﻿#![cfg_attr(not(feature = "llvm-orc"), allow(dead_code))]
 
 use std::collections::{HashMap, HashSet};
 

@@ -1,4 +1,4 @@
-use crate::diagnostics::Diagnostic;
+﻿use crate::diagnostics::Diagnostic;
 
 #[derive(Clone, Copy)]
 struct PendingIndentBlock {

@@ -1,4 +1,4 @@
-# onda Project Info
+﻿# onda Project Info
 
 ## Overview
 `onda` is a Rust compiler/runtime for an Onda-syntax audio DSL, targeting LLVM ORC JIT for host embedding (C ABI first-class).

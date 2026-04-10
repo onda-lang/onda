@@ -1,4 +1,4 @@
-import std/export_math
+﻿import std/export_math
 
 params:
   freq = 440.0 { 20, 1000 }
