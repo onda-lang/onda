@@ -1,4 +1,4 @@
-﻿use onda_frontend::{BinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr, LogicalOp, PrimitiveType};
+use onda_frontend::{BinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr, LogicalOp, PrimitiveType};
 
 use crate::AnalysisOptions;
 

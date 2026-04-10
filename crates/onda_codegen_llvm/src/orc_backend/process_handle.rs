@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 pub(super) type OrcProcessFn = unsafe extern "C" fn(
     *const *const u8,

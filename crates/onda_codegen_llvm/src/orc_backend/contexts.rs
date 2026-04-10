@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 #[derive(Clone, Copy)]
 pub(super) struct OrcValue {

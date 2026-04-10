@@ -1,4 +1,4 @@
-﻿triple = "x86_64-pc-windows-msvc"
+triple = "x86_64-pc-windows-msvc"
 cpu = "generic"
 features = ""
 abi_name = ""

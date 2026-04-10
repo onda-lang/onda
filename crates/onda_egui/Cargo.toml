@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "onda_egui"
 version.workspace = true
 edition.workspace = true

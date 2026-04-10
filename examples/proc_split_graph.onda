@@ -1,4 +1,4 @@
-﻿proc SplitProc:
+proc SplitProc:
   sample:
     out1 = in1
     out2 = in1 * 2.0

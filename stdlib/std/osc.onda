@@ -1,4 +1,4 @@
-﻿namespace std::osc:
+namespace std::osc:
   proc Phasor<T>:
     outs<T> 1
 

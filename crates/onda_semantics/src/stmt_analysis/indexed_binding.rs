@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) enum IndexedBindingKind {

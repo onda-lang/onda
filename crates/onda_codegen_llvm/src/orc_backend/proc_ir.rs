@@ -1,4 +1,4 @@
-﻿mod common;
+mod common;
 mod event_ir;
 mod init_ir;
 mod process_ir;

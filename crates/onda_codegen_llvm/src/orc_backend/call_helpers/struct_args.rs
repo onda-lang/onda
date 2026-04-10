@@ -1,4 +1,4 @@
-﻿use super::super::*;
+use super::super::*;
 
 fn struct_llvm_name(prefix: &str, suffix: &str) -> Vec<u8> {
     let mut name = format!("{prefix}_{suffix}").into_bytes();

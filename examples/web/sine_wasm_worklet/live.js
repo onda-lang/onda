@@ -1,4 +1,4 @@
-﻿const toggleButton = document.querySelector("[data-toggle]");
+const toggleButton = document.querySelector("[data-toggle]");
 const statusEl = document.querySelector("[data-status]");
 const frequencyEl = document.querySelector("[data-frequency]");
 const frequencyValueEl = document.querySelector("[data-frequency-value]");

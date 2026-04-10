@@ -1,4 +1,4 @@
-﻿#ifndef ONDA_H
+#ifndef ONDA_H
 #define ONDA_H
 
 #ifdef __cplusplus

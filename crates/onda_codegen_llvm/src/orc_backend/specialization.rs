@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 pub(super) fn mangle_user_fn_symbol(name: &str) -> Result<CString, Diagnostic> {
     CString::new(format!("onda_def_{name}"))

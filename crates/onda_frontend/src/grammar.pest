@@ -1,4 +1,4 @@
-﻿WHITESPACE = _{ " " | "\t" | "\r" }
+WHITESPACE = _{ " " | "\t" | "\r" }
 COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 

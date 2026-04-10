@@ -1,4 +1,4 @@
-﻿# Onda Syntax
+# Onda Syntax
 
 This document describes the syntax currently implemented in `onda`.
 It is organized from the simplest idea in Onda, the block, through reusable abstractions and multi-file programs.

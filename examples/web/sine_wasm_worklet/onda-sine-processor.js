@@ -1,4 +1,4 @@
-﻿class OndaSineProcessor extends AudioWorkletProcessor {
+class OndaSineProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
 

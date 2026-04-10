@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 mod expr_lowering;
 mod stmt_lowering;

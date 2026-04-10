@@ -1,4 +1,4 @@
-﻿use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use onda_frontend::ast::*;
 use onda_frontend::{DiagCtx, Diagnostic};

@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "onda_cli"
 version.workspace = true
 edition.workspace = true

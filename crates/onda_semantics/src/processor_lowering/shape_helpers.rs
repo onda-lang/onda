@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 
 fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {

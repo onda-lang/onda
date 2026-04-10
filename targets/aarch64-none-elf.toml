@@ -1,4 +1,4 @@
-﻿triple = "aarch64-none-elf"
+triple = "aarch64-none-elf"
 cpu = "generic"
 features = ""
 abi_name = ""

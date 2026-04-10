@@ -1,4 +1,4 @@
-﻿use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 
 use onda_codegen_llvm::{

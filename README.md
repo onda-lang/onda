@@ -1,4 +1,4 @@
-﻿<h1>
+<h1>
   onda <img src="assets/svg/onda-logo-dark.svg" alt="onda logo" width="40" align="absmiddle" />
 </h1>
 

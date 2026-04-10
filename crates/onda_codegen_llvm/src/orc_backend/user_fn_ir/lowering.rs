@@ -1,4 +1,4 @@
-﻿use super::super::*;
+use super::super::*;
 
 fn sanitize_runtime_symbol_component(name: &str) -> String {
     name.chars()

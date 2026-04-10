@@ -1,4 +1,4 @@
-﻿use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use onda_frontend::{ast::PortBlock, SourceLoc};
 

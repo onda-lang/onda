@@ -1,4 +1,4 @@
-﻿pub(crate) mod body_analysis;
+pub(crate) mod body_analysis;
 pub(crate) mod inference;
 mod monomorphization;
 mod overloads;

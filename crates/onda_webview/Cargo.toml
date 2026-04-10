@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "onda_webview"
 version.workspace = true
 edition.workspace = true

@@ -1,4 +1,4 @@
-﻿# Sine Wasm AudioWorklet Demo
+# Sine Wasm AudioWorklet Demo
 
 Build the wasm artifact directly into this folder.
 

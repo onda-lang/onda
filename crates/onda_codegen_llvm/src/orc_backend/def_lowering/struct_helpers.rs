@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 fn dot_slot_symbol_to_flat(symbol: &str) -> String {
     if let Some(idx_sep) = symbol.find("].") {

@@ -1,4 +1,4 @@
-﻿def add_phase(p, inc):
+def add_phase(p, inc):
   tau = f32(TWO_PI)
   next = p + inc
   if (next >= tau):

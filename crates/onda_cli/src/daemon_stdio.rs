@@ -1,4 +1,4 @@
-﻿use std::io::{self, BufRead, BufWriter, Write};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::path::Path;
 
 use onda_daemon::{

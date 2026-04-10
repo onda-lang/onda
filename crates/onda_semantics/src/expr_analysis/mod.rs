@@ -1,3 +1,3 @@
-﻿mod env;
+mod env;
 
 pub(crate) use env::*;

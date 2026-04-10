@@ -1,4 +1,4 @@
-﻿proc GainProc:
+proc GainProc:
   params:
     gain = 1.0
 

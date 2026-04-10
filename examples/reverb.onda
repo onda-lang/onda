@@ -1,4 +1,4 @@
-﻿import std/math
+import std/math
 
 const REVERB_REF_SR = 48000.0
 const REVERB_PRE_BUF_CAP = 32768

@@ -1,4 +1,4 @@
-﻿use std::sync::OnceLock;
+use std::sync::OnceLock;
 
 use llvm_sys::core::*;
 use llvm_sys::orc2::LLVMOrcThreadSafeContextRef;

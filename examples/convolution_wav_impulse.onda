@@ -1,4 +1,4 @@
-﻿import std/convolution
+import std/convolution
 
 const MAX_IR = 100000
 const FFT_SIZE = 1024

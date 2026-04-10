@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "onda_preview"
 version.workspace = true
 edition.workspace = true

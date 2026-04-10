@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 use onda_frontend::LogicalOp;
 
 fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {

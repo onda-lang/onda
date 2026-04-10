@@ -1,4 +1,4 @@
-﻿triple = "arm64-apple-darwin"
+triple = "arm64-apple-darwin"
 cpu = "apple-m1"
 features = ""
 abi_name = ""

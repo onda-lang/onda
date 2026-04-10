@@ -1,4 +1,4 @@
-﻿use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};

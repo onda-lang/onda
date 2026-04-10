@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 pub(super) fn build_local_slot(
     builder: LLVMBuilderRef,

@@ -1,4 +1,4 @@
-﻿use super::rewrite::{
+use super::rewrite::{
     finalize_const_decl_expr, rewrite_block_namespace_refs, substitute_expr_with_env,
     validate_compile_time_expr,
 };

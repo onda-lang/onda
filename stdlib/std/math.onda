@@ -1,4 +1,4 @@
-﻿namespace std::math:
+namespace std::math:
   def clamp(x, lo, hi):
     if (x < lo):
       return lo

@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 members = [
   "crates/onda_cli",
   "crates/onda_daemon",

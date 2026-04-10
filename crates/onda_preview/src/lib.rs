@@ -1,4 +1,4 @@
-﻿use std::fs;
+use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};

@@ -1,4 +1,4 @@
-﻿import std/osc
+import std/osc
 
 params:
   freq = 440.0

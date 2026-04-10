@@ -1,4 +1,4 @@
-﻿use super::namespaces::{
+use super::namespaces::{
     looks_like_namespace_ref, namespace_of_symbol, qualify_local_namespace_member_name,
     resolve_namespace_symbol_name, rewrite_named_type_ref_name,
 };

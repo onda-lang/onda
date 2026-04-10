@@ -1,4 +1,4 @@
-﻿use onda_codegen_llvm::{DeclaredBufferChannels, JitProgram, RuntimeState};
+use onda_codegen_llvm::{DeclaredBufferChannels, JitProgram, RuntimeState};
 use onda_frontend::{Diagnostic, PrimitiveType};
 
 #[derive(Debug, Clone, Copy)]

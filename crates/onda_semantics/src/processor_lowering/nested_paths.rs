@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 pub(super) fn nested_field_name(var: &str, field: &str) -> String {
     format!("{var}__{field}")

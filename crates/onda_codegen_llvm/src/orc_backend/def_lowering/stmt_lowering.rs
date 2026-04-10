@@ -1,4 +1,4 @@
-﻿use super::struct_helpers::{
+use super::struct_helpers::{
     lower_proc_array_call_args_in_def, lower_struct_array_call_args_in_def,
 };
 use super::*;

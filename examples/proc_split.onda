@@ -1,4 +1,4 @@
-﻿proc SplitProc:
+proc SplitProc:
   ins:
     in1
 

@@ -1,4 +1,4 @@
-﻿import std/delay
+import std/delay
 
 init:
   comb = std::delay::Delay(feedback = 0.8)

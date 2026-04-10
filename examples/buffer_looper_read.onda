@@ -1,4 +1,4 @@
-﻿import std/lookup
+import std/lookup
 
 buffers:
   src: f32[]

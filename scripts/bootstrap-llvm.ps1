@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$Version = "21.1.2",
     [string]$Asset = ""
 )

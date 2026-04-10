@@ -1,4 +1,4 @@
-﻿import std/osc
+import std/osc
 
 # Paper-inspired recurrent neural synth:
 # - 4 audio inputs + 3 control inputs in the early configuration

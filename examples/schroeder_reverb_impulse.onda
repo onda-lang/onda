@@ -1,4 +1,4 @@
-﻿def wrap_idx(i, n):
+def wrap_idx(i, n):
   if (i < 0.0):
     return i + n
   if (i >= n):

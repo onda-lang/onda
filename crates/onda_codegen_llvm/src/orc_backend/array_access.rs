@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 pub(super) unsafe fn lower_data_element_ptr(
     ctx: &mut LoweringCtx<'_>,

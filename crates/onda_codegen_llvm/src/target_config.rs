@@ -1,4 +1,4 @@
-﻿#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TargetCpu {
     Host,
     Explicit(String),

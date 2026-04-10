@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 pub(super) fn parse_stmt_list_pair(
     stmt_list_pair: Pair<'_, Rule>,

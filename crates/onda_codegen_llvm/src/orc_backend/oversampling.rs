@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 const SINC_A1_COEFF: f64 = 0.039151597734460045;
 const SINC_A2_COEFF: f64 = 0.3026468483284934;

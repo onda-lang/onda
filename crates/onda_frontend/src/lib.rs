@@ -1,4 +1,4 @@
-﻿pub mod ast;
+pub mod ast;
 pub mod diagnostics;
 pub mod parser;
 

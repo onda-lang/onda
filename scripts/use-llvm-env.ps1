@@ -1,4 +1,4 @@
-﻿param(
+param(
     [ValidateSet("auto", "prebuilt", "source-static", "source-shared", "source")]
     [string]$Flavor = "source-static",
     [string]$Version = "21.1.2"

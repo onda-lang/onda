@@ -1,4 +1,4 @@
-﻿triple = "wasm32-unknown-unknown"
+triple = "wasm32-unknown-unknown"
 cpu = "generic"
 features = ""
 abi_name = ""
