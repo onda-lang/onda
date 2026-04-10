@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use onda_daemon::{DaemonSession, DocumentVersion};
 use onda_frontend::{
-    parse_program, parse_program_with_path, AssignTarget, Block, Diagnostic, FunctionDef, Program,
-    Span, Stmt,
+    parse_program, parse_program_with_path, AssignTarget, Block, BlockExec, Diagnostic, EventDef,
+    FunctionDef, ProcessorDef, Program, Span, Stmt,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -800,21 +800,6 @@ impl SemanticScopeIndex {
         Some(self.scopes.len() - 1)
     }
 
-    fn push_full_document_scope(&mut self, parent: Option<usize>) -> usize {
-        let depth = parent.map(|idx| self.scopes[idx].depth + 1).unwrap_or(0);
-        self.scopes.push(ScopedSemanticScope {
-            scope: SemanticScope::default(),
-            parent,
-            start_line: 0,
-            start_column: 0,
-            end_line: u32::MAX,
-            end_column: u32::MAX,
-            depth,
-            allows_implicit_ports: true,
-        });
-        self.scopes.len() - 1
-    }
-
     fn innermost_scope_index(&self, line: u32, column: u32) -> Option<usize> {
         let mut best: Option<usize> = None;
         for (idx, scope) in self.scopes.iter().enumerate() {
@@ -908,20 +893,35 @@ fn build_semantic_scope_index(
         index.document_scope.consts.insert(name.to_owned());
     }
 
-    for block in &program.blocks {
-        if block_belongs_to_current_file(block, current_file_key) {
-            collect_document_scope_symbols(block, &mut index.document_scope);
-        }
+    let current_blocks = program
+        .blocks
+        .iter()
+        .filter(|block| block_belongs_to_current_file(block, current_file_key))
+        .collect::<Vec<_>>();
+
+    for block in &current_blocks {
+        collect_document_scope_symbols(block, &mut index.document_scope);
     }
 
-    let top_level_runtime_scope = has_top_level_runtime_blocks(program, current_file_key)
-        .then(|| index.push_full_document_scope(None));
+    build_top_level_runtime_scope(&mut index, &current_blocks);
 
-    for block in &program.blocks {
-        if !block_belongs_to_current_file(block, current_file_key) {
-            continue;
+    for block in current_blocks {
+        match block {
+            Block::Def(def) => build_function_scope(&mut index, None, def),
+            Block::Proc(proc_def) => build_proc_scope(&mut index, proc_def),
+            Block::Struct(struct_def) => {
+                let Some(owner_idx) = index.push_scope(None, struct_def.loc) else {
+                    continue;
+                };
+                for tp in &struct_def.type_params {
+                    index.scopes[owner_idx].scope.types.insert(tp.clone());
+                }
+                for method in &struct_def.methods {
+                    build_function_scope(&mut index, Some(owner_idx), method);
+                }
+            }
+            _ => {}
         }
-        build_block_scope_index(block, &mut index, top_level_runtime_scope);
     }
 
     index
@@ -955,24 +955,6 @@ fn span_belongs_to_current_file(span: Span, current_file_key: Option<&str>) -> b
     }
 }
 
-fn has_top_level_runtime_blocks(program: &Program, current_file_key: Option<&str>) -> bool {
-    program.blocks.iter().any(|block| {
-        block_belongs_to_current_file(block, current_file_key)
-            && matches!(
-                block,
-                Block::Ins(_)
-                    | Block::Outs(_)
-                    | Block::Params(_)
-                    | Block::Events(_)
-                    | Block::Buffers(_)
-                    | Block::Init(_)
-                    | Block::Block(_)
-                    | Block::Sample(_)
-                    | Block::Graph(_)
-            )
-    })
-}
-
 fn collect_document_scope_symbols(block: &Block, scope: &mut SemanticScope) {
     match block {
         Block::Const(decl) => {
@@ -994,93 +976,148 @@ fn collect_document_scope_symbols(block: &Block, scope: &mut SemanticScope) {
     }
 }
 
-fn build_block_scope_index(
-    block: &Block,
-    index: &mut SemanticScopeIndex,
-    top_level_runtime_scope: Option<usize>,
-) {
-    match block {
-        Block::Ins(ports) | Block::Outs(ports) => {
-            if let Some(scope_idx) = top_level_runtime_scope {
-                for decl in &ports.decls {
-                    index.scopes[scope_idx]
-                        .scope
-                        .ports
-                        .insert(decl.name.clone());
-                }
-            }
-        }
-        Block::Params(params) => {
-            if let Some(scope_idx) = top_level_runtime_scope {
-                for decl in &params.decls {
-                    index.scopes[scope_idx]
-                        .scope
-                        .parameters
-                        .insert(decl.name.clone());
-                }
-            }
-        }
-        Block::Buffers(buffers) => {
-            if let Some(scope_idx) = top_level_runtime_scope {
-                for decl in &buffers.decls {
-                    index.scopes[scope_idx]
-                        .scope
-                        .ports
-                        .insert(decl.name.clone());
-                }
-            }
-        }
-        Block::Init(init) => {
-            if let Some(scope_idx) = top_level_runtime_scope {
-                collect_runtime_state_symbols(&init.body, &mut index.scopes[scope_idx].scope);
-                build_stmt_scope(index, scope_idx, init.loc, &init.body);
-            }
-        }
-        Block::Block(exec) => {
-            if let Some(scope_idx) = top_level_runtime_scope {
-                collect_runtime_state_symbols(&exec.pre, &mut index.scopes[scope_idx].scope);
-                build_stmt_scope_from_body(index, scope_idx, &exec.pre);
-                if let Some(sample) = &exec.sample {
-                    build_stmt_scope(index, scope_idx, sample.loc, &sample.body);
-                }
-                collect_runtime_state_symbols(&exec.post, &mut index.scopes[scope_idx].scope);
-                build_stmt_scope_from_body(index, scope_idx, &exec.post);
-            }
-        }
-        Block::Sample(sample) => {
-            if let Some(scope_idx) = top_level_runtime_scope {
-                build_stmt_scope(index, scope_idx, sample.loc, &sample.body);
-            }
-        }
-        Block::Events(events) => {
-            if let Some(scope_idx) = top_level_runtime_scope {
-                for event in &events.events {
-                    build_event_scope(index, scope_idx, event);
-                }
-            }
-        }
-        Block::Def(def) => build_function_scope(index, None, def),
-        Block::Proc(proc_def) => build_proc_scope(index, proc_def),
-        Block::Struct(struct_def) => {
-            let Some(owner_idx) = index.push_scope(None, struct_def.loc) else {
-                return;
-            };
-            for tp in &struct_def.type_params {
-                index.scopes[owner_idx].scope.types.insert(tp.clone());
-            }
-            for method in &struct_def.methods {
-                build_function_scope(index, Some(owner_idx), method);
-            }
-        }
-        _ => {}
-    }
+#[derive(Clone, Copy)]
+struct RuntimeStmtRegion<'a> {
+    span: Span,
+    body: &'a [Stmt],
+    collect_state_symbols: bool,
 }
 
-fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &onda_frontend::ProcessorDef) {
-    let Some(owner_idx) = index.push_scope(None, proc_def.loc) else {
+#[derive(Default)]
+struct TopLevelRuntimeSections<'a> {
+    span: Option<Span>,
+    ports: Vec<String>,
+    parameters: Vec<String>,
+    stmt_regions: Vec<RuntimeStmtRegion<'a>>,
+    events: Vec<&'a EventDef>,
+}
+
+fn build_top_level_runtime_scope(index: &mut SemanticScopeIndex, blocks: &[&Block]) -> Option<usize> {
+    let sections = collect_top_level_runtime_sections(blocks);
+    let span = sections.span?;
+    let owner_idx = create_runtime_owner_scope(index, None, span, true)?;
+    {
+        let owner = &mut index.scopes[owner_idx].scope;
+        for name in sections.ports {
+            owner.ports.insert(name);
+        }
+        for name in sections.parameters {
+            owner.parameters.insert(name);
+        }
+    }
+    build_runtime_stmt_regions(index, owner_idx, &sections.stmt_regions);
+    for event in sections.events {
+        build_event_scope(index, owner_idx, event);
+    }
+    Some(owner_idx)
+}
+
+fn collect_top_level_runtime_sections<'a>(blocks: &[&'a Block]) -> TopLevelRuntimeSections<'a> {
+    let mut sections = TopLevelRuntimeSections::default();
+
+    for block in blocks {
+        match block {
+            Block::Ins(ports) | Block::Outs(ports) => {
+                extend_runtime_owner_span(&mut sections.span, block.loc().span());
+                sections
+                    .ports
+                    .extend(ports.decls.iter().map(|decl| decl.name.clone()));
+            }
+            Block::Params(params) => {
+                extend_runtime_owner_span(&mut sections.span, block.loc().span());
+                sections
+                    .parameters
+                    .extend(params.decls.iter().map(|decl| decl.name.clone()));
+            }
+            Block::Buffers(buffers) => {
+                extend_runtime_owner_span(&mut sections.span, block.loc().span());
+                sections
+                    .ports
+                    .extend(buffers.decls.iter().map(|decl| decl.name.clone()));
+            }
+            Block::Init(init) => {
+                extend_runtime_owner_span(&mut sections.span, init.loc);
+                sections.stmt_regions.push(RuntimeStmtRegion {
+                    span: init.loc,
+                    body: &init.body,
+                    collect_state_symbols: true,
+                });
+            }
+            Block::Block(exec) => {
+                extend_runtime_owner_span(&mut sections.span, exec.loc);
+                sections.stmt_regions.extend(runtime_regions_for_block_exec(exec));
+            }
+            Block::Sample(sample) => {
+                extend_runtime_owner_span(&mut sections.span, sample.loc);
+                sections.stmt_regions.push(RuntimeStmtRegion {
+                    span: sample.loc,
+                    body: &sample.body,
+                    collect_state_symbols: false,
+                });
+            }
+            Block::Events(events) => {
+                extend_runtime_owner_span(&mut sections.span, events.loc);
+                sections.events.extend(events.events.iter());
+            }
+            Block::Graph(graph) => {
+                extend_runtime_owner_span(&mut sections.span, graph.loc);
+            }
+            _ => {}
+        }
+    }
+
+    sections
+}
+
+fn create_runtime_owner_scope(
+    index: &mut SemanticScopeIndex,
+    parent: Option<usize>,
+    span: Span,
+    allows_implicit_ports: bool,
+) -> Option<usize> {
+    let scope_idx = index.push_scope(parent, span)?;
+    index.scopes[scope_idx].allows_implicit_ports = allows_implicit_ports;
+    Some(scope_idx)
+}
+
+fn extend_runtime_owner_span(span: &mut Option<Span>, next: Span) {
+    *span = Some(match *span {
+        Some(current) => Span::spanning(current, next),
+        None => next,
+    });
+}
+
+fn runtime_regions_for_block_exec<'a>(exec: &'a BlockExec) -> Vec<RuntimeStmtRegion<'a>> {
+    let mut regions = Vec::new();
+    if let Some(span) = span_for_stmt_body(&exec.pre) {
+        regions.push(RuntimeStmtRegion {
+            span,
+            body: &exec.pre,
+            collect_state_symbols: true,
+        });
+    }
+    if let Some(sample) = &exec.sample {
+        regions.push(RuntimeStmtRegion {
+            span: sample.loc,
+            body: &sample.body,
+            collect_state_symbols: false,
+        });
+    }
+    if let Some(span) = span_for_stmt_body(&exec.post) {
+        regions.push(RuntimeStmtRegion {
+            span,
+            body: &exec.post,
+            collect_state_symbols: true,
+        });
+    }
+    regions
+}
+
+fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
+    let Some(owner_idx) = create_runtime_owner_scope(index, None, span_for_proc_scope(proc_def), true)
+    else {
         return;
     };
-    index.scopes[owner_idx].allows_implicit_ports = true;
     {
         let owner = &mut index.scopes[owner_idx].scope;
         for tp in &proc_def.type_params {
@@ -1101,15 +1138,9 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &onda_frontend::Pr
         for def in &proc_def.local_defs {
             owner.functions.insert(def.name.clone());
         }
-        collect_runtime_state_symbols(&proc_def.init.body, owner);
     }
-
-    build_stmt_scope(index, owner_idx, proc_def.init.loc, &proc_def.init.body);
-    collect_runtime_state_symbols(&proc_def.block_pre, &mut index.scopes[owner_idx].scope);
-    build_stmt_scope_from_body(index, owner_idx, &proc_def.block_pre);
-    build_stmt_scope_from_body(index, owner_idx, &proc_def.sample);
-    collect_runtime_state_symbols(&proc_def.block_post, &mut index.scopes[owner_idx].scope);
-    build_stmt_scope_from_body(index, owner_idx, &proc_def.block_post);
+    let stmt_regions = proc_runtime_stmt_regions(proc_def);
+    build_runtime_stmt_regions(index, owner_idx, &stmt_regions);
 
     for event in &proc_def.events {
         build_event_scope(index, owner_idx, event);
@@ -1117,6 +1148,37 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &onda_frontend::Pr
     for def in &proc_def.local_defs {
         build_function_scope(index, Some(owner_idx), def);
     }
+}
+
+fn proc_runtime_stmt_regions<'a>(proc_def: &'a ProcessorDef) -> Vec<RuntimeStmtRegion<'a>> {
+    let mut regions = Vec::new();
+    regions.push(RuntimeStmtRegion {
+        span: proc_def.init.loc,
+        body: &proc_def.init.body,
+        collect_state_symbols: true,
+    });
+    if let Some(span) = span_for_stmt_body(&proc_def.block_pre) {
+        regions.push(RuntimeStmtRegion {
+            span,
+            body: &proc_def.block_pre,
+            collect_state_symbols: true,
+        });
+    }
+    if let Some(span) = span_for_stmt_body(&proc_def.sample) {
+        regions.push(RuntimeStmtRegion {
+            span,
+            body: &proc_def.sample,
+            collect_state_symbols: false,
+        });
+    }
+    if let Some(span) = span_for_stmt_body(&proc_def.block_post) {
+        regions.push(RuntimeStmtRegion {
+            span,
+            body: &proc_def.block_post,
+            collect_state_symbols: true,
+        });
+    }
+    regions
 }
 
 fn build_function_scope(index: &mut SemanticScopeIndex, parent: Option<usize>, def: &FunctionDef) {
@@ -1175,16 +1237,53 @@ fn build_stmt_scope(index: &mut SemanticScopeIndex, parent: usize, span: Span, s
     }
 }
 
-fn build_stmt_scope_from_body(index: &mut SemanticScopeIndex, parent: usize, stmts: &[Stmt]) {
-    if let Some(span) = span_for_stmt_body(stmts) {
-        build_stmt_scope(index, parent, span, stmts);
+fn build_runtime_stmt_regions(
+    index: &mut SemanticScopeIndex,
+    owner_idx: usize,
+    stmt_regions: &[RuntimeStmtRegion<'_>],
+) {
+    for region in stmt_regions {
+        if region.collect_state_symbols {
+            collect_runtime_state_symbols(region.body, &mut index.scopes[owner_idx].scope);
+        }
+        if !region.body.is_empty() {
+            build_stmt_scope(index, owner_idx, region.span, region.body);
+        }
+    }
+}
+
+fn span_for_stmt(stmt: &Stmt) -> Span {
+    match stmt {
+        Stmt::If {
+            loc,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            let mut span = *loc;
+            if let Some(branch_span) = span_for_stmt_body(then_branch) {
+                span = Span::spanning(span, branch_span);
+            }
+            if let Some(branch_span) = span_for_stmt_body(else_branch) {
+                span = Span::spanning(span, branch_span);
+            }
+            span
+        }
+        Stmt::For { loc, body, .. } | Stmt::While { loc, body, .. } => {
+            let mut span = *loc;
+            if let Some(body_span) = span_for_stmt_body(body) {
+                span = Span::spanning(span, body_span);
+            }
+            span
+        }
+        _ => stmt.loc().span(),
     }
 }
 
 fn span_for_stmt_body(stmts: &[Stmt]) -> Option<Span> {
-    let first = stmts.first()?.loc().span();
-    let last = stmts.last()?.loc().span();
-    Some(Span::spanning(first, last))
+    let mut iter = stmts.iter();
+    let first = span_for_stmt(iter.next()?);
+    Some(iter.fold(first, |span, stmt| Span::spanning(span, span_for_stmt(stmt))))
 }
 
 fn span_for_function_scope(def: &FunctionDef) -> Span {
@@ -1197,6 +1296,48 @@ fn span_for_event_scope(event: &onda_frontend::EventDef) -> Span {
     span_for_stmt_body(&event.body)
         .map(|body_span| Span::spanning(event.loc, body_span))
         .unwrap_or(event.loc)
+}
+
+fn span_for_proc_scope(proc_def: &onda_frontend::ProcessorDef) -> Span {
+    let mut span = proc_def.loc;
+
+    for decl in &proc_def.consts {
+        span = Span::spanning(span, decl.loc);
+    }
+    for decl in &proc_def.ins {
+        span = Span::spanning(span, decl.loc);
+    }
+    for decl in &proc_def.outs {
+        span = Span::spanning(span, decl.loc);
+    }
+    for decl in &proc_def.params {
+        span = Span::spanning(span, decl.loc);
+    }
+    for decl in &proc_def.buffers {
+        span = Span::spanning(span, decl.loc);
+    }
+
+    span = Span::spanning(span, proc_def.init.loc);
+    if let Some(body_span) = span_for_stmt_body(&proc_def.block_pre) {
+        span = Span::spanning(span, body_span);
+    }
+    if let Some(body_span) = span_for_stmt_body(&proc_def.sample) {
+        span = Span::spanning(span, body_span);
+    }
+    if let Some(body_span) = span_for_stmt_body(&proc_def.block_post) {
+        span = Span::spanning(span, body_span);
+    }
+    if let Some(graph) = &proc_def.graph {
+        span = Span::spanning(span, graph.loc);
+    }
+    for event in &proc_def.events {
+        span = Span::spanning(span, span_for_event_scope(event));
+    }
+    for def in &proc_def.local_defs {
+        span = Span::spanning(span, span_for_function_scope(def));
+    }
+
+    span
 }
 
 fn collect_runtime_state_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
@@ -3002,6 +3143,34 @@ mod tests {
                     && t.token_type == SEMANTIC_TOKEN_TYPE_STATE
             }),
             "pos decl: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_proc_output_in_else_branch() {
+        let source = concat!(
+            "proc Svf:\n",
+            "  params:\n",
+            "    mode: i32 = 0\n",
+            "\n",
+            "  sample:\n",
+            "    if (mode <= 0):\n",
+            "      out1 = 0.0\n",
+            "    elif (mode == 1):\n",
+            "      out1 = 1.0\n",
+            "    else:\n",
+            "      out1 = 2.0\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+
+        assert!(
+            tokens.iter().any(|t| {
+                t.line == 10
+                    && t.start == 6
+                    && t.length == 4
+                    && t.token_type == SEMANTIC_TOKEN_TYPE_PORT
+            }),
+            "else-branch proc output should be highlighted as port: {tokens:?}"
         );
     }
 
