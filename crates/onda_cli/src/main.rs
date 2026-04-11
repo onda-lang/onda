@@ -45,6 +45,7 @@ const MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK: usize = 64;
 const DEFAULT_BLOCK_FRAMES: usize = 512;
 const DEFAULT_PLAY_BLOCK_FRAMES: usize = 128;
 const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
+const ONDA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE_BODY: &str = r#"Commands:
   
@@ -170,6 +171,12 @@ fn build_usage() -> String {
         out.push_str(line);
         out.push('\n');
     }
+    out.push('\n');
+    let version_line = format!("onda {ONDA_VERSION}");
+    let pad = commands_width.saturating_sub(version_line.chars().count()) / 2;
+    out.push_str(&" ".repeat(pad));
+    out.push_str(&version_line);
+    out.push('\n');
     out.push('\n');
     out.push_str(USAGE_BODY);
     out
@@ -4363,9 +4370,10 @@ fn f32_to_i16(sample: f32) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_diag_snippet, format_expr, format_program, parse_args, preview_control_response,
-        Command, CompileEmit, DaemonCommand, PlaybackControlCommand, PlaybackControlRequest,
-        PreviewCommand, PreviewEventValue, PreviewHostKind, ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES,
+        build_usage, format_diag_snippet, format_expr, format_program, parse_args,
+        preview_control_response, Command, CompileEmit, DaemonCommand, PlaybackControlCommand,
+        PlaybackControlRequest, PreviewCommand, PreviewEventValue, PreviewHostKind,
+        ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES, ONDA_VERSION,
     };
     use onda_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
     use onda_frontend::{
@@ -4847,6 +4855,12 @@ reloc_model = "default"
             }
             _ => panic!("expected preview window command"),
         }
+    }
+
+    #[test]
+    fn usage_includes_version_below_banner() {
+        let usage = build_usage();
+        assert!(usage.contains(&format!("onda {ONDA_VERSION}")));
     }
 
     #[test]
