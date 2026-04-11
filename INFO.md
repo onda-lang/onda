@@ -215,7 +215,10 @@
   - A proc cannot directly instantiate its own proc type as state.
 - Functions (`def`):
   - positional + named args, default values, early return.
+  - explicit return annotations are supported with Python-style `->` syntax on top-level defs, struct methods, and proc-local defs.
   - return types: a `def` can return a primitive scalar (`f32`, `f64`, `i32`, `i64`, `bool`) or a tuple of primitives. Returning structs, arrays, or buffers is not supported.
+  - explicit annotations may name those same supported return shapes, including generic primitive placeholders that specialize to them (for example `-> T`, `-> (T, i32)`).
+  - annotated returns use ordinary assignment compatibility rules: exact match and implicit widening are allowed; narrowing requires an explicit cast in the returned expression.
   - Top-level `def` bodies are lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not in scope unless passed as parameters.
   - Proc-local `def` blocks have implicit access to proc state (init-declared variables, params, nested procs) without `self`. They are private to the enclosing processor and are inlined at call sites during semantic analysis.
   - top-level overloads and struct-method overloads are supported (same symbol with different arity and/or parameter types); proc-local defs are excluded.

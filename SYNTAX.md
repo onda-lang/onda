@@ -877,12 +877,32 @@ Supported features:
 - named arguments
 - default values
 - early return
+- optional explicit return type annotations with `->`
 - multi-line argument lists with an optional trailing comma
 
 Return types:
 - a `def` can return a primitive scalar
 - a `def` can return a tuple of primitives
+- a `def` may declare that return contract explicitly with `->`
 - returning structs, arrays, or buffers is not supported
+
+Examples:
+
+```onda
+def wrap_phase(p, upper = TWO_PI) -> f32:
+  if p > upper:
+    return p - upper
+  return p
+
+def pair(x: f32, y: i32) -> (f32, i32):
+  return (x, y)
+```
+
+Rules for explicit return annotations:
+- annotations are optional; omitting `->` keeps the current inference-based behavior
+- supported annotations are primitive scalars such as `f32` and tuples of primitive scalars
+- generic primitive placeholders are also allowed where they belong to the current generic owner, for example `-> T` or `-> (T, i32)`
+- return checking follows ordinary assignment rules: exact match and implicit widening are allowed, but narrowing requires an explicit cast in the returned expression
 
 Top-level `def` bodies are lexical-local:
 - top-level runtime symbols such as `ins`, `outs`, `params`, `buffers`, and top-level `init` state are not in scope unless passed explicitly
