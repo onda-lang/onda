@@ -4372,8 +4372,8 @@ mod tests {
     use super::{
         build_usage, format_diag_snippet, format_expr, format_program, parse_args,
         preview_control_response, Command, CompileEmit, DaemonCommand, PlaybackControlCommand,
-        PlaybackControlRequest, PreviewCommand, PreviewEventValue, PreviewHostKind,
-        ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES, ONDA_VERSION,
+        PlaybackControlRequest, PreviewCommand, PreviewEventValue, PreviewHostKind, ScopeRing,
+        DEFAULT_PLAY_BLOCK_FRAMES, ONDA_VERSION,
     };
     use onda_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
     use onda_frontend::{
