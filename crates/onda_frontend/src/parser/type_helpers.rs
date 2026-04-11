@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast::{FnReturnScalarType, FnReturnType};
 
 pub(super) fn parse_section_default_decl_type(
     pair: Pair<'_, Rule>,
@@ -279,6 +280,69 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
         }
     };
     Ok(out)
+}
+
+pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::fn_return_type {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            "internal parser error: expected function return type",
+        )]);
+    }
+    let loc = stmt_loc_from_pair(&pair);
+    let Some(inner) = pair.into_inner().next() else {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "missing function return type",
+        )]);
+    };
+
+    fn parse_scalar(pair: Pair<'_, Rule>) -> Result<FnReturnScalarType, Vec<Diagnostic>> {
+        match pair.as_rule() {
+            Rule::type_name => Ok(FnReturnScalarType::Primitive(
+                parse_primitive_type(pair.as_str()).map_err(|d| vec![d])?,
+            )),
+            Rule::qualified_ident | Rule::namespace_ref => {
+                Ok(FnReturnScalarType::Named(pair.as_str().trim().to_owned()))
+            }
+            _ => Err(vec![syntax_at_pair(
+                &pair,
+                "unsupported function return scalar type",
+            )]),
+        }
+    }
+
+    match inner.as_rule() {
+        Rule::fn_return_scalar_type => {
+            let Some(scalar_pair) = inner.into_inner().next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing function return scalar type",
+                )]);
+            };
+            parse_scalar(scalar_pair).map(FnReturnType::Scalar)
+        }
+        Rule::fn_return_tuple_type => {
+            let elems: Result<Vec<FnReturnScalarType>, Vec<Diagnostic>> = inner
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::fn_return_scalar_type)
+                .map(|p| {
+                    let scalar_pair = p.into_inner().next().ok_or_else(|| {
+                        vec![syntax_at_loc(
+                            loc.as_ref(),
+                            "missing function return tuple element type",
+                        )]
+                    })?;
+                    parse_scalar(scalar_pair)
+                })
+                .collect();
+            Ok(FnReturnType::Tuple(elems?))
+        }
+        _ => Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "unsupported function return type",
+        )]),
+    }
 }
 
 pub(super) fn parse_event_param_type(

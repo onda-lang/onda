@@ -200,6 +200,8 @@ pub(super) fn build_proc_read_helper(
         type_params: Vec::new(),
         name: proc_read_helper_name(owner_proc, len, unsafe_mode),
         params,
+        return_ty: None,
+        return_ty_loc: Default::default(),
         body,
     }
 }
@@ -331,6 +333,8 @@ pub(super) fn build_proc_write_helper(
         type_params: Vec::new(),
         name: proc_write_helper_name(owner_proc, slots, unsafe_mode),
         params,
+        return_ty: None,
+        return_ty_loc: Default::default(),
         body,
     }
 }

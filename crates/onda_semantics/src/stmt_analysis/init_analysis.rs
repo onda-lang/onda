@@ -420,11 +420,13 @@ pub(crate) fn analyze_init_stmt(
                 st.absorb_registered_state(else_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
+                let mut tuple_vars = HashMap::new();
                 merge_branch_scope_flow_state(
                     &mut st.known_scalars,
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
+                    &mut tuple_vars,
                     then_flow,
                     else_flow,
                 );
@@ -473,11 +475,13 @@ pub(crate) fn analyze_init_stmt(
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
+                let mut tuple_vars = HashMap::new();
                 adopt_loop_scope_flow_state(
                     &st.known_scalars,
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
+                    &mut tuple_vars,
                     loop_flow,
                 );
                 st.sync_known_scalars_with_registered_state();
@@ -505,11 +509,13 @@ pub(crate) fn analyze_init_stmt(
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
+                let mut tuple_vars = HashMap::new();
                 adopt_loop_scope_flow_state(
                     &st.known_scalars,
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
+                    &mut tuple_vars,
                     loop_flow,
                 );
                 st.sync_known_scalars_with_registered_state();

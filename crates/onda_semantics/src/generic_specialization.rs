@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::*;
+use onda_frontend::ast::{FnReturnScalarType, FnReturnType};
 
 mod proc_specialization;
 pub(crate) use proc_specialization::*;
@@ -307,6 +308,15 @@ pub(crate) fn specialize_generic_struct_template(
             FnParamType::Tuple(elems) => FnParamType::Tuple(elems.clone()),
         }
     };
+    let specialize_fn_return_scalar_type = |ty: &FnReturnScalarType| -> FnReturnScalarType {
+        match ty {
+            FnReturnScalarType::Primitive(prim) => FnReturnScalarType::Primitive(*prim),
+            FnReturnScalarType::Named(name) => match type_bindings.get(name).copied() {
+                Some(bound) => FnReturnScalarType::Primitive(bound),
+                None => FnReturnScalarType::Named(name.clone()),
+            },
+        }
+    };
 
     let mut fields = Vec::<StructField>::new();
     for field in &template.fields {
@@ -385,6 +395,19 @@ pub(crate) fn specialize_generic_struct_template(
                     errors,
                 );
             }
+        }
+        if let Some(return_ty) = &mut method.return_ty {
+            *return_ty = match return_ty {
+                FnReturnType::Scalar(scalar) => {
+                    FnReturnType::Scalar(specialize_fn_return_scalar_type(scalar))
+                }
+                FnReturnType::Tuple(elems) => FnReturnType::Tuple(
+                    elems
+                        .iter()
+                        .map(|elem| specialize_fn_return_scalar_type(elem))
+                        .collect(),
+                ),
+            };
         }
         for stmt in &mut method.body {
             specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);

@@ -154,6 +154,8 @@ pub(super) fn parse_struct_method_decl(
     let mut name: Option<String> = None;
     let mut type_params = Vec::new();
     let mut params = Vec::new();
+    let mut return_ty = None;
+    let mut return_ty_loc = Span::ZERO;
     let mut body = None;
     for child in pair.into_inner() {
         match child.as_rule() {
@@ -176,6 +178,10 @@ pub(super) fn parse_struct_method_decl(
                     }
                 }
             }
+            Rule::fn_return_type => {
+                return_ty_loc = stmt_loc_from_pair(&child);
+                return_ty = Some(parse_fn_return_type(child)?);
+            }
             Rule::stmt_block => {
                 body = Some(parse_stmt_block(child)?);
             }
@@ -194,6 +200,8 @@ pub(super) fn parse_struct_method_decl(
         name,
         type_params,
         params,
+        return_ty,
+        return_ty_loc,
         body,
     })
 }

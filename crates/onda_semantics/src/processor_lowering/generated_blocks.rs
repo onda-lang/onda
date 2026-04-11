@@ -868,6 +868,8 @@ fn generate_nested_wrapper_defs(
                 ty_loc: Default::default(),
                 default: None,
             }],
+            return_ty: None,
+            return_ty_loc: Default::default(),
             body: nested_init_body,
         }));
 
@@ -1114,6 +1116,8 @@ fn generate_nested_wrapper_defs(
             type_params: Vec::new(),
             name: nested_step_name.clone(),
             params: nested_step_params.clone(),
+            return_ty: None,
+            return_ty_loc: Default::default(),
             body: nested_step_body,
         }));
 
@@ -1204,6 +1208,8 @@ fn generate_nested_wrapper_defs(
                     type_params: Vec::new(),
                     name: nested_event_fn_name(&proc.name, &nested_path, &event.name),
                     params: nested_event_params,
+                    return_ty: None,
+                    return_ty_loc: Default::default(),
                     body: nested_event_body,
                 }));
             }
@@ -1326,6 +1332,8 @@ fn generate_nested_wrapper_defs(
                 type_params: Vec::new(),
                 name: nested_block_pre_fn_name(&proc.name, &nested_path),
                 params: nested_block_params.clone(),
+                return_ty: None,
+                return_ty_loc: Default::default(),
                 body: nested_block_pre_body,
             }));
 
@@ -1432,6 +1440,8 @@ fn generate_nested_wrapper_defs(
                 type_params: Vec::new(),
                 name: nested_block_post_fn_name(&proc.name, &nested_path),
                 params: nested_block_params,
+                return_ty: None,
+                return_ty_loc: Default::default(),
                 body: nested_block_post_body,
             }));
         }
@@ -1458,6 +1468,8 @@ fn generate_nested_wrapper_defs(
                 type_params: Vec::new(),
                 name: nested_call_out_fn_name(&proc.name, &nested_path, idx),
                 params: nested_step_params.clone(),
+                return_ty: None,
+                return_ty_loc: Default::default(),
                 body: vec![
                     Stmt::Expr {
                         loc: Default::default(),
@@ -2058,6 +2070,8 @@ pub(super) fn generate_lowered_proc_blocks(
                 ty_loc: Default::default(),
                 default: None,
             }],
+            return_ty: None,
+            return_ty_loc: Default::default(),
             body: init_body,
         }));
 
@@ -2159,6 +2173,8 @@ pub(super) fn generate_lowered_proc_blocks(
                     type_params: Vec::new(),
                     name: format!("{}{}{}", proc.name, PROC_EVENT_FN_PREFIX, event.name),
                     params: event_params,
+                    return_ty: None,
+                    return_ty_loc: Default::default(),
                     body: event_body,
                 }));
             }
@@ -2357,6 +2373,8 @@ pub(super) fn generate_lowered_proc_blocks(
                 type_params: Vec::new(),
                 name: format!("{}{}", proc.name, PROC_BLOCK_PRE_FN_SUFFIX),
                 params: block_params.clone(),
+                return_ty: None,
+                return_ty_loc: Default::default(),
                 body: block_pre_body,
             }));
 
@@ -2456,6 +2474,8 @@ pub(super) fn generate_lowered_proc_blocks(
                 type_params: Vec::new(),
                 name: format!("{}{}", proc.name, PROC_BLOCK_POST_FN_SUFFIX),
                 params: block_params,
+                return_ty: None,
+                return_ty_loc: Default::default(),
                 body: block_post_body,
             }));
         }
@@ -2556,6 +2576,8 @@ pub(super) fn generate_lowered_proc_blocks(
             type_params: Vec::new(),
             name: step_fn_name.clone(),
             params: step_params.clone(),
+            return_ty: None,
+            return_ty_loc: Default::default(),
             body: step_body,
         }));
 
@@ -2616,6 +2638,8 @@ pub(super) fn generate_lowered_proc_blocks(
                 type_params: Vec::new(),
                 name: format!("{}{}{}", proc.name, PROC_CALL_OUT_FN_PREFIX, idx),
                 params: step_params.clone(),
+                return_ty: None,
+                return_ty_loc: Default::default(),
                 body: vec![
                     Stmt::Expr {
                         loc: Default::default(),

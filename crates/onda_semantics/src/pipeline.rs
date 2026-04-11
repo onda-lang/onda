@@ -834,6 +834,8 @@ pub fn analyze_with_options(
                 type_params: method.type_params.clone(),
                 name: fq_name,
                 params: method.params.clone(),
+                return_ty: method.return_ty.clone(),
+                return_ty_loc: method.return_ty_loc,
                 body: desugared_method_body,
             });
         }

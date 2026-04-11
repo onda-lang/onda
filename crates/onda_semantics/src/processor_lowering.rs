@@ -794,6 +794,8 @@ fn build_proc_lowering_env(
                 type_params: Vec::new(),
                 name: format!("{struct_name}.{}", method.name),
                 params: method.params.clone(),
+                return_ty: method.return_ty.clone(),
+                return_ty_loc: method.return_ty_loc,
                 body: desugared_method_body,
             });
         }

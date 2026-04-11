@@ -4,7 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DeclType,
-    EventParamType, Expr, FieldType, FnParamType, GraphEndpoint, GraphRate, PrimitiveType, Stmt,
+    EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType, FnReturnType, GraphEndpoint,
+    GraphRate, PrimitiveType, Stmt,
 };
 
 use super::{
@@ -5031,6 +5032,146 @@ sample:
     assert!(matches!(
         st.methods[0].params[1].ty,
         Some(FnParamType::ArrayGeneric(ref n)) if n == "T"
+    ));
+}
+
+#[test]
+fn parses_def_return_type_annotations() {
+    let src = r#"
+def scalar(x: f32) -> f64:
+  return x
+
+def pair<T>(x: T, y: i32) -> (T, i32):
+  return (x, y)
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("def return annotations should parse");
+    let defs = program
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Def(def) => Some(def),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(matches!(
+        defs[0].return_ty,
+        Some(FnReturnType::Scalar(FnReturnScalarType::Primitive(
+            PrimitiveType::F64
+        )))
+    ));
+    assert!(matches!(
+        defs[1].return_ty,
+        Some(FnReturnType::Tuple(ref elems))
+            if elems.as_slice()
+                == [
+                    FnReturnScalarType::Named("T".to_owned()),
+                    FnReturnScalarType::Primitive(PrimitiveType::I32),
+                ]
+    ));
+}
+
+#[test]
+fn parses_struct_method_return_type_annotation() {
+    let src = r#"
+struct Pair<T>:
+  a: T
+  b: T
+
+  def swap(self) -> (T, T):
+    return (self.b, self.a)
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("method return annotation should parse");
+    let st = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Struct(s) if s.name == "Pair" => Some(s),
+            _ => None,
+        })
+        .expect("Pair struct");
+
+    assert!(matches!(
+        st.methods[0].return_ty,
+        Some(FnReturnType::Tuple(ref elems))
+            if elems.as_slice()
+                == [
+                    FnReturnScalarType::Named("T".to_owned()),
+                    FnReturnScalarType::Named("T".to_owned()),
+                ]
+    ));
+}
+
+#[test]
+fn parses_proc_local_def_return_type_annotation() {
+    let src = r#"
+proc Voice:
+  outs:
+    out1
+
+  def pair(x: f32) -> (f32, i32):
+    return (x, 1)
+
+  sample:
+    out1 = 0.0
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("proc-local return annotation should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) if p.name == "Voice" => Some(p),
+            _ => None,
+        })
+        .expect("Voice proc");
+
+    assert!(matches!(
+        proc.local_defs[0].return_ty,
+        Some(FnReturnType::Tuple(ref elems))
+            if elems.as_slice()
+                == [
+                    FnReturnScalarType::Primitive(PrimitiveType::F32),
+                    FnReturnScalarType::Primitive(PrimitiveType::I32),
+                ]
+    ));
+}
+
+#[test]
+fn parses_namespaced_def_return_type_annotation() {
+    let src = r#"
+namespace dsp:
+  struct Pair:
+    x
+
+def borrow(pair: dsp::Pair) -> dsp::Pair:
+  return pair
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("namespaced return annotation should parse");
+    let def = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Def(def) if def.name == "borrow" => Some(def),
+            _ => None,
+        })
+        .expect("borrow def");
+
+    assert!(matches!(
+        def.return_ty,
+        Some(FnReturnType::Scalar(FnReturnScalarType::Named(ref name)))
+            if name == "dsp::Pair"
     ));
 }
 

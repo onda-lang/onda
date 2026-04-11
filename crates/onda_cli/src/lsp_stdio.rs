@@ -992,7 +992,10 @@ struct TopLevelRuntimeSections<'a> {
     events: Vec<&'a EventDef>,
 }
 
-fn build_top_level_runtime_scope(index: &mut SemanticScopeIndex, blocks: &[&Block]) -> Option<usize> {
+fn build_top_level_runtime_scope(
+    index: &mut SemanticScopeIndex,
+    blocks: &[&Block],
+) -> Option<usize> {
     let sections = collect_top_level_runtime_sections(blocks);
     let span = sections.span?;
     let owner_idx = create_runtime_owner_scope(index, None, span, true)?;
@@ -1045,7 +1048,9 @@ fn collect_top_level_runtime_sections<'a>(blocks: &[&'a Block]) -> TopLevelRunti
             }
             Block::Block(exec) => {
                 extend_runtime_owner_span(&mut sections.span, exec.loc);
-                sections.stmt_regions.extend(runtime_regions_for_block_exec(exec));
+                sections
+                    .stmt_regions
+                    .extend(runtime_regions_for_block_exec(exec));
             }
             Block::Sample(sample) => {
                 extend_runtime_owner_span(&mut sections.span, sample.loc);
@@ -1114,7 +1119,8 @@ fn runtime_regions_for_block_exec<'a>(exec: &'a BlockExec) -> Vec<RuntimeStmtReg
 }
 
 fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
-    let Some(owner_idx) = create_runtime_owner_scope(index, None, span_for_proc_scope(proc_def), true)
+    let Some(owner_idx) =
+        create_runtime_owner_scope(index, None, span_for_proc_scope(proc_def), true)
     else {
         return;
     };
@@ -1283,7 +1289,9 @@ fn span_for_stmt(stmt: &Stmt) -> Span {
 fn span_for_stmt_body(stmts: &[Stmt]) -> Option<Span> {
     let mut iter = stmts.iter();
     let first = span_for_stmt(iter.next()?);
-    Some(iter.fold(first, |span, stmt| Span::spanning(span, span_for_stmt(stmt))))
+    Some(iter.fold(first, |span, stmt| {
+        Span::spanning(span, span_for_stmt(stmt))
+    }))
 }
 
 fn span_for_function_scope(def: &FunctionDef) -> Span {

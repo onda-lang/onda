@@ -82,7 +82,6 @@ pub(crate) fn analyze_def_stmt(
         let output_names = common.output_names;
         let param_names = common.param_names;
         let struct_defs = common.struct_defs;
-        let fn_signatures = common.fn_signatures;
         let def_return_types = ctx.def_return_types;
         let options = common.options;
         let empty_data = HashMap::<String, usize>::new();
@@ -101,18 +100,31 @@ pub(crate) fn analyze_def_stmt(
             &empty_outputs,
             proc_array_roots,
         );
-        let stmt_expr_env = |scope| {
-            let mut env = build_scope_stmt_expr_env(
-                expr_inputs,
-                known_scalars,
-                local_aliases,
-                local_array_aliases,
-                &array_vars,
-                scope,
-            );
-            env.expr_env.tuple_vars = tuple_vars;
-            env
-        };
+        macro_rules! stmt_expr_env {
+            ($scope:expr) => {
+                build_scope_stmt_expr_env_with_tuples(
+                    expr_inputs,
+                    known_scalars,
+                    local_aliases,
+                    local_array_aliases,
+                    &array_vars,
+                    $scope,
+                    tuple_vars,
+                )
+            };
+        }
+        macro_rules! scope_expr_env {
+            ($scope:expr) => {
+                build_scope_expr_env_with_tuples(
+                    expr_inputs,
+                    known_scalars,
+                    local_aliases,
+                    &array_vars,
+                    $scope,
+                    tuple_vars,
+                )
+            };
+        }
         match stmt {
             Stmt::Const { .. } => {}
             Stmt::Assign {
@@ -201,18 +213,7 @@ pub(crate) fn analyze_def_stmt(
                                         {
                                             validate_expr(
                                                 value,
-                                                build_expr_env(
-                                                    known_scalars,
-                                                    locals,
-                                                    &empty_outputs,
-                                                    &array_vars,
-                                                    declared_symbols,
-                                                    param_structs,
-                                                    struct_instance_ctx,
-                                                    struct_defs,
-                                                    fn_signatures,
-                                                    ScopeKind::Def,
-                                                ),
+                                                scope_expr_env!(ScopeKind::Def),
                                                 errors,
                                             );
                                             let value_ty =
@@ -317,17 +318,7 @@ pub(crate) fn analyze_def_stmt(
                             return;
                         }
                         for value in values {
-                            validate_expr(
-                                value,
-                                build_scope_expr_env(
-                                    expr_inputs,
-                                    known_scalars,
-                                    local_aliases,
-                                    &array_vars,
-                                    ScopeKind::Def,
-                                ),
-                                errors,
-                            );
+                            validate_expr(value, scope_expr_env!(ScopeKind::Def), errors);
                         }
                         let inferred_first =
                             infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
@@ -425,17 +416,7 @@ pub(crate) fn analyze_def_stmt(
                             );
                             return;
                         }
-                        validate_expr(
-                            expr,
-                            build_scope_expr_env(
-                                expr_inputs,
-                                known_scalars,
-                                local_aliases,
-                                &array_vars,
-                                ScopeKind::Def,
-                            ),
-                            errors,
-                        );
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
                         if let Some(alias) = infer_def_slice_alias_info(
                             base,
                             start.as_deref(),
@@ -451,17 +432,7 @@ pub(crate) fn analyze_def_stmt(
                         return;
                     }
                     if local_aliases.contains_key(name) {
-                        validate_expr(
-                            expr,
-                            build_scope_expr_env(
-                                expr_inputs,
-                                known_scalars,
-                                local_aliases,
-                                &array_vars,
-                                ScopeKind::Def,
-                            ),
-                            errors,
-                        );
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
                         let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             expr,
                             state_scalars,
@@ -485,6 +456,9 @@ pub(crate) fn analyze_def_stmt(
                             &format!("alias assignment to '{name}'"),
                             errors,
                         );
+                        let tuple_arity =
+                            infer_tracked_tuple_arity(expr, tuple_vars, def_return_types);
+                        track_tuple_var_assignment(tuple_vars, name, tuple_arity);
                         known_scalars.insert(name.clone());
                         return;
                     }
@@ -542,13 +516,7 @@ pub(crate) fn analyze_def_stmt(
                                 let expr_error_count_before = errors.len();
                                 validate_expr(
                                     &expr_for_validation,
-                                    build_scope_expr_env(
-                                        expr_inputs,
-                                        known_scalars,
-                                        local_aliases,
-                                        &array_vars,
-                                        ScopeKind::Def,
-                                    ),
+                                    scope_expr_env!(ScopeKind::Def),
                                     errors,
                                 );
                                 let expr_ty =
@@ -640,17 +608,7 @@ pub(crate) fn analyze_def_stmt(
                                 struct_defs,
                                 errors,
                             ) {
-                                validate_expr(
-                                    index,
-                                    build_scope_expr_env(
-                                        expr_inputs,
-                                        known_scalars,
-                                        local_aliases,
-                                        &array_vars,
-                                        ScopeKind::Def,
-                                    ),
-                                    errors,
-                                );
+                                validate_expr(index, scope_expr_env!(ScopeKind::Def), errors);
                                 let idx_ty =
                                     infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                         index,
@@ -758,13 +716,7 @@ pub(crate) fn analyze_def_stmt(
                         rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                     validate_expr(
                         &expr_for_validation,
-                        build_scope_expr_env(
-                            expr_inputs,
-                            known_scalars,
-                            local_aliases,
-                            &array_vars,
-                            ScopeKind::Def,
-                        ),
+                        scope_expr_env!(ScopeKind::Def),
                         errors,
                     );
                     let had_expr_validation_error = errors.len() > expr_error_count_before;
@@ -812,20 +764,8 @@ pub(crate) fn analyze_def_stmt(
                     }
                     // Track tuple variables (assigned from tuple literal or
                     // tuple-returning call) for indexing validation
-                    let tuple_arity = match expr {
-                        Expr::Tuple { values, .. } => Some(values.len()),
-                        Expr::UserCall { name: fn_name, .. } => {
-                            match def_return_types.get(fn_name) {
-                                Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
-                                _ => None,
-                            }
-                        }
-                        Expr::Var { name: var_name, .. } => tuple_vars.get(var_name).copied(),
-                        _ => None,
-                    };
-                    if let Some(arity) = tuple_arity {
-                        tuple_vars.insert(name.clone(), arity);
-                    }
+                    let tuple_arity = infer_tracked_tuple_arity(expr, tuple_vars, def_return_types);
+                    track_tuple_var_assignment(tuple_vars, name, tuple_arity);
                     if can_track_local {
                         local_aliases.entry(name.clone()).or_insert(target_ty);
                     }
@@ -858,28 +798,8 @@ pub(crate) fn analyze_def_stmt(
                             );
                             return;
                         }
-                        validate_expr(
-                            index,
-                            build_scope_expr_env(
-                                expr_inputs,
-                                known_scalars,
-                                local_aliases,
-                                &array_vars,
-                                ScopeKind::Def,
-                            ),
-                            errors,
-                        );
-                        validate_expr(
-                            expr,
-                            build_scope_expr_env(
-                                expr_inputs,
-                                known_scalars,
-                                local_aliases,
-                                &array_vars,
-                                ScopeKind::Def,
-                            ),
-                            errors,
-                        );
+                        validate_expr(index, scope_expr_env!(ScopeKind::Def), errors);
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
                         let index_ty =
                             infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                 index,
@@ -938,28 +858,8 @@ pub(crate) fn analyze_def_stmt(
                             ),
                         );
                         }
-                        validate_expr(
-                            index,
-                            build_scope_expr_env(
-                                expr_inputs,
-                                known_scalars,
-                                local_aliases,
-                                &array_vars,
-                                ScopeKind::Def,
-                            ),
-                            errors,
-                        );
-                        validate_expr(
-                            expr,
-                            build_scope_expr_env(
-                                expr_inputs,
-                                known_scalars,
-                                local_aliases,
-                                &array_vars,
-                                ScopeKind::Def,
-                            ),
-                            errors,
-                        );
+                        validate_expr(index, scope_expr_env!(ScopeKind::Def), errors);
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
                         let index_ty =
                             infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                 index,
@@ -1038,28 +938,8 @@ pub(crate) fn analyze_def_stmt(
                                 );
                                 return;
                             };
-                            validate_expr(
-                                index,
-                                build_scope_expr_env(
-                                    expr_inputs,
-                                    known_scalars,
-                                    local_aliases,
-                                    &array_vars,
-                                    ScopeKind::Def,
-                                ),
-                                errors,
-                            );
-                            validate_expr(
-                                expr,
-                                build_scope_expr_env(
-                                    expr_inputs,
-                                    known_scalars,
-                                    local_aliases,
-                                    &array_vars,
-                                    ScopeKind::Def,
-                                ),
-                                errors,
-                            );
+                            validate_expr(index, scope_expr_env!(ScopeKind::Def), errors);
+                            validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
                             let index_ty =
                                 infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                     index,
@@ -1151,28 +1031,8 @@ pub(crate) fn analyze_def_stmt(
                                 ),
                             );
                         }
-                        validate_expr(
-                            index,
-                            build_scope_expr_env(
-                                expr_inputs,
-                                known_scalars,
-                                local_aliases,
-                                &array_vars,
-                                ScopeKind::Def,
-                            ),
-                            errors,
-                        );
-                        validate_expr(
-                            expr,
-                            build_scope_expr_env(
-                                expr_inputs,
-                                known_scalars,
-                                local_aliases,
-                                &array_vars,
-                                ScopeKind::Def,
-                            ),
-                            errors,
-                        );
+                        validate_expr(index, scope_expr_env!(ScopeKind::Def), errors);
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
                         let index_ty =
                             infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                 index,
@@ -1257,13 +1117,7 @@ pub(crate) fn analyze_def_stmt(
                         );
                         return;
                     }
-                    let slice_env = build_scope_expr_env(
-                        expr_inputs,
-                        known_scalars,
-                        local_aliases,
-                        &array_vars,
-                        ScopeKind::Def,
-                    );
+                    let slice_env = scope_expr_env!(ScopeKind::Def);
                     if let Some(start) = start {
                         validate_expr(start, slice_env, errors);
                         let start_ty =
@@ -1305,14 +1159,7 @@ pub(crate) fn analyze_def_stmt(
                         );
                         require_expr_numeric_type(end, end_ty, "slice end bound", errors);
                     }
-                    let stmt_env = build_scope_stmt_expr_env(
-                        expr_inputs,
-                        known_scalars,
-                        local_aliases,
-                        local_array_aliases,
-                        &array_vars,
-                        ScopeKind::Def,
-                    );
+                    let stmt_env = stmt_expr_env!(ScopeKind::Def);
                     if is_data_like_value_expr(expr, stmt_env) {
                         validate_data_like_value_expr(expr, stmt_env, errors);
                         if let Some(src_info) = infer_def_data_like_info(
@@ -1360,25 +1207,9 @@ pub(crate) fn analyze_def_stmt(
                 }
                 AssignTarget::Tuple(targets) => {
                     // Validate the RHS expression
-                    let mut tuple_env = build_scope_stmt_expr_env(
-                        expr_inputs,
-                        known_scalars,
-                        local_aliases,
-                        local_array_aliases,
-                        &array_vars,
-                        ScopeKind::Def,
-                    );
-                    tuple_env.expr_env.tuple_vars = tuple_vars;
-                    analyze_stmt_expr(expr, tuple_env, errors);
+                    analyze_stmt_expr(expr, stmt_expr_env!(ScopeKind::Def), errors);
                     // Validate destructuring arity against the RHS tuple length
-                    let rhs_arity = match expr {
-                        Expr::Tuple { values, .. } => Some(values.len()),
-                        Expr::UserCall { name, .. } => match def_return_types.get(name.as_str()) {
-                            Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
+                    let rhs_arity = infer_tracked_tuple_arity(expr, tuple_vars, def_return_types);
                     if let Some(expected) = rhs_arity {
                         if targets.len() != expected {
                             errors.push(Diagnostic::semantic(
@@ -1392,6 +1223,7 @@ pub(crate) fn analyze_def_stmt(
                             ));
                         }
                     }
+                    clear_tuple_var_bindings(tuple_vars, targets.iter());
                     // Register each destructured target as a known scalar
                     for target_name in targets {
                         known_scalars.insert(target_name.clone());
@@ -1403,11 +1235,11 @@ pub(crate) fn analyze_def_stmt(
             }),
             Stmt::Expr { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-                analyze_stmt_expr(&expr, stmt_expr_env(ScopeKind::Def), errors);
+                analyze_stmt_expr(&expr, stmt_expr_env!(ScopeKind::Def), errors);
             }
             Stmt::Return { expr, .. } => {
                 let expr = rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-                analyze_stmt_expr(&expr, stmt_expr_env(ScopeKind::Def), errors);
+                analyze_stmt_expr(&expr, stmt_expr_env!(ScopeKind::Def), errors);
             }
             Stmt::If {
                 cond,
@@ -1418,7 +1250,7 @@ pub(crate) fn analyze_def_stmt(
                 require_validated_bool_stmt_expr(
                     cond,
                     "if condition",
-                    stmt_expr_env(ScopeKind::Def),
+                    stmt_expr_env!(ScopeKind::Def),
                     errors,
                 );
                 let mut then_state = fork_scope_flow_state_with_tuples(
@@ -1446,6 +1278,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    tuple_vars,
                     then_state,
                     else_state,
                 );
@@ -1461,16 +1294,16 @@ pub(crate) fn analyze_def_stmt(
                 require_validated_numeric_stmt_expr(
                     start,
                     "for loop start bound",
-                    stmt_expr_env(ScopeKind::Def),
+                    stmt_expr_env!(ScopeKind::Def),
                     errors,
                 );
                 require_validated_numeric_stmt_expr(
                     end,
                     "for loop end bound",
-                    stmt_expr_env(ScopeKind::Def),
+                    stmt_expr_env!(ScopeKind::Def),
                     errors,
                 );
-                validate_for_loop_step_expr(step.as_ref(), stmt_expr_env(ScopeKind::Def), errors);
+                validate_for_loop_step_expr(step.as_ref(), stmt_expr_env!(ScopeKind::Def), errors);
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone());
                 let mut loop_state = fork_scope_flow_state_with_tuples(
@@ -1492,6 +1325,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    tuple_vars,
                     loop_state,
                 );
             }
@@ -1499,7 +1333,7 @@ pub(crate) fn analyze_def_stmt(
                 require_validated_bool_stmt_expr(
                     cond,
                     "while condition",
-                    stmt_expr_env(ScopeKind::Def),
+                    stmt_expr_env!(ScopeKind::Def),
                     errors,
                 );
                 let mut loop_state = fork_scope_flow_state_with_tuples(
@@ -1517,6 +1351,7 @@ pub(crate) fn analyze_def_stmt(
                     local_aliases,
                     local_array_aliases,
                     local_proc_aliases,
+                    tuple_vars,
                     loop_state,
                 );
             }

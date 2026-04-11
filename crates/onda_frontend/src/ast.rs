@@ -482,6 +482,18 @@ pub enum FnParamType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum FnReturnScalarType {
+    Primitive(PrimitiveType),
+    Named(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FnReturnType {
+    Scalar(FnReturnScalarType),
+    Tuple(Vec<FnReturnScalarType>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum BufferElemType {
     Primitive(PrimitiveType),
     Generic(String),
@@ -540,6 +552,8 @@ pub struct FunctionDef {
     pub name: String,
     pub type_params: Vec<String>,
     pub params: Vec<FnParamDecl>,
+    pub return_ty: Option<FnReturnType>,
+    pub return_ty_loc: Span,
     pub body: Vec<Stmt>,
 }
 

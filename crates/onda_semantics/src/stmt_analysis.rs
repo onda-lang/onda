@@ -101,6 +101,7 @@ pub(crate) fn merge_branch_scope_flow_state(
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    tuple_vars: &mut HashMap<String, usize>,
     then_state: ScopeFlowState,
     else_state: ScopeFlowState,
 ) {
@@ -152,6 +153,17 @@ pub(crate) fn merge_branch_scope_flow_state(
         base_proc_aliases.contains_key(name)
             || (then_proc_names.contains(name) && else_proc_names.contains(name))
     });
+    *tuple_vars = then_state
+        .tuple_vars
+        .into_iter()
+        .filter_map(|(name, arity)| {
+            else_state
+                .tuple_vars
+                .get(&name)
+                .filter(|other_arity| **other_arity == arity && known_scalars.contains(&name))
+                .map(|_| (name, arity))
+        })
+        .collect();
 }
 
 pub(crate) fn adopt_loop_scope_flow_state(
@@ -159,6 +171,7 @@ pub(crate) fn adopt_loop_scope_flow_state(
     local_aliases: &mut LocalAliasTypes,
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     local_proc_aliases: &mut HashMap<String, ProcArrayAliasInfo>,
+    tuple_vars: &mut HashMap<String, usize>,
     loop_state: ScopeFlowState,
 ) {
     let base_array_aliases = local_array_aliases.clone();
@@ -169,6 +182,8 @@ pub(crate) fn adopt_loop_scope_flow_state(
     local_array_aliases.retain(|name, _| base_array_aliases.contains_key(name));
     *local_proc_aliases = loop_state.local_proc_aliases;
     local_proc_aliases.retain(|name, _| base_proc_aliases.contains_key(name));
+    *tuple_vars = loop_state.tuple_vars;
+    tuple_vars.retain(|name, _| known_scalars.contains(name));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -212,6 +227,84 @@ pub(crate) fn build_scope_stmt_expr_env<'a>(
         inputs.output_names,
         inputs.param_names,
     )
+}
+
+pub(crate) fn build_scope_expr_env_with_tuples<'a>(
+    inputs: ScopeExprInputs<'a>,
+    known_scalars: &'a HashSet<String>,
+    local_aliases: &'a LocalAliasTypes,
+    array_vars: &'a HashMap<String, usize>,
+    scope: ScopeKind,
+    tuple_vars: &'a HashMap<String, usize>,
+) -> ExprEnv<'a> {
+    let mut env = build_scope_expr_env(inputs, known_scalars, local_aliases, array_vars, scope);
+    env.tuple_vars = tuple_vars;
+    env
+}
+
+pub(crate) fn build_scope_stmt_expr_env_with_tuples<'a>(
+    inputs: ScopeExprInputs<'a>,
+    known_scalars: &'a HashSet<String>,
+    local_aliases: &'a LocalAliasTypes,
+    local_array_aliases: &'a HashMap<String, LocalArrayAliasInfo>,
+    array_vars: &'a HashMap<String, usize>,
+    scope: ScopeKind,
+    tuple_vars: &'a HashMap<String, usize>,
+) -> StmtExprAnalysisEnv<'a> {
+    build_stmt_expr_env(
+        build_scope_expr_env_with_tuples(
+            inputs,
+            known_scalars,
+            local_aliases,
+            array_vars,
+            scope,
+            tuple_vars,
+        ),
+        inputs.state_scalars,
+        inputs.declared_symbols,
+        local_aliases,
+        local_array_aliases,
+        inputs.input_names,
+        inputs.output_names,
+        inputs.param_names,
+    )
+}
+
+pub(crate) fn infer_tracked_tuple_arity(
+    expr: &Expr,
+    tuple_vars: &HashMap<String, usize>,
+    fn_return_types: &HashMap<String, ReturnType>,
+) -> Option<usize> {
+    match expr {
+        Expr::Tuple { values, .. } => Some(values.len()),
+        Expr::UserCall { name, .. } => match fn_return_types.get(name.as_str()) {
+            Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
+            _ => None,
+        },
+        Expr::Var { name, .. } => tuple_vars.get(name).copied(),
+        _ => None,
+    }
+}
+
+pub(crate) fn track_tuple_var_assignment(
+    tuple_vars: &mut HashMap<String, usize>,
+    name: &str,
+    tuple_arity: Option<usize>,
+) {
+    if let Some(arity) = tuple_arity {
+        tuple_vars.insert(name.to_owned(), arity);
+    } else {
+        tuple_vars.remove(name);
+    }
+}
+
+pub(crate) fn clear_tuple_var_bindings<'a>(
+    tuple_vars: &mut HashMap<String, usize>,
+    names: impl IntoIterator<Item = &'a String>,
+) {
+    for name in names {
+        tuple_vars.remove(name);
+    }
 }
 
 pub(crate) fn validate_and_infer_stmt_expr_type(

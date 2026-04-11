@@ -51,6 +51,8 @@ pub(super) fn pre_desugar_proc_local_hidden_def(
         type_params: local_def.type_params.clone(),
         name: proc_local_hidden_def_name(owner_proc, &local_def.name),
         params: local_def.params.clone(),
+        return_ty: local_def.return_ty.clone(),
+        return_ty_loc: local_def.return_ty_loc,
         body: local_def.body.clone(),
     }
 }
@@ -65,6 +67,8 @@ pub(super) fn owner_proc_local_hidden_def(
         type_params: local_def.type_params.clone(),
         name: proc_local_hidden_def_name(owner_proc, &local_def.name),
         params: proc_local_hidden_def_params(owner_proc, local_def),
+        return_ty: local_def.return_ty.clone(),
+        return_ty_loc: local_def.return_ty_loc,
         body,
     }
 }
@@ -80,6 +84,8 @@ pub(super) fn nested_wrapper_proc_local_hidden_def(
         type_params: local_def.type_params.clone(),
         name: nested_wrapper_local_def_name(owner_proc, nested_path, &local_def.name),
         params: proc_local_hidden_def_params(owner_proc, local_def),
+        return_ty: local_def.return_ty.clone(),
+        return_ty_loc: local_def.return_ty_loc,
         body,
     }
 }

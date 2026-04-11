@@ -899,6 +899,224 @@ sample:
     }
 
     #[test]
+    fn explicit_def_return_type_allows_implicit_widening() {
+        let src = "outs:\n  out1\ndef widen(x: i32) -> i64:\n  return x\nsample:\n  out1 = f32(widen(1))\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("explicit widening return annotation should analyze");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "widen")
+            .expect("missing typed def");
+        assert_eq!(def.return_ty, ReturnType::Scalar(PrimitiveType::I64));
+    }
+
+    #[test]
+    fn explicit_def_return_type_rejects_implicit_narrowing() {
+        let src =
+            "outs:\n  out1\ndef narrow() -> i32:\n  return 3.5\nsample:\n  out1 = f32(narrow())\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("implicit narrowing return should fail");
+        assert!(
+            errors.iter().any(|diag| {
+                diag.message.contains("return in function 'narrow'")
+                    && diag.message.contains("cannot assign F32 to I32")
+            }),
+            "expected return mismatch diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn generic_def_return_annotation_specializes_through_monomorphization() {
+        let src = "outs:\n  out1\ndef id<T>(x: T) -> T:\n  return x\nsample:\n  out1 = id(0.5)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("generic return annotation should analyze");
+        assert!(
+            typed.defs.iter().any(|def| {
+                def.name.contains("id.__mono")
+                    && def.return_ty == ReturnType::Scalar(PrimitiveType::F32)
+            }),
+            "expected monomorphized id def with f32 return, got {:#?}",
+            typed.defs
+        );
+    }
+
+    #[test]
+    fn explicit_tuple_return_type_analyzes_and_sets_typed_return() {
+        let src = "outs:\n  out1\ndef pair(x: f32) -> (f32, i32):\n  return (x, 1)\nsample:\n  vals = pair(0.5)\n  out1 = vals[0] + f32(vals[1])\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("explicit tuple return annotation should analyze");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name == "pair")
+            .expect("missing typed def");
+        assert_eq!(
+            def.return_ty,
+            ReturnType::Tuple(vec![PrimitiveType::F32, PrimitiveType::I32])
+        );
+    }
+
+    #[test]
+    fn explicit_tuple_return_type_rejects_element_mismatch() {
+        let src = "outs:\n  out1\ndef pair() -> (f32, i32):\n  return (1.0, 2.5)\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("tuple return element mismatch should fail");
+        assert!(
+            errors.iter().any(|diag| {
+                diag.message.contains("return in function 'pair'")
+                    && diag.message.contains("cannot assign F32 to I32")
+            }),
+            "expected tuple return mismatch diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn generic_tuple_return_annotation_specializes_through_monomorphization() {
+        let src = "outs:\n  out1\ndef pair<T>(x: T, y: i32) -> (T, i32):\n  return (x, y)\nsample:\n  vals = pair(0.5, 2)\n  out1 = vals[0] + f32(vals[1])\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("generic tuple return annotation should analyze");
+        assert!(
+            typed.defs.iter().any(|def| {
+                def.name.contains("pair.__mono")
+                    && def.return_ty
+                        == ReturnType::Tuple(vec![PrimitiveType::F32, PrimitiveType::I32])
+            }),
+            "expected monomorphized pair def with tuple return, got {:#?}",
+            typed.defs
+        );
+    }
+
+    #[test]
+    fn unannotated_defs_still_infer_tuple_returns() {
+        let src = "outs:\n  out1\ndef pair(x):\n  return (x, 1)\nsample:\n  vals = pair(0.5)\n  out1 = vals[0] + f32(vals[1])\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("unannotated tuple return should still infer");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name.contains("pair"))
+            .expect("missing typed def");
+        assert_eq!(
+            def.return_ty,
+            ReturnType::Tuple(vec![PrimitiveType::F32, PrimitiveType::I32])
+        );
+    }
+
+    #[test]
+    fn return_annotations_do_not_change_overload_resolution_behavior() {
+        let src = "outs:\n  out1\ndef foo(x: f32) -> f32:\n  return x\ndef foo(x: f64) -> f32:\n  return f32(x)\nsample:\n  out1 = foo(1)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("annotated ambiguous overload should fail");
+        assert!(
+            errors.iter().any(|diag| {
+                diag.message
+                    .contains("ambiguous overload for function 'foo'")
+            }),
+            "expected ambiguous overload diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn generic_struct_method_return_annotation_specializes_with_owner_generics() {
+        let src = "struct Pair<T>:\n  a: T\n  b: T\n\n  def swap(self) -> (T, T):\n    return (self.b, self.a)\n\nouts:\n  out1\ninit:\n  p = Pair<f32>(1.0, 2.0)\nsample:\n  vals = p.swap()\n  out1 = vals[0] + vals[1]\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed =
+            analyze(program).expect("generic struct method return annotation should analyze");
+        assert!(
+            typed.defs.iter().any(|def| {
+                def.name.ends_with(".swap")
+                    && def.method_of.is_some()
+                    && def.return_ty
+                        == ReturnType::Tuple(vec![PrimitiveType::F32, PrimitiveType::F32])
+            }),
+            "expected specialized swap method def with tuple return, got {:#?}",
+            typed.defs
+        );
+    }
+
+    #[test]
+    fn proc_local_def_return_annotation_lowers_and_validates() {
+        let src = "proc Voice:\n  outs:\n    out1\n\n  def pair(x: f32) -> (f32, i32):\n    return (x, 1)\n\n  sample:\n    vals = pair(0.5)\n    out1 = vals[0] + f32(vals[1])\n\ninit:\n  voice = Voice()\n\nsample:\n  out1 = voice()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("proc-local return annotation should analyze");
+        let def = typed
+            .defs
+            .iter()
+            .find(|def| def.name.contains("Voice.__proc_local__pair"))
+            .expect("missing lowered proc-local def");
+        assert_eq!(
+            def.return_ty,
+            ReturnType::Tuple(vec![PrimitiveType::F32, PrimitiveType::I32])
+        );
+        assert!(matches!(
+            def.param_kinds.first(),
+            Some(TypedFnParam::Struct { struct_name }) if struct_name == "Voice"
+        ));
+    }
+
+    #[test]
+    fn struct_return_annotation_is_rejected() {
+        let src = "struct Pair:\n  x\nouts:\n  out1\ndef borrow(pair: Pair) -> Pair:\n  return pair\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("struct return annotation should fail");
+        assert!(
+            errors.iter().any(|diag| {
+                diag.message.contains("function 'borrow' return type 'Pair' is not supported")
+            }),
+            "expected unsupported struct return diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn namespaced_struct_return_annotation_is_rejected_after_rewrite() {
+        let src = "namespace dsp:\n  struct Pair:\n    x\nouts:\n  out1\ndef borrow(pair: dsp::Pair) -> dsp::Pair:\n  return pair\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("namespaced struct return annotation should fail");
+        assert!(
+            errors.iter().any(|diag| {
+                diag.message.contains("function 'borrow' return type 'dsp::Pair' is not supported")
+            }),
+            "expected unsupported namespaced return diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn sample_tuple_local_survives_if_merge() {
+        let src = "outs:\n  out1\nsample:\n  if true:\n    vals = (0.5, 1)\n  else:\n    vals = (0.25, 2)\n  out1 = vals[0] + f32(vals[1])\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("tuple local should survive if merge");
+    }
+
+    #[test]
+    fn sample_tuple_local_survives_loop_reassignment() {
+        let src = "outs:\n  out1\nsample:\n  vals = (0.0, 0)\n  for i in 0..2:\n    vals = (f32(i), i)\n  out1 = vals[0] + f32(vals[1])\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("tuple local should survive loop reassignment");
+    }
+
+    #[test]
+    fn def_tuple_local_survives_if_merge() {
+        let src = "outs:\n  out1\ndef pick(flag: bool) -> f32:\n  if flag:\n    vals = (0.5, 1)\n  else:\n    vals = (0.25, 2)\n  return vals[0] + f32(vals[1])\nsample:\n  out1 = pick(true)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("tuple local in def should survive if merge");
+    }
+
+    #[test]
+    fn tuple_tracking_clears_after_scalar_reassignment() {
+        let src = "outs:\n  out1\nsample:\n  vals = (0.5, 1)\n  vals = 0.5\n  out1 = vals[0]\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("stale tuple tracking should be rejected");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("indexed expression 'vals[...]' is not a array/buffer symbol")),
+            "expected stale tuple indexing diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn namespaced_proc_array_typed_declaration_analyzes() {
         let src = "import std/osc\nouts:\n  out1\ninit:\n  voices: std::osc::Sine[2] = std::osc::Sine()\nsample:\n  out1 = voices[0]()\n";
         let program = parse_program(src).expect("parse should succeed");

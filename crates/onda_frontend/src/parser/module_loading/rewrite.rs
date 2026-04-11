@@ -3,6 +3,7 @@ use super::namespaces::{
     resolve_namespace_symbol_name, rewrite_named_type_ref_name,
 };
 use super::*;
+use crate::ast::{FnReturnScalarType, FnReturnType};
 
 fn rebase_expr_locs(expr: &mut Expr, loc: SourceLoc) {
     expr.set_loc(loc);
@@ -953,6 +954,16 @@ fn rewrite_function_def(
             rewrite_expr(default, current_ns, const_env, state, generated)?;
         }
     }
+    if let Some(return_ty) = &mut def.return_ty {
+        rewrite_fn_return_type(
+            return_ty,
+            current_ns,
+            const_env,
+            state,
+            generated,
+            def.return_ty_loc.as_ref().or(def.loc.as_ref()),
+        )?;
+    }
     rewrite_stmts(&mut def.body, current_ns, const_env, state, generated)
 }
 
@@ -1066,6 +1077,36 @@ fn rewrite_fn_param_type(
         | FnParamType::SizedArray { .. }
         | FnParamType::BareBuffer
         | FnParamType::Tuple(_) => {}
+    }
+    Ok(())
+}
+
+fn rewrite_fn_return_type(
+    ty: &mut FnReturnType,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
+) -> Result<(), Vec<Diagnostic>> {
+    let loc = loc.into();
+    let rewrite_scalar = |scalar: &mut FnReturnScalarType,
+                          state: &mut LoadState,
+                          generated: &mut Vec<Block>|
+     -> Result<(), Vec<Diagnostic>> {
+        if let FnReturnScalarType::Named(name) = scalar {
+            rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
+        }
+        Ok(())
+    };
+
+    match ty {
+        FnReturnType::Scalar(scalar) => rewrite_scalar(scalar, state, generated)?,
+        FnReturnType::Tuple(elems) => {
+            for elem in elems {
+                rewrite_scalar(elem, state, generated)?;
+            }
+        }
     }
     Ok(())
 }

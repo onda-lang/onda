@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::overloads::OverloadRewriteEnv;
 use crate::*;
+use onda_frontend::ast::{FnReturnScalarType, FnReturnType};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum MonoParamKey {
@@ -431,6 +432,33 @@ fn generate_mono_def(
                         errors,
                     );
                 }
+            }
+            if let Some(return_ty) = &mut new_def.return_ty {
+                *return_ty = match return_ty {
+                    FnReturnType::Scalar(scalar) => FnReturnType::Scalar(match scalar {
+                        FnReturnScalarType::Primitive(prim) => FnReturnScalarType::Primitive(*prim),
+                        FnReturnScalarType::Named(name) => match type_bindings.get(name).copied() {
+                            Some(bound) => FnReturnScalarType::Primitive(bound),
+                            None => FnReturnScalarType::Named(name.clone()),
+                        },
+                    }),
+                    FnReturnType::Tuple(elems) => FnReturnType::Tuple(
+                        elems
+                            .iter()
+                            .map(|elem| match elem {
+                                FnReturnScalarType::Primitive(prim) => {
+                                    FnReturnScalarType::Primitive(*prim)
+                                }
+                                FnReturnScalarType::Named(name) => {
+                                    match type_bindings.get(name).copied() {
+                                        Some(bound) => FnReturnScalarType::Primitive(bound),
+                                        None => FnReturnScalarType::Named(name.clone()),
+                                    }
+                                }
+                            })
+                            .collect(),
+                    ),
+                };
             }
         }
 

@@ -1,4 +1,5 @@
 use super::*;
+use onda_frontend::ast::{FnReturnScalarType, FnReturnType};
 
 fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
     errors.push(diag.semantic(message, 0, 0));
@@ -749,6 +750,15 @@ pub(crate) fn specialize_generic_proc_template(
         expand_inline_array_ctor_initializers(&mut event.body);
     }
     for def in &mut local_defs {
+        let specialize_return_scalar = |ty: &FnReturnScalarType| -> FnReturnScalarType {
+            match ty {
+                FnReturnScalarType::Primitive(prim) => FnReturnScalarType::Primitive(*prim),
+                FnReturnScalarType::Named(name) => match type_bindings.get(name).copied() {
+                    Some(bound) => FnReturnScalarType::Primitive(bound),
+                    None => FnReturnScalarType::Named(name.clone()),
+                },
+            }
+        };
         for param in &mut def.params {
             if let Some(ty) = &mut param.ty {
                 *ty = match ty {
@@ -812,6 +822,19 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 );
             }
+        }
+        if let Some(return_ty) = &mut def.return_ty {
+            *return_ty = match return_ty {
+                FnReturnType::Scalar(scalar) => {
+                    FnReturnType::Scalar(specialize_return_scalar(scalar))
+                }
+                FnReturnType::Tuple(elems) => FnReturnType::Tuple(
+                    elems
+                        .iter()
+                        .map(|elem| specialize_return_scalar(elem))
+                        .collect(),
+                ),
+            };
         }
         for stmt in &mut def.body {
             specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);

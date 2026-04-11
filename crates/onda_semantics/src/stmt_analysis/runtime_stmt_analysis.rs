@@ -248,16 +248,15 @@ fn build_runtime_stmt_expr_env<'a>(
     array_vars: &'a HashMap<String, usize>,
     scope: ScopeKind,
 ) -> StmtExprAnalysisEnv<'a> {
-    let mut env = build_scope_stmt_expr_env(
+    build_scope_stmt_expr_env_with_tuples(
         expr_inputs,
         &flow_state.known_scalars,
         &flow_state.local_aliases,
         &flow_state.local_array_aliases,
         array_vars,
         scope,
-    );
-    env.expr_env.tuple_vars = &flow_state.tuple_vars;
-    env
+        &flow_state.tuple_vars,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -727,6 +726,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.tuple_vars,
                     then_state,
                     else_state,
                 );
@@ -786,6 +786,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.tuple_vars,
                     loop_state,
                 );
             }
@@ -819,6 +820,7 @@ fn analyze_runtime_stmt_inner(
                     &mut state.local_aliases,
                     &mut state.local_array_aliases,
                     &mut state.local_proc_aliases,
+                    &mut state.tuple_vars,
                     loop_state,
                 );
             }
@@ -882,23 +884,24 @@ fn analyze_assign_sample(
         proc_array_roots,
     };
     let stmt_expr_env = |scope| {
-        build_scope_stmt_expr_env(
+        build_scope_stmt_expr_env_with_tuples(
             expr_inputs,
             known_scalars,
             local_aliases,
             local_array_aliases,
             &array_vars,
             scope,
+            tuple_vars,
         )
     };
-    let mut scope_expr_env = build_scope_expr_env(
+    let scope_expr_env = build_scope_expr_env_with_tuples(
         expr_inputs,
         known_scalars,
         local_aliases,
         &array_vars,
         scope,
+        tuple_vars,
     );
-    scope_expr_env.tuple_vars = tuple_vars;
     macro_rules! target_error {
         ($message:expr $(,)?) => {
             errors.push(Diagnostic::semantic_span($message, target_loc))
@@ -1469,6 +1472,8 @@ fn analyze_assign_sample(
                     &format!("alias assignment to '{name}'"),
                     errors,
                 );
+                let tuple_arity = infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types);
+                track_tuple_var_assignment(tuple_vars, name, tuple_arity);
                 known_scalars.insert(name.clone());
                 return;
             }
@@ -1730,20 +1735,8 @@ fn analyze_assign_sample(
             }
 
             // Track local tuple variables for indexing validation
-            let tuple_arity = match expr {
-                Expr::Tuple { values, .. } => Some(values.len()),
-                Expr::UserCall { name: fn_name, .. } => {
-                    match fn_return_types.get(fn_name.as_str()) {
-                        Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
-                        _ => None,
-                    }
-                }
-                Expr::Var { name: var_name, .. } => tuple_vars.get(var_name).copied(),
-                _ => None,
-            };
-            if let Some(arity) = tuple_arity {
-                tuple_vars.insert(name.clone(), arity);
-            }
+            let tuple_arity = infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types);
+            track_tuple_var_assignment(tuple_vars, name, tuple_arity);
 
             if output_names.contains(name) || can_track_local {
                 known_scalars.insert(name.clone());
@@ -1754,15 +1747,14 @@ fn analyze_assign_sample(
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             validate_expr(&expr_for_validation, scope_expr_env, errors);
             // Validate destructuring arity against the RHS tuple length
-            let rhs_arity = match expr {
-                Expr::Tuple { values, .. } => Some(values.len()),
-                Expr::UserCall { name, .. } => match fn_return_types.get(name.as_str()) {
-                    Some(ReturnType::Tuple(elem_tys)) => Some(elem_tys.len()),
-                    _ => None,
-                },
-                Expr::Var { name, .. } => state_tuples.get(name).map(|tys| tys.len()),
-                _ => None,
-            };
+            let rhs_arity =
+                infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types).or_else(|| {
+                    if let Expr::Var { name, .. } = expr {
+                        state_tuples.get(name).map(|tys| tys.len())
+                    } else {
+                        None
+                    }
+                });
             if let Some(expected) = rhs_arity {
                 if targets.len() != expected {
                     errors.push(Diagnostic::semantic(
@@ -1776,6 +1768,7 @@ fn analyze_assign_sample(
                     ));
                 }
             }
+            clear_tuple_var_bindings(tuple_vars, targets.iter());
             for target_name in targets {
                 known_scalars.insert(target_name.clone());
                 local_aliases
