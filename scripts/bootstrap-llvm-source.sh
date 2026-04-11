@@ -58,7 +58,7 @@ if [[ ! -f "$bootstrap_root/build_local.sh" ]]; then
   exit 1
 fi
 
-"$bootstrap_root/build_local.sh" \
+bash "$bootstrap_root/build_local.sh" \
   --llvm-ref "llvmorg-$VERSION" \
   --source-dir "$source_dir" \
   --build-dir "$build_dir" \
