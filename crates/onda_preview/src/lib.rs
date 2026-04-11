@@ -741,9 +741,10 @@ impl FileWatcher {
     fn watch(path: &Path, on_change: impl Fn() + Send + 'static) -> Option<Self> {
         let (tx, rx) = mpsc::channel();
         let mut debouncer = new_debouncer(Duration::from_millis(200), tx).ok()?;
+        let watch_root = path.parent().unwrap_or_else(|| Path::new("."));
         debouncer
             .watcher()
-            .watch(path, notify::RecursiveMode::NonRecursive)
+            .watch(watch_root, notify::RecursiveMode::NonRecursive)
             .ok()?;
         let watched_path = path.to_path_buf();
         let mut last_stamp = file_stamp(&watched_path);
@@ -1018,4 +1019,53 @@ fn event_arg_default_value(arg: &Value) -> Option<Value> {
 
 fn display_path(path: &Path) -> String {
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileWatcher;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::mpsc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn file_watcher_survives_repeated_atomic_replaces() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "onda_preview_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should advance")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp dir");
+        let watched = temp_root.join("patch.onda");
+        fs::write(&watched, "outs:\n  out1\nsample:\n  out1 = 0.0\n").expect("write initial file");
+
+        let (tx, rx) = mpsc::channel();
+        let _watcher = FileWatcher::watch(&watched, move || {
+            let _ = tx.send(());
+        })
+        .expect("watcher should start");
+
+        replace_file(&watched, "outs:\n  out1\nsample:\n  out1 = 1.0\n");
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("first replace should trigger");
+
+        replace_file(&watched, "outs:\n  out1\nsample:\n  out1 = 2.0\n");
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("second replace should trigger");
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    fn replace_file(path: &Path, contents: &str) {
+        let tmp = path.with_extension("tmp");
+        fs::write(&tmp, contents).expect("write temp file");
+        #[cfg(target_os = "windows")]
+        if path.exists() {
+            fs::remove_file(path).expect("remove old file");
+        }
+        fs::rename(&tmp, path).expect("replace watched file");
+    }
 }
