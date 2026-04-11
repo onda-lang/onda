@@ -29,8 +29,8 @@ namespace std::filter:
       z2 = 0.0
 
     block:
-      c: T = clamp(cutoff, 0.0, SR * 0.48)
-      qv: T = max(q, 0.01)
+      c: T = clamp(cutoff, T(0.0), T(SR * 0.48))
+      qv: T = max(q, T(0.01))
       f: T = tan(PI * c / SR)
       inv_q: T = 1.0 / qv
       d: T = 1.0 / (1.0 + inv_q * f + f * f)

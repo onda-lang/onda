@@ -16,7 +16,7 @@ namespace std::delay:
 
     block:
       delay_samples: T = delay_s * SR
-      d: T = clamp(delay_samples, 0.0, T(max_d))
+      d: T = clamp(delay_samples, T(0.0), T(max_d))
       di0 = i32(d)
       frac: T = d - T(di0)
       sample:
