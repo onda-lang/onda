@@ -335,14 +335,15 @@ impl eframe::App for PreviewApp {
 
                         if state.running {
                             ui.add_space(12.0);
-                            section_box(ui, "", |ui| {
-                                egui::CollapsingHeader::new("Scope")
-                                    .default_open(true)
-                                    .show_unindented(ui, |ui| {
-                                        draw_scope(
-                                            ui,
-                                            state.scope_channels,
-                                            &state.scope_samples,
+                        section_box(ui, "", |ui| {
+                            egui::CollapsingHeader::new("Scope")
+                                .default_open(true)
+                                .show_unindented(ui, |ui| {
+                                    ui.add_space(8.0);
+                                    draw_scope(
+                                        ui,
+                                        state.scope_channels,
+                                        &state.scope_samples,
                                             egui::vec2(ui.available_width(), 140.0),
                                             &theme,
                                         );
@@ -356,6 +357,7 @@ impl eframe::App for PreviewApp {
                                 egui::CollapsingHeader::new("Buffers")
                                     .default_open(true)
                                     .show_unindented(ui, |ui| {
+                                        ui.add_space(8.0);
                                         for (index, buffer) in state.buffers.iter().enumerate() {
                                             let name = buffer_name(buffer).unwrap_or("buffer");
                                             let loaded_path =
@@ -497,6 +499,7 @@ impl eframe::App for PreviewApp {
                                 egui::CollapsingHeader::new("Events")
                                     .default_open(true)
                                     .show_unindented(ui, |ui| {
+                                        ui.add_space(8.0);
                                         for (event_index, event) in state.events.iter().enumerate()
                                         {
                                             let Some(name) = event_name(event) else {
@@ -598,6 +601,7 @@ impl eframe::App for PreviewApp {
                                 egui::CollapsingHeader::new("Params")
                                     .default_open(true)
                                     .show_unindented(ui, |ui| {
+                                        ui.add_space(8.0);
                                         let param_count = state.params.len();
                                         for (index, mut param) in
                                             state.params.into_iter().enumerate()
@@ -654,7 +658,7 @@ fn section_box(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
         .fill(ui.visuals().panel_fill)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
         .corner_radius(12.0)
-        .inner_margin(egui::Margin::symmetric(12, 10))
+        .inner_margin(egui::Margin::symmetric(8, 10))
         .show(ui, |ui| {
             if !title.is_empty() {
                 ui.label(
