@@ -5,8 +5,7 @@
 - Polymorph defs follow-ups
   - Improve overload diagnostics to show per-candidate ranking details.
   - Evaluate extending overloads from top-level `def` and struct methods to proc-local defs.
-  - Clarify current exclusions in docs: proc-local defs are still not overloadable.
-  - Clarify/document overload behavior for complex untyped array/buffer inference-heavy call sites.
+  - Document remaining overload edge cases for complex untyped array/buffer inference-heavy call sites.
   - Evaluate banning recursion and mutual recursion for ordinary top-level `def` and struct methods, then marking lowered user defs/methods `alwaysinline` once the user-def call graph is guaranteed acyclic.
   - If we take the no-recursion route, add an explicit semantic cycle check for ordinary `def`/method call graphs rather than relying on LLVM `alwaysinline` failures for diagnostics.
 
@@ -124,7 +123,7 @@
   - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
 
 - Standard library follow-ups
-  - Keep the built-in module inventory synced across `README.md`, `docs/INFO.md`, and `docs/SYNTAX.md`:
+  - Keep the built-in module inventory in sync as docs evolve across `README.md`, `docs/INFO.md`, and `docs/SYNTAX.md`:
     `std/prelude`, `std/math`, `std/random`, `std/export_math`, `std/complex`, `std/osc`, `std/filter`, `std/env`,
     `std/delay`, `std/data`, `std/lookup`, `std/fft`, `std/convolution`.
   - Decide which stdlib modules are considered stable MVP surface versus still-evolving API.
@@ -138,7 +137,6 @@
 
 - Generics follow-ups
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.
-  - Document generic ownership/error rules in a dedicated language-spec section (`T` must belong to the current generic owner).
 
 - Range declarations follow-ups
   - Evaluate whether range syntax should be extended to array `ins`/`params` declarations.
