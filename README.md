@@ -7,7 +7,7 @@ This repository provides the compiler, runtime, CLI, language server, preview to
 
 ## Short example
 
-For the actual language reference, see [SYNTAX.md](SYNTAX.md).
+For the actual language reference, see [docs/SYNTAX.md](docs/SYNTAX.md).
 As a minimal example for a sine wave:
 
 ```onda
@@ -57,8 +57,8 @@ The CLI can also emit LLVM IR and native object files for AOT-style workflows.
 
 ## Documentation
 
-- [SYNTAX.md](SYNTAX.md): language syntax and semantics
-- [INFO.md](INFO.md): project structure and implementation notes
+- [docs/SYNTAX.md](docs/SYNTAX.md): language syntax and semantics
+- [docs/INFO.md](docs/INFO.md): project structure and implementation notes
 
 ## Building `onda`
 

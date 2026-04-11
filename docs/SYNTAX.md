@@ -448,8 +448,6 @@ init:
 `tmp` is local to `init`, but because every branch assigns it, it is available later in the same `init` flow.
 `carried` becomes persistent state.
 
-For the normative storage/scoping rules, see [SCOPING.md](SCOPING.md).
-
 ### 4.7 `block`
 
 `block` is the per-audio-block executable scope.
