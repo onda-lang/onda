@@ -360,31 +360,130 @@ impl eframe::App for PreviewApp {
                                             let name = buffer_name(buffer).unwrap_or("buffer");
                                             let loaded_path =
                                                 buffer.get("loadedPath").and_then(Value::as_str);
-                                            ui.horizontal(|ui| {
-                                                ui.label(egui::RichText::new(name).strong());
-                                                ui.label(buffer_type_summary(buffer));
-                                            });
-                                            ui.label(loaded_path.unwrap_or("No file loaded"));
-                                            ui.horizontal(|ui| {
-                                                if ui.button("Choose File").clicked() {
-                                                    if let Some(path) = rfd::FileDialog::new()
-                                                        .add_filter("Wave Audio", &["wav"])
-                                                        .set_title(format!("Bind '{name}' buffer"))
-                                                        .pick_file()
-                                                    {
-                                                        if let Some(file_path) = path.to_str() {
-                                                            self.controller
-                                                                .bind_buffer_file(name, file_path);
-                                                        }
-                                                    }
-                                                }
-                                                if ui.button("Clear").clicked() {
-                                                    self.controller.clear_buffer(name);
-                                                }
-                                            });
+                                            egui::Frame::group(ui.style())
+                                                .fill(ui.visuals().panel_fill)
+                                                .stroke(
+                                                    ui.visuals().widgets.noninteractive.bg_stroke,
+                                                )
+                                                .corner_radius(12.0)
+                                                .inner_margin(egui::Margin::same(12))
+                                                .show(ui, |ui| {
+                                                    ui.allocate_ui_with_layout(
+                                                        egui::vec2(ui.available_width(), 36.0),
+                                                        egui::Layout::left_to_right(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            ui.horizontal(|ui| {
+                                                                ui.label(
+                                                                    egui::RichText::new(name)
+                                                                        .strong()
+                                                                        .size(15.0),
+                                                                );
+                                                                ui.label(
+                                                                    egui::RichText::new(
+                                                                        buffer_type_summary(buffer),
+                                                                    )
+                                                                    .size(12.0)
+                                                                    .weak(),
+                                                                );
+                                                            });
+                                                            ui.with_layout(
+                                                                egui::Layout::right_to_left(
+                                                                    egui::Align::Center,
+                                                                ),
+                                                                |ui| {
+                                                                    let clear_clicked = ui
+                                                                        .add_enabled(
+                                                                            loaded_path.is_some(),
+                                                                            egui::Button::new(
+                                                                                "Clear",
+                                                                            )
+                                                                            .min_size(egui::vec2(
+                                                                                104.0, 36.0,
+                                                                            )),
+                                                                        )
+                                                                        .clicked();
+                                                                    let choose_clicked = ui
+                                                                        .add(
+                                                                            egui::Button::new(
+                                                                                "Choose File",
+                                                                            )
+                                                                            .min_size(egui::vec2(
+                                                                                104.0, 36.0,
+                                                                            )),
+                                                                        )
+                                                                        .on_hover_text(
+                                                                            "Bind a WAV file to this buffer",
+                                                                        )
+                                                                        .clicked();
+
+                                                                    if clear_clicked {
+                                                                        self.controller
+                                                                            .clear_buffer(name);
+                                                                    }
+                                                                    if choose_clicked {
+                                                                        if let Some(path) =
+                                                                            rfd::FileDialog::new()
+                                                                                .add_filter(
+                                                                                    "Wave Audio",
+                                                                                    &["wav"],
+                                                                                )
+                                                                                .set_title(format!(
+                                                                                    "Bind '{name}' buffer"
+                                                                                ))
+                                                                                .pick_file()
+                                                                        {
+                                                                            if let Some(file_path) =
+                                                                                path.to_str()
+                                                                            {
+                                                                                self.controller
+                                                                                    .bind_buffer_file(
+                                                                                        name,
+                                                                                        file_path,
+                                                                                    );
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                },
+                                                            );
+                                                        },
+                                                    );
+
+                                                    ui.add_space(8.0);
+                                                    ui.label(
+                                                        egui::RichText::new("Loaded file")
+                                                            .size(12.0)
+                                                            .weak(),
+                                                    );
+                                                    ui.add_space(4.0);
+                                                    egui::Frame::group(ui.style())
+                                                        .fill(ui.visuals().faint_bg_color)
+                                                        .stroke(
+                                                            ui.visuals()
+                                                                .widgets
+                                                                .noninteractive
+                                                                .bg_stroke,
+                                                        )
+                                                        .corner_radius(10.0)
+                                                        .inner_margin(egui::Margin::same(10))
+                                                        .show(ui, |ui| {
+                                                            ui.set_min_width(ui.available_width());
+                                                            let text = loaded_path
+                                                                .unwrap_or("No file loaded");
+                                                            let rich_text =
+                                                                if loaded_path.is_some() {
+                                                                    egui::RichText::new(text)
+                                                                        .monospace()
+                                                                } else {
+                                                                    egui::RichText::new(text)
+                                                                        .weak()
+                                                                };
+                                                            ui.label(rich_text);
+                                                        });
+
+                                                });
                                             if index + 1 < state.buffers.len() {
-                                                ui.add_space(6.0);
-                                                ui.separator();
                                                 ui.add_space(6.0);
                                             }
                                         }
@@ -419,26 +518,73 @@ impl eframe::App for PreviewApp {
                                                         .collect()
                                                 });
 
-                                            ui.horizontal(|ui| {
-                                                ui.label(egui::RichText::new(name).strong());
-                                                if ui.button("Trigger").clicked() {
-                                                    self.controller
-                                                        .trigger_event(name, values.clone());
-                                                }
-                                            });
-                                            for (index, arg) in args.iter().enumerate() {
-                                                render_scalar_value_editor(
-                                                    ui,
-                                                    arg_name(arg).unwrap_or("arg"),
-                                                    arg_type(arg),
-                                                    None,
-                                                    None,
-                                                    &mut values[index],
-                                                );
-                                            }
+                                            egui::Frame::group(ui.style())
+                                                .fill(ui.visuals().panel_fill)
+                                                .stroke(
+                                                    ui.visuals().widgets.noninteractive.bg_stroke,
+                                                )
+                                                .corner_radius(12.0)
+                                                .inner_margin(egui::Margin::same(12))
+                                                .show(ui, |ui| {
+                                                    ui.allocate_ui_with_layout(
+                                                        egui::vec2(ui.available_width(), 36.0),
+                                                        egui::Layout::left_to_right(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            ui.label(
+                                                                egui::RichText::new(name)
+                                                                    .strong()
+                                                                    .size(15.0),
+                                                            );
+                                                            ui.with_layout(
+                                                                egui::Layout::right_to_left(
+                                                                    egui::Align::Center,
+                                                                ),
+                                                                |ui| {
+                                                                    let trigger_button =
+                                                                        egui::Button::new(
+                                                                            egui::RichText::new(
+                                                                                "Trigger",
+                                                                            )
+                                                                            .strong()
+                                                                            .size(14.0),
+                                                                        )
+                                                                        .min_size(egui::vec2(
+                                                                            104.0, 36.0,
+                                                                        ));
+                                                                    if ui
+                                                                        .add_enabled(
+                                                                            state.connected,
+                                                                            trigger_button,
+                                                                        )
+                                                                        .clicked()
+                                                                    {
+                                                                        self.controller
+                                                                            .trigger_event(
+                                                                                name,
+                                                                                values.clone(),
+                                                                            );
+                                                                    }
+                                                                },
+                                                            );
+                                                        },
+                                                    );
+
+                                                    if !args.is_empty() {
+                                                        ui.add_space(8.0);
+                                                        for (index, arg) in args.iter().enumerate()
+                                                        {
+                                                            render_event_arg_editor(
+                                                                ui,
+                                                                arg_name(arg).unwrap_or("arg"),
+                                                                arg_type(arg),
+                                                                &mut values[index],
+                                                            );
+                                                        }
+                                                    }
+                                                });
                                             if event_index + 1 < state.events.len() {
-                                                ui.add_space(6.0);
-                                                ui.separator();
                                                 ui.add_space(6.0);
                                             }
                                         }
@@ -565,17 +711,24 @@ fn ellipsize_middle(text: &str, max_chars: usize) -> String {
     format!("{head}...{tail}")
 }
 
-fn render_scalar_value_editor(
-    ui: &mut egui::Ui,
-    label: &str,
-    ty: &str,
-    min: Option<f64>,
-    max: Option<f64>,
-    value: &mut Value,
-) -> bool {
+fn render_event_arg_editor(ui: &mut egui::Ui, label: &str, ty: &str, value: &mut Value) -> bool {
+    let row_height = 26.0;
     if ty == "bool" {
         let mut checked = value.as_bool().unwrap_or(false);
-        let changed = ui.checkbox(&mut checked, label).changed();
+        let changed = ui
+            .horizontal(|ui| {
+                ui.set_min_height(row_height);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(label).strong());
+                    ui.label(egui::RichText::new(ty).size(12.0).weak());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut checked, "")
+                })
+                .inner
+                .changed()
+            })
+            .inner;
         if changed {
             *value = Value::Bool(checked);
         }
@@ -584,74 +737,39 @@ fn render_scalar_value_editor(
 
     let is_integer = is_integer_type(ty);
     let mut number = value.as_f64().unwrap_or(0.0);
-    let step = scalar_step(ty, min, max);
+    let step = scalar_step(ty, None, None);
     let changed = ui
-        .vertical(|ui| {
-            let header_drag_changed = ui
-                .horizontal(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(label).strong());
-                        ui.label(egui::RichText::new(ty).size(12.0).weak());
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if is_integer {
-                            let mut integer = number.round() as i64;
-                            let drag = if let (Some(min), Some(max)) = (min, max) {
-                                egui::DragValue::new(&mut integer)
-                                    .speed(0.25)
-                                    .range((min.ceil() as i64)..=(max.floor() as i64))
-                            } else {
-                                egui::DragValue::new(&mut integer).speed(0.25)
-                            };
-                            let changed = ui.add_sized([120.0, 26.0], drag).changed();
-                            number = integer as f64;
-                            changed
-                        } else {
-                            let drag = if let (Some(min), Some(max)) = (min, max) {
-                                egui::DragValue::new(&mut number)
-                                    .speed(step / 4.0)
-                                    .range(min..=max)
-                                    .max_decimals(slider_decimals(step))
-                            } else {
-                                egui::DragValue::new(&mut number)
-                                    .speed(step / 4.0)
-                                    .max_decimals(slider_decimals(step))
-                            };
-                            ui.add_sized([120.0, 26.0], drag).changed()
-                        }
-                    })
-                    .inner
-                })
-                .inner;
-            ui.add_space(2.0);
-            if let (Some(min), Some(max)) = (min, max) {
-                let slider_height = 24.0;
-                let slider_changed = ui
-                    .scope(|ui| {
-                        ui.spacing_mut().interact_size.y = slider_height;
-                        ui.spacing_mut().slider_width = ui.available_width();
-                        let slider = if is_integer {
-                            egui::Slider::new(&mut number, min..=max)
-                                .integer()
-                                .step_by(1.0)
-                                .show_value(false)
-                                .trailing_fill(true)
-                        } else {
-                            egui::Slider::new(&mut number, min..=max)
-                                .step_by(step)
-                                .show_value(false)
-                                .trailing_fill(true)
-                        };
-                        ui.add_sized([ui.available_width(), slider_height], slider)
-                            .changed()
-                    })
-                    .inner;
-                slider_changed || header_drag_changed
-            } else {
-                header_drag_changed
-            }
+        .horizontal(|ui| {
+            ui.set_min_height(row_height);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(label).strong());
+                ui.label(egui::RichText::new(ty).size(12.0).weak());
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if is_integer {
+                    let mut integer = number.round() as i64;
+                    let changed = ui
+                        .add_sized(
+                            [104.0, row_height],
+                            egui::DragValue::new(&mut integer).speed(0.25),
+                        )
+                        .changed();
+                    number = integer as f64;
+                    changed
+                } else {
+                    ui.add_sized(
+                        [104.0, row_height],
+                        egui::DragValue::new(&mut number)
+                            .speed(step / 4.0)
+                            .max_decimals(slider_decimals(step)),
+                    )
+                    .changed()
+                }
+            })
+            .inner
         })
         .inner;
+
     if changed {
         *value = json_number(number);
     }
@@ -703,7 +821,7 @@ fn render_param_value_editor(
                     } else {
                         egui::DragValue::new(&mut integer).speed(0.25)
                     };
-                    let response = ui.add_sized([120.0, 26.0], drag);
+                    let response = ui.add_sized([104.0, 26.0], drag);
                     let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
                     let editing_finished =
                         response.drag_stopped() || response.lost_focus() || enter_pressed;
@@ -732,7 +850,7 @@ fn render_param_value_editor(
                             .speed(0.01)
                             .max_decimals(8)
                     };
-                    let response = ui.add_sized([120.0, 26.0], drag);
+                    let response = ui.add_sized([104.0, 26.0], drag);
                     let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
                     let editing_finished =
                         response.drag_stopped() || response.lost_focus() || enter_pressed;
