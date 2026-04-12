@@ -11,6 +11,14 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+use onda_codegen_llvm::TargetOptLevel;
+use onda_daemon::{
+    DaemonConfig, DaemonSession, PreviewBufferChannels as DaemonPreviewBufferChannels,
+    PreviewBuildError, PreviewEventInfo, PreviewEventParamInfo, PreviewEventValue,
+    PreviewOptions, PreviewParamInfo,
+};
+use onda_frontend::Diagnostic;
+use onda_semantics::AnalysisOptions;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -248,7 +256,11 @@ impl PreviewController {
                     }
                 }
                 ControllerEvent::FileChanged => {
-                    let _ = self.restart_with_status("Restarting...");
+                    if self.state.running {
+                        let _ = self.restart_with_status("Restarting...");
+                    } else {
+                        self.refresh_stopped_state();
+                    }
                     result.state_changed = true;
                 }
             }
@@ -401,6 +413,37 @@ impl PreviewController {
         }
     }
 
+    fn refresh_stopped_state(&mut self) {
+        match load_preview_metadata(&self.onda_path, &self.options) {
+            Ok(metadata) => {
+                reconcile_preserved_params(
+                    &mut self.preserved_params,
+                    &self.state.params,
+                    &metadata.params,
+                );
+                self.state.params = metadata.params;
+                apply_preserved_param_state(&mut self.state.params, &self.preserved_params);
+                self.state.buffers = metadata.buffers;
+                apply_preserved_buffer_state(&mut self.state.buffers, &self.preserved_buffers);
+                self.state.events = metadata.events;
+                apply_preserved_event_state(&mut self.state.events, &self.preserved_events);
+                self.state.path = metadata.path;
+                self.state.output_channels = metadata.output_channels;
+                self.state.status = "Stopped".to_owned();
+                self.state.error = None;
+                self.state.scope_channels = 0;
+                self.state.scope_samples.clear();
+            }
+            Err(error) => {
+                self.state.status = "Stopped".to_owned();
+                self.state.error = Some(error);
+                self.state.output_channels = 0;
+                self.state.scope_channels = 0;
+                self.state.scope_samples.clear();
+            }
+        }
+    }
+
     fn handle_child_ready(&mut self, ready: ReadyEvent) {
         let bridge_error = self
             .bridge
@@ -492,6 +535,128 @@ impl Drop for PreviewController {
 struct ChildSession {
     child: Option<Child>,
     stderr_buffer: Arc<Mutex<String>>,
+}
+
+struct PreviewMetadata {
+    path: String,
+    output_channels: usize,
+    params: Vec<Value>,
+    buffers: Vec<Value>,
+    events: Vec<Value>,
+}
+
+fn load_preview_metadata(path: &Path, options: &PreviewHostOptions) -> Result<PreviewMetadata, String> {
+    let mut session = DaemonSession::new(DaemonConfig {
+        analysis: AnalysisOptions {
+            sample_rate: options.sample_rate_hz as f32,
+            block_size: options.block_frames,
+        },
+        preview: PreviewOptions {
+            sample_rate: options.sample_rate_hz as f32,
+            block_size: options.block_frames,
+            fast_math: options.fast_math,
+            opt_level: parse_preview_opt_level(&options.opt_level),
+            ..PreviewOptions::default()
+        },
+    });
+    let preview = session
+        .start_preview(path)
+        .map_err(|err| format_preview_build_error("preview refresh failed", &err))?;
+    Ok(PreviewMetadata {
+        path: display_path(preview.path()),
+        output_channels: preview.output_channel_count(),
+        params: preview.param_info().iter().map(preview_param_json).collect(),
+        buffers: preview.buffer_info().iter().map(preview_buffer_json).collect(),
+        events: preview.event_info().iter().map(preview_event_json).collect(),
+    })
+}
+
+fn parse_preview_opt_level(value: &str) -> TargetOptLevel {
+    match value {
+        "0" => TargetOptLevel::O0,
+        "1" => TargetOptLevel::O1,
+        "2" => TargetOptLevel::O2,
+        _ => TargetOptLevel::O3,
+    }
+}
+
+fn format_preview_build_error(prefix: &str, err: &PreviewBuildError) -> String {
+    match err {
+        PreviewBuildError::Diagnostics(diags) => {
+            if let Some(first) = diags.first() {
+                format_single_diagnostic(prefix, first)
+            } else {
+                format!("{prefix}: preview diagnostics")
+            }
+        }
+        PreviewBuildError::Runtime(diag) => format_single_diagnostic(prefix, diag),
+    }
+}
+
+fn format_single_diagnostic(prefix: &str, diag: &Diagnostic) -> String {
+    let location = if let Some(file) = diag
+        .file
+        .as_ref()
+        .filter(|file: &&String| !file.is_empty())
+    {
+        format!("{}:{}:{}", file, diag.line, diag.column)
+    } else {
+        format!("{}:{}", diag.line, diag.column)
+    };
+    format!("{prefix}: {} ({location})", diag.message)
+}
+
+fn preview_param_json(param: &PreviewParamInfo) -> Value {
+    json!({
+        "index": param.index,
+        "name": param.name,
+        "type": param.type_repr,
+        "value": param.value,
+        "default": param.default,
+        "rangeMin": param.range_min,
+        "rangeMax": param.range_max,
+        "scalar": param.scalar,
+    })
+}
+
+fn preview_buffer_json(buffer: &onda_daemon::PreviewBufferInfo) -> Value {
+    let (channels_kind, channels_static) = match buffer.channels {
+        DaemonPreviewBufferChannels::Mono => ("mono", None),
+        DaemonPreviewBufferChannels::Static(channels) => ("static", Some(channels)),
+        DaemonPreviewBufferChannels::Dynamic => ("dynamic", None),
+    };
+    json!({
+        "index": buffer.index,
+        "name": buffer.name,
+        "type": buffer.type_repr,
+        "channelsKind": channels_kind,
+        "channelsStatic": channels_static,
+        "loadedPath": buffer.loaded_path,
+    })
+}
+
+fn preview_event_json(event: &PreviewEventInfo) -> Value {
+    json!({
+        "index": event.index,
+        "name": event.name,
+        "args": event.params.iter().map(preview_event_param_json).collect::<Vec<_>>(),
+    })
+}
+
+fn preview_event_param_json(param: &PreviewEventParamInfo) -> Value {
+    json!({
+        "index": param.index,
+        "name": param.name,
+        "type": param.type_repr,
+        "value": preview_event_value_json(&param.value),
+    })
+}
+
+fn preview_event_value_json(value: &PreviewEventValue) -> Value {
+    match value {
+        PreviewEventValue::Bool(value) => Value::Bool(*value),
+        PreviewEventValue::Number(value) => json!(value),
+    }
 }
 
 impl ChildSession {
@@ -623,7 +788,7 @@ impl ChildSession {
 
     fn kill(&mut self) {
         if let Some(ref mut child) = self.child {
-            let _ = child.kill();
+            terminate_preview_child(child);
             let _ = child.wait();
         }
         self.child = None;
@@ -634,6 +799,23 @@ impl Drop for ChildSession {
     fn drop(&mut self) {
         self.kill();
     }
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_preview_child(child: &mut Child) {
+    let pid = child.id().to_string();
+    let mut cmd = Command::new("taskkill");
+    cmd.arg("/PID").arg(pid).arg("/T").arg("/F");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    if cmd.status().map(|status| status.success()).unwrap_or(false) {
+        return;
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_preview_child(child: &mut Child) {
+    let _ = child.kill();
 }
 
 #[derive(Clone)]

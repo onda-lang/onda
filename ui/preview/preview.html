@@ -855,17 +855,22 @@
         return Number(snapped.toFixed(places));
       }
 
+      function canEditPatchControls() {
+        return Boolean(state.path);
+      }
+
       function createSliderControl(param, currentValue, step, onInputValue, onCommitValue) {
         const min = Number(param.rangeMin);
         const max = Number(param.rangeMax);
+        const canEdit = canEditPatchControls();
         const slider = document.createElement("div");
         slider.className = "param-slider";
-        slider.tabIndex = state.connected ? 0 : -1;
+        slider.tabIndex = canEdit ? 0 : -1;
         slider.setAttribute("role", "slider");
         slider.setAttribute("aria-label", param.name);
         slider.setAttribute("aria-valuemin", String(min));
         slider.setAttribute("aria-valuemax", String(max));
-        slider.setAttribute("aria-disabled", state.connected ? "false" : "true");
+        slider.setAttribute("aria-disabled", canEdit ? "false" : "true");
 
         const track = document.createElement("div");
         track.className = "param-slider-track";
@@ -904,7 +909,7 @@
           }
         };
 
-        if (state.connected) {
+        if (canEdit) {
           slider.addEventListener("pointerdown", (event) => {
             slider.setPointerCapture(event.pointerId);
             setFromClientX(event.clientX, false);
@@ -1123,6 +1128,7 @@
         const hasEvents = state.events.length > 0;
         const hasParams = state.params.length > 0;
         const hasIoSettings = state.inputDevices.length > 0 || state.outputDevices.length > 0;
+        const canEditPatch = canEditPatchControls();
         buffersSection.style.display = hasBuffers ? "" : "none";
         eventsSection.style.display = hasEvents ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
@@ -1157,13 +1163,14 @@
             const choose = document.createElement("button");
             choose.className = "secondary";
             choose.textContent = "Choose File";
+            choose.disabled = !canEditPatch;
             choose.addEventListener("click", () => {
               hostBridge.postMessage({ type: "chooseBufferFile", name: buffer.name });
             });
             const clear = document.createElement("button");
             clear.className = "secondary";
             clear.textContent = "Clear";
-            clear.disabled = !buffer.loadedPath;
+            clear.disabled = !canEditPatch || !buffer.loadedPath;
             clear.addEventListener("click", () => {
               hostBridge.postMessage({ type: "clearBuffer", name: buffer.name });
             });
@@ -1283,7 +1290,7 @@
             const input = document.createElement("input");
             input.type = "checkbox";
             input.checked = Boolean(param.value);
-            input.disabled = !state.connected;
+            input.disabled = !canEditPatch;
             input.addEventListener("change", () => {
               hostBridge.postMessage({ type: "setParam", name: param.name, value: input.checked });
             });
@@ -1308,7 +1315,7 @@
               number.max = String(param.rangeMax);
               number.step = step;
               number.value = formatNumberForInput(currentValue, stepValue);
-              number.disabled = !state.connected;
+              number.disabled = !canEditPatch;
               controls.appendChild(number);
 
               const sliderControl = createSliderControl(
@@ -1352,7 +1359,7 @@
               number.type = "number";
               number.step = step;
               number.value = formatNumberForInput(currentValue, stepValue);
-              number.disabled = !state.connected;
+              number.disabled = !canEditPatch;
               number.addEventListener("change", () => {
                 const parsed = Number(number.value);
                 if (!Number.isFinite(parsed)) {

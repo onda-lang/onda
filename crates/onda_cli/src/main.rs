@@ -47,6 +47,9 @@ const DEFAULT_PLAY_BLOCK_FRAMES: usize = 128;
 const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
 const ONDA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[cfg(unix)]
+static PREVIEW_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 const USAGE_BODY: &str = r#"Commands:
   
   onda compile <input.onda>          Check, inspect, or emit compile artifacts
@@ -1653,6 +1656,7 @@ fn run_daemon_play(
 }
 
 fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
+    let _signal_guard = install_preview_signal_handlers();
     let host = cpal::default_host();
     let output_device = find_output_device(&host, launch.output_device.as_deref())?;
     let default_output_config = output_device
@@ -1805,6 +1809,11 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         &stop_flag,
         &render_error,
     )?;
+    if stop_flag.load(Ordering::Acquire) {
+        let _ = render_thread.join();
+        drop(control_server);
+        return Ok(());
+    }
 
     let stream = match default_output_config.sample_format() {
         cpal::SampleFormat::F32 => build_output_stream::<f32>(
@@ -1882,6 +1891,9 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     {
         return Err(err);
     }
+    if preview_termination_requested() {
+        return Ok(());
+    }
     Ok(())
 }
 
@@ -1900,6 +1912,10 @@ fn wait_for_playback_completion(
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
     loop {
+        if preview_termination_requested() {
+            stop_flag.store(true, Ordering::Release);
+            break;
+        }
         if stop_flag.load(Ordering::Acquire) {
             break;
         }
@@ -2554,6 +2570,10 @@ fn wait_for_prefill(
     render_error: &Arc<Mutex<Option<String>>>,
 ) -> Result<(), String> {
     while sample_queue.len() < min_samples && !stop_flag.load(Ordering::Acquire) {
+        if preview_termination_requested() {
+            stop_flag.store(true, Ordering::Release);
+            break;
+        }
         if let Some(err) = render_error
             .lock()
             .map_err(|_| "failed to read render thread error state".to_owned())?
@@ -2572,6 +2592,58 @@ fn store_thread_error(slot: &Arc<Mutex<Option<String>>>, message: String) {
             *slot = Some(message);
         }
     }
+}
+
+#[cfg(unix)]
+extern "C" fn preview_termination_signal_handler(_sig: libc::c_int) {
+    PREVIEW_TERMINATION_REQUESTED.store(true, Ordering::Release);
+}
+
+#[cfg(unix)]
+struct PreviewSignalGuard {
+    previous_sigint: libc::sighandler_t,
+    previous_sigterm: libc::sighandler_t,
+}
+
+#[cfg(unix)]
+impl Drop for PreviewSignalGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::signal(libc::SIGINT, self.previous_sigint);
+            libc::signal(libc::SIGTERM, self.previous_sigterm);
+        }
+        PREVIEW_TERMINATION_REQUESTED.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(unix)]
+fn install_preview_signal_handlers() -> PreviewSignalGuard {
+    PREVIEW_TERMINATION_REQUESTED.store(false, Ordering::Release);
+    let handler = preview_termination_signal_handler as *const () as libc::sighandler_t;
+    let previous_sigint = unsafe { libc::signal(libc::SIGINT, handler) };
+    let previous_sigterm = unsafe { libc::signal(libc::SIGTERM, handler) };
+    PreviewSignalGuard {
+        previous_sigint,
+        previous_sigterm,
+    }
+}
+
+#[cfg(not(unix))]
+struct PreviewSignalGuard;
+
+#[cfg(not(unix))]
+fn install_preview_signal_handlers() -> PreviewSignalGuard {
+    PreviewSignalGuard
+}
+
+#[cfg(unix)]
+fn preview_termination_requested() -> bool {
+    PREVIEW_TERMINATION_REQUESTED.load(Ordering::Acquire)
+}
+
+#[cfg(not(unix))]
+fn preview_termination_requested() -> bool {
+    false
 }
 
 fn preview_param_json(param: &PreviewParamInfo) -> Value {

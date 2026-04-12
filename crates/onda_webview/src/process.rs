@@ -190,7 +190,7 @@ impl ChildSession {
     /// Kill the child process if it's still running.
     pub fn kill(&mut self) {
         if let Some(ref mut child) = self.child {
-            let _ = child.kill();
+            terminate_preview_child(child);
             let _ = child.wait();
         }
         self.child = None;
@@ -201,4 +201,21 @@ impl Drop for ChildSession {
     fn drop(&mut self) {
         self.kill();
     }
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_preview_child(child: &mut Child) {
+    let pid = child.id().to_string();
+    let mut cmd = Command::new("taskkill");
+    cmd.arg("/PID").arg(pid).arg("/T").arg("/F");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    if cmd.status().map(|status| status.success()).unwrap_or(false) {
+        return;
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_preview_child(child: &mut Child) {
+    let _ = child.kill();
 }
