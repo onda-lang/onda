@@ -2,7 +2,7 @@
 use std::path::Path;
 
 #[cfg(target_os = "linux")]
-use onda_preview::PreviewHostOptions;
+use onda_run::RunHostOptions;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod platform {
@@ -10,13 +10,13 @@ mod platform {
     use std::time::Duration;
 
     use image::ImageReader;
-    use onda_preview::{PreviewController, PreviewHostOptions, PreviewState, PreviewThemeMode};
+    use onda_run::{RunController, RunHostOptions, RunState, RunThemeMode};
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
     use tao::window::{Icon, WindowBuilder};
     use wry::{Rect, WebViewBuilder};
 
-    const PREVIEW_HTML: &str = include_str!("../../../ui/preview/preview.html");
+    const RUN_HTML: &str = include_str!("../../../ui/run/run.html");
     const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo-dark-rect.png");
     const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo-rect.png");
 
@@ -29,10 +29,10 @@ mod platform {
         },
     }
 
-    pub fn run_preview_window(onda_path: &Path, options: PreviewHostOptions) -> Result<(), String> {
+    pub fn run_run_window(onda_path: &Path, options: RunHostOptions) -> Result<(), String> {
         let event_loop: EventLoop<UserEvent> = EventLoopBuilder::with_user_event().build();
         let proxy = event_loop.create_proxy();
-        let preview_theme = options.theme;
+        let run_theme = options.theme;
 
         let window = WindowBuilder::new()
             .with_title(format!(
@@ -44,15 +44,15 @@ mod platform {
             ))
             .with_inner_size(tao::dpi::LogicalSize::new(480.0_f64, 720.0))
             .with_window_icon(Some(load_app_icon(startup_window_icon_is_dark(
-                preview_theme,
+                run_theme,
             ))?))
             .build(&event_loop)
             .map_err(|e| format!("failed to create window: {e}"))?;
-        if let Ok(icon) = load_app_icon(resolved_window_icon_is_dark(&window, preview_theme)) {
+        if let Ok(icon) = load_app_icon(resolved_window_icon_is_dark(&window, run_theme)) {
             window.set_window_icon(Some(icon));
         }
 
-        let theme_mode = web_theme_mode(preview_theme);
+        let theme_mode = web_theme_mode(run_theme);
         let init_script = format!(
             r#"
             window.__hostBridge = {{ mode: "wry", theme: "{theme_mode}" }};
@@ -64,7 +64,7 @@ mod platform {
         );
         let ipc_proxy = proxy.clone();
         let webview = WebViewBuilder::new()
-            .with_html(PREVIEW_HTML)
+            .with_html(RUN_HTML)
             .with_initialization_script(&init_script)
             .with_ipc_handler(move |msg| {
                 let _ = ipc_proxy.send_event(UserEvent::WebviewMessage(msg.body().to_owned()));
@@ -82,7 +82,7 @@ mod platform {
             .into(),
         });
 
-        let mut controller = PreviewController::new(onda_path, options)?;
+        let mut controller = RunController::new(onda_path, options)?;
         let mut pending_state_sync = true;
         let mut pending_scope_sync = true;
 
@@ -120,7 +120,7 @@ mod platform {
                     event: WindowEvent::ThemeChanged(theme),
                     ..
                 } => {
-                    if matches!(preview_theme, PreviewThemeMode::Auto) {
+                    if matches!(run_theme, RunThemeMode::Auto) {
                         if let Ok(icon) = load_app_icon(matches!(theme, tao::window::Theme::Dark)) {
                             window.set_window_icon(Some(icon));
                         }
@@ -163,7 +163,7 @@ mod platform {
     fn handle_webview_message(
         msg: &serde_json::Value,
         webview: &wry::WebView,
-        controller: &mut PreviewController,
+        controller: &mut RunController,
         proxy: &tao::event_loop::EventLoopProxy<UserEvent>,
         theme_mode: &str,
     ) -> bool {
@@ -256,7 +256,7 @@ mod platform {
         }
     }
 
-    fn sync_panel_state(webview: &wry::WebView, state: &PreviewState, theme_mode: &str) {
+    fn sync_panel_state(webview: &wry::WebView, state: &RunState, theme_mode: &str) {
         let panel_state = serde_json::json!({
             "running": state.running,
             "connected": state.connected,
@@ -278,7 +278,7 @@ mod platform {
         sync_scope_state(webview, state);
     }
 
-    fn sync_scope_state(webview: &wry::WebView, state: &PreviewState) {
+    fn sync_scope_state(webview: &wry::WebView, state: &RunState) {
         let scope_message = serde_json::json!({
             "type": "scopeData",
             "channels": state.scope_channels,
@@ -323,35 +323,35 @@ mod platform {
             .map_err(|err| format!("failed to build webview app icon: {err}"))
     }
 
-    fn startup_window_icon_is_dark(theme: PreviewThemeMode) -> bool {
+    fn startup_window_icon_is_dark(theme: RunThemeMode) -> bool {
         match theme {
-            PreviewThemeMode::Dark => true,
-            PreviewThemeMode::Light => false,
-            PreviewThemeMode::Auto => true,
+            RunThemeMode::Dark => true,
+            RunThemeMode::Light => false,
+            RunThemeMode::Auto => true,
         }
     }
 
-    fn resolved_window_icon_is_dark(window: &tao::window::Window, theme: PreviewThemeMode) -> bool {
+    fn resolved_window_icon_is_dark(window: &tao::window::Window, theme: RunThemeMode) -> bool {
         match theme {
-            PreviewThemeMode::Dark => true,
-            PreviewThemeMode::Light => false,
-            PreviewThemeMode::Auto => matches!(window.theme(), tao::window::Theme::Dark),
+            RunThemeMode::Dark => true,
+            RunThemeMode::Light => false,
+            RunThemeMode::Auto => matches!(window.theme(), tao::window::Theme::Dark),
         }
     }
 
-    fn web_theme_mode(theme: PreviewThemeMode) -> &'static str {
+    fn web_theme_mode(theme: RunThemeMode) -> &'static str {
         match theme {
-            PreviewThemeMode::Auto => "auto",
-            PreviewThemeMode::Dark => "dark",
-            PreviewThemeMode::Light => "light",
+            RunThemeMode::Auto => "auto",
+            RunThemeMode::Dark => "dark",
+            RunThemeMode::Light => "light",
         }
     }
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-pub use platform::run_preview_window;
+pub use platform::run_run_window;
 
 #[cfg(target_os = "linux")]
-pub fn run_preview_window(_onda_path: &Path, _options: PreviewHostOptions) -> Result<(), String> {
-    Err("webview preview host is unavailable on this platform/build".to_owned())
+pub fn run_run_window(_onda_path: &Path, _options: RunHostOptions) -> Result<(), String> {
+    Err("webview run host is unavailable on this platform/build".to_owned())
 }

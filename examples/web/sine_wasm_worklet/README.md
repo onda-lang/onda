@@ -45,4 +45,4 @@ If script execution is blocked, use:
 powershell.exe -ExecutionPolicy Bypass -File .\examples\web\sine_wasm_worklet\build-demo.ps1
 ```
 
-Open `http://127.0.0.1:8787/` and click `Start Audio`. The page loads the same `onda-sine-processor.js` worklet and runs the Onda patch in a real `AudioContext` with live frequency and gain controls.
+Open `http://127.0.0.1:8787/` and click `Start Audio`. The page loads the same `onda-sine-processor.js` worklet and runs the Onda file in a real `AudioContext` with live frequency and gain controls.

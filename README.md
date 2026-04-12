@@ -3,7 +3,7 @@
 </h1>
 
 `onda` is a DSL for low-level audio programming.
-This repository provides the compiler, runtime, CLI, language server, preview tooling and a C API for embedding the JIT compiler.
+This repository provides the compiler, runtime, CLI, language server, run tooling and a C API for embedding the JIT compiler.
 
 ## Short example
 
@@ -31,10 +31,10 @@ Take a look at the `examples/` folder for more usage examples.
 
 ## What this repository provides
 
-- `onda` CLI for compile, render, preview, diagnostics, and language-server workflows
+- `onda` CLI for compile, run, diagnostics, and language-server workflows
 - LLVM-backed compiler and JIT runtime for Onda programs
 - stdio LSP server for diagnostics and semantic tokens
-- preview tooling for offline render and real-time playback
+- run tooling for offline render and real-time playback
 - editor integrations for VSCode and Neovim
 - C API in `include/onda.h` for non-Rust hosts
 
@@ -48,11 +48,11 @@ The CLI can also emit LLVM IR and native object files for AOT compilation.
 - `crates/onda_codegen_llvm`: LLVM lowering and ORC JIT backend
 - `crates/onda_runtime`: runtime instance and processing APIs
 - `crates/onda_api`: C ABI
-- `crates/onda_daemon`: analysis and preview session engine
-- `crates/onda_preview`: shared preview controller/runtime
-- `crates/onda_cli`: CLI, LSP adapter, and preview control transport
-- `crates/onda_egui`: native egui preview host
-- `crates/onda_webview`: native webview preview host
+- `crates/onda_daemon`: analysis and run session engine
+- `crates/onda_run`: shared run controller/runtime
+- `crates/onda_cli`: CLI, LSP adapter, and run control transport
+- `crates/onda_egui`: native egui run host
+- `crates/onda_webview`: native webview run host
 - `examples/`: Onda example programs
 
 ## Documentation
@@ -112,9 +112,9 @@ The CLI surface is:
 ```text
 onda compile <input.onda>
 onda lsp
-onda preview <input.onda> [--theme <auto|dark|light>]
-onda preview play <input.onda>
-onda preview render <input.onda>
+onda run <input.onda> [--theme <auto|dark|light>]
+onda run play <input.onda>
+onda run render <input.onda>
 onda daemon diagnose <input.onda>
 onda daemon stdio
 ```
@@ -145,18 +145,18 @@ Cross-target IR and object emission is also supported:
 onda compile examples/sine.onda --target-spec ./targets/arm64.toml --emit obj
 ```
 
-### `onda preview`
+### `onda run`
 
-Opens the standalone patch preview window.
-This is the interactive path for listening to a patch, tweaking params, and inspecting buffers/devices.
+Opens the standalone run window.
+This is the default interactive path for listening to a file, tweaking params, and inspecting buffers/devices.
 
 ```bash
-onda preview examples/sine.onda
+onda run examples/sine.onda
 ```
 
-Preview host selection:
-- egui is the default preview host
-- `--webview` selects the webview preview host explicitly
+Run host selection:
+- egui is the default run host
+- `--webview` selects the webview run host explicitly
 
 Useful flags:
 - `--sample-rate`
@@ -168,13 +168,13 @@ Useful flags:
 - `--output-device`
 - `--theme`
 
-### `onda preview play`
+### `onda run play`
 
 Runs the real-time playback/control transport without opening the standalone UI.
 
 ```bash
-onda preview play examples/sine.onda --dur 2
-onda preview play examples/sine.onda --forever
+onda run play examples/sine.onda --dur 2
+onda run play examples/sine.onda --forever
 ```
 
 Useful flags:
@@ -186,15 +186,15 @@ Useful flags:
 - `--input-device`
 - `--output-device`
 
-With `--control-json`, `onda preview play` prints a control handshake on stdout and serves a localhost control socket for preview clients.
+With `--control-json`, `onda run play` prints a control handshake on stdout and serves a localhost control socket for run clients.
 
-### `onda preview render`
+### `onda run render`
 
-Offline render through the preview pipeline.
-This is useful when you want the preview-oriented path, including `--set` parameter overrides, without running real-time playback.
+Offline render through the run pipeline.
+This is useful when you want the interactive run-oriented path, including `--set` parameter overrides, without running real-time playback.
 
 ```bash
-onda preview render examples/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
+onda run render examples/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
 ```
 
 Useful flags:
@@ -258,11 +258,11 @@ The VSCode extension lives in the standalone [`onda-lang/onda-vscode`](https://g
 It provides:
 - `.onda` and `.on` language registration
 - syntax highlighting plus LSP semantic tokens
-- `Onda: Run Patch`
-- `Onda: Stop Patch`
+- `Onda: Run File`
+- `Onda: Stop File`
 - `Onda: Restart Language Server`
 
-`Onda: Run Patch` launches the preview transport and opens a patch UI with:
+`Onda: Run File` launches the run transport and opens the run UI with:
 - start, stop, and reset controls
 - scalar param controls
 - input and output device selectors
@@ -275,4 +275,4 @@ It provides:
 - `.onda` and `.on` filetype detection
 - regex syntax highlighting
 - builtin LSP startup through `onda lsp`
-- `:OndaRunPatch` for launching the standalone preview window
+- `:OndaRunFile` for launching the standalone run window

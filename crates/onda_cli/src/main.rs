@@ -22,8 +22,8 @@ use onda_codegen_llvm::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
 };
 use onda_daemon::{
-    DaemonConfig, DaemonSession, PreviewBufferChannels, PreviewBufferInfo, PreviewBuildError,
-    PreviewEventInfo, PreviewEventValue, PreviewOptions, PreviewParamInfo,
+    DaemonConfig, DaemonSession, RunBufferChannels, RunBufferInfo, RunBuildError,
+    RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
 };
 use onda_frontend::{
     parse_program_file, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
@@ -31,7 +31,7 @@ use onda_frontend::{
     Diagnostic, EventParamType, Expr, FieldType, FunctionDef, InitBlock, LogicalOp, PrimitiveType,
     ProcessorDef, Program, SampleBlock, Stmt, StructDef,
 };
-use onda_preview::{available_audio_devices, PreviewHostOptions, PreviewThemeMode};
+use onda_run::{available_audio_devices, RunHostOptions, RunThemeMode};
 use onda_semantics::{
     analyze_with_options, lower_graphs_for_inspection_with_options, AnalysisOptions,
     TypedArrayInfo, TypedProgram,
@@ -48,7 +48,7 @@ const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
 const ONDA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(unix)]
-static PREVIEW_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 const USAGE_BODY: &str = r#"Commands:
   
@@ -63,14 +63,14 @@ const USAGE_BODY: &str = r#"Commands:
     [--reloc-model <default|static|pic|dynamic-no-pic>] 
     [--code-model <default|small|kernel|medium|large>] 
   
-  onda preview <input.onda>          Open the interactive preview window
+  onda run <input.onda>              Open the interactive run window
     
     [--sample-rate <hz>] [--block <frames>]
     [--opt-level <0|1|2|3>] [--fast-math] 
     [--input-device <name>] [--output-device <name>]
     [--theme <auto|dark|light>] [--webview] [--meta]
   
-  onda preview play <input.onda>     Run realtime preview playback without the UI
+  onda run play <input.onda>         Run realtime playback without the UI
     
     [--dur <seconds> | --forever]
     [--sample-rate <hz>] [--block <frames>]
@@ -78,7 +78,7 @@ const USAGE_BODY: &str = r#"Commands:
     [--input-device <name>] [--output-device <name>]
     [--set <name=value>] [--control-json] [--meta]
   
-  onda preview render <input.onda>   Render offline through the preview pipeline
+  onda run render <input.onda>       Render offline through the run pipeline
     
     [--output <path>] [--dur <seconds>]
     [--sample-rate <hz>] [--block <frames>]
@@ -96,7 +96,7 @@ const USAGE_BODY: &str = r#"Commands:
 Shared Options:
   
   --sample-rate, --sr    Sample rate in Hz (default: 48000)
-  --block, -b            Block size in frames (default: 512; preview play: 128)
+  --block, -b            Block size in frames (default: 512; run play: 128)
   --opt-level            LLVM optimization level (default: 3)
   --fast-math            Enable LLVM fast-math flags for floating-point operations
   --meta                 Print available metadata for the selected command
@@ -117,17 +117,17 @@ Compile Options:
   --reloc-model          Target relocation model for compile-time IR emission
   --code-model           Target code model for compile-time IR emission
 
-Preview Options:
+Run Options:
   
   --dur, -d              Render/play duration in seconds (default: 5)
   --forever              Render/play with infinite duration
-  --output, -o           Output WAV path for `onda preview render`
-  --input-device         Select audio input device by exact name for preview playback
-  --output-device        Select audio output device by exact name for preview playback
-  --set                  Override a scalar preview param with `name=value`
-  --control-json         Emit preview control handshake on stdout and serve param control over localhost
-  --theme                Preview window theme: `auto`, `dark`, or `light` (default: auto)
-  --webview              Use the webview preview host instead of egui
+  --output, -o           Output WAV path for `onda run render`
+  --input-device         Select audio input device by exact name for run playback
+  --output-device        Select audio output device by exact name for run playback
+  --set                  Override a scalar run param with `name=value`
+  --control-json         Emit run control handshake on stdout and serve param control over localhost
+  --theme                Run window theme: `auto`, `dark`, or `light` (default: auto)
+  --webview              Use the webview run host instead of egui
 "#;
 
 #[allow(dead_code)]
@@ -183,7 +183,7 @@ enum Command {
         target: TargetConfig,
     },
     Lsp,
-    Preview(PreviewCommand),
+    Run(RunCommand),
     Daemon(DaemonCommand),
 }
 
@@ -194,7 +194,7 @@ enum CompileEmit {
     Object,
 }
 
-enum PreviewCommand {
+enum RunCommand {
     Play {
         input: PathBuf,
         dur_seconds: Option<u32>,
@@ -228,13 +228,13 @@ enum PreviewCommand {
         output_device: Option<String>,
         fast_math: bool,
         show_meta: bool,
-        theme: PreviewThemeMode,
-        host: PreviewHostKind,
+        theme: RunThemeMode,
+        host: RunHostKind,
     },
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum PreviewHostKind {
+enum RunHostKind {
     Auto,
     Egui,
     Webview,
@@ -306,7 +306,7 @@ fn main() {
             target,
         ),
         Command::Lsp => lsp_stdio::run_stdio_loop(),
-        Command::Preview(cmd) => run_preview(cmd),
+        Command::Run(cmd) => run_run(cmd),
         Command::Daemon(cmd) => run_daemon(cmd),
     };
 
@@ -316,37 +316,37 @@ fn main() {
     }
 }
 
-fn run_preview_host(
-    host: PreviewHostKind,
+fn run_run_host(
+    host: RunHostKind,
     input: &Path,
-    options: PreviewHostOptions,
+    options: RunHostOptions,
 ) -> Result<(), String> {
-    match resolve_preview_host_kind(host) {
-        PreviewHostKind::Egui => onda_egui::run_preview_egui(input, options),
-        PreviewHostKind::Webview => run_webview_preview(input, options),
-        PreviewHostKind::Auto => unreachable!("preview host should be resolved before launch"),
+    match resolve_run_host_kind(host) {
+        RunHostKind::Egui => onda_egui::run_run_egui(input, options),
+        RunHostKind::Webview => run_webview_run(input, options),
+        RunHostKind::Auto => unreachable!("run host should be resolved before launch"),
     }
 }
 
-fn resolve_preview_host_kind(host: PreviewHostKind) -> PreviewHostKind {
+fn resolve_run_host_kind(host: RunHostKind) -> RunHostKind {
     match host {
-        PreviewHostKind::Auto => default_preview_host_kind(),
+        RunHostKind::Auto => default_run_host_kind(),
         other => other,
     }
 }
 
-fn default_preview_host_kind() -> PreviewHostKind {
-    PreviewHostKind::Egui
+fn default_run_host_kind() -> RunHostKind {
+    RunHostKind::Egui
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-fn run_webview_preview(input: &Path, options: PreviewHostOptions) -> Result<(), String> {
-    onda_webview::run_preview_window(input, options)
+fn run_webview_run(input: &Path, options: RunHostOptions) -> Result<(), String> {
+    onda_webview::run_run_window(input, options)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn run_webview_preview(_input: &Path, _options: PreviewHostOptions) -> Result<(), String> {
-    Err("webview preview host is unavailable on this platform/build".to_owned())
+fn run_webview_run(_input: &Path, _options: RunHostOptions) -> Result<(), String> {
+    Err("webview run host is unavailable on this platform/build".to_owned())
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -361,7 +361,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
     match cmd.as_str() {
         "compile" => parse_compile_args(args),
         "lsp" => parse_lsp_args(args),
-        "preview" => parse_preview_args(args),
+        "run" => parse_run_args(args),
         "daemon" => parse_daemon_args(args),
         _ => Err(format!("unknown command '{cmd}'\n{}", usage())),
     }
@@ -378,28 +378,28 @@ fn parse_lsp_args(args: impl Iterator<Item = String>) -> Result<Command, String>
     Ok(Command::Lsp)
 }
 
-fn parse_preview_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+fn parse_run_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
     let Some(subcommand) = args.next() else {
         return Err(format!(
-            "preview requires a subcommand or input file\n\n{}",
+            "run requires a subcommand or input file\n\n{}",
             usage()
         ));
     };
-    let preview = match subcommand.as_str() {
-        "play" => parse_preview_play_args(args)?,
-        "render" => parse_preview_render_args(args)?,
+    let run = match subcommand.as_str() {
+        "play" => parse_run_play_args(args)?,
+        "render" => parse_run_render_args(args)?,
         _ => {
-            // Treat as `onda preview <file.onda>` — the windowed preview.
+            // Treat as `onda run <file.onda>` — the windowed run host.
             if subcommand.starts_with('-') {
                 return Err(format!(
-                    "unknown preview option '{subcommand}'\n\n{}",
+                    "unknown run option '{subcommand}'\n\n{}",
                     usage()
                 ));
             }
-            parse_preview_window_args(subcommand, args)?
+            parse_run_window_args(subcommand, args)?
         }
     };
-    Ok(Command::Preview(preview))
+    Ok(Command::Run(run))
 }
 
 fn parse_daemon_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -411,13 +411,13 @@ fn parse_daemon_args(mut args: impl Iterator<Item = String>) -> Result<Command, 
         "diagnose" => parse_daemon_diagnose_args(args)?,
         "play" => {
             return Err(format!(
-                "daemon play was renamed to 'onda preview play'\n\n{}",
+                "daemon play was renamed to 'onda run play'\n\n{}",
                 usage()
             ))
         }
-        "preview" => {
+        "run" => {
             return Err(format!(
-                "daemon preview was renamed to 'onda preview render'\n\n{}",
+                "daemon run was renamed to 'onda run render'\n\n{}",
                 usage()
             ))
         }
@@ -725,12 +725,12 @@ fn parse_daemon_diagnose_args(
     })
 }
 
-fn parse_preview_render_args(
+fn parse_run_render_args(
     mut args: impl Iterator<Item = String>,
-) -> Result<PreviewCommand, String> {
+) -> Result<RunCommand, String> {
     let Some(input) = args.next() else {
         return Err(format!(
-            "preview render requires an input file\n\n{}",
+            "run render requires an input file\n\n{}",
             usage()
         ));
     };
@@ -810,7 +810,7 @@ fn parse_preview_render_args(
         }
     }
 
-    Ok(PreviewCommand::Render {
+    Ok(RunCommand::Render {
         input: PathBuf::from(input),
         output,
         dur_seconds,
@@ -823,10 +823,10 @@ fn parse_preview_render_args(
     })
 }
 
-fn parse_preview_window_args(
+fn parse_run_window_args(
     input: String,
     mut args: impl Iterator<Item = String>,
-) -> Result<PreviewCommand, String> {
+) -> Result<RunCommand, String> {
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_PLAY_BLOCK_FRAMES;
     let mut opt_level = TargetOptLevel::O3;
@@ -834,8 +834,8 @@ fn parse_preview_window_args(
     let mut output_device = None;
     let mut fast_math = false;
     let mut show_meta = false;
-    let mut theme = PreviewThemeMode::Auto;
-    let mut host = PreviewHostKind::Auto;
+    let mut theme = RunThemeMode::Auto;
+    let mut host = RunHostKind::Auto;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -873,9 +873,9 @@ fn parse_preview_window_args(
                 let Some(value) = args.next() else {
                     return Err("--theme requires one of: auto, dark, light".to_owned());
                 };
-                theme = parse_preview_theme_mode(&value)?;
+                theme = parse_run_theme_mode(&value)?;
             }
-            "--webview" => host = PreviewHostKind::Webview,
+            "--webview" => host = RunHostKind::Webview,
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--help" | "-h" => return Err(usage().to_owned()),
@@ -898,13 +898,13 @@ fn parse_preview_window_args(
                 output_device = Some(arg["--output-device=".len()..].to_owned());
             }
             _ if arg.starts_with("--theme=") => {
-                theme = parse_preview_theme_mode(&arg["--theme=".len()..])?;
+                theme = parse_run_theme_mode(&arg["--theme=".len()..])?;
             }
             _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
 
-    Ok(PreviewCommand::Window {
+    Ok(RunCommand::Window {
         input: PathBuf::from(input),
         sample_rate_hz,
         block_frames,
@@ -918,23 +918,23 @@ fn parse_preview_window_args(
     })
 }
 
-fn parse_preview_theme_mode(value: &str) -> Result<PreviewThemeMode, String> {
+fn parse_run_theme_mode(value: &str) -> Result<RunThemeMode, String> {
     match value {
-        "auto" => Ok(PreviewThemeMode::Auto),
-        "dark" => Ok(PreviewThemeMode::Dark),
-        "light" => Ok(PreviewThemeMode::Light),
+        "auto" => Ok(RunThemeMode::Auto),
+        "dark" => Ok(RunThemeMode::Dark),
+        "light" => Ok(RunThemeMode::Light),
         _ => Err(format!(
             "invalid --theme value '{value}'; expected auto, dark, or light"
         )),
     }
 }
 
-fn parse_preview_play_args(
+fn parse_run_play_args(
     mut args: impl Iterator<Item = String>,
-) -> Result<PreviewCommand, String> {
+) -> Result<RunCommand, String> {
     let Some(input) = args.next() else {
         return Err(format!(
-            "preview play requires an input file\n\n{}",
+            "run play requires an input file\n\n{}",
             usage()
         ));
     };
@@ -1040,7 +1040,7 @@ fn parse_preview_play_args(
         }
     }
 
-    Ok(PreviewCommand::Play {
+    Ok(RunCommand::Play {
         input: PathBuf::from(input),
         dur_seconds,
         sample_rate_hz,
@@ -1433,9 +1433,9 @@ fn run_daemon(cmd: DaemonCommand) -> Result<(), String> {
     }
 }
 
-fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
+fn run_run(cmd: RunCommand) -> Result<(), String> {
     match cmd {
-        PreviewCommand::Play {
+        RunCommand::Play {
             input,
             dur_seconds,
             sample_rate_hz,
@@ -1460,7 +1460,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             control_json,
             &param_sets,
         ),
-        PreviewCommand::Render {
+        RunCommand::Render {
             input,
             output,
             dur_seconds,
@@ -1470,7 +1470,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             fast_math,
             show_meta,
             param_sets,
-        } => run_daemon_preview(
+        } => run_daemon_run(
             &input,
             &output,
             dur_seconds,
@@ -1481,7 +1481,7 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             show_meta,
             &param_sets,
         ),
-        PreviewCommand::Window {
+        RunCommand::Window {
             input,
             sample_rate_hz,
             block_frames,
@@ -1496,10 +1496,10 @@ fn run_preview(cmd: PreviewCommand) -> Result<(), String> {
             let onda_bin = env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "onda".to_owned());
-            run_preview_host(
+            run_run_host(
                 host,
                 &input,
-                PreviewHostOptions {
+                RunHostOptions {
                     sample_rate_hz,
                     block_frames,
                     opt_level: opt_level.as_str().to_owned(),
@@ -1525,10 +1525,10 @@ fn run_daemon_diagnose(
             sample_rate: sample_rate_hz as f32,
             block_size: block_frames,
         },
-        preview: PreviewOptions {
+        run: RunOptions {
             sample_rate: sample_rate_hz as f32,
             block_size: block_frames,
-            ..PreviewOptions::default()
+            ..RunOptions::default()
         },
     });
     let snapshot = session.analyze_document(input);
@@ -1542,7 +1542,7 @@ fn run_daemon_diagnose(
     ))
 }
 
-fn run_daemon_preview(
+fn run_daemon_run(
     input: &Path,
     output: &Path,
     dur_seconds: u32,
@@ -1558,35 +1558,35 @@ fn run_daemon_preview(
             sample_rate: sample_rate_hz as f32,
             block_size: block_frames,
         },
-        preview: PreviewOptions {
+        run: RunOptions {
             sample_rate: sample_rate_hz as f32,
             block_size: block_frames,
             fast_math,
             opt_level,
-            ..PreviewOptions::default()
+            ..RunOptions::default()
         },
     });
 
     session
-        .start_preview(input)
-        .map_err(|err| format_preview_build_error("daemon preview start failed", &err))?;
+        .start_run(input)
+        .map_err(|err| format_run_build_error("daemon run start failed", &err))?;
 
     if show_meta {
         let info = session
-            .preview(input)
-            .expect("preview should be active after successful start")
+            .run(input)
+            .expect("run should be active after successful start")
             .param_info();
         if !info.is_empty() {
-            println!("{}", format_preview_param_info(&info));
+            println!("{}", format_run_param_info(&info));
         }
     }
 
     for (name, value) in param_sets {
         session
-            .preview_mut(input)
-            .expect("preview should be active while applying params")
+            .run_mut(input)
+            .expect("run should be active while applying params")
             .set_param_f64(name, *value)
-            .map_err(|diag| format_single_diagnostic("daemon preview param failed", &diag))?;
+            .map_err(|diag| format_single_diagnostic("daemon run param failed", &diag))?;
     }
 
     let total_frames = sample_rate_hz as usize * dur_seconds as usize;
@@ -1596,14 +1596,14 @@ fn run_daemon_preview(
 
     for _ in 0..full_blocks {
         let block = session
-            .render_preview_block(input)
-            .map_err(|diag| format_single_diagnostic("daemon preview render failed", &diag))?;
+            .render_run_block(input)
+            .map_err(|diag| format_single_diagnostic("daemon run render failed", &diag))?;
         append_interleaved_block(&mut rendered, &block);
     }
     if tail_frames > 0 {
         let block = session
-            .render_preview_block(input)
-            .map_err(|diag| format_single_diagnostic("daemon preview render failed", &diag))?;
+            .render_run_block(input)
+            .map_err(|diag| format_single_diagnostic("daemon run render failed", &diag))?;
         let mut interleaved = Vec::<f32>::new();
         append_interleaved_block(&mut interleaved, &block);
         let channels = block.len().max(1);
@@ -1611,16 +1611,16 @@ fn run_daemon_preview(
     }
 
     let out_channels = session
-        .preview(input)
-        .expect("preview should remain active through render")
+        .run(input)
+        .expect("run should remain active through render")
         .output_channel_count();
     if out_channels == 0 {
-        return Err("daemon preview requires at least one output channel".to_owned());
+        return Err("daemon run requires at least one output channel".to_owned());
     }
 
     write_wav_interleaved_i16(output, out_channels, sample_rate_hz, &rendered)?;
     println!(
-        "Wrote {} seconds of daemon-preview audio to {}",
+        "Wrote {} seconds of daemon-run audio to {}",
         dur_seconds,
         output.display()
     );
@@ -1640,7 +1640,7 @@ fn run_daemon_play(
     control_json: bool,
     param_sets: &[(String, f64)],
 ) -> Result<(), String> {
-    play_preview_realtime(PlaybackLaunch {
+    play_run_realtime(PlaybackLaunch {
         input: input.to_path_buf(),
         dur_seconds,
         sample_rate_hz,
@@ -1655,8 +1655,8 @@ fn run_daemon_play(
     })
 }
 
-fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
-    let _signal_guard = install_preview_signal_handlers();
+fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
+    let _signal_guard = install_run_signal_handlers();
     let host = cpal::default_host();
     let output_device = find_output_device(&host, launch.output_device.as_deref())?;
     let default_output_config = output_device
@@ -1686,7 +1686,7 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     };
 
     let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
-    let render_thread = spawn_preview_render_thread(
+    let render_thread = spawn_run_render_thread(
         launch.clone(),
         Arc::clone(&sample_queue),
         Arc::clone(&input_queue),
@@ -1698,25 +1698,25 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     );
     let startup = startup_rx
         .recv()
-        .map_err(|_| "preview render thread exited before startup completed".to_owned())??;
+        .map_err(|_| "run render thread exited before startup completed".to_owned())??;
 
     let control_server = if launch.control_json {
         let Some(control_tx) = control_tx else {
             unreachable!("control channel should exist when control json is enabled");
         };
         let listener = TcpListener::bind(("127.0.0.1", 0))
-            .map_err(|err| format!("failed to bind preview control socket: {err}"))?;
+            .map_err(|err| format!("failed to bind run control socket: {err}"))?;
         let port = listener
             .local_addr()
-            .map_err(|err| format!("failed to query preview control socket: {err}"))?
+            .map_err(|err| format!("failed to query run control socket: {err}"))?
             .port();
         let startup_message = json!({
             "event": "ready",
             "path": display_path(&startup.path),
             "port": port,
-            "params": startup.params.iter().map(preview_param_json).collect::<Vec<_>>(),
-            "buffers": startup.buffers.iter().map(preview_buffer_json).collect::<Vec<_>>(),
-            "events": startup.events.iter().map(preview_event_json).collect::<Vec<_>>(),
+            "params": startup.params.iter().map(run_param_json).collect::<Vec<_>>(),
+            "buffers": startup.buffers.iter().map(run_buffer_json).collect::<Vec<_>>(),
+            "events": startup.events.iter().map(run_event_json).collect::<Vec<_>>(),
             "outputChannels": startup.output_channels,
             "inputDevices": startup.input_devices,
             "outputDevices": startup.output_devices,
@@ -1727,8 +1727,8 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             &mut BufWriter::new(std::io::stdout().lock()),
             &startup_message,
         )
-        .map_err(|err| format!("failed to write preview control startup event: {err}"))?;
-        Some(spawn_preview_control_server(
+        .map_err(|err| format!("failed to write run control startup event: {err}"))?;
+        Some(spawn_run_control_server(
             listener,
             control_tx,
             Arc::clone(&scope_ring),
@@ -1740,16 +1740,16 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
 
     if launch.show_meta && !startup.params.is_empty() {
         if launch.control_json {
-            eprintln!("{}", format_preview_param_info(&startup.params));
+            eprintln!("{}", format_run_param_info(&startup.params));
         } else {
-            println!("{}", format_preview_param_info(&startup.params));
+            println!("{}", format_run_param_info(&startup.params));
         }
     }
     if launch.show_meta && !startup.events.is_empty() {
         if launch.control_json {
-            eprintln!("{}", format_preview_event_info(&startup.events));
+            eprintln!("{}", format_run_event_info(&startup.events));
         } else {
-            println!("{}", format_preview_event_info(&startup.events));
+            println!("{}", format_run_event_info(&startup.events));
         }
     }
     if startup.output_channels == 0 {
@@ -1891,7 +1891,7 @@ fn play_preview_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     {
         return Err(err);
     }
-    if preview_termination_requested() {
+    if run_termination_requested() {
         return Ok(());
     }
     Ok(())
@@ -1912,7 +1912,7 @@ fn wait_for_playback_completion(
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
     loop {
-        if preview_termination_requested() {
+        if run_termination_requested() {
             stop_flag.store(true, Ordering::Release);
             break;
         }
@@ -2140,9 +2140,9 @@ struct PlaybackStartup {
     path: PathBuf,
     input_channels: usize,
     output_channels: usize,
-    params: Vec<PreviewParamInfo>,
-    buffers: Vec<PreviewBufferInfo>,
-    events: Vec<PreviewEventInfo>,
+    params: Vec<RunParamInfo>,
+    buffers: Vec<RunBufferInfo>,
+    events: Vec<RunEventInfo>,
     input_devices: Vec<String>,
     output_devices: Vec<String>,
     current_input_device: Option<String>,
@@ -2151,13 +2151,13 @@ struct PlaybackStartup {
 
 enum PlaybackControlCommand {
     GetParams {
-        reply: mpsc::Sender<Result<Vec<PreviewParamInfo>, String>>,
+        reply: mpsc::Sender<Result<Vec<RunParamInfo>, String>>,
     },
     GetBuffers {
-        reply: mpsc::Sender<Result<Vec<PreviewBufferInfo>, String>>,
+        reply: mpsc::Sender<Result<Vec<RunBufferInfo>, String>>,
     },
     GetEvents {
-        reply: mpsc::Sender<Result<Vec<PreviewEventInfo>, String>>,
+        reply: mpsc::Sender<Result<Vec<RunEventInfo>, String>>,
     },
     GetDevices {
         reply: mpsc::Sender<Result<(Vec<String>, Vec<String>), String>>,
@@ -2169,7 +2169,7 @@ enum PlaybackControlCommand {
     },
     TriggerEvent {
         name: String,
-        values: Vec<PreviewEventValue>,
+        values: Vec<RunEventValue>,
         reply: Option<mpsc::Sender<Result<(), String>>>,
     },
     BindBufferWav {
@@ -2257,7 +2257,7 @@ struct PlaybackControlRequest {
     max_frames: Option<usize>,
 }
 
-fn spawn_preview_render_thread(
+fn spawn_run_render_thread(
     launch: PlaybackLaunch,
     sample_queue: Arc<SpscSampleRing>,
     input_queue: Arc<SpscSampleRing>,
@@ -2274,48 +2274,48 @@ fn spawn_preview_render_thread(
                 sample_rate: launch.sample_rate_hz as f32,
                 block_size: launch.block_frames,
             },
-            preview: PreviewOptions {
+            run: RunOptions {
                 sample_rate: launch.sample_rate_hz as f32,
                 block_size: launch.block_frames,
                 fast_math: launch.fast_math,
                 opt_level: launch.opt_level,
-                ..PreviewOptions::default()
+                ..RunOptions::default()
             },
         });
 
         let startup = (|| -> Result<PlaybackStartup, String> {
             session
-                .start_preview(&launch.input)
-                .map_err(|err| format_preview_build_error("daemon play start failed", &err))?;
+                .start_run(&launch.input)
+                .map_err(|err| format_run_build_error("daemon play start failed", &err))?;
 
-            let preview = session
-                .preview(&launch.input)
-                .expect("preview should be active after successful start");
+            let run = session
+                .run(&launch.input)
+                .expect("run should be active after successful start");
             let params = if launch.show_meta || launch.control_json {
-                preview.param_info()
+                run.param_info()
             } else {
                 Vec::new()
             };
             let buffers = if launch.control_json {
-                preview.buffer_info()
+                run.buffer_info()
             } else {
                 Vec::new()
             };
             let events = if launch.show_meta || launch.control_json {
-                preview.event_info()
+                run.event_info()
             } else {
                 Vec::new()
             };
             let input_devices = Vec::new();
             let output_devices = Vec::new();
-            let input_channels = preview.input_channel_count();
-            let output_channels = preview.output_channel_count();
-            let path = preview.path().to_path_buf();
+            let input_channels = run.input_channel_count();
+            let output_channels = run.output_channel_count();
+            let path = run.path().to_path_buf();
 
             for (name, value) in &launch.param_sets {
                 session
-                    .preview_mut(&launch.input)
-                    .expect("preview should be active while applying params")
+                    .run_mut(&launch.input)
+                    .expect("run should be active while applying params")
                     .set_param_f64(name, *value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
             }
@@ -2381,9 +2381,9 @@ fn spawn_preview_render_thread(
                                 &launch.input,
                             );
                             let result = session
-                                .preview(&launch.input)
-                                .map(|preview| preview.param_info())
-                                .ok_or_else(|| "preview is not active".to_owned());
+                                .run(&launch.input)
+                                .map(|run| run.param_info())
+                                .ok_or_else(|| "run is not active".to_owned());
                             let _ = reply.send(result);
                         }
                         PlaybackControlCommand::GetBuffers { reply } => {
@@ -2393,9 +2393,9 @@ fn spawn_preview_render_thread(
                                 &launch.input,
                             );
                             let result = session
-                                .preview(&launch.input)
-                                .map(|preview| preview.buffer_info())
-                                .ok_or_else(|| "preview is not active".to_owned());
+                                .run(&launch.input)
+                                .map(|run| run.buffer_info())
+                                .ok_or_else(|| "run is not active".to_owned());
                             let _ = reply.send(result);
                         }
                         PlaybackControlCommand::GetEvents { reply } => {
@@ -2405,9 +2405,9 @@ fn spawn_preview_render_thread(
                                 &launch.input,
                             );
                             let result = session
-                                .preview(&launch.input)
-                                .map(|preview| preview.event_info())
-                                .ok_or_else(|| "preview is not active".to_owned());
+                                .run(&launch.input)
+                                .map(|run| run.event_info())
+                                .ok_or_else(|| "run is not active".to_owned());
                             let _ = reply.send(result);
                         }
                         PlaybackControlCommand::GetDevices { reply } => {
@@ -2436,10 +2436,10 @@ fn spawn_preview_render_thread(
                                 &launch.input,
                             );
                             let result = session
-                                .preview_mut(&launch.input)
-                                .ok_or_else(|| "preview is not active".to_owned())
-                                .and_then(|preview| {
-                                    preview.trigger_event(&name, &values).map_err(|diag| {
+                                .run_mut(&launch.input)
+                                .ok_or_else(|| "run is not active".to_owned())
+                                .and_then(|run| {
+                                    run.trigger_event(&name, &values).map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon play trigger event failed",
                                             &diag,
@@ -2457,10 +2457,10 @@ fn spawn_preview_render_thread(
                                 &launch.input,
                             );
                             let result = session
-                                .preview_mut(&launch.input)
-                                .ok_or_else(|| "preview is not active".to_owned())
-                                .and_then(|preview| {
-                                    preview.bind_buffer_wav_path(&name, &path).map_err(|diag| {
+                                .run_mut(&launch.input)
+                                .ok_or_else(|| "run is not active".to_owned())
+                                .and_then(|run| {
+                                    run.bind_buffer_wav_path(&name, &path).map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon play bind buffer failed",
                                             &diag,
@@ -2476,10 +2476,10 @@ fn spawn_preview_render_thread(
                                 &launch.input,
                             );
                             let result = session
-                                .preview_mut(&launch.input)
-                                .ok_or_else(|| "preview is not active".to_owned())
-                                .and_then(|preview| {
-                                    preview.clear_buffer(&name).map_err(|diag| {
+                                .run_mut(&launch.input)
+                                .ok_or_else(|| "run is not active".to_owned())
+                                .and_then(|run| {
+                                    run.clear_buffer(&name).map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon play clear buffer failed",
                                             &diag,
@@ -2504,12 +2504,12 @@ fn spawn_preview_render_thread(
                 for sample in &mut captured {
                     *sample = input_queue.pop_one().unwrap_or(0.0);
                 }
-                if let Some(preview) = session.preview_mut(&launch.input) {
-                    preview.set_input_block(&captured, input_channels);
+                if let Some(run) = session.run_mut(&launch.input) {
+                    run.set_input_block(&captured, input_channels);
                 }
             }
 
-            let block = match session.render_preview_block(&launch.input) {
+            let block = match session.render_run_block(&launch.input) {
                 Ok(block) => block,
                 Err(diag) => {
                     store_thread_error(
@@ -2550,10 +2550,10 @@ fn flush_pending_param_updates(
 ) {
     for (name, update) in std::mem::take(pending) {
         let result = session
-            .preview_mut(input)
-            .ok_or_else(|| "preview is not active".to_owned())
-            .and_then(|preview| {
-                preview
+            .run_mut(input)
+            .ok_or_else(|| "run is not active".to_owned())
+            .and_then(|run| {
+                run
                     .set_param_f64(&name, update.value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))
             });
@@ -2570,7 +2570,7 @@ fn wait_for_prefill(
     render_error: &Arc<Mutex<Option<String>>>,
 ) -> Result<(), String> {
     while sample_queue.len() < min_samples && !stop_flag.load(Ordering::Acquire) {
-        if preview_termination_requested() {
+        if run_termination_requested() {
             stop_flag.store(true, Ordering::Release);
             break;
         }
@@ -2595,58 +2595,58 @@ fn store_thread_error(slot: &Arc<Mutex<Option<String>>>, message: String) {
 }
 
 #[cfg(unix)]
-extern "C" fn preview_termination_signal_handler(_sig: libc::c_int) {
-    PREVIEW_TERMINATION_REQUESTED.store(true, Ordering::Release);
+extern "C" fn run_termination_signal_handler(_sig: libc::c_int) {
+    RUN_TERMINATION_REQUESTED.store(true, Ordering::Release);
 }
 
 #[cfg(unix)]
-struct PreviewSignalGuard {
+struct RunSignalGuard {
     previous_sigint: libc::sighandler_t,
     previous_sigterm: libc::sighandler_t,
 }
 
 #[cfg(unix)]
-impl Drop for PreviewSignalGuard {
+impl Drop for RunSignalGuard {
     fn drop(&mut self) {
         unsafe {
             libc::signal(libc::SIGINT, self.previous_sigint);
             libc::signal(libc::SIGTERM, self.previous_sigterm);
         }
-        PREVIEW_TERMINATION_REQUESTED.store(false, Ordering::Release);
+        RUN_TERMINATION_REQUESTED.store(false, Ordering::Release);
     }
 }
 
 #[cfg(unix)]
-fn install_preview_signal_handlers() -> PreviewSignalGuard {
-    PREVIEW_TERMINATION_REQUESTED.store(false, Ordering::Release);
-    let handler = preview_termination_signal_handler as *const () as libc::sighandler_t;
+fn install_run_signal_handlers() -> RunSignalGuard {
+    RUN_TERMINATION_REQUESTED.store(false, Ordering::Release);
+    let handler = run_termination_signal_handler as *const () as libc::sighandler_t;
     let previous_sigint = unsafe { libc::signal(libc::SIGINT, handler) };
     let previous_sigterm = unsafe { libc::signal(libc::SIGTERM, handler) };
-    PreviewSignalGuard {
+    RunSignalGuard {
         previous_sigint,
         previous_sigterm,
     }
 }
 
 #[cfg(not(unix))]
-struct PreviewSignalGuard;
+struct RunSignalGuard;
 
 #[cfg(not(unix))]
-fn install_preview_signal_handlers() -> PreviewSignalGuard {
-    PreviewSignalGuard
+fn install_run_signal_handlers() -> RunSignalGuard {
+    RunSignalGuard
 }
 
 #[cfg(unix)]
-fn preview_termination_requested() -> bool {
-    PREVIEW_TERMINATION_REQUESTED.load(Ordering::Acquire)
+fn run_termination_requested() -> bool {
+    RUN_TERMINATION_REQUESTED.load(Ordering::Acquire)
 }
 
 #[cfg(not(unix))]
-fn preview_termination_requested() -> bool {
+fn run_termination_requested() -> bool {
     false
 }
 
-fn preview_param_json(param: &PreviewParamInfo) -> Value {
+fn run_param_json(param: &RunParamInfo) -> Value {
     json!({
         "index": param.index,
         "name": param.name,
@@ -2659,11 +2659,11 @@ fn preview_param_json(param: &PreviewParamInfo) -> Value {
     })
 }
 
-fn preview_buffer_json(buffer: &PreviewBufferInfo) -> Value {
+fn run_buffer_json(buffer: &RunBufferInfo) -> Value {
     let (channels_kind, channels_static) = match buffer.channels {
-        PreviewBufferChannels::Mono => ("mono", None),
-        PreviewBufferChannels::Static(channels) => ("static", Some(channels)),
-        PreviewBufferChannels::Dynamic => ("dynamic", None),
+        RunBufferChannels::Mono => ("mono", None),
+        RunBufferChannels::Static(channels) => ("static", Some(channels)),
+        RunBufferChannels::Dynamic => ("dynamic", None),
     };
     json!({
         "index": buffer.index,
@@ -2675,7 +2675,7 @@ fn preview_buffer_json(buffer: &PreviewBufferInfo) -> Value {
     })
 }
 
-fn preview_event_json(event: &PreviewEventInfo) -> Value {
+fn run_event_json(event: &RunEventInfo) -> Value {
     json!({
         "index": event.index,
         "name": event.name,
@@ -2683,16 +2683,16 @@ fn preview_event_json(event: &PreviewEventInfo) -> Value {
             "index": param.index,
             "name": param.name,
             "type": param.type_repr,
-            "default": preview_event_value_json(&param.value),
-            "value": preview_event_value_json(&param.value),
+            "default": run_event_value_json(&param.value),
+            "value": run_event_value_json(&param.value),
         })).collect::<Vec<_>>(),
     })
 }
 
-fn preview_event_value_json(value: &PreviewEventValue) -> Value {
+fn run_event_value_json(value: &RunEventValue) -> Value {
     match value {
-        PreviewEventValue::Bool(value) => Value::Bool(*value),
-        PreviewEventValue::Number(value) => serde_json::Number::from_f64(*value)
+        RunEventValue::Bool(value) => Value::Bool(*value),
+        RunEventValue::Number(value) => serde_json::Number::from_f64(*value)
             .map(Value::Number)
             .unwrap_or(Value::Null),
     }
@@ -2704,7 +2704,7 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io
     writer.flush()
 }
 
-fn spawn_preview_control_server(
+fn spawn_run_control_server(
     listener: TcpListener,
     control_tx: mpsc::Sender<PlaybackControlCommand>,
     scope_ring: Arc<Mutex<ScopeRing>>,
@@ -2719,16 +2719,16 @@ fn spawn_preview_control_server(
             match listener.accept() {
                 Ok((stream, _)) => {
                     if let Err(err) =
-                        handle_preview_control_client(stream, &control_tx, &scope_ring, &stop_flag)
+                        handle_run_control_client(stream, &control_tx, &scope_ring, &stop_flag)
                     {
-                        eprintln!("preview control client error: {err}");
+                        eprintln!("run control client error: {err}");
                     }
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(25));
                 }
                 Err(err) => {
-                    eprintln!("preview control accept error: {err}");
+                    eprintln!("run control accept error: {err}");
                     break;
                 }
             }
@@ -2736,7 +2736,7 @@ fn spawn_preview_control_server(
     })
 }
 
-fn handle_preview_control_client(
+fn handle_run_control_client(
     stream: TcpStream,
     control_tx: &mpsc::Sender<PlaybackControlCommand>,
     scope_ring: &Arc<Mutex<ScopeRing>>,
@@ -2772,7 +2772,7 @@ fn handle_preview_control_client(
 
         let request: PlaybackControlRequest = serde_json::from_str(trimmed)
             .map_err(|err| format!("invalid control request json: {err}"))?;
-        let response = preview_control_response(request, control_tx, scope_ring);
+        let response = run_control_response(request, control_tx, scope_ring);
         if let Some(response) = response {
             write_json_line(&mut writer, &response)
                 .map_err(|err| format!("failed to write control response: {err}"))?;
@@ -2782,7 +2782,7 @@ fn handle_preview_control_client(
     Ok(())
 }
 
-fn preview_control_response(
+fn run_control_response(
     request: PlaybackControlRequest,
     control_tx: &mpsc::Sender<PlaybackControlCommand>,
     scope_ring: &Arc<Mutex<ScopeRing>>,
@@ -2794,18 +2794,18 @@ fn preview_control_response(
                 let (reply_tx, reply_rx) = mpsc::channel();
                 control_tx
                 .send(PlaybackControlCommand::GetParams { reply: reply_tx })
-                .map_err(|_| "preview control channel closed".to_owned())
+                .map_err(|_| "run control channel closed".to_owned())
                 .and_then(|_| {
                     reply_rx
                         .recv()
-                        .map_err(|_| "preview control reply channel closed".to_owned())
+                        .map_err(|_| "run control reply channel closed".to_owned())
                 })
                 .map(|result| Some(match result {
                     Ok(params) => json!({
                         "id": request_id,
                         "ok": true,
                         "result": {
-                            "params": params.iter().map(preview_param_json).collect::<Vec<_>>(),
+                            "params": params.iter().map(run_param_json).collect::<Vec<_>>(),
                         }
                     }),
                     Err(err) => json!({
@@ -2819,18 +2819,18 @@ fn preview_control_response(
                 let (reply_tx, reply_rx) = mpsc::channel();
                 control_tx
                 .send(PlaybackControlCommand::GetBuffers { reply: reply_tx })
-                .map_err(|_| "preview control channel closed".to_owned())
+                .map_err(|_| "run control channel closed".to_owned())
                 .and_then(|_| {
                     reply_rx
                         .recv()
-                        .map_err(|_| "preview control reply channel closed".to_owned())
+                        .map_err(|_| "run control reply channel closed".to_owned())
                 })
                 .map(|result| Some(match result {
                     Ok(buffers) => json!({
                         "id": request_id,
                         "ok": true,
                         "result": {
-                            "buffers": buffers.iter().map(preview_buffer_json).collect::<Vec<_>>(),
+                            "buffers": buffers.iter().map(run_buffer_json).collect::<Vec<_>>(),
                         }
                     }),
                     Err(err) => json!({
@@ -2844,18 +2844,18 @@ fn preview_control_response(
                 let (reply_tx, reply_rx) = mpsc::channel();
                 control_tx
                 .send(PlaybackControlCommand::GetEvents { reply: reply_tx })
-                .map_err(|_| "preview control channel closed".to_owned())
+                .map_err(|_| "run control channel closed".to_owned())
                 .and_then(|_| {
                     reply_rx
                         .recv()
-                        .map_err(|_| "preview control reply channel closed".to_owned())
+                        .map_err(|_| "run control reply channel closed".to_owned())
                 })
                 .map(|result| Some(match result {
                     Ok(events) => json!({
                         "id": request_id,
                         "ok": true,
                         "result": {
-                            "events": events.iter().map(preview_event_json).collect::<Vec<_>>(),
+                            "events": events.iter().map(run_event_json).collect::<Vec<_>>(),
                         }
                     }),
                     Err(err) => json!({
@@ -2869,11 +2869,11 @@ fn preview_control_response(
                 let (reply_tx, reply_rx) = mpsc::channel();
                 control_tx
                     .send(PlaybackControlCommand::GetDevices { reply: reply_tx })
-                    .map_err(|_| "preview control channel closed".to_owned())
+                    .map_err(|_| "run control channel closed".to_owned())
                     .and_then(|_| {
                         reply_rx
                             .recv()
-                            .map_err(|_| "preview control reply channel closed".to_owned())
+                            .map_err(|_| "run control reply channel closed".to_owned())
                     })
                     .map(|result| {
                         Some(match result {
@@ -2921,7 +2921,7 @@ fn preview_control_response(
                                 value,
                                 reply: None,
                             })
-                            .map_err(|_| "preview control channel closed".to_owned())?;
+                            .map_err(|_| "run control channel closed".to_owned())?;
                         return Ok(None);
                     }
                     let (reply_tx, reply_rx) = mpsc::channel();
@@ -2931,10 +2931,10 @@ fn preview_control_response(
                             value,
                             reply: Some(reply_tx),
                         })
-                        .map_err(|_| "preview control channel closed".to_owned())?;
+                        .map_err(|_| "run control channel closed".to_owned())?;
                     match reply_rx
                         .recv()
-                        .map_err(|_| "preview control reply channel closed".to_owned())?
+                        .map_err(|_| "run control reply channel closed".to_owned())?
                     {
                         Ok(()) => Ok(request_id.clone().map(|id| {
                             json!({
@@ -2962,10 +2962,10 @@ fn preview_control_response(
                     let values = raw_values
                         .into_iter()
                         .map(|value| match value {
-                            Value::Bool(value) => Ok(PreviewEventValue::Bool(value)),
+                            Value::Bool(value) => Ok(RunEventValue::Bool(value)),
                             Value::Number(value) => value
                                 .as_f64()
-                                .map(PreviewEventValue::Number)
+                                .map(RunEventValue::Number)
                                 .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
                             _ => Err("triggerEvent values must be numbers or booleans".to_owned()),
                         })
@@ -2977,7 +2977,7 @@ fn preview_control_response(
                                 values,
                                 reply: None,
                             })
-                            .map_err(|_| "preview control channel closed".to_owned())?;
+                            .map_err(|_| "run control channel closed".to_owned())?;
                         return Ok(None);
                     }
                     let (reply_tx, reply_rx) = mpsc::channel();
@@ -2987,10 +2987,10 @@ fn preview_control_response(
                             values,
                             reply: Some(reply_tx),
                         })
-                        .map_err(|_| "preview control channel closed".to_owned())?;
+                        .map_err(|_| "run control channel closed".to_owned())?;
                     match reply_rx
                         .recv()
-                        .map_err(|_| "preview control reply channel closed".to_owned())?
+                        .map_err(|_| "run control reply channel closed".to_owned())?
                     {
                         Ok(()) => Ok(request_id.clone().map(|id| {
                             json!({
@@ -3024,10 +3024,10 @@ fn preview_control_response(
                             path: PathBuf::from(path),
                             reply: reply_tx,
                         })
-                        .map_err(|_| "preview control channel closed".to_owned())?;
+                        .map_err(|_| "run control channel closed".to_owned())?;
                     match reply_rx
                         .recv()
-                        .map_err(|_| "preview control reply channel closed".to_owned())?
+                        .map_err(|_| "run control reply channel closed".to_owned())?
                     {
                         Ok(()) => Ok(request_id.clone().map(|id| {
                             json!({
@@ -3071,10 +3071,10 @@ fn preview_control_response(
                             name,
                             reply: reply_tx,
                         })
-                        .map_err(|_| "preview control channel closed".to_owned())?;
+                        .map_err(|_| "run control channel closed".to_owned())?;
                     match reply_rx
                         .recv()
-                        .map_err(|_| "preview control reply channel closed".to_owned())?
+                        .map_err(|_| "run control reply channel closed".to_owned())?
                     {
                         Ok(()) => Ok(request_id.clone().map(|id| {
                             json!({
@@ -3184,16 +3184,16 @@ impl SpscSampleRing {
     }
 }
 
-fn format_preview_build_error(context: &str, err: &PreviewBuildError) -> String {
+fn format_run_build_error(context: &str, err: &RunBuildError) -> String {
     match err {
-        PreviewBuildError::Diagnostics(diags) => format_diagnostics(context, diags),
-        PreviewBuildError::Runtime(diag) => format_single_diagnostic(context, diag),
+        RunBuildError::Diagnostics(diags) => format_diagnostics(context, diags),
+        RunBuildError::Runtime(diag) => format_single_diagnostic(context, diag),
     }
 }
 
-fn format_preview_param_info(params: &[PreviewParamInfo]) -> String {
+fn format_run_param_info(params: &[RunParamInfo]) -> String {
     let mut lines = Vec::with_capacity(params.len() + 1);
-    lines.push("Preview params:".to_owned());
+    lines.push("Run params:".to_owned());
     for param in params {
         let range = match (param.range_min, param.range_max) {
             (Some(min), Some(max)) => format!(" [{min}, {max}]"),
@@ -3213,9 +3213,9 @@ fn format_preview_param_info(params: &[PreviewParamInfo]) -> String {
     lines.join("\n")
 }
 
-fn format_preview_event_info(events: &[PreviewEventInfo]) -> String {
+fn format_run_event_info(events: &[RunEventInfo]) -> String {
     let mut lines = Vec::with_capacity(events.len() + 1);
-    lines.push("Preview events:".to_owned());
+    lines.push("Run events:".to_owned());
     for event in events {
         let signature = if event.params.is_empty() {
             "()".to_owned()
@@ -4427,15 +4427,15 @@ fn f32_to_i16(sample: f32) -> i16 {
 mod tests {
     use super::{
         format_diag_snippet, format_expr, format_program, parse_args,
-        preview_control_response, Command, CompileEmit, DaemonCommand, PlaybackControlCommand,
-        PlaybackControlRequest, PreviewCommand, PreviewEventValue, PreviewHostKind, ScopeRing,
+        run_control_response, Command, CompileEmit, DaemonCommand, PlaybackControlCommand,
+        PlaybackControlRequest, RunCommand, RunEventValue, RunHostKind, ScopeRing,
         DEFAULT_PLAY_BLOCK_FRAMES,
     };
     use onda_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
     use onda_frontend::{
         Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
     };
-    use onda_preview::PreviewThemeMode;
+    use onda_run::RunThemeMode;
     use serde_json::Value;
     use std::path::{Path, PathBuf};
     use std::sync::{mpsc, Arc, Mutex};
@@ -4736,11 +4736,11 @@ reloc_model = "default"
     }
 
     #[test]
-    fn parse_preview_play_accepts_meta_and_param_sets() {
+    fn parse_run_play_accepts_meta_and_param_sets() {
         let cmd = parse_args(
             [
                 "onda",
-                "preview",
+                "run",
                 "play",
                 "x.onda",
                 "--meta",
@@ -4752,9 +4752,9 @@ reloc_model = "default"
             .into_iter()
             .map(str::to_owned),
         )
-        .expect("preview play args should parse");
+        .expect("run play args should parse");
         match cmd {
-            Command::Preview(PreviewCommand::Play {
+            Command::Run(RunCommand::Play {
                 show_meta,
                 control_json,
                 fast_math,
@@ -4766,20 +4766,52 @@ reloc_model = "default"
                 assert!(fast_math);
                 assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
             }
-            _ => panic!("expected preview play command"),
+            _ => panic!("expected run play command"),
         }
     }
 
     #[test]
-    fn parse_preview_play_accepts_forever() {
-        let cmd = parse_args(
-            ["onda", "preview", "play", "x.onda", "--forever"]
+    fn parse_run_command_alias_accepts_window_play_and_render() {
+        let window = parse_args(["onda", "run", "x.onda"].into_iter().map(str::to_owned))
+            .expect("run window args should parse");
+        match window {
+            Command::Run(RunCommand::Window { .. }) => {}
+            _ => panic!("expected run window command"),
+        }
+
+        let play = parse_args(
+            ["onda", "run", "play", "x.onda"]
                 .into_iter()
                 .map(str::to_owned),
         )
-        .expect("preview play --forever should parse");
+        .expect("run play args should parse");
+        match play {
+            Command::Run(RunCommand::Play { .. }) => {}
+            _ => panic!("expected run play command"),
+        }
+
+        let render = parse_args(
+            ["onda", "run", "render", "x.onda"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("run render args should parse");
+        match render {
+            Command::Run(RunCommand::Render { .. }) => {}
+            _ => panic!("expected run render command"),
+        }
+    }
+
+    #[test]
+    fn parse_run_play_accepts_forever() {
+        let cmd = parse_args(
+            ["onda", "run", "play", "x.onda", "--forever"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("run play --forever should parse");
         match cmd {
-            Command::Preview(PreviewCommand::Play {
+            Command::Run(RunCommand::Play {
                 dur_seconds,
                 block_frames,
                 ..
@@ -4787,16 +4819,16 @@ reloc_model = "default"
                 assert_eq!(dur_seconds, None);
                 assert_eq!(block_frames, DEFAULT_PLAY_BLOCK_FRAMES);
             }
-            _ => panic!("expected preview play command"),
+            _ => panic!("expected run play command"),
         }
     }
 
     #[test]
-    fn parse_preview_render_accepts_meta_and_param_sets() {
+    fn parse_run_render_accepts_meta_and_param_sets() {
         let cmd = parse_args(
             [
                 "onda",
-                "preview",
+                "run",
                 "render",
                 "x.onda",
                 "--meta",
@@ -4807,9 +4839,9 @@ reloc_model = "default"
             .into_iter()
             .map(str::to_owned),
         )
-        .expect("preview render args should parse");
+        .expect("run render args should parse");
         match cmd {
-            Command::Preview(PreviewCommand::Render {
+            Command::Run(RunCommand::Render {
                 show_meta,
                 fast_math,
                 param_sets,
@@ -4819,97 +4851,97 @@ reloc_model = "default"
                 assert!(fast_math);
                 assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
             }
-            _ => panic!("expected preview render command"),
+            _ => panic!("expected run render command"),
         }
     }
 
     #[test]
-    fn parse_preview_commands_accept_opt_level() {
+    fn parse_run_commands_accept_opt_level() {
         let window = parse_args(
-            ["onda", "preview", "x.onda", "--opt-level", "1"]
+            ["onda", "run", "x.onda", "--opt-level", "1"]
                 .into_iter()
                 .map(str::to_owned),
         )
-        .expect("preview window args should parse");
+        .expect("run window args should parse");
         match window {
-            Command::Preview(PreviewCommand::Window { opt_level, .. }) => {
+            Command::Run(RunCommand::Window { opt_level, .. }) => {
                 assert_eq!(opt_level, TargetOptLevel::O1);
             }
-            _ => panic!("expected preview window command"),
+            _ => panic!("expected run window command"),
         }
 
         let play = parse_args(
-            ["onda", "preview", "play", "x.onda", "--opt-level", "2"]
+            ["onda", "run", "play", "x.onda", "--opt-level", "2"]
                 .into_iter()
                 .map(str::to_owned),
         )
-        .expect("preview play args should parse");
+        .expect("run play args should parse");
         match play {
-            Command::Preview(PreviewCommand::Play { opt_level, .. }) => {
+            Command::Run(RunCommand::Play { opt_level, .. }) => {
                 assert_eq!(opt_level, TargetOptLevel::O2);
             }
-            _ => panic!("expected preview play command"),
+            _ => panic!("expected run play command"),
         }
 
         let render = parse_args(
-            ["onda", "preview", "render", "x.onda", "--opt-level", "0"]
+            ["onda", "run", "render", "x.onda", "--opt-level", "0"]
                 .into_iter()
                 .map(str::to_owned),
         )
-        .expect("preview render args should parse");
+        .expect("run render args should parse");
         match render {
-            Command::Preview(PreviewCommand::Render { opt_level, .. }) => {
+            Command::Run(RunCommand::Render { opt_level, .. }) => {
                 assert_eq!(opt_level, TargetOptLevel::O0);
             }
-            _ => panic!("expected preview render command"),
+            _ => panic!("expected run render command"),
         }
     }
 
     #[test]
-    fn parse_preview_window_accepts_webview_flag() {
+    fn parse_run_window_accepts_webview_flag() {
         let cmd = parse_args(
-            ["onda", "preview", "x.onda", "--webview"]
+            ["onda", "run", "x.onda", "--webview"]
                 .into_iter()
                 .map(str::to_owned),
         )
-        .expect("preview window args should parse");
+        .expect("run window args should parse");
         match cmd {
-            Command::Preview(PreviewCommand::Window { host, .. }) => {
-                assert_eq!(host, PreviewHostKind::Webview);
+            Command::Run(RunCommand::Window { host, .. }) => {
+                assert_eq!(host, RunHostKind::Webview);
             }
-            _ => panic!("expected preview window command"),
+            _ => panic!("expected run window command"),
         }
     }
 
     #[test]
-    fn parse_preview_window_accepts_theme_flag() {
+    fn parse_run_window_accepts_theme_flag() {
         let cmd = parse_args(
-            ["onda", "preview", "x.onda", "--theme", "dark"]
+            ["onda", "run", "x.onda", "--theme", "dark"]
                 .into_iter()
                 .map(str::to_owned),
         )
-        .expect("preview window args should parse");
+        .expect("run window args should parse");
         match cmd {
-            Command::Preview(PreviewCommand::Window { theme, .. }) => {
-                assert_eq!(theme, PreviewThemeMode::Dark);
+            Command::Run(RunCommand::Window { theme, .. }) => {
+                assert_eq!(theme, RunThemeMode::Dark);
             }
-            _ => panic!("expected preview window command"),
+            _ => panic!("expected run window command"),
         }
     }
 
     #[test]
-    fn parse_preview_window_accepts_meta_flag() {
+    fn parse_run_window_accepts_meta_flag() {
         let cmd = parse_args(
-            ["onda", "preview", "x.onda", "--meta"]
+            ["onda", "run", "x.onda", "--meta"]
                 .into_iter()
                 .map(str::to_owned),
         )
-        .expect("preview window args should parse");
+        .expect("run window args should parse");
         match cmd {
-            Command::Preview(PreviewCommand::Window { show_meta, .. }) => {
+            Command::Run(RunCommand::Window { show_meta, .. }) => {
                 assert!(show_meta);
             }
-            _ => panic!("expected preview window command"),
+            _ => panic!("expected run window command"),
         }
     }
 
@@ -4923,7 +4955,7 @@ reloc_model = "default"
             Ok(_) => panic!("daemon play should report rename"),
             Err(err) => err,
         };
-        assert!(err.contains("onda preview play"));
+        assert!(err.contains("onda run play"));
     }
 
     #[test]
@@ -4996,10 +5028,10 @@ reloc_model = "default"
     }
 
     #[test]
-    fn preview_set_param_notification_enqueues_without_waiting_for_reply() {
+    fn run_set_param_notification_enqueues_without_waiting_for_reply() {
         let (control_tx, control_rx) = mpsc::channel();
         let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
-        let response = preview_control_response(
+        let response = run_control_response(
             PlaybackControlRequest {
                 id: None,
                 command: "setParam".to_owned(),
@@ -5025,10 +5057,10 @@ reloc_model = "default"
     }
 
     #[test]
-    fn preview_trigger_event_notification_enqueues_full_payload() {
+    fn run_trigger_event_notification_enqueues_full_payload() {
         let (control_tx, control_rx) = mpsc::channel();
         let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
-        let response = preview_control_response(
+        let response = run_control_response(
             PlaybackControlRequest {
                 id: None,
                 command: "triggerEvent".to_owned(),
@@ -5056,9 +5088,9 @@ reloc_model = "default"
                 assert_eq!(
                     values,
                     vec![
-                        PreviewEventValue::Number(60.0),
-                        PreviewEventValue::Number(0.75),
-                        PreviewEventValue::Bool(true),
+                        RunEventValue::Number(60.0),
+                        RunEventValue::Number(0.75),
+                        RunEventValue::Bool(true),
                     ]
                 );
                 assert!(reply.is_none());

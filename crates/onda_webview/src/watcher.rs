@@ -14,7 +14,7 @@ impl FileWatcher {
     /// Start watching `path` for modifications.
     ///
     /// `on_change` is called on a background thread after a 200ms debounce window.
-    /// Returns `None` if watching fails (non-fatal — the preview still works, just
+    /// Returns `None` if watching fails (non-fatal — the run still works, just
     /// without auto-restart on save).
     pub fn watch(path: &Path, on_change: impl Fn() + Send + 'static) -> Option<Self> {
         let (tx, rx) = mpsc::channel();

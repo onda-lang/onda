@@ -8,6 +8,6 @@ authors.workspace = true
 [dependencies]
 eframe = "0.31"
 egui_extras = { version = "0.31", features = ["svg"] }
-onda_preview = { path = "../onda_preview" }
+onda_run = { path = "../onda_run" }
 rfd = "0.15"
 serde_json = "1.0"

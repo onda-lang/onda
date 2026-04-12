@@ -75,7 +75,7 @@
     - The glue layer handles interleaved<->planar conversion if needed (or document that Onda
       uses planar layout matching `AudioWorkletProcessor` conventions).
     - Param changes and event dispatch go through the glue layer via `MessagePort`.
-  - Host-side hot-swap (daemon-served live preview):
+  - Host-side hot-swap (daemon-served live run):
     - Compilation stays on the host: the daemon runs LLVM or Binaryen natively and emits `.wasm` bytes -
       no JIT inside the WASM sandbox.
     - Reuse the existing daemon recompile-on-save loop; the only change is the output artifact
@@ -85,13 +85,13 @@
     - Client-side swap protocol:
       - Browser receives new `.wasm` bytes -> `WebAssembly.compile()` -> `WebAssembly.instantiate()`.
       - New AudioWorklet processor is wired up; old processor is drained/crossfaded or hard-swapped
-        (accept a brief glitch, same as current native preview does on recompile).
-      - State is reset on swap (matches current native preview behavior on recompile).
+        (accept a brief glitch, same as current native run does on recompile).
+      - State is reset on swap (matches current native run behavior on recompile).
       - Param values and buffer bindings are re-applied from the client-side shadow state
-        (same pattern as the current daemon preview session rebuild).
-    - Decide whether to extend `onda preview play --target wasm32` to spawn a local HTTP server +
-      WebSocket bridge, or keep WASM preview as a separate `onda preview web` subcommand.
-    - Evaluate whether the VSCode extension's Patch panel can reuse this path
+        (same pattern as the current daemon run session rebuild).
+    - Decide whether to extend `onda run play --target wasm32` to spawn a local HTTP server +
+      WebSocket bridge, or keep WASM run as a separate `onda run web` subcommand.
+    - Evaluate whether the VSCode extension's Run panel can reuse this path
       (webview already runs in a browser-like context; could load the AudioWorklet directly).
   - In-browser compiler (zero-install web playground):
     - Compile the Onda frontend (`onda_frontend`) + semantics (`onda_semantics`) +
@@ -126,4 +126,3 @@
   - Add a backend that exports Onda programs to a single-file, self-contained C++ header class.
   - Generate deterministic `init`/`process` methods with no dynamic allocation in the audio callback.
   - Keep generated API compatible with current channel/state/data model for easy host embedding.
-

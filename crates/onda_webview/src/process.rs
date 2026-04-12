@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tao::event_loop::EventLoopProxy;
 
-use crate::{PreviewWindowOptions, UserEvent};
+use crate::{RunWindowOptions, UserEvent};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -39,22 +39,22 @@ struct RawReadyEvent {
     output_channels: Option<usize>,
 }
 
-/// Manages a running `onda preview play --control-json` subprocess.
+/// Manages a running `onda run play --control-json` subprocess.
 pub struct ChildSession {
     child: Option<Child>,
     stderr_buffer: Arc<Mutex<String>>,
 }
 
 impl ChildSession {
-    /// Spawn `onda preview play <path> --forever --control-json` and start a background
+    /// Spawn `onda run play <path> --forever --control-json` and start a background
     /// thread that reads stdout looking for the ready event.
     pub fn spawn(
         onda_path: &Path,
-        options: &PreviewWindowOptions,
+        options: &RunWindowOptions,
         proxy: EventLoopProxy<UserEvent>,
     ) -> Result<Self, String> {
         let mut cmd = Command::new(&options.onda_bin);
-        cmd.arg("preview")
+        cmd.arg("run")
             .arg("play")
             .arg(onda_path)
             .arg("--forever")
@@ -83,7 +83,7 @@ impl ChildSession {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("failed to spawn onda preview: {e}"))?;
+            .map_err(|e| format!("failed to spawn onda run: {e}"))?;
 
         let stdout = child
             .stdout
@@ -103,7 +103,7 @@ impl ChildSession {
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        eprintln!("[onda preview] {line}");
+                        eprintln!("[onda run] {line}");
                         if let Ok(mut slot) = stderr_sink.lock() {
                             if !slot.is_empty() {
                                 slot.push('\n');
@@ -148,7 +148,7 @@ impl ChildSession {
                     }
                 }
                 // Non-ready stdout lines are informational.
-                eprintln!("[onda preview stdout] {trimmed}");
+                eprintln!("[onda run stdout] {trimmed}");
             }
         });
 
@@ -190,7 +190,7 @@ impl ChildSession {
     /// Kill the child process if it's still running.
     pub fn kill(&mut self) {
         if let Some(ref mut child) = self.child {
-            terminate_preview_child(child);
+            terminate_run_child(child);
             let _ = child.wait();
         }
         self.child = None;
@@ -204,7 +204,7 @@ impl Drop for ChildSession {
 }
 
 #[cfg(target_os = "windows")]
-fn terminate_preview_child(child: &mut Child) {
+fn terminate_run_child(child: &mut Child) {
     let pid = child.id().to_string();
     let mut cmd = Command::new("taskkill");
     cmd.arg("/PID").arg(pid).arg("/T").arg("/F");
@@ -216,6 +216,6 @@ fn terminate_preview_child(child: &mut Child) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn terminate_preview_child(child: &mut Child) {
+fn terminate_run_child(child: &mut Child) {
     let _ = child.kill();
 }

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Onda Patch</title>
+    <title>Onda Run</title>
     <style>
       :root {
         color-scheme: dark light;
@@ -855,14 +855,14 @@
         return Number(snapped.toFixed(places));
       }
 
-      function canEditPatchControls() {
+      function canEditRunControls() {
         return Boolean(state.path);
       }
 
       function createSliderControl(param, currentValue, step, onInputValue, onCommitValue) {
         const min = Number(param.rangeMin);
         const max = Number(param.rangeMax);
-        const canEdit = canEditPatchControls();
+        const canEdit = canEditRunControls();
         const slider = document.createElement("div");
         slider.className = "param-slider";
         slider.tabIndex = canEdit ? 0 : -1;
@@ -1119,7 +1119,7 @@
 
       function render() {
         applyTheme();
-        pathNode.textContent = state.path ? state.path : "No patch selected";
+        pathNode.textContent = state.path ? state.path : "No file selected";
         statusNode.textContent = state.connected ? state.status : state.running ? state.status + " (connecting controls...)" : state.status;
         errorNode.textContent = state.error || "";
         errorNode.style.display = state.error ? "block" : "none";
@@ -1128,7 +1128,7 @@
         const hasEvents = state.events.length > 0;
         const hasParams = state.params.length > 0;
         const hasIoSettings = state.inputDevices.length > 0 || state.outputDevices.length > 0;
-        const canEditPatch = canEditPatchControls();
+        const canEditRun = canEditRunControls();
         buffersSection.style.display = hasBuffers ? "" : "none";
         eventsSection.style.display = hasEvents ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
@@ -1150,7 +1150,7 @@
             head.innerHTML = '<div class="param-name"></div><div class="param-type"></div>';
             head.querySelector(".param-name").textContent = buffer.name;
             head.querySelector(".param-type").textContent =
-              buffer.type + " \u00b7 " + describePatchBufferChannels(buffer);
+              buffer.type + " \u00b7 " + describeRunBufferChannels(buffer);
             card.appendChild(head);
 
             const loaded = document.createElement("div");
@@ -1163,14 +1163,14 @@
             const choose = document.createElement("button");
             choose.className = "secondary";
             choose.textContent = "Choose File";
-            choose.disabled = !canEditPatch;
+            choose.disabled = !canEditRun;
             choose.addEventListener("click", () => {
               hostBridge.postMessage({ type: "chooseBufferFile", name: buffer.name });
             });
             const clear = document.createElement("button");
             clear.className = "secondary";
             clear.textContent = "Clear";
-            clear.disabled = !canEditPatch || !buffer.loadedPath;
+            clear.disabled = !canEditRun || !buffer.loadedPath;
             clear.addEventListener("click", () => {
               hostBridge.postMessage({ type: "clearBuffer", name: buffer.name });
             });
@@ -1290,7 +1290,7 @@
             const input = document.createElement("input");
             input.type = "checkbox";
             input.checked = Boolean(param.value);
-            input.disabled = !canEditPatch;
+            input.disabled = !canEditRun;
             input.addEventListener("change", () => {
               hostBridge.postMessage({ type: "setParam", name: param.name, value: input.checked });
             });
@@ -1315,7 +1315,7 @@
               number.max = String(param.rangeMax);
               number.step = step;
               number.value = formatNumberForInput(currentValue, stepValue);
-              number.disabled = !canEditPatch;
+              number.disabled = !canEditRun;
               controls.appendChild(number);
 
               const sliderControl = createSliderControl(
@@ -1359,7 +1359,7 @@
               number.type = "number";
               number.step = step;
               number.value = formatNumberForInput(currentValue, stepValue);
-              number.disabled = !canEditPatch;
+              number.disabled = !canEditRun;
               number.addEventListener("change", () => {
                 const parsed = Number(number.value);
                 if (!Number.isFinite(parsed)) {
@@ -1382,7 +1382,7 @@
       // Helpers
       // ---------------------------------------------------------------------------
 
-      function describePatchBufferChannels(buffer) {
+      function describeRunBufferChannels(buffer) {
         switch (buffer.channelsKind) {
           case "mono":
             return "mono";

@@ -1,10 +1,10 @@
 mod analysis_session;
-mod preview_session;
+mod run_session;
 
 pub use analysis_session::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
-pub use preview_session::{
-    PreviewBufferChannels, PreviewBufferInfo, PreviewBuildError, PreviewEventInfo,
-    PreviewEventParamInfo, PreviewEventValue, PreviewOptions, PreviewParamInfo, PreviewSession,
+pub use run_session::{
+    RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo,
+    RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo, RunSession,
 };
 
 use std::collections::HashMap;
@@ -18,14 +18,14 @@ use crate::analysis_session::normalize_session_path;
 #[derive(Debug, Clone, Copy)]
 pub struct DaemonConfig {
     pub analysis: AnalysisOptions,
-    pub preview: PreviewOptions,
+    pub run: RunOptions,
 }
 
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             analysis: AnalysisOptions::default(),
-            preview: PreviewOptions::default(),
+            run: RunOptions::default(),
         }
     }
 }
@@ -34,7 +34,7 @@ impl Default for DaemonConfig {
 pub struct DaemonSession {
     config: DaemonConfig,
     analysis: AnalysisSession,
-    previews: HashMap<PathBuf, PreviewSession>,
+    runs: HashMap<PathBuf, RunSession>,
 }
 
 impl DaemonSession {
@@ -42,7 +42,7 @@ impl DaemonSession {
         Self {
             config,
             analysis: AnalysisSession::new(),
-            previews: HashMap::new(),
+            runs: HashMap::new(),
         }
     }
 
@@ -52,16 +52,16 @@ impl DaemonSession {
 
     pub fn set_config(&mut self, config: DaemonConfig) {
         self.config = config;
-        self.previews.clear();
+        self.runs.clear();
     }
 
     pub fn set_analysis_options(&mut self, options: AnalysisOptions) {
         self.config.analysis = options;
     }
 
-    pub fn set_preview_options(&mut self, options: PreviewOptions) {
-        self.config.preview = options;
-        self.previews.clear();
+    pub fn set_run_options(&mut self, options: RunOptions) {
+        self.config.run = options;
+        self.runs.clear();
     }
 
     pub fn analysis(&self) -> &AnalysisSession {
@@ -92,7 +92,7 @@ impl DaemonSession {
 
     pub fn close_document(&mut self, path: impl AsRef<Path>) -> Option<OpenDocument> {
         let normalized = normalize_session_path(path.as_ref());
-        self.previews.remove(&normalized);
+        self.runs.remove(&normalized);
         self.analysis.close_document(normalized)
     }
 
@@ -100,68 +100,68 @@ impl DaemonSession {
         self.analysis.analyze_document(path, self.config.analysis)
     }
 
-    pub fn start_preview(
+    pub fn start_run(
         &mut self,
         path: impl AsRef<Path>,
-    ) -> Result<&PreviewSession, PreviewBuildError> {
-        self.start_preview_with_options(path, self.config.preview)
+    ) -> Result<&RunSession, RunBuildError> {
+        self.start_run_with_options(path, self.config.run)
     }
 
-    pub fn start_preview_with_options(
+    pub fn start_run_with_options(
         &mut self,
         path: impl AsRef<Path>,
-        options: PreviewOptions,
-    ) -> Result<&PreviewSession, PreviewBuildError> {
+        options: RunOptions,
+    ) -> Result<&RunSession, RunBuildError> {
         let normalized = normalize_session_path(path.as_ref());
-        let preview = PreviewSession::build(&self.analysis, &normalized, options)?;
-        self.previews.insert(normalized.clone(), preview);
+        let run = RunSession::build(&self.analysis, &normalized, options)?;
+        self.runs.insert(normalized.clone(), run);
         Ok(self
-            .previews
+            .runs
             .get(&normalized)
-            .expect("preview inserted into session"))
+            .expect("run inserted into session"))
     }
 
-    pub fn rebuild_preview(
+    pub fn rebuild_run(
         &mut self,
         path: impl AsRef<Path>,
-    ) -> Result<&PreviewSession, PreviewBuildError> {
+    ) -> Result<&RunSession, RunBuildError> {
         let normalized = normalize_session_path(path.as_ref());
         let options = self
-            .previews
+            .runs
             .get(&normalized)
-            .map(|preview| preview.options())
-            .unwrap_or(self.config.preview);
-        self.start_preview_with_options(normalized, options)
+            .map(|run| run.options())
+            .unwrap_or(self.config.run);
+        self.start_run_with_options(normalized, options)
     }
 
-    pub fn preview(&self, path: impl AsRef<Path>) -> Option<&PreviewSession> {
+    pub fn run(&self, path: impl AsRef<Path>) -> Option<&RunSession> {
         let normalized = normalize_session_path(path.as_ref());
-        self.previews.get(&normalized)
+        self.runs.get(&normalized)
     }
 
-    pub fn preview_mut(&mut self, path: impl AsRef<Path>) -> Option<&mut PreviewSession> {
+    pub fn run_mut(&mut self, path: impl AsRef<Path>) -> Option<&mut RunSession> {
         let normalized = normalize_session_path(path.as_ref());
-        self.previews.get_mut(&normalized)
+        self.runs.get_mut(&normalized)
     }
 
-    pub fn stop_preview(&mut self, path: impl AsRef<Path>) -> Option<PreviewSession> {
+    pub fn stop_run(&mut self, path: impl AsRef<Path>) -> Option<RunSession> {
         let normalized = normalize_session_path(path.as_ref());
-        self.previews.remove(&normalized)
+        self.runs.remove(&normalized)
     }
 
-    pub fn render_preview_block(
+    pub fn render_run_block(
         &mut self,
         path: impl AsRef<Path>,
     ) -> Result<Vec<Vec<f32>>, Diagnostic> {
         let normalized = normalize_session_path(path.as_ref());
-        let preview = self.previews.get_mut(&normalized).ok_or_else(|| {
+        let run = self.runs.get_mut(&normalized).ok_or_else(|| {
             Diagnostic::runtime(
-                format!("preview is not active for '{}'", normalized.display()),
+                format!("run is not active for '{}'", normalized.display()),
                 0,
                 0,
             )
         })?;
-        preview.render_block()
+        run.render_block()
     }
 }
 
@@ -281,8 +281,8 @@ mod tests {
     }
 
     #[test]
-    fn preview_renders_and_updates_scalar_param() {
-        let dir = mk_temp_dir("preview_render");
+    fn run_renders_and_updates_scalar_param() {
+        let dir = mk_temp_dir("run_render");
         let main = dir.join("main.onda");
 
         write_file(
@@ -292,42 +292,42 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_preview_with_options(
+            .start_run_with_options(
                 &main,
-                PreviewOptions {
+                RunOptions {
                     float_param_smoothing_ms: 0.0,
-                    ..PreviewOptions::default()
+                    ..RunOptions::default()
                 },
             )
-            .expect("preview should compile and start");
+            .expect("run should compile and start");
 
-        let param_info = session.preview(&main).expect("active preview").param_info();
+        let param_info = session.run(&main).expect("active run").param_info();
         assert_eq!(param_info.len(), 1);
         assert_eq!(param_info[0].name, "gain");
         assert_eq!(param_info[0].default, Some(0.25));
 
         let first = session
-            .render_preview_block(&main)
-            .expect("first preview render should succeed");
+            .render_run_block(&main)
+            .expect("first run render should succeed");
         assert_eq!(first.len(), 1);
         assert!(first[0].iter().all(|sample| (*sample - 0.25).abs() < 1e-6));
 
         session
-            .preview_mut(&main)
-            .expect("active preview")
+            .run_mut(&main)
+            .expect("active run")
             .set_param_f64("gain", 0.5)
             .expect("param update should succeed");
         let second = session
-            .render_preview_block(&main)
-            .expect("second preview render should succeed");
+            .render_run_block(&main)
+            .expect("second run render should succeed");
         assert!(second[0].iter().all(|sample| (*sample - 0.5).abs() < 1e-6));
 
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn preview_binds_wav_file_to_f32_buffer() {
-        let dir = mk_temp_dir("preview_buffer");
+    fn run_binds_wav_file_to_f32_buffer() {
+        let dir = mk_temp_dir("run_buffer");
         let main = dir.join("main.onda");
         let wav = dir.join("input.wav");
         let wav_alt = dir.join("input_alt.wav");
@@ -341,38 +341,38 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_preview(&main)
-            .expect("preview should compile and start");
+            .start_run(&main)
+            .expect("run should compile and start");
 
         let buffer_info = session
-            .preview(&main)
-            .expect("active preview")
+            .run(&main)
+            .expect("active run")
             .buffer_info();
         assert_eq!(buffer_info.len(), 1);
         assert_eq!(buffer_info[0].name, "src");
 
         session
-            .preview_mut(&main)
-            .expect("active preview")
+            .run_mut(&main)
+            .expect("active run")
             .bind_buffer_wav_path("src", &wav)
             .expect("wav buffer bind should succeed");
 
         let rendered = session
-            .render_preview_block(&main)
-            .expect("preview render with bound wav should succeed");
+            .render_run_block(&main)
+            .expect("run render with bound wav should succeed");
         assert!((rendered[0][0] - 0.1).abs() < 1e-6);
         assert!((rendered[0][1] - 0.2).abs() < 1e-6);
         assert!((rendered[0][2] - 0.3).abs() < 1e-6);
         assert!((rendered[0][3] - 0.4).abs() < 1e-6);
 
         session
-            .preview_mut(&main)
-            .expect("active preview")
+            .run_mut(&main)
+            .expect("active run")
             .bind_buffer_wav_path("src", &wav_alt)
             .expect("second wav buffer bind should succeed");
         let rebound = session
-            .render_preview_block(&main)
-            .expect("preview render with rebound wav should succeed");
+            .render_run_block(&main)
+            .expect("run render with rebound wav should succeed");
         assert!((rebound[0][0] - 0.9).abs() < 1e-6);
         assert!((rebound[0][1] - 0.8).abs() < 1e-6);
 
@@ -380,8 +380,8 @@ mod tests {
     }
 
     #[test]
-    fn preview_binds_multichannel_wav_file_to_f32_buffer() {
-        let dir = mk_temp_dir("preview_buffer_stereo");
+    fn run_binds_multichannel_wav_file_to_f32_buffer() {
+        let dir = mk_temp_dir("run_buffer_stereo");
         let main = dir.join("main.onda");
         let wav = dir.join("stereo.wav");
 
@@ -393,18 +393,18 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_preview(&main)
-            .expect("preview should compile and start");
+            .start_run(&main)
+            .expect("run should compile and start");
 
         session
-            .preview_mut(&main)
-            .expect("active preview")
+            .run_mut(&main)
+            .expect("active run")
             .bind_buffer_wav_path("src", &wav)
             .expect("stereo wav buffer bind should succeed");
 
         let rendered = session
-            .render_preview_block(&main)
-            .expect("preview render with bound stereo wav should succeed");
+            .render_run_block(&main)
+            .expect("run render with bound stereo wav should succeed");
         assert!((rendered[0][0] - 0.1).abs() < 1e-6);
         assert!((rendered[1][0] - 0.5).abs() < 1e-6);
         assert!((rendered[0][1] - 0.2).abs() < 1e-6);
@@ -414,8 +414,8 @@ mod tests {
     }
 
     #[test]
-    fn preview_renders_single_stereo_output_port() {
-        let dir = mk_temp_dir("preview_stereo_output_port");
+    fn run_renders_single_stereo_output_port() {
+        let dir = mk_temp_dir("run_stereo_output_port");
         let main = dir.join("main.onda");
 
         write_file(
@@ -425,15 +425,15 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_preview(&main)
-            .expect("preview should compile and start");
+            .start_run(&main)
+            .expect("run should compile and start");
 
-        let preview = session.preview(&main).expect("active preview");
-        assert_eq!(preview.output_channel_count(), 2);
+        let run = session.run(&main).expect("active run");
+        assert_eq!(run.output_channel_count(), 2);
 
         let rendered = session
-            .render_preview_block(&main)
-            .expect("preview render with stereo output port should succeed");
+            .render_run_block(&main)
+            .expect("run render with stereo output port should succeed");
         assert_eq!(rendered.len(), 2);
         assert!(rendered[0]
             .iter()
@@ -446,8 +446,8 @@ mod tests {
     }
 
     #[test]
-    fn preview_rebuilds_instance_when_buffer_binding_changes() {
-        let dir = mk_temp_dir("preview_buffer_rebuild");
+    fn run_rebuilds_instance_when_buffer_binding_changes() {
+        let dir = mk_temp_dir("run_buffer_rebuild");
         let main = dir.join("main.onda");
         let wav_a = dir.join("a.wav");
         let wav_b = dir.join("b.wav");
@@ -461,40 +461,40 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_preview(&main)
-            .expect("preview should compile and start");
+            .start_run(&main)
+            .expect("run should compile and start");
 
         let initial = session
-            .render_preview_block(&main)
-            .expect("initial preview render should succeed");
+            .render_run_block(&main)
+            .expect("initial run render should succeed");
         assert!((initial[0][0] - 1.0).abs() < 1e-6);
 
         session
-            .preview_mut(&main)
-            .expect("active preview")
+            .run_mut(&main)
+            .expect("active run")
             .bind_buffer_wav_path("src", &wav_a)
             .expect("first wav buffer bind should succeed");
         let first = session
-            .render_preview_block(&main)
-            .expect("preview render with first buffer should succeed");
+            .render_run_block(&main)
+            .expect("run render with first buffer should succeed");
         assert!((first[0][0] - 1.0).abs() < 1e-6);
 
         session
-            .preview_mut(&main)
-            .expect("active preview")
+            .run_mut(&main)
+            .expect("active run")
             .bind_buffer_wav_path("src", &wav_b)
             .expect("second wav buffer bind should succeed");
         let second = session
-            .render_preview_block(&main)
-            .expect("preview render with rebound buffer should succeed");
+            .render_run_block(&main)
+            .expect("run render with rebound buffer should succeed");
         assert!((second[0][0] - 1.0).abs() < 1e-6);
 
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn preview_exposes_and_triggers_scalar_events() {
-        let dir = mk_temp_dir("preview_events");
+    fn run_exposes_and_triggers_scalar_events() {
+        let dir = mk_temp_dir("run_events");
         let main = dir.join("main.onda");
 
         write_file(
@@ -504,10 +504,10 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_preview(&main)
-            .expect("preview should compile and start");
+            .start_run(&main)
+            .expect("run should compile and start");
 
-        let events = session.preview(&main).expect("active preview").event_info();
+        let events = session.run(&main).expect("active run").event_info();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].name, "note_on");
         assert_eq!(events[0].params.len(), 3);
@@ -516,21 +516,21 @@ mod tests {
         assert_eq!(events[0].params[2].type_repr, "bool");
 
         session
-            .preview_mut(&main)
-            .expect("active preview")
+            .run_mut(&main)
+            .expect("active run")
             .trigger_event(
                 "note_on",
                 &[
-                    PreviewEventValue::Number(72.0),
-                    PreviewEventValue::Number(0.25),
-                    PreviewEventValue::Bool(true),
+                    RunEventValue::Number(72.0),
+                    RunEventValue::Number(0.25),
+                    RunEventValue::Bool(true),
                 ],
             )
             .expect("event trigger should succeed");
 
         let rendered = session
-            .render_preview_block(&main)
-            .expect("preview render after event should succeed");
+            .render_run_block(&main)
+            .expect("run render after event should succeed");
         assert!((rendered[0][0] - 72.0).abs() < 1e-6);
         assert!((rendered[1][0] - 1.25).abs() < 1e-6);
 

@@ -15,7 +15,7 @@ use onda_semantics::{AnalysisOptions, TypedProgram};
 use crate::analysis_session::{normalize_session_path, AnalysisSession, DocumentVersion};
 
 #[derive(Debug, Clone, Copy)]
-pub struct PreviewOptions {
+pub struct RunOptions {
     pub sample_rate: f32,
     pub block_size: usize,
     pub float_param_smoothing_ms: f64,
@@ -24,7 +24,7 @@ pub struct PreviewOptions {
     pub backend: ExecutionBackend,
 }
 
-impl Default for PreviewOptions {
+impl Default for RunOptions {
     fn default() -> Self {
         Self {
             sample_rate: 48_000.0,
@@ -37,7 +37,7 @@ impl Default for PreviewOptions {
     }
 }
 
-impl PreviewOptions {
+impl RunOptions {
     pub fn analysis_options(&self) -> AnalysisOptions {
         AnalysisOptions {
             sample_rate: self.sample_rate,
@@ -57,7 +57,7 @@ impl PreviewOptions {
 }
 
 #[derive(Debug, Clone)]
-pub struct PreviewParamInfo {
+pub struct RunParamInfo {
     pub index: usize,
     pub name: String,
     pub type_repr: String,
@@ -69,65 +69,65 @@ pub struct PreviewParamInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct PreviewBufferInfo {
+pub struct RunBufferInfo {
     pub index: usize,
     pub name: String,
     pub type_repr: String,
-    pub channels: PreviewBufferChannels,
+    pub channels: RunBufferChannels,
     pub loaded_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct PreviewEventInfo {
+pub struct RunEventInfo {
     pub index: usize,
     pub name: String,
-    pub params: Vec<PreviewEventParamInfo>,
+    pub params: Vec<RunEventParamInfo>,
 }
 
 #[derive(Debug, Clone)]
-pub struct PreviewEventParamInfo {
+pub struct RunEventParamInfo {
     pub index: usize,
     pub name: String,
     pub type_repr: String,
-    pub value: PreviewEventValue,
+    pub value: RunEventValue,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum PreviewEventValue {
+pub enum RunEventValue {
     Bool(bool),
     Number(f64),
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum PreviewBufferChannels {
+pub enum RunBufferChannels {
     Mono,
     Static(usize),
     Dynamic,
 }
 
 #[derive(Debug)]
-pub enum PreviewBuildError {
+pub enum RunBuildError {
     Diagnostics(Vec<Diagnostic>),
     Runtime(Diagnostic),
 }
 
 #[derive(Debug)]
-pub struct PreviewSession {
+pub struct RunSession {
     path: PathBuf,
     version: Option<DocumentVersion>,
-    options: PreviewOptions,
+    options: RunOptions,
     typed: TypedProgram,
     jit: JitProgram,
     instance: Instance,
     param_values: HashMap<String, f64>,
     param_runtime_values: HashMap<String, f64>,
-    buffer_bindings: Vec<PreviewBufferBinding>,
+    buffer_bindings: Vec<RunBufferBinding>,
     input_buffers: Vec<Vec<f32>>,
     output_buffers: Vec<Vec<f32>>,
 }
 
 #[derive(Debug)]
-struct PreviewBufferBinding {
+struct RunBufferBinding {
     _samples: Vec<f32>,
     frames: usize,
     channels: usize,
@@ -135,21 +135,21 @@ struct PreviewBufferBinding {
     loaded_path: Option<PathBuf>,
 }
 
-impl PreviewSession {
+impl RunSession {
     pub fn build(
         analysis: &AnalysisSession,
         path: impl AsRef<Path>,
-        options: PreviewOptions,
-    ) -> Result<Self, PreviewBuildError> {
+        options: RunOptions,
+    ) -> Result<Self, RunBuildError> {
         let path = normalize_session_path(path.as_ref());
         let snapshot = analysis.analyze_document(&path, options.analysis_options());
         let version = snapshot.version;
         let Some(typed) = snapshot.typed else {
-            return Err(PreviewBuildError::Diagnostics(snapshot.diagnostics));
+            return Err(RunBuildError::Diagnostics(snapshot.diagnostics));
         };
 
         let jit = lower_and_jit_with_options(typed.clone(), options.compile_options())
-            .map_err(PreviewBuildError::Diagnostics)?;
+            .map_err(RunBuildError::Diagnostics)?;
 
         let config = InstanceConfig {
             sample_rate: options.sample_rate,
@@ -158,7 +158,7 @@ impl PreviewSession {
             out_channels: jit.required_out_channels(),
         };
         let mut instance =
-            create_instance(jit.clone(), config).map_err(PreviewBuildError::Runtime)?;
+            create_instance(jit.clone(), config).map_err(RunBuildError::Runtime)?;
 
         let mut input_buffers = jit
             .inputs()
@@ -172,7 +172,7 @@ impl PreviewSession {
                 buffer.as_ptr().cast::<u8>(),
                 std::mem::size_of_val(buffer.as_slice()),
             )
-            .map_err(PreviewBuildError::Runtime)?;
+            .map_err(RunBuildError::Runtime)?;
         }
 
         let mut output_buffers = jit
@@ -187,12 +187,12 @@ impl PreviewSession {
                 buffer.as_mut_ptr().cast::<u8>(),
                 std::mem::size_of_val(buffer.as_slice()),
             )
-            .map_err(PreviewBuildError::Runtime)?;
+            .map_err(RunBuildError::Runtime)?;
         }
 
         let buffer_bindings =
             bind_placeholder_buffers(&jit, &mut instance, options.block_size, options.sample_rate)
-                .map_err(PreviewBuildError::Runtime)?;
+                .map_err(RunBuildError::Runtime)?;
 
         Ok(Self {
             path,
@@ -217,7 +217,7 @@ impl PreviewSession {
         self.version
     }
 
-    pub fn options(&self) -> PreviewOptions {
+    pub fn options(&self) -> RunOptions {
         self.options
     }
 
@@ -233,7 +233,7 @@ impl PreviewSession {
         self.jit.required_in_channels()
     }
 
-    pub fn param_info(&self) -> Vec<PreviewParamInfo> {
+    pub fn param_info(&self) -> Vec<RunParamInfo> {
         (0..self.jit.param_count())
             .filter_map(|index| {
                 let desc = self.jit.param_descriptor(index)?;
@@ -242,7 +242,7 @@ impl PreviewSession {
                     .get(desc.name())
                     .copied()
                     .or_else(|| desc.default_as_f64());
-                Some(PreviewParamInfo {
+                Some(RunParamInfo {
                     index,
                     name: desc.name().to_owned(),
                     type_repr: desc.type_repr(),
@@ -256,21 +256,21 @@ impl PreviewSession {
             .collect()
     }
 
-    pub fn buffer_info(&self) -> Vec<PreviewBufferInfo> {
+    pub fn buffer_info(&self) -> Vec<RunBufferInfo> {
         self.jit
             .buffers()
             .iter()
             .enumerate()
-            .map(|(index, desc)| PreviewBufferInfo {
+            .map(|(index, desc)| RunBufferInfo {
                 index,
                 name: desc.name().to_owned(),
                 type_repr: desc.type_repr(),
                 channels: match desc.channels() {
-                    DeclaredBufferChannels::Mono => PreviewBufferChannels::Mono,
+                    DeclaredBufferChannels::Mono => RunBufferChannels::Mono,
                     DeclaredBufferChannels::Static(channels) => {
-                        PreviewBufferChannels::Static(channels)
+                        RunBufferChannels::Static(channels)
                     }
-                    DeclaredBufferChannels::Dynamic => PreviewBufferChannels::Dynamic,
+                    DeclaredBufferChannels::Dynamic => RunBufferChannels::Dynamic,
                 },
                 loaded_path: self
                     .buffer_bindings
@@ -281,25 +281,25 @@ impl PreviewSession {
             .collect()
     }
 
-    pub fn event_info(&self) -> Vec<PreviewEventInfo> {
+    pub fn event_info(&self) -> Vec<RunEventInfo> {
         (0..self.jit.event_count())
             .filter_map(|index| {
                 let desc = self.jit.event_descriptor(index)?;
-                if !is_preview_supported_event(desc) {
+                if !is_run_supported_event(desc) {
                     return None;
                 }
-                Some(PreviewEventInfo {
+                Some(RunEventInfo {
                     index,
                     name: desc.name().to_owned(),
                     params: desc
                         .params()
                         .iter()
                         .enumerate()
-                        .map(|(param_index, param)| PreviewEventParamInfo {
+                        .map(|(param_index, param)| RunEventParamInfo {
                             index: param_index,
                             name: param.name().to_owned(),
                             type_repr: param.type_repr(),
-                            value: default_preview_event_value(param),
+                            value: default_run_event_value(param),
                         })
                         .collect(),
                 })
@@ -330,10 +330,10 @@ impl PreviewSession {
             ));
         }
         self.param_values.insert(name.to_owned(), value);
-        if should_smooth_preview_param(desc.elem_ty()) {
+        if should_smooth_run_param(desc.elem_ty()) {
             self.param_runtime_values
                 .entry(name.to_owned())
-                .or_insert_with(|| default_preview_param_value(desc));
+                .or_insert_with(|| default_run_param_value(desc));
         } else {
             let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
             set_param_by_index(&mut self.instance, index, &bytes)?;
@@ -345,7 +345,7 @@ impl PreviewSession {
     pub fn trigger_event(
         &mut self,
         name: &str,
-        values: &[PreviewEventValue],
+        values: &[RunEventValue],
     ) -> Result<(), Diagnostic> {
         let Some(index) = self.jit.event_index(name) else {
             return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
@@ -353,10 +353,10 @@ impl PreviewSession {
         let Some(desc) = self.jit.event_descriptor(index) else {
             return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
         };
-        if !is_preview_supported_event(desc) {
+        if !is_run_supported_event(desc) {
             return Err(Diagnostic::runtime(
                 format!(
-                    "preview only supports host events with primitive scalar parameters, but '{}' is {}",
+                    "run only supports host events with primitive scalar parameters, but '{}' is {}",
                     name,
                     format_event_signature(desc)
                 ),
@@ -444,7 +444,7 @@ impl PreviewSession {
             .buffers()
             .get(index)
             .ok_or_else(|| Diagnostic::runtime(format!("unknown buffer '{name}'"), 0, 0))?;
-        let channels = default_preview_buffer_channels(desc.channels());
+        let channels = default_run_buffer_channels(desc.channels());
         let frames = self.options.block_size.max(1);
         let samples = vec![0.0_f32; frames.saturating_mul(channels)];
         self.bind_buffer_samples(name, samples, channels, self.options.sample_rate, None)
@@ -473,7 +473,7 @@ impl PreviewSession {
         if desc.elem_ty() != PrimitiveType::F32 {
             return Err(Diagnostic::runtime(
                 format!(
-                    "preview only supports f32-typed buffer bindings, but '{}' is {}",
+                    "run only supports f32-typed buffer bindings, but '{}' is {}",
                     name,
                     desc.type_repr()
                 ),
@@ -494,7 +494,7 @@ impl PreviewSession {
         let frames = samples.len() / channels;
         if self.buffer_bindings.len() <= index {
             self.buffer_bindings
-                .resize_with(index + 1, || PreviewBufferBinding {
+                .resize_with(index + 1, || RunBufferBinding {
                     _samples: Vec::new(),
                     frames: 0,
                     channels: 0,
@@ -502,7 +502,7 @@ impl PreviewSession {
                     loaded_path: None,
                 });
         }
-        self.buffer_bindings[index] = PreviewBufferBinding {
+        self.buffer_bindings[index] = RunBufferBinding {
             _samples: samples,
             frames,
             channels,
@@ -577,7 +577,7 @@ impl PreviewSession {
                 let Some(desc) = self.jit.param_descriptor(index) else {
                     continue;
                 };
-                if !should_smooth_preview_param(desc.elem_ty()) {
+                if !should_smooth_run_param(desc.elem_ty()) {
                     continue;
                 }
                 let bytes = scalar_param_bytes(desc.elem_ty(), target_value)?;
@@ -596,14 +596,14 @@ impl PreviewSession {
             let Some(desc) = self.jit.param_descriptor(index) else {
                 continue;
             };
-            if !should_smooth_preview_param(desc.elem_ty()) {
+            if !should_smooth_run_param(desc.elem_ty()) {
                 continue;
             }
             let current_value = self
                 .param_runtime_values
                 .get(&name)
                 .copied()
-                .unwrap_or_else(|| default_preview_param_value(desc));
+                .unwrap_or_else(|| default_run_param_value(desc));
             let mut next_value = current_value + (target_value - current_value) * alpha;
             if (target_value - next_value).abs() <= f64::max(0.0001, target_value.abs() * 0.001) {
                 next_value = target_value;
@@ -621,13 +621,13 @@ fn bind_placeholder_buffers(
     instance: &mut Instance,
     block_size: usize,
     sample_rate: f32,
-) -> Result<Vec<PreviewBufferBinding>, Diagnostic> {
+) -> Result<Vec<RunBufferBinding>, Diagnostic> {
     let mut bindings = Vec::with_capacity(jit.buffer_count());
     for (index, desc) in jit.buffers().iter().enumerate() {
         if desc.elem_ty() != PrimitiveType::F32 {
             return Err(Diagnostic::runtime(
                 format!(
-                    "preview only supports f32-typed buffer declarations, but '{}' is {}",
+                    "run only supports f32-typed buffer declarations, but '{}' is {}",
                     desc.name(),
                     desc.type_repr()
                 ),
@@ -635,7 +635,7 @@ fn bind_placeholder_buffers(
                 0,
             ));
         }
-        let channels = default_preview_buffer_channels(desc.channels());
+        let channels = default_run_buffer_channels(desc.channels());
         let frames = block_size.max(1);
         let mut samples = vec![0.0_f32; frames.saturating_mul(channels)];
         bind_buffer(
@@ -647,7 +647,7 @@ fn bind_placeholder_buffers(
             sample_rate,
             PrimitiveType::F32,
         )?;
-        bindings.push(PreviewBufferBinding {
+        bindings.push(RunBufferBinding {
             _samples: samples,
             frames,
             channels,
@@ -658,7 +658,7 @@ fn bind_placeholder_buffers(
     Ok(bindings)
 }
 
-fn default_preview_buffer_channels(channels: DeclaredBufferChannels) -> usize {
+fn default_run_buffer_channels(channels: DeclaredBufferChannels) -> usize {
     match channels {
         DeclaredBufferChannels::Mono => 1,
         DeclaredBufferChannels::Static(channels) => channels.max(1),
@@ -666,43 +666,43 @@ fn default_preview_buffer_channels(channels: DeclaredBufferChannels) -> usize {
     }
 }
 
-fn should_smooth_preview_param(ty: PrimitiveType) -> bool {
+fn should_smooth_run_param(ty: PrimitiveType) -> bool {
     matches!(ty, PrimitiveType::F32 | PrimitiveType::F64)
 }
 
-fn is_preview_supported_event(desc: &DeclaredEvent) -> bool {
+fn is_run_supported_event(desc: &DeclaredEvent) -> bool {
     desc.params()
         .iter()
         .all(|param| !param.is_slice() && param.array_len() == 1)
 }
 
-fn default_preview_event_value(param: &DeclaredEventParam) -> PreviewEventValue {
+fn default_run_event_value(param: &DeclaredEventParam) -> RunEventValue {
     let Some(bytes) = param.default_bytes() else {
         return match param.elem_ty() {
-            PrimitiveType::Bool => PreviewEventValue::Bool(false),
-            _ => PreviewEventValue::Number(0.0),
+            PrimitiveType::Bool => RunEventValue::Bool(false),
+            _ => RunEventValue::Number(0.0),
         };
     };
     match param.elem_ty() {
         PrimitiveType::F32 if bytes.len() == 4 => {
-            PreviewEventValue::Number(
+            RunEventValue::Number(
                 f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
             )
         }
-        PrimitiveType::F64 if bytes.len() == 8 => PreviewEventValue::Number(f64::from_ne_bytes([
+        PrimitiveType::F64 if bytes.len() == 8 => RunEventValue::Number(f64::from_ne_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ])),
         PrimitiveType::I32 if bytes.len() == 4 => {
-            PreviewEventValue::Number(
+            RunEventValue::Number(
                 i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
             )
         }
-        PrimitiveType::I64 if bytes.len() == 8 => PreviewEventValue::Number(i64::from_ne_bytes([
+        PrimitiveType::I64 if bytes.len() == 8 => RunEventValue::Number(i64::from_ne_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]) as f64),
-        PrimitiveType::Bool if !bytes.is_empty() => PreviewEventValue::Bool(bytes[0] != 0),
-        PrimitiveType::Bool => PreviewEventValue::Bool(false),
-        _ => PreviewEventValue::Number(0.0),
+        PrimitiveType::Bool if !bytes.is_empty() => RunEventValue::Bool(bytes[0] != 0),
+        PrimitiveType::Bool => RunEventValue::Bool(false),
+        _ => RunEventValue::Number(0.0),
     }
 }
 
@@ -721,7 +721,7 @@ fn format_event_signature(desc: &DeclaredEvent) -> String {
 
 fn scalar_event_payload_bytes(
     desc: &DeclaredEvent,
-    values: &[PreviewEventValue],
+    values: &[RunEventValue],
 ) -> Result<Vec<u8>, Diagnostic> {
     if values.len() != desc.params().len() {
         return Err(Diagnostic::runtime(
@@ -747,7 +747,7 @@ fn append_scalar_event_value(
     out: &mut Vec<u8>,
     event_name: &str,
     param: &DeclaredEventParam,
-    value: &PreviewEventValue,
+    value: &RunEventValue,
 ) -> Result<(), Diagnostic> {
     match param.elem_ty() {
         PrimitiveType::F32 => out.extend_from_slice(
@@ -764,14 +764,14 @@ fn append_scalar_event_value(
         ),
         PrimitiveType::Bool => {
             let encoded = match value {
-                PreviewEventValue::Bool(value) => {
+                RunEventValue::Bool(value) => {
                     if *value {
                         1_i8
                     } else {
                         0_i8
                     }
                 }
-                PreviewEventValue::Number(value) => {
+                RunEventValue::Number(value) => {
                     if *value == 0.0 {
                         0_i8
                     } else if *value == 1.0 {
@@ -798,11 +798,11 @@ fn append_scalar_event_value(
 fn event_number_value(
     event_name: &str,
     param: &DeclaredEventParam,
-    value: &PreviewEventValue,
+    value: &RunEventValue,
 ) -> Result<f64, Diagnostic> {
     match value {
-        PreviewEventValue::Number(value) => Ok(*value),
-        PreviewEventValue::Bool(value) => Err(Diagnostic::runtime(
+        RunEventValue::Number(value) => Ok(*value),
+        RunEventValue::Bool(value) => Err(Diagnostic::runtime(
             format!(
                 "event '{}' parameter '{}' requires a numeric {} value, got {}",
                 event_name,
@@ -816,7 +816,7 @@ fn event_number_value(
     }
 }
 
-fn default_preview_param_value(desc: &onda_codegen_llvm::DeclaredIo) -> f64 {
+fn default_run_param_value(desc: &onda_codegen_llvm::DeclaredIo) -> f64 {
     desc.default_as_f64()
         .or_else(|| desc.range_min_as_f64())
         .unwrap_or(0.0)

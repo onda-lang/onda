@@ -9,7 +9,7 @@ use tao::event_loop::EventLoopProxy;
 
 use crate::UserEvent;
 
-/// Manages the TCP connection to the `onda preview play --control-json` subprocess.
+/// Manages the TCP connection to the `onda run play --control-json` subprocess.
 #[derive(Clone)]
 pub struct IpcBridge {
     writer: Arc<Mutex<Option<BufWriter<TcpStream>>>>,

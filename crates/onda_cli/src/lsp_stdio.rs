@@ -3292,12 +3292,12 @@ mod tests {
     }
 
     #[test]
-    fn semantic_tokens_do_not_leak_event_locals_into_sample_blocks_for_preview_events_file() {
+    fn semantic_tokens_do_not_leak_event_locals_into_sample_blocks_for_simple_events_file() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("examples")
-            .join("preview_events.onda");
+            .join("simple_events.onda");
         let source = std::fs::read_to_string(&path).expect("example source should be readable");
         let tokens = semantic_tokens_for_document(&source, Some(&path));
 

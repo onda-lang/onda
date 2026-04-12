@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
-use onda_preview::{PreviewController, PreviewHostOptions, PreviewThemeMode};
+use onda_run::{RunController, RunHostOptions, RunThemeMode};
 use serde_json::{Number, Value};
 
 const LOGO_DARK_URI: &str = "bytes://onda-logo-dark-rect.svg";
@@ -14,16 +14,16 @@ const LOGO_LIGHT_BYTES: &[u8] = include_bytes!("../../../assets/svg/onda-logo-re
 const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo-dark-rect.png");
 const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo-rect.png");
 
-pub fn run_preview_egui(onda_path: &Path, options: PreviewHostOptions) -> Result<(), String> {
+pub fn run_run_egui(onda_path: &Path, options: RunHostOptions) -> Result<(), String> {
     let theme_mode = options.theme;
-    let controller = PreviewController::new(onda_path, options)?;
+    let controller = RunController::new(onda_path, options)?;
     let title = format!(
         "Onda - {}",
         controller
             .path()
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Preview".to_owned())
+            .unwrap_or_else(|| "Run".to_owned())
     );
 
     let native_options = eframe::NativeOptions {
@@ -39,22 +39,22 @@ pub fn run_preview_egui(onda_path: &Path, options: PreviewHostOptions) -> Result
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             match theme_mode {
-                PreviewThemeMode::Auto => {}
-                PreviewThemeMode::Dark => cc.egui_ctx.set_visuals(egui::Visuals::dark()),
-                PreviewThemeMode::Light => cc.egui_ctx.set_visuals(egui::Visuals::light()),
+                RunThemeMode::Auto => {}
+                RunThemeMode::Dark => cc.egui_ctx.set_visuals(egui::Visuals::dark()),
+                RunThemeMode::Light => cc.egui_ctx.set_visuals(egui::Visuals::light()),
             }
             let initial_icon_dark = resolved_theme_is_dark(&cc.egui_ctx, theme_mode);
             if let Ok(icon) = load_app_icon(initial_icon_dark) {
                 cc.egui_ctx
                     .send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
             }
-            Ok(Box::new(PreviewApp::new(
+            Ok(Box::new(RunApp::new(
                 controller,
                 Some(initial_icon_dark),
             )))
         }),
     )
-    .map_err(|err| format!("failed to start egui preview: {err}"))
+    .map_err(|err| format!("failed to start egui run: {err}"))
 }
 
 fn load_app_icon(is_dark: bool) -> Result<egui::IconData, String> {
@@ -64,32 +64,32 @@ fn load_app_icon(is_dark: bool) -> Result<egui::IconData, String> {
         APP_ICON_LIGHT_PNG
     };
     eframe::icon_data::from_png_bytes(png_bytes)
-        .map_err(|err| format!("failed to decode preview app icon: {err}"))
+        .map_err(|err| format!("failed to decode run app icon: {err}"))
 }
 
-fn startup_icon_is_dark(theme_mode: PreviewThemeMode) -> bool {
-    !matches!(theme_mode, PreviewThemeMode::Light)
+fn startup_icon_is_dark(theme_mode: RunThemeMode) -> bool {
+    !matches!(theme_mode, RunThemeMode::Light)
 }
 
-fn resolved_theme_is_dark(ctx: &egui::Context, theme_mode: PreviewThemeMode) -> bool {
+fn resolved_theme_is_dark(ctx: &egui::Context, theme_mode: RunThemeMode) -> bool {
     match theme_mode {
-        PreviewThemeMode::Dark => true,
-        PreviewThemeMode::Light => false,
-        PreviewThemeMode::Auto => {
+        RunThemeMode::Dark => true,
+        RunThemeMode::Light => false,
+        RunThemeMode::Auto => {
             ctx.system_theme().unwrap_or_else(|| ctx.theme()) == egui::Theme::Dark
         }
     }
 }
 
-struct PreviewApp {
-    controller: PreviewController,
+struct RunApp {
+    controller: RunController,
     event_inputs: HashMap<String, Vec<Value>>,
     number_drafts: HashMap<String, f64>,
     current_icon_dark: Option<bool>,
 }
 
-impl PreviewApp {
-    fn new(controller: PreviewController, current_icon_dark: Option<bool>) -> Self {
+impl RunApp {
+    fn new(controller: RunController, current_icon_dark: Option<bool>) -> Self {
         let mut app = Self {
             controller,
             event_inputs: HashMap::new(),
@@ -154,16 +154,16 @@ impl PreviewApp {
     }
 }
 
-impl eframe::App for PreviewApp {
+impl eframe::App for RunApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let poll = self.controller.poll();
         if poll.state_changed {
             self.sync_event_inputs();
         }
         ctx.request_repaint_after(Duration::from_millis(16));
-        let theme = PreviewTheme::from_dark_mode(ctx.style().visuals.dark_mode);
+        let theme = RunTheme::from_dark_mode(ctx.style().visuals.dark_mode);
         self.sync_window_icon(ctx, theme.is_dark);
-        apply_preview_theme(ctx, &theme);
+        apply_run_theme(ctx, &theme);
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::default()
@@ -935,7 +935,7 @@ fn draw_scope(
     channels: usize,
     samples: &[f32],
     size: egui::Vec2,
-    theme: &PreviewTheme,
+    theme: &RunTheme,
 ) {
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
@@ -977,7 +977,7 @@ fn draw_scope(
 }
 
 #[derive(Clone, Copy)]
-struct PreviewTheme {
+struct RunTheme {
     is_dark: bool,
     app_fill: egui::Color32,
     accent: egui::Color32,
@@ -993,7 +993,7 @@ struct PreviewTheme {
     scope_strokes: [egui::Color32; 4],
 }
 
-impl PreviewTheme {
+impl RunTheme {
     fn from_dark_mode(is_dark: bool) -> Self {
         if is_dark {
             Self {
@@ -1041,7 +1041,7 @@ impl PreviewTheme {
     }
 }
 
-fn apply_preview_theme(ctx: &egui::Context, theme: &PreviewTheme) {
+fn apply_run_theme(ctx: &egui::Context, theme: &RunTheme) {
     let mut style = (*ctx.style()).clone();
     let visuals = &mut style.visuals;
 

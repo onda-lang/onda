@@ -2,8 +2,8 @@ use std::io::{self, BufRead, BufWriter, Write};
 use std::path::Path;
 
 use onda_daemon::{
-    DaemonConfig, DaemonSession, DocumentVersion, PreviewBuildError, PreviewOptions,
-    PreviewParamInfo,
+    DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunOptions,
+    RunParamInfo,
 };
 use onda_frontend::Diagnostic;
 use onda_semantics::AnalysisOptions;
@@ -75,21 +75,21 @@ enum Request {
     Diagnose {
         path: String,
     },
-    PreviewStart {
+    RunStart {
         path: String,
     },
-    PreviewStop {
+    RunStop {
         path: String,
     },
-    PreviewParams {
+    RunParams {
         path: String,
     },
-    PreviewSetParam {
+    RunSetParam {
         path: String,
         name: String,
         value: f64,
     },
-    PreviewRender {
+    RunRender {
         path: String,
     },
 }
@@ -135,26 +135,26 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             fast_math,
         } => {
             let current = session.config();
-            let preview = PreviewOptions {
-                sample_rate: sample_rate_hz.unwrap_or(current.preview.sample_rate as u32) as f32,
-                block_size: block_frames.unwrap_or(current.preview.block_size),
-                float_param_smoothing_ms: current.preview.float_param_smoothing_ms,
-                fast_math: fast_math.unwrap_or(current.preview.fast_math),
-                opt_level: current.preview.opt_level,
-                backend: current.preview.backend,
+            let run = RunOptions {
+                sample_rate: sample_rate_hz.unwrap_or(current.run.sample_rate as u32) as f32,
+                block_size: block_frames.unwrap_or(current.run.block_size),
+                float_param_smoothing_ms: current.run.float_param_smoothing_ms,
+                fast_math: fast_math.unwrap_or(current.run.fast_math),
+                opt_level: current.run.opt_level,
+                backend: current.run.backend,
             };
             let config = DaemonConfig {
                 analysis: AnalysisOptions {
-                    sample_rate: preview.sample_rate,
-                    block_size: preview.block_size,
+                    sample_rate: run.sample_rate,
+                    block_size: run.block_size,
                 },
-                preview,
+                run,
             };
             session.set_config(config);
             Ok(json!({
-                "sample_rate_hz": preview.sample_rate,
-                "block_frames": preview.block_size,
-                "fast_math": preview.fast_math,
+                "sample_rate_hz": run.sample_rate,
+                "block_frames": run.block_size,
+                "fast_math": run.fast_math,
             }))
         }
         Request::Open {
@@ -192,41 +192,41 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 "diagnostics": snapshot.diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
             }))
         }
-        Request::PreviewStart { path } => session
-            .start_preview(&path)
-            .map(|preview| {
+        Request::RunStart { path } => session
+            .start_run(&path)
+            .map(|run| {
                 json!({
-                    "path": display_path(preview.path()),
-                    "version": preview.version().map(|v| v.0),
-                    "params": preview.param_info().iter().map(preview_param_json).collect::<Vec<_>>(),
-                    "output_channels": preview.output_channel_count(),
+                    "path": display_path(run.path()),
+                    "version": run.version().map(|v| v.0),
+                    "params": run.param_info().iter().map(run_param_json).collect::<Vec<_>>(),
+                    "output_channels": run.output_channel_count(),
                 })
             })
-            .map_err(|err| preview_build_error_string("preview_start failed", &err)),
-        Request::PreviewStop { path } => {
-            let stopped = session.stop_preview(path).is_some();
+            .map_err(|err| run_build_error_string("run_start failed", &err)),
+        Request::RunStop { path } => {
+            let stopped = session.stop_run(path).is_some();
             Ok(json!({ "stopped": stopped }))
         }
-        Request::PreviewParams { path } => session
-            .preview(path)
-            .map(|preview| {
+        Request::RunParams { path } => session
+            .run(path)
+            .map(|run| {
                 json!({
-                    "params": preview.param_info().iter().map(preview_param_json).collect::<Vec<_>>(),
-                    "output_channels": preview.output_channel_count(),
+                    "params": run.param_info().iter().map(run_param_json).collect::<Vec<_>>(),
+                    "output_channels": run.output_channel_count(),
                 })
             })
-            .ok_or_else(|| "preview is not active".to_owned()),
-        Request::PreviewSetParam { path, name, value } => session
-            .preview_mut(path)
-            .ok_or_else(|| "preview is not active".to_owned())
-            .and_then(|preview| {
-                preview
+            .ok_or_else(|| "run is not active".to_owned()),
+        Request::RunSetParam { path, name, value } => session
+            .run_mut(path)
+            .ok_or_else(|| "run is not active".to_owned())
+            .and_then(|run| {
+                run
                     .set_param_f64(&name, value)
-                    .map_err(|diag| diagnostic_string("preview_set_param failed", &diag))
+                    .map_err(|diag| diagnostic_string("run_set_param failed", &diag))
             })
             .map(|_| json!({ "status": "ok" })),
-        Request::PreviewRender { path } => session
-            .render_preview_block(path)
+        Request::RunRender { path } => session
+            .render_run_block(path)
             .map(|channels| {
                 let frames = channels.first().map(Vec::len).unwrap_or(0);
                 json!({
@@ -234,7 +234,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                     "channels": channels,
                 })
             })
-            .map_err(|diag| diagnostic_string("preview_render failed", &diag)),
+            .map_err(|diag| diagnostic_string("run_render failed", &diag)),
     };
 
     match result {
@@ -256,7 +256,7 @@ fn diagnostic_json(diag: &Diagnostic) -> Value {
     })
 }
 
-fn preview_param_json(param: &PreviewParamInfo) -> Value {
+fn run_param_json(param: &RunParamInfo) -> Value {
     json!({
         "index": param.index,
         "name": param.name.clone(),
@@ -269,10 +269,10 @@ fn preview_param_json(param: &PreviewParamInfo) -> Value {
     })
 }
 
-fn preview_build_error_string(context: &str, err: &PreviewBuildError) -> String {
+fn run_build_error_string(context: &str, err: &RunBuildError) -> String {
     match err {
-        PreviewBuildError::Diagnostics(diags) => diagnostics_string(context, diags),
-        PreviewBuildError::Runtime(diag) => diagnostic_string(context, diag),
+        RunBuildError::Diagnostics(diags) => diagnostics_string(context, diags),
+        RunBuildError::Runtime(diag) => diagnostic_string(context, diag),
     }
 }
 
@@ -347,12 +347,12 @@ mod tests {
         assert!(response.ok);
         assert_eq!(session.config().analysis.block_size, 256);
         assert_eq!(session.config().analysis.sample_rate, 44_100.0);
-        assert!(session.config().preview.fast_math);
+        assert!(session.config().run.fast_math);
     }
 
     #[test]
-    fn preview_render_command_round_trips() {
-        let dir = mk_temp_dir("preview_render");
+    fn run_render_command_round_trips() {
+        let dir = mk_temp_dir("run_render");
         let main = dir.join("main.onda");
         write_file(
             &main,
@@ -364,7 +364,7 @@ mod tests {
             &mut session,
             RequestEnvelope {
                 id: Some(2),
-                request: Request::PreviewStart {
+                request: Request::RunStart {
                     path: main.to_string_lossy().into_owned(),
                 },
             },
@@ -375,7 +375,7 @@ mod tests {
             &mut session,
             RequestEnvelope {
                 id: Some(3),
-                request: Request::PreviewRender {
+                request: Request::RunRender {
                     path: main.to_string_lossy().into_owned(),
                 },
             },

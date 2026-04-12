@@ -13,9 +13,9 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{
-    DaemonConfig, DaemonSession, PreviewBufferChannels as DaemonPreviewBufferChannels,
-    PreviewBuildError, PreviewEventInfo, PreviewEventParamInfo, PreviewEventValue,
-    PreviewOptions, PreviewParamInfo,
+    DaemonConfig, DaemonSession, RunBufferChannels as DaemonRunBufferChannels,
+    RunBuildError, RunEventInfo, RunEventParamInfo, RunEventValue,
+    RunOptions, RunParamInfo,
 };
 use onda_frontend::Diagnostic;
 use onda_semantics::AnalysisOptions;
@@ -38,7 +38,7 @@ use std::sync::OnceLock;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-pub enum PreviewThemeMode {
+pub enum RunThemeMode {
     #[default]
     Auto,
     Dark,
@@ -46,7 +46,7 @@ pub enum PreviewThemeMode {
 }
 
 #[derive(Clone, Debug)]
-pub struct PreviewHostOptions {
+pub struct RunHostOptions {
     pub sample_rate_hz: u32,
     pub block_frames: usize,
     pub opt_level: String,
@@ -54,11 +54,11 @@ pub struct PreviewHostOptions {
     pub output_device: Option<String>,
     pub fast_math: bool,
     pub show_meta: bool,
-    pub theme: PreviewThemeMode,
+    pub theme: RunThemeMode,
     pub onda_bin: String,
 }
 
-impl Default for PreviewHostOptions {
+impl Default for RunHostOptions {
     fn default() -> Self {
         Self {
             sample_rate_hz: 48_000,
@@ -68,14 +68,14 @@ impl Default for PreviewHostOptions {
             output_device: None,
             fast_math: false,
             show_meta: false,
-            theme: PreviewThemeMode::Auto,
+            theme: RunThemeMode::Auto,
             onda_bin: "onda".to_owned(),
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct PreviewState {
+pub struct RunState {
     pub running: bool,
     pub connected: bool,
     pub path: String,
@@ -93,8 +93,8 @@ pub struct PreviewState {
     pub scope_samples: Vec<f32>,
 }
 
-impl PreviewState {
-    fn new(path: &Path, options: &PreviewHostOptions) -> Self {
+impl RunState {
+    fn new(path: &Path, options: &RunHostOptions) -> Self {
         Self {
             running: false,
             connected: false,
@@ -160,10 +160,10 @@ struct RawReadyEvent {
     current_output_device: Option<String>,
 }
 
-pub struct PreviewController {
+pub struct RunController {
     onda_path: PathBuf,
-    options: PreviewHostOptions,
-    state: PreviewState,
+    options: RunHostOptions,
+    state: RunState,
     events_rx: Receiver<ControllerEvent>,
     events_tx: Sender<ControllerEvent>,
     bridge: IpcBridge,
@@ -183,15 +183,15 @@ pub struct PollResult {
     pub scope_changed: bool,
 }
 
-impl PreviewController {
-    pub fn new(onda_path: &Path, options: PreviewHostOptions) -> Result<Self, String> {
+impl RunController {
+    pub fn new(onda_path: &Path, options: RunHostOptions) -> Result<Self, String> {
         let onda_path = std::fs::canonicalize(onda_path)
             .map_err(|e| format!("cannot resolve path {}: {e}", onda_path.display()))?;
         let (events_tx, events_rx) = mpsc::channel();
         let bridge = IpcBridge::new();
-        let state = PreviewState::new(&onda_path, &options);
+        let state = RunState::new(&onda_path, &options);
         let child = ChildSession::spawn(&onda_path, &options, events_tx.clone())
-            .map_err(|e| format!("failed to start preview subprocess: {e}"))?;
+            .map_err(|e| format!("failed to start run subprocess: {e}"))?;
         let watcher_tx = events_tx.clone();
         let watcher = FileWatcher::watch(&onda_path, move || {
             let _ = watcher_tx.send(ControllerEvent::FileChanged);
@@ -218,7 +218,7 @@ impl PreviewController {
         Ok(controller)
     }
 
-    pub fn state(&self) -> &PreviewState {
+    pub fn state(&self) -> &RunState {
         &self.state
     }
 
@@ -414,7 +414,7 @@ impl PreviewController {
     }
 
     fn refresh_stopped_state(&mut self) {
-        match load_preview_metadata(&self.onda_path, &self.options) {
+        match load_run_metadata(&self.onda_path, &self.options) {
             Ok(metadata) => {
                 reconcile_preserved_params(
                     &mut self.preserved_params,
@@ -525,7 +525,7 @@ impl PreviewController {
     }
 }
 
-impl Drop for PreviewController {
+impl Drop for RunController {
     fn drop(&mut self) {
         self.child.kill();
         self.bridge.disconnect();
@@ -537,7 +537,7 @@ struct ChildSession {
     stderr_buffer: Arc<Mutex<String>>,
 }
 
-struct PreviewMetadata {
+struct RunMetadata {
     path: String,
     output_channels: usize,
     params: Vec<Value>,
@@ -545,33 +545,33 @@ struct PreviewMetadata {
     events: Vec<Value>,
 }
 
-fn load_preview_metadata(path: &Path, options: &PreviewHostOptions) -> Result<PreviewMetadata, String> {
+fn load_run_metadata(path: &Path, options: &RunHostOptions) -> Result<RunMetadata, String> {
     let mut session = DaemonSession::new(DaemonConfig {
         analysis: AnalysisOptions {
             sample_rate: options.sample_rate_hz as f32,
             block_size: options.block_frames,
         },
-        preview: PreviewOptions {
+        run: RunOptions {
             sample_rate: options.sample_rate_hz as f32,
             block_size: options.block_frames,
             fast_math: options.fast_math,
-            opt_level: parse_preview_opt_level(&options.opt_level),
-            ..PreviewOptions::default()
+            opt_level: parse_run_opt_level(&options.opt_level),
+            ..RunOptions::default()
         },
     });
-    let preview = session
-        .start_preview(path)
-        .map_err(|err| format_preview_build_error("preview refresh failed", &err))?;
-    Ok(PreviewMetadata {
-        path: display_path(preview.path()),
-        output_channels: preview.output_channel_count(),
-        params: preview.param_info().iter().map(preview_param_json).collect(),
-        buffers: preview.buffer_info().iter().map(preview_buffer_json).collect(),
-        events: preview.event_info().iter().map(preview_event_json).collect(),
+    let run = session
+        .start_run(path)
+        .map_err(|err| format_run_build_error("run refresh failed", &err))?;
+    Ok(RunMetadata {
+        path: display_path(run.path()),
+        output_channels: run.output_channel_count(),
+        params: run.param_info().iter().map(run_param_json).collect(),
+        buffers: run.buffer_info().iter().map(run_buffer_json).collect(),
+        events: run.event_info().iter().map(run_event_json).collect(),
     })
 }
 
-fn parse_preview_opt_level(value: &str) -> TargetOptLevel {
+fn parse_run_opt_level(value: &str) -> TargetOptLevel {
     match value {
         "0" => TargetOptLevel::O0,
         "1" => TargetOptLevel::O1,
@@ -580,16 +580,16 @@ fn parse_preview_opt_level(value: &str) -> TargetOptLevel {
     }
 }
 
-fn format_preview_build_error(prefix: &str, err: &PreviewBuildError) -> String {
+fn format_run_build_error(prefix: &str, err: &RunBuildError) -> String {
     match err {
-        PreviewBuildError::Diagnostics(diags) => {
+        RunBuildError::Diagnostics(diags) => {
             if let Some(first) = diags.first() {
                 format_single_diagnostic(prefix, first)
             } else {
-                format!("{prefix}: preview diagnostics")
+                format!("{prefix}: run diagnostics")
             }
         }
-        PreviewBuildError::Runtime(diag) => format_single_diagnostic(prefix, diag),
+        RunBuildError::Runtime(diag) => format_single_diagnostic(prefix, diag),
     }
 }
 
@@ -606,7 +606,7 @@ fn format_single_diagnostic(prefix: &str, diag: &Diagnostic) -> String {
     format!("{prefix}: {} ({location})", diag.message)
 }
 
-fn preview_param_json(param: &PreviewParamInfo) -> Value {
+fn run_param_json(param: &RunParamInfo) -> Value {
     json!({
         "index": param.index,
         "name": param.name,
@@ -619,11 +619,11 @@ fn preview_param_json(param: &PreviewParamInfo) -> Value {
     })
 }
 
-fn preview_buffer_json(buffer: &onda_daemon::PreviewBufferInfo) -> Value {
+fn run_buffer_json(buffer: &onda_daemon::RunBufferInfo) -> Value {
     let (channels_kind, channels_static) = match buffer.channels {
-        DaemonPreviewBufferChannels::Mono => ("mono", None),
-        DaemonPreviewBufferChannels::Static(channels) => ("static", Some(channels)),
-        DaemonPreviewBufferChannels::Dynamic => ("dynamic", None),
+        DaemonRunBufferChannels::Mono => ("mono", None),
+        DaemonRunBufferChannels::Static(channels) => ("static", Some(channels)),
+        DaemonRunBufferChannels::Dynamic => ("dynamic", None),
     };
     json!({
         "index": buffer.index,
@@ -635,38 +635,38 @@ fn preview_buffer_json(buffer: &onda_daemon::PreviewBufferInfo) -> Value {
     })
 }
 
-fn preview_event_json(event: &PreviewEventInfo) -> Value {
+fn run_event_json(event: &RunEventInfo) -> Value {
     json!({
         "index": event.index,
         "name": event.name,
-        "args": event.params.iter().map(preview_event_param_json).collect::<Vec<_>>(),
+        "args": event.params.iter().map(run_event_param_json).collect::<Vec<_>>(),
     })
 }
 
-fn preview_event_param_json(param: &PreviewEventParamInfo) -> Value {
+fn run_event_param_json(param: &RunEventParamInfo) -> Value {
     json!({
         "index": param.index,
         "name": param.name,
         "type": param.type_repr,
-        "value": preview_event_value_json(&param.value),
+        "value": run_event_value_json(&param.value),
     })
 }
 
-fn preview_event_value_json(value: &PreviewEventValue) -> Value {
+fn run_event_value_json(value: &RunEventValue) -> Value {
     match value {
-        PreviewEventValue::Bool(value) => Value::Bool(*value),
-        PreviewEventValue::Number(value) => json!(value),
+        RunEventValue::Bool(value) => Value::Bool(*value),
+        RunEventValue::Number(value) => json!(value),
     }
 }
 
 impl ChildSession {
     fn spawn(
         onda_path: &Path,
-        options: &PreviewHostOptions,
+        options: &RunHostOptions,
         event_tx: Sender<ControllerEvent>,
     ) -> Result<Self, String> {
         let mut cmd = Command::new(&options.onda_bin);
-        cmd.arg("preview")
+        cmd.arg("run")
             .arg("play")
             .arg(onda_path)
             .arg("--forever")
@@ -697,7 +697,7 @@ impl ChildSession {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("failed to spawn onda preview: {e}"))?;
+            .map_err(|e| format!("failed to spawn onda run: {e}"))?;
 
         let stdout = child
             .stdout
@@ -715,7 +715,7 @@ impl ChildSession {
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        eprintln!("[onda preview] {line}");
+                        eprintln!("[onda run] {line}");
                         if let Ok(mut slot) = stderr_sink.lock() {
                             if !slot.is_empty() {
                                 slot.push('\n');
@@ -761,7 +761,7 @@ impl ChildSession {
                         continue;
                     }
                 }
-                eprintln!("[onda preview stdout] {trimmed}");
+                eprintln!("[onda run stdout] {trimmed}");
             }
         });
 
@@ -788,7 +788,7 @@ impl ChildSession {
 
     fn kill(&mut self) {
         if let Some(ref mut child) = self.child {
-            terminate_preview_child(child);
+            terminate_run_child(child);
             let _ = child.wait();
         }
         self.child = None;
@@ -802,7 +802,7 @@ impl Drop for ChildSession {
 }
 
 #[cfg(target_os = "windows")]
-fn terminate_preview_child(child: &mut Child) {
+fn terminate_run_child(child: &mut Child) {
     let pid = child.id().to_string();
     let mut cmd = Command::new("taskkill");
     cmd.arg("/PID").arg(pid).arg("/T").arg("/F");
@@ -814,7 +814,7 @@ fn terminate_preview_child(child: &mut Child) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn terminate_preview_child(child: &mut Child) {
+fn terminate_run_child(child: &mut Child) {
     let _ = child.kill();
 }
 
@@ -1241,14 +1241,14 @@ mod tests {
     #[test]
     fn file_watcher_survives_repeated_atomic_replaces() {
         let temp_root = std::env::temp_dir().join(format!(
-            "onda_preview_test_{}",
+            "onda_run_test_{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("time should advance")
                 .as_nanos()
         ));
         fs::create_dir_all(&temp_root).expect("create temp dir");
-        let watched = temp_root.join("patch.onda");
+        let watched = temp_root.join("run.onda");
         fs::write(&watched, "outs:\n  out1\nsample:\n  out1 = 0.0\n").expect("write initial file");
 
         let (tx, rx) = mpsc::channel();
@@ -1280,8 +1280,8 @@ mod tests {
 
     #[test]
     fn preserved_params_are_dropped_when_param_signature_changes() {
-        let old_params = vec![preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)];
-        let new_params = vec![preview_param("gain", "f32", 0.5, Some(0.0), Some(2.0), true)];
+        let old_params = vec![run_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)];
+        let new_params = vec![run_param("gain", "f32", 0.5, Some(0.0), Some(2.0), true)];
         let mut preserved = vec![("gain".to_owned(), json!(1.25))];
 
         reconcile_preserved_params(&mut preserved, &old_params, &new_params);
@@ -1291,8 +1291,8 @@ mod tests {
 
     #[test]
     fn preserved_params_are_kept_when_param_signature_matches() {
-        let old_params = vec![preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)];
-        let new_params = vec![preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)];
+        let old_params = vec![run_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)];
+        let new_params = vec![run_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)];
         let mut preserved = vec![("gain".to_owned(), json!(1.25))];
 
         reconcile_preserved_params(&mut preserved, &old_params, &new_params);
@@ -1302,30 +1302,30 @@ mod tests {
 
     #[test]
     fn param_preservation_compatibility_checks_type_default_range_and_shape() {
-        let base = preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true);
+        let base = run_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true);
         assert!(params_are_compatible_for_preservation(
             &base,
-            &preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)
+            &run_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)
         ));
         assert!(!params_are_compatible_for_preservation(
             &base,
-            &preview_param("gain", "f64", 1.0, Some(0.0), Some(2.0), true)
+            &run_param("gain", "f64", 1.0, Some(0.0), Some(2.0), true)
         ));
         assert!(!params_are_compatible_for_preservation(
             &base,
-            &preview_param("gain", "f32", 0.5, Some(0.0), Some(2.0), true)
+            &run_param("gain", "f32", 0.5, Some(0.0), Some(2.0), true)
         ));
         assert!(!params_are_compatible_for_preservation(
             &base,
-            &preview_param("gain", "f32", 1.0, Some(-1.0), Some(2.0), true)
+            &run_param("gain", "f32", 1.0, Some(-1.0), Some(2.0), true)
         ));
         assert!(!params_are_compatible_for_preservation(
             &base,
-            &preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), false)
+            &run_param("gain", "f32", 1.0, Some(0.0), Some(2.0), false)
         ));
     }
 
-    fn preview_param(
+    fn run_param(
         name: &str,
         ty: &str,
         default: f64,

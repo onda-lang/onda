@@ -336,7 +336,7 @@
 - **Analysis sessions**:
   - In-memory document overlays (`open` / `update` / `close`) for open files.
   - `analyze_document` parses and type-checks via the overlay (substituting in-memory content for any file in the overlay, including transitive imports), returning an `AnalysisSnapshot` with diagnostics, parsed AST, and optional typed program.
-- **Preview sessions**:
+- **Run sessions**:
   - Build a live JIT-compiled instance from an analyzed document.
   - Bind input/output audio buffers (zero-filled), bind placeholder zero buffers for declared `buffer[...]` params.
   - `param_info()` and `buffer_info()` return metadata (names, types, ranges, defaults, channel layout).
@@ -367,10 +367,10 @@
 - Diagnostics are published per-file on open and save, grouped by URI across transitive imports. Stale diagnostics from previously-erroring files are cleared.
 - Semantic tokens are computed from the parsed AST (not the typed AST), so they work even when the file has semantic errors. A regex-based fallback provides `const` highlighting when parsing fails entirely.
 
-### Preview transport
-- `onda preview <file>` opens the standalone preview window.
-  - Internally it launches `onda preview play <file> --forever --control-json` and connects the native webview to that control socket.
-- `onda preview play` is the real-time preview transport on top of the daemon preview session.
+### Run transport
+- `onda run <file>` opens the standalone run window.
+  - Internally it launches `onda run play <file> --forever --control-json` and connects the native webview to that control socket.
+- `onda run play` is the real-time run transport on top of the daemon run session.
   - Audio playback is in-process via `cpal`.
   - Rendering runs on a background thread, outputting interleaved samples into a lock-free SPSC ring buffer that the cpal audio callback drains.
   - When `--control-json` is enabled:
@@ -382,8 +382,8 @@
       - `setParam {name, value}` — updates a scalar param.
       - `bindBufferWav {name, path}` — loads a WAV and rebinds a buffer.
       - `clearBuffer {name}` — zeros a buffer.
-- `onda preview render` renders offline to WAV via the daemon preview pipeline.
-- `onda daemon stdio` is a JSON-over-stdio daemon transport for non-LSP clients, supporting `ping`, `initialize`, `open`, `update`, `close`, `diagnose`, `preview_start`, `preview_stop`, `preview_params`, `preview_set_param`, and `preview_render` commands.
+- `onda run render` renders offline to WAV via the daemon run pipeline.
+- `onda daemon stdio` is a JSON-over-stdio daemon transport for non-LSP clients, supporting `ping`, `initialize`, `open`, `update`, `close`, `diagnose`, `run_start`, `run_stop`, `run_params`, `run_set_param`, and `run_render` commands.
 
 ### VSCode extension (`onda-lang/onda-vscode`)
 - Language registration with TextMate grammar for syntax highlighting.
@@ -393,23 +393,23 @@
   - `onda.server.path` — path to the `onda` binary (default `"onda"`).
   - `onda.server.args` — extra args prepended before the `lsp` subcommand.
 - Commands:
-  - `Onda: Run Patch` — compiles and starts `onda preview play --forever --control-json` for the active `.onda` file; opens the Patch panel.
-  - `Onda: Stop Patch` — kills the running patch process.
+  - `Onda: Run File` — compiles and starts `onda run play --forever --control-json` for the active `.onda` file; opens the run panel.
+  - `Onda: Stop File` — stops the running file.
   - `Onda: Restart Language Server` — stops and restarts the LSP client.
-- **Patch panel** (webview):
-  - Header with patch file path, status, Start/Stop/Reset buttons, and input/output device selectors.
+- **Run panel** (webview):
+  - Header with file path, status, Start/Stop/Reset buttons, and input/output device selectors.
   - **Buffers section**: one card per `buffer[...]` declaration with "Choose File", loaded file path display, and "Clear" button.
   - **Params section**: one card per scalar param with:
     - `bool` params: checkbox toggle.
     - Numeric params with range: synchronized range slider + number input.
     - Numeric params without range: number input only.
-  - Param/buffer state is preserved across patch restarts for the same file.
-  - Auto-restart on `.onda` file save when a patch is running for that file.
+  - Param/buffer state is preserved across restarts for the same file.
+  - Auto-restart on `.onda` file save when that file is running.
 
 ### Neovim runtime (`onda-lang/onda-nvim`)
 - `.onda` and `.on` filetype detection and regex syntax highlighting.
 - builtin LSP client startup via `onda lsp`.
-- `:OndaRunPatch` launches `onda preview <file>` in the standalone preview window.
+- `:OndaRunFile` launches `onda run <file>` in the standalone run window.
 
 ## Runtime and codegen
 - ORC JIT remains the only execution backend (`Auto` routes to ORC).
@@ -438,14 +438,14 @@
 - CLI (`onda`) supports:
   - `compile <file> [--emit check|llvm-ir|obj] [--output] [--meta-out] [--target-triple <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <csv>] [--target-abi <name>] [--reloc-model <mode>] [--code-model <mode>] [--opt-level <0|1|2|3>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--meta]`
   - `lsp [--stdio]`
-  - `preview <file> [--sr|--sample-rate] [--block] [--fast-math] [--input-device <name>] [--output-device <name>]`
-  - `preview render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value]`
-  - `preview play <file> [--dur | --forever] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value] [--control-json]`
+  - `run <file> [--sr|--sample-rate] [--block] [--fast-math] [--input-device <name>] [--output-device <name>]`
+  - `run render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value]`
+  - `run play <file> [--dur | --forever] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value] [--control-json]`
   - `daemon diagnose <file> [--sr|--sample-rate] [--block]`
   - `daemon stdio`
   - `--dump-graph` prints the program immediately after graph lowering, before proc desugaring/codegen.
-  - `preview play` defaults to a `128`-frame render/device block size.
-  - `preview render` keeps the offline render default block size (`512`).
+  - `run play` defaults to a `128`-frame render/device block size.
+  - `run render` keeps the offline render default block size (`512`).
   - `compile --emit obj` writes a native object file plus a JSON metadata sidecar.
   - `compile` remains host-native by default; cross-target AOT requires `--target-triple` or `--target-spec`.
   - `compile --target-spec <path>` loads a small TOML codegen preset; direct CLI flags override spec values.

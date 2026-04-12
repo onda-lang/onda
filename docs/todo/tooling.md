@@ -7,11 +7,10 @@
 - Improve diagnostic cadence:
   evaluate publish-on-change/debounced diagnostics in addition to the current open/save flow.
 - Stabilize daemon/editor transport boundaries:
-  decide which preview-control pieces stay private versus becoming a documented protocol.
+  decide which run-control pieces stay private versus becoming a documented protocol.
 - Keep VSCode syntax highlighting and semantic tokens aligned as the language grows.
 - Add an extension smoke-test path or automation for:
-  `onda lsp`, `Onda: Run Patch`, semantic tokens, and preview webview controls.
-- Improve preview panel UX:
+  `onda lsp`, `Onda: Run File`, semantic tokens, and run webview controls.
+- Improve run panel UX:
   better knob/slider affordances, richer status/errors, and explicit device/runtime state display.
-- Broaden preview buffer ingestion beyond current WAV-only `hound` path if warranted.
-
+- Broaden run buffer ingestion beyond current WAV-only `hound` path if warranted.

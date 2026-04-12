@@ -1636,7 +1636,7 @@ Why it is useful:
 
 ### 11.7 Event-driven patch
 
-`examples/preview_events.onda`
+`examples/run_events.onda`
 
 Why it is useful:
 - top-level `events`

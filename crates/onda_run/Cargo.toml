@@ -1,5 +1,5 @@
 [package]
-name = "onda_preview"
+name = "onda_run"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

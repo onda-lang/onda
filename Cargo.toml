@@ -7,7 +7,7 @@ members = [
   "crates/onda_codegen_llvm",
   "crates/onda_runtime",
   "crates/onda_api",
-  "crates/onda_preview",
+  "crates/onda_run",
   "crates/onda_egui",
   "crates/onda_webview",
   "crates/onda_examples",
@@ -17,7 +17,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.1.8"
+version = "0.2.0"
 authors = ["onda contributors"]
 
 [workspace.lints.clippy]
