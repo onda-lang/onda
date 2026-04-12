@@ -407,6 +407,7 @@ impl PreviewController {
             .connect(ready.port, self.events_tx.clone())
             .err();
 
+        reconcile_preserved_params(&mut self.preserved_params, &self.state.params, &ready.params);
         self.state.params = ready.params;
         apply_preserved_param_state(&mut self.state.params, &self.preserved_params);
         self.state.buffers = ready.buffers;
@@ -889,6 +890,31 @@ fn apply_preserved_param_state(params: &mut [Value], preserved_params: &[(String
     }
 }
 
+fn reconcile_preserved_params(
+    preserved_params: &mut Vec<(String, Value)>,
+    old_params: &[Value],
+    new_params: &[Value],
+) {
+    preserved_params.retain(|(name, _)| {
+        let Some(old_param) = old_params.iter().find(|param| param_name(param) == Some(name)) else {
+            return false;
+        };
+        let Some(new_param) = new_params.iter().find(|param| param_name(param) == Some(name)) else {
+            return false;
+        };
+        params_are_compatible_for_preservation(old_param, new_param)
+    });
+}
+
+fn params_are_compatible_for_preservation(old_param: &Value, new_param: &Value) -> bool {
+    param_name(old_param) == param_name(new_param)
+        && old_param.get("type") == new_param.get("type")
+        && old_param.get("default") == new_param.get("default")
+        && old_param.get("rangeMin") == new_param.get("rangeMin")
+        && old_param.get("rangeMax") == new_param.get("rangeMax")
+        && old_param.get("scalar") == new_param.get("scalar")
+}
+
 fn apply_preserved_buffer_state(buffers: &mut [Value], preserved_buffers: &[(String, String)]) {
     for buffer in buffers {
         let Some(name) = buffer_name(buffer).map(str::to_owned) else {
@@ -1023,7 +1049,8 @@ fn display_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::FileWatcher;
+    use super::{params_are_compatible_for_preservation, reconcile_preserved_params, FileWatcher};
+    use serde_json::{json, Value};
     use std::fs;
     use std::path::Path;
     use std::sync::mpsc;
@@ -1067,5 +1094,71 @@ mod tests {
             fs::remove_file(path).expect("remove old file");
         }
         fs::rename(&tmp, path).expect("replace watched file");
+    }
+
+    #[test]
+    fn preserved_params_are_dropped_when_param_signature_changes() {
+        let old_params = vec![preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)];
+        let new_params = vec![preview_param("gain", "f32", 0.5, Some(0.0), Some(2.0), true)];
+        let mut preserved = vec![("gain".to_owned(), json!(1.25))];
+
+        reconcile_preserved_params(&mut preserved, &old_params, &new_params);
+
+        assert!(preserved.is_empty(), "changed default should reset preserved param");
+    }
+
+    #[test]
+    fn preserved_params_are_kept_when_param_signature_matches() {
+        let old_params = vec![preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)];
+        let new_params = vec![preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)];
+        let mut preserved = vec![("gain".to_owned(), json!(1.25))];
+
+        reconcile_preserved_params(&mut preserved, &old_params, &new_params);
+
+        assert_eq!(preserved.len(), 1, "unchanged param should keep preserved value");
+    }
+
+    #[test]
+    fn param_preservation_compatibility_checks_type_default_range_and_shape() {
+        let base = preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true);
+        assert!(params_are_compatible_for_preservation(
+            &base,
+            &preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), true)
+        ));
+        assert!(!params_are_compatible_for_preservation(
+            &base,
+            &preview_param("gain", "f64", 1.0, Some(0.0), Some(2.0), true)
+        ));
+        assert!(!params_are_compatible_for_preservation(
+            &base,
+            &preview_param("gain", "f32", 0.5, Some(0.0), Some(2.0), true)
+        ));
+        assert!(!params_are_compatible_for_preservation(
+            &base,
+            &preview_param("gain", "f32", 1.0, Some(-1.0), Some(2.0), true)
+        ));
+        assert!(!params_are_compatible_for_preservation(
+            &base,
+            &preview_param("gain", "f32", 1.0, Some(0.0), Some(2.0), false)
+        ));
+    }
+
+    fn preview_param(
+        name: &str,
+        ty: &str,
+        default: f64,
+        range_min: Option<f64>,
+        range_max: Option<f64>,
+        scalar: bool,
+    ) -> Value {
+        json!({
+            "name": name,
+            "type": ty,
+            "value": default,
+            "default": default,
+            "rangeMin": range_min,
+            "rangeMax": range_max,
+            "scalar": scalar,
+        })
     }
 }
