@@ -815,6 +815,29 @@ pub(super) fn qualify_local_namespace_member_name(
     None
 }
 
+fn has_visible_namespace_prefix(prefix: &str, state: &LoadState) -> bool {
+    let nested_prefix = format!("{prefix}::");
+
+    state.namespace_templates.contains_key(prefix)
+        || state.namespace_aliases.contains_key(prefix)
+        || state
+            .namespace_members
+            .iter()
+            .any(|name| name.starts_with(&nested_prefix))
+        || state
+            .namespace_const_values
+            .keys()
+            .any(|name| name.starts_with(&nested_prefix))
+        || state
+            .namespace_templates
+            .keys()
+            .any(|name| name.starts_with(&nested_prefix))
+        || state
+            .namespace_aliases
+            .keys()
+            .any(|name| name.starts_with(&nested_prefix))
+}
+
 fn resolve_namespace_segments_internal(
     segments: &[NamespaceRefSegment],
     current_ns: &str,
@@ -893,6 +916,10 @@ fn resolve_namespace_segments_internal(
                         generated,
                         use_site_span,
                     )?);
+                    break;
+                }
+                if has_visible_namespace_prefix(&candidate, state) {
+                    resolved = Some(candidate);
                     break;
                 }
             }
