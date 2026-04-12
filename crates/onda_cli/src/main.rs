@@ -127,6 +127,7 @@ Preview Options:
   --webview              Use the webview preview host instead of egui
 "#;
 
+#[allow(dead_code)]
 const USAGE_BANNER: &[&str] = &[
     ":-====-:",
     ":+#@@@@@@@@@@@@#+:",
@@ -157,26 +158,9 @@ fn usage() -> &'static str {
 }
 
 fn build_usage() -> String {
-    let commands_width = USAGE_BODY
-        .lines()
-        .take_while(|line| !line.is_empty())
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(0);
     let mut out = String::new();
     out.push('\n');
-    for line in USAGE_BANNER {
-        let pad = commands_width.saturating_sub(line.chars().count()) / 2;
-        out.push_str(&" ".repeat(pad));
-        out.push_str(line);
-        out.push('\n');
-    }
-    out.push('\n');
-    let version_line = format!("onda {ONDA_VERSION}");
-    let pad = commands_width.saturating_sub(version_line.chars().count()) / 2;
-    out.push_str(&" ".repeat(pad));
-    out.push_str(&version_line);
-    out.push('\n');
+    out.push_str(&format!("~ onda {ONDA_VERSION} ~\n"));
     out.push('\n');
     out.push_str(USAGE_BODY);
     out
@@ -376,7 +360,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
         "lsp" => parse_lsp_args(args),
         "preview" => parse_preview_args(args),
         "daemon" => parse_daemon_args(args),
-        _ => Err(format!("unknown command '{cmd}'\n\n{}", usage())),
+        _ => Err(format!("unknown command '{cmd}'\n{}", usage())),
     }
 }
 
@@ -4858,9 +4842,9 @@ reloc_model = "default"
     }
 
     #[test]
-    fn usage_includes_version_below_banner() {
+    fn usage_starts_with_left_aligned_version() {
         let usage = build_usage();
-        assert!(usage.contains(&format!("onda {ONDA_VERSION}")));
+        assert!(usage.starts_with(&format!("\nonda {ONDA_VERSION}\n\n")));
     }
 
     #[test]
