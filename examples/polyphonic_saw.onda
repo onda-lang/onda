@@ -8,7 +8,7 @@ const NumVoices = 8
 proc Voice:
   params:
     decay_s = 0.35
-    amp = 0.15
+    amp = 1.0
 
   init:
     freq = 220.0
@@ -44,7 +44,7 @@ params:
   cutoff_min = 300.0 {20.0, 20000.0}
   cutoff_max = 6000.0 {20.0, 20000.0}
   decay_s = 0.35 {0.01, 4.0}
-  amp = 0.15 {0.0, 1.0}
+  amp = 1.0 {0.0, 1.0}
 
 outs:
   out1

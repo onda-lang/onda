@@ -533,14 +533,34 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
     let scope_index = parsed_program
         .as_ref()
         .map(|program| build_semantic_scope_index(program, current_file_key.as_deref()));
-    let mut source_scope = SemanticScope::default();
+    let source_proc_scope_index = build_source_proc_scope_index(source);
+    let source_top_level_scope_index = build_source_top_level_scope_index(source);
+    let mut source_decl_scope = SemanticScope::default();
+    let source_lines = source.lines().collect::<Vec<_>>();
 
-    collect_symbols_from_source(source, &mut source_scope);
+    collect_source_declaration_symbols(source, &mut source_decl_scope);
 
     let mut tokens = Vec::new();
     scan_identifiers(
         source,
-        |name, line, start, length, after_dot, is_call, in_ns_path| {
+        |name, line, start, length, after_dot, is_call, in_ns_path, is_named_arg_label| {
+            if is_named_arg_label {
+                return;
+            }
+            if identifier_is_in_import_path(&source_lines, line, start) {
+                let token_type = source_decl_scope
+                    .imported_token_type_for(name)
+                    .or_else(|| imported_scope.imported_token_type_for(name))
+                    .unwrap_or(SEMANTIC_TOKEN_TYPE_NAMESPACE);
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type,
+                    token_modifiers: 0,
+                });
+                return;
+            }
             // self → parameter color (same as other arguments)
             if name == "self" {
                 tokens.push(SemanticToken {
@@ -574,8 +594,8 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
             }
             // Namespace path segments: std::fft, std::complex::Complex, etc.
             if in_ns_path {
-                let token_type = source_scope
-                    .token_type_for_source_fallback(name)
+                let token_type = source_decl_scope
+                    .imported_token_type_for(name)
                     .or_else(|| imported_scope.imported_token_type_for(name))
                     .unwrap_or(SEMANTIC_TOKEN_TYPE_NAMESPACE);
                 tokens.push(SemanticToken {
@@ -590,16 +610,22 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
             let scope_resolution = scope_index
                 .as_ref()
                 .map(|index| index.token_type_for(name, line, start));
+            let source_scope_resolution = source_proc_scope_index
+                .token_type_for(name, line, start)
+                .0
+                .or_else(|| source_top_level_scope_index.token_type_for(name, line, start).0);
             let resolved_token_type = match scope_resolution {
                 Some((token_type, true)) => token_type
+                    .or(source_scope_resolution)
                     .or_else(|| imported_scope.imported_token_type_for(name))
-                    .or_else(|| source_scope.imported_token_type_for(name)),
+                    .or_else(|| source_decl_scope.imported_token_type_for(name)),
                 Some((token_type, false)) => token_type
+                    .or(source_scope_resolution)
                     .or_else(|| imported_scope.imported_token_type_for(name))
-                    .or_else(|| source_scope.imported_token_type_for(name))
-                    .or_else(|| source_scope.token_type_for_source_fallback(name)),
-                None => source_scope
-                    .token_type_for_source_fallback(name)
+                    .or_else(|| source_decl_scope.imported_token_type_for(name))
+                    .or_else(|| source_decl_scope.token_type_for_source_fallback(name)),
+                None => source_scope_resolution
+                    .or_else(|| source_decl_scope.token_type_for_source_fallback(name))
                     .or_else(|| imported_scope.imported_token_type_for(name)),
             };
             if let Some(mut token_type) = resolved_token_type {
@@ -637,6 +663,29 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
             && a.token_modifiers == b.token_modifiers
     });
     tokens
+}
+
+fn identifier_is_in_import_path(source_lines: &[&str], line: u32, start: u32) -> bool {
+    let line_text = match source_lines.get(line as usize) {
+        Some(line_text) => *line_text,
+        None => return false,
+    };
+    let start = start as usize;
+    if start > line_text.len() {
+        return false;
+    }
+    let trimmed = line_text.trim_start();
+    let indent = line_text.len().saturating_sub(trimmed.len());
+    let Some(rest) = trimmed.strip_prefix("import ") else {
+        return false;
+    };
+    if start < indent + "import ".len() {
+        return false;
+    }
+    let between = &rest[..start - indent - "import ".len()];
+    between
+        .bytes()
+        .all(|b| is_ident_continue_char(b) || b == b'/')
 }
 
 fn is_reserved_word(name: &str) -> bool {
@@ -925,6 +974,549 @@ fn build_semantic_scope_index(
     }
 
     index
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceProcScopeKind {
+    ProcOwner,
+    Init,
+    Sample,
+    Function,
+    Event,
+}
+
+#[derive(Clone, Copy)]
+struct OpenLineScope<K> {
+    idx: usize,
+    indent: usize,
+    kind: K,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceProcSectionKind {
+    Ins,
+    Outs,
+    Params,
+    Buffers,
+    Init,
+    Events,
+    Sample,
+}
+
+#[derive(Clone, Copy)]
+struct SourceProcSection {
+    kind: SourceProcSectionKind,
+    indent: usize,
+    owner_idx: usize,
+}
+
+fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
+    let mut index = SemanticScopeIndex::default();
+    let mut open_scopes: Vec<OpenLineScope<SourceProcScopeKind>> = Vec::new();
+    let mut current_section: Option<SourceProcSection> = None;
+    let mut prev_nonempty_line = 0_u32;
+    let mut saw_nonempty_line = false;
+
+    for (line_no, line) in source.lines().enumerate() {
+        let line_no = line_no as u32;
+        let indent = line.len().saturating_sub(line.trim_start().len());
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        saw_nonempty_line = true;
+
+        close_open_line_scopes(&mut index, &mut open_scopes, indent, prev_nonempty_line);
+
+        if let Some(section) = current_section {
+            let proc_owner_idx = open_scopes
+                .iter()
+                .rev()
+                .find(|scope| scope.kind == SourceProcScopeKind::ProcOwner)
+                .map(|scope| scope.idx);
+            if indent <= section.indent || proc_owner_idx != Some(section.owner_idx) {
+                current_section = None;
+            }
+        }
+
+        if trimmed.starts_with("proc ") || trimmed.starts_with("processor ") {
+            let idx = push_line_scope(&mut index, None, line_no, 0, true);
+            open_scopes.push(OpenLineScope {
+                idx,
+                indent,
+                kind: SourceProcScopeKind::ProcOwner,
+            });
+
+            let after_kw = if trimmed.starts_with("processor ") {
+                &trimmed["processor ".len()..]
+            } else {
+                &trimmed["proc ".len()..]
+            };
+            if let Some(name) = extract_leading_ident(after_kw.trim_start()) {
+                index.document_scope.types.insert(name.to_owned());
+                index.scopes[idx].scope.types.insert(name.to_owned());
+            }
+            extract_type_params(trimmed, &mut index.scopes[idx].scope);
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        let Some(proc_owner_idx) = open_scopes
+            .iter()
+            .rev()
+            .find(|scope| scope.kind == SourceProcScopeKind::ProcOwner)
+            .map(|scope| scope.idx)
+        else {
+            prev_nonempty_line = line_no;
+            continue;
+        };
+
+        if let Some(section_kind) = detect_source_proc_section_header(trimmed) {
+            current_section = Some(SourceProcSection {
+                kind: section_kind,
+                indent,
+                owner_idx: proc_owner_idx,
+            });
+            match section_kind {
+                SourceProcSectionKind::Init => {
+                    let idx = push_line_scope(&mut index, Some(proc_owner_idx), line_no, 0, true);
+                    open_scopes.push(OpenLineScope {
+                        idx,
+                        indent,
+                        kind: SourceProcScopeKind::Init,
+                    });
+                }
+                SourceProcSectionKind::Sample => {
+                    let idx = push_line_scope(&mut index, Some(proc_owner_idx), line_no, 0, true);
+                    open_scopes.push(OpenLineScope {
+                        idx,
+                        indent,
+                        kind: SourceProcScopeKind::Sample,
+                    });
+                }
+                _ => {}
+            }
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some(section) = current_section {
+            if indent > section.indent {
+                match section.kind {
+                    SourceProcSectionKind::Ins
+                    | SourceProcSectionKind::Outs
+                    | SourceProcSectionKind::Buffers => {
+                        if let Some(name) = extract_leading_ident(trimmed) {
+                            index.scopes[proc_owner_idx].scope.ports.insert(name.to_owned());
+                        }
+                    }
+                    SourceProcSectionKind::Params => {
+                        if let Some(name) = extract_leading_ident(trimmed) {
+                            index.scopes[proc_owner_idx]
+                                .scope
+                                .parameters
+                                .insert(name.to_owned());
+                        }
+                    }
+                    SourceProcSectionKind::Init => {
+                        if let Some(name) = source_assignment_target_name(trimmed) {
+                            index.scopes[proc_owner_idx]
+                                .scope
+                                .insert_state_variable(name.to_owned());
+                        }
+                    }
+                    SourceProcSectionKind::Events => {
+                        if let Some((event_name, params)) = parse_event_header(trimmed) {
+                            index.scopes[proc_owner_idx]
+                                .scope
+                                .functions
+                                .insert(event_name.to_owned());
+                            let idx = push_source_callable_scope(
+                                &mut index,
+                                Some(proc_owner_idx),
+                                line_no,
+                                true,
+                                event_name,
+                                params,
+                            );
+                            open_scopes.push(OpenLineScope {
+                                idx,
+                                indent,
+                                kind: SourceProcScopeKind::Event,
+                            });
+                            prev_nonempty_line = line_no;
+                            continue;
+                        }
+                    }
+                    SourceProcSectionKind::Sample => {}
+                }
+            }
+        }
+
+        if let Some((def_name, params)) = parse_def_header(trimmed) {
+            index.scopes[proc_owner_idx]
+                .scope
+                .functions
+                .insert(def_name.to_owned());
+            let idx = push_source_callable_scope(
+                &mut index,
+                Some(proc_owner_idx),
+                line_no,
+                true,
+                def_name,
+                params,
+            );
+            open_scopes.push(OpenLineScope {
+                idx,
+                indent,
+                kind: SourceProcScopeKind::Function,
+            });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some((event_name, params)) = parse_singular_event_header(trimmed) {
+            index.scopes[proc_owner_idx]
+                .scope
+                .functions
+                .insert(event_name.to_owned());
+            let idx = push_source_callable_scope(
+                &mut index,
+                Some(proc_owner_idx),
+                line_no,
+                true,
+                event_name,
+                params,
+            );
+            open_scopes.push(OpenLineScope {
+                idx,
+                indent,
+                kind: SourceProcScopeKind::Event,
+            });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some(active_scope_idx) = open_scopes
+            .iter()
+            .rev()
+            .find(|scope| {
+                matches!(
+                    scope.kind,
+                    SourceProcScopeKind::Sample
+                        | SourceProcScopeKind::Function
+                        | SourceProcScopeKind::Event
+                )
+            })
+            .map(|scope| scope.idx)
+        {
+            collect_source_local_symbols(trimmed, &mut index.scopes[active_scope_idx].scope);
+        }
+
+        prev_nonempty_line = line_no;
+    }
+
+    let end_line = if saw_nonempty_line { prev_nonempty_line } else { 0 };
+    while let Some(open_scope) = open_scopes.pop() {
+        close_line_scope(&mut index, open_scope.idx, end_line);
+    }
+
+    index
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceTopLevelScopeKind {
+    RuntimeOwner,
+    Init,
+    Sample,
+    Function,
+    Event,
+}
+
+#[derive(Clone, Copy)]
+enum SourceTopLevelSectionKind {
+    Ins,
+    Outs,
+    Params,
+    Buffers,
+    Init,
+    Events,
+    Sample,
+}
+
+#[derive(Clone, Copy)]
+struct SourceTopLevelSection {
+    kind: SourceTopLevelSectionKind,
+    indent: usize,
+    owner_idx: usize,
+}
+
+fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
+    let mut index = SemanticScopeIndex::default();
+    let mut open_scopes: Vec<OpenLineScope<SourceTopLevelScopeKind>> = Vec::new();
+    let mut current_section: Option<SourceTopLevelSection> = None;
+    let mut runtime_owner_idx: Option<usize> = None;
+    let mut proc_indent_stack: Vec<usize> = Vec::new();
+    let mut prev_nonempty_line = 0_u32;
+    let mut saw_nonempty_line = false;
+
+    for (line_no, line) in source.lines().enumerate() {
+        let line_no = line_no as u32;
+        let indent = line.len().saturating_sub(line.trim_start().len());
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        saw_nonempty_line = true;
+
+        while let Some(proc_indent) = proc_indent_stack.last().copied() {
+            if indent > proc_indent {
+                break;
+            }
+            proc_indent_stack.pop();
+        }
+
+        close_open_line_scopes(&mut index, &mut open_scopes, indent, prev_nonempty_line);
+
+        if let Some(section) = current_section {
+            let active_owner_idx = open_scopes
+                .iter()
+                .rev()
+                .find(|scope| scope.kind == SourceTopLevelScopeKind::RuntimeOwner)
+                .map(|scope| scope.idx);
+            if indent <= section.indent || active_owner_idx != Some(section.owner_idx) {
+                current_section = None;
+            }
+        }
+
+        if trimmed.starts_with("proc ") || trimmed.starts_with("processor ") {
+            proc_indent_stack.push(indent);
+            prev_nonempty_line = line_no;
+            continue;
+        }
+        if !proc_indent_stack.is_empty() {
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some(section_kind) = detect_source_top_level_section_header(trimmed) {
+            let owner_idx = *runtime_owner_idx.get_or_insert_with(|| {
+                let idx = push_line_scope(&mut index, None, line_no, 0, true);
+                open_scopes.push(OpenLineScope {
+                    idx,
+                    indent: 0,
+                    kind: SourceTopLevelScopeKind::RuntimeOwner,
+                });
+                idx
+            });
+            current_section = Some(SourceTopLevelSection {
+                kind: section_kind,
+                indent,
+                owner_idx,
+            });
+            match section_kind {
+                SourceTopLevelSectionKind::Init => {
+                    let idx = push_line_scope(&mut index, Some(owner_idx), line_no, 0, true);
+                    open_scopes.push(OpenLineScope {
+                        idx,
+                        indent,
+                        kind: SourceTopLevelScopeKind::Init,
+                    });
+                }
+                SourceTopLevelSectionKind::Sample => {
+                    let idx = push_line_scope(&mut index, Some(owner_idx), line_no, 0, true);
+                    open_scopes.push(OpenLineScope {
+                        idx,
+                        indent,
+                        kind: SourceTopLevelScopeKind::Sample,
+                    });
+                }
+                _ => {}
+            }
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some(section) = current_section {
+            if indent > section.indent {
+                match section.kind {
+                    SourceTopLevelSectionKind::Ins
+                    | SourceTopLevelSectionKind::Outs
+                    | SourceTopLevelSectionKind::Buffers => {
+                        if let Some(name) = extract_leading_ident(trimmed) {
+                            index.scopes[section.owner_idx].scope.ports.insert(name.to_owned());
+                        }
+                    }
+                    SourceTopLevelSectionKind::Params => {
+                        if let Some(name) = extract_leading_ident(trimmed) {
+                            index.scopes[section.owner_idx]
+                                .scope
+                                .parameters
+                                .insert(name.to_owned());
+                        }
+                    }
+                    SourceTopLevelSectionKind::Init => {
+                        if let Some(name) = source_assignment_target_name(trimmed) {
+                            index.scopes[section.owner_idx]
+                                .scope
+                                .insert_state_variable(name.to_owned());
+                        }
+                    }
+                    SourceTopLevelSectionKind::Events => {
+                        if let Some((event_name, params)) = parse_event_header(trimmed) {
+                            index.scopes[section.owner_idx]
+                                .scope
+                                .functions
+                                .insert(event_name.to_owned());
+                            let idx = push_source_callable_scope(
+                                &mut index,
+                                Some(section.owner_idx),
+                                line_no,
+                                true,
+                                event_name,
+                                params,
+                            );
+                            open_scopes.push(OpenLineScope {
+                                idx,
+                                indent,
+                                kind: SourceTopLevelScopeKind::Event,
+                            });
+                            prev_nonempty_line = line_no;
+                            continue;
+                        }
+                    }
+                    SourceTopLevelSectionKind::Sample => {}
+                }
+            }
+        }
+
+        if let Some((def_name, params)) = parse_def_header(trimmed) {
+            index.document_scope.functions.insert(def_name.to_owned());
+            let idx =
+                push_source_callable_scope(&mut index, None, line_no, false, def_name, params);
+            open_scopes.push(OpenLineScope {
+                idx,
+                indent,
+                kind: SourceTopLevelScopeKind::Function,
+            });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some((event_name, params)) = parse_singular_event_header(trimmed) {
+            let owner_idx = *runtime_owner_idx.get_or_insert_with(|| {
+                let idx = push_line_scope(&mut index, None, line_no, 0, true);
+                open_scopes.push(OpenLineScope {
+                    idx,
+                    indent: 0,
+                    kind: SourceTopLevelScopeKind::RuntimeOwner,
+                });
+                idx
+            });
+            index.scopes[owner_idx]
+                .scope
+                .functions
+                .insert(event_name.to_owned());
+            let idx = push_source_callable_scope(
+                &mut index,
+                Some(owner_idx),
+                line_no,
+                true,
+                event_name,
+                params,
+            );
+            open_scopes.push(OpenLineScope {
+                idx,
+                indent,
+                kind: SourceTopLevelScopeKind::Event,
+            });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some(active_scope_idx) = open_scopes
+            .iter()
+            .rev()
+            .find(|scope| {
+                matches!(
+                    scope.kind,
+                    SourceTopLevelScopeKind::Sample
+                        | SourceTopLevelScopeKind::Function
+                        | SourceTopLevelScopeKind::Event
+                )
+            })
+            .map(|scope| scope.idx)
+        {
+            collect_source_local_symbols(trimmed, &mut index.scopes[active_scope_idx].scope);
+        }
+
+        prev_nonempty_line = line_no;
+    }
+
+    let end_line = if saw_nonempty_line { prev_nonempty_line } else { 0 };
+    while let Some(open_scope) = open_scopes.pop() {
+        close_line_scope(&mut index, open_scope.idx, end_line);
+    }
+
+    index
+}
+
+fn push_line_scope(
+    index: &mut SemanticScopeIndex,
+    parent: Option<usize>,
+    start_line: u32,
+    start_column: u32,
+    allows_implicit_ports: bool,
+) -> usize {
+    let depth = parent.map(|idx| index.scopes[idx].depth + 1).unwrap_or(0);
+    index.scopes.push(ScopedSemanticScope {
+        scope: SemanticScope::default(),
+        parent,
+        start_line,
+        start_column,
+        end_line: start_line,
+        end_column: u32::MAX,
+        depth,
+        allows_implicit_ports,
+    });
+    index.scopes.len() - 1
+}
+
+fn close_open_line_scopes<K: Copy>(
+    index: &mut SemanticScopeIndex,
+    open_scopes: &mut Vec<OpenLineScope<K>>,
+    indent: usize,
+    prev_nonempty_line: u32,
+) {
+    while let Some(open_scope) = open_scopes.last().copied() {
+        if indent > open_scope.indent {
+            break;
+        }
+        close_line_scope(index, open_scope.idx, prev_nonempty_line);
+        open_scopes.pop();
+    }
+}
+
+fn close_line_scope(index: &mut SemanticScopeIndex, idx: usize, end_line: u32) {
+    index.scopes[idx].end_line = end_line;
+    index.scopes[idx].end_column = u32::MAX;
+}
+
+fn push_source_callable_scope(
+    index: &mut SemanticScopeIndex,
+    parent: Option<usize>,
+    line_no: u32,
+    allows_implicit_ports: bool,
+    name: &str,
+    params: Vec<String>,
+) -> usize {
+    let idx = push_line_scope(index, parent, line_no, 0, allows_implicit_ports);
+    let scope = &mut index.scopes[idx].scope;
+    scope.functions.insert(name.to_owned());
+    for param in params {
+        scope.parameters.insert(param);
+    }
+    idx
 }
 
 fn normalize_file_key_for_path(path: &Path) -> Option<String> {
@@ -1581,23 +2173,6 @@ fn collect_state_target_symbols(target: &AssignTarget, scope: &mut SemanticScope
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum SourceSection {
-    None,
-    Ins,
-    Outs,
-    Params,
-    Buffers,
-    Init,
-    Block,
-    Sample,
-    Events,
-    Def,
-    EventHandler,
-}
-
-/// Collect symbols directly from source text. This handles namespaced files where
-/// the parser lowers procs into structs+defs, losing the original structure.
 const BUILTIN_CONSTS: &[&str] = &[
     "PI",
     "pi",
@@ -1617,50 +2192,19 @@ const BUILTIN_CONSTS: &[&str] = &[
     "blocksize",
 ];
 
-fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
+fn collect_source_declaration_symbols(source: &str, scope: &mut SemanticScope) {
     for &name in BUILTIN_CONSTS {
         scope.consts.insert(name.to_owned());
     }
 
-    let mut section = SourceSection::None;
-    let mut section_indent: usize = 0;
-    // Track the events section so we can restore it when leaving an event handler
-    let mut events_indent: Option<usize> = None;
-
     for line in source.lines() {
-        let indent = line.len() - line.trim_start().len();
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
-        // If we've dedented back to or past the section start, leave it
-        if section != SourceSection::None && indent <= section_indent {
-            // When leaving an EventHandler, check if we're still within the events section
-            if section == SourceSection::EventHandler {
-                if let Some(ev_indent) = events_indent {
-                    if indent > ev_indent {
-                        section = SourceSection::Events;
-                        section_indent = ev_indent;
-                    } else {
-                        section = SourceSection::None;
-                        events_indent = None;
-                    }
-                } else {
-                    section = SourceSection::None;
-                }
-            } else {
-                if section == SourceSection::Events {
-                    events_indent = None;
-                }
-                section = SourceSection::None;
-            }
-        }
-
-        // Namespace generic params: namespace name<Param = val, ...>
         if trimmed.starts_with("namespace ") {
             let rest = &trimmed["namespace ".len()..];
-            // Register each segment of the namespace path (before < or :)
             let path_end = rest
                 .find(|c: char| c == '<' || c == ':' || c == '=')
                 .unwrap_or(rest.len());
@@ -1672,12 +2216,9 @@ fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
                 }
             }
             extract_namespace_generic_consts(trimmed, scope);
-            section = SourceSection::None;
-            section_indent = indent;
             continue;
         }
 
-        // const Name = ...
         if let Some(rest) = trimmed.strip_prefix("const ") {
             if let Some(name) = extract_leading_ident(rest) {
                 scope.consts.insert(name.to_owned());
@@ -1685,12 +2226,10 @@ fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
             continue;
         }
 
-        // proc/struct Name<T, ...>:
         if trimmed.starts_with("proc ")
             || trimmed.starts_with("processor ")
             || trimmed.starts_with("struct ")
         {
-            // Extract the name after the keyword
             let after_kw = if trimmed.starts_with("processor ") {
                 &trimmed["processor ".len()..]
             } else if trimmed.starts_with("proc ") {
@@ -1702,128 +2241,27 @@ fn collect_symbols_from_source(source: &str, scope: &mut SemanticScope) {
                 scope.types.insert(name.to_owned());
             }
             extract_type_params(trimmed, scope);
-            section = SourceSection::None;
-            section_indent = indent;
             continue;
         }
 
-        // def Name<T>(params):
         if trimmed.starts_with("def ") {
-            extract_def_symbols(trimmed, scope);
-            section = SourceSection::Def;
-            section_indent = indent;
+            extract_def_declaration_symbol(trimmed, scope);
             continue;
-        }
-
-        // event Name(params):
-        if trimmed.starts_with("event ") {
-            extract_event_symbols(trimmed, scope);
-            section = SourceSection::EventHandler;
-            section_indent = indent;
-            continue;
-        }
-
-        // Section headers: ins/outs/params/buffers/init/events/sample/block/graph
-        if let Some(new_section) = detect_section_header(trimmed) {
-            section = new_section;
-            section_indent = indent;
-            if section == SourceSection::Events {
-                events_indent = Some(indent);
-            }
-            // Handle ins<T> N / outs<T> N — extract type params
-            if matches!(section, SourceSection::Ins | SourceSection::Outs) {
-                extract_type_params(trimmed, scope);
-            }
-            continue;
-        }
-
-        // Event handler: name(params): — inside events section
-        if section == SourceSection::Events && indent > section_indent {
-            if let Some(paren) = trimmed.find('(') {
-                let name = &trimmed[..paren];
-                if !name.is_empty()
-                    && is_ident_start(name.as_bytes()[0])
-                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-                {
-                    scope.functions.insert(name.to_owned());
-                    extract_params_from_parens(&trimmed[paren..], scope);
-                    section = SourceSection::EventHandler;
-                    section_indent = indent;
-                    continue;
-                }
-            }
-        }
-
-        // Within port/param/buffer sections: each line declares a name
-        match section {
-            SourceSection::Ins | SourceSection::Outs | SourceSection::Buffers => {
-                if indent > section_indent {
-                    if let Some(name) = extract_leading_ident(trimmed) {
-                        scope.ports.insert(name.to_owned());
-                    }
-                }
-            }
-            SourceSection::Params => {
-                if indent > section_indent {
-                    if let Some(name) = extract_leading_ident(trimmed) {
-                        scope.parameters.insert(name.to_owned());
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        // for NAME in
-        if let Some(rest) = trimmed.strip_prefix("for ") {
-            if let Some(in_pos) = rest.find(" in ") {
-                let name = rest[..in_pos].trim();
-                if !name.is_empty() && is_ident_start(name.as_bytes()[0]) {
-                    scope.insert_variable(name.to_owned());
-                }
-            }
-            continue;
-        }
-
-        // Typed declaration: NAME: TYPE or NAME: TYPE = VALUE
-        // Assignment: NAME = VALUE (not ==, !=, <=, >=)
-        // Indexed/slice assignment: NAME[...] = ...
-        if let Some(name) = extract_leading_ident(trimmed) {
-            let rest = trimmed[name.len()..].trim_start();
-            if rest.starts_with(':') && !rest.starts_with("::") {
-                if section == SourceSection::Init && indent > section_indent {
-                    scope.insert_state_variable(name.to_owned());
-                } else {
-                    scope.insert_variable(name.to_owned());
-                }
-            } else if rest.starts_with('=') && !rest.starts_with("==") {
-                if section == SourceSection::Init && indent > section_indent {
-                    scope.insert_state_variable(name.to_owned());
-                } else {
-                    scope.insert_variable(name.to_owned());
-                }
-            } else if rest.starts_with('[') {
-                if section == SourceSection::Init && indent > section_indent {
-                    scope.insert_state_variable(name.to_owned());
-                } else {
-                    scope.insert_variable(name.to_owned());
-                }
-            }
         }
     }
 }
 
-fn detect_section_header(trimmed: &str) -> Option<SourceSection> {
-    let pairs: &[(&str, SourceSection)] = &[
-        ("ins", SourceSection::Ins),
-        ("outs", SourceSection::Outs),
-        ("params", SourceSection::Params),
-        ("buffers", SourceSection::Buffers),
-        ("init", SourceSection::Init),
-        ("events", SourceSection::Events),
-        ("sample", SourceSection::Sample),
-        ("block", SourceSection::Block),
+fn detect_source_proc_section_header(trimmed: &str) -> Option<SourceProcSectionKind> {
+    let pairs: &[(&str, SourceProcSectionKind)] = &[
+        ("ins", SourceProcSectionKind::Ins),
+        ("outs", SourceProcSectionKind::Outs),
+        ("params", SourceProcSectionKind::Params),
+        ("buffers", SourceProcSectionKind::Buffers),
+        ("init", SourceProcSectionKind::Init),
+        ("events", SourceProcSectionKind::Events),
+        ("sample", SourceProcSectionKind::Sample),
     ];
-    for &(kw, sec) in pairs {
+    for &(kw, kind) in pairs {
         if trimmed.starts_with(kw) {
             let rest = &trimmed[kw.len()..];
             if rest.is_empty()
@@ -1832,11 +2270,118 @@ fn detect_section_header(trimmed: &str) -> Option<SourceSection> {
                 || rest.starts_with(' ')
                 || rest.starts_with('{')
             {
-                return Some(sec);
+                return Some(kind);
             }
         }
     }
     None
+}
+
+fn detect_source_top_level_section_header(trimmed: &str) -> Option<SourceTopLevelSectionKind> {
+    let pairs: &[(&str, SourceTopLevelSectionKind)] = &[
+        ("ins", SourceTopLevelSectionKind::Ins),
+        ("outs", SourceTopLevelSectionKind::Outs),
+        ("params", SourceTopLevelSectionKind::Params),
+        ("buffers", SourceTopLevelSectionKind::Buffers),
+        ("init", SourceTopLevelSectionKind::Init),
+        ("events", SourceTopLevelSectionKind::Events),
+        ("sample", SourceTopLevelSectionKind::Sample),
+    ];
+    for &(kw, kind) in pairs {
+        if trimmed.starts_with(kw) {
+            let rest = &trimmed[kw.len()..];
+            if rest.is_empty()
+                || rest.starts_with(':')
+                || rest.starts_with('<')
+                || rest.starts_with(' ')
+                || rest.starts_with('{')
+            {
+                return Some(kind);
+            }
+        }
+    }
+    None
+}
+
+fn parse_def_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
+    let rest = trimmed.strip_prefix("def ")?.trim_start();
+    let name = extract_leading_ident(rest)?;
+    let after_name = &rest[name.len()..];
+    let after_generics = if let Some(open) = after_name.find('<') {
+        if let Some(close) = after_name[open..].find('>') {
+            &after_name[open + close + 1..]
+        } else {
+            after_name
+        }
+    } else {
+        after_name
+    };
+    Some((name, extract_param_names_from_parens(after_generics)))
+}
+
+fn parse_singular_event_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
+    let rest = trimmed.strip_prefix("event ")?.trim_start();
+    let name = extract_leading_ident(rest)?;
+    let after_name = &rest[name.len()..];
+    Some((name, extract_param_names_from_parens(after_name)))
+}
+
+fn parse_event_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
+    let paren = trimmed.find('(')?;
+    let name = trimmed[..paren].trim();
+    if name.is_empty()
+        || !is_ident_start(name.as_bytes()[0])
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return None;
+    }
+    Some((name, extract_param_names_from_parens(&trimmed[paren..])))
+}
+
+fn extract_param_names_from_parens(text: &str) -> Vec<String> {
+    let inner = if let Some(open) = text.find('(') {
+        if let Some(close) = text[open..].find(')') {
+            &text[open + 1..open + close]
+        } else {
+            return Vec::new();
+        }
+    } else {
+        return Vec::new();
+    };
+
+    inner
+        .split(',')
+        .filter_map(|part| extract_leading_ident(part.trim()).map(str::to_owned))
+        .collect()
+}
+
+fn source_assignment_target_name(trimmed: &str) -> Option<&str> {
+    let name = extract_leading_ident(trimmed)?;
+    let rest = trimmed[name.len()..].trim_start();
+    if (rest.starts_with(':') && !rest.starts_with("::"))
+        || (rest.starts_with('=') && !rest.starts_with("=="))
+        || rest.starts_with('[')
+    {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+fn collect_source_local_symbols(trimmed: &str, scope: &mut SemanticScope) {
+    if let Some(rest) = trimmed.strip_prefix("for ") {
+        if let Some(in_pos) = rest.find(" in ") {
+            let name = rest[..in_pos].trim();
+            if !name.is_empty() && is_ident_start(name.as_bytes()[0]) {
+                scope.insert_variable(name.to_owned());
+            }
+        }
+        return;
+    }
+
+    if let Some(name) = source_assignment_target_name(trimmed) {
+        scope.insert_variable(name.to_owned());
+    }
 }
 
 fn is_ident_start(b: u8) -> bool {
@@ -1845,6 +2390,10 @@ fn is_ident_start(b: u8) -> bool {
 
 fn is_ident_continue(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn is_ident_continue_char(b: u8) -> bool {
+    is_ident_start(b) || b.is_ascii_digit()
 }
 
 /// Extract the first identifier from `text`, e.g. `"foo_bar: i32"` → `"foo_bar"`.
@@ -1893,61 +2442,16 @@ fn extract_type_params(trimmed: &str, scope: &mut SemanticScope) {
     }
 }
 
-/// Extract function name and params from `def name(param: Type, ...)` or `def name<T>(...)`.
-fn extract_def_symbols(trimmed: &str, scope: &mut SemanticScope) {
+/// Extract function declaration name from `def name(param: Type, ...)` or `def name<T>(...)`.
+fn extract_def_declaration_symbol(trimmed: &str, scope: &mut SemanticScope) {
     let rest = trimmed.strip_prefix("def ").unwrap_or(trimmed).trim_start();
     if let Some(name) = extract_leading_ident(rest) {
         scope.functions.insert(name.to_owned());
         let after_name = &rest[name.len()..];
-        // Skip optional type params
-        let after_generics = if let Some(open) = after_name.find('<') {
-            if let Some(close) = after_name[open..].find('>') {
+        if let Some(open) = after_name.find('<') {
+            if after_name[open..].find('>').is_some() {
                 extract_type_params(after_name, scope);
-                &after_name[open + close + 1..]
-            } else {
-                after_name
             }
-        } else {
-            after_name
-        };
-        // Extract params from parens
-        if let Some(paren_start) = after_generics.find('(') {
-            extract_params_from_parens(&after_generics[paren_start..], scope);
-        }
-    }
-}
-
-/// Extract function name and params from `event name(param: Type, ...)`.
-fn extract_event_symbols(trimmed: &str, scope: &mut SemanticScope) {
-    let rest = trimmed
-        .strip_prefix("event ")
-        .unwrap_or(trimmed)
-        .trim_start();
-    if let Some(name) = extract_leading_ident(rest) {
-        scope.functions.insert(name.to_owned());
-        let after_name = &rest[name.len()..];
-        if let Some(paren_start) = after_name.find('(') {
-            extract_params_from_parens(&after_name[paren_start..], scope);
-        }
-    }
-}
-
-/// Extract parameter names from `(name: Type, name2: Type)`.
-fn extract_params_from_parens(text: &str, scope: &mut SemanticScope) {
-    // Find matching parens
-    let inner = if let Some(open) = text.find('(') {
-        if let Some(close) = text[open..].find(')') {
-            &text[open + 1..open + close]
-        } else {
-            return;
-        }
-    } else {
-        return;
-    };
-    for part in inner.split(',') {
-        let part = part.trim();
-        if let Some(name) = extract_leading_ident(part) {
-            scope.parameters.insert(name.to_owned());
         }
     }
 }
@@ -1967,13 +2471,18 @@ fn collect_const_names(source: &str) -> HashSet<String> {
     names
 }
 
-fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32, bool, bool, bool)) {
+fn scan_identifiers(
+    source: &str,
+    mut f: impl FnMut(&str, u32, u32, u32, bool, bool, bool, bool),
+) {
     let chars = source.chars().collect::<Vec<_>>();
     let mut index = 0;
     let mut line = 0_u32;
     let mut column = 0_u32;
     let mut prev_char = '\0';
     let mut prev_prev_char = '\0';
+    let mut call_paren_stack: Vec<bool> = Vec::new();
+    let mut next_lparen_is_call = false;
 
     while index < chars.len() {
         let ch = chars[index];
@@ -2008,6 +2517,15 @@ fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32, bool, b
             prev_char = '"';
             continue;
         }
+        if ch == '(' {
+            call_paren_stack.push(next_lparen_is_call);
+            next_lparen_is_call = false;
+        } else if ch == ')' {
+            call_paren_stack.pop();
+            next_lparen_is_call = false;
+        } else if !ch.is_whitespace() && ch != '<' && ch != '>' {
+            next_lparen_is_call = false;
+        }
         if is_identifier_start(ch) {
             let after_dot = prev_char == '.' && prev_prev_char != '.';
             let start_line = line;
@@ -2030,6 +2548,7 @@ fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32, bool, b
                 peek += 1;
             }
             let mut is_call = peek < chars.len() && chars[peek] == '(';
+            let mut call_paren_index = if is_call { Some(peek) } else { None };
             let mut followed_by_colons =
                 peek + 1 < chars.len() && chars[peek] == ':' && chars[peek + 1] == ':';
             if !is_call && !followed_by_colons && peek < chars.len() && chars[peek] == '<' {
@@ -2051,11 +2570,27 @@ fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32, bool, b
                         peek += 1;
                     }
                     is_call = peek < chars.len() && chars[peek] == '(';
+                    call_paren_index = if is_call { Some(peek) } else { None };
                     followed_by_colons =
                         peek + 1 < chars.len() && chars[peek] == ':' && chars[peek + 1] == ':';
                 }
             }
             let in_ns_path = after_colons || followed_by_colons;
+            let opens_call_arg_list = call_paren_index
+                .map(|paren_idx| !paren_is_followed_by_colon(&chars, paren_idx))
+                .unwrap_or(false);
+            let mut assign_peek = index;
+            while assign_peek < chars.len()
+                && chars[assign_peek].is_whitespace()
+                && chars[assign_peek] != '\n'
+            {
+                assign_peek += 1;
+            }
+            let is_named_arg_label = call_paren_stack.last().copied().unwrap_or(false)
+                && assign_peek < chars.len()
+                && chars[assign_peek] == '='
+                && (assign_peek + 1 >= chars.len() || chars[assign_peek + 1] != '=');
+            next_lparen_is_call = opens_call_arg_list;
             f(
                 &name,
                 start_line,
@@ -2064,6 +2599,7 @@ fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32, bool, b
                 after_dot,
                 is_call,
                 in_ns_path,
+                is_named_arg_label,
             );
             continue;
         }
@@ -2083,6 +2619,66 @@ fn is_identifier_start(ch: char) -> bool {
 
 fn is_identifier_continue(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn paren_is_followed_by_colon(chars: &[char], open_idx: usize) -> bool {
+    let mut depth = 0_u32;
+    let mut idx = open_idx;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while idx < chars.len() {
+        let ch = chars[idx];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            idx += 1;
+            continue;
+        }
+
+        if ch == '#' {
+            while idx < chars.len() && chars[idx] != '\n' {
+                idx += 1;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    idx += 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    while idx < chars.len() {
+        let ch = chars[idx];
+        if ch == '#' {
+            while idx < chars.len() && chars[idx] != '\n' {
+                idx += 1;
+            }
+            continue;
+        }
+        if ch.is_whitespace() {
+            idx += 1;
+            continue;
+        }
+        return ch == ':';
+    }
+
+    false
 }
 
 fn advance_position(ch: char, line: &mut u32, column: &mut u32) {
@@ -2335,12 +2931,12 @@ fn invalid_params(message: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_const_names, collect_symbols_from_source, diagnostic_message, file_uri_to_path,
-        is_reserved_word, latest_full_text, lsp_document_path, path_to_file_uri,
-        semantic_tokens_for_document, LspServer, SemanticScope, TextDocumentContentChangeEvent,
-        SEMANTIC_TOKEN_TYPE_ENUM_MEMBER, SEMANTIC_TOKEN_TYPE_FUNCTION,
+        collect_const_names, collect_source_declaration_symbols, diagnostic_message,
+        file_uri_to_path, is_reserved_word, latest_full_text, lsp_document_path,
+        path_to_file_uri, semantic_tokens_for_document, LspServer, SemanticScope,
+        TextDocumentContentChangeEvent, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
         SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT, SEMANTIC_TOKEN_TYPE_STATE,
-        SEMANTIC_TOKEN_TYPE_VARIABLE,
+        SEMANTIC_TOKEN_TYPE_TYPE, SEMANTIC_TOKEN_TYPE_VARIABLE,
     };
     use onda_frontend::{DiagCode, Diagnostic};
     use serde_json::json;
@@ -2398,7 +2994,7 @@ mod tests {
     }
 
     #[test]
-    fn source_fallback_collects_singular_event_symbols_like_defs() {
+    fn source_declaration_scope_excludes_scoped_symbols() {
         let source = concat!(
             "proc Env:\n",
             "  init:\n",
@@ -2409,23 +3005,75 @@ mod tests {
             "    phase = local\n",
         );
         let mut scope = SemanticScope::default();
-        collect_symbols_from_source(source, &mut scope);
+        collect_source_declaration_symbols(source, &mut scope);
 
         assert_eq!(
-            scope.token_type_for_source_fallback("note_on"),
-            Some(SEMANTIC_TOKEN_TYPE_FUNCTION)
+            scope.imported_token_type_for("Env"),
+            Some(SEMANTIC_TOKEN_TYPE_TYPE)
         );
-        assert_eq!(
-            scope.token_type_for_source_fallback("freq"),
-            Some(SEMANTIC_TOKEN_TYPE_PARAMETER)
+        assert_eq!(scope.token_type_for_source_fallback("note_on"), None);
+        assert_eq!(scope.token_type_for_source_fallback("freq"), None);
+        assert_eq!(scope.token_type_for_source_fallback("local"), None);
+        assert_eq!(scope.token_type_for_source_fallback("phase"), None);
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_expose_top_level_runtime_via_source_scope_fallback() {
+        let source = concat!(
+            "params:\n",
+            "  gain = 1.0\n",
+            "outs:\n",
+            "  out1\n",
+            "init:\n",
+            "  phase = 0.0\n",
+            "\n",
+            "def helper(x):\n",
+            "  y = x + 1.0\n",
+            "  return y\n",
+            "\n",
+            "sample:\n",
+            "  out1 = phase * gain\n",
         );
-        assert_eq!(
-            scope.token_type_for_source_fallback("local"),
-            Some(SEMANTIC_TOKEN_TYPE_VARIABLE)
+        let tokens = semantic_tokens_for_document(source, None);
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        let gain_tokens = find_tokens("gain");
+        assert!(
+            !gain_tokens
+                .iter()
+                .any(|t| t.line == 8 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            "top-level def should not see runtime param via source fallback: {gain_tokens:?}"
         );
-        assert_eq!(
-            scope.token_type_for_source_fallback("phase"),
-            Some(SEMANTIC_TOKEN_TYPE_STATE)
+        assert!(
+            gain_tokens
+                .iter()
+                .any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            "sample should still see top-level runtime param: {gain_tokens:?}"
+        );
+
+        let phase_tokens = find_tokens("phase");
+        assert!(
+            !phase_tokens
+                .iter()
+                .any(|t| t.line == 8 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "top-level def should not see runtime state via source fallback: {phase_tokens:?}"
+        );
+        assert!(
+            phase_tokens
+                .iter()
+                .any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "sample should still see top-level runtime state: {phase_tokens:?}"
         );
     }
 
@@ -3233,6 +3881,159 @@ mod tests {
     }
 
     #[test]
+    fn semantic_tokens_mark_top_level_block_locals_in_nested_sample_for_buffer_looper_read() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("examples")
+            .join("buffer_looper_read.onda");
+        let source = std::fs::read_to_string(&path).expect("example source should be readable");
+        let tokens = semantic_tokens_for_document(&source, Some(&path));
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        let frames_tokens = find_tokens("frames");
+        assert!(
+            frames_tokens
+                .iter()
+                .any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "top-level block local 'frames' should be highlighted in block: {frames_tokens:?}"
+        );
+        assert!(
+            frames_tokens
+                .iter()
+                .any(|t| t.line == 23 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "top-level block local 'frames' should carry into nested sample: {frames_tokens:?}"
+        );
+
+        let chans_tokens = find_tokens("chans");
+        assert!(
+            chans_tokens
+                .iter()
+                .any(|t| t.line == 17 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "top-level block local 'chans' should carry into nested sample: {chans_tokens:?}"
+        );
+
+        let speed_tokens = find_tokens("speed");
+        assert!(
+            speed_tokens
+                .iter()
+                .any(|t| t.line == 22 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "top-level block local 'speed' should carry into nested sample: {speed_tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_mark_import_path_segments_as_init_state_in_polyphonic_saw() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("examples")
+            .join("polyphonic_saw.onda");
+        let source = std::fs::read_to_string(&path).expect("example source should be readable");
+        let tokens = semantic_tokens_for_document(&source, Some(&path));
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        let osc_tokens = find_tokens("osc");
+        assert!(
+            osc_tokens
+                .iter()
+                .all(|t| !(t.line == 0 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE)),
+            "import path segment 'osc' should not be state on line 0: {osc_tokens:?}"
+        );
+        assert!(
+            osc_tokens
+                .iter()
+                .any(|t| t.line > 0 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "proc init state 'osc' should still be highlighted as state in executable scopes: {osc_tokens:?}"
+        );
+
+        let env_tokens = find_tokens("env");
+        assert!(
+            env_tokens
+                .iter()
+                .all(|t| !(t.line == 2 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE)),
+            "import path segment 'env' should not be state on line 2: {env_tokens:?}"
+        );
+        assert!(
+            env_tokens
+                .iter()
+                .any(|t| t.line > 2 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "proc init state 'env' should still be highlighted as state in executable scopes: {env_tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_highlight_named_argument_labels_in_polyphonic_saw() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("examples")
+            .join("polyphonic_saw.onda");
+        let source = std::fs::read_to_string(&path).expect("example source should be readable");
+        let tokens = semantic_tokens_for_document(&source, Some(&path));
+
+        let has_token = |line_no: usize, needle: &str| -> bool {
+            let line = source
+                .lines()
+                .nth(line_no)
+                .expect("expected source line for named arg test");
+            let start = line.find(needle).expect("expected named arg label on line");
+            tokens.iter().any(|t| {
+                t.line as usize == line_no
+                    && t.start as usize == start
+                    && t.length as usize == needle.len()
+            })
+        };
+
+        assert!(
+            !has_token(16, "freq"),
+            "named arg label 'freq =' should not be highlighted"
+        );
+        assert!(
+            !has_token(17, "cutoff"),
+            "named arg label 'cutoff =' should not be highlighted"
+        );
+        assert!(
+            !has_token(18, "decay_s"),
+            "named arg label 'decay_s =' should not be highlighted"
+        );
+        assert!(
+            !has_token(18, "trigger"),
+            "named arg label 'trigger =' should not be highlighted"
+        );
+        assert!(
+            !has_token(65, "freq_hz"),
+            "event call named arg label 'freq_hz =' should not be highlighted"
+        );
+        assert!(
+            !has_token(66, "cutoff_hz"),
+            "event call named arg label 'cutoff_hz =' should not be highlighted"
+        );
+    }
+
+    #[test]
     fn semantic_tokens_do_not_mark_nested_init_locals_as_state() {
         let source = concat!(
             "outs:\n",
@@ -3289,6 +4090,40 @@ mod tests {
     }
 
     #[test]
+    fn semantic_tokens_do_not_highlight_named_argument_labels_in_calls() {
+        let source = concat!(
+            "def foo(a = 0.0, b = 0.0):\n",
+            "  return a + b\n",
+            "\n",
+            "outs:\n",
+            "  out1\n",
+            "\n",
+            "event bang():\n",
+            "  out1 = foo(a = 1.0, b = 2.0)\n",
+        );
+        let tokens = semantic_tokens_for_document(source, None);
+        let line = source
+            .lines()
+            .nth(7)
+            .expect("expected call line for named arg labels");
+        let a_start = line.find("a =").expect("expected named arg label a");
+        let b_start = line.find("b =").expect("expected named arg label b");
+
+        assert!(
+            !tokens.iter().any(|t| {
+                t.line == 7 && t.start as usize == a_start && t.length as usize == 1
+            }),
+            "named arg label 'a =' should not be highlighted: {tokens:?}"
+        );
+        assert!(
+            !tokens.iter().any(|t| {
+                t.line == 7 && t.start as usize == b_start && t.length as usize == 1
+            }),
+            "named arg label 'b =' should not be highlighted: {tokens:?}"
+        );
+    }
+
+    #[test]
     fn semantic_tokens_mark_block_pre_state_in_nested_sample() {
         let source = concat!(
             "outs:\n",
@@ -3321,6 +4156,58 @@ mod tests {
                 .iter()
                 .any(|t| t.line == 5 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
             "nested sample should see block-pre carried state: {acc_tokens:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_proc_block_locals_in_nested_sample_for_std_osc() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("stdlib")
+            .join("std")
+            .join("osc.onda");
+        let source = std::fs::read_to_string(&path).expect("stdlib source should be readable");
+        let tokens = semantic_tokens_for_document(&source, Some(&path));
+
+        let find_tokens = |name: &str| -> Vec<&super::SemanticToken> {
+            tokens
+                .iter()
+                .filter(|t| {
+                    let line = t.line as usize;
+                    let col = t.start as usize;
+                    let len = t.length as usize;
+                    source.lines().nth(line).and_then(|l| l.get(col..col + len)) == Some(name)
+                })
+                .collect()
+        };
+
+        let incr_tokens = find_tokens("incr");
+        assert!(
+            incr_tokens
+                .iter()
+                .any(|t| t.line == 11 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "proc block local 'incr' should be highlighted in block: {incr_tokens:?}"
+        );
+        assert!(
+            incr_tokens
+                .iter()
+                .any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "proc block local 'incr' should carry into nested sample: {incr_tokens:?}"
+        );
+
+        let dt_tokens = find_tokens("dt");
+        assert!(
+            dt_tokens
+                .iter()
+                .any(|t| t.line == 58 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "proc block local 'dt' should be highlighted in block: {dt_tokens:?}"
+        );
+        assert!(
+            dt_tokens
+                .iter()
+                .any(|t| t.line == 62 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+            "proc block local 'dt' should carry into nested sample: {dt_tokens:?}"
         );
     }
 
