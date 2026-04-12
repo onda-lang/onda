@@ -39,7 +39,7 @@ Take a look at the `examples/` folder for more usage examples.
 - C API in `include/onda.h` for non-Rust hosts
 
 Current execution is LLVM ORC JIT.
-The CLI can also emit LLVM IR and native object files for AOT-style workflows.
+The CLI can also emit LLVM IR and native object files for AOT compilation.
 
 ## Main components
 
@@ -206,19 +206,6 @@ Useful flags:
 - `--set name=value`
 - `--meta`
 
-### `onda lsp`
-
-Starts the Onda language server over stdio.
-
-```bash
-onda lsp
-```
-
-Current LSP support includes:
-- open, change, save, and close document tracking
-- diagnostics on open and save
-- semantic tokens for constants, params, ports, and init-scoped variables
-
 ### `onda daemon diagnose`
 
 Runs daemon-backed analysis for a file and reports diagnostics.
@@ -235,6 +222,19 @@ This is intended for tool/editor integration rather than everyday manual use.
 ```bash
 onda daemon stdio
 ```
+
+### `onda lsp`
+
+Starts the Onda language server over stdio.
+
+```bash
+onda lsp
+```
+
+Current LSP support includes:
+- open, change, save, and close document tracking
+- diagnostics on open and save
+- semantic tokens for constants, params, ports, and init-scoped variables
 
 ## C API
 
