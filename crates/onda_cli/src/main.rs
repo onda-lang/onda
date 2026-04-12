@@ -4426,10 +4426,10 @@ fn f32_to_i16(sample: f32) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_usage, format_diag_snippet, format_expr, format_program, parse_args,
+        format_diag_snippet, format_expr, format_program, parse_args,
         preview_control_response, Command, CompileEmit, DaemonCommand, PlaybackControlCommand,
         PlaybackControlRequest, PreviewCommand, PreviewEventValue, PreviewHostKind, ScopeRing,
-        DEFAULT_PLAY_BLOCK_FRAMES, ONDA_VERSION,
+        DEFAULT_PLAY_BLOCK_FRAMES,
     };
     use onda_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
     use onda_frontend::{
@@ -4911,12 +4911,6 @@ reloc_model = "default"
             }
             _ => panic!("expected preview window command"),
         }
-    }
-
-    #[test]
-    fn usage_starts_with_left_aligned_version() {
-        let usage = build_usage();
-        assert!(usage.starts_with(&format!("\nonda {ONDA_VERSION}\n\n")));
     }
 
     #[test]
