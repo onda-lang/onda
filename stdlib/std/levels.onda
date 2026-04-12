@@ -1,0 +1,21 @@
+namespace std::levels:
+  const HALF_PI: f64 = PI / 2.0
+  const DB_TO_GAIN_SCALE: f64 = 0.11512925464970229
+  const DB_PER_NAT: f64 = 8.685889638065037
+  const MIN_FLOAT: f64 = 0.00000000000000000001
+
+  def db_to_gain<T>(x: T):
+    return exp(x * T(DB_TO_GAIN_SCALE))
+
+  def gain_to_db<T>(x: T):
+    safe = max(x, T(MIN_FLOAT))
+    return log(safe) * T(DB_PER_NAT)
+
+  def pan_linear<T>(x: T):
+    t = clamp((x + T(1.0)) * T(0.5), T(0.0), T(1.0))
+    return (T(1.0) - t, t)
+
+  def pan_3db<T>(x: T):
+    t = clamp((x + T(1.0)) * T(0.5), T(0.0), T(1.0))
+    angle = t * T(HALF_PI)
+    return (cos(angle), sin(angle))

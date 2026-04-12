@@ -5358,6 +5358,44 @@ sample {
     }
 }
 
+#[test]
+fn rewrites_relative_nested_namespace_const_paths_from_current_namespace() {
+    let src = r#"
+namespace Outer:
+  namespace Inner:
+    const VALUE = 3
+
+  def read():
+    return f32(Inner::VALUE)
+
+outs {
+  out1
+}
+
+sample {
+  out1 = Outer::read()
+}
+"#;
+    let program =
+        parse_program(src).expect("relative nested namespace const access should rewrite");
+
+    let def = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Def(def) if def.name == "Outer::read" => Some(def),
+            _ => None,
+        })
+        .expect("Outer::read def");
+
+    for stmt in &def.body {
+        assert!(
+            !stmt_contains_var_with_suffix(stmt, "Inner::VALUE"),
+            "expected relative nested namespace const path to fold away, got {stmt:?}"
+        );
+    }
+}
+
 fn stmt_contains_var_with_suffix(stmt: &Stmt, suffix: &str) -> bool {
     match stmt {
         Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,

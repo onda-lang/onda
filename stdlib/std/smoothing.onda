@@ -1,0 +1,69 @@
+namespace std::smoothing:
+  proc Lag<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      time_s = 0.05
+
+    init<T>:
+      y = 0.0
+
+    block:
+      sample:
+        if (time_s <= 0.0):
+          y = in1
+        else:
+          coef: T = exp(T(-1.0) / max(time_s * SR, T(1.0)))
+          y = in1 + (y - in1) * coef
+        out1 = y
+
+  proc LagUD<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      attack_s = 0.01
+      release_s = 0.1
+
+    init<T>:
+      y = 0.0
+
+    sample:
+      if (in1 > y):
+        if (attack_s <= 0.0):
+          y = in1
+        else:
+          coef: T = exp(T(-1.0) / max(attack_s * SR, T(1.0)))
+          y = in1 + (y - in1) * coef
+      else:
+        if (release_s <= 0.0):
+          y = in1
+        else:
+          coef: T = exp(T(-1.0) / max(release_s * SR, T(1.0)))
+          y = in1 + (y - in1) * coef
+      out1 = y
+
+  proc Slew<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      rise_per_s = 1.0
+      fall_per_s = 1.0
+
+    init<T>:
+      y = 0.0
+
+    block:
+      rise_step: T = max(rise_per_s, T(0.0)) / SR
+      fall_step: T = max(fall_per_s, T(0.0)) / SR
+      sample:
+        delta = in1 - y
+        if (delta > rise_step):
+          y = y + rise_step
+        elif (delta < -fall_step):
+          y = y - fall_step
+        else:
+          y = in1
+        out1 = y

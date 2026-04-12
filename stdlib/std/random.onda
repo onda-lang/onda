@@ -12,7 +12,7 @@ namespace std::random:
   struct Rng<T>:
     state: i64 = 1
 
-    def reseed(self, seed: i64):
+    def seed(self, seed: i64):
       self.state = seed_state(seed)
 
     def next_u31(self):

@@ -1,0 +1,15 @@
+import std/filter
+import std/noise
+
+params:
+  amp = 0.2 {0.0, 1.0}
+  brightness = 0.5 {0.0, 1.0}
+
+init:
+  src = std::noise::Pink(amp = amp)
+  tone = std::filter::OnePole(cutoff = 3200.0)
+
+sample:
+  src.amp = amp
+  tone.cutoff = 150.0 + brightness * 9000.0
+  out1 = tone(src())

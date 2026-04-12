@@ -1,19 +1,53 @@
 namespace std::filter:
+  namespace mode:
+    const ONE_POLE_LOWPASS: i32 = 0
+    const ONE_POLE_HIGHPASS: i32 = 1
+    const SVF_LOWPASS: i32 = 0
+    const SVF_HIGHPASS: i32 = 1
+    const SVF_BANDPASS: i32 = 2
+    const SVF_NOTCH: i32 = 3
+    const SVF_PEAK: i32 = 4
+    const SVF_ALLPASS: i32 = 5
+
   proc OnePole<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
       cutoff = 1000.0
+      mode: i32 = mode::ONE_POLE_LOWPASS
 
     init<T>:
       z = 0.0
 
     block:
-      a: T = 1.0 - exp(-TWO_PI * cutoff / SR)
+      c: T = clamp(cutoff, T(0.0), T(SR * 0.48))
+      a: T = 1.0 - exp(-TWO_PI * c / SR)
       sample:
         z = z + a * (in1 - z)
-        out1 = z
+        low: T = z
+        high: T = in1 - low
+
+        if (mode == mode::ONE_POLE_HIGHPASS):
+          out1 = high
+        else:
+          out1 = low
+
+  proc DCBlock<T>:
+    ins<T> 1
+    outs<T> 1
+
+    init<T>:
+      x1 = 0.0
+      y1 = 0.0
+
+    block:
+      r: T = 0.995
+      sample:
+        y = in1 - x1 + r * y1
+        x1 = in1
+        y1 = y
+        out1 = y
 
   proc Svf<T>:
     ins<T> 1
@@ -40,13 +74,22 @@ namespace std::filter:
         high: T = (in1 - g1 * z1 - z2) * d
         band: T = f * high + z1
         low: T = f * band + z2
+        notch: T = low + high
+        peak: T = low - high
+        allpass: T = notch - inv_q * band
 
         z1 = f * high + band
         z2 = f * band + low
 
-        if (mode <= 0):
+        if (mode <= mode::SVF_LOWPASS):
           out1 = low
-        elif (mode == 1):
+        elif (mode == mode::SVF_HIGHPASS):
           out1 = high
-        else:
+        elif (mode == mode::SVF_BANDPASS):
           out1 = band
+        elif (mode == mode::SVF_NOTCH):
+          out1 = notch
+        elif (mode == mode::SVF_PEAK):
+          out1 = peak
+        else:
+          out1 = allpass

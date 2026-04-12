@@ -1,0 +1,89 @@
+import std/math
+
+namespace std::mix:
+  namespace chans<N = 2>:
+    assert(N > 0)
+
+    proc Broadcast<T>:
+      ins<T> 1
+      outs<T> N
+
+      sample:
+        for i in 0..N:
+          outs[i] = in1
+
+    proc Sum<T>:
+      ins<T> N
+      outs<T> 1
+
+      sample:
+        y: T = 0.0
+        for i in 0..N:
+          y = y + ins[i]
+        out1 = y
+
+    proc Average<T>:
+      ins<T> N
+      outs<T> 1
+
+      sample:
+        y: T = 0.0
+        for i in 0..N:
+          y = y + ins[i]
+        out1 = y / T(N)
+
+    proc Crossfade<T>:
+      ins:
+        a: T[N]
+        b: T[N]
+
+      outs:
+        out: T[N]
+
+      params<T>:
+        mix = 0.5
+
+      sample:
+        t: T = clamp(mix, T(0.0), T(1.0))
+        for i in 0..N:
+          out[i] = lerp(a[i], b[i], t)
+
+  proc MonoToStereo<T>:
+    ins<T> 1
+    outs<T> 2
+
+    sample:
+      out1 = in1
+      out2 = in1
+
+  proc StereoToMono<T>:
+    ins<T> 2
+    outs<T> 1
+
+    params<T>:
+      norm = 0.5
+
+    sample:
+      out1 = (in1 + in2) * norm
+
+  proc ConstantSum<T>:
+    ins<T> 2
+    outs<T> 1
+
+    params<T>:
+      gain1 = 1.0
+      gain2 = 1.0
+
+    sample:
+      out1 = in1 * gain1 + in2 * gain2
+
+  proc Crossfade<T>:
+    ins<T> 2
+    outs<T> 1
+
+    params<T>:
+      mix = 0.5
+
+    sample:
+      t: T = clamp(mix, T(0.0), T(1.0))
+      out1 = lerp(in1, in2, t)

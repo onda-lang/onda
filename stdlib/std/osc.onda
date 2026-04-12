@@ -60,4 +60,86 @@ namespace std::osc:
       sample:
         phase = phasor()
         base = phase + phase - 1.0
-        out1 = base - std::osc::poly_blep(phase, dt) * amp
+        out1 = (base - std::osc::poly_blep(phase, dt)) * amp
+
+  proc SawDown<T>:
+    outs<T> 1
+
+    params<T>:
+      freq = 440.0
+      amp = 1.0
+
+    init:
+      phasor = Phasor(freq = freq)
+
+    block:
+      phasor.freq = freq
+      dt: T = freq / SR
+      sample:
+        phase = phasor()
+        base = 1.0 - phase - phase
+        out1 = (base + std::osc::poly_blep(phase, dt)) * amp
+
+  proc Pulse<T>:
+    outs<T> 1
+
+    params<T>:
+      freq = 440.0
+      width = 0.5
+      amp = 1.0
+
+    init:
+      phasor = Phasor(freq = freq)
+
+    block:
+      phasor.freq = freq
+      width_v: T = clamp(width, T(0.001), T(0.999))
+      dt: T = freq / SR
+      sample:
+        phase = phasor()
+        if (phase < width_v):
+          wave = 1.0
+        else:
+          wave = -1.0
+
+        phase2: T = phase - width_v
+        if (phase2 < 0.0):
+          phase2 = phase2 + 1.0
+
+        wave = wave + std::osc::poly_blep(phase, dt)
+        wave = wave - std::osc::poly_blep(phase2, dt)
+        out1 = wave * amp
+
+  proc Square<T>:
+    outs<T> 1
+
+    params<T>:
+      freq = 440.0
+      amp = 1.0
+
+    init:
+      pulse = Pulse(freq = freq, width = 0.5, amp = amp)
+
+    block:
+      pulse.freq = freq
+      pulse.amp = amp
+      sample:
+        out1 = pulse()
+
+  proc Triangle<T>:
+    outs<T> 1
+
+    params<T>:
+      freq = 440.0
+      amp = 1.0
+
+    init<T>:
+      pulse = Pulse(freq = freq, width = 0.5, amp = 1.0)
+      tri = -1.0
+
+    block:
+      pulse.freq = freq
+      dt: T = freq / SR
+      sample:
+        tri = clamp(tri + pulse() * dt * T(4.0), T(-1.0), T(1.0))
+        out1 = tri * amp

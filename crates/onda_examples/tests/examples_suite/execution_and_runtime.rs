@@ -1,5 +1,322 @@
 use super::*;
 
+const STDLIB_ENV_AR_ONE_SHOT_EXAMPLE: &str = r#"
+import std/env
+
+outs { out1 }
+
+init {
+  trig = 0.0
+  env = std::env::AR(attack_s = 0.00025, release_s = 0.0005, trigger = trig)
+}
+
+events {
+  bang() {
+    trig = 1.0
+  }
+}
+
+sample {
+  env.trigger = trig
+  trig = 0.0
+  out1 = env()
+}
+"#;
+
+const STDLIB_ENV_ASR_F64_EXAMPLE: &str = r#"
+import std/env
+
+outs { out1 }
+
+init {
+  env = std::env::ASR<f64>(
+    attack_s = f64(0.00025),
+    sustain = f64(0.5),
+    release_s = f64(0.00025),
+    gate = f64(1.0),
+  )
+}
+
+sample {
+  out1 = f32(env())
+}
+"#;
+
+const STD_ENV_ADSR_FILE_EXAMPLE: &str = include_str!("../../../../examples/std_env_adsr.onda");
+const STDLIB_OSC_SQUARE_F64_EXAMPLE: &str = r#"
+import std/osc
+
+outs { out1 }
+
+init {
+  osc = std::osc::Square<f64>(freq = f64(220.0), amp = f64(0.25))
+}
+
+sample {
+  out1 = f32(osc())
+}
+"#;
+
+const STDLIB_OSC_SAW_AMP_EXAMPLE: &str = r#"
+import std/osc
+
+outs { out1 }
+
+init {
+  osc = std::osc::Saw(freq = 220.0, amp = 0.25)
+}
+
+sample {
+  out1 = osc()
+}
+"#;
+
+const STDLIB_OSC_TRIANGLE_F64_EXAMPLE: &str = r#"
+import std/osc
+
+outs { out1 }
+
+init {
+  osc = std::osc::Triangle<f64>(freq = f64(220.0), amp = f64(0.25))
+}
+
+sample {
+  out1 = f32(osc())
+}
+"#;
+
+const STD_OSC_SHAPES_FILE_EXAMPLE: &str = include_str!("../../../../examples/std_osc_shapes.onda");
+const STDLIB_FILTER_ONE_POLE_MODES_EXAMPLE: &str = r#"
+import std/filter
+
+outs 2
+
+init {
+  lp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::mode::ONE_POLE_LOWPASS)
+  hp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
+}
+
+sample {
+  out1 = lp(1.0)
+  out2 = hp(1.0)
+}
+"#;
+
+const STDLIB_FILTER_DCBLOCK_EXAMPLE: &str = r#"
+import std/filter
+
+outs { out1 }
+
+init {
+  dc = std::filter::DCBlock()
+}
+
+sample {
+  out1 = dc(1.0)
+}
+"#;
+
+const STDLIB_NOISE_FAMILY_EXAMPLE: &str = r#"
+import std/noise
+
+outs 3
+
+init {
+  white = std::noise::White(amp = 0.25)
+  pink = std::noise::Pink(amp = 0.25)
+  brown = std::noise::Brown(amp = 0.25)
+}
+
+sample {
+  out1 = white()
+  out2 = pink()
+  out3 = brown()
+}
+"#;
+
+const STDLIB_NOISE_WHITE_F64_EXAMPLE: &str = r#"
+import std/noise
+
+outs { out1 }
+
+init {
+  noise = std::noise::White<f64>(amp = f64(0.25))
+}
+
+sample {
+  out1 = f32(noise())
+}
+"#;
+
+const STDLIB_LEVELS_HELPERS_EXAMPLE: &str = r#"
+import std/levels
+
+outs 8
+
+sample {
+  (lin_l, lin_r) = std::levels::pan_linear(0.0)
+  (pow_l, pow_r) = std::levels::pan_3db(0.0)
+
+  out1 = std::levels::db_to_gain(-6.0)
+  out2 = std::levels::gain_to_db(0.5)
+  out3 = lin_l
+  out4 = lin_r
+  out5 = pow_l
+  out6 = pow_r
+  out7 = f32(std::levels::db_to_gain(f64(-6.0)))
+  out8 = f32(std::levels::gain_to_db(f64(0.5)))
+}
+"#;
+
+const STD_FILTER_MODES_FILE_EXAMPLE: &str =
+    include_str!("../../../../examples/std_filter_modes.onda");
+const STD_NOISE_FILE_EXAMPLE: &str = include_str!("../../../../examples/std_noise.onda");
+const STDLIB_FILTER_SVF_EXTRA_MODES_EXAMPLE: &str = r#"
+import std/filter
+import std/osc
+
+outs 3
+
+init {
+  src = std::osc::Saw(freq = 220.0, amp = 0.25)
+  notch = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_NOTCH)
+  peak = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_PEAK)
+  allpass = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_ALLPASS)
+}
+
+sample {
+  x = src()
+  out1 = notch(x)
+  out2 = peak(x)
+  out3 = allpass(x)
+}
+"#;
+
+const STDLIB_SMOOTHING_LAG_EXAMPLE: &str = r#"
+import std/smoothing
+
+outs { out1 }
+
+init {
+  smooth = std::smoothing::Lag(time_s = 0.001)
+}
+
+sample {
+  out1 = smooth(1.0)
+}
+"#;
+
+const STDLIB_SMOOTHING_SLEW_F64_EXAMPLE: &str = r#"
+import std/smoothing
+
+outs { out1 }
+
+init {
+  smooth = std::smoothing::Slew<f64>(rise_per_s = f64(4800.0), fall_per_s = f64(2400.0))
+}
+
+sample {
+  out1 = f32(smooth(f64(1.0)))
+}
+"#;
+
+const STD_SMOOTHING_FILE_EXAMPLE: &str = include_str!("../../../../examples/std_smoothing.onda");
+const STDLIB_MIX_HELPERS_EXAMPLE: &str = r#"
+import std/mix
+
+outs 5
+
+init {
+  mono = std::mix::MonoToStereo()
+  sum = std::mix::StereoToMono()
+  blend = std::mix::ConstantSum(gain1 = 0.25, gain2 = 0.5)
+  xfade = std::mix::Crossfade(mix = 0.25)
+}
+
+sample {
+  mono(0.5)
+  out1 = mono.out1
+  out2 = mono.out2
+  out3 = sum(0.5, -0.5)
+  out4 = blend(1.0, 2.0)
+  out5 = xfade(1.0, -1.0)
+}
+"#;
+
+const STDLIB_MIX_GENERIC_CHANNELS_EXAMPLE: &str = r#"
+import std/mix
+
+outs 7
+
+init {
+  spread = std::mix::chans<4>::Broadcast()
+  avg = std::mix::chans<4>::Average()
+  xfade = std::mix::chans<2>::Crossfade(mix = 0.25)
+}
+
+sample {
+  spread(0.25)
+  xfade([1.0, -1.0], [0.0, 1.0])
+
+  out1 = spread.out1
+  out2 = spread.out2
+  out3 = spread.out3
+  out4 = spread.out4
+  out5 = avg(1.0, 2.0, 3.0, 4.0)
+  out6 = xfade.out1
+  out7 = xfade.out2
+}
+"#;
+
+const STDLIB_GAIN_LINEAR_DB_EXAMPLE: &str = r#"
+import std/gain
+
+outs 3
+
+init {
+  lin = std::gain::Constant(gain = 0.25)
+  db = std::gain::Db(db = -6.0)
+}
+
+sample {
+  out1 = lin(1.0)
+  out2 = db(1.0)
+  out3 = db(-1.0)
+}
+"#;
+
+const STDLIB_GAIN_SMOOTHED_DB_F64_EXAMPLE: &str = r#"
+import std/gain
+
+outs { out1 }
+
+init {
+  gain = std::gain::SmoothedDb<f64>(db = f64(0.0), time_s = f64(0.001))
+}
+
+sample {
+  out1 = f32(gain(f64(1.0)))
+}
+"#;
+
+const STDLIB_PITCH_HELPERS_EXAMPLE: &str = r#"
+import std/pitch
+
+outs 6
+
+sample {
+  out1 = std::pitch::note_to_hz(69.0)
+  out2 = std::pitch::hz_to_note(440.0)
+  out3 = std::pitch::ratio_between(69.0, 81.0)
+  out4 = f32(std::pitch::note_to_hz(f64(69.0)))
+  out5 = f32(std::pitch::hz_to_note(f64(440.0)))
+  out6 = f32(std::pitch::ratio_between(f64(69.0), f64(81.0)))
+}
+"#;
+
+const STD_MIX_GAIN_PITCH_FILE_EXAMPLE: &str =
+    include_str!("../../../../examples/std_mix_gain_pitch.onda");
+
 #[test]
 
 fn stdlib_f32_graph_example_matches_sample_version() {
@@ -85,6 +402,820 @@ fn graph_nodes_remain_addressable_from_top_level_events() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert!(output.iter().all(|sample| (*sample - 0.75).abs() <= 1e-6));
+}
+
+#[test]
+
+fn stdlib_env_ar_runs_as_a_one_shot_envelope() {
+    let frames = 64;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_ENV_AR_ONE_SHOT_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let bang_idx = instance.event_index("bang").expect("bang event must exist");
+
+    assert_eq!(instance.event_payload_bytes(bang_idx), Some(0));
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(output.iter().all(|sample| sample.abs() <= 1e-6));
+
+    trigger_event_by_index(&mut instance, bang_idx, &[]).expect("bang trigger should succeed");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let peak = output
+        .iter()
+        .fold(0.0_f32, |acc, sample| acc.max(sample.abs()));
+
+    assert!(
+        peak >= 0.9,
+        "expected AR envelope peak near 1.0, got {peak}"
+    );
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 1e-3),
+        "expected AR envelope to finish and return to zero, got {output:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_env_asr_supports_f64_and_holds_sustain() {
+    let frames = 64;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_ENV_ASR_F64_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| *sample > 0.1),
+        "expected ASR envelope to rise above zero, got {output:?}"
+    );
+
+    let tail = &output[frames - 8..];
+
+    for sample in tail {
+        assert_near(*sample, 0.5, 0.05);
+    }
+}
+
+#[test]
+
+fn std_env_adsr_example_responds_to_note_on_and_note_off() {
+    let frames = 128;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STD_ENV_ADSR_FILE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let attack_idx = instance
+        .param_index("attack_s")
+        .expect("attack_s param must exist");
+    let decay_idx = instance
+        .param_index("decay_s")
+        .expect("decay_s param must exist");
+    let release_idx = instance
+        .param_index("release_s")
+        .expect("release_s param must exist");
+
+    set_param_by_index(&mut instance, attack_idx, &0.0005_f32.to_ne_bytes()).expect("set attack_s");
+    set_param_by_index(&mut instance, decay_idx, &0.001_f32.to_ne_bytes()).expect("set decay_s");
+    set_param_by_index(&mut instance, release_idx, &0.001_f32.to_ne_bytes())
+        .expect("set release_s");
+
+    let note_on_idx = instance
+        .event_index("note_on")
+        .expect("note_on event must exist");
+    let note_off_idx = instance
+        .event_index("note_off")
+        .expect("note_off event must exist");
+
+    assert_eq!(instance.event_payload_bytes(note_on_idx), Some(0));
+    assert_eq!(instance.event_payload_bytes(note_off_idx), Some(0));
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 1e-6),
+        "expected silence before note_on, got {output:?}"
+    );
+
+    trigger_event_by_index(&mut instance, note_on_idx, &[])
+        .expect("note_on trigger should succeed");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let on_peak = output
+        .iter()
+        .fold(0.0_f32, |acc, sample| acc.max(sample.abs()));
+
+    assert!(
+        on_peak >= 0.02,
+        "expected audible ADSR output after note_on, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 0.25),
+        "expected bounded ADSR example output, got {output:?}"
+    );
+
+    trigger_event_by_index(&mut instance, note_off_idx, &[])
+        .expect("note_off trigger should succeed");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let tail = &output[frames - 32..];
+
+    assert!(
+        tail.iter().all(|sample| sample.abs() <= 1e-2),
+        "expected ADSR release tail to decay close to zero, got {tail:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_square_supports_f64_and_stays_bounded() {
+    let frames = 128;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_OSC_SQUARE_F64_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| *sample > 0.05),
+        "expected square output to go positive, got {output:?}"
+    );
+    assert!(
+        output.iter().any(|sample| *sample < -0.05),
+        "expected square output to go negative, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 0.3),
+        "expected square output to stay within amp bounds, got {output:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_saw_applies_amp_to_the_full_waveform() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_OSC_SAW_AMP_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let peak = output
+        .iter()
+        .fold(0.0_f32, |acc, sample| acc.max(sample.abs()));
+
+    assert!(peak >= 0.15, "expected audible saw output, got {output:?}");
+    assert!(
+        peak <= 0.3,
+        "expected amp-scaled saw output near 0.25 peak, got peak {peak} from {output:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_triangle_supports_f64_and_stays_bounded() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_OSC_TRIANGLE_F64_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| *sample > 0.05),
+        "expected triangle output to go positive, got {output:?}"
+    );
+    assert!(
+        output.iter().any(|sample| *sample < -0.05),
+        "expected triangle output to go negative, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 0.3),
+        "expected triangle output to stay within amp bounds, got {output:?}"
+    );
+}
+
+#[test]
+
+fn std_osc_shapes_example_runs_with_bounded_output() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STD_OSC_SHAPES_FILE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let freq_idx = instance.param_index("freq").expect("freq param must exist");
+    let width_idx = instance
+        .param_index("pulse_width")
+        .expect("pulse_width param must exist");
+
+    set_param_by_index(&mut instance, freq_idx, &165.0_f32.to_ne_bytes()).expect("set freq");
+    set_param_by_index(&mut instance, width_idx, &0.2_f32.to_ne_bytes()).expect("set pulse_width");
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| sample.abs() >= 0.05),
+        "expected oscillator mix to produce audible output, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 0.45),
+        "expected oscillator mix to remain bounded, got {output:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_one_pole_lowpass_and_highpass_modes_behave_distinctly() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_FILTER_ONE_POLE_MODES_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let tail = &output[(frames - 32) * out_channels..];
+    let mut low_sum = 0.0_f32;
+    let mut high_sum = 0.0_f32;
+
+    for frame in tail.chunks_exact(out_channels) {
+        low_sum += frame[0];
+        high_sum += frame[1].abs();
+    }
+
+    let low_avg = low_sum / 32.0;
+    let high_avg = high_sum / 32.0;
+
+    assert!(
+        low_avg >= 0.9,
+        "expected low-pass output to settle near DC input, got avg {low_avg}"
+    );
+    assert!(
+        high_avg <= 0.1,
+        "expected high-pass output to reject steady DC input, got avg {high_avg}"
+    );
+}
+
+#[test]
+
+fn stdlib_dcblock_attenuates_steady_dc() {
+    let frames = 512;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_FILTER_DCBLOCK_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output[0].abs() >= 0.9,
+        "expected DC blocker to pass the initial transient, got {output:?}"
+    );
+
+    let tail = &output[frames - 64..];
+    let tail_avg = tail.iter().map(|sample| sample.abs()).sum::<f32>() / tail.len() as f32;
+
+    assert!(
+        tail_avg <= 0.15,
+        "expected DC blocker tail to decay toward zero, got avg {tail_avg} from {tail:?}"
+    );
+}
+
+#[test]
+
+fn std_filter_modes_example_runs_with_bounded_output() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STD_FILTER_MODES_FILE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let cutoff_idx = instance
+        .param_index("cutoff")
+        .expect("cutoff param must exist");
+    let mode_idx = instance
+        .param_index("svf_mode")
+        .expect("svf_mode param must exist");
+
+    set_param_by_index(&mut instance, cutoff_idx, &1800.0_f32.to_ne_bytes()).expect("set cutoff");
+    set_param_by_index(&mut instance, mode_idx, &2_i32.to_ne_bytes()).expect("set svf_mode");
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| sample.abs() >= 0.02),
+        "expected filter example to produce audible output, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 0.4),
+        "expected filter example to remain bounded, got {output:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_svf_extra_modes_are_bounded_and_distinct() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_FILTER_SVF_EXTRA_MODES_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 3);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let mut diff_np = 0.0_f32;
+    let mut diff_na = 0.0_f32;
+
+    for frame in output.chunks_exact(out_channels) {
+        assert!(
+            frame.iter().all(|sample| sample.abs() <= 1.0),
+            "expected bounded SVF extra mode output, got {output:?}"
+        );
+        diff_np += (frame[0] - frame[1]).abs();
+        diff_na += (frame[0] - frame[2]).abs();
+    }
+
+    assert!(
+        diff_np >= 0.5,
+        "expected notch and peak to differ, got {output:?}"
+    );
+    assert!(
+        diff_na >= 0.5,
+        "expected notch and allpass to differ, got {output:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_noise_family_outputs_are_bounded_and_nonzero() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_NOISE_FAMILY_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 3);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    let mut max_abs = [0.0_f32; 3];
+
+    for frame in output.chunks_exact(out_channels) {
+        for channel in 0..out_channels {
+            max_abs[channel] = max_abs[channel].max(frame[channel].abs());
+            assert!(
+                frame[channel].abs() <= 0.3,
+                "expected bounded noise output, got {output:?}"
+            );
+        }
+    }
+
+    for peak in max_abs {
+        assert!(
+            peak >= 0.01,
+            "expected non-silent noise output, got peaks {max_abs:?}"
+        );
+    }
+}
+
+#[test]
+
+fn stdlib_white_noise_supports_f64() {
+    let frames = 128;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_NOISE_WHITE_F64_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| sample.abs() >= 0.01),
+        "expected non-silent white noise output, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 0.3),
+        "expected bounded white noise output, got {output:?}"
+    );
+}
+
+#[test]
+
+fn std_noise_example_runs_with_bounded_output() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STD_NOISE_FILE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let brightness_idx = instance
+        .param_index("brightness")
+        .expect("brightness param must exist");
+
+    set_param_by_index(&mut instance, brightness_idx, &0.75_f32.to_ne_bytes())
+        .expect("set brightness");
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| sample.abs() >= 0.01),
+        "expected noise example to produce audible output, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 0.25),
+        "expected noise example to remain bounded, got {output:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_levels_helpers_return_expected_values() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_LEVELS_HELPERS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 8);
+
+    let mut output = vec![0.0_f32; out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 10.0_f32.powf(-6.0 / 20.0), 1e-5);
+    assert_near(output[1], 20.0 * 0.5_f32.log10(), 1e-5);
+    assert_near(output[2], 0.5, 1e-6);
+    assert_near(output[3], 0.5, 1e-6);
+    assert_near(output[4], 0.5_f32.sqrt(), 1e-5);
+    assert_near(output[5], 0.5_f32.sqrt(), 1e-5);
+    assert_near(output[6], 10.0_f32.powf(-6.0 / 20.0), 1e-5);
+    assert_near(output[7], 20.0 * 0.5_f32.log10(), 1e-5);
+}
+
+#[test]
+
+fn stdlib_lag_rises_toward_target_without_jumping_immediately() {
+    let frames = 64;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_SMOOTHING_LAG_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output[0] > 0.0 && output[0] < 1.0,
+        "expected lag output to move but not jump immediately, got {output:?}"
+    );
+    assert!(
+        output[frames - 1] > output[0],
+        "expected lag output to rise over time, got {output:?}"
+    );
+    assert!(
+        output[frames - 1] >= 0.6,
+        "expected lag output to approach the target, got {output:?}"
+    );
+
+    for pair in output.windows(2) {
+        assert!(
+            pair[1] + 1e-6 >= pair[0],
+            "expected monotonic lag rise, got {output:?}"
+        );
+    }
+}
+
+#[test]
+
+fn stdlib_slew_supports_f64_and_limits_rise_rate() {
+    let frames = 6;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_SMOOTHING_SLEW_F64_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 0.1, 1e-4);
+    assert_near(output[1], 0.2, 1e-4);
+    assert_near(output[2], 0.3, 1e-4);
+    assert_near(output[3], 0.4, 1e-4);
+}
+
+#[test]
+
+fn std_smoothing_example_runs_with_bounded_output() {
+    let frames = 128;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STD_SMOOTHING_FILE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let target_idx = instance
+        .param_index("target")
+        .expect("target param must exist");
+    let attack_idx = instance
+        .param_index("attack_s")
+        .expect("attack_s param must exist");
+    let release_idx = instance
+        .param_index("release_s")
+        .expect("release_s param must exist");
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 1e-6),
+        "expected silence before target rises, got {output:?}"
+    );
+
+    set_param_by_index(&mut instance, target_idx, &1.0_f32.to_ne_bytes()).expect("set target");
+    set_param_by_index(&mut instance, attack_idx, &0.002_f32.to_ne_bytes()).expect("set attack_s");
+    set_param_by_index(&mut instance, release_idx, &0.01_f32.to_ne_bytes()).expect("set release_s");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| sample.abs() >= 0.01),
+        "expected smoothing example to produce audible output, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 0.25),
+        "expected smoothing example to remain bounded, got {output:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_mix_helpers_route_and_combine_expected_values() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_MIX_HELPERS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 5);
+
+    let mut output = vec![0.0_f32; out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 0.5, 1e-6);
+    assert_near(output[1], 0.5, 1e-6);
+    assert_near(output[2], 0.0, 1e-6);
+    assert_near(output[3], 1.25, 1e-6);
+    assert_near(output[4], 0.5, 1e-6);
+}
+
+#[test]
+
+fn stdlib_mix_namespace_channel_helpers_scale_beyond_stereo() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_MIX_GENERIC_CHANNELS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 7);
+
+    let mut output = vec![0.0_f32; out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 0.25, 1e-6);
+    assert_near(output[1], 0.25, 1e-6);
+    assert_near(output[2], 0.25, 1e-6);
+    assert_near(output[3], 0.25, 1e-6);
+    assert_near(output[4], 2.5, 1e-6);
+    assert_near(output[5], 0.75, 1e-6);
+    assert_near(output[6], -0.5, 1e-6);
+}
+
+#[test]
+
+fn stdlib_gain_helpers_apply_linear_and_db_scaling() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_GAIN_LINEAR_DB_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 3);
+
+    let mut output = vec![0.0_f32; out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 0.25, 1e-6);
+    assert_near(output[1], 10.0_f32.powf(-6.0 / 20.0), 1e-5);
+    assert_near(output[2], -10.0_f32.powf(-6.0 / 20.0), 1e-5);
+}
+
+#[test]
+
+fn stdlib_smoothed_db_gain_supports_f64_and_ramps() {
+    let frames = 64;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_GAIN_SMOOTHED_DB_F64_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output[0] > 0.0 && output[0] < 1.0,
+        "expected smoothed gain to ramp from zero, got {output:?}"
+    );
+    assert!(
+        output[frames - 1] > output[0],
+        "expected smoothed gain to continue rising, got {output:?}"
+    );
+    assert!(
+        output[frames - 1] >= 0.6,
+        "expected smoothed gain to approach unity, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 1.0),
+        "expected smoothed gain output to stay bounded, got {output:?}"
+    );
+
+    for pair in output.windows(2) {
+        assert!(
+            pair[1] + 1e-6 >= pair[0],
+            "expected monotonic smoothed gain ramp, got {output:?}"
+        );
+    }
+}
+
+#[test]
+
+fn stdlib_pitch_helpers_return_expected_values() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_PITCH_HELPERS_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 6);
+
+    let mut output = vec![0.0_f32; out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 440.0, 1e-3);
+    assert_near(output[1], 69.0, 1e-4);
+    assert_near(output[2], 2.0, 1e-4);
+    assert_near(output[3], 440.0, 1e-3);
+    assert_near(output[4], 69.0, 1e-4);
+    assert_near(output[5], 2.0, 1e-4);
+}
+
+#[test]
+
+fn std_mix_gain_pitch_example_runs_with_bounded_output() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STD_MIX_GAIN_PITCH_FILE_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 2);
+
+    let note_idx = instance.param_index("note").expect("note param must exist");
+    let blend_idx = instance
+        .param_index("blend")
+        .expect("blend param must exist");
+    let db_idx = instance
+        .param_index("level_db")
+        .expect("level_db param must exist");
+    let smooth_idx = instance
+        .param_index("smooth_s")
+        .expect("smooth_s param must exist");
+
+    set_param_by_index(&mut instance, note_idx, &57.0_f32.to_ne_bytes()).expect("set note");
+    set_param_by_index(&mut instance, blend_idx, &0.6_f32.to_ne_bytes()).expect("set blend");
+    set_param_by_index(&mut instance, db_idx, &(-6.0_f32).to_ne_bytes()).expect("set level_db");
+    set_param_by_index(&mut instance, smooth_idx, &0.001_f32.to_ne_bytes()).expect("set smooth_s");
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert!(
+        output.iter().any(|sample| sample.abs() >= 0.01),
+        "expected mix/gain/pitch example to produce audible output, got {output:?}"
+    );
+    assert!(
+        output.iter().all(|sample| sample.abs() <= 0.3),
+        "expected mix/gain/pitch example to remain bounded, got {output:?}"
+    );
 }
 
 #[test]
@@ -5082,7 +6213,7 @@ fn sample_oversample_passthrough_preserves_more_high_band_level() {
         compile_instance(SAMPLE_OVERSAMPLE_PASSTHROUGH_4X_EXAMPLE, frames);
 
     let input = (0..frames)
-        .map(|idx| (f32::sin(2.0 * std::f32::consts::PI * freq * idx as f32 / sample_rate)))
+        .map(|idx| f32::sin(2.0 * std::f32::consts::PI * freq * idx as f32 / sample_rate))
         .collect::<Vec<_>>();
 
     let mut base_output = vec![0.0_f32; frames];

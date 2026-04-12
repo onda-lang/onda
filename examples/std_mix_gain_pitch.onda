@@ -1,0 +1,32 @@
+import std/gain
+import std/mix
+import std/osc
+import std/pitch
+
+outs 2
+
+params:
+  note: f32 = 60.0 {24.0, 96.0}
+  interval: f32 = 7.0 {0.0, 24.0}
+  blend: f32 = 0.35 {0.0, 1.0}
+  level_db: f32 = -9.0 {-36.0, 6.0}
+  smooth_s: f32 = 0.02 {0.0, 0.5}
+
+init:
+  osc_a = std::osc::Saw(freq = std::pitch::note_to_hz(note), amp = 0.18)
+  osc_b = std::osc::Square(freq = std::pitch::note_to_hz(note + interval), amp = 0.18)
+  xfade = std::mix::Crossfade(mix = blend)
+  level = std::gain::SmoothedDb(db = level_db, time_s = smooth_s)
+  stereo = std::mix::MonoToStereo()
+
+sample:
+  osc_a.freq = std::pitch::note_to_hz(note)
+  osc_b.freq = std::pitch::note_to_hz(note + interval)
+  xfade.mix = blend
+  level.db = level_db
+  level.time_s = smooth_s
+
+  mono = level(xfade(osc_a(), osc_b()))
+  stereo(mono)
+  out1 = stereo.out1
+  out2 = stereo.out2

@@ -1,0 +1,24 @@
+namespace std::pitch:
+  const A4_HZ: f64 = 440.0
+  const MIDI_A4: f64 = 69.0
+  const LN_2_OVER_12: f64 = 0.05776226504666211
+  const INV_LN_2_OVER_12: f64 = 17.31234049066756
+  const MIN_FLOAT: f64 = 0.00000000000000000001
+
+  def note_to_hz<T>(note: T):
+    return note_to_hz(note, T(A4_HZ))
+
+  def note_to_hz<T>(note: T, a4_hz: T):
+    ref = max(a4_hz, T(MIN_FLOAT))
+    return ref * exp((note - T(MIDI_A4)) * T(LN_2_OVER_12))
+
+  def hz_to_note<T>(hz: T):
+    return hz_to_note(hz, T(A4_HZ))
+
+  def hz_to_note<T>(hz: T, a4_hz: T):
+    safe_hz = max(hz, T(MIN_FLOAT))
+    ref = max(a4_hz, T(MIN_FLOAT))
+    return log(safe_hz / ref) * T(INV_LN_2_OVER_12) + T(MIDI_A4)
+
+  def ratio_between<T>(source_note: T, target_note: T):
+    return exp((target_note - source_note) * T(LN_2_OVER_12))

@@ -1,0 +1,24 @@
+import std/filter
+import std/osc
+
+params:
+  freq = 110.0 {20.0, 880.0}
+  cutoff = 1200.0 {40.0, 12000.0}
+  q = 0.8 {0.1, 8.0}
+  svf_mode: i32 = 0 {5}
+
+init:
+  osc = std::osc::Saw(freq = freq, amp = 0.18)
+  lp = std::filter::OnePole(cutoff = cutoff, mode = std::filter::mode::ONE_POLE_LOWPASS)
+  hp = std::filter::OnePole(cutoff = cutoff, mode = std::filter::mode::ONE_POLE_HIGHPASS)
+  svf = std::filter::Svf(cutoff = cutoff, q = q, mode = svf_mode)
+
+sample:
+  osc.freq = freq
+  lp.cutoff = cutoff
+  hp.cutoff = cutoff
+  svf.cutoff = cutoff
+  svf.q = q
+  svf.mode = svf_mode
+  src = osc()
+  out1 = lp(src) * 0.45 + hp(src) * 0.2 + svf(src) * 0.35

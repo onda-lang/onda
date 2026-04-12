@@ -1,0 +1,54 @@
+import std/smoothing
+
+namespace std::gain:
+  const DB_TO_GAIN_SCALE: f64 = 0.11512925464970229
+
+  proc Constant<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      gain = 1.0
+
+    sample:
+      out1 = in1 * gain
+
+  proc Db<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      db = 0.0
+
+    sample:
+      out1 = in1 * exp(db * T(DB_TO_GAIN_SCALE))
+
+  proc Smoothed<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      gain = 1.0
+      time_s = 0.05
+
+    init<T>:
+      smooth = std::smoothing::Lag<T>(time_s = time_s)
+
+    sample:
+      smooth.time_s = time_s
+      out1 = in1 * smooth(gain)
+
+  proc SmoothedDb<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      db = 0.0
+      time_s = 0.05
+
+    init<T>:
+      smooth = std::smoothing::Lag<T>(time_s = time_s)
+
+    sample:
+      smooth.time_s = time_s
+      out1 = in1 * smooth(exp(db * T(DB_TO_GAIN_SCALE)))
