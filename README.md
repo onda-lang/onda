@@ -119,6 +119,8 @@ onda daemon diagnose <input.onda>
 onda daemon stdio
 ```
 
+For a full list of all commands and their flags, run the help file via `onda --help`.
+
 ### `onda compile`
 
 Compiles an Onda file and optionally emits IR or an object file.
@@ -161,9 +163,6 @@ Run host selection:
 Useful flags:
 - `--sample-rate`
 - `--block`
-- `--opt-level`
-- `--fast-math`
-- `--meta`
 - `--input-device`
 - `--output-device`
 - `--theme`
@@ -171,27 +170,27 @@ Useful flags:
 ### `onda run play`
 
 Runs the real-time playback/control transport without opening the standalone UI.
+Parameters can be set via the `--set` argument.
 
 ```bash
 onda run play examples/sine.onda --dur 2
-onda run play examples/sine.onda --forever
+onda run play examples/sine.onda --forever --set freq=220
 ```
 
 Useful flags:
 - `--dur` or `--forever`
-- `--opt-level`
-- `--set name=value`
-- `--meta`
-- `--control-json`
+- `--sample-rate`
+- `--block`
 - `--input-device`
 - `--output-device`
+- `--set name=value`
 
 With `--control-json`, `onda run play` prints a control handshake on stdout and serves a localhost control socket for run clients.
 
 ### `onda run render`
 
 Offline render through the run pipeline.
-This is useful when you want the interactive run-oriented path, including `--set` parameter overrides, without running real-time playback.
+This is useful when you want to render out to a wav file without running real-time playback.
 
 ```bash
 onda run render examples/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
@@ -202,9 +201,7 @@ Useful flags:
 - `--dur`
 - `--sample-rate`
 - `--block`
-- `--opt-level`
 - `--set name=value`
-- `--meta`
 
 ### `onda daemon diagnose`
 
