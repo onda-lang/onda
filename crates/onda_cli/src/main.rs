@@ -86,10 +86,10 @@ const USAGE_BODY: &str = r#"Commands:
     
     [--sample-rate <hz>] [--block <frames>]
 
+  onda daemon stdio                  Start the daemon transport over stdio
+  
   onda lsp                           Start the language server over stdio
   
-  onda daemon stdio                  Start the daemon transport over stdio
-
 Shared Options:
   
   --sample-rate, --sr    Sample rate in Hz (default: 48000)
