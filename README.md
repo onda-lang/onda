@@ -147,8 +147,8 @@ onda compile examples/sine.onda --target-spec ./targets/arm64.toml --emit obj
 
 ### `onda run`
 
-Opens the standalone run window.
-This is the default interactive path for listening to a file, tweaking params, and inspecting buffers/devices.
+Opens the standalone UI window.
+This can be used to interactively play with the live-running code.
 
 ```bash
 onda run examples/sine.onda
