@@ -61,7 +61,7 @@ impl ChildSession {
             .arg("--control-json")
             .arg("--sample-rate")
             .arg(options.sample_rate_hz.to_string())
-            .arg("--block")
+            .arg("--block-size")
             .arg(options.block_frames.to_string())
             .arg("--opt-level")
             .arg(options.opt_level.as_str());

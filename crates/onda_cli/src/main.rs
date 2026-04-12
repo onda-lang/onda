@@ -55,7 +55,7 @@ const USAGE_BODY: &str = r#"Commands:
   onda compile <input.onda>          Check, inspect, or emit compile artifacts
     
     [--emit <check|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
-    [--sample-rate <hz>] [--block <frames>]
+    [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math]  
     [--dump-graph] [--ir] [--meta] 
     [--target-spec <path>] [--target-features <feature-list>] 
@@ -65,7 +65,7 @@ const USAGE_BODY: &str = r#"Commands:
   
   onda run <input.onda>              Open the interactive run window
     
-    [--sample-rate <hz>] [--block <frames>]
+    [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math] 
     [--input-device <name>] [--output-device <name>]
     [--theme <auto|dark|light>] [--webview] [--meta]
@@ -73,7 +73,7 @@ const USAGE_BODY: &str = r#"Commands:
   onda run play <input.onda>         Run realtime playback without the UI
     
     [--dur <seconds> | --forever]
-    [--sample-rate <hz>] [--block <frames>]
+    [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math]
     [--input-device <name>] [--output-device <name>]
     [--set <name=value>] [--control-json] [--meta]
@@ -81,13 +81,13 @@ const USAGE_BODY: &str = r#"Commands:
   onda run render <input.onda>       Render offline through the run pipeline
     
     [--output <path>] [--dur <seconds>]
-    [--sample-rate <hz>] [--block <frames>]
+    [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math]
     [--set <name=value>] [--meta] 
   
   onda daemon diagnose <input.onda>  Run daemon-backed analysis and diagnostics
     
-    [--sample-rate <hz>] [--block <frames>]
+    [--sample-rate <hz>] [--block-size <frames>]
 
   onda daemon stdio                  Start the daemon transport over stdio
   
@@ -96,7 +96,7 @@ const USAGE_BODY: &str = r#"Commands:
 Shared Options:
   
   --sample-rate, --sr    Sample rate in Hz (default: 48000)
-  --block, -b            Block size in frames (default: 512; run play: 128)
+  --block-size, -b       Block size in frames (default: 512; run play: 128)
   --opt-level            LLVM optimization level (default: 3)
   --fast-math            Enable LLVM fast-math flags for floating-point operations
   --meta                 Print available metadata for the selected command
@@ -482,9 +482,9 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 };
                 sample_rate_hz = parse_sample_rate_hz(&value)?;
             }
-            "--block" | "-b" => {
+            "--block-size" | "-b" => {
                 let Some(value) = args.next() else {
-                    return Err("--block requires a positive integer value".to_owned());
+                    return Err("--block-size requires a positive integer value".to_owned());
                 };
                 block_frames = parse_block_frames(&value)?;
             }
@@ -578,8 +578,8 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 let value = &arg["--sr=".len()..];
                 sample_rate_hz = parse_sample_rate_hz(value)?;
             }
-            _ if arg.starts_with("--block=") => {
-                let value = &arg["--block=".len()..];
+            _ if arg.starts_with("--block-size=") => {
+                let value = &arg["--block-size=".len()..];
                 block_frames = parse_block_frames(value)?;
             }
             _ if arg.starts_with("--target-triple=") => {
@@ -699,9 +699,9 @@ fn parse_daemon_diagnose_args(
                 };
                 sample_rate_hz = parse_sample_rate_hz(&value)?;
             }
-            "--block" | "-b" => {
+            "--block-size" | "-b" => {
                 let Some(value) = args.next() else {
-                    return Err("--block requires a positive integer value".to_owned());
+                    return Err("--block-size requires a positive integer value".to_owned());
                 };
                 block_frames = parse_block_frames(&value)?;
             }
@@ -712,8 +712,8 @@ fn parse_daemon_diagnose_args(
             _ if arg.starts_with("--sr=") => {
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
             }
-            _ if arg.starts_with("--block=") => {
-                block_frames = parse_block_frames(&arg["--block=".len()..])?;
+            _ if arg.starts_with("--block-size=") => {
+                block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
             }
             _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
@@ -764,9 +764,9 @@ fn parse_run_render_args(
                 };
                 sample_rate_hz = parse_sample_rate_hz(&value)?;
             }
-            "--block" | "-b" => {
+            "--block-size" | "-b" => {
                 let Some(value) = args.next() else {
-                    return Err("--block requires a positive integer value".to_owned());
+                    return Err("--block-size requires a positive integer value".to_owned());
                 };
                 block_frames = parse_block_frames(&value)?;
             }
@@ -797,8 +797,8 @@ fn parse_run_render_args(
             _ if arg.starts_with("--sr=") => {
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
             }
-            _ if arg.starts_with("--block=") => {
-                block_frames = parse_block_frames(&arg["--block=".len()..])?;
+            _ if arg.starts_with("--block-size=") => {
+                block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
             }
             _ if arg.starts_with("--opt-level=") => {
                 opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
@@ -845,9 +845,9 @@ fn parse_run_window_args(
                 };
                 sample_rate_hz = parse_sample_rate_hz(&value)?;
             }
-            "--block" | "-b" => {
+            "--block-size" | "-b" => {
                 let Some(value) = args.next() else {
-                    return Err("--block requires a positive integer value".to_owned());
+                    return Err("--block-size requires a positive integer value".to_owned());
                 };
                 block_frames = parse_block_frames(&value)?;
             }
@@ -885,8 +885,8 @@ fn parse_run_window_args(
             _ if arg.starts_with("--sr=") => {
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
             }
-            _ if arg.starts_with("--block=") => {
-                block_frames = parse_block_frames(&arg["--block=".len()..])?;
+            _ if arg.starts_with("--block-size=") => {
+                block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
             }
             _ if arg.starts_with("--opt-level=") => {
                 opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
@@ -968,9 +968,9 @@ fn parse_run_play_args(
                 };
                 sample_rate_hz = parse_sample_rate_hz(&value)?;
             }
-            "--block" | "-b" => {
+            "--block-size" | "-b" => {
                 let Some(value) = args.next() else {
-                    return Err("--block requires a positive integer value".to_owned());
+                    return Err("--block-size requires a positive integer value".to_owned());
                 };
                 block_frames = parse_block_frames(&value)?;
             }
@@ -1021,8 +1021,8 @@ fn parse_run_play_args(
             _ if arg.starts_with("--sr=") => {
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
             }
-            _ if arg.starts_with("--block=") => {
-                block_frames = parse_block_frames(&arg["--block=".len()..])?;
+            _ if arg.starts_with("--block-size=") => {
+                block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
             }
             _ if arg.starts_with("--opt-level=") => {
                 opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
@@ -4477,7 +4477,7 @@ mod tests {
                 "x.onda",
                 "--sample-rate",
                 "44100",
-                "--block",
+                "--block-size",
                 "256",
                 "--target-triple",
                 "aarch64-unknown-linux-gnu",
@@ -4686,7 +4686,7 @@ reloc_model = "default"
     fn parse_daemon_diagnose_accepts_block_and_sample_rate() {
         let cmd = parse_args(
             [
-                "onda", "daemon", "diagnose", "x.onda", "--block", "256", "--sr", "44100",
+                "onda", "daemon", "diagnose", "x.onda", "--block-size", "256", "--sr", "44100",
             ]
             .into_iter()
             .map(str::to_owned),

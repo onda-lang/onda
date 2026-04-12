@@ -162,7 +162,7 @@ Run host selection:
 
 Useful flags:
 - `--sample-rate`
-- `--block`
+- `--block-size`
 - `--input-device`
 - `--output-device`
 - `--theme`
@@ -180,7 +180,7 @@ onda run play examples/sine.onda --forever --set freq=220
 Useful flags:
 - `--dur` or `--forever`
 - `--sample-rate`
-- `--block`
+- `--block-size`
 - `--input-device`
 - `--output-device`
 - `--set name=value`
@@ -200,7 +200,7 @@ Useful flags:
 - `--output`
 - `--dur`
 - `--sample-rate`
-- `--block`
+- `--block-size`
 - `--set name=value`
 
 ### `onda daemon diagnose`

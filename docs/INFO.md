@@ -436,12 +436,12 @@
 - Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
   - `onda_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
 - CLI (`onda`) supports:
-  - `compile <file> [--emit check|llvm-ir|obj] [--output] [--meta-out] [--target-triple <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <csv>] [--target-abi <name>] [--reloc-model <mode>] [--code-model <mode>] [--opt-level <0|1|2|3>] [--sample-rate <hz>] [--block <frames>] [--dump-graph] [--ir] [--meta]`
+  - `compile <file> [--emit check|llvm-ir|obj] [--output] [--meta-out] [--target-triple <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <csv>] [--target-abi <name>] [--reloc-model <mode>] [--code-model <mode>] [--opt-level <0|1|2|3>] [--sample-rate <hz>] [--block-size <frames>] [--dump-graph] [--ir] [--meta]`
   - `lsp [--stdio]`
-  - `run <file> [--sr|--sample-rate] [--block] [--fast-math] [--input-device <name>] [--output-device <name>]`
-  - `run render <file> [--output] [--dur] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value]`
-  - `run play <file> [--dur | --forever] [--sr|--sample-rate] [--block] [--fast-math] [--meta] [--set name=value] [--control-json]`
-  - `daemon diagnose <file> [--sr|--sample-rate] [--block]`
+  - `run <file> [--sr|--sample-rate] [--block-size] [--fast-math] [--input-device <name>] [--output-device <name>]`
+  - `run render <file> [--output] [--dur] [--sr|--sample-rate] [--block-size] [--fast-math] [--meta] [--set name=value]`
+  - `run play <file> [--dur | --forever] [--sr|--sample-rate] [--block-size] [--fast-math] [--meta] [--set name=value] [--control-json]`
+  - `daemon diagnose <file> [--sr|--sample-rate] [--block-size]`
   - `daemon stdio`
   - `--dump-graph` prints the program immediately after graph lowering, before proc desugaring/codegen.
   - `run play` defaults to a `128`-frame render/device block size.
