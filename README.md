@@ -254,18 +254,13 @@ This is the embedding surface for non-Rust hosts.
 The VSCode extension lives in the standalone [`onda-lang/onda-vscode`](https://github.com/onda-lang/onda-vscode) repository.
 It provides:
 - `.onda` and `.on` language registration
-- syntax highlighting plus LSP semantic tokens
-- `Onda: Run File`
-- `Onda: Stop File`
-- `Onda: Restart Language Server`
-
-`Onda: Run File` launches the `onda run --webview` UI directly in-editor.
+- builtin LSP through `onda lsp`
+- `Onda: Run File` for launching the `onda run --webview` UI directly in-editor
 
 ### Neovim
 
 The Neovim plugin lives in the standalone [`onda-lang/onda-nvim`](https://github.com/onda-lang/onda-nvim) repository.
 It provides:
 - `.onda` and `.on` filetype detection
-- regex syntax highlighting
-- builtin LSP startup through `onda lsp`
+- builtin LSP through `onda lsp`
 - `:OndaRunFile` for launching the standalone run window
