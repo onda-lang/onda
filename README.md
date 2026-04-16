@@ -259,11 +259,7 @@ It provides:
 - `Onda: Stop File`
 - `Onda: Restart Language Server`
 
-`Onda: Run File` launches the run transport and opens the run UI with:
-- start, stop, and reset controls
-- scalar param controls
-- input and output device selectors
-- buffer binding cards for declared `f32` buffers
+`Onda: Run File` launches the `onda run --webview` UI directly in-editor.
 
 ### Neovim
 
