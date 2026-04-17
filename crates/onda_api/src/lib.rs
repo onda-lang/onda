@@ -5,7 +5,7 @@ use onda_codegen_llvm::{
     lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, DeclaredEventParam,
     JitProgram,
 };
-use onda_frontend::{parse_program, DiagCode, Diagnostic, PrimitiveType};
+use onda_frontend::{parse_program, parse_program_file, DiagCode, Diagnostic, PrimitiveType};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
     reset_instance_state, set_param_by_index, trigger_event_by_index, validate_bindings,
@@ -235,6 +235,288 @@ unsafe fn onda_compile_impl(
     };
 
     let parsed = match parse_program(source) {
+        Ok(p) => p,
+        Err(errs) => {
+            let diag = errs
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Diagnostic::internal("parse failed"));
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+
+    let typed = match analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: options.sample_rate,
+            block_size: options.block_size as usize,
+        },
+    ) {
+        Ok(t) => t,
+        Err(errs) => {
+            let diag = errs
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Diagnostic::internal("semantic analysis failed"));
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+
+    let mut jit_options = CompileOptions::default();
+    jit_options.fast_math = options.fast_math != 0;
+    jit_options.sample_rate = options.sample_rate;
+    jit_options.block_size = options.block_size as usize;
+    let jit = match lower_and_jit_with_options(typed, jit_options) {
+        Ok(j) => j,
+        Err(errs) => {
+            let diag = errs
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Diagnostic::internal("codegen failed"));
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+
+    let input_names = match build_cstring_cache(
+        (0..jit.input_count())
+            .filter_map(|idx| jit.input_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "input name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let input_types = match build_cstring_cache(
+        (0..jit.input_count())
+            .filter_map(|idx| jit.input_type(idx))
+            .collect(),
+        "input type",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let output_names = match build_cstring_cache(
+        (0..jit.output_count())
+            .filter_map(|idx| jit.output_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "output name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let output_types = match build_cstring_cache(
+        (0..jit.output_count())
+            .filter_map(|idx| jit.output_type(idx))
+            .collect(),
+        "output type",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let param_names = match build_cstring_cache(
+        (0..jit.param_count())
+            .filter_map(|idx| jit.param_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "param name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let param_types = match build_cstring_cache(
+        (0..jit.param_count())
+            .filter_map(|idx| jit.param_type(idx))
+            .collect(),
+        "param type",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let buffer_names = match build_cstring_cache(
+        (0..jit.buffer_count())
+            .filter_map(|idx| jit.buffer_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "buffer name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let buffer_types = match build_cstring_cache(
+        (0..jit.buffer_count())
+            .filter_map(|idx| jit.buffer_type(idx))
+            .collect(),
+        "buffer type",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let event_names = match build_cstring_cache(
+        (0..jit.event_count())
+            .filter_map(|idx| jit.event_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "event name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let event_param_names = match build_nested_cstring_cache(
+        (0..jit.event_count())
+            .map(|event_idx| {
+                jit.event_descriptor(event_idx)
+                    .map(|event| {
+                        event
+                            .params()
+                            .iter()
+                            .map(|param| param.name().to_owned())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect(),
+        "event parameter name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+
+    Box::into_raw(Box::new(onda_program {
+        jit,
+        input_names,
+        input_types,
+        output_names,
+        output_types,
+        param_names,
+        param_types,
+        buffer_names,
+        buffer_types,
+        event_names,
+        event_param_names,
+    }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_compile_file(
+    file_path_utf8: *const c_char,
+    options: *const onda_compile_options_t,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_program {
+    onda_compile_file_impl(file_path_utf8, options, out_diag)
+}
+
+unsafe fn onda_compile_file_impl(
+    file_path_utf8: *const c_char,
+    options: *const onda_compile_options_t,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_program {
+    if file_path_utf8.is_null() || options.is_null() {
+        write_diag(
+            out_diag,
+            onda_diag_t {
+                code: DiagCode::Runtime as i32,
+                line: 0,
+                column: 0,
+                end_line: 0,
+                end_column: 0,
+                message: STATIC_ERR_NULL_ARG.as_ptr().cast::<c_char>(),
+                file: ptr::null(),
+                trace: ptr::null(),
+            },
+        );
+        return ptr::null_mut();
+    }
+
+    let options = &*options;
+    if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
+        write_diag(
+            out_diag,
+            onda_diag_t {
+                code: DiagCode::Runtime as i32,
+                line: 0,
+                column: 0,
+                end_line: 0,
+                end_column: 0,
+                message: b"compile options require finite sample_rate > 0\0"
+                    .as_ptr()
+                    .cast::<c_char>(),
+                file: ptr::null(),
+                trace: ptr::null(),
+            },
+        );
+        return ptr::null_mut();
+    }
+    if options.block_size <= 0 {
+        write_diag(
+            out_diag,
+            onda_diag_t {
+                code: DiagCode::Runtime as i32,
+                line: 0,
+                column: 0,
+                end_line: 0,
+                end_column: 0,
+                message: b"compile options require block_size > 0\0"
+                    .as_ptr()
+                    .cast::<c_char>(),
+                file: ptr::null(),
+                trace: ptr::null(),
+            },
+        );
+        return ptr::null_mut();
+    }
+
+    let path_cstr = CStr::from_ptr(file_path_utf8);
+    let path_str = match path_cstr.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            write_diag(
+                out_diag,
+                onda_diag_t {
+                    code: DiagCode::Syntax as i32,
+                    line: 0,
+                    column: 0,
+                    end_line: 0,
+                    end_column: 0,
+                    message: STATIC_ERR_INVALID_UTF8.as_ptr().cast::<c_char>(),
+                    file: ptr::null(),
+                    trace: ptr::null(),
+                },
+            );
+            return ptr::null_mut();
+        }
+    };
+
+    let parsed = match parse_program_file(std::path::Path::new(path_str)) {
         Ok(p) => p,
         Err(errs) => {
             let diag = errs

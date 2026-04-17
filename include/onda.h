@@ -52,6 +52,13 @@ onda_program_t* onda_compile(
   const onda_compile_options_t* options,
   onda_diag_t* out_diag
 );
+/* Compiles an Onda file and returns a program handle, or NULL on failure.
+   Relative include/import resolution uses file_path_utf8 as the entry path. */
+onda_program_t* onda_compile_file(
+  const char* file_path_utf8,
+  const onda_compile_options_t* options,
+  onda_diag_t* out_diag
+);
 /* Destroys a program handle created by onda_compile. */
 void onda_program_destroy(onda_program_t* program);
 
