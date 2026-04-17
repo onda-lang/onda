@@ -13,9 +13,8 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{
-    DaemonConfig, DaemonSession, RunBufferChannels as DaemonRunBufferChannels,
-    RunBuildError, RunEventInfo, RunEventParamInfo, RunEventValue,
-    RunOptions, RunParamInfo,
+    DaemonConfig, DaemonSession, RunBufferChannels as DaemonRunBufferChannels, RunBuildError,
+    RunEventInfo, RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo,
 };
 use onda_frontend::Diagnostic;
 use onda_semantics::AnalysisOptions;
@@ -450,7 +449,11 @@ impl RunController {
             .connect(ready.port, self.events_tx.clone())
             .err();
 
-        reconcile_preserved_params(&mut self.preserved_params, &self.state.params, &ready.params);
+        reconcile_preserved_params(
+            &mut self.preserved_params,
+            &self.state.params,
+            &ready.params,
+        );
         self.state.params = ready.params;
         apply_preserved_param_state(&mut self.state.params, &self.preserved_params);
         self.state.buffers = ready.buffers;
@@ -594,10 +597,7 @@ fn format_run_build_error(prefix: &str, err: &RunBuildError) -> String {
 }
 
 fn format_single_diagnostic(prefix: &str, diag: &Diagnostic) -> String {
-    let location = if let Some(file) = diag
-        .file
-        .as_ref()
-        .filter(|file: &&String| !file.is_empty())
+    let location = if let Some(file) = diag.file.as_ref().filter(|file: &&String| !file.is_empty())
     {
         format!("{}:{}:{}", file, diag.line, diag.column)
     } else {
@@ -1078,10 +1078,16 @@ fn reconcile_preserved_params(
     new_params: &[Value],
 ) {
     preserved_params.retain(|(name, _)| {
-        let Some(old_param) = old_params.iter().find(|param| param_name(param) == Some(name)) else {
+        let Some(old_param) = old_params
+            .iter()
+            .find(|param| param_name(param) == Some(name))
+        else {
             return false;
         };
-        let Some(new_param) = new_params.iter().find(|param| param_name(param) == Some(name)) else {
+        let Some(new_param) = new_params
+            .iter()
+            .find(|param| param_name(param) == Some(name))
+        else {
             return false;
         };
         params_are_compatible_for_preservation(old_param, new_param)
@@ -1286,7 +1292,10 @@ mod tests {
 
         reconcile_preserved_params(&mut preserved, &old_params, &new_params);
 
-        assert!(preserved.is_empty(), "changed default should reset preserved param");
+        assert!(
+            preserved.is_empty(),
+            "changed default should reset preserved param"
+        );
     }
 
     #[test]
@@ -1297,7 +1306,11 @@ mod tests {
 
         reconcile_preserved_params(&mut preserved, &old_params, &new_params);
 
-        assert_eq!(preserved.len(), 1, "unchanged param should keep preserved value");
+        assert_eq!(
+            preserved.len(),
+            1,
+            "unchanged param should keep preserved value"
+        );
     }
 
     #[test]

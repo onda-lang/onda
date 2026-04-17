@@ -613,7 +613,11 @@ fn semantic_tokens_for_document(source: &str, path: Option<&Path>) -> Vec<Semant
             let source_scope_resolution = source_proc_scope_index
                 .token_type_for(name, line, start)
                 .0
-                .or_else(|| source_top_level_scope_index.token_type_for(name, line, start).0);
+                .or_else(|| {
+                    source_top_level_scope_index
+                        .token_type_for(name, line, start)
+                        .0
+                });
             let resolved_token_type = match scope_resolution {
                 Some((token_type, true)) => token_type
                     .or(source_scope_resolution)
@@ -1107,7 +1111,10 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                     | SourceProcSectionKind::Outs
                     | SourceProcSectionKind::Buffers => {
                         if let Some(name) = extract_leading_ident(trimmed) {
-                            index.scopes[proc_owner_idx].scope.ports.insert(name.to_owned());
+                            index.scopes[proc_owner_idx]
+                                .scope
+                                .ports
+                                .insert(name.to_owned());
                         }
                     }
                     SourceProcSectionKind::Params => {
@@ -1216,7 +1223,11 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
         prev_nonempty_line = line_no;
     }
 
-    let end_line = if saw_nonempty_line { prev_nonempty_line } else { 0 };
+    let end_line = if saw_nonempty_line {
+        prev_nonempty_line
+    } else {
+        0
+    };
     while let Some(open_scope) = open_scopes.pop() {
         close_line_scope(&mut index, open_scope.idx, end_line);
     }
@@ -1344,7 +1355,10 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                     | SourceTopLevelSectionKind::Outs
                     | SourceTopLevelSectionKind::Buffers => {
                         if let Some(name) = extract_leading_ident(trimmed) {
-                            index.scopes[section.owner_idx].scope.ports.insert(name.to_owned());
+                            index.scopes[section.owner_idx]
+                                .scope
+                                .ports
+                                .insert(name.to_owned());
                         }
                     }
                     SourceTopLevelSectionKind::Params => {
@@ -1453,7 +1467,11 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
         prev_nonempty_line = line_no;
     }
 
-    let end_line = if saw_nonempty_line { prev_nonempty_line } else { 0 };
+    let end_line = if saw_nonempty_line {
+        prev_nonempty_line
+    } else {
+        0
+    };
     while let Some(open_scope) = open_scopes.pop() {
         close_line_scope(&mut index, open_scope.idx, end_line);
     }
@@ -2471,10 +2489,7 @@ fn collect_const_names(source: &str) -> HashSet<String> {
     names
 }
 
-fn scan_identifiers(
-    source: &str,
-    mut f: impl FnMut(&str, u32, u32, u32, bool, bool, bool, bool),
-) {
+fn scan_identifiers(source: &str, mut f: impl FnMut(&str, u32, u32, u32, bool, bool, bool, bool)) {
     let chars = source.chars().collect::<Vec<_>>();
     let mut index = 0;
     let mut line = 0_u32;
@@ -2932,11 +2947,10 @@ fn invalid_params(message: String) -> String {
 mod tests {
     use super::{
         collect_const_names, collect_source_declaration_symbols, diagnostic_message,
-        file_uri_to_path, is_reserved_word, latest_full_text, lsp_document_path,
-        path_to_file_uri, semantic_tokens_for_document, LspServer, SemanticScope,
-        TextDocumentContentChangeEvent, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER,
-        SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT, SEMANTIC_TOKEN_TYPE_STATE,
-        SEMANTIC_TOKEN_TYPE_TYPE, SEMANTIC_TOKEN_TYPE_VARIABLE,
+        file_uri_to_path, is_reserved_word, latest_full_text, lsp_document_path, path_to_file_uri,
+        semantic_tokens_for_document, LspServer, SemanticScope, TextDocumentContentChangeEvent,
+        SEMANTIC_TOKEN_TYPE_ENUM_MEMBER, SEMANTIC_TOKEN_TYPE_PARAMETER, SEMANTIC_TOKEN_TYPE_PORT,
+        SEMANTIC_TOKEN_TYPE_STATE, SEMANTIC_TOKEN_TYPE_TYPE, SEMANTIC_TOKEN_TYPE_VARIABLE,
     };
     use onda_frontend::{DiagCode, Diagnostic};
     use serde_json::json;
@@ -4110,15 +4124,15 @@ mod tests {
         let b_start = line.find("b =").expect("expected named arg label b");
 
         assert!(
-            !tokens.iter().any(|t| {
-                t.line == 7 && t.start as usize == a_start && t.length as usize == 1
-            }),
+            !tokens
+                .iter()
+                .any(|t| { t.line == 7 && t.start as usize == a_start && t.length as usize == 1 }),
             "named arg label 'a =' should not be highlighted: {tokens:?}"
         );
         assert!(
-            !tokens.iter().any(|t| {
-                t.line == 7 && t.start as usize == b_start && t.length as usize == 1
-            }),
+            !tokens
+                .iter()
+                .any(|t| { t.line == 7 && t.start as usize == b_start && t.length as usize == 1 }),
             "named arg label 'b =' should not be highlighted: {tokens:?}"
         );
     }

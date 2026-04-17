@@ -48,10 +48,7 @@ pub fn run_run_egui(onda_path: &Path, options: RunHostOptions) -> Result<(), Str
                 cc.egui_ctx
                     .send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
             }
-            Ok(Box::new(RunApp::new(
-                controller,
-                Some(initial_icon_dark),
-            )))
+            Ok(Box::new(RunApp::new(controller, Some(initial_icon_dark))))
         }),
     )
     .map_err(|err| format!("failed to start egui run: {err}"))

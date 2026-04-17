@@ -157,8 +157,7 @@ impl RunSession {
             in_channels: jit.required_in_channels(),
             out_channels: jit.required_out_channels(),
         };
-        let mut instance =
-            create_instance(jit.clone(), config).map_err(RunBuildError::Runtime)?;
+        let mut instance = create_instance(jit.clone(), config).map_err(RunBuildError::Runtime)?;
 
         let mut input_buffers = jit
             .inputs()
@@ -267,9 +266,7 @@ impl RunSession {
                 type_repr: desc.type_repr(),
                 channels: match desc.channels() {
                     DeclaredBufferChannels::Mono => RunBufferChannels::Mono,
-                    DeclaredBufferChannels::Static(channels) => {
-                        RunBufferChannels::Static(channels)
-                    }
+                    DeclaredBufferChannels::Static(channels) => RunBufferChannels::Static(channels),
                     DeclaredBufferChannels::Dynamic => RunBufferChannels::Dynamic,
                 },
                 loaded_path: self

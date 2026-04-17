@@ -3,8 +3,8 @@ mod run_session;
 
 pub use analysis_session::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
-    RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo,
-    RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo, RunSession,
+    RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo, RunEventParamInfo,
+    RunEventValue, RunOptions, RunParamInfo, RunSession,
 };
 
 use std::collections::HashMap;
@@ -100,10 +100,7 @@ impl DaemonSession {
         self.analysis.analyze_document(path, self.config.analysis)
     }
 
-    pub fn start_run(
-        &mut self,
-        path: impl AsRef<Path>,
-    ) -> Result<&RunSession, RunBuildError> {
+    pub fn start_run(&mut self, path: impl AsRef<Path>) -> Result<&RunSession, RunBuildError> {
         self.start_run_with_options(path, self.config.run)
     }
 
@@ -121,10 +118,7 @@ impl DaemonSession {
             .expect("run inserted into session"))
     }
 
-    pub fn rebuild_run(
-        &mut self,
-        path: impl AsRef<Path>,
-    ) -> Result<&RunSession, RunBuildError> {
+    pub fn rebuild_run(&mut self, path: impl AsRef<Path>) -> Result<&RunSession, RunBuildError> {
         let normalized = normalize_session_path(path.as_ref());
         let options = self
             .runs
@@ -344,10 +338,7 @@ mod tests {
             .start_run(&main)
             .expect("run should compile and start");
 
-        let buffer_info = session
-            .run(&main)
-            .expect("active run")
-            .buffer_info();
+        let buffer_info = session.run(&main).expect("active run").buffer_info();
         assert_eq!(buffer_info.len(), 1);
         assert_eq!(buffer_info[0].name, "src");
 

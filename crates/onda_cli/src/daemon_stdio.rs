@@ -2,8 +2,7 @@ use std::io::{self, BufRead, BufWriter, Write};
 use std::path::Path;
 
 use onda_daemon::{
-    DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunOptions,
-    RunParamInfo,
+    DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunOptions, RunParamInfo,
 };
 use onda_frontend::Diagnostic;
 use onda_semantics::AnalysisOptions;
@@ -220,8 +219,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             .run_mut(path)
             .ok_or_else(|| "run is not active".to_owned())
             .and_then(|run| {
-                run
-                    .set_param_f64(&name, value)
+                run.set_param_f64(&name, value)
                     .map_err(|diag| diagnostic_string("run_set_param failed", &diag))
             })
             .map(|_| json!({ "status": "ok" })),

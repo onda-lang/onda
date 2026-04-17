@@ -43,9 +43,7 @@ mod platform {
                     .unwrap_or_default()
             ))
             .with_inner_size(tao::dpi::LogicalSize::new(480.0_f64, 720.0))
-            .with_window_icon(Some(load_app_icon(startup_window_icon_is_dark(
-                run_theme,
-            ))?))
+            .with_window_icon(Some(load_app_icon(startup_window_icon_is_dark(run_theme))?))
             .build(&event_loop)
             .map_err(|e| format!("failed to create window: {e}"))?;
         if let Ok(icon) = load_app_icon(resolved_window_icon_is_dark(&window, run_theme)) {

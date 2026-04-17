@@ -1,4 +1,4 @@
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -22,8 +22,8 @@ use onda_codegen_llvm::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
 };
 use onda_daemon::{
-    DaemonConfig, DaemonSession, RunBufferChannels, RunBufferInfo, RunBuildError,
-    RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
+    DaemonConfig, DaemonSession, RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo,
+    RunEventValue, RunOptions, RunParamInfo,
 };
 use onda_frontend::{
     parse_program_file, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
@@ -316,11 +316,7 @@ fn main() {
     }
 }
 
-fn run_run_host(
-    host: RunHostKind,
-    input: &Path,
-    options: RunHostOptions,
-) -> Result<(), String> {
+fn run_run_host(host: RunHostKind, input: &Path, options: RunHostOptions) -> Result<(), String> {
     match resolve_run_host_kind(host) {
         RunHostKind::Egui => onda_egui::run_run_egui(input, options),
         RunHostKind::Webview => run_webview_run(input, options),
@@ -391,10 +387,7 @@ fn parse_run_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
         _ => {
             // Treat as `onda run <file.onda>` — the windowed run host.
             if subcommand.starts_with('-') {
-                return Err(format!(
-                    "unknown run option '{subcommand}'\n\n{}",
-                    usage()
-                ));
+                return Err(format!("unknown run option '{subcommand}'\n\n{}", usage()));
             }
             parse_run_window_args(subcommand, args)?
         }
@@ -725,14 +718,9 @@ fn parse_daemon_diagnose_args(
     })
 }
 
-fn parse_run_render_args(
-    mut args: impl Iterator<Item = String>,
-) -> Result<RunCommand, String> {
+fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCommand, String> {
     let Some(input) = args.next() else {
-        return Err(format!(
-            "run render requires an input file\n\n{}",
-            usage()
-        ));
+        return Err(format!("run render requires an input file\n\n{}", usage()));
     };
 
     let mut output = PathBuf::from(DEFAULT_DAEMON_OUTPUT);
@@ -929,14 +917,9 @@ fn parse_run_theme_mode(value: &str) -> Result<RunThemeMode, String> {
     }
 }
 
-fn parse_run_play_args(
-    mut args: impl Iterator<Item = String>,
-) -> Result<RunCommand, String> {
+fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunCommand, String> {
     let Some(input) = args.next() else {
-        return Err(format!(
-            "run play requires an input file\n\n{}",
-            usage()
-        ));
+        return Err(format!("run play requires an input file\n\n{}", usage()));
     };
 
     let mut dur_seconds = Some(DEFAULT_DUR_SECONDS);
@@ -1958,6 +1941,7 @@ where
         .build_output_stream(
             config,
             move |data: &mut [T], _| {
+                ensure_realtime_thread_fp_mode();
                 write_output_data::<T>(data, device_channels, source_channels, &sample_queue)
             },
             err_fn,
@@ -1982,6 +1966,7 @@ where
         .build_input_stream(
             config,
             move |data: &[T], _| {
+                ensure_realtime_thread_fp_mode();
                 write_input_data::<T>(data, device_channels, target_channels, &input_queue)
             },
             err_fn,
@@ -2009,6 +1994,49 @@ fn make_input_stream_error_handler(
         }
     }
 }
+
+thread_local! {
+    static REALTIME_FP_MODE_CONFIGURED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn ensure_realtime_thread_fp_mode() {
+    REALTIME_FP_MODE_CONFIGURED.with(|configured| {
+        if configured.get() {
+            return;
+        }
+        configure_realtime_thread_fp_mode();
+        configured.set(true);
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+fn configure_realtime_thread_fp_mode() {
+    // Flush denormals to zero on realtime threads to avoid severe x86 stalls when
+    // tiny float values appear during parameter smoothing or feedback decay.
+    unsafe {
+        let mut csr = 0_u32;
+        std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack, preserves_flags));
+        let desired = csr | (1 << 15) | (1 << 6);
+        if desired != csr {
+            std::arch::asm!("ldmxcsr [{}]", in(reg) &desired, options(nostack, preserves_flags));
+        }
+    }
+}
+
+#[cfg(target_arch = "x86")]
+fn configure_realtime_thread_fp_mode() {
+    unsafe {
+        let mut csr = 0_u32;
+        std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack, preserves_flags));
+        let desired = csr | (1 << 15) | (1 << 6);
+        if desired != csr {
+            std::arch::asm!("ldmxcsr [{}]", in(reg) &desired, options(nostack, preserves_flags));
+        }
+    }
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn configure_realtime_thread_fp_mode() {}
 
 fn write_output_data<T>(
     data: &mut [T],
@@ -2268,6 +2296,7 @@ fn spawn_run_render_thread(
     control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        ensure_realtime_thread_fp_mode();
         let control_rx = control_rx;
         let mut session = DaemonSession::new(DaemonConfig {
             analysis: AnalysisOptions {
@@ -2553,8 +2582,7 @@ fn flush_pending_param_updates(
             .run_mut(input)
             .ok_or_else(|| "run is not active".to_owned())
             .and_then(|run| {
-                run
-                    .set_param_f64(&name, update.value)
+                run.set_param_f64(&name, update.value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))
             });
         for reply in update.replies {
@@ -2793,27 +2821,29 @@ fn run_control_response(
             "getParams" => {
                 let (reply_tx, reply_rx) = mpsc::channel();
                 control_tx
-                .send(PlaybackControlCommand::GetParams { reply: reply_tx })
-                .map_err(|_| "run control channel closed".to_owned())
-                .and_then(|_| {
-                    reply_rx
-                        .recv()
-                        .map_err(|_| "run control reply channel closed".to_owned())
-                })
-                .map(|result| Some(match result {
-                    Ok(params) => json!({
-                        "id": request_id,
-                        "ok": true,
-                        "result": {
-                            "params": params.iter().map(run_param_json).collect::<Vec<_>>(),
-                        }
-                    }),
-                    Err(err) => json!({
-                        "id": request_id,
-                        "ok": false,
-                        "error": err,
-                    }),
-                }))
+                    .send(PlaybackControlCommand::GetParams { reply: reply_tx })
+                    .map_err(|_| "run control channel closed".to_owned())
+                    .and_then(|_| {
+                        reply_rx
+                            .recv()
+                            .map_err(|_| "run control reply channel closed".to_owned())
+                    })
+                    .map(|result| {
+                        Some(match result {
+                            Ok(params) => json!({
+                                "id": request_id,
+                                "ok": true,
+                                "result": {
+                                    "params": params.iter().map(run_param_json).collect::<Vec<_>>(),
+                                }
+                            }),
+                            Err(err) => json!({
+                                "id": request_id,
+                                "ok": false,
+                                "error": err,
+                            }),
+                        })
+                    })
             }
             "getBuffers" => {
                 let (reply_tx, reply_rx) = mpsc::channel();
@@ -2843,27 +2873,29 @@ fn run_control_response(
             "getEvents" => {
                 let (reply_tx, reply_rx) = mpsc::channel();
                 control_tx
-                .send(PlaybackControlCommand::GetEvents { reply: reply_tx })
-                .map_err(|_| "run control channel closed".to_owned())
-                .and_then(|_| {
-                    reply_rx
-                        .recv()
-                        .map_err(|_| "run control reply channel closed".to_owned())
-                })
-                .map(|result| Some(match result {
-                    Ok(events) => json!({
-                        "id": request_id,
-                        "ok": true,
-                        "result": {
-                            "events": events.iter().map(run_event_json).collect::<Vec<_>>(),
-                        }
-                    }),
-                    Err(err) => json!({
-                        "id": request_id,
-                        "ok": false,
-                        "error": err,
-                    }),
-                }))
+                    .send(PlaybackControlCommand::GetEvents { reply: reply_tx })
+                    .map_err(|_| "run control channel closed".to_owned())
+                    .and_then(|_| {
+                        reply_rx
+                            .recv()
+                            .map_err(|_| "run control reply channel closed".to_owned())
+                    })
+                    .map(|result| {
+                        Some(match result {
+                            Ok(events) => json!({
+                                "id": request_id,
+                                "ok": true,
+                                "result": {
+                                    "events": events.iter().map(run_event_json).collect::<Vec<_>>(),
+                                }
+                            }),
+                            Err(err) => json!({
+                                "id": request_id,
+                                "ok": false,
+                                "error": err,
+                            }),
+                        })
+                    })
             }
             "getDevices" => {
                 let (reply_tx, reply_rx) = mpsc::channel();
@@ -4426,10 +4458,9 @@ fn f32_to_i16(sample: f32) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_diag_snippet, format_expr, format_program, parse_args,
-        run_control_response, Command, CompileEmit, DaemonCommand, PlaybackControlCommand,
-        PlaybackControlRequest, RunCommand, RunEventValue, RunHostKind, ScopeRing,
-        DEFAULT_PLAY_BLOCK_FRAMES,
+        format_diag_snippet, format_expr, format_program, parse_args, run_control_response,
+        Command, CompileEmit, DaemonCommand, PlaybackControlCommand, PlaybackControlRequest,
+        RunCommand, RunEventValue, RunHostKind, ScopeRing, DEFAULT_PLAY_BLOCK_FRAMES,
     };
     use onda_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
     use onda_frontend::{
@@ -4686,7 +4717,14 @@ reloc_model = "default"
     fn parse_daemon_diagnose_accepts_block_and_sample_rate() {
         let cmd = parse_args(
             [
-                "onda", "daemon", "diagnose", "x.onda", "--block-size", "256", "--sr", "44100",
+                "onda",
+                "daemon",
+                "diagnose",
+                "x.onda",
+                "--block-size",
+                "256",
+                "--sr",
+                "44100",
             ]
             .into_iter()
             .map(str::to_owned),
