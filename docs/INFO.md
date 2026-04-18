@@ -120,6 +120,9 @@
   - `freq: i32 = 500 {8000}` (max-only)
   - Integer-typed declarations require integer defaults/min/max constant expressions.
   - Ranges on array declarations are rejected.
+- Fixed-size `ins` and `params` arrays support compile-time defaults.
+  - Array-literal defaults must match the declared element count exactly.
+  - Element values are coerced with the normal scalar casting rules.
 - Fixed-size arrays are supported for stateful storage, including typed forms and compile-time capacity expressions.
 - Primitive array and buffer slice syntax is supported with Python-style two-bound forms:
   - `a[:]`
@@ -202,6 +205,7 @@
 - Event array/slice params are passed as read-only references.
 - Fixed-array event params are lowered internally as array-typed params rather than one scalar arg per element.
   - Event params without explicit type default to `f32`.
+  - Event defaults support both primitive scalars and fixed-size primitive arrays.
   - Event handlers can declare local fixed-size primitive arrays via untyped literals (for example `b = [1, 2, 3]`).
   - Event handlers can write init-root state only (plus local symbols); output/input/event-param writes are rejected.
   - Top-level handlers are host-triggered and run immediately on the audio thread.

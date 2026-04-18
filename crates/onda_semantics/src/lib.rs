@@ -824,6 +824,87 @@ sample:
     }
 
     #[test]
+    fn top_level_input_array_defaults_are_typed_per_element() {
+        let src = r#"
+ins:
+  freqs: f32[3] = [220, 440, 880]
+outs:
+  out1
+sample:
+  out1 = freqs[1]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("input array defaults should analyze");
+
+        let freqs = typed
+            .in_arrays
+            .get("freqs")
+            .expect("missing input array info");
+        assert_eq!(freqs.elem_ty, PrimitiveType::F32);
+        assert_eq!(freqs.len, 3);
+        assert_eq!(freqs.offset, 0);
+        assert_eq!(
+            typed.in_defaults.get("freqs[0]"),
+            Some(&TypedConstValue::F32(220.0))
+        );
+        assert_eq!(
+            typed.in_defaults.get("freqs[1]"),
+            Some(&TypedConstValue::F32(440.0))
+        );
+        assert_eq!(
+            typed.in_defaults.get("freqs[2]"),
+            Some(&TypedConstValue::F32(880.0))
+        );
+    }
+
+    #[test]
+    fn input_array_defaults_require_exact_length() {
+        let src = r#"
+ins:
+  freqs: f32[3] = [220, 440]
+outs:
+  out1
+sample:
+  out1 = freqs[0]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("wrong-length input default should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("input 'freqs' default expects 3 elements, got 2")),
+            "expected array-length diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn proc_input_and_param_array_defaults_work_for_generic_processors() {
+        let src = r#"
+proc Voice<T>:
+  ins:
+    freqs: T[3] = [220, 440, 880]
+  params:
+    amps: T[2] = [0.5, 0.25]
+  outs:
+    out1
+  sample:
+    out1 = freqs[2] * amps[1]
+
+outs:
+  out1
+
+init:
+  voice = Voice<f32>()
+
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("generic proc array defaults should analyze");
+    }
+
+    #[test]
     fn declaration_only_library_file_does_not_require_sample_block() {
         let src = "proc Mix:\n  ins:\n    dry\n    fb\n  sample:\n    out1 = (dry + fb) * 0.5\n\ndef clip(x) {\n  return x\n}\nconst SCALE = 0.5\n";
         let program = parse_program(src).expect("parse should succeed");

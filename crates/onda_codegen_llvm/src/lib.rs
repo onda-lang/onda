@@ -78,6 +78,7 @@ pub struct DeclaredIo {
     slot_offset: usize,
     byte_offset: usize,
     default: Option<TypedConstValue>,
+    default_bytes: Option<Vec<u8>>,
     range: Option<TypedValueRange>,
 }
 

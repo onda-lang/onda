@@ -997,11 +997,15 @@ pub(super) fn expand_proc_port_specs(
                 let slots = (0..len)
                     .map(|idx| format!("{}[{idx}]", port.name))
                     .collect::<Vec<_>>();
+                let slot_defaults = slots
+                    .iter()
+                    .map(|slot| defaults.get(slot).copied().map(typed_const_expr))
+                    .collect::<Vec<_>>();
                 array_slots.insert(port.name.clone(), slots.clone());
                 port_specs.push(ProcPortSpec {
                     name: port.name.clone(),
                     slots,
-                    defaults: vec![None; len],
+                    defaults: slot_defaults,
                     ranges: vec![None; len],
                 });
             }

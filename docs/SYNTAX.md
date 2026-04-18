@@ -148,6 +148,8 @@ ins<f64>:
 Rules:
 - omitted input types default to `f32`
 - explicit entry types override the section default type
+- fixed-size array inputs can use defaults such as `freqs: f32[3] = [220, 440, 880]`
+- fixed-size array input defaults must provide exactly the declared element count when written as array literals
 - `ins N` expands to `in1..inN`
 - the count can be a compile-time integer expression
 - if both a count and an explicit declaration list are present, they must match exactly
@@ -217,6 +219,8 @@ Rules:
   - `gain = 0.5` -> `f32`
   - `mode = 0` -> `i32`
   - pure numeric constant expressions also follow the usual untyped-assignment narrowing rules
+- fixed-size array params can use defaults such as `spread: f32[2] = [0.25, 0.75]`
+- fixed-size array param defaults must provide exactly the declared element count when written as array literals
 - ranges are supported only on scalar params
 - arrays are supported, but array params cannot have ranges
 - `params[i]` is supported under the same dynamic-indexing rules as `ins[i]`
@@ -283,6 +287,7 @@ Supported event parameter types:
 
 Rules:
 - event params without an explicit type default to `f32`
+- defaults work for scalar params and fixed-size primitive array params
 - fixed-array and slice params are read-only in handlers
 - top-level events run immediately on the audio thread
 - proc events are reached through explicit receiver calls such as `voice.note_on(...)`

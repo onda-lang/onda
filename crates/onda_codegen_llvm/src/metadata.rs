@@ -53,6 +53,14 @@ impl DeclaredIo {
         self.default
     }
 
+    pub fn has_default(&self) -> bool {
+        self.default_bytes.is_some()
+    }
+
+    pub fn default_bytes(&self) -> Option<&[u8]> {
+        self.default_bytes.as_deref()
+    }
+
     pub fn default_as_f64(&self) -> Option<f64> {
         self.default.map(typed_const_to_f64)
     }
@@ -230,6 +238,13 @@ fn build_declared_port_ios(
     let mut byte_offset = 0usize;
     while slot < flat.len() {
         if let Some((name, info)) = arrays_by_offset.get(&slot) {
+            let default_bytes = flat
+                .iter()
+                .skip(slot)
+                .take(info.len)
+                .map(|slot_name| defaults.get(slot_name).copied())
+                .collect::<Option<Vec<_>>>()
+                .map(|values| typed_const_values_to_bytes(&values, info.elem_ty));
             out.push(DeclaredIo {
                 name: (*name).clone(),
                 elem_ty: info.elem_ty,
@@ -237,6 +252,7 @@ fn build_declared_port_ios(
                 slot_offset: slot,
                 byte_offset,
                 default: None,
+                default_bytes,
                 range: None,
             });
             byte_offset = byte_offset
@@ -255,6 +271,7 @@ fn build_declared_port_ios(
             slot_offset: slot,
             byte_offset,
             default,
+            default_bytes: default.map(|value| typed_const_values_to_bytes(&[value], ty)),
             range,
         });
         byte_offset = byte_offset.saturating_add(primitive_type_bytes(ty));
@@ -274,6 +291,13 @@ fn build_declared_param_ios(typed: &TypedProgram) -> Vec<DeclaredIo> {
     let mut byte_offset = 0usize;
     while slot < typed.params.len() {
         if let Some((name, info)) = arrays_by_offset.get(&slot) {
+            let default_bytes = typed
+                .params
+                .iter()
+                .skip(slot)
+                .take(info.len)
+                .map(|param| param.default)
+                .collect::<Vec<_>>();
             out.push(DeclaredIo {
                 name: (*name).clone(),
                 elem_ty: info.elem_ty,
@@ -281,6 +305,7 @@ fn build_declared_param_ios(typed: &TypedProgram) -> Vec<DeclaredIo> {
                 slot_offset: slot,
                 byte_offset,
                 default: None,
+                default_bytes: Some(typed_const_values_to_bytes(&default_bytes, info.elem_ty)),
                 range: None,
             });
             byte_offset = byte_offset
@@ -296,6 +321,7 @@ fn build_declared_param_ios(typed: &TypedProgram) -> Vec<DeclaredIo> {
             slot_offset: slot,
             byte_offset,
             default: Some(param.default),
+            default_bytes: Some(typed_const_values_to_bytes(&[param.default], param.ty)),
             range: param.range,
         });
         byte_offset = byte_offset.saturating_add(primitive_type_bytes(param.ty));
@@ -318,6 +344,14 @@ fn build_event_name_to_index(entries: &[DeclaredEvent]) -> HashMap<String, usize
         .enumerate()
         .map(|(idx, entry)| (entry.name.clone(), idx))
         .collect()
+}
+
+fn typed_const_values_to_bytes(values: &[TypedConstValue], elem_ty: PrimitiveType) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(primitive_type_bytes(elem_ty).saturating_mul(values.len()));
+    for value in values {
+        append_typed_const_bytes(&mut bytes, *value, elem_ty);
+    }
+    bytes
 }
 
 fn build_declared_buffers(typed: &TypedProgram) -> Vec<DeclaredBuffer> {
@@ -1080,4 +1114,67 @@ fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use onda_frontend::parse_program;
+    use onda_semantics::{analyze_with_options, AnalysisOptions};
+
+    fn typed_program(src: &str) -> TypedProgram {
+        let program = parse_program(src).expect("source should parse");
+        analyze_with_options(program, AnalysisOptions::default()).expect("source should analyze")
+    }
+
+    #[test]
+    fn declared_array_ios_preserve_default_bytes() {
+        let typed = typed_program(
+            r#"
+ins:
+  freqs: f32[3] = [220, 440, 880]
+params:
+  gains: i32[2] = [2, 4]
+outs:
+  out1
+sample:
+  out1 = freqs[0]
+"#,
+        );
+
+        let metadata = build_program_metadata(&typed);
+
+        let freqs = metadata
+            .inputs
+            .iter()
+            .find(|input| input.name() == "freqs")
+            .expect("missing input descriptor");
+        assert!(freqs.has_default());
+        let freqs_bytes = freqs.default_bytes().expect("input default bytes");
+        assert_eq!(freqs_bytes.len(), 12);
+        assert_eq!(
+            f32::from_ne_bytes(freqs_bytes[0..4].try_into().unwrap()),
+            220.0
+        );
+        assert_eq!(
+            f32::from_ne_bytes(freqs_bytes[4..8].try_into().unwrap()),
+            440.0
+        );
+        assert_eq!(
+            f32::from_ne_bytes(freqs_bytes[8..12].try_into().unwrap()),
+            880.0
+        );
+
+        let gains = metadata
+            .params
+            .iter()
+            .find(|param| param.name() == "gains")
+            .expect("missing param descriptor");
+        assert!(gains.has_default());
+        let gains_bytes = gains.default_bytes().expect("param default bytes");
+        assert_eq!(gains_bytes.len(), 8);
+        assert_eq!(i32::from_ne_bytes(gains_bytes[0..4].try_into().unwrap()), 2);
+        assert_eq!(i32::from_ne_bytes(gains_bytes[4..8].try_into().unwrap()), 4);
+    }
 }

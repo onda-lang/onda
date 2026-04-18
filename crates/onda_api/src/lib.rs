@@ -1669,11 +1669,7 @@ pub unsafe extern "C" fn onda_input_has_default(program: *const onda_program, in
         return -1;
     }
     bool_flag_from_index(index, |idx| {
-        (*program)
-            .jit
-            .inputs()
-            .get(idx)
-            .map(|d| d.default().is_some())
+        (*program).jit.inputs().get(idx).map(|d| d.has_default())
     })
 }
 
@@ -1683,11 +1679,7 @@ pub unsafe extern "C" fn onda_output_has_default(program: *const onda_program, i
         return -1;
     }
     bool_flag_from_index(index, |idx| {
-        (*program)
-            .jit
-            .outputs()
-            .get(idx)
-            .map(|d| d.default().is_some())
+        (*program).jit.outputs().get(idx).map(|d| d.has_default())
     })
 }
 
@@ -1697,11 +1689,7 @@ pub unsafe extern "C" fn onda_param_has_default(program: *const onda_program, in
         return -1;
     }
     bool_flag_from_index(index, |idx| {
-        (*program)
-            .jit
-            .params()
-            .get(idx)
-            .map(|d| d.default().is_some())
+        (*program).jit.params().get(idx).map(|d| d.has_default())
     })
 }
 

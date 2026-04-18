@@ -842,15 +842,6 @@ pub(super) fn expand_port_decls(
                 );
             }
             Some(DeclType::ArrayGeneric { elem, size }) => {
-                if port.default.is_some() {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "{kind} '{}' default is not supported for array declarations",
-                            port.name
-                        ),
-                        port_loc,
-                    ));
-                }
                 if port.range.is_some() {
                     errors.push(Diagnostic::semantic_span(
                         format!(
@@ -882,10 +873,61 @@ pub(super) fn expand_port_decls(
                         offset,
                     },
                 );
-                for idx in 0..len {
+                let defaults_for_slots = match &port.default {
+                    None => vec![coerce_const_default_to_typed(0.0, PrimitiveType::F32); len],
+                    Some(Expr::ArrayLiteral { values, .. }) => {
+                        if values.len() != len {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "{kind} '{}' default expects {len} elements, got {}",
+                                    port.name,
+                                    values.len()
+                                ),
+                                port_loc,
+                            ));
+                        }
+                        let mut coerced = Vec::with_capacity(len);
+                        for idx in 0..len {
+                            let value = values.get(idx).and_then(|expr| {
+                                with_loc_diag_context(port_loc, |_diag| {
+                                    eval_typed_const_expr(
+                                        expr,
+                                        PrimitiveType::F32,
+                                        options,
+                                        &format!("{kind} '{}' default element [{idx}]", port.name),
+                                        true,
+                                        false,
+                                        errors,
+                                    )
+                                })
+                            });
+                            coerced.push(value.unwrap_or_else(|| {
+                                coerce_const_default_to_typed(0.0, PrimitiveType::F32)
+                            }));
+                        }
+                        coerced
+                    }
+                    Some(expr) => {
+                        let value = with_loc_diag_context(port_loc, |_diag| {
+                            eval_typed_const_expr(
+                                expr,
+                                PrimitiveType::F32,
+                                options,
+                                &format!("{kind} '{}' default", port.name),
+                                true,
+                                false,
+                                errors,
+                            )
+                        })
+                        .unwrap_or_else(|| coerce_const_default_to_typed(0.0, PrimitiveType::F32));
+                        vec![value; len]
+                    }
+                };
+                for (idx, default) in defaults_for_slots.into_iter().enumerate() {
                     let slot_name = format!("{}[{idx}]", port.name);
                     flat.push(slot_name.clone());
-                    types.insert(slot_name, PrimitiveType::F32);
+                    types.insert(slot_name.clone(), PrimitiveType::F32);
+                    defaults.insert(slot_name, default);
                 }
             }
             Some(DeclType::Tuple(_)) => {
@@ -896,15 +938,6 @@ pub(super) fn expand_port_decls(
                 continue;
             }
             Some(DeclType::Array { elem, size }) => {
-                if port.default.is_some() {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "{kind} '{}' default is not supported for array declarations",
-                            port.name
-                        ),
-                        port_loc,
-                    ));
-                }
                 if port.range.is_some() {
                     errors.push(Diagnostic::semantic_span(
                         format!(
@@ -929,10 +962,61 @@ pub(super) fn expand_port_decls(
                         offset,
                     },
                 );
-                for idx in 0..len {
+                let defaults_for_slots = match &port.default {
+                    None => vec![coerce_const_default_to_typed(0.0, *elem); len],
+                    Some(Expr::ArrayLiteral { values, .. }) => {
+                        if values.len() != len {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "{kind} '{}' default expects {len} elements, got {}",
+                                    port.name,
+                                    values.len()
+                                ),
+                                port_loc,
+                            ));
+                        }
+                        let mut coerced = Vec::with_capacity(len);
+                        for idx in 0..len {
+                            let value = values.get(idx).and_then(|expr| {
+                                with_loc_diag_context(port_loc, |_diag| {
+                                    eval_typed_const_expr(
+                                        expr,
+                                        *elem,
+                                        options,
+                                        &format!("{kind} '{}' default element [{idx}]", port.name),
+                                        is_float_type(*elem),
+                                        matches!(*elem, PrimitiveType::I32 | PrimitiveType::I64),
+                                        errors,
+                                    )
+                                })
+                            });
+                            coerced.push(
+                                value.unwrap_or_else(|| coerce_const_default_to_typed(0.0, *elem)),
+                            );
+                        }
+                        coerced
+                    }
+                    Some(expr) => {
+                        let value = with_loc_diag_context(port_loc, |_diag| {
+                            eval_typed_const_expr(
+                                expr,
+                                *elem,
+                                options,
+                                &format!("{kind} '{}' default", port.name),
+                                is_float_type(*elem),
+                                matches!(*elem, PrimitiveType::I32 | PrimitiveType::I64),
+                                errors,
+                            )
+                        })
+                        .unwrap_or_else(|| coerce_const_default_to_typed(0.0, *elem));
+                        vec![value; len]
+                    }
+                };
+                for (idx, default) in defaults_for_slots.into_iter().enumerate() {
                     let slot_name = format!("{}[{idx}]", port.name);
                     flat.push(slot_name.clone());
-                    types.insert(slot_name, *elem);
+                    types.insert(slot_name.clone(), *elem);
+                    defaults.insert(slot_name, default);
                 }
             }
         }
