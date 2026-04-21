@@ -570,7 +570,7 @@ pub fn validate_bindings(instance: &mut Instance) -> Result<(), Diagnostic> {
     Ok(())
 }
 
-pub fn process_bound(instance: &mut Instance, frames: usize) -> Result<(), Diagnostic> {
+pub fn process_checked(instance: &mut Instance, frames: usize) -> Result<(), Diagnostic> {
     if frames > instance.config.frames_per_block {
         return Err(Diagnostic::runtime(
             "frame count must be less than or equal to fixed instance block size",
@@ -587,16 +587,16 @@ pub fn process_bound(instance: &mut Instance, frames: usize) -> Result<(), Diagn
     if !instance.outputs_validated {
         validate_outputs(instance)?;
     }
-    // Proc-local buffer-ref refresh/sync is intentionally tied to the safe
-    // bound path. `process_unchecked` must not perform hidden refresh work.
-    instance.program.sync_proc_buffer_refs_for_process_bound(
+    // Proc-local buffer-ref refresh/sync is intentionally tied to the checked
+    // path. `process_unchecked` must not perform hidden refresh work.
+    instance.program.sync_proc_buffer_refs_for_process_checked(
         &mut instance.state,
         &instance.buffer_ptrs,
         &instance.buffer_frames,
         &instance.buffer_channels,
         &instance.buffer_sample_rates,
     )?;
-    instance.program.process_bound(
+    instance.program.process_checked(
         &mut instance.state,
         &instance.params,
         frames,
@@ -656,7 +656,7 @@ pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<(), Diagnosti
         instance.inputs_validated && instance.outputs_validated && instance.buffers_validated,
         "process_unchecked called without validating required input/output/buffer bindings; this is UB in release builds"
     );
-    instance.program.process_bound_unchecked(
+    instance.program.process_unchecked(
         &mut instance.state,
         &instance.params,
         instance.process_frames_u32,

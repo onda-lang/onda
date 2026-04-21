@@ -307,7 +307,7 @@ sample:
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f64(&out_bytes);
 

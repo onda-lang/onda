@@ -7,7 +7,7 @@ use onda_codegen_llvm::{
     lower_and_jit_with_options, CompileOptions, ExecutionBackend, TargetOptLevel,
 };
 use onda_frontend::{parse_program, Diagnostic};
-use onda_runtime::{bind_buffer, bind_output, create_instance, process_bound, InstanceConfig};
+use onda_runtime::{bind_buffer, bind_output, create_instance, process_checked, InstanceConfig};
 use onda_semantics::{analyze_with_options, AnalysisOptions};
 
 const DEFAULT_INPUT: &str = "target/garden.wav";
@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut rendered = Vec::<f32>::with_capacity(render_frames * out_channels);
 
     for _ in 0..full_blocks {
-        process_bound(&mut instance, BLOCK_FRAMES)
+        process_checked(&mut instance, BLOCK_FRAMES)
             .map_err(|d| format!("processing failed: {d:?}"))?;
         append_interleaved_block_from_bound_outputs(
             &bound_out,
@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
     }
     if tail_frames > 0 {
-        process_bound(&mut instance, BLOCK_FRAMES)
+        process_checked(&mut instance, BLOCK_FRAMES)
             .map_err(|d| format!("processing failed: {d:?}"))?;
         append_interleaved_block_from_bound_outputs(
             &bound_out,

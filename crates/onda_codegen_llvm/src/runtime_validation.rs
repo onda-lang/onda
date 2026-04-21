@@ -332,7 +332,7 @@ impl JitProgram {
         }
     }
 
-    pub fn process_bound(
+    pub fn process_checked(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -346,7 +346,7 @@ impl JitProgram {
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            return process_bound_orc(
+            return process_checked_orc(
                 &self.compiled,
                 state,
                 params,
@@ -378,7 +378,7 @@ impl JitProgram {
         }
     }
 
-    pub fn sync_proc_buffer_refs_for_process_bound(
+    pub fn sync_proc_buffer_refs_for_process_checked(
         &self,
         state: &mut RuntimeState,
         buffer_ptrs: &[*mut u8],
@@ -388,7 +388,7 @@ impl JitProgram {
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            return sync_proc_buffer_refs_for_process_bound_orc(
+            return sync_proc_buffer_refs_for_process_checked_orc(
                 &self.compiled,
                 state,
                 buffer_ptrs,
@@ -412,7 +412,7 @@ impl JitProgram {
         }
     }
 
-    pub unsafe fn process_bound_unchecked(
+    pub unsafe fn process_unchecked(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -426,7 +426,7 @@ impl JitProgram {
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            process_bound_orc_unchecked(
+            process_unchecked_orc(
                 &self.compiled,
                 state,
                 params,
@@ -630,7 +630,7 @@ fn validate_param_bytes(
 }
 
 #[cfg(feature = "llvm-orc")]
-fn process_bound_orc(
+fn process_checked_orc(
     compiled: &crate::orc_backend::OrcProcess,
     state: &mut RuntimeState,
     params: &[u8],
@@ -696,7 +696,7 @@ fn process_bound_orc(
 }
 
 #[cfg(feature = "llvm-orc")]
-fn sync_proc_buffer_refs_for_process_bound_orc(
+fn sync_proc_buffer_refs_for_process_checked_orc(
     compiled: &crate::orc_backend::OrcProcess,
     state: &mut RuntimeState,
     buffer_ptrs: &[*mut u8],
@@ -723,7 +723,7 @@ fn sync_proc_buffer_refs_for_process_bound_orc(
 }
 
 #[cfg(feature = "llvm-orc")]
-unsafe fn process_bound_orc_unchecked(
+unsafe fn process_unchecked_orc(
     compiled: &crate::orc_backend::OrcProcess,
     state: &mut RuntimeState,
     params: &[u8],

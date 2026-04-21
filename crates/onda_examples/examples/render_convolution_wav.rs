@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use onda_codegen_llvm::{CompileOptions, ExecutionBackend, TargetOptLevel};
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::{
-    bind_output, create_instance, process_bound, trigger_event_by_index, InstanceConfig,
+    bind_output, create_instance, process_checked, trigger_event_by_index, InstanceConfig,
 };
 use onda_semantics::{analyze_with_options, AnalysisOptions};
 
@@ -121,7 +121,7 @@ fn main() -> Result<(), Diagnostic> {
 
     let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len())?;
-    process_bound(&mut instance, frames)?;
+    process_checked(&mut instance, frames)?;
 
     let full = out_bytes
         .chunks_exact(std::mem::size_of::<f32>())

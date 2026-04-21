@@ -7,7 +7,7 @@ use onda_codegen_llvm::{
     lower_and_jit_with_options, CompileOptions, ExecutionBackend, TargetOptLevel,
 };
 use onda_frontend::{parse_program, Diagnostic};
-use onda_runtime::{bind_output, create_instance, process_bound, InstanceConfig};
+use onda_runtime::{bind_output, create_instance, process_checked, InstanceConfig};
 use onda_semantics::{analyze_with_options, AnalysisOptions};
 
 const SAMPLE_RATE: u32 = 48_000;
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|d| format!("bind output failed: {d:?}"))?;
 
     for _ in 0..blocks {
-        process_bound(&mut instance, BLOCK_FRAMES)
+        process_checked(&mut instance, BLOCK_FRAMES)
             .map_err(|d| format!("processing failed: {d:?}"))?;
         let out_f32 =
             unsafe { std::slice::from_raw_parts(out_bound.as_ptr().cast::<f32>(), BLOCK_FRAMES) };

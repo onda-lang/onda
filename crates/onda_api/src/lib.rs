@@ -7,7 +7,7 @@ use onda_codegen_llvm::{
 };
 use onda_frontend::{parse_program, parse_program_file, DiagCode, Diagnostic, PrimitiveType};
 use onda_runtime::{
-    bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
+    bind_buffer, bind_input, bind_output, create_instance, process_checked, process_unchecked,
     reset_instance_state, set_param_by_index, trigger_event_by_index, validate_bindings,
     validate_buffers, validate_inputs, validate_outputs, Instance, InstanceConfig,
 };
@@ -902,11 +902,11 @@ pub unsafe extern "C" fn onda_bind_buffer(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_process_bound(instance: *mut onda_instance, frames: i32) -> i32 {
+pub unsafe extern "C" fn onda_process_checked(instance: *mut onda_instance, frames: i32) -> i32 {
     if instance.is_null() || frames < 0 {
         return -1;
     }
-    match process_bound(&mut (*instance).inner, frames as usize) {
+    match process_checked(&mut (*instance).inner, frames as usize) {
         Ok(_) => 0,
         Err(_) => -2,
     }

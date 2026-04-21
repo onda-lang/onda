@@ -135,7 +135,7 @@ int onda_bind_buffer(
 /* Processes up to one block with current bindings and parameters; returns 0 on success.
    frames must be in [0, compile_time_block_size]. The runtime only reads/writes the first
    `frames` samples of each bound input/output entry for the current call. */
-int onda_process_bound(onda_instance_t* instance, int frames);
+int onda_process_checked(onda_instance_t* instance, int frames);
 /* Resets instance DSP/state memory to the initial post-init state captured at instance creation. */
 int onda_reset_instance_state(onda_instance_t* instance);
 /* Validates all required domains (buffers, inputs, outputs); returns 0 on success. */

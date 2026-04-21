@@ -1354,7 +1354,7 @@ Indexed proc-array operations:
 
 Rules:
 - runtime indices are clamped to the valid slot range
-- proc-array buffer refs are refreshed on the safe `process_bound` path
+- proc-array buffer refs are refreshed on the safe `process_checked` path
 - a proc cannot directly instantiate its own type in its own state
 
 If the proc defines a `block` section, indexed proc-array calls use active-slot block-hook semantics:

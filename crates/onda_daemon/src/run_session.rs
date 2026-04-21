@@ -7,7 +7,7 @@ use onda_codegen_llvm::{
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_runtime::{
-    bind_buffer, bind_input, bind_output, create_instance, process_bound, reset_instance_state,
+    bind_buffer, bind_input, bind_output, create_instance, process_checked, reset_instance_state,
     set_param_by_index, trigger_event_by_index, Instance, InstanceConfig,
 };
 use onda_semantics::{AnalysisOptions, TypedProgram};
@@ -370,7 +370,7 @@ impl RunSession {
         for buffer in &mut self.output_buffers {
             buffer.fill(0.0);
         }
-        process_bound(&mut self.instance, self.options.block_size)?;
+        process_checked(&mut self.instance, self.options.block_size)?;
         let mut rendered = Vec::with_capacity(self.jit.required_out_channels());
         for (buffer, desc) in self.output_buffers.iter().zip(self.jit.outputs()) {
             for ch in 0..desc.array_len() {

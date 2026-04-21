@@ -309,7 +309,7 @@
     - Dynamic index handling is active-slot based (no conservative "run hooks for all slots" fallback).
     - Applies in top-level and nested/proc-lowered paths.
   - Non-`block` procs do not allocate/use active-slot hook tracking and keep the lower-overhead call path.
-  - Proc-slot buffer refs (`ptr`/`frames`/`channels`) are refreshed on the safe `process_bound` path; `process_unchecked` does not perform hidden refresh.
+  - Proc-slot buffer refs (`ptr`/`frames`/`channels`) are refreshed on the safe `process_checked` path; `process_unchecked` does not perform hidden refresh.
 - Sample oversampling is implemented for both top-level and proc sample blocks:
   - syntax: `sample N:` where `N` is any compile-time integer constant expression that resolves to one of `{1,2,4,8,16,32,64,128,256,512}`.
   - oversampling path is compiler-managed (input interpolation, held params, filtered decimation).
@@ -345,7 +345,7 @@
   - Bind input/output audio buffers (zero-filled), bind placeholder zero buffers for declared `buffer[...]` params.
   - `param_info()` and `buffer_info()` return metadata (names, types, ranges, defaults, channel layout).
   - `set_param_f64(name, value)` updates scalar params at runtime.
-  - `render_block()` calls `process_bound` and returns per-channel output.
+  - `render_block()` calls `process_checked` and returns per-channel output.
   - `reset()` resets instance state.
   - `bind_buffer_wav_path(name, path)` loads a WAV file (f32/i8/i16/i24/i32) and rebinds, rebuilding the instance from scratch (reapplies all buffers and params).
   - `clear_buffer(name)` replaces a buffer binding with a zero-filled placeholder.
@@ -421,7 +421,7 @@
 - Optimized LLVM pipeline is used (`default<O3>` style pass pipeline + host-target settings).
 - Fixed compile-time block size per program/instance.
 - No callback-time allocations for compiler-managed DSP state; allocations happen during setup/init.
-- Runtime processing API is bound-buffer based (`process_bound`).
+- Runtime processing API is bound-buffer based (`process_checked`).
 - Current runtime behavior:
   - all declared buffers must be bound before processing.
   - top-level ranged params are hoisted and clamped once per block in JITed code.

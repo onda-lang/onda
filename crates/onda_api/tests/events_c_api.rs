@@ -254,7 +254,7 @@ sample { out1 = amp }
             onda_trigger_event_by_index(instance.0, 99, std::ptr::null(), 0),
             0
         );
-        assert_eq!(onda_process_bound(instance.0, frames), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
             assert_eq!(*sample, 0.0);
         }
@@ -274,7 +274,7 @@ sample { out1 = amp }
             ),
             0
         );
-        assert_eq!(onda_process_bound(instance.0, frames), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
             assert!((*sample - 0.625).abs() < 1e-6);
         }
@@ -347,7 +347,7 @@ sample { out1 = gate }
             ),
             0
         );
-        assert_eq!(onda_process_bound(instance.0, frames), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in out {
             assert!((sample - 2.25).abs() < 1e-6);
         }
@@ -401,13 +401,13 @@ sample { out1 = amp }
             ),
             0
         );
-        assert_eq!(onda_process_bound(instance.0, frames), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
             assert!((*sample - 0.5).abs() < 1e-6);
         }
 
         assert_eq!(onda_reset_instance_state(instance.0), 0);
-        assert_eq!(onda_process_bound(instance.0, frames), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in &out {
             assert!((*sample - 0.0).abs() < 1e-6);
         }
@@ -457,7 +457,7 @@ sample { out1 = 0.25 }
             ),
             0
         );
-        assert_eq!(onda_process_bound(instance.0, 128), 0);
+        assert_eq!(onda_process_checked(instance.0, 128), 0);
         for sample in out {
             assert!((sample - 0.25).abs() < 1e-6);
         }
@@ -465,7 +465,7 @@ sample { out1 = 0.25 }
 }
 
 #[test]
-fn c_api_process_bound_accepts_sub_block_frame_counts() {
+fn c_api_process_checked_accepts_sub_block_frame_counts() {
     unsafe {
         let frames = 512_i32;
         let sub_frames = 128_i32;
@@ -495,7 +495,7 @@ sample { out1 = 0.25 }
             ),
             0
         );
-        assert_eq!(onda_process_bound(instance.0, sub_frames), 0);
+        assert_eq!(onda_process_checked(instance.0, sub_frames), 0);
         for sample in &out[..sub_frames as usize] {
             assert!((*sample - 0.25).abs() < 1e-6);
         }
@@ -550,7 +550,7 @@ sample { out1 = SAMPLE_RATE }
             ),
             0
         );
-        assert_eq!(onda_process_bound(instance.0, block_size), 0);
+        assert_eq!(onda_process_checked(instance.0, block_size), 0);
         for sample in out {
             assert!((sample - sample_rate).abs() < 1e-3);
         }
@@ -791,7 +791,7 @@ sample {
             ),
             0
         );
-        assert_eq!(onda_process_bound(instance.0, frames), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
 
         for sample in out1 {
             assert!(sample.abs() > 1e-9);
@@ -837,7 +837,7 @@ sample {
             ),
             0
         );
-        assert_eq!(onda_process_bound(instance.0, frames), 0);
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
         for sample in out {
             assert!((sample - 512.0).abs() < 1e-6);
         }

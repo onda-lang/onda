@@ -5,7 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use onda_codegen_llvm::{CompileOptions, ExecutionBackend, TargetOptLevel};
 use onda_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use onda_runtime::{
-    bind_buffer, bind_input, bind_output, create_instance, process_bound, process_unchecked,
+    bind_buffer, bind_input, bind_output, create_instance, process_checked, process_unchecked,
     reset_instance_state, set_param_by_index, trigger_event_by_index, validate_bindings,
     validate_buffers, validate_outputs, InstanceConfig,
 };
@@ -6644,7 +6644,7 @@ fn process_interleaved(
         out_buffers.push(bytes);
     }
 
-    process_bound(instance, frames)?;
+    process_checked(instance, frames)?;
 
     for (idx, desc) in out_descs.iter().copied().enumerate() {
         let bytes = &out_buffers[idx];

@@ -1242,7 +1242,7 @@ fn bound_io_writes_directly_for_f32_arrays() {
 
     bind_output(&mut instance, 0, bound_out.as_mut_ptr(), bound_out.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let copied_bound = decode_planar_f32(&bound_out);
 
@@ -1277,7 +1277,7 @@ fn bound_io_writes_directly_for_f64_declared_types() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f64(&out_bytes);
 
@@ -1354,7 +1354,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -1372,7 +1372,7 @@ sample {
     set_param_by_index(&mut instance, 1, &9007199254740995_i64.to_ne_bytes())
         .expect("set i64 param");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -1467,7 +1467,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -1568,7 +1568,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -1681,7 +1681,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -1820,7 +1820,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -1973,7 +1973,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -2122,7 +2122,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -2179,7 +2179,7 @@ fn buffer_mono_read_uses_clamped_index_path() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2333,7 +2333,7 @@ fn unsafe_builtins_support_mono_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2528,7 +2528,7 @@ fn buffer_stereo_two_dim_read_and_clamp_work() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2573,7 +2573,7 @@ fn buffer_stereo_two_dim_write_works() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2631,7 +2631,7 @@ fn buffer_static_chans_returns_declared_channel_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2674,7 +2674,7 @@ fn buffer_dynamic_chans_returns_runtime_channel_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2716,7 +2716,7 @@ fn buffer_dynamic_len_returns_runtime_frame_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2754,7 +2754,7 @@ fn def_can_take_mono_buffer_typed_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -2837,7 +2837,7 @@ fn def_can_take_stereo_buffer_typed_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3310,7 +3310,7 @@ fn stdlib_random_generic_rng_compile_and_run() {
     bind_output(&mut instance, 1, out2_bytes.as_mut_ptr(), out2_bytes.len()).expect("bind out2");
     bind_output(&mut instance, 2, out3_bytes.as_mut_ptr(), out3_bytes.len()).expect("bind out3");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out1 = decode_planar_f64(&out1_bytes);
     let out2 = decode_planar_f64(&out2_bytes);
@@ -3389,7 +3389,7 @@ fn stdlib_buffer_read_mono_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3434,7 +3434,7 @@ fn stdlib_buffer_read_linear_and_cubic_with_channel_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3474,7 +3474,7 @@ fn stdlib_buffer_is_auto_imported_for_arrays_and_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3514,7 +3514,7 @@ fn stdlib_lookup_write_array_and_buffer_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -4005,7 +4005,7 @@ sample:
     )
     .expect("bind i64 output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     for sample in decode_planar_i64(&out_i64_bytes) {
         assert_eq!(sample, 42);
@@ -5022,7 +5022,7 @@ fn def_can_infer_duck_typed_mono_buffer_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -5062,7 +5062,7 @@ fn def_duck_typed_buffer_inference_propagates_through_def_calls() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -5117,7 +5117,7 @@ fn def_duck_typed_buffer_param_allows_mixed_element_types() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -5157,7 +5157,7 @@ fn def_indexable_param_accepts_array_and_buffer_call_sites() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -5202,7 +5202,7 @@ fn def_indexable_param_supports_two_dimensional_buffer_indexing() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -5892,7 +5892,7 @@ fn proc_can_bind_and_read_top_level_buffer() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -6824,7 +6824,7 @@ fn proc_instance_array_indexed_call_dynamic_index_selects_slot_buffer_binding() 
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -6923,7 +6923,7 @@ fn proc_instance_array_len_compiles_and_runs() {
 
 #[test]
 
-fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process_bound() {
+fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process_checked() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) = compile_instance(
@@ -6971,7 +6971,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound with old buf2");
+    process_checked(&mut instance, frames).expect("process checked with old buf2");
 
     let out_old = decode_planar_f32(&out_bytes);
 
@@ -6992,7 +6992,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process
     )
     .expect("bind buf2 new");
 
-    process_bound(&mut instance, frames).expect("process bound with new buf2");
+    process_checked(&mut instance, frames).expect("process checked with new buf2");
 
     let out_new = decode_planar_f32(&out_bytes);
 
@@ -7052,7 +7052,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound to seed proc-slot refs");
+    process_checked(&mut instance, frames).expect("process checked to seed proc-slot refs");
 
     let out_seed = decode_planar_f32(&out_bytes);
 
@@ -7087,7 +7087,7 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_
         assert_near(sample, 0.75, 1e-6);
     }
 
-    process_bound(&mut instance, frames).expect("process bound refreshes refs");
+    process_checked(&mut instance, frames).expect("process checked refreshes refs");
 
     let out_refreshed = decode_planar_f32(&out_bytes);
 
@@ -7425,7 +7425,7 @@ fn proc_deep_nested_buffer_binding_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_bound(&mut instance, frames).expect("process bound");
+    process_checked(&mut instance, frames).expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
