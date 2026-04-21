@@ -465,6 +465,47 @@ sample { out1 = 0.25 }
 }
 
 #[test]
+fn c_api_process_bound_accepts_sub_block_frame_counts() {
+    unsafe {
+        let frames = 512_i32;
+        let sub_frames = 128_i32;
+        let program = compile_program(
+            r#"
+outs { out1 }
+sample { out1 = 0.25 }
+"#,
+        );
+
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out = vec![-1.0_f32; frames as usize];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_process_bound(instance.0, sub_frames), 0);
+        for sample in &out[..sub_frames as usize] {
+            assert!((*sample - 0.25).abs() < 1e-6);
+        }
+        for sample in &out[sub_frames as usize..] {
+            assert_eq!(*sample, -1.0);
+        }
+    }
+}
+
+#[test]
 fn c_api_compile_options_sample_rate_controls_builtin_sample_rate() {
     unsafe {
         let src = CString::new(

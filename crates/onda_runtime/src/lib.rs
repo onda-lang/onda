@@ -571,9 +571,9 @@ pub fn validate_bindings(instance: &mut Instance) -> Result<(), Diagnostic> {
 }
 
 pub fn process_bound(instance: &mut Instance, frames: usize) -> Result<(), Diagnostic> {
-    if frames != instance.config.frames_per_block {
+    if frames > instance.config.frames_per_block {
         return Err(Diagnostic::runtime(
-            "frame count must match fixed instance block size",
+            "frame count must be less than or equal to fixed instance block size",
             0,
             0,
         ));
