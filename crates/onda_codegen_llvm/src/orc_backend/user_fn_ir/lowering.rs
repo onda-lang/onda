@@ -1,23 +1,5 @@
 use super::super::*;
-
-fn sanitize_runtime_symbol_component(name: &str) -> String {
-    name.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-}
-
-fn runtime_proc_array_active_symbol(array_base: &str) -> String {
-    format!(
-        "__onda_proc_block_active_{}",
-        sanitize_runtime_symbol_component(array_base)
-    )
-}
+use onda_semantics::internal_names::runtime_proc_array_active_symbol;
 
 pub(in crate::orc_backend) unsafe fn lower_user_function_body(
     def: &TypedFunction,

@@ -7,18 +7,7 @@ use crate::processor_lowering::{
 };
 use crate::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
-pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
-    analyze_with_options(program, AnalysisOptions::default())
-}
-
-pub fn lower_graphs_for_inspection_with_options(
-    program: Program,
-    options: AnalysisOptions,
-) -> Result<Program, Vec<Diagnostic>> {
+fn validate_analysis_options(options: AnalysisOptions) -> Result<(), Vec<Diagnostic>> {
     if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
         return Err(vec![Diagnostic::internal(
             "analysis option 'sample_rate' must be finite and greater than zero",
@@ -29,8 +18,14 @@ pub fn lower_graphs_for_inspection_with_options(
             "analysis option 'block_size' must be greater than zero",
         )]);
     }
+    Ok(())
+}
 
-    let mut program = program;
+fn preprocess_program_for_analysis(
+    mut program: Program,
+    options: AnalysisOptions,
+) -> Result<Program, Vec<Diagnostic>> {
+    validate_analysis_options(options)?;
     inject_auto_std_math(&mut program)?;
 
     let mut errors = Vec::new();
@@ -53,7 +48,20 @@ pub fn lower_graphs_for_inspection_with_options(
     if !errors.is_empty() {
         return Err(errors);
     }
+    Ok(program)
+}
 
+pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
+    analyze_with_options(program, AnalysisOptions::default())
+}
+
+pub fn lower_graphs_for_inspection_with_options(
+    program: Program,
+    options: AnalysisOptions,
+) -> Result<Program, Vec<Diagnostic>> {
+    let mut program = preprocess_program_for_analysis(program, options)?;
+
+    let mut errors = Vec::new();
     lower_graph_blocks(&mut program, options, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
@@ -65,47 +73,15 @@ pub fn analyze_with_options(
     program: Program,
     options: AnalysisOptions,
 ) -> Result<TypedProgram, Vec<Diagnostic>> {
-    if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
-        return Err(vec![Diagnostic::internal(
-            "analysis option 'sample_rate' must be finite and greater than zero",
-        )]);
-    }
-    if options.block_size == 0 {
-        return Err(vec![Diagnostic::internal(
-            "analysis option 'block_size' must be greater than zero",
-        )]);
-    }
-
     let original_last_block_loc = program
         .blocks
         .iter()
         .rev()
         .map(Block::loc)
         .find(|loc| !loc.is_zero());
-    let mut program = program;
-    inject_auto_std_math(&mut program)?;
+    let program = preprocess_program_for_analysis(program, options)?;
 
     let mut errors = Vec::new();
-    for block in &program.blocks {
-        let Block::Assert(assert_decl) = block else {
-            continue;
-        };
-        let context = "assert condition";
-        if let Some(passed) = eval_const_bool_expr(&assert_decl.expr, options, context, &mut errors)
-        {
-            if !passed {
-                errors.push(Diagnostic::semantic_span(
-                    "assert failed",
-                    assert_decl.expr.loc(),
-                ));
-            }
-        }
-    }
-    program.blocks.retain(|b| !matches!(b, Block::Assert(_)));
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
     let ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,
@@ -1589,19 +1565,7 @@ pub fn analyze_with_options(
         nested_procs: HashMap::new(),
         nested_proc_arrays: HashMap::new(),
     };
-    for stmt in &init {
-        analyze_init_stmt(
-            stmt,
-            InitStmtAnalysisCtx {
-                init: &init_ctx,
-                locals: &init_locals,
-            },
-            &mut init_st,
-            0,
-            0,
-            &mut errors,
-        );
-    }
+    analyze_owner_init_stmts(&init, &init_ctx, &init_locals, &mut init_st, &mut errors);
     let InitAnalysisState {
         known_scalars: _init_known_scalars,
         local_aliases: _init_local_aliases,
@@ -1620,232 +1584,99 @@ pub fn analyze_with_options(
 
     // Rewrite struct-array inline field sentinels (for example `data[0].field` and
     // `data[0].field[i]`) to flattened Index exprs before runtime analysis.
-    rewrite_struct_array_inline_field_stmts(
-        &mut init,
-        &state_array_struct_roots,
-        &struct_defs,
-        &mut errors,
-    );
-    rewrite_struct_array_inline_field_stmts(
-        &mut block_pre,
-        &state_array_struct_roots,
-        &struct_defs,
-        &mut errors,
-    );
-    rewrite_struct_array_inline_field_stmts(
-        &mut block_post,
-        &state_array_struct_roots,
-        &struct_defs,
-        &mut errors,
-    );
-    rewrite_struct_array_inline_field_stmts(
-        &mut sample,
-        &state_array_struct_roots,
-        &struct_defs,
-        &mut errors,
-    );
-    for event in &mut events {
-        rewrite_struct_array_inline_field_stmts(
-            &mut event.body,
-            &state_array_struct_roots,
-            &struct_defs,
-            &mut errors,
-        );
-    }
-
-    let port_index_ins = if ins_explicit && !ins.is_empty() {
-        uniform_port_type(&ins, &in_types).map(|ty| PortIndexInfo {
-            count: ins.len(),
-            elem_ty: ty,
-        })
-    } else {
-        None
-    };
-    let port_index_outs = if outs_explicit && !outs.is_empty() {
-        uniform_port_type(&outs, &out_types).map(|ty| PortIndexInfo {
-            count: outs.len(),
-            elem_ty: ty,
-        })
-    } else {
-        None
-    };
-    let port_index_params = if params_explicit && !typed_params.is_empty() {
-        uniform_port_type_from_params(&typed_params).map(|ty| PortIndexInfo {
-            count: typed_params.len(),
-            elem_ty: ty,
-        })
-    } else {
-        None
-    };
-
-    let block_locals = HashSet::new();
-    let empty_inputs = HashSet::new();
-    let empty_outputs = HashSet::new();
-    let block_forbidden_assigns = output_names.clone();
-    let block_pre_known_scalars = build_known_scalars_from_state(&param_names, &state_scalars);
-    let mut block_pre_local_data_aliases = HashMap::new();
-    seed_top_level_array_aliases(&mut block_pre_local_data_aliases, &in_arrays, false);
-    seed_top_level_array_aliases(&mut block_pre_local_data_aliases, &out_arrays, true);
-    seed_top_level_array_aliases(&mut block_pre_local_data_aliases, &param_arrays, false);
-    register_and_analyze_runtime_scope(
-        block_pre.iter(),
-        ScopeAnalysisCtx {
-            policy: ScopePolicy::Runtime(ScopeKind::Block),
-            input_names: &empty_inputs,
-            output_names: &empty_outputs,
-            param_names: &param_names,
-            struct_defs: &struct_defs,
-            fn_signatures: &fn_signatures,
-            fn_return_types: &def_return_types,
-            options,
-            port_index_ins,
-            port_index_outs,
-            port_index_params,
+    rewrite_owner_struct_array_inline_fields(
+        ExecutableOwnerBodies {
+            init: &mut init,
+            block_pre: &mut block_pre,
+            sample: &mut sample,
+            block_post: &mut block_post,
+            events: &mut events,
         },
-        RuntimeRegistrationMode::BlockRoot,
-        &mut state_scalars,
-        &declared_symbols,
-        &state_arrays,
         &state_array_struct_roots,
-        &empty_nested_proc_instances,
-        &nested_proc_arrays,
-        &struct_instances,
-        &input_names,
-        &output_names,
-        &param_names,
-        &block_locals,
-        block_pre_known_scalars,
-        LocalAliasTypes::new(),
-        block_pre_local_data_aliases,
-        &block_forbidden_assigns,
-        &state_tuples,
+        &struct_defs,
         &mut errors,
     );
 
-    let mut sample_base = param_names.clone();
-    sample_base.extend(input_names.iter().cloned());
-    let sample_known_scalars = build_known_scalars_from_state(&sample_base, &state_scalars);
-    let sample_locals = HashSet::new();
-    let mut sample_local_data_aliases = HashMap::new();
-    seed_top_level_array_aliases(&mut sample_local_data_aliases, &in_arrays, false);
-    seed_top_level_array_aliases(&mut sample_local_data_aliases, &out_arrays, true);
-    seed_top_level_array_aliases(&mut sample_local_data_aliases, &param_arrays, false);
-    let sample_forbidden_assigns = HashSet::new();
-    register_and_analyze_runtime_scope(
-        sample.iter(),
-        ScopeAnalysisCtx {
-            policy: ScopePolicy::Runtime(ScopeKind::Sample),
-            input_names: &input_names,
-            output_names: &output_names,
-            param_names: &param_names,
-            struct_defs: &struct_defs,
-            fn_signatures: &fn_signatures,
-            fn_return_types: &def_return_types,
-            options,
-            port_index_ins,
-            port_index_outs,
-            port_index_params,
-        },
-        RuntimeRegistrationMode::None,
-        &mut state_scalars,
-        &declared_symbols,
-        &state_arrays,
-        &state_array_struct_roots,
-        &empty_nested_proc_instances,
-        &nested_proc_arrays,
-        &struct_instances,
-        &input_names,
-        &output_names,
-        &param_names,
-        &sample_locals,
-        sample_known_scalars,
-        LocalAliasTypes::new(),
-        sample_local_data_aliases,
-        &sample_forbidden_assigns,
-        &state_tuples,
-        &mut errors,
-    );
-
-    let block_post_known_scalars = build_known_scalars_from_state(&param_names, &state_scalars);
-    let mut block_post_local_data_aliases = HashMap::new();
-    seed_top_level_array_aliases(&mut block_post_local_data_aliases, &in_arrays, false);
-    seed_top_level_array_aliases(&mut block_post_local_data_aliases, &out_arrays, true);
-    seed_top_level_array_aliases(&mut block_post_local_data_aliases, &param_arrays, false);
-    register_and_analyze_runtime_scope(
-        block_post.iter(),
-        ScopeAnalysisCtx {
-            policy: ScopePolicy::Runtime(ScopeKind::Block),
-            input_names: &empty_inputs,
-            output_names: &empty_outputs,
-            param_names: &param_names,
-            struct_defs: &struct_defs,
-            fn_signatures: &fn_signatures,
-            fn_return_types: &def_return_types,
-            options,
-            port_index_ins,
-            port_index_outs,
-            port_index_params,
-        },
-        RuntimeRegistrationMode::BlockRoot,
-        &mut state_scalars,
-        &declared_symbols,
-        &state_arrays,
-        &state_array_struct_roots,
-        &empty_nested_proc_instances,
-        &nested_proc_arrays,
-        &struct_instances,
-        &input_names,
-        &output_names,
-        &param_names,
-        &block_locals,
-        block_post_known_scalars,
-        LocalAliasTypes::new(),
-        block_post_local_data_aliases,
-        &block_forbidden_assigns,
-        &state_tuples,
-        &mut errors,
+    let port_index_ins = uniform_port_index_info_from_names(ins_explicit, &ins, &in_types);
+    let port_index_outs = uniform_port_index_info_from_names(outs_explicit, &outs, &out_types);
+    let port_index_params = uniform_port_index_info_from_types(
+        params_explicit,
+        typed_params.len(),
+        typed_params.iter().map(|param| param.ty),
     );
 
     let typed_events = coerce_typed_events(&events, true, "top-level", options, &mut errors);
-    let final_state_roots = collect_runtime_state_roots(&state_scalars, &state_arrays);
-    let immutable_event_roots = final_state_roots
-        .difference(&init_writable_roots)
-        .cloned()
-        .collect::<HashSet<_>>();
-    let event_known_scalars_seed = build_known_scalars_from_state(&param_names, &state_scalars);
-    let mut event_array_alias_seed = HashMap::new();
-    seed_top_level_array_aliases(&mut event_array_alias_seed, &param_arrays, false);
-    analyze_runtime_events(
-        &typed_events,
-        &event_known_scalars_seed,
-        &event_array_alias_seed,
+    let analysis_plan_seeds = build_top_level_owner_analysis_plan_seeds(
         &param_names,
-        &init_writable_roots,
-        &immutable_event_roots,
         &input_names,
         &output_names,
         &state_scalars,
-        &declared_symbols,
-        &state_arrays,
-        &state_array_struct_roots,
-        &empty_nested_proc_instances,
-        &nested_proc_arrays,
-        &struct_instances,
-        ScopeAnalysisCtx {
-            policy: ScopePolicy::Event,
-            input_names: &input_names,
-            output_names: &output_names,
-            param_names: &param_names,
-            struct_defs: &struct_defs,
-            fn_signatures: &fn_signatures,
-            fn_return_types: &def_return_types,
-            options,
-            port_index_ins: None,
-            port_index_outs: None,
-            port_index_params: None,
-        },
-        &mut errors,
+        &in_arrays,
+        &out_arrays,
+        &param_arrays,
     );
+    {
+        let mut runtime_state = ExecutableOwnerRuntimeState {
+            state_scalars: &mut state_scalars,
+            declared_symbols: &declared_symbols,
+            state_arrays: &state_arrays,
+            state_array_struct_roots: &state_array_struct_roots,
+            nested_proc_instances: &empty_nested_proc_instances,
+            proc_array_roots: &nested_proc_arrays,
+            struct_instances: &struct_instances,
+            state_tuples: &state_tuples,
+        };
+        analyze_owner_runtime_scopes(
+            &mut runtime_state,
+            analysis_plan_seeds.runtime_scope_plans(
+                RuntimeScopeBodies {
+                    block_pre: &block_pre,
+                    sample: &sample,
+                    block_post: &block_post,
+                },
+                RuntimeScopePlanInputs {
+                    sample_input_names: &input_names,
+                    sample_output_names: &output_names,
+                    param_names: &param_names,
+                    struct_defs: &struct_defs,
+                    fn_signatures: &fn_signatures,
+                    fn_return_types: &def_return_types,
+                    options,
+                    port_index_ins,
+                    port_index_outs,
+                    port_index_params,
+                    registration_input_names: &input_names,
+                    registration_output_names: &output_names,
+                    registration_param_names: &param_names,
+                },
+            ),
+            &mut errors,
+        );
+
+        analyze_owner_events(
+            &runtime_state,
+            analysis_plan_seeds.event_plan(
+                runtime_state.state_scalars,
+                EventPlanInputs {
+                    typed_events: &typed_events,
+                    init_writable_roots: &init_writable_roots,
+                    input_names: &input_names,
+                    output_names: &output_names,
+                    param_names: &param_names,
+                    validation_input_names: &input_names,
+                    validation_output_names: &output_names,
+                    struct_defs: &struct_defs,
+                    fn_signatures: &fn_signatures,
+                    fn_return_types: &def_return_types,
+                    options,
+                    port_index_ins: None,
+                    port_index_outs: None,
+                    port_index_params: None,
+                },
+            ),
+            &mut errors,
+        );
+    }
 
     let mut block_exec = block_pre.clone();
     block_exec.extend(block_post.clone());
@@ -2407,31 +2238,6 @@ pub fn analyze_with_options(
     }
 }
 
-pub(crate) fn uniform_port_type(
-    names: &[String],
-    types: &HashMap<String, PrimitiveType>,
-) -> Option<PrimitiveType> {
-    let mut it = names.iter().filter_map(|n| types.get(n).copied());
-    let first = it.next().unwrap_or(PrimitiveType::F32);
-    if it.all(|t| t == first) {
-        Some(first)
-    } else {
-        None
-    }
-}
-
-fn uniform_port_type_from_params(params: &[TypedParam]) -> Option<PrimitiveType> {
-    if params.is_empty() {
-        return None;
-    }
-    let first = params[0].ty;
-    if params.iter().all(|p| p.ty == first) {
-        Some(first)
-    } else {
-        None
-    }
-}
-
 fn requires_entry_sample(program: &Program) -> bool {
     program.blocks.iter().any(|block| {
         matches!(
@@ -2864,25 +2670,6 @@ fn def_has_concrete_param_contract(
             | None => false,
         }
     })
-}
-
-fn sanitize_runtime_symbol_component(name: &str) -> String {
-    name.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-}
-
-fn runtime_proc_array_active_symbol(array_base: &str) -> String {
-    format!(
-        "__onda_proc_block_active_{}",
-        sanitize_runtime_symbol_component(array_base)
-    )
 }
 
 fn try_indexed_proc_call_meta_in_def<'a>(

@@ -1,10 +1,6 @@
 use super::*;
 use onda_frontend::ast::{FnReturnScalarType, FnReturnType};
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 fn parse_explicit_proc_array_elem_type_args(
     name: &str,
     context: &str,

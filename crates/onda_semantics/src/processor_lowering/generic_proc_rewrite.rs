@@ -1,9 +1,5 @@
 use super::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(super) fn rewrite_and_materialize_generic_processors(
     program: &mut Program,
     errors: &mut Vec<Diagnostic>,

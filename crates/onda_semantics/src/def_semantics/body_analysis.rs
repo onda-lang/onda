@@ -1,9 +1,5 @@
 use crate::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 fn infer_def_slice_alias_info(
     base: &str,
     start: Option<&Expr>,

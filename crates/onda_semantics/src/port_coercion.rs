@@ -1,10 +1,6 @@
 use super::*;
 use onda_frontend::LogicalOp;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(super) fn coerce_const_default_to_typed(
     raw_default: f64,
     ty: PrimitiveType,

@@ -52,6 +52,7 @@ mod expr_common;
 mod jit_utils;
 mod layout;
 mod llvm_helpers;
+mod lowering_common;
 mod orc_expr_stmt;
 mod orc_locals;
 mod oversampling;

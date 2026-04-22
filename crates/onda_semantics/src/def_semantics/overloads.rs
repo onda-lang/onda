@@ -1,9 +1,5 @@
 use crate::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct OverloadCandidate {
     internal_name: String,

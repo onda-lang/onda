@@ -1,9 +1,5 @@
 use super::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(crate) fn resolve_init_default_ty(
     decl_ty: Option<&DeclType>,
     context_label: &str,

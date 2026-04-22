@@ -3,10 +3,6 @@ use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 
 type ProcArrayAliases = HashMap<String, ProcArrayAliasInfo>;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(super) fn try_constant_index_i64(expr: &Expr) -> Option<i64> {
     match expr {
         Expr::Int { value: v, .. } => Some(*v),

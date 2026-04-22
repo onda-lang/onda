@@ -1,9 +1,5 @@
 use super::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(crate) fn merged_data_vars_for_runtime(
     state_arrays: &HashMap<String, usize>,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,

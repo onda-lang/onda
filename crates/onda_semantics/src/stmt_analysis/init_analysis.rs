@@ -1,9 +1,5 @@
 use super::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(crate) struct ProcResolutionCtx<'a> {
     pub owner_proc_name: &'a str,
     pub reserved: &'a HashSet<String>,
@@ -42,81 +38,6 @@ impl<'a> InitStmtAnalysisCtx<'a> {
     fn proc_init_resolution(&self) -> Option<&ProcResolutionCtx<'a>> {
         self.init.proc_init_resolution()
     }
-}
-
-fn specialized_proc_template_bases(proc_symbols: &HashSet<String>) -> HashSet<String> {
-    proc_symbols
-        .iter()
-        .filter_map(|name| {
-            name.rsplit_once(".__gen__")
-                .map(|(base, _)| base.to_owned())
-        })
-        .collect()
-}
-
-fn resolve_proc_ctor_symbol_name(
-    ctor_name: &str,
-    current_ns: &str,
-    proc_symbols: &HashSet<String>,
-) -> Option<String> {
-    let direct = if ctor_name.contains("::") {
-        proc_symbols
-            .contains(ctor_name)
-            .then_some(ctor_name.to_owned())
-    } else {
-        resolve_unqualified_symbol_name(ctor_name, current_ns, proc_symbols)
-    };
-    if direct.is_some() {
-        return direct;
-    }
-
-    let resolved_base = if ctor_name.contains("::") {
-        ctor_name.to_owned()
-    } else {
-        let template_bases = specialized_proc_template_bases(proc_symbols);
-        resolve_unqualified_symbol_name(ctor_name, current_ns, &template_bases)?
-    };
-    let prefix = format!("{resolved_base}.__gen__");
-    let mut matches = proc_symbols
-        .iter()
-        .filter(|name| name.starts_with(&prefix))
-        .cloned()
-        .collect::<Vec<_>>();
-    if matches.len() == 1 {
-        matches.pop()
-    } else {
-        None
-    }
-}
-
-fn resolve_specialized_proc_ctor_name(
-    ctor_name: &str,
-    type_args: &[CallTypeArg],
-    current_ns: &str,
-    proc_symbols: &HashSet<String>,
-    diag: DiagCtx,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<String> {
-    if type_args.is_empty() {
-        return None;
-    }
-
-    let resolved_type_args = resolve_explicit_call_type_args(
-        type_args,
-        &format!("processor constructor '{}'", ctor_name),
-        diag,
-        errors,
-    )?;
-
-    let resolved_base = if ctor_name.contains("::") {
-        ctor_name.to_owned()
-    } else {
-        let template_bases = specialized_proc_template_bases(proc_symbols);
-        resolve_unqualified_symbol_name(ctor_name, current_ns, &template_bases)?
-    };
-
-    let specialized = specialized_struct_name(&resolved_base, &resolved_type_args);
-    proc_symbols.contains(&specialized).then_some(specialized)
 }
 
 #[derive(Clone)]
