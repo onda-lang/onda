@@ -10,7 +10,6 @@ name = "onda"
 path = "src/main.rs"
 
 [dependencies]
-cpal = "0.16"
 hound = "3.5.1"
 onda_daemon = { path = "../onda_daemon" }
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
@@ -24,6 +23,3 @@ serde_json = "1.0"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 onda_webview = { path = "../onda_webview" }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

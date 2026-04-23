@@ -1,15 +1,7 @@
-use std::cell::{Cell, UnsafeCell};
-use std::collections::HashMap;
 use std::env;
-use std::io::BufWriter;
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::LazyLock;
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
 mod args;
 mod compile_cmd;
@@ -18,32 +10,15 @@ mod diag_print;
 mod formatting;
 mod lsp_stdio;
 mod run_cmd;
-mod run_control;
-mod run_realtime;
-mod run_signal;
 
 use args::parse_args;
 use compile_cmd::run_compile;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::Sample;
 use onda_codegen_llvm::{TargetConfig, TargetOptLevel};
-use onda_daemon::{
-    DaemonConfig, DaemonSession, RunBufferInfo, RunEventInfo, RunOptions, RunParamInfo,
-};
-use onda_run::{available_audio_devices, RunThemeMode};
-use onda_semantics::AnalysisOptions;
+use onda_run::RunThemeMode;
 use run_cmd::{run_daemon, run_run};
-use run_control::{
-    run_buffer_json, run_event_json, run_param_json, spawn_run_control_server, write_json_line,
-    PlaybackControlCommand, ScopeRing,
-};
-use serde_json::json;
-
-use diag_print::{format_run_build_error, format_single_diagnostic};
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_DUR_SECONDS: u32 = 5;
-const MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK: usize = 64;
 const DEFAULT_BLOCK_FRAMES: usize = 512;
 const DEFAULT_PLAY_BLOCK_FRAMES: usize = 128;
 const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";

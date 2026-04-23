@@ -1,21 +1,48 @@
-use std::fs;
+use std::cell::{Cell, UnsafeCell};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
-use super::run_signal::{install_run_signal_handlers, run_termination_requested};
-use super::*;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::Sample;
+use onda_codegen_llvm::TargetOptLevel;
+use onda_daemon::{
+    DaemonConfig, DaemonSession, RunBufferInfo, RunEventInfo, RunEventValue, RunOptions,
+    RunParamInfo,
+};
+use onda_semantics::AnalysisOptions;
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+use crate::{
+    available_audio_devices, display_path, format_run_build_error, format_single_diagnostic,
+    run_buffer_json, run_event_json, run_param_json,
+};
+
+const MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK: usize = 64;
+const SCOPE_CAPACITY_FRAMES: usize = 4096;
+
+#[cfg(unix)]
+static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
-pub(crate) struct PlaybackLaunch {
-    pub(crate) input: PathBuf,
-    pub(crate) dur_seconds: Option<u32>,
-    pub(crate) sample_rate_hz: u32,
-    pub(crate) block_frames: usize,
-    pub(crate) opt_level: TargetOptLevel,
-    pub(crate) input_device: Option<String>,
-    pub(crate) output_device: Option<String>,
-    pub(crate) fast_math: bool,
-    pub(crate) show_meta: bool,
-    pub(crate) control_json: bool,
-    pub(crate) param_sets: Vec<(String, f64)>,
+pub struct PlaybackLaunch {
+    pub input: PathBuf,
+    pub dur_seconds: Option<u32>,
+    pub sample_rate_hz: u32,
+    pub block_frames: usize,
+    pub opt_level: TargetOptLevel,
+    pub input_device: Option<String>,
+    pub output_device: Option<String>,
+    pub fast_math: bool,
+    pub show_meta: bool,
+    pub control_json: bool,
+    pub param_sets: Vec<(String, f64)>,
 }
 
 struct PlaybackStartup {
@@ -31,12 +58,115 @@ struct PlaybackStartup {
     current_output_device: Option<String>,
 }
 
+enum PlaybackControlCommand {
+    GetParams {
+        reply: mpsc::Sender<Result<Vec<RunParamInfo>, String>>,
+    },
+    GetBuffers {
+        reply: mpsc::Sender<Result<Vec<RunBufferInfo>, String>>,
+    },
+    GetEvents {
+        reply: mpsc::Sender<Result<Vec<RunEventInfo>, String>>,
+    },
+    GetDevices {
+        reply: mpsc::Sender<Result<(Vec<String>, Vec<String>), String>>,
+    },
+    SetParam {
+        name: String,
+        value: f64,
+        reply: Option<mpsc::Sender<Result<(), String>>>,
+    },
+    TriggerEvent {
+        name: String,
+        values: Vec<RunEventValue>,
+        reply: Option<mpsc::Sender<Result<(), String>>>,
+    },
+    BindBufferWav {
+        name: String,
+        path: PathBuf,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    ClearBuffer {
+        name: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+}
+
+struct ScopeSnapshot {
+    channels: usize,
+    samples: Vec<f32>,
+}
+
+struct ScopeRing {
+    buffer: Vec<f32>,
+    channels: usize,
+    write_pos: usize,
+    frames_written: usize,
+}
+
 struct PendingParamUpdate {
     value: f64,
     replies: Vec<mpsc::Sender<Result<(), String>>>,
 }
 
-pub(crate) fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
+impl ScopeRing {
+    fn new(capacity_frames: usize, channels: usize) -> Self {
+        Self {
+            buffer: vec![0.0; capacity_frames * channels],
+            channels,
+            write_pos: 0,
+            frames_written: 0,
+        }
+    }
+
+    fn push_interleaved(&mut self, samples: &[f32]) {
+        let cap = self.buffer.len();
+        if cap == 0 {
+            return;
+        }
+        for (i, &sample) in samples.iter().enumerate() {
+            self.buffer[(self.write_pos + i) % cap] = sample;
+        }
+        self.write_pos = (self.write_pos + samples.len()) % cap;
+        self.frames_written += samples.len() / self.channels.max(1);
+    }
+
+    fn snapshot(&self, max_frames: usize) -> ScopeSnapshot {
+        let total_frames = self.buffer.len() / self.channels.max(1);
+        let available = total_frames.min(self.frames_written);
+        let frames = max_frames.min(available);
+        let sample_count = frames * self.channels;
+        let cap = self.buffer.len();
+        let start = (self.write_pos + cap - sample_count) % cap;
+        let mut samples = Vec::with_capacity(sample_count);
+        for i in 0..sample_count {
+            samples.push(self.buffer[(start + i) % cap]);
+        }
+        ScopeSnapshot {
+            channels: self.channels,
+            samples,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaybackControlRequest {
+    #[serde(default)]
+    id: Option<Value>,
+    command: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    value: Option<Value>,
+    #[serde(default)]
+    values: Option<Vec<Value>>,
+    #[serde(default, rename = "maxFrames")]
+    max_frames: Option<usize>,
+}
+
+pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let _signal_guard = install_run_signal_handlers();
     let host = cpal::default_host();
     let output_device = find_output_device(&host, launch.output_device.as_deref())?;
@@ -278,6 +408,62 @@ pub(crate) fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     Ok(())
 }
 
+pub fn append_interleaved_block(rendered: &mut Vec<f32>, block: &[Vec<f32>]) {
+    if block.is_empty() {
+        return;
+    }
+    let frames = block[0].len();
+    for frame in 0..frames {
+        for channel in block {
+            rendered.push(channel[frame]);
+        }
+    }
+}
+
+pub fn format_run_param_info(params: &[RunParamInfo]) -> String {
+    let mut lines = Vec::with_capacity(params.len() + 1);
+    lines.push("Run params:".to_owned());
+    for param in params {
+        let range = match (param.range_min, param.range_max) {
+            (Some(min), Some(max)) => format!(" [{min}, {max}]"),
+            (None, Some(max)) => format!(" [.., {max}]"),
+            _ => String::new(),
+        };
+        let default = param
+            .default
+            .map(|value| format!(" = {value}"))
+            .unwrap_or_default();
+        let scalar = if param.scalar { "" } else { " (non-scalar)" };
+        lines.push(format!(
+            "  {}: {}{}{}{}",
+            param.name, param.type_repr, default, range, scalar
+        ));
+    }
+    lines.join("\n")
+}
+
+fn format_run_event_info(events: &[RunEventInfo]) -> String {
+    let mut lines = Vec::with_capacity(events.len() + 1);
+    lines.push("Run events:".to_owned());
+    for event in events {
+        let signature = if event.params.is_empty() {
+            "()".to_owned()
+        } else {
+            format!(
+                "({})",
+                event
+                    .params
+                    .iter()
+                    .map(|param| format!("{}: {}", param.name, param.type_repr))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        lines.push(format!("  {}{}", event.name, signature));
+    }
+    lines.join("\n")
+}
+
 fn playback_status_message(path: &Path, dur_seconds: Option<u32>) -> String {
     match dur_seconds {
         Some(dur_seconds) => format!("Playing {} for {} seconds", display_path(path), dur_seconds),
@@ -488,23 +674,6 @@ fn write_input_data<T>(
     }
 }
 
-pub(crate) fn append_interleaved_block(rendered: &mut Vec<f32>, block: &[Vec<f32>]) {
-    if block.is_empty() {
-        return;
-    }
-    let frames = block[0].len();
-    for frame in 0..frames {
-        for channel in block {
-            rendered.push(channel[frame]);
-        }
-    }
-}
-
-fn display_path(path: &Path) -> String {
-    let raw = path.display().to_string();
-    raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_owned()
-}
-
 fn find_output_device(
     host: &cpal::Host,
     requested_name: Option<&str>,
@@ -628,7 +797,6 @@ fn spawn_run_render_thread(
         let render_input_channels = match startup {
             Ok(ref startup) => {
                 {
-                    const SCOPE_CAPACITY_FRAMES: usize = 4096;
                     let mut ring = scope_ring.lock().unwrap();
                     *ring = ScopeRing::new(SCOPE_CAPACITY_FRAMES, startup.output_channels);
                 }
@@ -884,6 +1052,473 @@ fn store_thread_error(slot: &Arc<Mutex<Option<String>>>, message: String) {
     }
 }
 
+#[cfg(unix)]
+extern "C" fn run_termination_signal_handler(_sig: libc::c_int) {
+    RUN_TERMINATION_REQUESTED.store(true, Ordering::Release);
+}
+
+#[cfg(unix)]
+struct RunSignalGuard {
+    previous_sigint: libc::sighandler_t,
+    previous_sigterm: libc::sighandler_t,
+}
+
+#[cfg(unix)]
+impl Drop for RunSignalGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::signal(libc::SIGINT, self.previous_sigint);
+            libc::signal(libc::SIGTERM, self.previous_sigterm);
+        }
+        RUN_TERMINATION_REQUESTED.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(unix)]
+fn install_run_signal_handlers() -> RunSignalGuard {
+    RUN_TERMINATION_REQUESTED.store(false, Ordering::Release);
+    let handler = run_termination_signal_handler as *const () as libc::sighandler_t;
+    let previous_sigint = unsafe { libc::signal(libc::SIGINT, handler) };
+    let previous_sigterm = unsafe { libc::signal(libc::SIGTERM, handler) };
+    RunSignalGuard {
+        previous_sigint,
+        previous_sigterm,
+    }
+}
+
+#[cfg(not(unix))]
+struct RunSignalGuard;
+
+#[cfg(not(unix))]
+fn install_run_signal_handlers() -> RunSignalGuard {
+    RunSignalGuard
+}
+
+#[cfg(unix)]
+fn run_termination_requested() -> bool {
+    RUN_TERMINATION_REQUESTED.load(Ordering::Acquire)
+}
+
+#[cfg(not(unix))]
+fn run_termination_requested() -> bool {
+    false
+}
+
+fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io::Error> {
+    serde_json::to_writer(&mut *writer, value)?;
+    writer.write_all(b"\n")?;
+    writer.flush()
+}
+
+fn spawn_run_control_server(
+    listener: TcpListener,
+    control_tx: mpsc::Sender<PlaybackControlCommand>,
+    scope_ring: Arc<Mutex<ScopeRing>>,
+    stop_flag: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        if listener.set_nonblocking(true).is_err() {
+            return;
+        }
+
+        while !stop_flag.load(Ordering::Acquire) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if let Err(err) =
+                        handle_run_control_client(stream, &control_tx, &scope_ring, &stop_flag)
+                    {
+                        eprintln!("run control client error: {err}");
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(err) => {
+                    eprintln!("run control accept error: {err}");
+                    break;
+                }
+            }
+        }
+    })
+}
+
+fn handle_run_control_client(
+    stream: TcpStream,
+    control_tx: &mpsc::Sender<PlaybackControlCommand>,
+    scope_ring: &Arc<Mutex<ScopeRing>>,
+    stop_flag: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .map_err(|err| format!("failed to set control socket read timeout: {err}"))?;
+    let reader_stream = stream
+        .try_clone()
+        .map_err(|err| format!("failed to clone control socket: {err}"))?;
+    let mut reader = BufReader::new(reader_stream);
+    let mut writer = BufWriter::new(stream);
+
+    while !stop_flag.load(Ordering::Acquire) {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(err) => return Err(format!("failed to read control request: {err}")),
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let request: PlaybackControlRequest = serde_json::from_str(trimmed)
+            .map_err(|err| format!("invalid control request json: {err}"))?;
+        let response = run_control_response(request, control_tx, scope_ring);
+        if let Some(response) = response {
+            write_json_line(&mut writer, &response)
+                .map_err(|err| format!("failed to write control response: {err}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn run_control_response(
+    request: PlaybackControlRequest,
+    control_tx: &mpsc::Sender<PlaybackControlCommand>,
+    scope_ring: &Arc<Mutex<ScopeRing>>,
+) -> Option<Value> {
+    let request_id = request.id;
+    let result = match request.command.as_str() {
+        "getParams" => {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::GetParams { reply: reply_tx })
+                .map_err(|_| "run control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "run control reply channel closed".to_owned())
+                })
+                .map(|result| {
+                    Some(match result {
+                        Ok(params) => json!({
+                            "id": request_id,
+                            "ok": true,
+                            "result": {
+                                "params": params.iter().map(run_param_json).collect::<Vec<_>>(),
+                            }
+                        }),
+                        Err(err) => json!({
+                            "id": request_id,
+                            "ok": false,
+                            "error": err,
+                        }),
+                    })
+                })
+        }
+        "getBuffers" => {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::GetBuffers { reply: reply_tx })
+                .map_err(|_| "run control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "run control reply channel closed".to_owned())
+                })
+                .map(|result| {
+                    Some(match result {
+                        Ok(buffers) => json!({
+                            "id": request_id,
+                            "ok": true,
+                            "result": {
+                                "buffers": buffers.iter().map(run_buffer_json).collect::<Vec<_>>(),
+                            }
+                        }),
+                        Err(err) => json!({
+                            "id": request_id,
+                            "ok": false,
+                            "error": err,
+                        }),
+                    })
+                })
+        }
+        "getEvents" => {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::GetEvents { reply: reply_tx })
+                .map_err(|_| "run control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "run control reply channel closed".to_owned())
+                })
+                .map(|result| {
+                    Some(match result {
+                        Ok(events) => json!({
+                            "id": request_id,
+                            "ok": true,
+                            "result": {
+                                "events": events.iter().map(run_event_json).collect::<Vec<_>>(),
+                            }
+                        }),
+                        Err(err) => json!({
+                            "id": request_id,
+                            "ok": false,
+                            "error": err,
+                        }),
+                    })
+                })
+        }
+        "getDevices" => {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::GetDevices { reply: reply_tx })
+                .map_err(|_| "run control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "run control reply channel closed".to_owned())
+                })
+                .map(|result| {
+                    Some(match result {
+                        Ok((input_devices, output_devices)) => json!({
+                            "id": request_id,
+                            "ok": true,
+                            "result": {
+                                "inputDevices": input_devices,
+                                "outputDevices": output_devices,
+                            }
+                        }),
+                        Err(err) => json!({
+                            "id": request_id,
+                            "ok": false,
+                            "error": err,
+                        }),
+                    })
+                })
+        }
+        "setParam" => {
+            let result = (|| -> Result<Option<Value>, String> {
+                let name = request
+                    .name
+                    .ok_or_else(|| "setParam requires 'name'".to_owned())?;
+                let raw_value = request
+                    .value
+                    .ok_or_else(|| "setParam requires 'value'".to_owned())?;
+                let value = match raw_value {
+                    Value::Bool(value) => {
+                        if value {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    Value::Number(value) => value
+                        .as_f64()
+                        .ok_or_else(|| "setParam value must be numeric".to_owned())?,
+                    _ => return Err("setParam value must be number or boolean".to_owned()),
+                };
+                if request_id.is_none() {
+                    control_tx
+                        .send(PlaybackControlCommand::SetParam {
+                            name,
+                            value,
+                            reply: None,
+                        })
+                        .map_err(|_| "run control channel closed".to_owned())?;
+                    return Ok(None);
+                }
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::SetParam {
+                        name,
+                        value,
+                        reply: Some(reply_tx),
+                    })
+                    .map_err(|_| "run control channel closed".to_owned())?;
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "run control reply channel closed".to_owned())?
+                {
+                    Ok(()) => Ok(request_id.clone().map(|id| {
+                        json!({
+                            "id": id,
+                            "ok": true,
+                        })
+                    })),
+                    Err(err) => Ok(request_id.clone().map(|id| {
+                        json!({
+                            "id": id,
+                            "ok": false,
+                            "error": err,
+                        })
+                    })),
+                }
+            })();
+            result
+        }
+        "triggerEvent" => {
+            let result = (|| -> Result<Option<Value>, String> {
+                let name = request
+                    .name
+                    .ok_or_else(|| "triggerEvent requires 'name'".to_owned())?;
+                let raw_values = request.values.unwrap_or_default();
+                let values = raw_values
+                    .into_iter()
+                    .map(|value| match value {
+                        Value::Bool(value) => Ok(RunEventValue::Bool(value)),
+                        Value::Number(value) => value
+                            .as_f64()
+                            .map(RunEventValue::Number)
+                            .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
+                        _ => Err("triggerEvent values must be numbers or booleans".to_owned()),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if request_id.is_none() {
+                    control_tx
+                        .send(PlaybackControlCommand::TriggerEvent {
+                            name,
+                            values,
+                            reply: None,
+                        })
+                        .map_err(|_| "run control channel closed".to_owned())?;
+                    return Ok(None);
+                }
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::TriggerEvent {
+                        name,
+                        values,
+                        reply: Some(reply_tx),
+                    })
+                    .map_err(|_| "run control channel closed".to_owned())?;
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "run control reply channel closed".to_owned())?
+                {
+                    Ok(()) => Ok(request_id.clone().map(|id| {
+                        json!({
+                            "id": id,
+                            "ok": true,
+                        })
+                    })),
+                    Err(err) => Ok(request_id.clone().map(|id| {
+                        json!({
+                            "id": id,
+                            "ok": false,
+                            "error": err,
+                        })
+                    })),
+                }
+            })();
+            result
+        }
+        "bindBufferWav" => {
+            let result = (|| -> Result<Option<Value>, String> {
+                let name = request
+                    .name
+                    .ok_or_else(|| "bindBufferWav requires 'name'".to_owned())?;
+                let path = request
+                    .path
+                    .ok_or_else(|| "bindBufferWav requires 'path'".to_owned())?;
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::BindBufferWav {
+                        name,
+                        path: PathBuf::from(path),
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| "run control channel closed".to_owned())?;
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "run control reply channel closed".to_owned())?
+                {
+                    Ok(()) => Ok(request_id.clone().map(|id| {
+                        json!({
+                            "id": id,
+                            "ok": true,
+                        })
+                    })),
+                    Err(err) => Ok(request_id.clone().map(|id| {
+                        json!({
+                            "id": id,
+                            "ok": false,
+                            "error": err,
+                        })
+                    })),
+                }
+            })();
+            result
+        }
+        "getScopeData" => scope_ring
+            .lock()
+            .map_err(|_| "failed to lock scope ring".to_owned())
+            .map(|ring| {
+                let snapshot = ring.snapshot(request.max_frames.unwrap_or(2048));
+                Some(json!({
+                    "id": request_id,
+                    "ok": true,
+                    "result": {
+                        "channels": snapshot.channels,
+                        "samples": snapshot.samples,
+                    }
+                }))
+            }),
+        "clearBuffer" => {
+            let result = (|| -> Result<Option<Value>, String> {
+                let name = request
+                    .name
+                    .ok_or_else(|| "clearBuffer requires 'name'".to_owned())?;
+                let (reply_tx, reply_rx) = mpsc::channel();
+                control_tx
+                    .send(PlaybackControlCommand::ClearBuffer {
+                        name,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| "run control channel closed".to_owned())?;
+                match reply_rx
+                    .recv()
+                    .map_err(|_| "run control reply channel closed".to_owned())?
+                {
+                    Ok(()) => Ok(request_id.clone().map(|id| {
+                        json!({
+                            "id": id,
+                            "ok": true,
+                        })
+                    })),
+                    Err(err) => Ok(request_id.clone().map(|id| {
+                        json!({
+                            "id": id,
+                            "ok": false,
+                            "error": err,
+                        })
+                    })),
+                }
+            })();
+            result
+        }
+        other => Err(format!("unknown command '{other}'")),
+    };
+
+    match result {
+        Ok(value) => value,
+        Err(err) => request_id.map(|id| {
+            json!({
+                "id": id,
+                "ok": false,
+                "error": err,
+            })
+        }),
+    }
+}
+
 struct SpscSampleRing {
     capacity: usize,
     mask: usize,
@@ -960,102 +1595,82 @@ impl SpscSampleRing {
     }
 }
 
-pub(crate) fn format_run_param_info(params: &[RunParamInfo]) -> String {
-    let mut lines = Vec::with_capacity(params.len() + 1);
-    lines.push("Run params:".to_owned());
-    for param in params {
-        let range = match (param.range_min, param.range_max) {
-            (Some(min), Some(max)) => format!(" [{min}, {max}]"),
-            (None, Some(max)) => format!(" [.., {max}]"),
-            _ => String::new(),
-        };
-        let default = param
-            .default
-            .map(|value| format!(" = {value}"))
-            .unwrap_or_default();
-        let scalar = if param.scalar { "" } else { " (non-scalar)" };
-        lines.push(format!(
-            "  {}: {}{}{}{}",
-            param.name, param.type_repr, default, range, scalar
-        ));
-    }
-    lines.join("\n")
-}
+#[cfg(test)]
+mod tests {
+    use super::{run_control_response, PlaybackControlCommand, PlaybackControlRequest, ScopeRing};
+    use onda_daemon::RunEventValue;
+    use serde_json::Value;
+    use std::sync::{mpsc, Arc, Mutex};
 
-pub(crate) fn format_run_event_info(events: &[RunEventInfo]) -> String {
-    let mut lines = Vec::with_capacity(events.len() + 1);
-    lines.push("Run events:".to_owned());
-    for event in events {
-        let signature = if event.params.is_empty() {
-            "()".to_owned()
-        } else {
-            format!(
-                "({})",
-                event
-                    .params
-                    .iter()
-                    .map(|param| format!("{}: {}", param.name, param.type_repr))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        lines.push(format!("  {}{}", event.name, signature));
-    }
-    lines.join("\n")
-}
+    #[test]
+    fn run_set_param_notification_enqueues_without_waiting_for_reply() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let response = run_control_response(
+            PlaybackControlRequest {
+                id: None,
+                command: "setParam".to_owned(),
+                name: Some("gain".to_owned()),
+                path: None,
+                value: Some(Value::from(0.5)),
+                values: None,
+                max_frames: None,
+            },
+            &control_tx,
+            &scope_ring,
+        );
 
-pub(crate) fn write_wav_interleaved_i16(
-    path: &Path,
-    channels: usize,
-    sample_rate_hz: u32,
-    samples: &[f32],
-) -> Result<(), String> {
-    if channels == 0 {
-        return Err("cannot write wav with zero channels".to_owned());
-    }
-    if samples.len() % channels != 0 {
-        return Err(format!(
-            "sample buffer length {} is not divisible by channel count {}",
-            samples.len(),
-            channels
-        ));
-    }
-
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|err| {
-                format!(
-                    "failed to create output directory '{}': {err}",
-                    parent.display()
-                )
-            })?;
+        assert!(response.is_none());
+        match control_rx.try_recv().expect("setParam should be queued") {
+            PlaybackControlCommand::SetParam { name, value, reply } => {
+                assert_eq!(name, "gain");
+                assert_eq!(value, 0.5);
+                assert!(reply.is_none());
+            }
+            _ => panic!("expected setParam command"),
         }
     }
 
-    let channel_u16 = u16::try_from(channels)
-        .map_err(|_| format!("channel count {channels} exceeds wav limit"))?;
+    #[test]
+    fn run_trigger_event_notification_enqueues_full_payload() {
+        let (control_tx, control_rx) = mpsc::channel();
+        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let response = run_control_response(
+            PlaybackControlRequest {
+                id: None,
+                command: "triggerEvent".to_owned(),
+                name: Some("note_on".to_owned()),
+                path: None,
+                value: None,
+                values: Some(vec![Value::from(60), Value::from(0.75), Value::Bool(true)]),
+                max_frames: None,
+            },
+            &control_tx,
+            &scope_ring,
+        );
 
-    let spec = hound::WavSpec {
-        channels: channel_u16,
-        sample_rate: sample_rate_hz,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-
-    let mut writer = hound::WavWriter::create(path, spec)
-        .map_err(|err| format!("failed to create wav '{}': {err}", path.display()))?;
-    for sample in samples {
-        writer
-            .write_sample(f32_to_i16(*sample))
-            .map_err(|err| format!("failed to write wav sample: {err}"))?;
+        assert!(response.is_none());
+        match control_rx
+            .try_recv()
+            .expect("triggerEvent should be queued")
+        {
+            PlaybackControlCommand::TriggerEvent {
+                name,
+                values,
+                reply,
+            } => {
+                assert_eq!(name, "note_on");
+                assert_eq!(
+                    values,
+                    vec![
+                        RunEventValue::Number(60.0),
+                        RunEventValue::Number(0.75),
+                        RunEventValue::Bool(true),
+                    ]
+                );
+                assert!(reply.is_none());
+            }
+            _ => panic!("expected triggerEvent command"),
+        }
     }
-    writer
-        .finalize()
-        .map_err(|err| format!("failed to finalize wav '{}': {err}", path.display()))?;
-    Ok(())
-}
-
-fn f32_to_i16(sample: f32) -> i16 {
-    let clamped = sample.clamp(-1.0, 1.0);
-    (clamped * i16::MAX as f32).round() as i16
 }

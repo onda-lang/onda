@@ -21,6 +21,12 @@ use onda_semantics::AnalysisOptions;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod playback;
+
+pub use playback::{
+    append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
+};
+
 const SCOPE_MAX_FRAMES: usize = 1024;
 const SCOPE_POLL_INTERVAL_MS: u64 = 50;
 
@@ -648,6 +654,7 @@ fn run_event_param_json(param: &RunEventParamInfo) -> Value {
         "index": param.index,
         "name": param.name,
         "type": param.type_repr,
+        "default": run_event_value_json(&param.value),
         "value": run_event_value_json(&param.value),
     })
 }
@@ -1232,7 +1239,8 @@ fn event_arg_default_value(arg: &Value) -> Option<Value> {
 }
 
 fn display_path(path: &Path) -> String {
-    path.display().to_string()
+    let raw = path.display().to_string();
+    raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_owned()
 }
 
 #[cfg(test)]

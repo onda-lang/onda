@@ -1,19 +1,13 @@
-use super::run_control::{
-    run_control_response, PlaybackControlCommand, PlaybackControlRequest, ScopeRing,
-};
 use super::{
     parse_args, Command, CompileEmit, DaemonCommand, RunCommand, RunHostKind,
     DEFAULT_PLAY_BLOCK_FRAMES,
 };
 use onda_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
-use onda_daemon::RunEventValue;
 use onda_frontend::{
     Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
 };
 use onda_run::RunThemeMode;
-use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn write_temp_target_spec(contents: &str) -> PathBuf {
@@ -607,76 +601,4 @@ fn format_diag_snippet_underlines_same_line_ranges() {
     assert!(snippet.contains("   |          ^^^^^^^"));
 
     let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn run_set_param_notification_enqueues_without_waiting_for_reply() {
-    let (control_tx, control_rx) = mpsc::channel();
-    let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
-    let response = run_control_response(
-        PlaybackControlRequest {
-            id: None,
-            command: "setParam".to_owned(),
-            name: Some("gain".to_owned()),
-            path: None,
-            value: Some(Value::from(0.5)),
-            values: None,
-            max_frames: None,
-        },
-        &control_tx,
-        &scope_ring,
-    );
-
-    assert!(response.is_none());
-    match control_rx.try_recv().expect("setParam should be queued") {
-        PlaybackControlCommand::SetParam { name, value, reply } => {
-            assert_eq!(name, "gain");
-            assert_eq!(value, 0.5);
-            assert!(reply.is_none());
-        }
-        _ => panic!("expected setParam command"),
-    }
-}
-
-#[test]
-fn run_trigger_event_notification_enqueues_full_payload() {
-    let (control_tx, control_rx) = mpsc::channel();
-    let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
-    let response = run_control_response(
-        PlaybackControlRequest {
-            id: None,
-            command: "triggerEvent".to_owned(),
-            name: Some("note_on".to_owned()),
-            path: None,
-            value: None,
-            values: Some(vec![Value::from(60), Value::from(0.75), Value::Bool(true)]),
-            max_frames: None,
-        },
-        &control_tx,
-        &scope_ring,
-    );
-
-    assert!(response.is_none());
-    match control_rx
-        .try_recv()
-        .expect("triggerEvent should be queued")
-    {
-        PlaybackControlCommand::TriggerEvent {
-            name,
-            values,
-            reply,
-        } => {
-            assert_eq!(name, "note_on");
-            assert_eq!(
-                values,
-                vec![
-                    RunEventValue::Number(60.0),
-                    RunEventValue::Number(0.75),
-                    RunEventValue::Bool(true),
-                ]
-            );
-            assert!(reply.is_none());
-        }
-        _ => panic!("expected triggerEvent command"),
-    }
 }

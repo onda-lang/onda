@@ -1,16 +1,16 @@
 use std::env;
+use std::fs;
 use std::path::Path;
 
 use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{DaemonConfig, DaemonSession, RunOptions};
-use onda_run::RunHostOptions;
+use onda_run::{
+    append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
+    RunHostOptions,
+};
 use onda_semantics::AnalysisOptions;
 
 use super::diag_print::{format_diagnostics, format_run_build_error, format_single_diagnostic};
-use super::run_realtime::{
-    append_interleaved_block, format_run_param_info, play_run_realtime, write_wav_interleaved_i16,
-    PlaybackLaunch,
-};
 use super::{daemon_stdio, DaemonCommand, RunCommand, RunHostKind};
 
 pub(crate) fn run_daemon(cmd: DaemonCommand) -> Result<(), String> {
@@ -273,4 +273,60 @@ fn run_daemon_play(
         control_json,
         param_sets: param_sets.to_vec(),
     })
+}
+
+fn write_wav_interleaved_i16(
+    path: &Path,
+    channels: usize,
+    sample_rate_hz: u32,
+    samples: &[f32],
+) -> Result<(), String> {
+    if channels == 0 {
+        return Err("cannot write wav with zero channels".to_owned());
+    }
+    if samples.len() % channels != 0 {
+        return Err(format!(
+            "sample buffer length {} is not divisible by channel count {}",
+            samples.len(),
+            channels
+        ));
+    }
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "failed to create output directory '{}': {err}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+
+    let channel_u16 = u16::try_from(channels)
+        .map_err(|_| format!("channel count {channels} exceeds wav limit"))?;
+
+    let spec = hound::WavSpec {
+        channels: channel_u16,
+        sample_rate: sample_rate_hz,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+
+    let mut writer = hound::WavWriter::create(path, spec)
+        .map_err(|err| format!("failed to create wav '{}': {err}", path.display()))?;
+    for sample in samples {
+        writer
+            .write_sample(f32_to_i16(*sample))
+            .map_err(|err| format!("failed to write wav sample: {err}"))?;
+    }
+    writer
+        .finalize()
+        .map_err(|err| format!("failed to finalize wav '{}': {err}", path.display()))?;
+    Ok(())
+}
+
+fn f32_to_i16(sample: f32) -> i16 {
+    let clamped = sample.clamp(-1.0, 1.0);
+    (clamped * i16::MAX as f32).round() as i16
 }
