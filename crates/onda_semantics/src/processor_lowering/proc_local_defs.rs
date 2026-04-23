@@ -1,13 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::push_semantic;
 use onda_frontend::ast::*;
 use onda_frontend::{DiagCtx, Diagnostic};
 
 pub(super) const PROC_LOCAL_DEF_FN_PREFIX: &str = ".__proc_local__";
-
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
 
 pub(super) fn proc_local_hidden_def_name(owner_proc: &str, local_name: &str) -> String {
     format!("{owner_proc}{PROC_LOCAL_DEF_FN_PREFIX}{local_name}")

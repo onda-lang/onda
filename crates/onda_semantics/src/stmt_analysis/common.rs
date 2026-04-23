@@ -26,6 +26,50 @@ pub(crate) struct PortIndexInfo {
     pub(crate) elem_ty: PrimitiveType,
 }
 
+pub(crate) fn uniform_port_index_info_from_names(
+    enabled: bool,
+    names: &[String],
+    types: &HashMap<String, PrimitiveType>,
+) -> Option<PortIndexInfo> {
+    if !enabled || names.is_empty() {
+        return None;
+    }
+    uniform_port_type_from_names(names, types).map(|elem_ty| PortIndexInfo {
+        count: names.len(),
+        elem_ty,
+    })
+}
+
+pub(crate) fn uniform_port_index_info_from_types(
+    enabled: bool,
+    count: usize,
+    types: impl IntoIterator<Item = PrimitiveType>,
+) -> Option<PortIndexInfo> {
+    if !enabled || count == 0 {
+        return None;
+    }
+    uniform_port_type_from_types(types).map(|elem_ty| PortIndexInfo { count, elem_ty })
+}
+
+fn uniform_port_type_from_names(
+    names: &[String],
+    types: &HashMap<String, PrimitiveType>,
+) -> Option<PrimitiveType> {
+    uniform_port_type_from_types(names.iter().filter_map(|name| types.get(name).copied()))
+}
+
+fn uniform_port_type_from_types(
+    types: impl IntoIterator<Item = PrimitiveType>,
+) -> Option<PrimitiveType> {
+    let mut it = types.into_iter();
+    let first = it.next().unwrap_or(PrimitiveType::F32);
+    if it.all(|ty| ty == first) {
+        Some(first)
+    } else {
+        None
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ScopeAnalysisCtx<'a> {
     pub(crate) policy: ScopePolicy,

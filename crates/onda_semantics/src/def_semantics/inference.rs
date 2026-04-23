@@ -17,9 +17,9 @@ use crate::builtins::{
     parse_buffer_samplerate_instance_base,
 };
 use crate::{
-    resolve_struct_field_decl, with_expr_diag_context, with_stmt_diag_context, AnalysisOptions,
-    FnSignature, ProcNestedArrayState, TypedBufferChannels, TypedFieldType, TypedFnParam,
-    TypedStructField,
+    push_semantic, resolve_struct_field_decl, with_expr_diag_context, with_stmt_diag_context,
+    AnalysisOptions, FnSignature, ProcNestedArrayState, TypedBufferChannels, TypedFieldType,
+    TypedFnParam, TypedStructField,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,10 +61,6 @@ pub(crate) struct InferredStructArrayParam {
 pub(crate) struct InferredProcArrayParam {
     pub(crate) proc_name: String,
     pub(crate) len: usize,
-}
-
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
 }
 
 pub(crate) fn infer_def_param_kinds(

@@ -1,9 +1,5 @@
 use super::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(crate) const PROC_FIELD_SENTINEL_PREFIX: &str = "__onda_proc_field__";
 pub(crate) const PROC_FIELD_SENTINEL_ARG: &str = "__proc_field";
 pub(crate) const PROC_INDEX_CALL_SENTINEL: &str = "__onda_proc_index_call";

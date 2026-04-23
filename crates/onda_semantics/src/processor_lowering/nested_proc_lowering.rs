@@ -1,9 +1,5 @@
 use super::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(super) fn rewrite_nested_proc_calls_in_expr(
     expr: &mut Expr,
     owner_proc: &str,

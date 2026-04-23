@@ -252,6 +252,125 @@ pub(super) struct PreparedUserCall<'a> {
     pub(super) ret_ty: ReturnType,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct UserCallSharedContext<'a> {
+    pub(super) module: LLVMModuleRef,
+    pub(super) context: LLVMContextRef,
+    pub(super) float_ty: LLVMTypeRef,
+    pub(super) sample_rate: f32,
+    pub(super) block_size: f32,
+    pub(super) fast_math: bool,
+    pub(super) struct_fields: &'a HashMap<String, Vec<TypedStructField>>,
+    pub(super) user_fn_param_names: &'a HashMap<String, Vec<String>>,
+    pub(super) user_fn_param_defaults: &'a HashMap<String, Vec<Option<Expr>>>,
+    pub(super) user_fn_param_kinds: &'a HashMap<String, Vec<TypedFnParam>>,
+    pub(super) user_fn_param_by_ref: &'a HashMap<String, Vec<bool>>,
+    pub(super) user_registry: *mut UserFnRegistry,
+    pub(super) builder: LLVMBuilderRef,
+}
+
+pub(super) struct LoweredUserCall {
+    pub(super) call: LLVMValueRef,
+    pub(super) ret_ty: ReturnType,
+}
+
+pub(super) trait SharedUserCallSpecialCaseBackend {
+    unsafe fn lower_buffer_read2_call(&mut self, args: &[CallArg]) -> Result<OrcValue, Diagnostic>;
+    unsafe fn lower_buffer_write2_call(&mut self, args: &[CallArg])
+        -> Result<OrcValue, Diagnostic>;
+
+    fn is_builtin_data_len_receiver(&self, base: &str) -> bool;
+    unsafe fn lower_data_len_call(
+        &mut self,
+        method_name: &str,
+        base: &str,
+        args: &[CallArg],
+    ) -> Result<OrcValue, Diagnostic>;
+
+    fn is_builtin_buffer_receiver(&self, base: &str) -> bool;
+    unsafe fn lower_buffer_chans_call(
+        &mut self,
+        method_name: &str,
+        base: &str,
+        args: &[CallArg],
+    ) -> Result<OrcValue, Diagnostic>;
+    unsafe fn lower_buffer_samplerate_call(
+        &mut self,
+        method_name: &str,
+        base: &str,
+        args: &[CallArg],
+    ) -> Result<OrcValue, Diagnostic>;
+
+    fn is_builtin_unsafe_data_receiver(&self, base: &str) -> bool;
+    unsafe fn lower_unsafe_data_read_call(
+        &mut self,
+        args: &[CallArg],
+    ) -> Result<OrcValue, Diagnostic>;
+    unsafe fn lower_unsafe_data_write_call(
+        &mut self,
+        args: &[CallArg],
+    ) -> Result<OrcValue, Diagnostic>;
+}
+
+fn prepend_receiver_arg(base: &str, args: &[CallArg]) -> Vec<CallArg> {
+    let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+    method_args.push(CallArg {
+        name: None,
+        expr: Expr::var(base.to_owned()),
+    });
+    method_args.extend(args.iter().cloned());
+    method_args
+}
+
+pub(super) unsafe fn try_lower_user_call_special_case_common<
+    B: SharedUserCallSpecialCaseBackend,
+>(
+    backend: &mut B,
+    name: &str,
+    args: &[CallArg],
+) -> Option<Result<OrcValue, Diagnostic>> {
+    if name == "__onda_buffer_read2" {
+        return Some(backend.lower_buffer_read2_call(args));
+    }
+    if name == "__onda_buffer_write2" {
+        return Some(backend.lower_buffer_write2_call(args));
+    }
+    if let Some(base) = parse_array_len_instance_base(name) {
+        if backend.is_builtin_data_len_receiver(base) {
+            return Some(backend.lower_data_len_call(name, base, args));
+        }
+    }
+    if let Some(base) = parse_buffer_chans_instance_base(name) {
+        if backend.is_builtin_buffer_receiver(base) {
+            return Some(backend.lower_buffer_chans_call(name, base, args));
+        }
+    }
+    if let Some(base) = parse_buffer_samplerate_instance_base(name) {
+        if backend.is_builtin_buffer_receiver(base) {
+            return Some(backend.lower_buffer_samplerate_call(name, base, args));
+        }
+    }
+    if let Some(base) = parse_unsafe_read_instance_base(name) {
+        if backend.is_builtin_unsafe_data_receiver(base) {
+            let method_args = prepend_receiver_arg(base, args);
+            return Some(backend.lower_unsafe_data_read_call(&method_args));
+        }
+    }
+    if let Some(base) = parse_unsafe_write_instance_base(name) {
+        if backend.is_builtin_unsafe_data_receiver(base) {
+            let method_args = prepend_receiver_arg(base, args);
+            return Some(backend.lower_unsafe_data_write_call(&method_args));
+        }
+    }
+    if name == "unsafe_read" {
+        return Some(backend.lower_unsafe_data_read_call(args));
+    }
+    if name == "unsafe_write" {
+        return Some(backend.lower_unsafe_data_write_call(args));
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn prepare_user_call_common<'a>(
     name: &str,
@@ -472,6 +591,103 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
         fn_ref,
         fn_ty,
         ret_ty,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) unsafe fn lower_user_call_common<'a>(
+    shared: UserCallSharedContext<'a>,
+    name: &str,
+    type_args: &[CallTypeArg],
+    args: &'a [CallArg],
+    lower_scalar_expr: &mut dyn FnMut(&Expr) -> Result<OrcValue, Diagnostic>,
+    infer_buffer_arg_signature: &mut dyn FnMut(
+        &Expr,
+        &str,
+    ) -> Result<
+        (PrimitiveType, TypedBufferChannels),
+        Diagnostic,
+    >,
+    infer_array_arg_signature: &mut dyn FnMut(
+        &Expr,
+        &str,
+    ) -> Result<(PrimitiveType, usize), Diagnostic>,
+    call_context: &str,
+    scalar_arg_name: &[u8],
+    cast_scalar_arg: &mut dyn FnMut(OrcValue, PrimitiveType, &[u8]) -> LLVMValueRef,
+    lower_struct_arg: &mut dyn FnMut(
+        &mut Vec<LLVMValueRef>,
+        &Expr,
+        &str,
+        bool,
+    ) -> Result<(), Diagnostic>,
+    lower_struct_array_arg: &mut dyn FnMut(
+        &mut Vec<LLVMValueRef>,
+        &Expr,
+        &str,
+    ) -> Result<(), Diagnostic>,
+    lower_proc_array_arg: &mut dyn FnMut(
+        &mut Vec<LLVMValueRef>,
+        &Expr,
+        &str,
+    ) -> Result<(), Diagnostic>,
+    lower_array_arg: &mut dyn FnMut(
+        &mut Vec<LLVMValueRef>,
+        &Expr,
+        Option<PrimitiveType>,
+    ) -> Result<(), Diagnostic>,
+    lower_buffer_arg: &mut dyn FnMut(&mut Vec<LLVMValueRef>, &Expr) -> Result<(), Diagnostic>,
+    call_name: &[u8],
+) -> Result<LoweredUserCall, Diagnostic> {
+    let prepared = prepare_user_call_common(
+        name,
+        type_args,
+        args,
+        shared.module,
+        shared.context,
+        shared.float_ty,
+        shared.sample_rate,
+        shared.block_size,
+        shared.fast_math,
+        shared.struct_fields,
+        shared.user_fn_param_names,
+        shared.user_fn_param_defaults,
+        shared.user_fn_param_kinds,
+        shared.user_fn_param_by_ref,
+        shared.user_registry,
+        lower_scalar_expr,
+        infer_buffer_arg_signature,
+        infer_array_arg_signature,
+        call_context,
+    )?;
+
+    let mut arg_values = Vec::new();
+    materialize_user_call_args_common(
+        name,
+        &prepared,
+        &mut arg_values,
+        scalar_arg_name,
+        call_context,
+        cast_scalar_arg,
+        lower_struct_arg,
+        lower_struct_array_arg,
+        lower_proc_array_arg,
+        lower_array_arg,
+        lower_buffer_arg,
+    )?;
+
+    let call = LLVMBuildCall2(
+        shared.builder,
+        prepared.fn_ty,
+        prepared.fn_ref,
+        arg_values.as_mut_ptr(),
+        arg_values.len() as u32,
+        call_name.as_ptr().cast(),
+    );
+
+    Ok(LoweredUserCall {
+        call,
+        ret_ty: prepared.ret_ty,
     })
 }
 

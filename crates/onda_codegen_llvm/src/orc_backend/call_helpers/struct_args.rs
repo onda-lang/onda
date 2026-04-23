@@ -1,28 +1,10 @@
 use super::super::*;
+use onda_semantics::internal_names::runtime_proc_array_active_symbol;
 
 fn struct_llvm_name(prefix: &str, suffix: &str) -> Vec<u8> {
     let mut name = format!("{prefix}_{suffix}").into_bytes();
     name.push(0);
     name
-}
-
-fn sanitize_runtime_symbol_component(name: &str) -> String {
-    name.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-}
-
-fn runtime_proc_array_active_symbol(array_base: &str) -> String {
-    format!(
-        "__onda_proc_block_active_{}",
-        sanitize_runtime_symbol_component(array_base)
-    )
 }
 
 fn resolve_runtime_proc_array_active_base<'a, T>(

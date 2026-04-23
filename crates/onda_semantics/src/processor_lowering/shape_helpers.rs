@@ -1,10 +1,6 @@
 use super::*;
 use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 fn is_proc_operator_helper_name(name: &str) -> bool {
     name.ends_with(PROC_STEP_FN_SUFFIX)
         || name.contains(PROC_CALL_OUT_FN_PREFIX)
@@ -883,13 +879,13 @@ pub(super) fn compute_proc_shape(
     // helper function calls during proc lowering.
     if ins.len() > 1
         && !in_array_slots.contains_key("ins")
-        && crate::pipeline::uniform_port_type(&ins, &in_types).is_some()
+        && uniform_port_index_info_from_names(true, &ins, &in_types).is_some()
     {
         in_array_slots.insert("ins".to_owned(), ins.clone());
     }
     if outs.len() > 1
         && !field_array_slots.contains_key("outs")
-        && crate::pipeline::uniform_port_type(&outs, &out_types).is_some()
+        && uniform_port_index_info_from_names(true, &outs, &out_types).is_some()
     {
         field_array_slots.insert("outs".to_owned(), outs.clone());
     }
@@ -1074,19 +1070,7 @@ pub(super) fn compute_proc_shape(
     };
     // Seed known_scalars with reserved names so they're visible for decl-order checks
     init_st.known_scalars.extend(reserved.iter().cloned());
-    for stmt in &proc.init {
-        analyze_init_stmt(
-            stmt,
-            InitStmtAnalysisCtx {
-                init: &init_ctx,
-                locals: &proc_locals,
-            },
-            &mut init_st,
-            0,
-            0,
-            errors,
-        );
-    }
+    analyze_owner_init_stmts(&proc.init, &init_ctx, &proc_locals, &mut init_st, errors);
     let mut state = convert_init_state_to_proc_fields(&init_st);
 
     // Non-init scopes: unified runtime analysis via register_scope_state + runtime stmt analysis.
@@ -1099,38 +1083,18 @@ pub(super) fn compute_proc_shape(
     let mut proc_state_tuples = init_st.state_tuples;
     let mut proc_struct_instances_typed = proc_struct_instances.clone();
 
-    rewrite_struct_array_inline_field_stmts(
-        &mut proc.init,
+    rewrite_owner_struct_array_inline_fields(
+        ExecutableOwnerBodies {
+            init: &mut proc.init,
+            block_pre: &mut proc.block_pre,
+            sample: &mut proc.sample,
+            block_post: &mut proc.block_post,
+            events: &mut proc.events,
+        },
         &proc_state_array_struct_roots,
         &typed_struct_defs,
         errors,
     );
-    rewrite_struct_array_inline_field_stmts(
-        &mut proc.block_pre,
-        &proc_state_array_struct_roots,
-        &typed_struct_defs,
-        errors,
-    );
-    rewrite_struct_array_inline_field_stmts(
-        &mut proc.block_post,
-        &proc_state_array_struct_roots,
-        &typed_struct_defs,
-        errors,
-    );
-    rewrite_struct_array_inline_field_stmts(
-        &mut proc.sample,
-        &proc_state_array_struct_roots,
-        &typed_struct_defs,
-        errors,
-    );
-    for event in &mut proc.events {
-        rewrite_struct_array_inline_field_stmts(
-            &mut event.body,
-            &proc_state_array_struct_roots,
-            &typed_struct_defs,
-            errors,
-        );
-    }
     for def in &mut proc.local_defs {
         rewrite_struct_array_inline_field_stmts(
             &mut def.body,
@@ -1334,227 +1298,85 @@ pub(super) fn compute_proc_shape(
     let init_writable_roots = collect_runtime_state_roots(&proc_state_scalars, &proc_state_arrays);
 
     // Compute port index info for proc scopes (procs always have explicit port blocks)
-    let port_index_ins = if !ins.is_empty() {
-        crate::pipeline::uniform_port_type(&ins, &in_types).map(|ty| PortIndexInfo {
-            count: ins.len(),
-            elem_ty: ty,
-        })
-    } else {
-        None
-    };
-    let port_index_outs = if !outs.is_empty() {
-        crate::pipeline::uniform_port_type(&outs, &out_types).map(|ty| PortIndexInfo {
-            count: outs.len(),
-            elem_ty: ty,
-        })
-    } else {
-        None
-    };
-    let port_index_params = {
-        if !param_specs.is_empty() {
-            let first_ty = param_specs[0]
-                .slots
-                .first()
-                .map(|s| s.ty)
-                .unwrap_or(PrimitiveType::F32);
-            if param_specs
-                .iter()
-                .flat_map(|s| &s.slots)
-                .all(|s| s.ty == first_ty)
-            {
-                Some(PortIndexInfo {
-                    count: param_specs.iter().map(|s| s.slots.len()).sum(),
-                    elem_ty: first_ty,
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
-
-    // Register + analyze block pre scope state
-    let block_locals = HashSet::new();
-    let empty_inputs = HashSet::new();
-    let empty_outputs = HashSet::new();
-    let block_forbidden = out_names.clone();
-    let mut block_pre_known_scalars = reserved.clone();
-    extend_known_scalars(
-        &mut block_pre_known_scalars,
-        proc_struct_instances_typed.keys(),
-    );
-    extend_known_scalars(&mut block_pre_known_scalars, state.nested_procs.keys());
-    extend_known_scalars(&mut block_pre_known_scalars, proc_state_arrays.keys());
-    register_and_analyze_runtime_scope(
-        proc.block_pre.iter(),
-        ScopeAnalysisCtx {
-            policy: ScopePolicy::Runtime(ScopeKind::Block),
-            input_names: &empty_inputs,
-            output_names: &empty_outputs,
-            param_names: &typed_param_names,
-            struct_defs: &typed_struct_defs,
-            fn_signatures: &proc_fn_signatures,
-            fn_return_types,
-            options,
-            port_index_ins,
-            port_index_outs,
-            port_index_params,
-        },
-        RuntimeRegistrationMode::BlockRoot,
-        &mut proc_state_scalars,
-        &proc_declared_symbols,
-        &proc_state_arrays,
-        &proc_state_array_struct_roots,
-        &state.nested_procs,
-        &state.nested_proc_arrays,
-        &proc_struct_instances_typed,
-        &ins_names,
-        &out_names,
-        &typed_param_names,
-        &block_locals,
-        block_pre_known_scalars,
-        LocalAliasTypes::new(),
-        HashMap::new(),
-        &block_forbidden,
-        &proc_state_tuples,
-        errors,
+    let port_index_ins = uniform_port_index_info_from_names(true, &ins, &in_types);
+    let port_index_outs = uniform_port_index_info_from_names(true, &outs, &out_types);
+    let port_index_params = uniform_port_index_info_from_types(
+        true,
+        param_specs.iter().map(|spec| spec.slots.len()).sum(),
+        param_specs
+            .iter()
+            .flat_map(|spec| spec.slots.iter().map(|slot| slot.ty)),
     );
 
-    // Register + analyze sample scope state
-    let mut sample_known_scalars = reserved.clone();
-    extend_known_scalars(
-        &mut sample_known_scalars,
-        proc_struct_instances_typed.keys(),
-    );
-    extend_known_scalars(&mut sample_known_scalars, state.nested_procs.keys());
-    extend_known_scalars(&mut sample_known_scalars, proc_state_arrays.keys());
-    let sample_locals = HashSet::new();
-    let sample_forbidden = HashSet::new();
-    register_and_analyze_runtime_scope(
-        proc.sample.iter(),
-        ScopeAnalysisCtx {
-            policy: ScopePolicy::Runtime(ScopeKind::Sample),
-            input_names: &ins_names,
-            output_names: &out_names,
-            param_names: &typed_param_names,
-            struct_defs: &typed_struct_defs,
-            fn_signatures: &proc_fn_signatures,
-            fn_return_types,
-            options,
-            port_index_ins,
-            port_index_outs,
-            port_index_params,
-        },
-        RuntimeRegistrationMode::None,
-        &mut proc_state_scalars,
-        &proc_declared_symbols,
-        &proc_state_arrays,
-        &proc_state_array_struct_roots,
-        &state.nested_procs,
-        &state.nested_proc_arrays,
-        &proc_struct_instances_typed,
-        &ins_names,
+    let analysis_plan_seeds = build_proc_owner_analysis_plan_seeds(
+        &reserved,
         &out_names,
-        &typed_param_names,
-        &sample_locals,
-        sample_known_scalars,
-        LocalAliasTypes::new(),
-        HashMap::new(),
-        &sample_forbidden,
-        &proc_state_tuples,
-        errors,
+        &proc_struct_instances_typed,
+        &state.nested_procs,
+        &proc_state_arrays,
     );
+    {
+        let mut runtime_state = ExecutableOwnerRuntimeState {
+            state_scalars: &mut proc_state_scalars,
+            declared_symbols: &proc_declared_symbols,
+            state_arrays: &proc_state_arrays,
+            state_array_struct_roots: &proc_state_array_struct_roots,
+            nested_proc_instances: &state.nested_procs,
+            proc_array_roots: &state.nested_proc_arrays,
+            struct_instances: &proc_struct_instances_typed,
+            state_tuples: &proc_state_tuples,
+        };
+        analyze_owner_runtime_scopes(
+            &mut runtime_state,
+            analysis_plan_seeds.runtime_scope_plans(
+                RuntimeScopeBodies {
+                    block_pre: &proc.block_pre,
+                    sample: &proc.sample,
+                    block_post: &proc.block_post,
+                },
+                RuntimeScopePlanInputs {
+                    sample_input_names: &ins_names,
+                    sample_output_names: &out_names,
+                    param_names: &typed_param_names,
+                    struct_defs: &typed_struct_defs,
+                    fn_signatures: &proc_fn_signatures,
+                    fn_return_types,
+                    options,
+                    port_index_ins,
+                    port_index_outs,
+                    port_index_params,
+                    registration_input_names: &ins_names,
+                    registration_output_names: &out_names,
+                    registration_param_names: &typed_param_names,
+                },
+            ),
+            errors,
+        );
 
-    let mut block_post_known_scalars = reserved.clone();
-    extend_known_scalars(
-        &mut block_post_known_scalars,
-        proc_struct_instances_typed.keys(),
-    );
-    extend_known_scalars(&mut block_post_known_scalars, state.nested_procs.keys());
-    extend_known_scalars(&mut block_post_known_scalars, proc_state_arrays.keys());
-    register_and_analyze_runtime_scope(
-        proc.block_post.iter(),
-        ScopeAnalysisCtx {
-            policy: ScopePolicy::Runtime(ScopeKind::Block),
-            input_names: &empty_inputs,
-            output_names: &empty_outputs,
-            param_names: &typed_param_names,
-            struct_defs: &typed_struct_defs,
-            fn_signatures: &proc_fn_signatures,
-            fn_return_types,
-            options,
-            port_index_ins,
-            port_index_outs,
-            port_index_params,
-        },
-        RuntimeRegistrationMode::BlockRoot,
-        &mut proc_state_scalars,
-        &proc_declared_symbols,
-        &proc_state_arrays,
-        &proc_state_array_struct_roots,
-        &state.nested_procs,
-        &state.nested_proc_arrays,
-        &proc_struct_instances_typed,
-        &ins_names,
-        &out_names,
-        &typed_param_names,
-        &block_locals,
-        block_post_known_scalars,
-        LocalAliasTypes::new(),
-        HashMap::new(),
-        &block_forbidden,
-        &proc_state_tuples,
-        errors,
-    );
-
-    // Analyze event statements via the same runtime statement analyzer path.
-    let final_state_roots = collect_runtime_state_roots(&proc_state_scalars, &proc_state_arrays);
-    let immutable_event_roots = final_state_roots
-        .difference(&init_writable_roots)
-        .cloned()
-        .collect::<HashSet<_>>();
-    let mut event_known_scalars_seed =
-        build_known_scalars_from_state(&reserved, &proc_state_scalars);
-    extend_known_scalars(
-        &mut event_known_scalars_seed,
-        proc_struct_instances_typed.keys(),
-    );
-    extend_known_scalars(&mut event_known_scalars_seed, state.nested_procs.keys());
-    extend_known_scalars(&mut event_known_scalars_seed, proc_state_arrays.keys());
-    let event_array_alias_seed = HashMap::new();
-    let event_immutable_param_seed = HashSet::new();
-    analyze_runtime_events(
-        &typed_events,
-        &event_known_scalars_seed,
-        &event_array_alias_seed,
-        &event_immutable_param_seed,
-        &init_writable_roots,
-        &immutable_event_roots,
-        &ins_names,
-        &out_names,
-        &proc_state_scalars,
-        &proc_declared_symbols,
-        &proc_state_arrays,
-        &proc_state_array_struct_roots,
-        &state.nested_procs,
-        &state.nested_proc_arrays,
-        &proc_struct_instances_typed,
-        ScopeAnalysisCtx {
-            policy: ScopePolicy::Event,
-            input_names: &ins_names,
-            output_names: &out_names,
-            param_names: &typed_param_names,
-            struct_defs: &typed_struct_defs,
-            fn_signatures: &proc_fn_signatures,
-            fn_return_types,
-            options,
-            port_index_ins,
-            port_index_outs,
-            port_index_params,
-        },
-        errors,
-    );
+        analyze_owner_events(
+            &runtime_state,
+            analysis_plan_seeds.event_plan(
+                runtime_state.state_scalars,
+                EventPlanInputs {
+                    typed_events: &typed_events,
+                    init_writable_roots: &init_writable_roots,
+                    input_names: &ins_names,
+                    output_names: &out_names,
+                    param_names: &typed_param_names,
+                    validation_input_names: &ins_names,
+                    validation_output_names: &out_names,
+                    struct_defs: &typed_struct_defs,
+                    fn_signatures: &proc_fn_signatures,
+                    fn_return_types,
+                    options,
+                    port_index_ins,
+                    port_index_outs,
+                    port_index_params,
+                },
+            ),
+            errors,
+        );
+    }
 
     // Merge new scalars from block/sample into state
     for (name, ty) in &proc_state_scalars {
@@ -1629,7 +1451,7 @@ pub(super) fn compute_proc_shape(
         }
         nested_proc_array_active_fields.insert(
             array_name.clone(),
-            runtime_proc_array_active_field_name(&array_name),
+            runtime_proc_array_active_symbol(&array_name),
         );
         nested_proc_array_slots.insert(array_name, slots);
     }

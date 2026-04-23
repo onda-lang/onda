@@ -2888,6 +2888,75 @@ fn unsafe_builtins_support_top_level_arrays() {
 }
 
 #[test]
+fn shared_scalar_dispatch_handles_sample_var_and_user_calls() {
+    let frames = 4;
+    let src = r#"
+params { level = 4.0 }
+outs { out1 }
+
+def half(x) {
+  return x * 0.5
+}
+
+init {
+  buf: f32[2]
+}
+
+sample {
+  idx: i32 = 1
+  unsafe_write(buf, idx, level)
+  out1 = half(unsafe_read(buf, idx))
+}
+"#;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 2.0, 1e-6);
+    }
+}
+
+#[test]
+fn shared_scalar_dispatch_handles_def_index_and_len_calls() {
+    let frames = 4;
+    let src = r#"
+outs { out1 }
+
+def pick_plus_len(arr: f32[], i: i32) {
+  return arr[i] + f32(arr.len())
+}
+
+sample {
+  vals: f32[3] = [2.0, 3.0, 5.0]
+  idx: i32 = 1
+  out1 = pick_plus_len(vals, idx)
+}
+"#;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 6.0, 1e-6);
+    }
+}
+
+#[test]
 
 fn multitap_feedback_struct_data_example_compiles_and_runs() {
     let frames = 128;

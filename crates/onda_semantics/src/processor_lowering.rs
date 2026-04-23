@@ -22,10 +22,6 @@ use shape_helpers::*;
 
 const BUILTIN_PROC_INIT_EVENT_NAME: &str = "init";
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 fn is_builtin_proc_init_event_name(name: &str) -> bool {
     name == BUILTIN_PROC_INIT_EVENT_NAME
 }
@@ -245,25 +241,6 @@ pub(crate) struct ProcessorDesugarResult {
 }
 
 const ALLOWED_SAMPLE_OVERSAMPLE_FACTORS: &[i64] = &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
-
-fn sanitize_runtime_symbol_component(name: &str) -> String {
-    name.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-}
-
-pub(crate) fn runtime_proc_array_active_field_name(array_base: &str) -> String {
-    format!(
-        "__onda_proc_block_active_{}",
-        sanitize_runtime_symbol_component(array_base)
-    )
-}
 
 pub(crate) fn validated_sample_oversample_factor(
     factor_expr: Option<&Expr>,

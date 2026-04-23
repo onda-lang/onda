@@ -14,16 +14,20 @@ mod builtins;
 mod decl_symbols;
 mod declaration_coercion;
 mod def_semantics;
+mod diag_utils;
+mod executable_owner_analysis;
 mod expr_analysis;
 mod expr_typing;
 mod expr_validation;
 mod generic_specialization;
+pub mod internal_names;
 mod io_state_helpers;
 mod namespacing;
 mod pipeline;
 mod port_coercion;
 mod proc_call_rewrite;
 mod proc_call_support;
+mod proc_resolution;
 mod proc_state_rewrite;
 mod processor_lowering;
 mod stmt_analysis;
@@ -32,10 +36,13 @@ use builtins::*;
 use decl_symbols::*;
 use declaration_coercion::*;
 use def_semantics::*;
+pub(crate) use diag_utils::push_semantic;
+use executable_owner_analysis::*;
 use expr_analysis::{build_expr_env, build_scope_expr_env, ExprEnv, FnSignature, ScopeExprInputs};
 use expr_typing::*;
 use expr_validation::*;
 use generic_specialization::*;
+pub(crate) use internal_names::runtime_proc_array_active_symbol;
 use io_state_helpers::*;
 use namespacing::*;
 pub use pipeline::{analyze, analyze_with_options, lower_graphs_for_inspection_with_options};
@@ -45,15 +52,9 @@ use proc_call_support::{
     rewrite_proc_alias_calls_for_validation, rewrite_proc_alias_calls_in_expr, split_dot_path,
     ProcArrayAliasInfo,
 };
+use proc_resolution::*;
 use proc_state_rewrite::*;
 use stmt_analysis::*;
-
-pub mod internal_names {
-    pub const PROC_INDEX_BUFFER_SELECT_SENTINEL: &str =
-        crate::proc_state_rewrite::PROC_INDEX_BUFFER_SELECT_SENTINEL;
-    pub const PROC_INDEX_BASE_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_BASE_ARG;
-    pub const PROC_INDEX_EXPR_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_EXPR_ARG;
-}
 
 #[derive(Debug, Clone)]
 pub struct TypedProgram {

@@ -10,12 +10,9 @@ use crate::proc_state_rewrite::{
     SAFI_FIELD_IDX_ARG, SAFI_IDX_ARG, STRUCT_ARRAY_FIELD_INDEX_SENTINEL,
 };
 use crate::{
-    ArrayStructRootInfo, LocalAliasTypes, LocalArrayAliasInfo, TypedFieldType, TypedStructField,
+    push_semantic, ArrayStructRootInfo, LocalAliasTypes, LocalArrayAliasInfo, TypedFieldType,
+    TypedStructField,
 };
-
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
 
 #[derive(Debug, Clone)]
 enum StructArrayLayoutKind {

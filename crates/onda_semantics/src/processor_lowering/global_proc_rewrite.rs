@@ -1,78 +1,10 @@
 use super::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 #[derive(Debug, Clone)]
 struct RuntimeManagedProcArray {
     proc_name: String,
     slots: Vec<String>,
     active_symbol: String,
-}
-
-fn sanitize_runtime_symbol_component(name: &str) -> String {
-    name.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-}
-
-fn runtime_proc_array_active_symbol(array_base: &str) -> String {
-    format!(
-        "__onda_proc_block_active_{}",
-        sanitize_runtime_symbol_component(array_base)
-    )
-}
-
-fn specialized_proc_template_bases(proc_symbols: &HashSet<String>) -> HashSet<String> {
-    proc_symbols
-        .iter()
-        .filter_map(|name| {
-            name.rsplit_once(".__gen__")
-                .map(|(base, _)| base.to_owned())
-        })
-        .collect()
-}
-
-fn resolve_proc_ctor_symbol_name(
-    ctor_name: &str,
-    current_ns: &str,
-    proc_symbols: &HashSet<String>,
-) -> Option<String> {
-    let direct = if ctor_name.contains("::") {
-        proc_symbols
-            .contains(ctor_name)
-            .then_some(ctor_name.to_owned())
-    } else {
-        resolve_unqualified_symbol_name(ctor_name, current_ns, proc_symbols)
-    };
-    if direct.is_some() {
-        return direct;
-    }
-
-    let resolved_base = if ctor_name.contains("::") {
-        ctor_name.to_owned()
-    } else {
-        let template_bases = specialized_proc_template_bases(proc_symbols);
-        resolve_unqualified_symbol_name(ctor_name, current_ns, &template_bases)?
-    };
-    let prefix = format!("{resolved_base}.__gen__");
-    let mut matches = proc_symbols
-        .iter()
-        .filter(|name| name.starts_with(&prefix))
-        .cloned()
-        .collect::<Vec<_>>();
-    if matches.len() == 1 {
-        matches.pop()
-    } else {
-        None
-    }
 }
 
 fn try_dynamic_proc_call_meta<'a>(

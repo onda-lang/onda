@@ -1,10 +1,6 @@
 use super::*;
 use onda_frontend::Span;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(super) fn parent_namespace(ns: &str) -> Option<&str> {
     ns.rsplit_once("::").map(|(parent, _)| parent)
 }

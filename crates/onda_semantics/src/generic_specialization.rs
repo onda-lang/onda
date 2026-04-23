@@ -6,10 +6,6 @@ use onda_frontend::ast::{FnReturnScalarType, FnReturnType};
 mod proc_specialization;
 pub(crate) use proc_specialization::*;
 
-fn push_semantic(diag: DiagCtx, errors: &mut Vec<Diagnostic>, message: impl Into<String>) {
-    errors.push(diag.semantic(message, 0, 0));
-}
-
 pub(crate) fn primitive_sig_code_for_specialization(ty: PrimitiveType) -> &'static str {
     match ty {
         PrimitiveType::F32 => "f32",
