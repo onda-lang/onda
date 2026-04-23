@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-cpal = "0.16"
+cpal = { version = "0.16", features = ["audio_thread_priority"] }
 libc = "0.2"
 notify = { version = "7", default-features = false, features = ["macos_kqueue"] }
 notify-debouncer-mini = "0.5"
