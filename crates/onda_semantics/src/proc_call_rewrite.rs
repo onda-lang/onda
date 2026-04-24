@@ -193,6 +193,7 @@ pub(super) fn build_proc_read_helper(
 
     FunctionDef {
         loc: Default::default(),
+        is_const: false,
         type_params: Vec::new(),
         name: proc_read_helper_name(owner_proc, len, unsafe_mode),
         params,
@@ -326,6 +327,7 @@ pub(super) fn build_proc_write_helper(
 
     FunctionDef {
         loc: Default::default(),
+        is_const: false,
         type_params: Vec::new(),
         name: proc_write_helper_name(owner_proc, slots, unsafe_mode),
         params,

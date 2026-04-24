@@ -322,6 +322,25 @@ pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType,
             };
             parse_scalar(scalar_pair).map(FnReturnType::Scalar)
         }
+        Rule::fn_return_array_type => {
+            let mut inner = inner.into_inner();
+            let Some(elem_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing function return array element type",
+                )]);
+            };
+            let Some(size_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing function return array size",
+                )]);
+            };
+            Ok(FnReturnType::Array {
+                elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+                size: parse_expr(size_pair)?,
+            })
+        }
         Rule::fn_return_tuple_type => {
             let elems: Result<Vec<FnReturnScalarType>, Vec<Diagnostic>> = inner
                 .into_inner()

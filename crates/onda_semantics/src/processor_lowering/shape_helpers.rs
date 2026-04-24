@@ -1225,6 +1225,7 @@ pub(super) fn compute_proc_shape(
                     defaults: Vec::new(),
                     param_types: Vec::new(),
                     type_params: Vec::new(),
+                    readonly_array_params: HashSet::new(),
                 },
             );
 

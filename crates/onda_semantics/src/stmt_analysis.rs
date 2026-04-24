@@ -217,8 +217,11 @@ pub(crate) fn build_scope_stmt_expr_env<'a>(
     array_vars: &'a HashMap<String, usize>,
     scope: ScopeKind,
 ) -> StmtExprAnalysisEnv<'a> {
+    let mut expr_env =
+        build_scope_expr_env(inputs, known_scalars, local_aliases, array_vars, scope);
+    expr_env.local_array_aliases = local_array_aliases;
     build_stmt_expr_env(
-        build_scope_expr_env(inputs, known_scalars, local_aliases, array_vars, scope),
+        expr_env,
         inputs.state_scalars,
         inputs.declared_symbols,
         local_aliases,
@@ -251,15 +254,17 @@ pub(crate) fn build_scope_stmt_expr_env_with_tuples<'a>(
     scope: ScopeKind,
     tuple_vars: &'a HashMap<String, usize>,
 ) -> StmtExprAnalysisEnv<'a> {
+    let mut expr_env = build_scope_expr_env_with_tuples(
+        inputs,
+        known_scalars,
+        local_aliases,
+        array_vars,
+        scope,
+        tuple_vars,
+    );
+    expr_env.local_array_aliases = local_array_aliases;
     build_stmt_expr_env(
-        build_scope_expr_env_with_tuples(
-            inputs,
-            known_scalars,
-            local_aliases,
-            array_vars,
-            scope,
-            tuple_vars,
-        ),
+        expr_env,
         inputs.state_scalars,
         inputs.declared_symbols,
         local_aliases,

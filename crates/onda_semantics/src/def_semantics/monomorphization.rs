@@ -442,6 +442,10 @@ fn generate_mono_def(
                             None => FnReturnScalarType::Named(name.clone()),
                         },
                     }),
+                    FnReturnType::Array { elem, size } => FnReturnType::Array {
+                        elem: *elem,
+                        size: size.clone(),
+                    },
                     FnReturnType::Tuple(elems) => FnReturnType::Tuple(
                         elems
                             .iter()

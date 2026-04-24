@@ -964,7 +964,14 @@ pub(super) fn parse_proc_block(
                 graph = Some(parse_graph_block(child)?);
             }
             Rule::def_block => {
-                local_defs.push(parse_def_block(child)?);
+                let def = parse_def_block(child)?;
+                if def.is_const {
+                    return Err(vec![syntax_at_loc(
+                        def.loc.as_ref(),
+                        "const defs are only supported at top-level and namespace scope",
+                    )]);
+                }
+                local_defs.push(def);
             }
             _ => {}
         }
@@ -1198,6 +1205,7 @@ pub(super) fn merge_inferred_integer_type(
 
 pub(super) fn parse_def_block(block_pair: Pair<'_, Rule>) -> Result<FunctionDef, Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&block_pair);
+    let is_const = block_pair.as_str().trim_start().starts_with("const");
     let mut name: Option<String> = None;
     let mut type_params = Vec::new();
     let mut params = Vec::new();
@@ -1247,6 +1255,7 @@ pub(super) fn parse_def_block(block_pair: Pair<'_, Rule>) -> Result<FunctionDef,
     Ok(FunctionDef {
         loc,
         name,
+        is_const,
         type_params,
         params,
         return_ty,

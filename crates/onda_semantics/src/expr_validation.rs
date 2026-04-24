@@ -625,6 +625,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 for (idx, arg) in resolved.into_iter().enumerate() {
                     if let Some(arg) = arg {
                         let param_ty = sig.param_types.get(idx).and_then(|t| t.as_ref());
+                        let param_readonly = sig
+                            .params
+                            .get(idx)
+                            .is_some_and(|param| sig.readonly_array_params.contains(param));
                         if let Some(FnParamType::Buffer(buffer_ty)) = param_ty {
                             validate_buffer_param_call_arg(
                                 name,
@@ -638,20 +642,40 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             );
                             continue;
                         }
-                        if matches!(
-                            param_ty,
-                            Some(FnParamType::Array(_))
-                                | Some(FnParamType::ArrayGeneric(_))
-                                | Some(FnParamType::SizedArray { .. })
-                                | Some(FnParamType::BareBuffer)
-                        ) {
+                        if is_function_array_param(param_ty) {
+                            if reject_immutable_array_call_arg(
+                                name,
+                                &sig.params[idx],
+                                param_readonly,
+                                arg,
+                                env,
+                                expr.loc(),
+                                errors,
+                            ) {
+                                continue;
+                            }
                             if matches!(arg, Expr::Slice { .. }) {
                                 validate_expr(arg, env, errors);
                             }
-                            // Array and bare buffer params accept data-like args.
+                            // Array params accept data-like args.
+                            continue;
+                        }
+                        if matches!(param_ty, Some(FnParamType::BareBuffer)) {
+                            // Bare buffer params accept data-like args.
                             continue;
                         }
                         if param_ty.is_none() && is_by_ref_call_arg_expr(arg, env) {
+                            if reject_immutable_array_call_arg(
+                                name,
+                                &sig.params[idx],
+                                param_readonly,
+                                arg,
+                                env,
+                                expr.loc(),
+                                errors,
+                            ) {
+                                continue;
+                            }
                             continue;
                         }
                         if let Expr::Var { name: v, .. } = arg {
@@ -803,6 +827,52 @@ fn is_by_ref_call_arg_expr(expr: &Expr, env: ExprEnv<'_>) -> bool {
         }
         _ => false,
     }
+}
+
+fn immutable_array_alias_arg_name<'a>(expr: &'a Expr, env: ExprEnv<'_>) -> Option<&'a str> {
+    let name = match expr {
+        Expr::Var { name, .. } => name.as_str(),
+        Expr::Slice { base, .. } => base.as_str(),
+        _ => return None,
+    };
+    env.local_array_aliases
+        .get(name)
+        .filter(|alias| !alias.writable)
+        .map(|_| name)
+}
+
+fn is_function_array_param(param_ty: Option<&FnParamType>) -> bool {
+    matches!(
+        param_ty,
+        Some(FnParamType::Array(_))
+            | Some(FnParamType::ArrayGeneric(_))
+            | Some(FnParamType::SizedArray { .. })
+    )
+}
+
+fn reject_immutable_array_call_arg(
+    fn_name: &str,
+    param_name: &str,
+    param_readonly: bool,
+    arg: &Expr,
+    env: ExprEnv<'_>,
+    call_loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Some(alias_name) = immutable_array_alias_arg_name(arg, env) else {
+        return false;
+    };
+    if param_readonly {
+        return false;
+    }
+    push_loc_error(
+        errors,
+        arg.loc().or(call_loc),
+        format!(
+            "cannot pass immutable array alias '{alias_name}' to mutable array parameter '{param_name}' of function '{fn_name}'"
+        ),
+    );
+    true
 }
 
 fn is_builtin_unsafe_data_receiver(base: &str, env: ExprEnv<'_>) -> bool {
@@ -1576,6 +1646,20 @@ fn validate_unsafe_data_builtin_call(
                             "buffer access '{}' in builtin '{}'",
                             base, name
                         )),
+                    );
+                }
+                if name == "unsafe_write"
+                    && env
+                        .local_array_aliases
+                        .get(base)
+                        .is_some_and(|alias| !alias.writable)
+                {
+                    push_loc_error(
+                        errors,
+                        first_arg.expr.loc().or(loc),
+                        format!(
+                            "builtin 'unsafe_write' cannot write immutable array alias '{base}'"
+                        ),
                     );
                 }
                 let mut is_valid_primitive_data = false;

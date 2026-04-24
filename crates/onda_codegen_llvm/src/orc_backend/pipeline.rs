@@ -6,6 +6,84 @@ struct PreparedCodegenLayouts {
     state_total_size_bytes: usize,
 }
 
+fn const_array_info_map(typed: &TypedProgram) -> HashMap<String, TypedArrayInfo> {
+    typed
+        .const_arrays
+        .iter()
+        .map(|array| {
+            (
+                array.name.clone(),
+                TypedArrayInfo {
+                    elem_ty: array.elem_ty,
+                    len: array.len,
+                    offset: 0,
+                },
+            )
+        })
+        .collect()
+}
+
+unsafe fn llvm_const_for_typed_value(
+    context: LLVMContextRef,
+    value: TypedConstValue,
+    ty: PrimitiveType,
+) -> Result<LLVMValueRef, Diagnostic> {
+    Ok(match (ty, value) {
+        (PrimitiveType::F32, TypedConstValue::F32(v)) => {
+            LLVMConstReal(llvm_ty_for_primitive(context, ty), v as f64)
+        }
+        (PrimitiveType::F64, TypedConstValue::F64(v)) => {
+            LLVMConstReal(llvm_ty_for_primitive(context, ty), v)
+        }
+        (PrimitiveType::I32, TypedConstValue::I32(v)) => {
+            LLVMConstInt(llvm_ty_for_primitive(context, ty), v as u64, 1)
+        }
+        (PrimitiveType::I64, TypedConstValue::I64(v)) => {
+            LLVMConstInt(llvm_ty_for_primitive(context, ty), v as u64, 1)
+        }
+        (PrimitiveType::Bool, TypedConstValue::Bool(v)) => {
+            LLVMConstInt(llvm_ty_for_primitive(context, ty), u64::from(v), 0)
+        }
+        (expected, actual) => {
+            return Err(Diagnostic::internal(format!(
+                "const array value type mismatch: expected {:?}, got {:?}",
+                expected, actual
+            )));
+        }
+    })
+}
+
+unsafe fn build_const_array_globals(
+    typed: &TypedProgram,
+    module: LLVMModuleRef,
+    context: LLVMContextRef,
+) -> Result<HashMap<String, LLVMValueRef>, Diagnostic> {
+    let mut out = HashMap::new();
+    let i32_ty = LLVMInt32TypeInContext(context);
+    for array in &typed.const_arrays {
+        let elem_ty = llvm_ty_for_primitive(context, array.elem_ty);
+        let array_ty = LLVMArrayType2(elem_ty, array.len as u64);
+        let mut values = Vec::with_capacity(array.values.len());
+        for value in &array.values {
+            values.push(llvm_const_for_typed_value(context, *value, array.elem_ty)?);
+        }
+        let init = LLVMConstArray2(elem_ty, values.as_mut_ptr(), values.len() as u64);
+        let llvm_name = CString::new(format!(
+            "__onda_const_array_{}",
+            sanitize_runtime_symbol_component(&array.name)
+        ))
+        .map_err(|_| Diagnostic::internal("invalid const array global name"))?;
+        let global = LLVMAddGlobal(module, array_ty, llvm_name.as_ptr());
+        LLVMSetInitializer(global, init);
+        LLVMSetGlobalConstant(global, 1);
+        LLVMSetLinkage(global, llvm_sys::LLVMLinkage::LLVMInternalLinkage);
+        let mut indices = [LLVMConstInt(i32_ty, 0, 0), LLVMConstInt(i32_ty, 0, 0)];
+        let base_ptr = LLVMConstInBoundsGEP2(array_ty, global, indices.as_mut_ptr(), 2);
+        out.insert(array.name.clone(), base_ptr);
+    }
+    Ok(out)
+}
+
 pub(crate) fn compile_orc(
     typed: &TypedProgram,
     sample_rate: f32,
@@ -435,14 +513,25 @@ unsafe fn build_optimized_module(
     LLVMSetDataLayout(module, data_layout.as_ptr());
 
     let result = (|| {
-        let mut user_fns =
-            build_user_functions_ir(typed, module, context, sample_rate, block_size, fast_math)?;
+        let const_arrays = const_array_info_map(typed);
+        let const_array_base_ptrs = build_const_array_globals(typed, module, context)?;
+        let mut user_fns = build_user_functions_ir(
+            typed,
+            module,
+            context,
+            &const_array_base_ptrs,
+            sample_rate,
+            block_size,
+            fast_math,
+        )?;
 
         build_init_ir(
             typed,
             module,
             context,
             &mut user_fns,
+            &const_arrays,
+            &const_array_base_ptrs,
             sample_rate,
             block_size,
             fast_math,
@@ -452,6 +541,8 @@ unsafe fn build_optimized_module(
             module,
             context,
             &mut user_fns,
+            &const_arrays,
+            &const_array_base_ptrs,
             sample_rate,
             block_size,
             fast_math,
@@ -463,6 +554,8 @@ unsafe fn build_optimized_module(
             module,
             context,
             &mut user_fns,
+            &const_arrays,
+            &const_array_base_ptrs,
             sample_rate,
             block_size,
             fast_math,

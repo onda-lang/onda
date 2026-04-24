@@ -732,15 +732,57 @@ User-defined compile-time constants:
 ```onda
 const MaxVoices = 8
 const Hop: i32 = BLOCK_SIZE / 2
+const Scale: f32[3] = [0.5, 1.0, 2.0]
+
+const def twice(x: f32) -> f32:
+  return x * 2.0
+
+const TwiceHalf = twice(0.5)
+const Table: f32[2] = [twice(0.25), twice(0.5)]
+
+const def ramp() -> f32[4]:
+  values: f32[4]
+  for i in 0..4:
+    values[i] = f32(i) * 0.25
+  return values
+
+const Ramp: f32[4] = ramp()
+
+const def scaled(xs: f32[3], gain: f32) -> f32[3]:
+  values: f32[3]
+  for i in 0..3:
+    values[i] = xs[i] * gain
+  return values
+
+const Scaled: f32[3] = scaled(Scale, 0.5)
+
+def sum_edges(xs: f32[]):
+  return xs[0] + xs[xs.len() - 1]
+
+const SumSource: f32[3] = [0.25, 0.5, 1.0]
+
+outs:
+  out1
+
+sample:
+  out1 = sum_edges(SumSource)
 ```
 
 Rules:
 - `const NAME = expr` and `const NAME: T = expr` are supported
+- fixed-size primitive const arrays are supported at top level and namespace scope with `const NAME: T[N] = [ ... ]` or first-element inference
 - `expr` must be compile-time evaluable
 - `const` is supported at top level, inside namespaces, and inside executable scopes
 - namespace consts can be referenced through qualified paths such as `NS::VALUE`
+- scalar-returning and fixed-array-returning `const def` helpers are supported at top level and namespace scope for later const-array initializers
+- top-level and namespace scalar `const` declarations can call scalar-returning `const def`s, for example `const X = helper(0.5)`
+- untyped scalar const declarations preserve full `f64` / `i64` precision until the value's eventual use site applies its normal type rules
+- `const def` params support primitive scalars and fixed-size primitive arrays
+- array-returning `const def` bodies can use local fixed primitive arrays, indexed local-array reads/writes, `if`, `for`, `loop`, `return`, pure builtin math, and calls to earlier visible const defs
+- const arrays and const slices can be passed to ordinary runtime `def` array params when the callee param is inferred read-only
+- writes through an array param, writes through its aliases, `unsafe_write`, or forwarding to a mutable callee make the param mutable and reject const-array args
 - reassignment is rejected
-- forward references are not currently supported
+- forward references, recursion, and mutual recursion are rejected
 
 ### 5.3 Control flow
 
@@ -764,12 +806,17 @@ for i in 0..8:
 
 for i @ -1 in 10..0:
   dst[i] = src[i]
+
+loop 8:
+  sum = sum + taps[_]
 ```
 
 Loop rules:
 - `@ STEP` defaults to `1`
 - `@ 0` is invalid
 - descending loops use a negative step
+- `loop N` is shorthand for `for _ in 0..N`
+- inside `loop N`, `_` is the loop index
 - loop variables are local to the loop body
 - a fresh symbol created inside a loop does not escape the loop
 

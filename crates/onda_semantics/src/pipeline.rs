@@ -27,15 +27,16 @@ fn preprocess_program_for_analysis(
 ) -> Result<Program, Vec<Diagnostic>> {
     validate_analysis_options(options)?;
     inject_auto_std_math(&mut program)?;
+    Ok(program)
+}
 
-    let mut errors = Vec::new();
+fn evaluate_asserts(program: &mut Program, options: AnalysisOptions, errors: &mut Vec<Diagnostic>) {
     for block in &program.blocks {
         let Block::Assert(assert_decl) = block else {
             continue;
         };
         let context = "assert condition";
-        if let Some(passed) = eval_const_bool_expr(&assert_decl.expr, options, context, &mut errors)
-        {
+        if let Some(passed) = eval_const_bool_expr(&assert_decl.expr, options, context, errors) {
             if !passed {
                 errors.push(Diagnostic::semantic_span(
                     "assert failed",
@@ -45,10 +46,2453 @@ fn preprocess_program_for_analysis(
         }
     }
     program.blocks.retain(|b| !matches!(b, Block::Assert(_)));
-    if !errors.is_empty() {
-        return Err(errors);
+}
+
+fn is_const_array_decl(decl: &onda_frontend::ConstDecl) -> bool {
+    matches!(decl.ty, Some(ConstType::Array { .. }))
+        || matches!(
+            decl.expr,
+            Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } | Expr::Slice { .. }
+        )
+}
+
+fn const_array_info_map(const_arrays: &[TypedConstArray]) -> HashMap<String, TypedArrayInfo> {
+    const_arrays
+        .iter()
+        .map(|array| {
+            (
+                array.name.clone(),
+                TypedArrayInfo {
+                    elem_ty: array.elem_ty,
+                    len: array.len,
+                    offset: 0,
+                },
+            )
+        })
+        .collect()
+}
+
+fn typed_const_expr_with_loc(value: TypedConstValue, loc: SourceLoc) -> Expr {
+    typed_const_expr(value).with_loc(loc)
+}
+
+fn const_array_literal_expr(values: &[TypedConstValue], loc: SourceLoc) -> Expr {
+    Expr::ArrayLiteral {
+        loc: loc.into(),
+        values: values
+            .iter()
+            .map(|value| typed_const_expr_with_loc(*value, loc))
+            .collect(),
     }
-    Ok(program)
+}
+
+fn typed_const_value_type(value: TypedConstValue) -> PrimitiveType {
+    match value {
+        TypedConstValue::F32(_) => PrimitiveType::F32,
+        TypedConstValue::F64(_) => PrimitiveType::F64,
+        TypedConstValue::I32(_) => PrimitiveType::I32,
+        TypedConstValue::I64(_) => PrimitiveType::I64,
+        TypedConstValue::Bool(_) => PrimitiveType::Bool,
+    }
+}
+
+const CONST_DEF_LOOP_ITERATION_LIMIT: usize = 1_000_000;
+
+#[derive(Debug, Clone, PartialEq)]
+struct ConstEvalArray {
+    elem_ty: PrimitiveType,
+    values: Vec<TypedConstValue>,
+}
+
+impl ConstEvalArray {
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ConstEvalValue {
+    Scalar(TypedConstValue),
+    Array(ConstEvalArray),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum ConstDefReturn {
+    Scalar(PrimitiveType),
+    Array { elem_ty: PrimitiveType, len: usize },
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum ConstDefParamKind {
+    Scalar(PrimitiveType),
+    Array { elem_ty: PrimitiveType, len: usize },
+}
+
+#[derive(Copy, Clone)]
+struct ConstDefRegistry<'a> {
+    defs: &'a HashMap<String, FunctionDef>,
+    order: &'a HashMap<String, usize>,
+}
+
+fn zero_const_value(ty: PrimitiveType) -> TypedConstValue {
+    match ty {
+        PrimitiveType::F32 => TypedConstValue::F32(0.0),
+        PrimitiveType::F64 => TypedConstValue::F64(0.0),
+        PrimitiveType::I32 => TypedConstValue::I32(0),
+        PrimitiveType::I64 => TypedConstValue::I64(0),
+        PrimitiveType::Bool => TypedConstValue::Bool(false),
+    }
+}
+
+fn fold_const_array_expr(
+    expr: &mut Expr,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+    inline_array_vars: bool,
+) {
+    let loc = expr.loc();
+    if let Expr::Var { name, .. } = expr {
+        if let Some(ConstValue::Scalar(value)) = const_values.get(name) {
+            *expr = typed_const_expr_with_loc(*value, loc);
+            return;
+        }
+    }
+    if inline_array_vars {
+        if let Expr::Var { name, .. } = expr {
+            if let Some(ConstValue::Array { values, .. }) = const_values.get(name) {
+                *expr = const_array_literal_expr(values, loc);
+                return;
+            }
+        }
+    }
+
+    match expr {
+        Expr::Index { base, index, .. } => {
+            fold_const_array_expr(index, const_values, options, errors, false);
+            let Some(ConstValue::Array { len, values, .. }) = const_values.get(base) else {
+                return;
+            };
+            if !can_eval_const_expr_exact_int(index) {
+                return;
+            }
+            let Some(raw_idx) = eval_const_expr_i64_exact(
+                index,
+                options,
+                &format!("const array '{base}' index"),
+                errors,
+            ) else {
+                return;
+            };
+            let Ok(idx) = usize::try_from(raw_idx) else {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "const array '{base}' index {raw_idx} is out of bounds for length {len}"
+                    ),
+                    expr.loc(),
+                ));
+                return;
+            };
+            let Some(value) = values.get(idx).copied() else {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "const array '{base}' index {raw_idx} is out of bounds for length {len}"
+                    ),
+                    expr.loc(),
+                ));
+                return;
+            };
+            *expr = typed_const_expr_with_loc(value, loc);
+        }
+        Expr::UserCall { name, args, .. } => {
+            for arg in args.iter_mut() {
+                fold_const_array_expr(&mut arg.expr, const_values, options, errors, false);
+            }
+            if !args.is_empty() {
+                return;
+            }
+            let Some(base) = parse_array_len_instance_base(name) else {
+                return;
+            };
+            if let Some(ConstValue::Array { len, .. }) = const_values.get(base) {
+                *expr = Expr::int(*len as i64).with_loc(loc);
+            }
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                fold_const_array_expr(start, const_values, options, errors, false);
+            }
+            if let Some(end) = end {
+                fold_const_array_expr(end, const_values, options, errors, false);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            fold_const_array_expr(&mut spec.size, const_values, options, errors, false);
+            if let Some(init) = init {
+                for value in init {
+                    fold_const_array_expr(value, const_values, options, errors, false);
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            fold_const_array_expr(lhs, const_values, options, errors, false);
+            fold_const_array_expr(rhs, const_values, options, errors, false);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                fold_const_array_expr(arg, const_values, options, errors, false);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            fold_const_array_expr(expr, const_values, options, errors, false);
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                fold_const_array_expr(value, const_values, options, errors, false);
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+}
+
+fn const_def_param_signature(
+    def: &FunctionDef,
+    options: AnalysisOptions,
+    const_values: &HashMap<String, ConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Vec<ConstDefParamKind>> {
+    let mut out = Vec::with_capacity(def.params.len());
+    for param in &def.params {
+        match param.ty.as_ref() {
+            Some(FnParamType::Primitive(ty)) => out.push(ConstDefParamKind::Scalar(*ty)),
+            Some(FnParamType::SizedArray {
+                elem: Some(elem_ty),
+                generic_name: None,
+                size,
+            }) => {
+                let mut size = size.clone();
+                fold_const_array_expr(&mut size, const_values, options, errors, false);
+                let len = eval_data_size_expr(
+                    &size,
+                    options,
+                    &format!(
+                        "const def '{}' parameter '{}' array size",
+                        def.name, param.name
+                    ),
+                    errors,
+                )?;
+                out.push(ConstDefParamKind::Array {
+                    elem_ty: *elem_ty,
+                    len,
+                });
+            }
+            Some(_) => {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "const def '{}' parameter '{}' must use a primitive scalar or fixed primitive array type",
+                        def.name, param.name
+                    ),
+                    param.ty_loc.or(param.loc),
+                ));
+                return None;
+            }
+            None => {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "const def '{}' parameter '{}' must have an explicit primitive scalar or fixed primitive array type",
+                        def.name, param.name
+                    ),
+                    param.loc,
+                ));
+                return None;
+            }
+        }
+    }
+    Some(out)
+}
+
+fn const_def_return_type(
+    def: &FunctionDef,
+    options: AnalysisOptions,
+    const_values: &HashMap<String, ConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<ConstDefReturn> {
+    match def.return_ty.as_ref() {
+        Some(FnReturnType::Scalar(FnReturnScalarType::Primitive(ty))) => {
+            Some(ConstDefReturn::Scalar(*ty))
+        }
+        Some(FnReturnType::Scalar(FnReturnScalarType::Named(name))) => {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "const def '{}' return type '{}' is not a concrete primitive scalar",
+                    def.name, name
+                ),
+                def.return_ty_loc,
+            ));
+            None
+        }
+        Some(FnReturnType::Array { elem, size }) => {
+            let mut size = size.clone();
+            fold_const_array_expr(&mut size, const_values, options, errors, false);
+            let len = eval_data_size_expr(
+                &size,
+                options,
+                &format!("const def '{}' return array size", def.name),
+                errors,
+            )?;
+            Some(ConstDefReturn::Array {
+                elem_ty: *elem,
+                len,
+            })
+        }
+        Some(FnReturnType::Tuple(_)) => {
+            errors.push(Diagnostic::semantic_span(
+                format!("const def '{}' cannot return a tuple", def.name),
+                def.return_ty_loc,
+            ));
+            None
+        }
+        None => {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "const def '{}' must declare an explicit return type",
+                    def.name
+                ),
+                def.loc,
+            ));
+            None
+        }
+    }
+}
+
+fn eval_const_builtin_call(
+    func: BuiltinFn,
+    args: &[Expr],
+    loc: SourceLoc,
+    options: AnalysisOptions,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Expr> {
+    let arity = builtin_arity(func);
+    if args.len() != arity {
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "{context}: builtin '{}' expects {arity} argument(s), got {}",
+                builtin_name(func),
+                args.len()
+            ),
+            loc,
+        ));
+        return None;
+    }
+    let values = args
+        .iter()
+        .enumerate()
+        .map(|(idx, arg)| {
+            eval_const_expr_f64(arg, options, &format!("{context} argument {idx}"), errors)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let value = match func {
+        BuiltinFn::Sin => values[0].sin(),
+        BuiltinFn::Cos => values[0].cos(),
+        BuiltinFn::Tan => values[0].tan(),
+        BuiltinFn::Tanh => values[0].tanh(),
+        BuiltinFn::Atan => values[0].atan(),
+        BuiltinFn::Atan2 => values[0].atan2(values[1]),
+        BuiltinFn::Exp => values[0].exp(),
+        BuiltinFn::Log => values[0].ln(),
+        BuiltinFn::Sqrt => values[0].sqrt(),
+        BuiltinFn::Pow => values[0].powf(values[1]),
+        BuiltinFn::Abs
+        | BuiltinFn::Floor
+        | BuiltinFn::Ceil
+        | BuiltinFn::Round
+        | BuiltinFn::Trunc => match func {
+            BuiltinFn::Abs => values[0].abs(),
+            BuiltinFn::Floor => values[0].floor(),
+            BuiltinFn::Ceil => values[0].ceil(),
+            BuiltinFn::Round => values[0].round(),
+            BuiltinFn::Trunc => values[0].trunc(),
+            _ => unreachable!(),
+        },
+        BuiltinFn::Min => values[0].min(values[1]),
+        BuiltinFn::Max => values[0].max(values[1]),
+        BuiltinFn::Fma => values[0].mul_add(values[1], values[2]),
+    };
+    Some(Expr::number(value).with_loc(loc))
+}
+
+fn const_eval_array_by_name(
+    name: &str,
+    local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+) -> Option<ConstEvalArray> {
+    if let Some(array) = local_arrays.get(name) {
+        return Some(array.clone());
+    }
+    match const_values.get(name) {
+        Some(ConstValue::Array {
+            elem_ty, values, ..
+        }) => Some(ConstEvalArray {
+            elem_ty: *elem_ty,
+            values: values.clone(),
+        }),
+        _ => None,
+    }
+}
+
+fn fold_const_eval_expr(
+    expr: &Expr,
+    locals: &HashMap<String, TypedConstValue>,
+    local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    context: &str,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Expr> {
+    let loc = expr.loc();
+    match expr {
+        Expr::Var { name, .. } => {
+            if let Some(value) = locals.get(name).copied() {
+                return Some(typed_const_expr_with_loc(value, loc));
+            }
+            if let Some(ConstValue::Scalar(value)) = const_values.get(name) {
+                return Some(typed_const_expr_with_loc(*value, loc));
+            }
+            Some(expr.clone())
+        }
+        Expr::UserCall {
+            name,
+            args,
+            type_args,
+            ..
+        } => {
+            if args.is_empty() {
+                if let Some(base) = parse_array_len_instance_base(name) {
+                    if let Some(ConstValue::Array { len, .. }) = const_values.get(base) {
+                        return Some(Expr::int(*len as i64).with_loc(loc));
+                    }
+                }
+            }
+            if !type_args.is_empty() {
+                errors.push(Diagnostic::semantic_span(
+                    format!("{context}: const def calls cannot use explicit type arguments"),
+                    loc,
+                ));
+                return None;
+            }
+            let value = eval_const_def_call(
+                name,
+                args,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+                loc,
+            )?;
+            match value {
+                ConstEvalValue::Scalar(value) => Some(typed_const_expr_with_loc(value, loc)),
+                ConstEvalValue::Array(_) => {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("{context}: const def '{name}' returns an array, not a scalar"),
+                        loc,
+                    ));
+                    None
+                }
+            }
+        }
+        Expr::Call { func, args, .. } => {
+            let folded = args
+                .iter()
+                .map(|arg| {
+                    fold_const_eval_expr(
+                        arg,
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        context,
+                        call_stack,
+                        errors,
+                    )
+                })
+                .collect::<Option<Vec<_>>>()?;
+            eval_const_builtin_call(*func, &folded, loc, options, context, errors)
+        }
+        Expr::Index { base, index, .. } => {
+            let folded_index = fold_const_eval_expr(
+                index,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?;
+            if let Some(array) = const_eval_array_by_name(base, local_arrays, const_values) {
+                if !can_eval_const_expr_exact_int(&folded_index) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "{context}: const array '{base}' index is not compile-time integer"
+                        ),
+                        index.loc(),
+                    ));
+                    return None;
+                }
+                let raw_idx = eval_const_expr_i64_exact(
+                    &folded_index,
+                    options,
+                    &format!("{context}: const array '{base}' index"),
+                    errors,
+                )?;
+                let Ok(idx) = usize::try_from(raw_idx) else {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "{context}: const array '{base}' index {raw_idx} is out of bounds for length {}",
+                            array.len()
+                        ),
+                        expr.loc(),
+                    ));
+                    return None;
+                };
+                let Some(value) = array.values.get(idx).copied() else {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "{context}: const array '{base}' index {raw_idx} is out of bounds for length {}",
+                            array.len()
+                        ),
+                        expr.loc(),
+                    ));
+                    return None;
+                };
+                return Some(typed_const_expr_with_loc(value, loc));
+            }
+
+            let mut folded = Expr::Index {
+                loc: expr.loc().span(),
+                base: base.clone(),
+                index: Box::new(folded_index),
+            };
+            fold_const_array_expr(&mut folded, const_values, options, errors, false);
+            Some(folded)
+        }
+        Expr::Slice { .. } => {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context}: slices are not supported in const def evaluation"),
+                loc,
+            ));
+            None
+        }
+        Expr::ArrayLiteral { values, .. } => Some(Expr::ArrayLiteral {
+            loc: expr.loc().span(),
+            values: values
+                .iter()
+                .map(|value| {
+                    fold_const_eval_expr(
+                        value,
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        context,
+                        call_stack,
+                        errors,
+                    )
+                })
+                .collect::<Option<Vec<_>>>()?,
+        }),
+        Expr::Compare { loc, op, lhs, rhs } => Some(Expr::Compare {
+            loc: *loc,
+            op: *op,
+            lhs: Box::new(fold_const_eval_expr(
+                lhs,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?),
+            rhs: Box::new(fold_const_eval_expr(
+                rhs,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?),
+        }),
+        Expr::Logical { loc, op, lhs, rhs } => Some(Expr::Logical {
+            loc: *loc,
+            op: *op,
+            lhs: Box::new(fold_const_eval_expr(
+                lhs,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?),
+            rhs: Box::new(fold_const_eval_expr(
+                rhs,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?),
+        }),
+        Expr::Binary { loc, op, lhs, rhs } => Some(Expr::Binary {
+            loc: *loc,
+            op: *op,
+            lhs: Box::new(fold_const_eval_expr(
+                lhs,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?),
+            rhs: Box::new(fold_const_eval_expr(
+                rhs,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?),
+        }),
+        Expr::Cast { loc, to, expr } => Some(Expr::Cast {
+            loc: *loc,
+            to: *to,
+            expr: Box::new(fold_const_eval_expr(
+                expr,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?),
+        }),
+        Expr::UnaryNot { loc, expr } => Some(Expr::UnaryNot {
+            loc: *loc,
+            expr: Box::new(fold_const_eval_expr(
+                expr,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?),
+        }),
+        Expr::UnaryBitNot { loc, expr } => Some(Expr::UnaryBitNot {
+            loc: *loc,
+            expr: Box::new(fold_const_eval_expr(
+                expr,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?),
+        }),
+        Expr::Tuple { .. } | Expr::ArrayCtor { .. } => {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context}: expression is not supported in const def evaluation"),
+                loc,
+            ));
+            None
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => Some(expr.clone()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_const_scalar_expr_with_defs(
+    expr: &Expr,
+    expected_ty: PrimitiveType,
+    locals: &HashMap<String, TypedConstValue>,
+    local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    context: &str,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<TypedConstValue> {
+    let folded = fold_const_eval_expr(
+        expr,
+        locals,
+        local_arrays,
+        const_values,
+        const_defs,
+        options,
+        context,
+        call_stack,
+        errors,
+    )?;
+    eval_typed_const_expr(
+        &folded,
+        expected_ty,
+        options,
+        context,
+        is_float_type(expected_ty),
+        matches!(expected_ty, PrimitiveType::I32 | PrimitiveType::I64),
+        errors,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_const_scalar_expr_type_with_defs(
+    expr: &Expr,
+    locals: &HashMap<String, TypedConstValue>,
+    local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    context: &str,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    let folded = fold_const_eval_expr(
+        expr,
+        locals,
+        local_arrays,
+        const_values,
+        const_defs,
+        options,
+        context,
+        call_stack,
+        errors,
+    )?;
+    let inferred = infer_const_expr_type(&folded, options, context, errors);
+    effective_untyped_assignment_type(&folded, inferred)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_const_decl_scalar_type_with_defs(
+    expr: &Expr,
+    locals: &HashMap<String, TypedConstValue>,
+    local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    context: &str,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    let folded = fold_const_eval_expr(
+        expr,
+        locals,
+        local_arrays,
+        const_values,
+        const_defs,
+        options,
+        context,
+        call_stack,
+        errors,
+    )?;
+    infer_const_expr_type(&folded, options, context, errors)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_const_def_call(
+    name: &str,
+    args: &[CallArg],
+    inherited_locals: &HashMap<String, TypedConstValue>,
+    inherited_local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    context: &str,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+    loc: SourceLoc,
+) -> Option<ConstEvalValue> {
+    let Some(def) = const_defs.defs.get(name) else {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context}: unknown const def '{name}'"),
+            loc,
+        ));
+        return None;
+    };
+    if call_stack.iter().any(|entry| entry == name) {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context}: recursive const def call involving '{name}'"),
+            loc,
+        ));
+        return None;
+    }
+    if let Some(caller) = call_stack.last() {
+        if let (Some(caller_order), Some(callee_order)) =
+            (const_defs.order.get(caller), const_defs.order.get(name))
+        {
+            if callee_order >= caller_order {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "{context}: const def '{name}' is not visible from const def '{caller}'; const defs can only call earlier visible const defs"
+                    ),
+                    loc,
+                ));
+                return None;
+            }
+        }
+    }
+    if !def.type_params.is_empty() {
+        errors.push(Diagnostic::semantic_span(
+            format!("const def '{}' cannot declare type parameters", def.name),
+            def.loc,
+        ));
+        return None;
+    }
+    let return_ty = const_def_return_type(def, options, const_values, errors)?;
+    let param_kinds = const_def_param_signature(def, options, const_values, errors)?;
+    let param_names = def
+        .params
+        .iter()
+        .map(|param| param.name.clone())
+        .collect::<Vec<_>>();
+    let param_defaults = def
+        .params
+        .iter()
+        .map(|param| param.default.clone())
+        .collect::<Vec<_>>();
+    let before_errors = errors.len();
+    let resolved = resolve_call_args_at(
+        args,
+        &param_names,
+        &param_defaults,
+        false,
+        false,
+        &format!("const def '{name}' call"),
+        loc,
+        errors,
+    );
+    if errors.len() != before_errors {
+        return None;
+    }
+
+    let mut locals = HashMap::<String, TypedConstValue>::new();
+    let mut local_arrays = HashMap::<String, ConstEvalArray>::new();
+    for (idx, param_name) in param_names.iter().enumerate() {
+        let explicit_arg = resolved.get(idx).and_then(|expr| *expr);
+        let (arg_expr, is_default_arg) = match explicit_arg {
+            Some(expr) => (expr, false),
+            None => (
+                param_defaults.get(idx).and_then(|expr| expr.as_ref())?,
+                true,
+            ),
+        };
+        if is_default_arg {
+            call_stack.push(name.to_owned());
+        }
+        let evaluated_arg = match param_kinds[idx] {
+            ConstDefParamKind::Scalar(param_ty) => eval_const_scalar_expr_with_defs(
+                arg_expr,
+                param_ty,
+                inherited_locals,
+                inherited_local_arrays,
+                const_values,
+                const_defs,
+                options,
+                &format!("const def '{name}' argument '{param_name}'"),
+                call_stack,
+                errors,
+            )
+            .map(ConstEvalValue::Scalar),
+            ConstDefParamKind::Array { elem_ty, len } => eval_const_array_expr_with_defs(
+                arg_expr,
+                Some((elem_ty, len)),
+                inherited_locals,
+                inherited_local_arrays,
+                const_values,
+                const_defs,
+                options,
+                &format!("const def '{name}' argument '{param_name}'"),
+                call_stack,
+                errors,
+            )
+            .map(ConstEvalValue::Array),
+        };
+        if is_default_arg {
+            call_stack.pop();
+        }
+        match evaluated_arg? {
+            ConstEvalValue::Scalar(value) => {
+                locals.insert(param_name.clone(), value);
+            }
+            ConstEvalValue::Array(array) => {
+                local_arrays.insert(param_name.clone(), array);
+            }
+        }
+    }
+
+    call_stack.push(name.to_owned());
+    let out = eval_const_def_body(
+        def,
+        return_ty,
+        &mut locals,
+        &mut local_arrays,
+        const_values,
+        const_defs,
+        options,
+        call_stack,
+        errors,
+    );
+    call_stack.pop();
+    out
+}
+
+fn eval_const_def_body(
+    def: &FunctionDef,
+    return_ty: ConstDefReturn,
+    locals: &mut HashMap<String, TypedConstValue>,
+    local_arrays: &mut HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<ConstEvalValue> {
+    eval_const_def_stmt_list(
+        &def.body,
+        return_ty,
+        locals,
+        local_arrays,
+        const_values,
+        const_defs,
+        options,
+        call_stack,
+        errors,
+        &def.name,
+    )
+    .or_else(|| {
+        errors.push(Diagnostic::semantic_span(
+            format!("const def '{}' must return a value", def.name),
+            def.loc,
+        ));
+        None
+    })
+}
+
+fn check_const_eval_array_expected(
+    array: &ConstEvalArray,
+    expected: Option<(PrimitiveType, usize)>,
+    context: &str,
+    loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Some((expected_elem, expected_len)) = expected else {
+        return true;
+    };
+    if array.elem_ty == expected_elem && array.len() == expected_len {
+        return true;
+    }
+    errors.push(Diagnostic::semantic_span(
+        format!(
+            "{context}: expected {}, got {}",
+            fixed_array_type_label(expected_elem, expected_len),
+            fixed_array_type_label(array.elem_ty, array.len())
+        ),
+        loc,
+    ));
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_const_i64_expr_with_defs(
+    expr: &Expr,
+    locals: &HashMap<String, TypedConstValue>,
+    local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    context: &str,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<i64> {
+    let folded = fold_const_eval_expr(
+        expr,
+        locals,
+        local_arrays,
+        const_values,
+        const_defs,
+        options,
+        context,
+        call_stack,
+        errors,
+    )?;
+    if !can_eval_const_expr_exact_int(&folded) {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context}: expression is not a compile-time integer"),
+            expr.loc(),
+        ));
+        return None;
+    }
+    eval_const_expr_i64_exact(&folded, options, context, errors)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_const_array_size_with_defs(
+    expr: &Expr,
+    locals: &HashMap<String, TypedConstValue>,
+    local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    context: &str,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<usize> {
+    let folded = fold_const_eval_expr(
+        expr,
+        locals,
+        local_arrays,
+        const_values,
+        const_defs,
+        options,
+        context,
+        call_stack,
+        errors,
+    )?;
+    eval_data_size_expr(&folded, options, context, errors)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_const_array_expr_with_defs(
+    expr: &Expr,
+    expected: Option<(PrimitiveType, usize)>,
+    locals: &HashMap<String, TypedConstValue>,
+    local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    context: &str,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<ConstEvalArray> {
+    let loc = expr.loc();
+    let array = match expr {
+        Expr::Var { name, .. } => const_eval_array_by_name(name, local_arrays, const_values)
+            .or_else(|| {
+                errors.push(Diagnostic::semantic_span(
+                    format!("{context}: unknown const array '{name}'"),
+                    loc,
+                ));
+                None
+            })?,
+        Expr::UserCall {
+            name,
+            args,
+            type_args,
+            ..
+        } => {
+            if !type_args.is_empty() {
+                errors.push(Diagnostic::semantic_span(
+                    format!("{context}: const def calls cannot use explicit type arguments"),
+                    loc,
+                ));
+                return None;
+            }
+            match eval_const_def_call(
+                name,
+                args,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+                loc,
+            )? {
+                ConstEvalValue::Array(array) => array,
+                ConstEvalValue::Scalar(_) => {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("{context}: const def '{name}' returns a scalar, not an array"),
+                        loc,
+                    ));
+                    return None;
+                }
+            }
+        }
+        Expr::ArrayLiteral { values, .. } => {
+            if values.is_empty() {
+                errors.push(Diagnostic::semantic_span(
+                    format!("{context}: array literal cannot be empty"),
+                    loc,
+                ));
+                return None;
+            }
+            if let Some((_, expected_len)) = expected {
+                if values.len() != expected_len {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "{context}: expected array length {expected_len}, got {}",
+                            values.len()
+                        ),
+                        loc,
+                    ));
+                    return None;
+                }
+            }
+            let elem_ty = expected.map(|(elem_ty, _)| elem_ty).or_else(|| {
+                let folded = fold_const_eval_expr(
+                    &values[0],
+                    locals,
+                    local_arrays,
+                    const_values,
+                    const_defs,
+                    options,
+                    &format!("{context} element 0"),
+                    call_stack,
+                    errors,
+                )?;
+                let inferred = infer_const_expr_type(
+                    &folded,
+                    options,
+                    &format!("{context} element 0"),
+                    errors,
+                );
+                effective_untyped_assignment_type(&folded, inferred)
+            })?;
+            let mut typed_values = Vec::with_capacity(values.len());
+            for (idx, value) in values.iter().enumerate() {
+                typed_values.push(eval_const_scalar_expr_with_defs(
+                    value,
+                    elem_ty,
+                    locals,
+                    local_arrays,
+                    const_values,
+                    const_defs,
+                    options,
+                    &format!("{context} element {idx}"),
+                    call_stack,
+                    errors,
+                )?);
+            }
+            ConstEvalArray {
+                elem_ty,
+                values: typed_values,
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            let ArrayElemType::Primitive(elem_ty) = spec.elem else {
+                errors.push(Diagnostic::semantic_span(
+                    format!("{context}: const arrays can only use primitive element types"),
+                    loc,
+                ));
+                return None;
+            };
+            let len = eval_const_array_size_with_defs(
+                &spec.size,
+                locals,
+                local_arrays,
+                const_values,
+                const_defs,
+                options,
+                context,
+                call_stack,
+                errors,
+            )?;
+            let values = if let Some(init) = init {
+                if init.len() != len {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "{context}: declares length {len}, but initializer has {} element(s)",
+                            init.len()
+                        ),
+                        loc,
+                    ));
+                    return None;
+                }
+                init.iter()
+                    .enumerate()
+                    .map(|(idx, value)| {
+                        eval_const_scalar_expr_with_defs(
+                            value,
+                            elem_ty,
+                            locals,
+                            local_arrays,
+                            const_values,
+                            const_defs,
+                            options,
+                            &format!("{context} element {idx}"),
+                            call_stack,
+                            errors,
+                        )
+                    })
+                    .collect::<Option<Vec<_>>>()?
+            } else {
+                vec![zero_const_value(elem_ty); len]
+            };
+            ConstEvalArray { elem_ty, values }
+        }
+        _ => {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context}: expression does not evaluate to a const array"),
+                loc,
+            ));
+            return None;
+        }
+    };
+
+    if !check_const_eval_array_expected(&array, expected, context, loc, errors) {
+        return None;
+    }
+    Some(array)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_const_array_index(
+    base: &str,
+    index: &Expr,
+    array_len: usize,
+    locals: &HashMap<String, TypedConstValue>,
+    local_arrays: &HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    context: &str,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<usize> {
+    let raw_idx = eval_const_i64_expr_with_defs(
+        index,
+        locals,
+        local_arrays,
+        const_values,
+        const_defs,
+        options,
+        &format!("{context}: array '{base}' index"),
+        call_stack,
+        errors,
+    )?;
+    let Ok(idx) = usize::try_from(raw_idx) else {
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "{context}: array '{base}' index {raw_idx} is out of bounds for length {array_len}"
+            ),
+            index.loc(),
+        ));
+        return None;
+    };
+    if idx >= array_len {
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "{context}: array '{base}' index {raw_idx} is out of bounds for length {array_len}"
+            ),
+            index.loc(),
+        ));
+        return None;
+    }
+    Some(idx)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_const_for_stmt(
+    var: &str,
+    step: Option<&Expr>,
+    start: &Expr,
+    end: &Expr,
+    end_inclusive: bool,
+    body: &[Stmt],
+    return_ty: ConstDefReturn,
+    locals: &mut HashMap<String, TypedConstValue>,
+    local_arrays: &mut HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+    def_name: &str,
+) -> Option<ConstEvalValue> {
+    let start_value = eval_const_i64_expr_with_defs(
+        start,
+        locals,
+        local_arrays,
+        const_values,
+        const_defs,
+        options,
+        &format!("const def '{def_name}' for start"),
+        call_stack,
+        errors,
+    )?;
+    let end_value = eval_const_i64_expr_with_defs(
+        end,
+        locals,
+        local_arrays,
+        const_values,
+        const_defs,
+        options,
+        &format!("const def '{def_name}' for end"),
+        call_stack,
+        errors,
+    )?;
+    let step_value = if let Some(step) = step {
+        eval_const_i64_expr_with_defs(
+            step,
+            locals,
+            local_arrays,
+            const_values,
+            const_defs,
+            options,
+            &format!("const def '{def_name}' for step"),
+            call_stack,
+            errors,
+        )?
+    } else {
+        1
+    };
+    if step_value == 0 {
+        errors.push(Diagnostic::semantic_span(
+            format!("const def '{def_name}' for step cannot be 0"),
+            step.map(Expr::loc).unwrap_or_else(|| start.loc()),
+        ));
+        return None;
+    }
+
+    let saved_loop_var = locals.get(var).copied();
+    let pre_loop_scalar_names = locals.keys().cloned().collect::<HashSet<_>>();
+    let pre_loop_array_names = local_arrays.keys().cloned().collect::<HashSet<_>>();
+    let mut current = start_value;
+    let mut iterations = 0usize;
+    loop {
+        let in_range = if step_value > 0 {
+            if end_inclusive {
+                current <= end_value
+            } else {
+                current < end_value
+            }
+        } else if end_inclusive {
+            current >= end_value
+        } else {
+            current > end_value
+        };
+        if !in_range {
+            break;
+        }
+        if iterations >= CONST_DEF_LOOP_ITERATION_LIMIT {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "const def '{def_name}' loop exceeded {CONST_DEF_LOOP_ITERATION_LIMIT} iterations"
+                ),
+                start.loc(),
+            ));
+            return None;
+        }
+        iterations += 1;
+        let loop_value = match i32::try_from(current) {
+            Ok(value) => TypedConstValue::I32(value),
+            Err(_) => TypedConstValue::I64(current),
+        };
+        locals.insert(var.to_owned(), loop_value);
+        let before_errors = errors.len();
+        if let Some(returned) = eval_const_def_stmt_list(
+            body,
+            return_ty,
+            locals,
+            local_arrays,
+            const_values,
+            const_defs,
+            options,
+            call_stack,
+            errors,
+            def_name,
+        ) {
+            match saved_loop_var {
+                Some(value) => {
+                    locals.insert(var.to_owned(), value);
+                }
+                None => {
+                    locals.remove(var);
+                }
+            }
+            return Some(returned);
+        }
+        if errors.len() != before_errors {
+            return None;
+        }
+        current = match current.checked_add(step_value) {
+            Some(value) => value,
+            None => {
+                errors.push(Diagnostic::semantic_span(
+                    format!("const def '{def_name}' for loop index overflowed"),
+                    start.loc(),
+                ));
+                return None;
+            }
+        };
+    }
+
+    locals.retain(|name, _| pre_loop_scalar_names.contains(name));
+    local_arrays.retain(|name, _| pre_loop_array_names.contains(name));
+    match saved_loop_var {
+        Some(value) => {
+            locals.insert(var.to_owned(), value);
+        }
+        None => {
+            locals.remove(var);
+        }
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_const_def_stmt_list(
+    stmts: &[Stmt],
+    return_ty: ConstDefReturn,
+    locals: &mut HashMap<String, TypedConstValue>,
+    local_arrays: &mut HashMap<String, ConstEvalArray>,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: ConstDefRegistry<'_>,
+    options: AnalysisOptions,
+    call_stack: &mut Vec<String>,
+    errors: &mut Vec<Diagnostic>,
+    def_name: &str,
+) -> Option<ConstEvalValue> {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Return { expr, .. } => match return_ty {
+                ConstDefReturn::Scalar(return_ty) => {
+                    return eval_const_scalar_expr_with_defs(
+                        expr,
+                        return_ty,
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        &format!("const def '{def_name}' return"),
+                        call_stack,
+                        errors,
+                    )
+                    .map(ConstEvalValue::Scalar);
+                }
+                ConstDefReturn::Array { elem_ty, len } => {
+                    return eval_const_array_expr_with_defs(
+                        expr,
+                        Some((elem_ty, len)),
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        &format!("const def '{def_name}' return"),
+                        call_stack,
+                        errors,
+                    )
+                    .map(ConstEvalValue::Array);
+                }
+            },
+            Stmt::Assign {
+                target,
+                decl_ty,
+                generic_decl_ty,
+                expr,
+                ..
+            } => {
+                if generic_decl_ty.is_some() {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "const def '{def_name}' local declarations cannot use generic types"
+                        ),
+                        stmt.assign_target_loc(),
+                    ));
+                    return None;
+                }
+
+                if let AssignTarget::Index { base, index } = target {
+                    let Some(array) = local_arrays.get(base) else {
+                        errors.push(Diagnostic::semantic_span(
+                            format!("const def '{def_name}' can only write indexed local arrays"),
+                            stmt.assign_target_loc(),
+                        ));
+                        return None;
+                    };
+                    let idx = eval_const_array_index(
+                        base,
+                        index,
+                        array.len(),
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        &format!("const def '{def_name}'"),
+                        call_stack,
+                        errors,
+                    )?;
+                    let value = eval_const_scalar_expr_with_defs(
+                        expr,
+                        array.elem_ty,
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        &format!("const def '{def_name}' array '{base}' element {idx}"),
+                        call_stack,
+                        errors,
+                    )?;
+                    let Some(array) = local_arrays.get_mut(base) else {
+                        return None;
+                    };
+                    array.values[idx] = value;
+                    continue;
+                }
+
+                let AssignTarget::Var(name) = target else {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("const def '{def_name}' can only assign scalar locals or indexed local arrays"),
+                        stmt.assign_target_loc(),
+                    ));
+                    return None;
+                };
+                if matches!(expr, Expr::ArrayCtor { .. }) {
+                    let array = eval_const_array_expr_with_defs(
+                        expr,
+                        None,
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        &format!("const def '{def_name}' local array '{name}'"),
+                        call_stack,
+                        errors,
+                    )?;
+                    locals.remove(name);
+                    local_arrays.insert(name.clone(), array);
+                    continue;
+                }
+                if local_arrays.contains_key(name) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "const def '{def_name}' cannot assign a scalar to local array '{name}'"
+                        ),
+                        stmt.assign_target_loc(),
+                    ));
+                    return None;
+                }
+                let ty = if let Some(ty) = decl_ty {
+                    *ty
+                } else if let Some(existing) = locals.get(name).copied() {
+                    typed_const_value_type(existing)
+                } else {
+                    infer_const_scalar_expr_type_with_defs(
+                        expr,
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        &format!("const def '{def_name}' local '{name}'"),
+                        call_stack,
+                        errors,
+                    )?
+                };
+                let value = eval_const_scalar_expr_with_defs(
+                    expr,
+                    ty,
+                    locals,
+                    local_arrays,
+                    const_values,
+                    const_defs,
+                    options,
+                    &format!("const def '{def_name}' local '{name}'"),
+                    call_stack,
+                    errors,
+                )?;
+                locals.insert(name.clone(), value);
+            }
+            Stmt::Const { decl, .. } => {
+                if is_const_array_decl(decl) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("const def '{def_name}' local const arrays are not supported"),
+                        decl.loc.as_ref(),
+                    ));
+                    return None;
+                }
+                let ty = match decl.ty.as_ref() {
+                    Some(ConstType::Scalar(ty)) => *ty,
+                    Some(ConstType::Array { .. }) => {
+                        errors.push(Diagnostic::semantic_span(
+                            format!("const def '{def_name}' local const arrays are not supported"),
+                            decl.loc.as_ref(),
+                        ));
+                        return None;
+                    }
+                    None => infer_const_scalar_expr_type_with_defs(
+                        &decl.expr,
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        &format!("const def '{def_name}' local const '{}'", decl.name),
+                        call_stack,
+                        errors,
+                    )?,
+                };
+                let value = eval_const_scalar_expr_with_defs(
+                    &decl.expr,
+                    ty,
+                    locals,
+                    local_arrays,
+                    const_values,
+                    const_defs,
+                    options,
+                    &format!("const def '{def_name}' local const '{}'", decl.name),
+                    call_stack,
+                    errors,
+                )?;
+                locals.insert(decl.name.clone(), value);
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                let value = eval_const_scalar_expr_with_defs(
+                    cond,
+                    PrimitiveType::Bool,
+                    locals,
+                    local_arrays,
+                    const_values,
+                    const_defs,
+                    options,
+                    &format!("const def '{def_name}' if condition"),
+                    call_stack,
+                    errors,
+                )?;
+                let TypedConstValue::Bool(take_then) = value else {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("const def '{def_name}' if condition must be bool"),
+                        cond.loc(),
+                    ));
+                    return None;
+                };
+                let mut branch_locals = locals.clone();
+                let mut branch_arrays = local_arrays.clone();
+                if let Some(returned) = eval_const_def_stmt_list(
+                    if take_then { then_branch } else { else_branch },
+                    return_ty,
+                    &mut branch_locals,
+                    &mut branch_arrays,
+                    const_values,
+                    const_defs,
+                    options,
+                    call_stack,
+                    errors,
+                    def_name,
+                ) {
+                    return Some(returned);
+                }
+                *locals = branch_locals;
+                *local_arrays = branch_arrays;
+            }
+            Stmt::For {
+                var,
+                step,
+                start,
+                end,
+                end_inclusive,
+                body,
+                ..
+            } => {
+                let before_errors = errors.len();
+                if let Some(returned) = eval_const_for_stmt(
+                    var,
+                    step.as_ref(),
+                    start,
+                    end,
+                    *end_inclusive,
+                    body,
+                    return_ty,
+                    locals,
+                    local_arrays,
+                    const_values,
+                    const_defs,
+                    options,
+                    call_stack,
+                    errors,
+                    def_name,
+                ) {
+                    return Some(returned);
+                }
+                if errors.len() != before_errors {
+                    return None;
+                }
+            }
+            Stmt::Expr { .. } | Stmt::While { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {
+                errors.push(Diagnostic::semantic_span(
+                    format!("const def '{def_name}' statement is not supported"),
+                    stmt.loc(),
+                ));
+                return None;
+            }
+        }
+    }
+    None
+}
+
+fn fold_decl_type_const_arrays(
+    ty: &mut Option<DeclType>,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match ty {
+        Some(DeclType::Array { size, .. }) | Some(DeclType::ArrayGeneric { size, .. }) => {
+            fold_const_array_expr(size, const_values, options, errors, false);
+        }
+        Some(DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_)) | None => {}
+    }
+}
+
+fn fixed_array_default_target(
+    ty: &Option<DeclType>,
+    options: AnalysisOptions,
+) -> Option<(Option<PrimitiveType>, usize)> {
+    match ty {
+        Some(DeclType::Array { elem, size }) => {
+            eval_data_size_expr_silent(size, options).map(|len| (Some(*elem), len))
+        }
+        Some(DeclType::ArrayGeneric { size, .. }) => {
+            eval_data_size_expr_silent(size, options).map(|len| (None, len))
+        }
+        _ => None,
+    }
+}
+
+fn event_array_default_target(
+    ty: &EventParamType,
+    options: AnalysisOptions,
+) -> Option<(Option<PrimitiveType>, usize)> {
+    match ty {
+        EventParamType::Array { elem, size } => {
+            eval_data_size_expr_silent(size, options).map(|len| (Some(*elem), len))
+        }
+        _ => None,
+    }
+}
+
+fn eval_data_size_expr_silent(expr: &Expr, options: AnalysisOptions) -> Option<usize> {
+    let mut ignored = Vec::new();
+    eval_data_size_expr(expr, options, "array size", &mut ignored)
+}
+
+fn fixed_array_type_label(elem_ty: PrimitiveType, len: usize) -> String {
+    format!("{}[{len}]", primitive_type_label(elem_ty))
+}
+
+fn const_array_default_incompatible(
+    default_expr: &Expr,
+    expected: (Option<PrimitiveType>, usize),
+    context: &str,
+    const_values: &HashMap<String, ConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Expr::Var { name, .. } = default_expr else {
+        return false;
+    };
+    let Some(ConstValue::Array { elem_ty, len, .. }) = const_values.get(name) else {
+        return false;
+    };
+    let (expected_elem, expected_len) = expected;
+    match expected_elem {
+        Some(expected_elem) => {
+            if *elem_ty == expected_elem && *len == expected_len {
+                return false;
+            }
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "{context} default const array '{name}' has type {}, expected {}",
+                    fixed_array_type_label(*elem_ty, *len),
+                    fixed_array_type_label(expected_elem, expected_len)
+                ),
+                default_expr.loc(),
+            ));
+            true
+        }
+        None => {
+            if *len == expected_len {
+                return false;
+            }
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "{context} default const array '{name}' has length {len}, expected {expected_len}"
+                ),
+                default_expr.loc(),
+            ));
+            true
+        }
+    }
+}
+
+fn fold_fixed_array_default_const_arrays(
+    default: &mut Option<Expr>,
+    target: Option<(Option<PrimitiveType>, usize)>,
+    context: &str,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let (Some(default_expr), Some(target)) = (default.as_ref(), target) {
+        if const_array_default_incompatible(default_expr, target, context, const_values, errors) {
+            *default = None;
+            return;
+        }
+    }
+
+    if let Some(default_expr) = default {
+        fold_const_array_expr(
+            default_expr,
+            const_values,
+            options,
+            errors,
+            target.is_some(),
+        );
+    }
+}
+
+fn fold_decl_range_const_arrays(
+    range: &mut Option<DeclRange>,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(range) = range {
+        if let Some(min) = &mut range.min {
+            fold_const_array_expr(min, const_values, options, errors, false);
+        }
+        fold_const_array_expr(&mut range.max, const_values, options, errors, false);
+    }
+}
+
+fn fold_port_decl_const_arrays(
+    decl: &mut PortDecl,
+    kind: &str,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    fold_decl_type_const_arrays(&mut decl.ty, const_values, options, errors);
+    let target = fixed_array_default_target(&decl.ty, options);
+    fold_fixed_array_default_const_arrays(
+        &mut decl.default,
+        target,
+        &format!("{kind} '{}'", decl.name),
+        const_values,
+        options,
+        errors,
+    );
+    fold_decl_range_const_arrays(&mut decl.range, const_values, options, errors);
+}
+
+fn fold_param_decl_const_arrays(
+    decl: &mut ParamDecl,
+    context: &str,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    fold_decl_type_const_arrays(&mut decl.ty, const_values, options, errors);
+    let target = fixed_array_default_target(&decl.ty, options);
+    fold_fixed_array_default_const_arrays(
+        &mut decl.default,
+        target,
+        context,
+        const_values,
+        options,
+        errors,
+    );
+    fold_decl_range_const_arrays(&mut decl.range, const_values, options, errors);
+}
+
+fn fold_buffer_type_const_arrays(
+    ty: &mut Option<BufferType>,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(BufferType {
+        channels: BufferChannels::Static(expr),
+        ..
+    }) = ty
+    {
+        fold_const_array_expr(expr, const_values, options, errors, false);
+    }
+}
+
+fn fold_fn_param_type_const_arrays(
+    ty: &mut Option<FnParamType>,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match ty {
+        Some(FnParamType::SizedArray { size, .. }) => {
+            fold_const_array_expr(size, const_values, options, errors, false);
+        }
+        Some(FnParamType::Buffer(buffer_ty)) => {
+            if let BufferChannels::Static(expr) = &mut buffer_ty.channels {
+                fold_const_array_expr(expr, const_values, options, errors, false);
+            }
+        }
+        Some(
+            FnParamType::Primitive(_)
+            | FnParamType::Struct(_)
+            | FnParamType::Array(_)
+            | FnParamType::ArrayGeneric(_)
+            | FnParamType::BareBuffer
+            | FnParamType::Tuple(_),
+        )
+        | None => {}
+    }
+}
+
+fn fold_event_param_type_const_arrays(
+    ty: &mut EventParamType,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let EventParamType::Array { size, .. } = ty {
+        fold_const_array_expr(size, const_values, options, errors, false);
+    }
+}
+
+fn fold_field_type_const_arrays(
+    ty: &mut FieldType,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let FieldType::Array(spec) = ty {
+        fold_const_array_expr(&mut spec.size, const_values, options, errors, false);
+    }
+}
+
+fn fold_stmt_const_arrays(
+    stmt: &mut Stmt,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match stmt {
+        Stmt::Const { decl, .. } => {
+            fold_const_array_expr(&mut decl.expr, const_values, options, errors, false);
+            if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
+                fold_const_array_expr(size, const_values, options, errors, false);
+            }
+        }
+        Stmt::Assign { expr, .. } => {
+            fold_const_array_expr(expr, const_values, options, errors, false);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            fold_const_array_expr(expr, const_values, options, errors, false);
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            fold_const_array_expr(cond, const_values, options, errors, false);
+            for nested in then_branch {
+                fold_stmt_const_arrays(nested, const_values, options, errors);
+            }
+            for nested in else_branch {
+                fold_stmt_const_arrays(nested, const_values, options, errors);
+            }
+        }
+        Stmt::For {
+            step,
+            start,
+            end,
+            body,
+            ..
+        } => {
+            if let Some(step) = step {
+                fold_const_array_expr(step, const_values, options, errors, false);
+            }
+            fold_const_array_expr(start, const_values, options, errors, false);
+            fold_const_array_expr(end, const_values, options, errors, false);
+            for nested in body {
+                fold_stmt_const_arrays(nested, const_values, options, errors);
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            fold_const_array_expr(cond, const_values, options, errors, false);
+            for nested in body {
+                fold_stmt_const_arrays(nested, const_values, options, errors);
+            }
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn fold_function_const_arrays(
+    def: &mut FunctionDef,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &mut def.params {
+        fold_fn_param_type_const_arrays(&mut param.ty, const_values, options, errors);
+        if let Some(default) = &mut param.default {
+            fold_const_array_expr(default, const_values, options, errors, false);
+        }
+    }
+    for stmt in &mut def.body {
+        fold_stmt_const_arrays(stmt, const_values, options, errors);
+    }
+}
+
+fn fold_event_const_arrays(
+    event: &mut EventDef,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &mut event.params {
+        fold_event_param_type_const_arrays(&mut param.ty, const_values, options, errors);
+        let target = event_array_default_target(&param.ty, options);
+        fold_fixed_array_default_const_arrays(
+            &mut param.default,
+            target,
+            &format!("event '{}.{}'", event.name, param.name),
+            const_values,
+            options,
+            errors,
+        );
+    }
+    for stmt in &mut event.body {
+        fold_stmt_const_arrays(stmt, const_values, options, errors);
+    }
+}
+
+fn fold_graph_const_arrays(
+    graph: &mut GraphBlock,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for edge in &mut graph.edges {
+        fold_const_array_expr(&mut edge.source, const_values, options, errors, false);
+        if let Some(delay) = &mut edge.delay {
+            fold_const_array_expr(delay, const_values, options, errors, false);
+        }
+        for dest in &mut edge.dests {
+            if let GraphEndpoint::ProcIndexedField { index, .. } = dest {
+                fold_const_array_expr(index, const_values, options, errors, false);
+            }
+        }
+    }
+}
+
+fn fold_const_array_exprs_in_program(
+    program: &mut Program,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for block in &mut program.blocks {
+        match block {
+            Block::Ins(ports) => {
+                if let Some(count) = &mut ports.deferred_count {
+                    fold_const_array_expr(count, const_values, options, errors, false);
+                }
+                for decl in &mut ports.decls {
+                    fold_port_decl_const_arrays(decl, "input", const_values, options, errors);
+                }
+            }
+            Block::Outs(ports) => {
+                if let Some(count) = &mut ports.deferred_count {
+                    fold_const_array_expr(count, const_values, options, errors, false);
+                }
+                for decl in &mut ports.decls {
+                    fold_port_decl_const_arrays(decl, "output", const_values, options, errors);
+                }
+            }
+            Block::Params(params) => {
+                if let Some(count) = &mut params.deferred_count {
+                    fold_const_array_expr(count, const_values, options, errors, false);
+                }
+                for decl in &mut params.decls {
+                    fold_param_decl_const_arrays(
+                        decl,
+                        &format!("param '<top-level>.{}'", decl.name),
+                        const_values,
+                        options,
+                        errors,
+                    );
+                }
+            }
+            Block::Events(events) => {
+                for event in &mut events.events {
+                    fold_event_const_arrays(event, const_values, options, errors);
+                }
+            }
+            Block::Buffers(buffers) => {
+                if let Some(count) = &mut buffers.deferred_count {
+                    fold_const_array_expr(count, const_values, options, errors, false);
+                }
+                for decl in &mut buffers.decls {
+                    fold_buffer_type_const_arrays(&mut decl.ty, const_values, options, errors);
+                }
+            }
+            Block::Init(init) => {
+                for stmt in &mut init.body {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
+            }
+            Block::Block(block_exec) => {
+                for stmt in &mut block_exec.pre {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
+                if let Some(sample) = &mut block_exec.sample {
+                    if let Some(factor) = &mut sample.oversample_factor {
+                        fold_const_array_expr(factor, const_values, options, errors, false);
+                    }
+                    for stmt in &mut sample.body {
+                        fold_stmt_const_arrays(stmt, const_values, options, errors);
+                    }
+                }
+                for stmt in &mut block_exec.post {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
+            }
+            Block::Sample(sample) => {
+                if let Some(factor) = &mut sample.oversample_factor {
+                    fold_const_array_expr(factor, const_values, options, errors, false);
+                }
+                for stmt in &mut sample.body {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
+            }
+            Block::Graph(graph) => {
+                fold_graph_const_arrays(graph, const_values, options, errors);
+            }
+            Block::Const(decl) => {
+                if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
+                    fold_const_array_expr(size, const_values, options, errors, false);
+                }
+                fold_const_array_expr(&mut decl.expr, const_values, options, errors, false);
+            }
+            Block::Assert(assert_decl) => {
+                fold_const_array_expr(&mut assert_decl.expr, const_values, options, errors, false);
+            }
+            Block::Def(def) => fold_function_const_arrays(def, const_values, options, errors),
+            Block::Struct(struct_def) => {
+                for field in &mut struct_def.fields {
+                    fold_field_type_const_arrays(&mut field.ty, const_values, options, errors);
+                    if let Some(default) = &mut field.default {
+                        fold_const_array_expr(default, const_values, options, errors, false);
+                    }
+                }
+                for method in &mut struct_def.methods {
+                    fold_function_const_arrays(method, const_values, options, errors);
+                }
+            }
+            Block::Proc(proc) => {
+                for decl in &mut proc.ins {
+                    fold_port_decl_const_arrays(
+                        decl,
+                        &format!("processor '{}' input", proc.name),
+                        const_values,
+                        options,
+                        errors,
+                    );
+                }
+                if let Some(count) = &mut proc.ins_deferred_count {
+                    fold_const_array_expr(count, const_values, options, errors, false);
+                }
+                for decl in &mut proc.outs {
+                    fold_port_decl_const_arrays(
+                        decl,
+                        &format!("processor '{}' output", proc.name),
+                        const_values,
+                        options,
+                        errors,
+                    );
+                }
+                if let Some(count) = &mut proc.outs_deferred_count {
+                    fold_const_array_expr(count, const_values, options, errors, false);
+                }
+                for decl in &mut proc.params {
+                    fold_param_decl_const_arrays(
+                        decl,
+                        &format!("processor '{}' param '{}'", proc.name, decl.name),
+                        const_values,
+                        options,
+                        errors,
+                    );
+                }
+                if let Some(count) = &mut proc.params_deferred_count {
+                    fold_const_array_expr(count, const_values, options, errors, false);
+                }
+                for decl in &mut proc.buffers {
+                    fold_buffer_type_const_arrays(&mut decl.ty, const_values, options, errors);
+                }
+                if let Some(count) = &mut proc.buffers_deferred_count {
+                    fold_const_array_expr(count, const_values, options, errors, false);
+                }
+                if let Some(factor) = &mut proc.sample_oversample_factor {
+                    fold_const_array_expr(factor, const_values, options, errors, false);
+                }
+                for event in &mut proc.events {
+                    fold_event_const_arrays(event, const_values, options, errors);
+                }
+                for stmt in &mut proc.init.body {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
+                for stmt in &mut proc.block_pre {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
+                for stmt in &mut proc.sample {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
+                for stmt in &mut proc.block_post {
+                    fold_stmt_const_arrays(stmt, const_values, options, errors);
+                }
+                if let Some(graph) = &mut proc.graph {
+                    fold_graph_const_arrays(graph, const_values, options, errors);
+                }
+                for def in &mut proc.local_defs {
+                    fold_function_const_arrays(def, const_values, options, errors);
+                }
+            }
+        }
+    }
+}
+
+fn coerce_const_arrays(
+    blocks: &[Block],
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> (Vec<TypedConstArray>, HashMap<String, ConstValue>) {
+    let mut out = Vec::new();
+    let mut const_values = HashMap::<String, ConstValue>::new();
+    let mut const_defs = HashMap::<String, FunctionDef>::new();
+    let mut const_def_order = HashMap::<String, usize>::new();
+    let mut seen = HashSet::<String>::new();
+    for block in blocks {
+        match block {
+            Block::Def(def) if def.is_const => {
+                if !seen.insert(def.name.clone()) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("duplicate const symbol '{}'", def.name),
+                        def.loc,
+                    ));
+                    continue;
+                }
+                const_def_order.insert(def.name.clone(), const_def_order.len());
+                const_defs.insert(def.name.clone(), def.clone());
+            }
+            Block::Const(decl) => {
+                if !seen.insert(decl.name.clone()) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("duplicate const symbol '{}'", decl.name),
+                        decl.loc.as_ref(),
+                    ));
+                    continue;
+                }
+                if is_const_array_decl(decl) {
+                    if let Some(array) = coerce_const_array(
+                        decl,
+                        options,
+                        &const_values,
+                        &const_defs,
+                        &const_def_order,
+                        errors,
+                    ) {
+                        const_values.insert(
+                            array.name.clone(),
+                            ConstValue::Array {
+                                elem_ty: array.elem_ty,
+                                len: array.len,
+                                values: array.values.clone(),
+                            },
+                        );
+                        out.push(array);
+                    }
+                } else if let Some(value) = coerce_const_scalar(
+                    decl,
+                    options,
+                    &const_values,
+                    &const_defs,
+                    &const_def_order,
+                    errors,
+                ) {
+                    const_values.insert(decl.name.clone(), ConstValue::Scalar(value));
+                }
+            }
+            _ => {}
+        }
+    }
+    (out, const_values)
+}
+
+fn coerce_const_array(
+    decl: &onda_frontend::ConstDecl,
+    options: AnalysisOptions,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: &HashMap<String, FunctionDef>,
+    const_def_order: &HashMap<String, usize>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<TypedConstArray> {
+    let (decl_elem_ty, decl_len) = match &decl.ty {
+        Some(ConstType::Array { elem, size }) => {
+            let mut size = size.clone();
+            fold_const_array_expr(&mut size, const_values, options, errors, false);
+            let context = format!("const array '{}' size", decl.name);
+            let len = eval_data_size_expr(&size, options, &context, errors)?;
+            (Some(*elem), Some(len))
+        }
+        Some(ConstType::Scalar(_)) => {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "const array '{}' cannot use a scalar type annotation",
+                    decl.name
+                ),
+                decl.loc.as_ref(),
+            ));
+            (None, None)
+        }
+        None => (None, None),
+    };
+
+    let locals = HashMap::new();
+    let local_arrays = HashMap::new();
+    let const_defs = ConstDefRegistry {
+        defs: const_defs,
+        order: const_def_order,
+    };
+    let expected = match (decl_elem_ty, decl_len) {
+        (Some(elem_ty), Some(len)) => Some((elem_ty, len)),
+        _ => None,
+    };
+    let context = format!("const array '{}'", decl.name);
+    let array = eval_const_array_expr_with_defs(
+        &decl.expr,
+        expected,
+        &locals,
+        &local_arrays,
+        const_values,
+        const_defs,
+        options,
+        &context,
+        &mut Vec::new(),
+        errors,
+    )?;
+
+    Some(TypedConstArray {
+        name: decl.name.clone(),
+        elem_ty: array.elem_ty,
+        len: array.len(),
+        values: array.values,
+    })
+}
+
+fn coerce_const_scalar(
+    decl: &onda_frontend::ConstDecl,
+    options: AnalysisOptions,
+    const_values: &HashMap<String, ConstValue>,
+    const_defs: &HashMap<String, FunctionDef>,
+    const_def_order: &HashMap<String, usize>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<TypedConstValue> {
+    let expected_ty = match &decl.ty {
+        Some(ConstType::Scalar(ty)) => Some(*ty),
+        Some(ConstType::Array { .. }) => {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "const scalar '{}' cannot use an array type annotation",
+                    decl.name
+                ),
+                decl.loc.as_ref(),
+            ));
+            None
+        }
+        None => None,
+    };
+
+    let locals = HashMap::new();
+    let local_arrays = HashMap::new();
+    let const_defs = ConstDefRegistry {
+        defs: const_defs,
+        order: const_def_order,
+    };
+    let context = format!("const scalar '{}'", decl.name);
+    let ty = match expected_ty {
+        Some(ty) => ty,
+        None => infer_const_decl_scalar_type_with_defs(
+            &decl.expr,
+            &locals,
+            &local_arrays,
+            const_values,
+            const_defs,
+            options,
+            &context,
+            &mut Vec::new(),
+            errors,
+        )?,
+    };
+    eval_const_scalar_expr_with_defs(
+        &decl.expr,
+        ty,
+        &locals,
+        &local_arrays,
+        const_values,
+        const_defs,
+        options,
+        &context,
+        &mut Vec::new(),
+        errors,
+    )
 }
 
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
@@ -62,6 +2506,15 @@ pub fn lower_graphs_for_inspection_with_options(
     let mut program = preprocess_program_for_analysis(program, options)?;
 
     let mut errors = Vec::new();
+    let (_const_arrays, const_values) = coerce_const_arrays(&program.blocks, options, &mut errors);
+    fold_const_array_exprs_in_program(&mut program, &const_values, options, &mut errors);
+    evaluate_asserts(&mut program, options, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    program
+        .blocks
+        .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
     lower_graph_blocks(&mut program, options, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
@@ -79,9 +2532,19 @@ pub fn analyze_with_options(
         .rev()
         .map(Block::loc)
         .find(|loc| !loc.is_zero());
-    let program = preprocess_program_for_analysis(program, options)?;
+    let mut program = preprocess_program_for_analysis(program, options)?;
 
     let mut errors = Vec::new();
+    let (const_arrays, const_values) = coerce_const_arrays(&program.blocks, options, &mut errors);
+    let const_array_infos = const_array_info_map(&const_arrays);
+    fold_const_array_exprs_in_program(&mut program, &const_values, options, &mut errors);
+    evaluate_asserts(&mut program, options, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    program
+        .blocks
+        .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
     let ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,
@@ -94,7 +2557,10 @@ pub fn analyze_with_options(
     let mut seen_singleton = HashSet::new();
     for block in &program.blocks {
         let kind = block.kind();
-        if matches!(kind, BlockKind::Def | BlockKind::Struct | BlockKind::Proc) {
+        if matches!(
+            kind,
+            BlockKind::Def | BlockKind::Struct | BlockKind::Proc | BlockKind::Const
+        ) {
             continue;
         }
         if !seen_singleton.insert(kind) {
@@ -695,6 +3161,15 @@ pub fn analyze_with_options(
         &mut all_declared,
         &mut errors,
     );
+    check_unique_set(
+        &const_arrays
+            .iter()
+            .map(|array| array.name.clone())
+            .collect::<Vec<_>>(),
+        "const array",
+        &mut all_declared,
+        &mut errors,
+    );
 
     let mut struct_defs = HashMap::new();
     let mut typed_structs = Vec::new();
@@ -807,6 +3282,7 @@ pub fn analyze_with_options(
             }
             defs.push(FunctionDef {
                 loc: method.loc.clone(),
+                is_const: false,
                 type_params: method.type_params.clone(),
                 name: fq_name,
                 params: method.params.clone(),
@@ -946,6 +3422,11 @@ pub fn analyze_with_options(
     );
     top_level_env.array_elem_types.extend(
         param_arrays
+            .iter()
+            .map(|(name, info)| (name.clone(), info.elem_ty)),
+    );
+    top_level_env.array_elem_types.extend(
+        const_array_infos
             .iter()
             .map(|(name, info)| (name.clone(), info.elem_ty)),
     );
@@ -1126,6 +3607,7 @@ pub fn analyze_with_options(
                 defaults: def.params.iter().map(|p| p.default.clone()).collect(),
                 param_types: def.params.iter().map(|p| p.ty.clone()).collect(),
                 type_params: def.type_params.clone(),
+                readonly_array_params: HashSet::new(),
             },
         );
         if seen_public_function_symbols.insert(public_name.clone()) {
@@ -1459,6 +3941,7 @@ pub fn analyze_with_options(
             "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
         ))
         .or_insert_with(|| internal_proc_index_call_signature(true));
+    update_readonly_array_param_signatures(&defs, &mut fn_signatures);
 
     let mut state_scalars = HashMap::<String, PrimitiveType>::new();
     let mut declared_symbols = DeclaredSymbolMap::new();
@@ -1520,6 +4003,7 @@ pub fn analyze_with_options(
     seed_top_level_array_aliases(&mut init_local_data_aliases, &in_arrays, false);
     seed_top_level_array_aliases(&mut init_local_data_aliases, &out_arrays, false);
     seed_top_level_array_aliases(&mut init_local_data_aliases, &param_arrays, false);
+    seed_top_level_array_aliases(&mut init_local_data_aliases, &const_array_infos, false);
 
     let init_default_ty =
         resolve_init_default_ty(init_default_decl_ty.as_ref(), "top-level", &mut errors);
@@ -1614,6 +4098,7 @@ pub fn analyze_with_options(
         &in_arrays,
         &out_arrays,
         &param_arrays,
+        &const_array_infos,
     );
     {
         let mut runtime_state = ExecutableOwnerRuntimeState {
@@ -1697,6 +4182,15 @@ pub fn analyze_with_options(
         );
     }
     for (name, info) in &param_arrays {
+        inferred_array_bindings.insert(
+            name.clone(),
+            InferredArrayParam {
+                elem_ty: info.elem_ty,
+                len: info.len,
+            },
+        );
+    }
+    for (name, info) in &const_array_infos {
         inferred_array_bindings.insert(
             name.clone(),
             InferredArrayParam {
@@ -1821,6 +4315,7 @@ pub fn analyze_with_options(
         let fn_locals = HashSet::new();
         let fn_local_aliases = LocalAliasTypes::new();
         let mut fn_local_data_aliases = HashMap::new();
+        seed_top_level_array_aliases(&mut fn_local_data_aliases, &const_array_infos, false);
         let fn_local_proc_aliases = HashMap::new();
         let param_names_vec = def
             .params
@@ -2212,6 +4707,7 @@ pub fn analyze_with_options(
             in_arrays,
             out_arrays,
             param_arrays,
+            const_arrays,
             params: typed_params,
             buffers: typed_buffers,
             structs: typed_structs,
@@ -2634,6 +5130,461 @@ fn reject_non_sample_proc_operator_calls(
                     def_name
                 ),
             );
+        }
+    }
+}
+
+fn is_array_param_type(ty: Option<&FnParamType>) -> bool {
+    matches!(
+        ty,
+        Some(FnParamType::Array(_))
+            | Some(FnParamType::ArrayGeneric(_))
+            | Some(FnParamType::SizedArray { .. })
+    )
+}
+
+fn initial_readonly_array_param_candidates(def: &FunctionDef) -> HashSet<String> {
+    def.params
+        .iter()
+        .filter(|param| is_array_param_type(param.ty.as_ref()))
+        .map(|param| param.name.clone())
+        .collect()
+}
+
+fn readonly_alias_source(expr: &Expr, aliases: &HashMap<String, String>) -> Option<String> {
+    match expr {
+        Expr::Var { name, .. } => aliases.get(name).cloned(),
+        Expr::Slice { base, .. } => aliases.get(base).cloned(),
+        _ => None,
+    }
+}
+
+fn mark_readonly_param_expr_uses_as_mutable(
+    expr: &Expr,
+    aliases: &HashMap<String, String>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    readonly_params: &HashMap<String, HashSet<String>>,
+    mutable_params: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::UserCall { name, args, .. } => {
+            if name == "unsafe_write" {
+                if let Some(source_param) = args
+                    .first()
+                    .and_then(|arg| readonly_alias_source(&arg.expr, aliases))
+                {
+                    mutable_params.insert(source_param.to_owned());
+                }
+            } else if let Some((base, method)) = name.rsplit_once('.') {
+                if method == "unsafe_write" {
+                    if let Some(source_param) = aliases.get(base) {
+                        mutable_params.insert(source_param.clone());
+                    }
+                }
+            }
+
+            if let Some(sig) = fn_signatures.get(name) {
+                let mut ignored = Vec::new();
+                let resolved = resolve_call_args_at(
+                    args,
+                    &sig.params,
+                    &sig.defaults,
+                    sig.params.first().map(String::as_str) == Some("self"),
+                    false,
+                    &format!("function '{name}' call"),
+                    expr.loc(),
+                    &mut ignored,
+                );
+                if ignored.is_empty() {
+                    for (idx, arg) in resolved.into_iter().enumerate() {
+                        let Some(arg) = arg else {
+                            continue;
+                        };
+                        let Some(source_param) = readonly_alias_source(arg, aliases) else {
+                            continue;
+                        };
+                        let callee_param_name = sig.params.get(idx).map(String::as_str);
+                        let callee_param_ty = sig.param_types.get(idx).and_then(|ty| ty.as_ref());
+                        let callee_param_readonly = callee_param_name.is_some_and(|param| {
+                            sig.readonly_array_params.contains(param)
+                                || readonly_params
+                                    .get(name)
+                                    .is_some_and(|params| params.contains(param))
+                        });
+                        if is_array_param_type(callee_param_ty) && !callee_param_readonly {
+                            mutable_params.insert(source_param.to_owned());
+                        }
+                    }
+                }
+            }
+
+            for arg in args {
+                mark_readonly_param_expr_uses_as_mutable(
+                    &arg.expr,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+        }
+        Expr::Call { args, .. }
+        | Expr::ArrayLiteral { values: args, .. }
+        | Expr::Tuple { values: args, .. } => {
+            for arg in args {
+                mark_readonly_param_expr_uses_as_mutable(
+                    arg,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            mark_readonly_param_expr_uses_as_mutable(
+                lhs,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+            mark_readonly_param_expr_uses_as_mutable(
+                rhs,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            mark_readonly_param_expr_uses_as_mutable(
+                expr,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+        }
+        Expr::Index { index, .. } => {
+            mark_readonly_param_expr_uses_as_mutable(
+                index,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+        }
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                mark_readonly_param_expr_uses_as_mutable(
+                    start,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+            if let Some(end) = end {
+                mark_readonly_param_expr_uses_as_mutable(
+                    end,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            mark_readonly_param_expr_uses_as_mutable(
+                &spec.size,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+            if let Some(init) = init {
+                for value in init {
+                    mark_readonly_param_expr_uses_as_mutable(
+                        value,
+                        aliases,
+                        fn_signatures,
+                        readonly_params,
+                        mutable_params,
+                    );
+                }
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+}
+
+fn mark_readonly_param_stmt_uses_as_mutable(
+    stmt: &Stmt,
+    aliases: &mut HashMap<String, String>,
+    fn_signatures: &HashMap<String, FnSignature>,
+    readonly_params: &HashMap<String, HashSet<String>>,
+    mutable_params: &mut HashSet<String>,
+) {
+    match stmt {
+        Stmt::Assign { target, expr, .. } => match target {
+            AssignTarget::Var(name) => {
+                mark_readonly_param_expr_uses_as_mutable(
+                    expr,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+                if let Some(source_param) = readonly_alias_source(expr, aliases) {
+                    aliases.insert(name.clone(), source_param.to_owned());
+                } else {
+                    aliases.remove(name);
+                }
+            }
+            AssignTarget::Index { base, index } => {
+                if let Some(source_param) = aliases.get(base) {
+                    mutable_params.insert(source_param.clone());
+                }
+                mark_readonly_param_expr_uses_as_mutable(
+                    index,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+                mark_readonly_param_expr_uses_as_mutable(
+                    expr,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+            AssignTarget::Slice { base, start, end } => {
+                if let Some(source_param) = aliases.get(base) {
+                    mutable_params.insert(source_param.clone());
+                }
+                if let Some(start) = start {
+                    mark_readonly_param_expr_uses_as_mutable(
+                        start,
+                        aliases,
+                        fn_signatures,
+                        readonly_params,
+                        mutable_params,
+                    );
+                }
+                if let Some(end) = end {
+                    mark_readonly_param_expr_uses_as_mutable(
+                        end,
+                        aliases,
+                        fn_signatures,
+                        readonly_params,
+                        mutable_params,
+                    );
+                }
+                mark_readonly_param_expr_uses_as_mutable(
+                    expr,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+            AssignTarget::Tuple(_) => {
+                mark_readonly_param_expr_uses_as_mutable(
+                    expr,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+        },
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            mark_readonly_param_expr_uses_as_mutable(
+                expr,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+        }
+        Stmt::Const { decl, .. } => {
+            mark_readonly_param_expr_uses_as_mutable(
+                &decl.expr,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            mark_readonly_param_expr_uses_as_mutable(
+                cond,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+            let mut then_aliases = aliases.clone();
+            for stmt in then_branch {
+                mark_readonly_param_stmt_uses_as_mutable(
+                    stmt,
+                    &mut then_aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+            let mut else_aliases = aliases.clone();
+            for stmt in else_branch {
+                mark_readonly_param_stmt_uses_as_mutable(
+                    stmt,
+                    &mut else_aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+            aliases.extend(then_aliases);
+            aliases.extend(else_aliases);
+        }
+        Stmt::For {
+            step,
+            start,
+            end,
+            body,
+            ..
+        } => {
+            if let Some(step) = step {
+                mark_readonly_param_expr_uses_as_mutable(
+                    step,
+                    aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+            mark_readonly_param_expr_uses_as_mutable(
+                start,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+            mark_readonly_param_expr_uses_as_mutable(
+                end,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+            let mut loop_aliases = aliases.clone();
+            for stmt in body {
+                mark_readonly_param_stmt_uses_as_mutable(
+                    stmt,
+                    &mut loop_aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+            aliases.extend(loop_aliases);
+        }
+        Stmt::While { cond, body, .. } => {
+            mark_readonly_param_expr_uses_as_mutable(
+                cond,
+                aliases,
+                fn_signatures,
+                readonly_params,
+                mutable_params,
+            );
+            let mut loop_aliases = aliases.clone();
+            for stmt in body {
+                mark_readonly_param_stmt_uses_as_mutable(
+                    stmt,
+                    &mut loop_aliases,
+                    fn_signatures,
+                    readonly_params,
+                    mutable_params,
+                );
+            }
+            aliases.extend(loop_aliases);
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn infer_readonly_array_params_for_def(
+    def: &FunctionDef,
+    fn_signatures: &HashMap<String, FnSignature>,
+    readonly_params: &HashMap<String, HashSet<String>>,
+) -> HashSet<String> {
+    let candidates = initial_readonly_array_param_candidates(def);
+    if candidates.is_empty() {
+        return candidates;
+    }
+    let mut aliases = candidates
+        .iter()
+        .map(|name| (name.clone(), name.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut mutable_params = HashSet::<String>::new();
+    for stmt in &def.body {
+        mark_readonly_param_stmt_uses_as_mutable(
+            stmt,
+            &mut aliases,
+            fn_signatures,
+            readonly_params,
+            &mut mutable_params,
+        );
+    }
+    candidates
+        .into_iter()
+        .filter(|param| !mutable_params.contains(param))
+        .collect()
+}
+
+fn update_readonly_array_param_signatures(
+    defs: &[FunctionDef],
+    fn_signatures: &mut HashMap<String, FnSignature>,
+) {
+    let mut readonly_params = defs
+        .iter()
+        .map(|def| {
+            (
+                def.name.clone(),
+                initial_readonly_array_param_candidates(def),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    loop {
+        let mut changed = false;
+        for def in defs {
+            let inferred =
+                infer_readonly_array_params_for_def(def, fn_signatures, &readonly_params);
+            let entry = readonly_params.entry(def.name.clone()).or_default();
+            if *entry != inferred {
+                *entry = inferred;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for (name, params) in readonly_params {
+        if let Some(sig) = fn_signatures.get_mut(&name) {
+            sig.readonly_array_params = params;
         }
     }
 }

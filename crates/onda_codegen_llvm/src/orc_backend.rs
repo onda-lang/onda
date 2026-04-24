@@ -35,10 +35,13 @@ use onda_frontend::{
     PrimitiveType, Stmt,
 };
 use onda_semantics::{
-    internal_names::{PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_EXPR_ARG},
+    internal_names::{
+        sanitize_runtime_symbol_component, PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL,
+        PROC_INDEX_EXPR_ARG,
+    },
     ProcSincStageStateFields, ProcStepOversampleMeta, ReturnType, TypedArrayInfo,
-    TypedBufferChannels, TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction,
-    TypedProgram, TypedStructField,
+    TypedBufferChannels, TypedConstValue, TypedEventParamType, TypedFieldType, TypedFnParam,
+    TypedFunction, TypedProgram, TypedStructField,
 };
 
 use crate::primitives::primitive_type_bytes;

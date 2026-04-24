@@ -5,6 +5,7 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
     typed: &TypedProgram,
     module: LLVMModuleRef,
     context: LLVMContextRef,
+    const_array_base_ptrs: &HashMap<String, LLVMValueRef>,
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
@@ -24,6 +25,20 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
     let mut param_defaults = HashMap::new();
     let mut param_kinds = HashMap::new();
     let mut param_by_ref = HashMap::new();
+    let const_arrays = typed
+        .const_arrays
+        .iter()
+        .map(|array| {
+            (
+                array.name.clone(),
+                TypedArrayInfo {
+                    elem_ty: array.elem_ty,
+                    len: array.len,
+                    offset: 0,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
 
     for def in &typed.defs {
         defs.insert(def.name.clone(), def.clone());
@@ -183,6 +198,8 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
         param_defaults,
         param_kinds,
         param_by_ref,
+        const_arrays,
+        const_array_base_ptrs: const_array_base_ptrs.clone(),
         in_progress: HashSet::new(),
         return_in_progress: HashSet::new(),
     };

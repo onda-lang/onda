@@ -890,14 +890,20 @@ fn analyze_assign_sample(
             tuple_vars,
         )
     };
-    let scope_expr_env = build_scope_expr_env_with_tuples(
-        expr_inputs,
-        known_scalars,
-        local_aliases,
-        &array_vars,
-        scope,
-        tuple_vars,
-    );
+    macro_rules! scope_expr_env {
+        () => {{
+            let mut env = build_scope_expr_env_with_tuples(
+                expr_inputs,
+                known_scalars,
+                local_aliases,
+                &array_vars,
+                scope,
+                tuple_vars,
+            );
+            env.local_array_aliases = local_array_aliases;
+            env
+        }};
+    }
     macro_rules! target_error {
         ($message:expr $(,)?) => {
             errors.push(Diagnostic::semantic_span($message, target_loc))
@@ -946,25 +952,25 @@ fn analyze_assign_sample(
                 }
             }
             if base == "outs" {
-                if scope_expr_env.port_index_outs.is_none() {
+                if scope_expr_env!().port_index_outs.is_none() {
                     target_error!(
                         "outs[i] requires an explicit 'outs' block declaration with uniform types",
                     );
                 }
-                validate_expr(index, scope_expr_env, errors);
+                validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(
                     &rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases),
-                    scope_expr_env,
+                    scope_expr_env!(),
                     errors,
                 );
                 return;
             }
             if matches!(base.as_str(), "ins" | "params") {
                 target_error!(format!("cannot assign to immutable '{base}[i]'"),);
-                validate_expr(index, scope_expr_env, errors);
+                validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(
                     &rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases),
-                    scope_expr_env,
+                    scope_expr_env!(),
                     errors,
                 );
                 return;
@@ -989,7 +995,7 @@ fn analyze_assign_sample(
                 }
                 validate_expr(
                     &rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases),
-                    scope_expr_env,
+                    scope_expr_env!(),
                     errors,
                 );
                 return;
@@ -1008,8 +1014,8 @@ fn analyze_assign_sample(
                     ),
                 );
             }
-            validate_expr(index, scope_expr_env, errors);
-            validate_expr(&expr_for_validation, scope_expr_env, errors);
+            validate_expr(index, scope_expr_env!(), errors);
+            validate_expr(&expr_for_validation, scope_expr_env!(), errors);
             let index_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 index,
                 state_scalars,
@@ -1247,7 +1253,7 @@ fn analyze_assign_sample(
                                     });
                                 }
                                 for (idx, value) in values.iter().take(size_value).enumerate() {
-                                    validate_expr(value, scope_expr_env, errors);
+                                    validate_expr(value, scope_expr_env!(), errors);
                                     let value_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                         value,
                                         state_scalars,
@@ -1331,7 +1337,7 @@ fn analyze_assign_sample(
                     return;
                 }
                 for value in values {
-                    validate_expr(value, scope_expr_env, errors);
+                    validate_expr(value, scope_expr_env!(), errors);
                 }
                 let inferred_first = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     &values[0],
@@ -1418,7 +1424,7 @@ fn analyze_assign_sample(
                     ),);
                     return;
                 }
-                validate_expr(expr, scope_expr_env, errors);
+                validate_expr(expr, scope_expr_env!(), errors);
                 if let Some(alias) = infer_runtime_slice_alias_info(
                     base,
                     start.as_deref(),
@@ -1444,7 +1450,7 @@ fn analyze_assign_sample(
                         target_error!("struct construction is only allowed in init",);
                     }
                 }
-                validate_expr(expr, scope_expr_env, errors);
+                validate_expr(expr, scope_expr_env!(), errors);
                 let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     expr,
                     state_scalars,
@@ -1497,7 +1503,7 @@ fn analyze_assign_sample(
                                     "struct field '{flat}' must be initialized in init"
                                 ));
                             }
-                            validate_expr(expr, scope_expr_env, errors);
+                            validate_expr(expr, scope_expr_env!(), errors);
                             let expr_ty =
                                 infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                     expr,
@@ -1574,7 +1580,7 @@ fn analyze_assign_sample(
                         proc_array_roots,
                         errors,
                     ) {
-                        validate_expr(index, scope_expr_env, errors);
+                        validate_expr(index, scope_expr_env!(), errors);
                         let idx_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             index,
                             state_scalars,
@@ -1675,7 +1681,7 @@ fn analyze_assign_sample(
 
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-            validate_expr(&expr_for_validation, scope_expr_env, errors);
+            validate_expr(&expr_for_validation, scope_expr_env!(), errors);
             let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 &expr_for_validation,
                 state_scalars,
@@ -1741,7 +1747,7 @@ fn analyze_assign_sample(
         AssignTarget::Tuple(targets) => {
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-            validate_expr(&expr_for_validation, scope_expr_env, errors);
+            validate_expr(&expr_for_validation, scope_expr_env!(), errors);
             // Validate destructuring arity against the RHS tuple length
             let rhs_arity =
                 infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types).or_else(|| {

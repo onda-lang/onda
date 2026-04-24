@@ -409,7 +409,7 @@ pub struct AssertDecl {
 pub struct ConstDecl {
     pub loc: Span,
     pub name: String,
-    pub ty: Option<PrimitiveType>,
+    pub ty: Option<ConstType>,
     pub expr: Expr,
 }
 
@@ -455,6 +455,12 @@ pub enum PrimitiveType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum ConstType {
+    Scalar(PrimitiveType),
+    Array { elem: PrimitiveType, size: Expr },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum DeclType {
     Scalar(PrimitiveType),
     Generic(String),
@@ -490,6 +496,7 @@ pub enum FnReturnScalarType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FnReturnType {
     Scalar(FnReturnScalarType),
+    Array { elem: PrimitiveType, size: Expr },
     Tuple(Vec<FnReturnScalarType>),
 }
 
@@ -550,6 +557,7 @@ pub enum EventParamType {
 pub struct FunctionDef {
     pub loc: Span,
     pub name: String,
+    pub is_const: bool,
     pub type_params: Vec<String>,
     pub params: Vec<FnParamDecl>,
     pub return_ty: Option<FnReturnType>,

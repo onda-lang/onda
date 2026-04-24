@@ -199,7 +199,10 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_write_call(
     let base = builtin_data_call_base_symbol(args, "unsafe_write", "ORC expression lowering")?;
     let index_expr = &args[1].expr;
     let value_expr = &args[2].expr;
-    if ctx.input_arrays.contains_key(base) || ctx.param_arrays.contains_key(base) {
+    if ctx.input_arrays.contains_key(base)
+        || ctx.param_arrays.contains_key(base)
+        || ctx.const_arrays.contains_key(base)
+    {
         return Err(Diagnostic::internal(format!(
             "unsafe_write cannot target immutable top-level array '{base}' in ORC lowering"
         )));
@@ -305,6 +308,11 @@ pub(in crate::orc_backend) unsafe fn lower_def_unsafe_data_write_call(
 ) -> Result<OrcValue, Diagnostic> {
     ensure_builtin_data_call_positional_arity(args, "unsafe_write", 3, "def lowering")?;
     let base = builtin_data_call_base_symbol(args, "unsafe_write", "def lowering")?;
+    if ctx.const_array_names.contains(base) {
+        return Err(Diagnostic::internal(format!(
+            "unsafe_write cannot target const array '{base}' in def lowering"
+        )));
+    }
     let data = lower_def_data_element_ptr(ctx, base, &args[1].expr, false)?;
     let value = lower_def_expr(&args[2].expr, ctx)?;
     let casted = cast_def_value_to(ctx, value, data.elem_ty, b"def_unsafe_data_write_cast\0");
@@ -922,6 +930,12 @@ fn infer_orc_array_base_signature(
             len_hint: info.len,
         });
     }
+    if let Some(info) = ctx.const_arrays.get(base).copied() {
+        return Ok(CodegenArrayViewSig {
+            elem_ty: info.elem_ty,
+            len_hint: info.len,
+        });
+    }
     if let Some(len) = ctx.array_len.get(base).copied() {
         let elem_ty = *ctx.array_elem_ty.get(base).ok_or_else(|| {
             Diagnostic::internal(format!(
@@ -1021,6 +1035,17 @@ unsafe fn lower_orc_array_base_view(
     if let Some(info) = ctx.output_arrays.get(base).copied() {
         let ptr = *ctx.out_array_base_ptrs.get(base).ok_or_else(|| {
             Diagnostic::internal(format!("missing output array storage for '{base}'"))
+        })?;
+        return Ok(CodegenArrayView {
+            base_ptr: ptr,
+            len_val: LLVMConstInt(ctx.i32_ty, info.len as u64, 0),
+            elem_ty: info.elem_ty,
+            len_hint: info.len,
+        });
+    }
+    if let Some(info) = ctx.const_arrays.get(base).copied() {
+        let ptr = *ctx.const_array_base_ptrs.get(base).ok_or_else(|| {
+            Diagnostic::internal(format!("missing const array global for '{base}'"))
         })?;
         return Ok(CodegenArrayView {
             base_ptr: ptr,

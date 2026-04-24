@@ -1,6 +1,7 @@
 use super::rewrite::{
-    finalize_const_decl_expr, rewrite_block_namespace_refs, substitute_expr_with_env,
-    validate_compile_time_expr,
+    is_const_array_decl, rewrite_block_namespace_refs, rewrite_const_array_decl,
+    rewrite_scalar_const_decl, substitute_expr_with_env, validate_compile_time_expr,
+    ScalarConstRewrite,
 };
 use super::*;
 use crate::ast::Span;
@@ -427,6 +428,11 @@ fn emit_namespace_items(
             NamespaceDeclItem::Proc(p) => {
                 state.namespace_members.insert(namespace_join(ns, &p.name));
             }
+            NamespaceDeclItem::Const(decl) if is_const_array_decl(decl) => {
+                let full_name = namespace_join(ns, &decl.name);
+                state.namespace_members.insert(full_name.clone());
+                state.namespace_const_array_names.insert(full_name);
+            }
             NamespaceDeclItem::Assert(_)
             | NamespaceDeclItem::Const(_)
             | NamespaceDeclItem::Namespace(_)
@@ -454,13 +460,50 @@ fn emit_namespace_items(
                 }
                 let mut decl = decl.clone();
                 let mut generated = Vec::<Block>::new();
-                let value =
-                    finalize_const_decl_expr(&mut decl, ns, &local_consts, state, &mut generated)?;
-                out.extend(generated);
-                state
-                    .namespace_const_values
-                    .insert(namespace_join(ns, &decl.name), value.clone());
-                local_consts.insert(decl.name.clone(), value);
+                if is_const_array_decl(&decl) {
+                    let local_name = decl.name.clone();
+                    decl.name = namespace_join(ns, &decl.name);
+                    let semantic_const_names = state.semantic_scalar_const_names.clone();
+                    rewrite_const_array_decl(
+                        &mut decl,
+                        ns,
+                        &local_consts,
+                        &semantic_const_names,
+                        state,
+                        &mut generated,
+                    )?;
+                    out.extend(generated);
+                    out.push(Block::Const(decl));
+                    local_consts.remove(&local_name);
+                } else {
+                    let local_name = decl.name.clone();
+                    let semantic_const_names = state.semantic_scalar_const_names.clone();
+                    match rewrite_scalar_const_decl(
+                        &mut decl,
+                        ns,
+                        &local_consts,
+                        &semantic_const_names,
+                        state,
+                        &mut generated,
+                    )? {
+                        ScalarConstRewrite::Folded(value) => {
+                            out.extend(generated);
+                            state
+                                .namespace_const_values
+                                .insert(namespace_join(ns, &decl.name), value.clone());
+                            local_consts.insert(decl.name.clone(), value);
+                        }
+                        ScalarConstRewrite::Deferred => {
+                            let full_name = namespace_join(ns, &local_name);
+                            decl.name = full_name.clone();
+                            state.namespace_members.insert(full_name.clone());
+                            state.semantic_scalar_const_names.insert(full_name);
+                            out.extend(generated);
+                            out.push(Block::Const(decl));
+                            local_consts.remove(&local_name);
+                        }
+                    }
+                }
             }
             NamespaceDeclItem::Struct(s) => {
                 let mut s = s.clone();
@@ -829,6 +872,10 @@ fn has_visible_namespace_prefix(prefix: &str, state: &LoadState) -> bool {
             .keys()
             .any(|name| name.starts_with(&nested_prefix))
         || state
+            .namespace_const_array_names
+            .iter()
+            .any(|name| name.starts_with(&nested_prefix))
+        || state
             .namespace_templates
             .keys()
             .any(|name| name.starts_with(&nested_prefix))
@@ -1024,9 +1071,17 @@ fn instantiate_namespace_template(
         } else {
             substitute_expr_with_env(&param.default, &effective_consts)
         };
+        let known_const_arrays = state
+            .top_level_const_array_names
+            .iter()
+            .chain(state.namespace_const_array_names.iter())
+            .cloned()
+            .collect::<HashSet<_>>();
         validate_compile_time_expr(
             &value,
             &effective_consts,
+            &HashSet::new(),
+            &known_const_arrays,
             &format!(
                 "namespace template '{}' argument '{}'",
                 full_template_name, param.name
@@ -1137,6 +1192,11 @@ fn emit_instantiated_namespace_items(
                     .namespace_members
                     .insert(namespace_join(namespace, &p.name));
             }
+            NamespaceDeclItem::Const(decl) if is_const_array_decl(decl) => {
+                let full_name = namespace_join(namespace, &decl.name);
+                state.namespace_members.insert(full_name.clone());
+                state.namespace_const_array_names.insert(full_name);
+            }
             NamespaceDeclItem::Assert(_)
             | NamespaceDeclItem::Const(_)
             | NamespaceDeclItem::Namespace(_)
@@ -1170,17 +1230,47 @@ fn emit_instantiated_namespace_items(
                     )]);
                 }
                 let mut decl = decl.clone();
-                let value = finalize_const_decl_expr(
-                    &mut decl,
-                    namespace,
-                    &local_consts,
-                    state,
-                    generated,
-                )?;
-                state
-                    .namespace_const_values
-                    .insert(namespace_join(namespace, &decl.name), value.clone());
-                local_consts.insert(decl.name.clone(), value);
+                if is_const_array_decl(&decl) {
+                    let local_name = decl.name.clone();
+                    decl.name = namespace_join(namespace, &decl.name);
+                    let semantic_const_names = state.semantic_scalar_const_names.clone();
+                    rewrite_const_array_decl(
+                        &mut decl,
+                        namespace,
+                        &local_consts,
+                        &semantic_const_names,
+                        state,
+                        generated,
+                    )?;
+                    generated.push(Block::Const(decl));
+                    local_consts.remove(&local_name);
+                } else {
+                    let local_name = decl.name.clone();
+                    let semantic_const_names = state.semantic_scalar_const_names.clone();
+                    match rewrite_scalar_const_decl(
+                        &mut decl,
+                        namespace,
+                        &local_consts,
+                        &semantic_const_names,
+                        state,
+                        generated,
+                    )? {
+                        ScalarConstRewrite::Folded(value) => {
+                            state
+                                .namespace_const_values
+                                .insert(namespace_join(namespace, &decl.name), value.clone());
+                            local_consts.insert(decl.name.clone(), value);
+                        }
+                        ScalarConstRewrite::Deferred => {
+                            let full_name = namespace_join(namespace, &local_name);
+                            decl.name = full_name.clone();
+                            state.namespace_members.insert(full_name.clone());
+                            state.semantic_scalar_const_names.insert(full_name);
+                            generated.push(Block::Const(decl));
+                            local_consts.remove(&local_name);
+                        }
+                    }
+                }
             }
             NamespaceDeclItem::Struct(s) => {
                 let mut s = s.clone();

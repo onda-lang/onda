@@ -500,6 +500,19 @@ fn analyze_assign_init(
             errors.push(Diagnostic::semantic_span($message, target_loc))
         };
     }
+    macro_rules! scope_expr_env {
+        ($scope:expr) => {{
+            let mut env = build_scope_expr_env(
+                expr_inputs!(),
+                &st.known_scalars,
+                &st.local_aliases,
+                &array_vars,
+                $scope,
+            );
+            env.local_array_aliases = &st.local_array_aliases;
+            env
+        }};
+    }
     match target {
         AssignTarget::Index { base, index } => {
             if st.state_array_struct_roots.contains_key(base) {
@@ -590,28 +603,8 @@ fn analyze_assign_init(
                     ),
                 );
             }
-            validate_expr(
-                index,
-                build_scope_expr_env(
-                    expr_inputs!(),
-                    &st.known_scalars,
-                    &st.local_aliases,
-                    &array_vars,
-                    ScopeKind::Init,
-                ),
-                errors,
-            );
-            validate_expr(
-                expr,
-                build_scope_expr_env(
-                    expr_inputs!(),
-                    &st.known_scalars,
-                    &st.local_aliases,
-                    &array_vars,
-                    scope,
-                ),
-                errors,
-            );
+            validate_expr(index, scope_expr_env!(ScopeKind::Init), errors);
+            validate_expr(expr, scope_expr_env!(scope), errors);
             let idx_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 index,
                 &st.state_scalars,
@@ -735,13 +728,7 @@ fn analyze_assign_init(
                 target_error!(format!("cannot assign to immutable array alias '{base}'"),);
                 return;
             }
-            let slice_env = build_scope_expr_env(
-                expr_inputs!(),
-                &st.known_scalars,
-                &st.local_aliases,
-                &array_vars,
-                ScopeKind::Init,
-            );
+            let slice_env = scope_expr_env!(ScopeKind::Init);
             if let Some(start) = start {
                 validate_expr(start, slice_env, errors);
                 let start_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
@@ -919,17 +906,7 @@ fn analyze_assign_init(
             }
 
             if st.local_aliases.contains_key(name) {
-                validate_expr(
-                    expr,
-                    build_scope_expr_env(
-                        expr_inputs!(),
-                        &st.known_scalars,
-                        &st.local_aliases,
-                        &array_vars,
-                        scope,
-                    ),
-                    errors,
-                );
+                validate_expr(expr, scope_expr_env!(scope), errors);
                 let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                     expr,
                     &st.state_scalars,
@@ -1020,17 +997,7 @@ fn analyze_assign_init(
                 }
 
                 for value in values {
-                    validate_expr(
-                        value,
-                        build_scope_expr_env(
-                            expr_inputs!(),
-                            &st.known_scalars,
-                            &st.local_aliases,
-                            &array_vars,
-                            ScopeKind::Init,
-                        ),
-                        errors,
-                    );
+                    validate_expr(value, scope_expr_env!(ScopeKind::Init), errors);
                 }
 
                 // Use backward-compatible literal type for the first element so
@@ -1112,17 +1079,7 @@ fn analyze_assign_init(
                 }
                 let mut elem_tys = Vec::new();
                 for (idx, value) in values.iter().enumerate() {
-                    validate_expr(
-                        value,
-                        build_scope_expr_env(
-                            expr_inputs!(),
-                            &st.known_scalars,
-                            &st.local_aliases,
-                            &array_vars,
-                            scope,
-                        ),
-                        errors,
-                    );
+                    validate_expr(value, scope_expr_env!(scope), errors);
                     let elem_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         value,
                         &st.state_scalars,
@@ -1181,17 +1138,7 @@ fn analyze_assign_init(
                     ),);
                     return;
                 }
-                validate_expr(
-                    expr,
-                    build_scope_expr_env(
-                        expr_inputs!(),
-                        &st.known_scalars,
-                        &st.local_aliases,
-                        &array_vars,
-                        ScopeKind::Init,
-                    ),
-                    errors,
-                );
+                validate_expr(expr, scope_expr_env!(ScopeKind::Init), errors);
                 if let Some(alias) = infer_init_slice_alias_info(
                     base,
                     start.as_deref(),
@@ -1723,17 +1670,7 @@ fn analyze_assign_init(
                                 });
                             }
                             for (idx, value) in values.iter().take(size_value).enumerate() {
-                                validate_expr(
-                                    value,
-                                    build_scope_expr_env(
-                                        expr_inputs!(),
-                                        &st.known_scalars,
-                                        &st.local_aliases,
-                                        &array_vars,
-                                        scope,
-                                    ),
-                                    errors,
-                                );
+                                validate_expr(value, scope_expr_env!(scope), errors);
                                 let value_ty =
                                     infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                                         value,
@@ -1806,17 +1743,7 @@ fn analyze_assign_init(
                         &empty_proc_array_roots,
                         errors,
                     ) {
-                        validate_expr(
-                            index,
-                            build_scope_expr_env(
-                                expr_inputs!(),
-                                &st.known_scalars,
-                                &st.local_aliases,
-                                &array_vars,
-                                scope,
-                            ),
-                            errors,
-                        );
+                        validate_expr(index, scope_expr_env!(scope), errors);
                         let idx_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                             index,
                             &st.state_scalars,
@@ -1876,17 +1803,7 @@ fn analyze_assign_init(
                     "cannot assign scalar expression to struct instance '{name}'"
                 ),);
             }
-            validate_expr(
-                expr,
-                build_scope_expr_env(
-                    expr_inputs!(),
-                    &st.known_scalars,
-                    &st.local_aliases,
-                    &array_vars,
-                    ScopeKind::Init,
-                ),
-                errors,
-            );
+            validate_expr(expr, scope_expr_env!(ScopeKind::Init), errors);
 
             let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 expr,

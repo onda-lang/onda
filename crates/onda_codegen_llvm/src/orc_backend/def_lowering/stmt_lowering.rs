@@ -414,6 +414,11 @@ unsafe fn lower_def_var_assign(
         return Ok(false);
     }
     if ctx.array_ptrs.contains_key(target_name) {
+        if ctx.const_array_names.contains(target_name) {
+            return Err(Diagnostic::internal(format!(
+                "cannot assign to const array '{target_name}' in def lowering"
+            )));
+        }
         return Err(Diagnostic::internal(format!(
             "array symbol '{target_name}' must be assigned via index syntax in def lowering"
         )));
@@ -665,6 +670,11 @@ unsafe fn lower_def_index_assign(
     expr: &Expr,
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
+    if ctx.const_array_names.contains(base) {
+        return Err(Diagnostic::internal(format!(
+            "cannot assign to const array '{base}' in def lowering"
+        )));
+    }
     let typed_value = lower_def_expr(expr, ctx)?;
     let data = lower_def_data_element_ptr(ctx, base, index, true)?;
     let value = cast_def_value_to(ctx, typed_value, data.elem_ty, b"def_data_store_cast\0");
@@ -679,6 +689,11 @@ unsafe fn lower_def_slice_assign(
     expr: &Expr,
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<bool, Diagnostic> {
+    if ctx.const_array_names.contains(base) {
+        return Err(Diagnostic::internal(format!(
+            "cannot assign to const array '{base}' in def lowering"
+        )));
+    }
     let dst_expr = Expr::Slice {
         loc: Default::default(),
         base: base.to_owned(),

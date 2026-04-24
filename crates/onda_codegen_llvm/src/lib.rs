@@ -308,6 +308,35 @@ mod tests {
         analyze_with_options(program, AnalysisOptions::default()).expect("source should analyze")
     }
 
+    fn run_one_sample(src: &str) -> f32 {
+        let program = lower_and_jit(typed_program(src)).expect("source should lower to JIT");
+        let params = vec![0_u8; program.param_byte_size()];
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let input_ptrs: Vec<*const u8> = Vec::new();
+        let mut output = vec![0.0_f32; 1];
+        let output_ptrs = [output.as_mut_ptr().cast::<u8>()];
+        let buffer_ptrs: Vec<*mut u8> = Vec::new();
+        let buffer_frames: Vec<i32> = Vec::new();
+        let buffer_channels: Vec<i32> = Vec::new();
+        let buffer_sample_rates: Vec<f32> = Vec::new();
+        program
+            .process_checked(
+                &mut state,
+                &params,
+                1,
+                &input_ptrs,
+                &output_ptrs,
+                &buffer_ptrs,
+                &buffer_frames,
+                &buffer_channels,
+                &buffer_sample_rates,
+            )
+            .expect("process should succeed");
+        output[0]
+    }
+
     fn is_missing_target_backend(diags: &[Diagnostic]) -> bool {
         diags.iter().any(|diag| {
             diag.message.contains("LLVMGetTargetFromTriple failed")
@@ -351,5 +380,182 @@ sample:
             }
             Err(diags) => panic!("cross-target AOT smoke test failed: {diags:#?}"),
         }
+    }
+
+    #[test]
+    fn lowers_const_array_read_to_llvm_ir() {
+        let typed = typed_program(
+            r#"
+const Table: f32[3] = [0.25, 0.5, 1.0]
+
+params:
+  idx: i32 = 1
+
+outs:
+  out1
+
+sample:
+  out1 = Table[idx]
+"#,
+        );
+
+        let ir = lower_to_llvm_ir_with_options(typed, CompileOptions::default())
+            .expect("const array program should lower to LLVM IR");
+        assert!(ir.contains("__onda_const_array_Table"));
+    }
+
+    #[test]
+    fn const_array_slice_copy_source_runs() {
+        let output = run_one_sample(
+            r#"
+const Table: f32[3] = [0.25, 0.5, 1.0]
+
+outs:
+  out1
+
+sample:
+  dst = [0.0, 0.0, 0.0]
+  dst[:] = Table[:]
+  out1 = dst[0] + dst[1] + dst[2]
+"#,
+        );
+
+        assert!((output - 1.75).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn const_array_len_runs() {
+        let output = run_one_sample(
+            r#"
+const Table: f32[3] = [0.25, 0.5, 1.0]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Table.len())
+"#,
+        );
+
+        assert!((output - 3.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn const_array_readonly_def_arg_runs() {
+        let output = run_one_sample(
+            r#"
+const Table: f32[3] = [0.25, 0.5, 1.0]
+
+def sum_edges(arr: f32[]):
+  return arr[0] + arr[arr.len() - 1]
+
+outs:
+  out1
+
+sample:
+  out1 = sum_edges(Table)
+"#,
+        );
+
+        assert!((output - 1.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn const_scalar_from_const_def_runs() {
+        let output = run_one_sample(
+            r#"
+const def gain(x: f64) -> f64:
+  return x * 2.0 + 0.25
+
+const Gain = gain(0.5)
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Gain)
+"#,
+        );
+
+        assert!((output - 1.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn const_array_bytes_do_not_increase_orc_state_size() {
+        let base = lower_and_jit(typed_program(
+            r#"
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#,
+        ))
+        .expect("base program should lower");
+        let values = (0..256)
+            .map(|idx| format!("{}.0", idx))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let with_const_src = format!(
+            r#"
+const Table: f32[256] = [{values}]
+
+outs:
+  out1
+
+sample:
+  out1 = Table[0]
+"#
+        );
+        let with_const =
+            lower_and_jit(typed_program(&with_const_src)).expect("const program should lower");
+        let params = Vec::<u8>::new();
+        let base_state = base
+            .initialize_state(&params)
+            .expect("base state should initialize");
+        let const_state = with_const
+            .initialize_state(&params)
+            .expect("const state should initialize");
+
+        assert_eq!(const_state.state_size_bytes, base_state.state_size_bytes);
+    }
+
+    #[test]
+    fn const_array_bytes_do_not_increase_aot_state_size() {
+        let base = typed_program(
+            r#"
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#,
+        );
+        let values = (0..256)
+            .map(|idx| format!("{}.0", idx))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let with_const_src = format!(
+            r#"
+const Table: f32[256] = [{values}]
+
+outs:
+  out1
+
+sample:
+  out1 = Table[0]
+"#
+        );
+        let with_const = typed_program(&with_const_src);
+        let base_artifact = lower_to_object_with_options(base, CodegenOptions::default())
+            .expect("base AOT object should emit");
+        let const_artifact = lower_to_object_with_options(with_const, CodegenOptions::default())
+            .expect("const AOT object should emit");
+
+        assert!(!const_artifact.object_bytes.is_empty());
+        assert_eq!(
+            const_artifact.metadata.runtime.state_size_bytes,
+            base_artifact.metadata.runtime.state_size_bytes
+        );
     }
 }

@@ -875,7 +875,10 @@ unsafe fn lower_orc_var_assign(
         LLVMBuildStore(ctx.builder, casted, slot.ptr);
         return Ok(());
     }
-    if ctx.array_base_ptrs.contains_key(name) || ctx.array_struct_len.contains_key(name) {
+    if ctx.array_base_ptrs.contains_key(name)
+        || ctx.array_struct_len.contains_key(name)
+        || ctx.const_arrays.contains_key(name)
+    {
         return Err(Diagnostic::internal(format!(
             "array symbol '{name}' must be assigned via index syntax"
         )));
@@ -892,6 +895,7 @@ unsafe fn lower_orc_var_assign(
         && !ctx.input_arrays.contains_key(name)
         && !ctx.param_arrays.contains_key(name)
         && !ctx.output_arrays.contains_key(name)
+        && !ctx.const_arrays.contains_key(name)
     {
         let target_ty = decl_ty.unwrap_or(typed.ty);
         let slot = build_local_slot(
@@ -1000,7 +1004,10 @@ unsafe fn lower_orc_index_assign(
         local_array_aliases,
         local_tuples,
     )?;
-    if ctx.input_arrays.contains_key(base) || ctx.param_arrays.contains_key(base) {
+    if ctx.input_arrays.contains_key(base)
+        || ctx.param_arrays.contains_key(base)
+        || ctx.const_arrays.contains_key(base)
+    {
         return Err(Diagnostic::internal(format!(
             "cannot assign to immutable top-level array '{base}' in ORC lowering"
         )));
@@ -1549,6 +1556,11 @@ unsafe fn lower_orc_slice_assign(
     local_array_aliases: &mut HashMap<String, LocalArrayAlias>,
     local_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<(), Diagnostic> {
+    if ctx.const_arrays.contains_key(base) {
+        return Err(Diagnostic::internal(format!(
+            "cannot assign to const array '{base}' in ORC lowering"
+        )));
+    }
     let dst_expr = Expr::Slice {
         loc: Default::default(),
         base: base.to_owned(),

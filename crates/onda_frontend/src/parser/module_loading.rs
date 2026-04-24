@@ -23,7 +23,11 @@ struct LoadState {
     namespace_aliases: HashMap<String, NamespaceAliasDecl>,
     namespace_members: HashSet<String>,
     namespace_const_values: HashMap<String, Expr>,
+    namespace_const_array_names: HashSet<String>,
     top_level_const_values: HashMap<String, Expr>,
+    top_level_const_names: HashSet<String>,
+    top_level_const_array_names: HashSet<String>,
+    semantic_scalar_const_names: HashSet<String>,
     namespace_instantiations: HashMap<String, String>,
     next_namespace_instantiation_id: u64,
 }
@@ -242,11 +246,8 @@ fn parse_program_preprocessed(
 
         let mut blocks = Vec::new();
         let mut top_level_consts = state.top_level_const_values.clone();
-        let mut top_level_const_names = state
-            .top_level_const_values
-            .keys()
-            .cloned()
-            .collect::<HashSet<_>>();
+        let mut top_level_const_names = state.top_level_const_names.clone();
+        top_level_const_names.extend(state.top_level_const_values.keys().cloned());
         let mut generated = Vec::<Block>::new();
         for pair in program_pair.into_inner() {
             match pair.as_rule() {
@@ -261,15 +262,39 @@ fn parse_program_preprocessed(
                             decl.loc.as_ref(),
                         )]);
                     }
-                    let value = finalize_const_decl_expr(
-                        &mut decl,
-                        "",
-                        &top_level_consts,
-                        state,
-                        &mut generated,
-                    )?;
-                    top_level_consts.insert(decl.name.clone(), value);
-                    state.top_level_const_values = top_level_consts.clone();
+                    state.top_level_const_names = top_level_const_names.clone();
+                    if is_const_array_decl(&decl) {
+                        state.top_level_const_array_names.insert(decl.name.clone());
+                        let semantic_const_names = state.semantic_scalar_const_names.clone();
+                        rewrite_const_array_decl(
+                            &mut decl,
+                            "",
+                            &top_level_consts,
+                            &semantic_const_names,
+                            state,
+                            &mut generated,
+                        )?;
+                        blocks.push(Block::Const(decl));
+                    } else {
+                        let semantic_const_names = state.semantic_scalar_const_names.clone();
+                        match rewrite_scalar_const_decl(
+                            &mut decl,
+                            "",
+                            &top_level_consts,
+                            &semantic_const_names,
+                            state,
+                            &mut generated,
+                        )? {
+                            ScalarConstRewrite::Folded(value) => {
+                                top_level_consts.insert(decl.name.clone(), value);
+                                state.top_level_const_values = top_level_consts.clone();
+                            }
+                            ScalarConstRewrite::Deferred => {
+                                state.semantic_scalar_const_names.insert(decl.name.clone());
+                                blocks.push(Block::Const(decl));
+                            }
+                        }
+                    }
                 }
                 Rule::events_block => {
                     append_or_merge_event_block(&mut blocks, parse_events_block(pair)?)?

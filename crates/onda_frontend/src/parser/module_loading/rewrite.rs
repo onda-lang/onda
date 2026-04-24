@@ -5,6 +5,11 @@ use super::namespaces::{
 use super::*;
 use crate::ast::{FnReturnScalarType, FnReturnType};
 
+pub(super) enum ScalarConstRewrite {
+    Folded(Expr),
+    Deferred,
+}
+
 fn rebase_expr_locs(expr: &mut Expr, loc: SourceLoc) {
     expr.set_loc(loc);
     match expr {
@@ -109,6 +114,8 @@ fn rewrite_named_type_ref_name_at(
 pub(super) fn validate_compile_time_expr(
     expr: &Expr,
     known_consts: &HashMap<String, Expr>,
+    semantic_scalar_consts: &HashSet<String>,
+    known_const_arrays: &HashSet<String>,
     context: &str,
 ) -> Result<(), Vec<Diagnostic>> {
     let expr_span = expr.loc().span();
@@ -116,7 +123,10 @@ pub(super) fn validate_compile_time_expr(
         Expr::Number { .. } | Expr::Bool { .. } => Ok(()),
         Expr::Int { .. } => Ok(()),
         Expr::Var { name, .. } => {
-            if known_consts.contains_key(name) || is_builtin_compile_time_const(name) {
+            if known_consts.contains_key(name)
+                || semantic_scalar_consts.contains(name)
+                || is_builtin_compile_time_const(name)
+            {
                 Ok(())
             } else {
                 Err(vec![Diagnostic::semantic_span(
@@ -129,16 +139,55 @@ pub(super) fn validate_compile_time_expr(
             }
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            validate_compile_time_expr(expr, known_consts, context)
+            validate_compile_time_expr(
+                expr,
+                known_consts,
+                semantic_scalar_consts,
+                known_const_arrays,
+                context,
+            )
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            validate_compile_time_expr(lhs, known_consts, context)?;
-            validate_compile_time_expr(rhs, known_consts, context)
+            validate_compile_time_expr(
+                lhs,
+                known_consts,
+                semantic_scalar_consts,
+                known_const_arrays,
+                context,
+            )?;
+            validate_compile_time_expr(
+                rhs,
+                known_consts,
+                semantic_scalar_consts,
+                known_const_arrays,
+                context,
+            )
+        }
+        Expr::Index { base, index, .. } if known_const_arrays.contains(base) => {
+            validate_compile_time_expr(
+                index,
+                known_consts,
+                semantic_scalar_consts,
+                known_const_arrays,
+                context,
+            )
+        }
+        Expr::UserCall { name, args, .. } => {
+            if args.is_empty() {
+                if let Some((base, method)) = name.rsplit_once('.') {
+                    if method == "len" && known_const_arrays.contains(base) {
+                        return Ok(());
+                    }
+                }
+            }
+            Err(vec![Diagnostic::semantic_span(
+                format!("{context}: expression is not compile-time evaluable"),
+                expr_span,
+            )])
         }
         Expr::Call { .. }
-        | Expr::UserCall { .. }
         | Expr::Index { .. }
         | Expr::Slice { .. }
         | Expr::ArrayCtor { .. }
@@ -150,13 +199,86 @@ pub(super) fn validate_compile_time_expr(
     }
 }
 
-pub(super) fn finalize_const_decl_expr(
+fn expr_contains_user_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::UserCall { .. } => true,
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            values.iter().any(expr_contains_user_call)
+        }
+        Expr::Index { index, .. } => expr_contains_user_call(index),
+        Expr::Slice { start, end, .. } => {
+            start.as_deref().is_some_and(expr_contains_user_call)
+                || end.as_deref().is_some_and(expr_contains_user_call)
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            expr_contains_user_call(&spec.size)
+                || init
+                    .as_ref()
+                    .is_some_and(|values| values.iter().any(expr_contains_user_call))
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            expr_contains_user_call(lhs) || expr_contains_user_call(rhs)
+        }
+        Expr::Call { args, .. } => args.iter().any(expr_contains_user_call),
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            expr_contains_user_call(expr)
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => false,
+    }
+}
+
+fn expr_references_semantic_scalar_const(expr: &Expr, names: &HashSet<String>) -> bool {
+    match expr {
+        Expr::Var { name, .. } => names.contains(name),
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
+            .iter()
+            .any(|value| expr_references_semantic_scalar_const(value, names)),
+        Expr::Index { index, .. } => expr_references_semantic_scalar_const(index, names),
+        Expr::Slice { start, end, .. } => {
+            start
+                .as_deref()
+                .is_some_and(|expr| expr_references_semantic_scalar_const(expr, names))
+                || end
+                    .as_deref()
+                    .is_some_and(|expr| expr_references_semantic_scalar_const(expr, names))
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            expr_references_semantic_scalar_const(&spec.size, names)
+                || init.as_ref().is_some_and(|values| {
+                    values
+                        .iter()
+                        .any(|value| expr_references_semantic_scalar_const(value, names))
+                })
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            expr_references_semantic_scalar_const(lhs, names)
+                || expr_references_semantic_scalar_const(rhs, names)
+        }
+        Expr::Call { args, .. } => args
+            .iter()
+            .any(|arg| expr_references_semantic_scalar_const(arg, names)),
+        Expr::UserCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_references_semantic_scalar_const(&arg.expr, names)),
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            expr_references_semantic_scalar_const(expr, names)
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => false,
+    }
+}
+
+pub(super) fn rewrite_scalar_const_decl(
     decl: &mut ConstDecl,
     current_ns: &str,
     const_env: &HashMap<String, Expr>,
+    semantic_scalar_consts: &HashSet<String>,
     state: &mut LoadState,
     generated: &mut Vec<Block>,
-) -> Result<Expr, Vec<Diagnostic>> {
+) -> Result<ScalarConstRewrite, Vec<Diagnostic>> {
     if is_builtin_compile_time_const(&decl.name) {
         return Err(vec![Diagnostic::semantic_span(
             format!(
@@ -168,18 +290,94 @@ pub(super) fn finalize_const_decl_expr(
     }
 
     rewrite_expr(&mut decl.expr, current_ns, const_env, state, generated)?;
-    validate_compile_time_expr(&decl.expr, const_env, &format!("const '{}'", decl.name))?;
+    if expr_references_semantic_scalar_const(&decl.expr, semantic_scalar_consts) {
+        return Ok(ScalarConstRewrite::Deferred);
+    }
+    if let Err(errors) = validate_compile_time_expr(
+        &decl.expr,
+        const_env,
+        semantic_scalar_consts,
+        &visible_const_array_names(state),
+        &format!("const '{}'", decl.name),
+    ) {
+        if expr_contains_user_call(&decl.expr) {
+            return Ok(ScalarConstRewrite::Deferred);
+        }
+        return Err(errors);
+    }
 
     let expr = decl.expr.clone();
-    Ok(if let Some(ty) = decl.ty {
+    let folded = if let Some(ConstType::Scalar(ty)) = decl.ty.as_ref() {
         Expr::Cast {
             loc: expr.loc().into(),
-            to: ty,
+            to: *ty,
             expr: Box::new(expr),
         }
     } else {
         expr
-    })
+    };
+    Ok(ScalarConstRewrite::Folded(folded))
+}
+
+pub(super) fn finalize_const_decl_expr(
+    decl: &mut ConstDecl,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<Expr, Vec<Diagnostic>> {
+    match rewrite_scalar_const_decl(
+        decl,
+        current_ns,
+        const_env,
+        &HashSet::new(),
+        state,
+        generated,
+    )? {
+        ScalarConstRewrite::Folded(expr) => Ok(expr),
+        ScalarConstRewrite::Deferred => Err(vec![Diagnostic::semantic_span(
+            format!("const '{}' is not supported in this scope", decl.name),
+            decl.loc.as_ref(),
+        )]),
+    }
+}
+
+pub(super) fn is_const_array_decl(decl: &ConstDecl) -> bool {
+    matches!(decl.ty, Some(ConstType::Array { .. }))
+        || matches!(
+            decl.expr,
+            Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } | Expr::Slice { .. }
+        )
+}
+
+pub(super) fn rewrite_const_array_decl(
+    decl: &mut ConstDecl,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    semantic_scalar_consts: &HashSet<String>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+) -> Result<(), Vec<Diagnostic>> {
+    if is_builtin_compile_time_const(&decl.name) {
+        return Err(vec![Diagnostic::semantic_span(
+            format!(
+                "constant name '{}' is reserved as a builtin compile-time constant",
+                decl.name
+            ),
+            decl.loc.as_ref(),
+        )]);
+    }
+    if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
+        rewrite_expr(size, current_ns, const_env, state, generated)?;
+        validate_compile_time_expr(
+            size,
+            const_env,
+            semantic_scalar_consts,
+            &visible_const_array_names(state),
+            &format!("const array '{}' size", decl.name),
+        )?;
+    }
+    rewrite_expr(&mut decl.expr, current_ns, const_env, state, generated)
 }
 
 pub(super) fn substitute_expr_with_env(expr: &Expr, const_env: &HashMap<String, Expr>) -> Expr {
@@ -310,9 +508,39 @@ pub(super) fn rewrite_blocks_namespace_refs(
                     decl.loc.as_ref(),
                 )]);
             }
-            let value = finalize_const_decl_expr(decl, "", &scope_consts, state, generated)?;
-            scope_consts.insert(decl.name.clone(), value);
-            continue;
+            if is_const_array_decl(decl) {
+                state.top_level_const_array_names.insert(decl.name.clone());
+                let semantic_const_names = state.semantic_scalar_const_names.clone();
+                rewrite_const_array_decl(
+                    decl,
+                    "",
+                    &scope_consts,
+                    &semantic_const_names,
+                    state,
+                    generated,
+                )?;
+                rewritten.push(block);
+                continue;
+            }
+            let semantic_const_names = state.semantic_scalar_const_names.clone();
+            match rewrite_scalar_const_decl(
+                decl,
+                "",
+                &scope_consts,
+                &semantic_const_names,
+                state,
+                generated,
+            )? {
+                ScalarConstRewrite::Folded(value) => {
+                    scope_consts.insert(decl.name.clone(), value);
+                    continue;
+                }
+                ScalarConstRewrite::Deferred => {
+                    state.semantic_scalar_const_names.insert(decl.name.clone());
+                    rewritten.push(block);
+                    continue;
+                }
+            }
         }
         let current_ns = match block {
             Block::Struct(ref s) => namespace_of_symbol(&s.name),
@@ -324,6 +552,56 @@ pub(super) fn rewrite_blocks_namespace_refs(
         rewritten.push(block);
     }
     *blocks = rewritten;
+    Ok(())
+}
+
+fn visible_const_array_names(state: &LoadState) -> HashSet<String> {
+    state
+        .top_level_const_array_names
+        .iter()
+        .chain(state.namespace_const_array_names.iter())
+        .cloned()
+        .collect()
+}
+
+fn qualify_or_resolve_symbol_name_at(
+    name: &str,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
+) -> Result<Option<String>, Vec<Diagnostic>> {
+    let loc = loc.into();
+    if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+        return Ok(Some(qualified));
+    }
+    if looks_like_namespace_ref(name) {
+        return resolve_namespace_symbol_name_at(
+            name, current_ns, const_env, state, generated, loc,
+        )
+        .map(Some);
+    }
+    Ok(None)
+}
+
+fn qualify_instance_method_call_name(
+    name: &mut String,
+    current_ns: &str,
+    const_env: &HashMap<String, Expr>,
+    state: &mut LoadState,
+    generated: &mut Vec<Block>,
+    loc: impl Into<SourceLoc>,
+) -> Result<(), Vec<Diagnostic>> {
+    let Some((base, method)) = name.rsplit_once('.') else {
+        return Ok(());
+    };
+    let loc = loc.into();
+    if let Some(resolved) =
+        qualify_or_resolve_symbol_name_at(base, current_ns, const_env, state, generated, loc)?
+    {
+        *name = format!("{resolved}.{method}");
+    }
     Ok(())
 }
 
@@ -698,6 +976,12 @@ pub(super) fn rewrite_block_namespace_refs(
                         decl.loc.as_ref(),
                     )]);
                 }
+                if is_const_array_decl(decl) {
+                    return Err(vec![Diagnostic::semantic_span(
+                        "const arrays are only supported at top-level and namespace scope",
+                        decl.loc.as_ref(),
+                    )]);
+                }
                 let value =
                     finalize_const_decl_expr(decl, current_ns, &proc_const_env, state, generated)?;
                 proc_const_env.insert(decl.name.clone(), value);
@@ -1064,17 +1348,18 @@ fn rewrite_fn_param_type(
             rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
         }
         FnParamType::SizedArray {
-            generic_name: Some(name),
-            ..
+            generic_name, size, ..
         } => {
-            rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
+            if let Some(name) = generic_name {
+                rewrite_named_type_ref_name_at(name, current_ns, const_env, state, generated, loc)?;
+            }
+            rewrite_expr(size, current_ns, const_env, state, generated)?;
         }
         FnParamType::Buffer(buffer_ty) => {
             rewrite_buffer_type(buffer_ty, current_ns, const_env, state, generated, loc)?;
         }
         FnParamType::Primitive(_)
         | FnParamType::Array(_)
-        | FnParamType::SizedArray { .. }
         | FnParamType::BareBuffer
         | FnParamType::Tuple(_) => {}
     }
@@ -1102,6 +1387,9 @@ fn rewrite_fn_return_type(
 
     match ty {
         FnReturnType::Scalar(scalar) => rewrite_scalar(scalar, state, generated)?,
+        FnReturnType::Array { size, .. } => {
+            rewrite_expr(size, current_ns, const_env, state, generated)?;
+        }
         FnReturnType::Tuple(elems) => {
             for elem in elems {
                 rewrite_scalar(elem, state, generated)?;
@@ -1144,6 +1432,12 @@ fn rewrite_stmts(
             if !local_const_names.insert(decl.name.clone()) {
                 return Err(vec![Diagnostic::semantic_span(
                     format!("duplicate constant '{}' in scope", decl.name),
+                    decl.loc.as_ref(),
+                )]);
+            }
+            if is_const_array_decl(decl) {
+                return Err(vec![Diagnostic::semantic_span(
+                    "const arrays are only supported at top-level and namespace scope",
                     decl.loc.as_ref(),
                 )]);
             }
@@ -1193,7 +1487,9 @@ fn rewrite_stmt(
                             generated,
                             target_loc.as_ref(),
                         )?;
-                        if state.namespace_const_values.contains_key(&resolved) {
+                        if state.namespace_const_values.contains_key(&resolved)
+                            || state.namespace_const_array_names.contains(&resolved)
+                        {
                             return Err(vec![Diagnostic::semantic_span(
                                 format!("cannot assign to constant '{}'", name),
                                 target_loc.as_ref(),
@@ -1212,7 +1508,9 @@ fn rewrite_stmt(
                             generated,
                             target_loc.as_ref(),
                         )?;
-                        if state.namespace_const_values.contains_key(&resolved) {
+                        if state.namespace_const_values.contains_key(&resolved)
+                            || state.namespace_const_array_names.contains(&resolved)
+                        {
                             return Err(vec![Diagnostic::semantic_span(
                                 format!("cannot assign to constant '{}'", base),
                                 target_loc.as_ref(),
@@ -1232,7 +1530,9 @@ fn rewrite_stmt(
                             generated,
                             target_loc.as_ref(),
                         )?;
-                        if state.namespace_const_values.contains_key(&resolved) {
+                        if state.namespace_const_values.contains_key(&resolved)
+                            || state.namespace_const_array_names.contains(&resolved)
+                        {
                             return Err(vec![Diagnostic::semantic_span(
                                 format!("cannot assign to constant '{}'", base),
                                 target_loc.as_ref(),
@@ -1411,6 +1711,14 @@ fn rewrite_expr(
             }
         }
         Expr::UserCall { name, args, .. } => {
+            qualify_instance_method_call_name(
+                name,
+                current_ns,
+                const_env,
+                state,
+                generated,
+                use_site_loc,
+            )?;
             if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
                 *name = qualified;
             } else if looks_like_namespace_ref(name) {

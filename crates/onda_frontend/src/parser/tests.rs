@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
-    ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DeclType,
-    EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType, FnReturnType, GraphEndpoint,
-    GraphRate, PrimitiveType, Stmt,
+    ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg,
+    ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType,
+    FnReturnType, GraphEndpoint, GraphRate, PrimitiveType, Stmt,
 };
 
 use super::{
@@ -5322,6 +5322,158 @@ sample {
         1,
         "local const should be stripped from the sample body"
     );
+}
+
+#[test]
+fn preserves_top_level_const_arrays_after_scalar_const_rewrite() {
+    let src = r#"
+const N = 3
+const Table: f32[N] = [0.25, 0.5, 1.0]
+"#;
+
+    let program = parse_program(src).expect("top-level const array should parse");
+    let table = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Const(decl) if decl.name == "Table" => Some(decl),
+            _ => None,
+        })
+        .expect("const array declaration should be retained");
+    match &table.ty {
+        Some(ConstType::Array { elem, size }) => {
+            assert_eq!(*elem, PrimitiveType::F32);
+            assert!(matches!(size, Expr::Int { value: 3, .. }));
+        }
+        other => panic!("expected typed const array, got {other:?}"),
+    }
+    assert!(matches!(
+        &table.expr,
+        Expr::ArrayLiteral { values, .. } if values.len() == 3
+    ));
+}
+
+#[test]
+fn parses_top_level_const_def() {
+    let src = r#"
+const def twice(x: f32) -> f32:
+  return x * 2.0
+
+const Table: f32[2] = [twice(0.5), twice(1.0)]
+"#;
+
+    let program = parse_program(src).expect("const def should parse");
+    let def = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Def(def) if def.name == "twice" => Some(def),
+            _ => None,
+        })
+        .expect("const def should be retained for semantics");
+    assert!(def.is_const);
+    assert_eq!(def.params.len(), 1);
+    assert!(matches!(
+        def.return_ty,
+        Some(FnReturnType::Scalar(FnReturnScalarType::Primitive(
+            PrimitiveType::F32
+        )))
+    ));
+}
+
+#[test]
+fn parses_const_def_array_return_type() {
+    let src = r#"
+const def table() -> f32[4]:
+  return [0.0, 0.25, 0.5, 0.75]
+"#;
+
+    let program = parse_program(src).expect("const def array return should parse");
+    let def = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Def(def) if def.name == "table" => Some(def),
+            _ => None,
+        })
+        .expect("const def should be retained for semantics");
+    assert!(def.is_const);
+    assert!(matches!(
+        def.return_ty,
+        Some(FnReturnType::Array {
+            elem: PrimitiveType::F32,
+            size: Expr::Int { value: 4, .. },
+        })
+    ));
+}
+
+#[test]
+fn qualifies_namespace_const_array_references() {
+    let src = r#"
+namespace LUT:
+  const Table = [1, 2, 3]
+
+outs:
+  out1
+
+sample:
+  out1 = LUT::Table[0]
+"#;
+
+    let program = parse_program(src).expect("namespace const array should parse");
+    assert!(program
+        .blocks
+        .iter()
+        .any(|block| { matches!(block, Block::Const(decl) if decl.name == "LUT::Table") }));
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+    match &sample.body[0] {
+        Stmt::Assign { expr, .. } => {
+            assert!(matches!(expr, Expr::Index { base, .. } if base == "LUT::Table"));
+        }
+        other => panic!("expected assignment, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_proc_local_const_arrays() {
+    let src = r#"
+proc Voice:
+  const Table = [1, 2]
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+"#;
+
+    let errors = parse_program(src).expect_err("proc-local const arrays should be rejected");
+    assert!(errors.iter().any(|diag| diag
+        .message
+        .contains("const arrays are only supported at top-level and namespace scope")));
+}
+
+#[test]
+fn rejects_proc_local_const_defs() {
+    let src = r#"
+proc Voice:
+  const def gain() -> f32:
+    return 1.0
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+"#;
+
+    let errors = parse_program(src).expect_err("proc-local const defs should be rejected");
+    assert!(errors.iter().any(|diag| diag
+        .message
+        .contains("const defs are only supported at top-level and namespace scope")));
 }
 
 #[test]

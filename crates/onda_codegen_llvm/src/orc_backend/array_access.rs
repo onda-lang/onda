@@ -557,6 +557,11 @@ pub(super) unsafe fn lower_data_element_ptr_with_bounds_mode(
                 )));
             }
         }
+    } else if let Some(info) = ctx.const_arrays.get(base).copied() {
+        let array_base_ptr = *ctx.const_array_base_ptrs.get(base).ok_or_else(|| {
+            Diagnostic::internal(format!("missing const array global for '{base}'"))
+        })?;
+        (array_base_ptr, info.len, info.elem_ty)
     } else {
         let array_len = *ctx.array_len.get(base).ok_or_else(|| {
             Diagnostic::internal(format!(
@@ -644,6 +649,9 @@ pub(super) unsafe fn load_data_base_ptr_for_symbol(
     ctx: &mut LoweringCtx<'_>,
     base: &str,
 ) -> Result<LLVMValueRef, Diagnostic> {
+    if let Some(ptr) = ctx.const_array_base_ptrs.get(base).copied() {
+        return Ok(ptr);
+    }
     ctx.array_base_ptrs.get(base).copied().ok_or_else(|| {
         Diagnostic::internal(format!(
             "unknown array symbol '{base}' in ORC indexed lowering"

@@ -51,6 +51,18 @@ fn try_resolve_declared_return_type(def: &FunctionDef) -> Option<ReturnType> {
                     resolve_scalar(scalar, &def.type_params, strict, &def.name, loc, errors)?;
                 Some(ReturnType::Scalar(prim))
             }
+            FnReturnType::Array { .. } => {
+                if strict {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "function '{}' array return types are only supported for const defs",
+                            def.name
+                        ),
+                        loc,
+                    ));
+                }
+                None
+            }
             FnReturnType::Tuple(elems) => {
                 let mut resolved = Vec::with_capacity(elems.len());
                 for elem in elems {
@@ -99,6 +111,16 @@ fn validate_declared_return_type(
         FnReturnType::Scalar(scalar) => {
             let prim = resolve_scalar(scalar, &def.type_params, &def.name, loc, errors)?;
             Some(ReturnType::Scalar(prim))
+        }
+        FnReturnType::Array { .. } => {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "function '{}' array return types are only supported for const defs",
+                    def.name
+                ),
+                loc,
+            ));
+            None
         }
         FnReturnType::Tuple(elems) => {
             let mut resolved = Vec::with_capacity(elems.len());

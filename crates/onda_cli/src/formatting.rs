@@ -1,9 +1,9 @@
 use onda_frontend::{
     ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec, BufferChannels,
-    BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp, DeclType,
-    EventDef, EventParamType, Expr, FieldType, FnParamType, FunctionDef, GraphEndpoint, GraphRate,
-    InitBlock, LogicalOp, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
-    Stmt, StructDef,
+    BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp, ConstType,
+    DeclType, EventDef, EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType,
+    FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp, ParamDecl, PortDecl,
+    PrimitiveType, ProcessorDef, Program, SampleBlock, Stmt, StructDef,
 };
 
 pub(crate) fn primitive_type_name(ty: PrimitiveType) -> &'static str {
@@ -38,11 +38,16 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
         Block::Ins(ports) => format_port_block("ins", ports, indent, out),
         Block::Outs(ports) => format_port_block("outs", ports, indent, out),
         Block::Params(params) => format_param_block("params", params, indent, out),
-        Block::Const(decl) => push_line(
-            out,
-            indent,
-            &format!("const {} = {}", decl.name, format_expr(&decl.expr)),
-        ),
+        Block::Const(decl) => {
+            let mut text = format!("const {}", decl.name);
+            if let Some(ty) = &decl.ty {
+                text.push_str(": ");
+                text.push_str(&format_const_type(ty));
+            }
+            text.push_str(" = ");
+            text.push_str(&format_expr(&decl.expr));
+            push_line(out, indent, &text);
+        }
         Block::Events(events) => {
             push_line(out, indent, "events:");
             for event in events {
@@ -226,7 +231,8 @@ fn format_struct(def: &StructDef, indent: usize, out: &mut String) {
 }
 
 fn format_def(def: &FunctionDef, indent: usize, out: &mut String) {
-    let mut header = format!("def {}", def.name);
+    let prefix = if def.is_const { "const def" } else { "def" };
+    let mut header = format!("{prefix} {}", def.name);
     if !def.type_params.is_empty() {
         header.push('<');
         header.push_str(&def.type_params.join(", "));
@@ -251,7 +257,12 @@ fn format_def(def: &FunctionDef, indent: usize, out: &mut String) {
             .collect::<Vec<_>>()
             .join(", "),
     );
-    header.push_str("):");
+    header.push(')');
+    if let Some(return_ty) = &def.return_ty {
+        header.push_str(" -> ");
+        header.push_str(&format_fn_return_type(return_ty));
+    }
+    header.push(':');
     push_line(out, indent, &header);
     format_stmt_list(&def.body, indent + 1, out);
 }
@@ -292,9 +303,9 @@ fn format_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
     match stmt {
         Stmt::Const { decl, .. } => {
             let mut text = format!("const {}", decl.name);
-            if let Some(ty) = decl.ty {
+            if let Some(ty) = &decl.ty {
                 text.push_str(": ");
-                text.push_str(primitive_type_name(ty));
+                text.push_str(&format_const_type(ty));
             }
             text.push_str(" = ");
             text.push_str(&format_expr(&decl.expr));
@@ -621,6 +632,15 @@ fn format_decl_type(ty: &DeclType) -> String {
     }
 }
 
+fn format_const_type(ty: &ConstType) -> String {
+    match ty {
+        ConstType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
+        ConstType::Array { elem, size } => {
+            format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
+        }
+    }
+}
+
 fn format_field_type(ty: &FieldType) -> String {
     match ty {
         FieldType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
@@ -671,6 +691,30 @@ fn format_fn_param_type(ty: &FnParamType) -> String {
             let inner = elems
                 .iter()
                 .map(|p| primitive_type_name(*p))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({inner})")
+        }
+    }
+}
+
+fn format_fn_return_scalar_type(ty: &FnReturnScalarType) -> String {
+    match ty {
+        FnReturnScalarType::Primitive(ty) => primitive_type_name(*ty).to_owned(),
+        FnReturnScalarType::Named(name) => name.clone(),
+    }
+}
+
+fn format_fn_return_type(ty: &FnReturnType) -> String {
+    match ty {
+        FnReturnType::Scalar(ty) => format_fn_return_scalar_type(ty),
+        FnReturnType::Array { elem, size } => {
+            format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
+        }
+        FnReturnType::Tuple(elems) => {
+            let inner = elems
+                .iter()
+                .map(format_fn_return_scalar_type)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("({inner})")

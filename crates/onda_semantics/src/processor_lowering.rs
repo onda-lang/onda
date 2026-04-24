@@ -325,6 +325,7 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
         defaults,
         param_types,
         type_params: Vec::new(),
+        readonly_array_params: HashSet::new(),
     }
 }
 
@@ -768,6 +769,7 @@ fn build_proc_lowering_env(
             }
             pre_desugar_defs.push(FunctionDef {
                 loc: method.loc.clone(),
+                is_const: false,
                 type_params: Vec::new(),
                 name: format!("{struct_name}.{}", method.name),
                 params: method.params.clone(),
@@ -791,6 +793,7 @@ fn build_proc_lowering_env(
                 defaults: def.params.iter().map(|p| p.default.clone()).collect(),
                 param_types: def.params.iter().map(|p| p.ty.clone()).collect(),
                 type_params: def.type_params.clone(),
+                readonly_array_params: HashSet::new(),
             });
     }
     let pre_desugar_def_return_types = infer_def_return_types(
