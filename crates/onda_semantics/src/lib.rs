@@ -2348,6 +2348,163 @@ sample:
     }
 
     #[test]
+    fn const_defs_can_read_any_length_array_params() {
+        let src = r#"
+const A: f32[] = [0.25, 0.5, 1.0]
+const B: f32[] = [2.0, 4.0]
+
+const def sum(xs: f32[]) -> f32:
+  total = 0.0
+  for i in 0..(xs.len()):
+    total = total + xs[i]
+  return total
+
+const Table: f32[] = [sum(A), sum(B), sum([10.0, 20.0, 30.0, 40.0])]
+
+outs:
+  out1
+
+sample:
+  out1 = Table[2]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("typed slice const def params should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(table.len, 3);
+        assert_eq!(
+            table.values,
+            vec![
+                TypedConstValue::F32(1.75),
+                TypedConstValue::F32(6.0),
+                TypedConstValue::F32(100.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn const_defs_can_read_untyped_any_primitive_array_params() {
+        let src = r#"
+const F: f32[] = [0.25, 0.5]
+const I: i32[] = [10, 20, 30]
+
+const def size(xs: []) -> i32:
+  return xs.len()
+
+const Sizes: i32[] = [size(F), size(I), size([true, false, true, false])]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Sizes[2])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("untyped slice const def params should analyze");
+
+        let sizes = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Sizes")
+            .expect("typed const array");
+        assert_eq!(
+            sizes.values,
+            vec![
+                TypedConstValue::I32(2),
+                TypedConstValue::I32(3),
+                TypedConstValue::I32(4)
+            ]
+        );
+    }
+
+    #[test]
+    fn const_def_slice_params_are_read_only() {
+        let src = r#"
+const Source: f32[] = [0.25, 0.5]
+
+const def bad(xs: f32[]) -> f32:
+  xs[0] = 1.0
+  return xs[0]
+
+const Value = bad(Source)
+
+outs:
+  out1
+
+sample:
+  out1 = Value
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("read-only const def slice write should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'bad' cannot write read-only array parameter 'xs'")));
+    }
+
+    #[test]
+    fn const_def_typed_slice_params_reject_wrong_element_type() {
+        let src = r#"
+const Source: i32[] = [1, 2]
+
+const def first(xs: f32[]) -> f32:
+  return xs[0]
+
+const Value = first(Source)
+
+outs:
+  out1
+
+sample:
+  out1 = Value
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("wrong-type const def slice arg should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'first' argument 'xs': expected f32[], got i32[2]")));
+    }
+
+    #[test]
+    fn const_array_slice_annotations_infer_initializer_length() {
+        let src = r#"
+const Full: f32[] = [0.0, 0.25, 0.5, 0.75]
+const Mid: f32[] = Full[1:-1]
+
+outs:
+  out1
+
+sample:
+  out1 = Mid[1]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("const slice annotation should infer length");
+
+        let full = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Full")
+            .expect("typed full array");
+        assert_eq!(full.len, 4);
+
+        let mid = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Mid")
+            .expect("typed mid array");
+        assert_eq!(mid.len, 2);
+        assert_eq!(
+            mid.values,
+            vec![TypedConstValue::F32(0.25), TypedConstValue::F32(0.5)]
+        );
+    }
+
+    #[test]
     fn const_defs_can_return_arrays_derived_from_fixed_array_params() {
         let src = r#"
 namespace LUT<N = 3>:
@@ -2502,6 +2659,43 @@ sample:
         assert!(
             typed.defs.iter().all(|def| def.name != "table"),
             "const defs should not be emitted as runtime defs"
+        );
+    }
+
+    #[test]
+    fn untyped_const_can_infer_array_returning_const_def_initializer() {
+        let src = r#"
+const N = 3
+
+const def harmonic_ratios() -> f32[N]:
+  values: f32[N]
+  for i in 0..N:
+    values[i] = f32(i + 1)
+  return values
+
+const Ratios = harmonic_ratios()
+
+outs:
+  out1
+
+sample:
+  out1 = Ratios[2]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("untyped array const def initializer should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Ratios")
+            .expect("typed const array");
+        assert_eq!(
+            table.values,
+            vec![
+                TypedConstValue::F32(1.0),
+                TypedConstValue::F32(2.0),
+                TypedConstValue::F32(3.0)
+            ]
         );
     }
 

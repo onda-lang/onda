@@ -5479,6 +5479,48 @@ const Table: f32[N] = [0.25, 0.5, 1.0]
 }
 
 #[test]
+fn parses_const_array_slice_type_annotations() {
+    let src = r#"
+const Table: f32[] = [0.25, 0.5, 1.0]
+
+namespace NS:
+  const Flags: bool[] = [true, false]
+"#;
+
+    let program = parse_program(src).expect("const array slice annotations should parse");
+    let table = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Const(decl) if decl.name == "Table" => Some(decl),
+            _ => None,
+        })
+        .expect("top-level const array");
+    assert!(matches!(
+        &table.ty,
+        Some(ConstType::Slice { elem }) if *elem == PrimitiveType::F32
+    ));
+
+    let flags = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Namespace(ns) if ns.name == "NS" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Const(decl) if decl.name == "Flags" => Some(decl),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("namespace const array");
+    assert!(matches!(
+        &flags.ty,
+        Some(ConstType::Slice { elem }) if *elem == PrimitiveType::Bool
+    ));
+}
+
+#[test]
 fn parses_top_level_const_def() {
     let src = r#"
 const def twice(x: f32) -> f32:

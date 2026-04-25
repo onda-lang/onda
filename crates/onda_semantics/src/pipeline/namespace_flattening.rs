@@ -190,7 +190,14 @@ fn register_const_decl_artifact(
         ));
         return;
     }
-    if is_const_array_decl(decl) {
+    let force_const_array = is_const_array_decl(decl)
+        || (decl.ty.is_none()
+            && is_known_const_array_initializer(
+                &decl.expr,
+                &state.artifacts.const_values,
+                &state.artifacts.const_defs,
+            ));
+    if force_const_array {
         if let Some(array) = coerce_const_array(
             decl,
             options,
@@ -199,28 +206,37 @@ fn register_const_decl_artifact(
             &state.artifacts.const_def_order,
             errors,
         ) {
-            state.artifacts.const_values.insert(
-                array.name.clone(),
-                ConstValue::Array {
-                    elem_ty: array.elem_ty,
-                    len: array.len,
-                    values: array.values.clone(),
-                },
-            );
-            state.artifacts.const_arrays.push(array);
+            record_const_array_artifact(&mut state.artifacts, array);
         }
-    } else if let Some(value) = coerce_const_scalar(
-        decl,
-        options,
-        &state.artifacts.const_values,
-        &state.artifacts.const_defs,
-        &state.artifacts.const_def_order,
-        errors,
-    ) {
-        state
-            .artifacts
-            .const_values
-            .insert(decl.name.clone(), ConstValue::Scalar(value));
+    } else {
+        let inferred_const_array = if decl.ty.is_none() {
+            let mut probe_errors = Vec::new();
+            coerce_const_array(
+                decl,
+                options,
+                &state.artifacts.const_values,
+                &state.artifacts.const_defs,
+                &state.artifacts.const_def_order,
+                &mut probe_errors,
+            )
+        } else {
+            None
+        };
+        if let Some(array) = inferred_const_array {
+            record_const_array_artifact(&mut state.artifacts, array);
+        } else if let Some(value) = coerce_const_scalar(
+            decl,
+            options,
+            &state.artifacts.const_values,
+            &state.artifacts.const_defs,
+            &state.artifacts.const_def_order,
+            errors,
+        ) {
+            state
+                .artifacts
+                .const_values
+                .insert(decl.name.clone(), ConstValue::Scalar(value));
+        }
     }
 }
 

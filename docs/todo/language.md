@@ -11,6 +11,7 @@
 
 - `const` future follow-ups
   - Evaluate const-def overloads. Start with unique names per lexical scope unless reusing ordinary overload machinery is straightforward.
+  - Evaluate inferred array return types for const defs, such as `-> f32[]` and `-> []`, where each call site validates the returned compile-time array element type and inferred length.
   - Consider local/proc-local const arrays if they prove useful.
   - Consider const structs or structural compile-time values if stdlib/table generation starts needing them.
   - Improve forward-reference and cycle diagnostics if the strict lexical model becomes annoying.

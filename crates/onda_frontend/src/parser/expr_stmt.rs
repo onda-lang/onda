@@ -295,6 +295,23 @@ fn parse_const_type(pair: Pair<'_, Rule>) -> Result<ConstType, Vec<Diagnostic>> 
         Rule::type_name => Ok(ConstType::Scalar(
             parse_primitive_type(actual.as_str()).map_err(|d| vec![d])?,
         )),
+        Rule::fn_typed_array_param => {
+            let Some(elem_pair) = actual.into_inner().next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing const array element type",
+                )]);
+            };
+            if elem_pair.as_rule() != Rule::type_name {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "const array element type must be primitive",
+                )]);
+            }
+            Ok(ConstType::Slice {
+                elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+            })
+        }
         Rule::array_type => {
             let mut inner = actual.into_inner();
             let Some(elem_pair) = inner.next() else {

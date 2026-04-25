@@ -510,6 +510,7 @@ pub enum PrimitiveType {
 pub enum ConstType {
     Scalar(PrimitiveType),
     Array { elem: PrimitiveType, size: Expr },
+    Slice { elem: PrimitiveType },
 }
 
 #[derive(Debug, Clone, PartialEq)]

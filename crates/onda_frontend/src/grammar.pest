@@ -57,7 +57,7 @@ def_block = { ("const" ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" 
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
 const_block = { const_decl ~ NEWLINE* }
 const_decl = { "const" ~ ident ~ (":" ~ const_type)? ~ "=" ~ expr }
-const_type = { array_type | type_name }
+const_type = { fn_typed_array_param | array_type | type_name }
 init_block = { "init" ~ section_default_decl_type? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 block_exec_block = { "block" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ block_exec_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 block_exec_list = { block_exec_item ~ (stmt_sep+ ~ block_exec_item)* ~ stmt_sep* }

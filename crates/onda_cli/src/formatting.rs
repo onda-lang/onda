@@ -873,6 +873,7 @@ fn format_const_type(ty: &ConstType) -> String {
         ConstType::Array { elem, size } => {
             format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
         }
+        ConstType::Slice { elem } => format!("{}[]", primitive_type_name(*elem)),
     }
 }
 

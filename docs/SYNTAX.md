@@ -733,6 +733,7 @@ User-defined compile-time constants:
 const MaxVoices = 8
 const Hop: i32 = BLOCK_SIZE / 2
 const Scale: f32[3] = [0.5, 1.0, 2.0]
+const MoreScale: f32[] = [0.25, 0.5, 1.0, 2.0]
 
 const def twice(x: f32) -> f32:
   return x * 2.0
@@ -756,10 +757,23 @@ const def scaled(xs: f32[3], gain: f32) -> f32[3]:
 
 const Scaled: f32[3] = scaled(Scale, 0.5)
 
+const def sum_any(xs: f32[]) -> f32:
+  total = 0.0
+  for i in 0..(xs.len()):
+    total = total + xs[i]
+  return total
+
+const def count_any(xs: []) -> i32:
+  return xs.len()
+
+const TotalScale = sum_any(MoreScale)
+const ScaleCount = count_any(MoreScale)
+
 def sum_edges(xs: f32[]):
   return xs[0] + xs[xs.len() - 1]
 
 const SumSource: f32[3] = [0.25, 0.5, 1.0]
+const SumSourceTail: f32[] = SumSource[1:]
 
 outs:
   out1
@@ -770,14 +784,19 @@ sample:
 
 Rules:
 - `const NAME = expr` and `const NAME: T = expr` are supported
-- fixed-size primitive const arrays are supported at top level and namespace scope with `const NAME: T[N] = [ ... ]` or first-element inference
+- primitive const arrays are supported at top level and namespace scope with fixed-size `const NAME: T[N] = [ ... ]`, inferred-length `const NAME: T[] = expr`, or first-element inference
+- `const NAME: T[] = expr` requires the initializer to evaluate to a compile-time primitive array with element type `T`; the concrete array length is inferred from the initializer
+- inferred-length const array initializers can be array literals, existing const arrays, const-array slices, or array-returning `const def` calls
 - `expr` must be compile-time evaluable
 - `const` is supported at top level, inside namespaces, and inside executable scopes
 - namespace consts can be referenced through qualified paths such as `NS::VALUE`
 - scalar-returning and fixed-array-returning `const def` helpers are supported at top level and namespace scope for later const-array initializers
 - top-level and namespace scalar `const` declarations can call scalar-returning `const def`s, for example `const X = helper(0.5)`
 - untyped scalar const declarations preserve full `f64` / `i64` precision until the value's eventual use site applies its normal type rules
-- `const def` params support primitive scalars and fixed-size primitive arrays
+- `const def` params support primitive scalars, fixed-size primitive arrays, and read-only primitive array slice params such as `f32[]`, `i64[]`, and untyped `[]`
+- typed const-def slice params such as `f32[]` accept compile-time arrays of any length with the matching element type
+- untyped const-def slice params `[]` accept compile-time arrays of any length and any primitive element type
+- const-def slice params support indexed reads and `.len()`, but indexed writes are rejected
 - every `const def` must declare an explicit return type, and every `return` is evaluated against that type; scalar returns are coerced/validated as that primitive type, while fixed-array returns must match the declared element type and length exactly
 - array-returning `const def` bodies can use local fixed primitive arrays, indexed local-array reads/writes, `if`, `for`, `loop`, `return`, pure builtin math, and calls to earlier visible const defs
 - const arrays and const slices can be passed to ordinary runtime `def` array params when the callee param is inferred read-only
@@ -1667,7 +1686,17 @@ Why it is useful:
 - builtin proc `init(...)`
 - `block` plus nested `sample`
 
-### 11.5 Modular multi-file patch
+### 11.5 Const arrays plus const defs
+
+`examples/const_harmonic_bank.onda`
+
+Why it is useful:
+- array-returning `const def` helpers
+- fixed-size const arrays derived from other const arrays
+- compile-time table normalization
+- runtime indexing of precomputed const arrays
+
+### 11.6 Modular multi-file patch
 
 `examples/reverb.onda` plus `examples/reverb_graph.onda`
 
@@ -1677,7 +1706,7 @@ Why it is useful:
 - combine stdlib imports with local imports
 - drive a larger proc through `graph`
 
-### 11.6 Generic proc in a larger graph
+### 11.7 Generic proc in a larger graph
 
 `examples/cybernetic_feedback_graph.onda`
 
@@ -1687,7 +1716,7 @@ Why it is useful:
 - delayed graph edges
 - larger graph composition with multiple reusable nodes
 
-### 11.7 Event-driven patch
+### 11.8 Event-driven patch
 
 `examples/run_events.onda`
 
