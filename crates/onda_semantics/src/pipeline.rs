@@ -148,6 +148,45 @@ struct SemanticConstArtifacts {
     const_def_order: HashMap<String, usize>,
 }
 
+fn ordinary_top_level_symbol_names(program: &Program) -> HashSet<String> {
+    program
+        .blocks
+        .iter()
+        .flat_map(|block| match block {
+            Block::Ins(ports) | Block::Outs(ports) => ports
+                .decls
+                .iter()
+                .map(|decl| decl.name.clone())
+                .collect::<Vec<_>>(),
+            Block::Params(params) => params
+                .decls
+                .iter()
+                .map(|decl| decl.name.clone())
+                .collect::<Vec<_>>(),
+            Block::Buffers(buffers) => buffers
+                .decls
+                .iter()
+                .map(|decl| decl.name.clone())
+                .collect::<Vec<_>>(),
+            Block::Def(def) if !def.is_const => vec![def.name.clone()],
+            Block::Struct(s) => vec![s.name.clone()],
+            Block::Proc(p) => vec![p.name.clone()],
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+fn top_level_const_symbol_names(program: &Program) -> HashSet<String> {
+    program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Const(decl) => Some(decl.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn zero_const_value(ty: PrimitiveType) -> TypedConstValue {
     match ty {
         PrimitiveType::F32 => TypedConstValue::F32(0.0),
@@ -2181,79 +2220,630 @@ fn fold_graph_const_arrays(
     }
 }
 
-fn fold_const_array_exprs_in_program(
-    program: &mut Program,
-    const_values: &HashMap<String, ConstValue>,
-    options: AnalysisOptions,
+fn reject_forward_const_ref_name(
+    name: &str,
+    loc: SourceLoc,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    for block in &mut program.blocks {
-        match block {
-            Block::Ins(ports) => {
-                if let Some(count) = &mut ports.deferred_count {
-                    fold_const_array_expr(count, const_values, options, errors, false);
-                }
-                for decl in &mut ports.decls {
-                    fold_port_decl_const_arrays(decl, "input", const_values, options, errors);
+    if future_consts.contains(name) && !visible_consts.contains_key(name) {
+        errors.push(Diagnostic::semantic_span(
+            format!("constant '{name}' is not visible before its declaration"),
+            loc,
+        ));
+    }
+}
+
+fn reject_forward_const_refs_expr(
+    expr: &Expr,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::Var { name, .. } => {
+            reject_forward_const_ref_name(name, expr.loc(), visible_consts, future_consts, errors);
+        }
+        Expr::Index { base, index, .. } => {
+            reject_forward_const_ref_name(base, expr.loc(), visible_consts, future_consts, errors);
+            reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
+        }
+        Expr::Slice {
+            base, start, end, ..
+        } => {
+            reject_forward_const_ref_name(base, expr.loc(), visible_consts, future_consts, errors);
+            if let Some(start) = start {
+                reject_forward_const_refs_expr(start, visible_consts, future_consts, errors);
+            }
+            if let Some(end) = end {
+                reject_forward_const_refs_expr(end, visible_consts, future_consts, errors);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            reject_forward_const_refs_expr(&spec.size, visible_consts, future_consts, errors);
+            if let Some(init) = init {
+                for value in init {
+                    reject_forward_const_refs_expr(value, visible_consts, future_consts, errors);
                 }
             }
-            Block::Outs(ports) => {
-                if let Some(count) = &mut ports.deferred_count {
-                    fold_const_array_expr(count, const_values, options, errors, false);
-                }
-                for decl in &mut ports.decls {
-                    fold_port_decl_const_arrays(decl, "output", const_values, options, errors);
-                }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            reject_forward_const_refs_expr(lhs, visible_consts, future_consts, errors);
+            reject_forward_const_refs_expr(rhs, visible_consts, future_consts, errors);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                reject_forward_const_refs_expr(arg, visible_consts, future_consts, errors);
             }
-            Block::Params(params) => {
-                if let Some(count) = &mut params.deferred_count {
-                    fold_const_array_expr(count, const_values, options, errors, false);
-                }
-                for decl in &mut params.decls {
-                    fold_param_decl_const_arrays(
-                        decl,
-                        &format!("param '<top-level>.{}'", decl.name),
-                        const_values,
-                        options,
+        }
+        Expr::UserCall { name, args, .. } => {
+            if args.is_empty() {
+                if let Some(base) = parse_array_len_instance_base(name) {
+                    reject_forward_const_ref_name(
+                        base,
+                        expr.loc(),
+                        visible_consts,
+                        future_consts,
                         errors,
                     );
                 }
             }
-            Block::Events(events) => {
-                for event in &mut events.events {
-                    fold_event_const_arrays(event, const_values, options, errors);
+            if let Some((base, _method)) = name.rsplit_once('.') {
+                reject_forward_const_ref_name(
+                    base,
+                    expr.loc(),
+                    visible_consts,
+                    future_consts,
+                    errors,
+                );
+            }
+            for arg in args {
+                reject_forward_const_refs_expr(&arg.expr, visible_consts, future_consts, errors);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            reject_forward_const_refs_expr(expr, visible_consts, future_consts, errors);
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                reject_forward_const_refs_expr(value, visible_consts, future_consts, errors);
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+    }
+}
+
+fn reject_forward_const_refs_decl_type(
+    ty: &Option<DeclType>,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match ty {
+        Some(DeclType::Array { size, .. }) | Some(DeclType::ArrayGeneric { size, .. }) => {
+            reject_forward_const_refs_expr(size, visible_consts, future_consts, errors);
+        }
+        Some(DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_)) | None => {}
+    }
+}
+
+fn reject_forward_const_refs_decl_range(
+    range: &Option<DeclRange>,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(range) = range {
+        if let Some(min) = &range.min {
+            reject_forward_const_refs_expr(min, visible_consts, future_consts, errors);
+        }
+        reject_forward_const_refs_expr(&range.max, visible_consts, future_consts, errors);
+    }
+}
+
+fn reject_forward_const_refs_port_decl(
+    decl: &PortDecl,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    reject_forward_const_refs_decl_type(&decl.ty, visible_consts, future_consts, errors);
+    if let Some(default) = &decl.default {
+        reject_forward_const_refs_expr(default, visible_consts, future_consts, errors);
+    }
+    reject_forward_const_refs_decl_range(&decl.range, visible_consts, future_consts, errors);
+}
+
+fn reject_forward_const_refs_param_decl(
+    decl: &ParamDecl,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    reject_forward_const_refs_decl_type(&decl.ty, visible_consts, future_consts, errors);
+    if let Some(default) = &decl.default {
+        reject_forward_const_refs_expr(default, visible_consts, future_consts, errors);
+    }
+    reject_forward_const_refs_decl_range(&decl.range, visible_consts, future_consts, errors);
+}
+
+fn reject_forward_const_refs_buffer_type(
+    ty: &Option<BufferType>,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(BufferType {
+        channels: BufferChannels::Static(expr),
+        ..
+    }) = ty
+    {
+        reject_forward_const_refs_expr(expr, visible_consts, future_consts, errors);
+    }
+}
+
+fn reject_forward_const_refs_fn_param_type(
+    ty: &Option<FnParamType>,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match ty {
+        Some(FnParamType::SizedArray { size, .. }) => {
+            reject_forward_const_refs_expr(size, visible_consts, future_consts, errors);
+        }
+        Some(FnParamType::Buffer(buffer_ty)) => {
+            if let BufferChannels::Static(expr) = &buffer_ty.channels {
+                reject_forward_const_refs_expr(expr, visible_consts, future_consts, errors);
+            }
+        }
+        Some(
+            FnParamType::Primitive(_)
+            | FnParamType::Struct(_)
+            | FnParamType::Array(_)
+            | FnParamType::ArrayGeneric(_)
+            | FnParamType::BareBuffer
+            | FnParamType::Tuple(_),
+        )
+        | None => {}
+    }
+}
+
+fn reject_forward_const_refs_event_param_type(
+    ty: &EventParamType,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let EventParamType::Array { size, .. } = ty {
+        reject_forward_const_refs_expr(size, visible_consts, future_consts, errors);
+    }
+}
+
+fn reject_forward_const_refs_field_type(
+    ty: &FieldType,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let FieldType::Array(spec) = ty {
+        reject_forward_const_refs_expr(&spec.size, visible_consts, future_consts, errors);
+    }
+}
+
+fn reject_forward_const_refs_return_type(
+    ty: &Option<FnReturnType>,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match ty {
+        Some(FnReturnType::Array { size, .. }) => {
+            reject_forward_const_refs_expr(size, visible_consts, future_consts, errors);
+        }
+        Some(FnReturnType::Scalar(_) | FnReturnType::Tuple(_)) | None => {}
+    }
+}
+
+fn reject_forward_const_refs_assign_target(
+    target: &AssignTarget,
+    target_loc: SourceLoc,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match target {
+        AssignTarget::Index { base, index } => {
+            reject_forward_const_ref_name(base, target_loc, visible_consts, future_consts, errors);
+            reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
+        }
+        AssignTarget::Slice { base, start, end } => {
+            reject_forward_const_ref_name(base, target_loc, visible_consts, future_consts, errors);
+            if let Some(start) = start {
+                reject_forward_const_refs_expr(start, visible_consts, future_consts, errors);
+            }
+            if let Some(end) = end {
+                reject_forward_const_refs_expr(end, visible_consts, future_consts, errors);
+            }
+        }
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
+    }
+}
+
+fn reject_forward_const_refs_stmt(
+    stmt: &Stmt,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match stmt {
+        Stmt::Const { decl, .. } => {
+            reject_forward_const_refs_expr(&decl.expr, visible_consts, future_consts, errors);
+            if let Some(ConstType::Array { size, .. }) = &decl.ty {
+                reject_forward_const_refs_expr(size, visible_consts, future_consts, errors);
+            }
+        }
+        Stmt::Assign {
+            target_loc,
+            target,
+            expr,
+            ..
+        } => {
+            reject_forward_const_refs_assign_target(
+                target,
+                target_loc.as_ref().into(),
+                visible_consts,
+                future_consts,
+                errors,
+            );
+            reject_forward_const_refs_expr(expr, visible_consts, future_consts, errors);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            reject_forward_const_refs_expr(expr, visible_consts, future_consts, errors);
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            reject_forward_const_refs_expr(cond, visible_consts, future_consts, errors);
+            for nested in then_branch {
+                reject_forward_const_refs_stmt(nested, visible_consts, future_consts, errors);
+            }
+            for nested in else_branch {
+                reject_forward_const_refs_stmt(nested, visible_consts, future_consts, errors);
+            }
+        }
+        Stmt::For {
+            step,
+            start,
+            end,
+            body,
+            ..
+        } => {
+            if let Some(step) = step {
+                reject_forward_const_refs_expr(step, visible_consts, future_consts, errors);
+            }
+            reject_forward_const_refs_expr(start, visible_consts, future_consts, errors);
+            reject_forward_const_refs_expr(end, visible_consts, future_consts, errors);
+            for nested in body {
+                reject_forward_const_refs_stmt(nested, visible_consts, future_consts, errors);
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            reject_forward_const_refs_expr(cond, visible_consts, future_consts, errors);
+            for nested in body {
+                reject_forward_const_refs_stmt(nested, visible_consts, future_consts, errors);
+            }
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn reject_forward_const_refs_function(
+    def: &FunctionDef,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &def.params {
+        reject_forward_const_refs_fn_param_type(&param.ty, visible_consts, future_consts, errors);
+        if let Some(default) = &param.default {
+            reject_forward_const_refs_expr(default, visible_consts, future_consts, errors);
+        }
+    }
+    reject_forward_const_refs_return_type(&def.return_ty, visible_consts, future_consts, errors);
+    for stmt in &def.body {
+        reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+    }
+}
+
+fn reject_forward_const_refs_event(
+    event: &EventDef,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &event.params {
+        reject_forward_const_refs_event_param_type(
+            &param.ty,
+            visible_consts,
+            future_consts,
+            errors,
+        );
+        if let Some(default) = &param.default {
+            reject_forward_const_refs_expr(default, visible_consts, future_consts, errors);
+        }
+    }
+    for stmt in &event.body {
+        reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+    }
+}
+
+fn reject_forward_const_refs_graph(
+    graph: &GraphBlock,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for edge in &graph.edges {
+        reject_forward_const_refs_expr(&edge.source, visible_consts, future_consts, errors);
+        if let Some(delay) = &edge.delay {
+            reject_forward_const_refs_expr(delay, visible_consts, future_consts, errors);
+        }
+        for dest in &edge.dests {
+            if let GraphEndpoint::ProcIndexedField { index, .. } = dest {
+                reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
+            }
+        }
+    }
+}
+
+fn reject_forward_const_refs_in_block(
+    block: &Block,
+    visible_consts: &HashMap<String, ConstValue>,
+    future_consts: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match block {
+        Block::Ins(ports) | Block::Outs(ports) => {
+            if let Some(count) = &ports.deferred_count {
+                reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
+            }
+            for decl in &ports.decls {
+                reject_forward_const_refs_port_decl(decl, visible_consts, future_consts, errors);
+            }
+        }
+        Block::Params(params) => {
+            if let Some(count) = &params.deferred_count {
+                reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
+            }
+            for decl in &params.decls {
+                reject_forward_const_refs_param_decl(decl, visible_consts, future_consts, errors);
+            }
+        }
+        Block::Events(events) => {
+            for event in &events.events {
+                reject_forward_const_refs_event(event, visible_consts, future_consts, errors);
+            }
+        }
+        Block::Buffers(buffers) => {
+            if let Some(count) = &buffers.deferred_count {
+                reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
+            }
+            for decl in &buffers.decls {
+                reject_forward_const_refs_buffer_type(
+                    &decl.ty,
+                    visible_consts,
+                    future_consts,
+                    errors,
+                );
+            }
+        }
+        Block::Init(init) => {
+            for stmt in &init.body {
+                reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+            }
+        }
+        Block::Block(block_exec) => {
+            for stmt in &block_exec.pre {
+                reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+            }
+            if let Some(sample) = &block_exec.sample {
+                if let Some(factor) = &sample.oversample_factor {
+                    reject_forward_const_refs_expr(factor, visible_consts, future_consts, errors);
+                }
+                for stmt in &sample.body {
+                    reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
                 }
             }
-            Block::Buffers(buffers) => {
-                if let Some(count) = &mut buffers.deferred_count {
-                    fold_const_array_expr(count, const_values, options, errors, false);
-                }
-                for decl in &mut buffers.decls {
-                    fold_buffer_type_const_arrays(&mut decl.ty, const_values, options, errors);
+            for stmt in &block_exec.post {
+                reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+            }
+        }
+        Block::Sample(sample) => {
+            if let Some(factor) = &sample.oversample_factor {
+                reject_forward_const_refs_expr(factor, visible_consts, future_consts, errors);
+            }
+            for stmt in &sample.body {
+                reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+            }
+        }
+        Block::Graph(graph) => {
+            reject_forward_const_refs_graph(graph, visible_consts, future_consts, errors);
+        }
+        Block::Assert(assert_decl) => {
+            reject_forward_const_refs_expr(
+                &assert_decl.expr,
+                visible_consts,
+                future_consts,
+                errors,
+            );
+        }
+        Block::Def(def) if !def.is_const => {
+            reject_forward_const_refs_function(def, visible_consts, future_consts, errors);
+        }
+        Block::Struct(struct_def) => {
+            for field in &struct_def.fields {
+                reject_forward_const_refs_field_type(
+                    &field.ty,
+                    visible_consts,
+                    future_consts,
+                    errors,
+                );
+                if let Some(default) = &field.default {
+                    reject_forward_const_refs_expr(default, visible_consts, future_consts, errors);
                 }
             }
-            Block::Init(init) => {
-                for stmt in &mut init.body {
-                    fold_stmt_const_arrays(stmt, const_values, options, errors);
-                }
+            for method in &struct_def.methods {
+                reject_forward_const_refs_function(method, visible_consts, future_consts, errors);
             }
-            Block::Block(block_exec) => {
-                for stmt in &mut block_exec.pre {
-                    fold_stmt_const_arrays(stmt, const_values, options, errors);
-                }
-                if let Some(sample) = &mut block_exec.sample {
-                    if let Some(factor) = &mut sample.oversample_factor {
-                        fold_const_array_expr(factor, const_values, options, errors, false);
-                    }
-                    for stmt in &mut sample.body {
-                        fold_stmt_const_arrays(stmt, const_values, options, errors);
-                    }
-                }
-                for stmt in &mut block_exec.post {
-                    fold_stmt_const_arrays(stmt, const_values, options, errors);
-                }
+        }
+        Block::Proc(proc) => {
+            if let Some(count) = &proc.ins_deferred_count {
+                reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
             }
-            Block::Sample(sample) => {
+            if let Some(default_ty) = &proc.ins_deferred_default_ty {
+                let ty = Some(default_ty.clone());
+                reject_forward_const_refs_decl_type(&ty, visible_consts, future_consts, errors);
+            }
+            if let Some(count) = &proc.outs_deferred_count {
+                reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
+            }
+            if let Some(default_ty) = &proc.outs_deferred_default_ty {
+                let ty = Some(default_ty.clone());
+                reject_forward_const_refs_decl_type(&ty, visible_consts, future_consts, errors);
+            }
+            if let Some(count) = &proc.params_deferred_count {
+                reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
+            }
+            if let Some(default_ty) = &proc.params_deferred_default_ty {
+                let ty = Some(default_ty.clone());
+                reject_forward_const_refs_decl_type(&ty, visible_consts, future_consts, errors);
+            }
+            if let Some(count) = &proc.buffers_deferred_count {
+                reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
+            }
+            reject_forward_const_refs_buffer_type(
+                &proc.buffers_deferred_default_ty,
+                visible_consts,
+                future_consts,
+                errors,
+            );
+            for decl in &proc.ins {
+                reject_forward_const_refs_port_decl(decl, visible_consts, future_consts, errors);
+            }
+            for decl in &proc.outs {
+                reject_forward_const_refs_port_decl(decl, visible_consts, future_consts, errors);
+            }
+            for decl in &proc.params {
+                reject_forward_const_refs_param_decl(decl, visible_consts, future_consts, errors);
+            }
+            for decl in &proc.buffers {
+                reject_forward_const_refs_buffer_type(
+                    &decl.ty,
+                    visible_consts,
+                    future_consts,
+                    errors,
+                );
+            }
+            if let Some(default_ty) = &proc.init.default_ty {
+                let ty = Some(default_ty.clone());
+                reject_forward_const_refs_decl_type(&ty, visible_consts, future_consts, errors);
+            }
+            if let Some(factor) = &proc.sample_oversample_factor {
+                reject_forward_const_refs_expr(factor, visible_consts, future_consts, errors);
+            }
+            for event in &proc.events {
+                reject_forward_const_refs_event(event, visible_consts, future_consts, errors);
+            }
+            for stmt in &proc.init.body {
+                reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+            }
+            for stmt in &proc.block_pre {
+                reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+            }
+            for stmt in &proc.sample {
+                reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+            }
+            for stmt in &proc.block_post {
+                reject_forward_const_refs_stmt(stmt, visible_consts, future_consts, errors);
+            }
+            if let Some(graph) = &proc.graph {
+                reject_forward_const_refs_graph(graph, visible_consts, future_consts, errors);
+            }
+            for def in &proc.local_defs {
+                reject_forward_const_refs_function(def, visible_consts, future_consts, errors);
+            }
+        }
+        Block::Const(_) | Block::Def(_) | Block::Namespace(_) | Block::NamespaceAlias(_) => {}
+    }
+}
+
+fn fold_const_array_exprs_in_block(
+    block: &mut Block,
+    const_values: &HashMap<String, ConstValue>,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match block {
+        Block::Ins(ports) => {
+            if let Some(count) = &mut ports.deferred_count {
+                fold_const_array_expr(count, const_values, options, errors, false);
+            }
+            for decl in &mut ports.decls {
+                fold_port_decl_const_arrays(decl, "input", const_values, options, errors);
+            }
+        }
+        Block::Outs(ports) => {
+            if let Some(count) = &mut ports.deferred_count {
+                fold_const_array_expr(count, const_values, options, errors, false);
+            }
+            for decl in &mut ports.decls {
+                fold_port_decl_const_arrays(decl, "output", const_values, options, errors);
+            }
+        }
+        Block::Params(params) => {
+            if let Some(count) = &mut params.deferred_count {
+                fold_const_array_expr(count, const_values, options, errors, false);
+            }
+            for decl in &mut params.decls {
+                fold_param_decl_const_arrays(
+                    decl,
+                    &format!("param '<top-level>.{}'", decl.name),
+                    const_values,
+                    options,
+                    errors,
+                );
+            }
+        }
+        Block::Events(events) => {
+            for event in &mut events.events {
+                fold_event_const_arrays(event, const_values, options, errors);
+            }
+        }
+        Block::Buffers(buffers) => {
+            if let Some(count) = &mut buffers.deferred_count {
+                fold_const_array_expr(count, const_values, options, errors, false);
+            }
+            for decl in &mut buffers.decls {
+                fold_buffer_type_const_arrays(&mut decl.ty, const_values, options, errors);
+            }
+        }
+        Block::Init(init) => {
+            for stmt in &mut init.body {
+                fold_stmt_const_arrays(stmt, const_values, options, errors);
+            }
+        }
+        Block::Block(block_exec) => {
+            for stmt in &mut block_exec.pre {
+                fold_stmt_const_arrays(stmt, const_values, options, errors);
+            }
+            if let Some(sample) = &mut block_exec.sample {
                 if let Some(factor) = &mut sample.oversample_factor {
                     fold_const_array_expr(factor, const_values, options, errors, false);
                 }
@@ -2261,100 +2851,107 @@ fn fold_const_array_exprs_in_program(
                     fold_stmt_const_arrays(stmt, const_values, options, errors);
                 }
             }
-            Block::Graph(graph) => {
+            for stmt in &mut block_exec.post {
+                fold_stmt_const_arrays(stmt, const_values, options, errors);
+            }
+        }
+        Block::Sample(sample) => {
+            if let Some(factor) = &mut sample.oversample_factor {
+                fold_const_array_expr(factor, const_values, options, errors, false);
+            }
+            for stmt in &mut sample.body {
+                fold_stmt_const_arrays(stmt, const_values, options, errors);
+            }
+        }
+        Block::Graph(graph) => {
+            fold_graph_const_arrays(graph, const_values, options, errors);
+        }
+        Block::Assert(assert_decl) => {
+            fold_const_array_expr(&mut assert_decl.expr, const_values, options, errors, false);
+        }
+        Block::Def(def) if !def.is_const => {
+            fold_function_const_arrays(def, const_values, options, errors);
+        }
+        Block::Struct(struct_def) => {
+            for field in &mut struct_def.fields {
+                fold_field_type_const_arrays(&mut field.ty, const_values, options, errors);
+                if let Some(default) = &mut field.default {
+                    fold_const_array_expr(default, const_values, options, errors, false);
+                }
+            }
+            for method in &mut struct_def.methods {
+                fold_function_const_arrays(method, const_values, options, errors);
+            }
+        }
+        Block::Proc(proc) => {
+            for decl in &mut proc.ins {
+                fold_port_decl_const_arrays(
+                    decl,
+                    &format!("processor '{}' input", proc.name),
+                    const_values,
+                    options,
+                    errors,
+                );
+            }
+            if let Some(count) = &mut proc.ins_deferred_count {
+                fold_const_array_expr(count, const_values, options, errors, false);
+            }
+            for decl in &mut proc.outs {
+                fold_port_decl_const_arrays(
+                    decl,
+                    &format!("processor '{}' output", proc.name),
+                    const_values,
+                    options,
+                    errors,
+                );
+            }
+            if let Some(count) = &mut proc.outs_deferred_count {
+                fold_const_array_expr(count, const_values, options, errors, false);
+            }
+            for decl in &mut proc.params {
+                fold_param_decl_const_arrays(
+                    decl,
+                    &format!("processor '{}' param '{}'", proc.name, decl.name),
+                    const_values,
+                    options,
+                    errors,
+                );
+            }
+            if let Some(count) = &mut proc.params_deferred_count {
+                fold_const_array_expr(count, const_values, options, errors, false);
+            }
+            for decl in &mut proc.buffers {
+                fold_buffer_type_const_arrays(&mut decl.ty, const_values, options, errors);
+            }
+            if let Some(count) = &mut proc.buffers_deferred_count {
+                fold_const_array_expr(count, const_values, options, errors, false);
+            }
+            if let Some(factor) = &mut proc.sample_oversample_factor {
+                fold_const_array_expr(factor, const_values, options, errors, false);
+            }
+            for event in &mut proc.events {
+                fold_event_const_arrays(event, const_values, options, errors);
+            }
+            for stmt in &mut proc.init.body {
+                fold_stmt_const_arrays(stmt, const_values, options, errors);
+            }
+            for stmt in &mut proc.block_pre {
+                fold_stmt_const_arrays(stmt, const_values, options, errors);
+            }
+            for stmt in &mut proc.sample {
+                fold_stmt_const_arrays(stmt, const_values, options, errors);
+            }
+            for stmt in &mut proc.block_post {
+                fold_stmt_const_arrays(stmt, const_values, options, errors);
+            }
+            if let Some(graph) = &mut proc.graph {
                 fold_graph_const_arrays(graph, const_values, options, errors);
             }
-            Block::Const(decl) => {
-                if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
-                    fold_const_array_expr(size, const_values, options, errors, false);
-                }
-                fold_const_array_expr(&mut decl.expr, const_values, options, errors, false);
+            for def in &mut proc.local_defs {
+                fold_function_const_arrays(def, const_values, options, errors);
             }
-            Block::Assert(assert_decl) => {
-                fold_const_array_expr(&mut assert_decl.expr, const_values, options, errors, false);
-            }
-            Block::Def(def) => fold_function_const_arrays(def, const_values, options, errors),
-            Block::Struct(struct_def) => {
-                for field in &mut struct_def.fields {
-                    fold_field_type_const_arrays(&mut field.ty, const_values, options, errors);
-                    if let Some(default) = &mut field.default {
-                        fold_const_array_expr(default, const_values, options, errors, false);
-                    }
-                }
-                for method in &mut struct_def.methods {
-                    fold_function_const_arrays(method, const_values, options, errors);
-                }
-            }
-            Block::Proc(proc) => {
-                for decl in &mut proc.ins {
-                    fold_port_decl_const_arrays(
-                        decl,
-                        &format!("processor '{}' input", proc.name),
-                        const_values,
-                        options,
-                        errors,
-                    );
-                }
-                if let Some(count) = &mut proc.ins_deferred_count {
-                    fold_const_array_expr(count, const_values, options, errors, false);
-                }
-                for decl in &mut proc.outs {
-                    fold_port_decl_const_arrays(
-                        decl,
-                        &format!("processor '{}' output", proc.name),
-                        const_values,
-                        options,
-                        errors,
-                    );
-                }
-                if let Some(count) = &mut proc.outs_deferred_count {
-                    fold_const_array_expr(count, const_values, options, errors, false);
-                }
-                for decl in &mut proc.params {
-                    fold_param_decl_const_arrays(
-                        decl,
-                        &format!("processor '{}' param '{}'", proc.name, decl.name),
-                        const_values,
-                        options,
-                        errors,
-                    );
-                }
-                if let Some(count) = &mut proc.params_deferred_count {
-                    fold_const_array_expr(count, const_values, options, errors, false);
-                }
-                for decl in &mut proc.buffers {
-                    fold_buffer_type_const_arrays(&mut decl.ty, const_values, options, errors);
-                }
-                if let Some(count) = &mut proc.buffers_deferred_count {
-                    fold_const_array_expr(count, const_values, options, errors, false);
-                }
-                if let Some(factor) = &mut proc.sample_oversample_factor {
-                    fold_const_array_expr(factor, const_values, options, errors, false);
-                }
-                for event in &mut proc.events {
-                    fold_event_const_arrays(event, const_values, options, errors);
-                }
-                for stmt in &mut proc.init.body {
-                    fold_stmt_const_arrays(stmt, const_values, options, errors);
-                }
-                for stmt in &mut proc.block_pre {
-                    fold_stmt_const_arrays(stmt, const_values, options, errors);
-                }
-                for stmt in &mut proc.sample {
-                    fold_stmt_const_arrays(stmt, const_values, options, errors);
-                }
-                for stmt in &mut proc.block_post {
-                    fold_stmt_const_arrays(stmt, const_values, options, errors);
-                }
-                if let Some(graph) = &mut proc.graph {
-                    fold_graph_const_arrays(graph, const_values, options, errors);
-                }
-                for def in &mut proc.local_defs {
-                    fold_function_const_arrays(def, const_values, options, errors);
-                }
-            }
-            Block::Namespace(_) | Block::NamespaceAlias(_) => {}
         }
+        Block::Const(_) | Block::Def(_) | Block::Namespace(_) | Block::NamespaceAlias(_) => {}
     }
 }
 
@@ -4177,7 +4774,15 @@ fn coerce_consts_and_expand_counts(
 ) -> SemanticConstArtifacts {
     let mut artifacts = SemanticConstArtifacts::default();
     let mut seen = HashSet::<String>::new();
+    let ordinary_symbols = ordinary_top_level_symbol_names(program);
+    let mut future_const_symbols = top_level_const_symbol_names(program);
+    for name in &ordinary_symbols {
+        future_const_symbols.remove(name);
+    }
     for block in &mut program.blocks {
+        if let Block::Const(decl) = block {
+            future_const_symbols.remove(&decl.name);
+        }
         let preprocess_local_consts = match block {
             Block::Const(_) => false,
             Block::Def(def) if def.is_const => false,
@@ -4192,6 +4797,16 @@ fn coerce_consts_and_expand_counts(
                     errors.push(Diagnostic::semantic_span(
                         format!(
                             "const def name '{}' is reserved as a builtin constant",
+                            def.name
+                        ),
+                        def.loc,
+                    ));
+                    continue;
+                }
+                if ordinary_symbols.contains(&def.name) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "const def name '{}' conflicts with existing symbol",
                             def.name
                         ),
                         def.loc,
@@ -4215,6 +4830,16 @@ fn coerce_consts_and_expand_counts(
                     errors.push(Diagnostic::semantic_span(
                         format!(
                             "constant name '{}' is reserved as a builtin constant",
+                            decl.name
+                        ),
+                        decl.loc.as_ref(),
+                    ));
+                    continue;
+                }
+                if ordinary_symbols.contains(&decl.name) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "constant name '{}' conflicts with existing symbol",
                             decl.name
                         ),
                         decl.loc.as_ref(),
@@ -4322,6 +4947,13 @@ fn coerce_consts_and_expand_counts(
             }
             _ => fold_direct_const_def_calls_in_block(block, &artifacts, options, errors),
         }
+        fold_const_array_exprs_in_block(block, &artifacts.const_values, options, errors);
+        reject_forward_const_refs_in_block(
+            block,
+            &artifacts.const_values,
+            &future_const_symbols,
+            errors,
+        );
     }
     artifacts
 }
@@ -4473,12 +5105,6 @@ pub(crate) fn preprocess_const_semantics_for_lowering(
     let mut errors = Vec::new();
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
     reject_const_assignments_in_program(&program, &const_artifacts.const_values, &mut errors);
-    fold_const_array_exprs_in_program(
-        &mut program,
-        &const_artifacts.const_values,
-        options,
-        &mut errors,
-    );
     evaluate_asserts(&mut program, options, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
@@ -4498,12 +5124,6 @@ pub fn lower_graphs_for_inspection_with_options(
     let mut errors = Vec::new();
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
     reject_const_assignments_in_program(&program, &const_artifacts.const_values, &mut errors);
-    fold_const_array_exprs_in_program(
-        &mut program,
-        &const_artifacts.const_values,
-        options,
-        &mut errors,
-    );
     evaluate_asserts(&mut program, options, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
@@ -4533,13 +5153,22 @@ pub fn analyze_with_options(
     let mut errors = Vec::new();
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
     let const_array_infos = const_array_info_map(&const_artifacts.const_arrays);
+    let mut const_scalar_names = const_artifacts
+        .const_values
+        .iter()
+        .filter_map(|(name, value)| match value {
+            ConstValue::Scalar(_) => Some(name.clone()),
+            ConstValue::Array { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    const_scalar_names.sort();
+    let mut const_def_names = const_artifacts
+        .const_defs
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    const_def_names.sort();
     reject_const_assignments_in_program(&program, &const_artifacts.const_values, &mut errors);
-    fold_const_array_exprs_in_program(
-        &mut program,
-        &const_artifacts.const_values,
-        options,
-        &mut errors,
-    );
     evaluate_asserts(&mut program, options, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
@@ -5164,12 +5793,19 @@ pub fn analyze_with_options(
         &mut all_declared,
         &mut errors,
     );
+    check_unique_set(&const_scalar_names, "const", &mut all_declared, &mut errors);
     check_unique_set(
         &const_arrays
             .iter()
             .map(|array| array.name.clone())
             .collect::<Vec<_>>(),
         "const array",
+        &mut all_declared,
+        &mut errors,
+    );
+    check_unique_set(
+        &const_def_names,
+        "const def",
         &mut all_declared,
         &mut errors,
     );

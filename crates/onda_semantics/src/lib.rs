@@ -1766,6 +1766,214 @@ sample:
     }
 
     #[test]
+    fn const_def_names_conflict_with_runtime_defs() {
+        let src = r#"
+const def foo() -> f32:
+  return 0.25
+
+def foo(x: f32):
+  return x * 2.0
+
+outs:
+  out1
+
+sample:
+  out1 = foo(0.5)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const def/runtime def name conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("const def name 'foo' conflicts with existing symbol")),
+            "expected const def name conflict, got {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|diag| !diag.message.contains("expects 0 argument")),
+            "runtime def call should not be intercepted by const folding: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_const_names_conflict_with_params() {
+        let src = r#"
+const gain = 1.0
+
+params:
+  gain = 0.5
+
+outs:
+  out1
+
+sample:
+  out1 = gain
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const/param name conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant name 'gain' conflicts with existing symbol")),
+            "expected const/param conflict, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_const_names_conflict_with_earlier_params_without_forward_ref_noise() {
+        let src = r#"
+params:
+  gain = 0.5
+
+outs:
+  out1
+
+sample:
+  out1 = gain
+
+const gain = 1.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("param/const name conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant name 'gain' conflicts with existing symbol")),
+            "expected param/const conflict, got {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|diag| !diag.message.contains("not visible before its declaration")),
+            "runtime param read should not be reported as forward const use: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_const_names_conflict_with_runtime_defs() {
+        let src = r#"
+const foo = 1.0
+
+def foo(x: f32):
+  return x * 2.0
+
+outs:
+  out1
+
+sample:
+  out1 = foo(0.5)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const/runtime def name conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant name 'foo' conflicts with existing symbol")),
+            "expected const/runtime def conflict, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_const_refs_reject_forward_scalar_consts() {
+        let src = r#"
+outs:
+  out1
+
+sample:
+  out1 = Later
+
+const Later = 0.5
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward scalar const use should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant 'Later' is not visible before its declaration")),
+            "expected forward scalar const diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_const_refs_reject_forward_const_arrays() {
+        let src = r#"
+outs:
+  out1
+
+sample:
+  idx = 0
+  out1 = Table[idx]
+
+const Table: f32[1] = [0.5]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward const array use should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant 'Table' is not visible before its declaration")),
+            "expected forward const array diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn declaration_defaults_reject_forward_const_arrays() {
+        let src = r#"
+params:
+  taps: f32[2] = Table
+
+const Table: f32[2] = [0.25, 0.75]
+
+outs:
+  out1
+
+sample:
+  out1 = taps[0]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward const array default should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant 'Table' is not visible before its declaration")),
+            "expected forward const array default diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn asserts_reject_forward_scalar_consts() {
+        let src = r#"
+namespace Check:
+  assert(Later == 1)
+
+const Later = 1
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward const assert should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant 'Later' is not visible before its declaration")),
+            "expected forward const assert diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn const_def_return_types_are_required_and_enforced() {
         let src = r#"
 const def missing():
