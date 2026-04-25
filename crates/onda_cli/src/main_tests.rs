@@ -4,7 +4,7 @@ use super::{
 };
 use onda_codegen_llvm::{TargetCodeModel, TargetCpu, TargetOptLevel, TargetRelocMode};
 use onda_frontend::{
-    Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
+    parse_program, Block, CallArg, Diagnostic, Expr, GraphBlock, GraphEdge, GraphEndpoint, Program,
 };
 use onda_run::RunThemeMode;
 use std::path::{Path, PathBuf};
@@ -577,6 +577,58 @@ fn format_program_prints_graph_fanout_destinations() {
         super::formatting::format_program(&program),
         "graph:\n  src >> { out1, mix.in1 }\n\n"
     );
+}
+
+#[test]
+fn format_program_preserves_deferred_count_shorthand_sections() {
+    let program = parse_program(
+        r#"
+const N = 2
+ins<f64> N
+outs<i32> 1:
+  out1
+params<bool> 3
+buffers[f32] N
+sample:
+  out1 = 0
+"#,
+    )
+    .expect("program should parse");
+
+    assert_eq!(
+        super::formatting::format_program(&program),
+        "const N = 2\n\nins<f64> N\n\nouts<i32> 1:\n  out1: i32\n\nparams<bool> 3\n\nbuffers[f32] N\n\nsample:\n  out1 = 0\n\n"
+    );
+}
+
+#[test]
+fn format_program_preserves_proc_deferred_count_shorthand_sections() {
+    let program = parse_program(
+        r#"
+proc Voice:
+  const N = 2
+  ins<f64> N
+  outs<i32> 1
+  params<bool> N
+  buffers[f32] N
+  sample:
+    out1 = 0
+
+outs:
+  out1
+init:
+  voice = Voice()
+sample:
+  out1 = voice.out1
+"#,
+    )
+    .expect("program should parse");
+
+    let formatted = super::formatting::format_program(&program);
+    assert!(formatted.contains("  ins<f64> N\n"));
+    assert!(formatted.contains("  outs<i32> 1\n"));
+    assert!(formatted.contains("  params<bool> N\n"));
+    assert!(formatted.contains("  buffers[f32] N\n"));
 }
 
 #[test]

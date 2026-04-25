@@ -7,10 +7,8 @@ use super::preprocess::preprocess_indentation_blocks;
 use super::*;
 
 mod namespaces;
+pub use namespaces::parse_namespace_ref_text_ast;
 use namespaces::*;
-
-mod rewrite;
-use rewrite::*;
 
 #[derive(Default)]
 struct LoadState {
@@ -19,17 +17,7 @@ struct LoadState {
     file_modes: HashMap<PathBuf, FileLoadMode>,
     stack: Vec<PathBuf>,
     builtin_stack: Vec<String>,
-    namespace_templates: HashMap<String, NamespaceTemplateDecl>,
-    namespace_aliases: HashMap<String, NamespaceAliasDecl>,
-    namespace_members: HashSet<String>,
-    namespace_const_values: HashMap<String, Expr>,
-    namespace_const_array_names: HashSet<String>,
-    top_level_const_values: HashMap<String, Expr>,
     top_level_const_names: HashSet<String>,
-    top_level_const_array_names: HashSet<String>,
-    semantic_scalar_const_names: HashSet<String>,
-    namespace_instantiations: HashMap<String, String>,
-    next_namespace_instantiation_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +35,8 @@ thread_local! {
 fn block_decl_name(block: &Block) -> Option<&str> {
     match block {
         Block::Const(c) => Some(c.name.as_str()),
+        Block::Namespace(ns) => Some(ns.name.as_str()),
+        Block::NamespaceAlias(alias) => Some(alias.name.as_str()),
         Block::Struct(s) => Some(s.name.as_str()),
         Block::Def(d) => Some(d.name.as_str()),
         Block::Proc(p) => Some(p.name.as_str()),
@@ -245,17 +235,14 @@ fn parse_program_preprocessed(
             .ok_or_else(|| vec![Diagnostic::syntax("empty parse result", 1, 1)])?;
 
         let mut blocks = Vec::new();
-        let mut top_level_consts = state.top_level_const_values.clone();
         let mut top_level_const_names = state.top_level_const_names.clone();
-        top_level_const_names.extend(state.top_level_const_values.keys().cloned());
-        let mut generated = Vec::<Block>::new();
         for pair in program_pair.into_inner() {
             match pair.as_rule() {
                 Rule::ins_block => blocks.push(Block::Ins(parse_port_block(pair)?)),
                 Rule::outs_block => blocks.push(Block::Outs(parse_port_block(pair)?)),
                 Rule::params_block => blocks.push(Block::Params(parse_params_block(pair)?)),
                 Rule::const_block => {
-                    let mut decl = parse_const_decl(pair)?;
+                    let decl = parse_const_decl(pair)?;
                     if !top_level_const_names.insert(decl.name.clone()) {
                         return Err(vec![Diagnostic::semantic_span(
                             format!("duplicate top-level constant '{}'", decl.name),
@@ -263,38 +250,7 @@ fn parse_program_preprocessed(
                         )]);
                     }
                     state.top_level_const_names = top_level_const_names.clone();
-                    if is_const_array_decl(&decl) {
-                        state.top_level_const_array_names.insert(decl.name.clone());
-                        let semantic_const_names = state.semantic_scalar_const_names.clone();
-                        rewrite_const_array_decl(
-                            &mut decl,
-                            "",
-                            &top_level_consts,
-                            &semantic_const_names,
-                            state,
-                            &mut generated,
-                        )?;
-                        blocks.push(Block::Const(decl));
-                    } else {
-                        let semantic_const_names = state.semantic_scalar_const_names.clone();
-                        match rewrite_scalar_const_decl(
-                            &mut decl,
-                            "",
-                            &top_level_consts,
-                            &semantic_const_names,
-                            state,
-                            &mut generated,
-                        )? {
-                            ScalarConstRewrite::Folded(value) => {
-                                top_level_consts.insert(decl.name.clone(), value);
-                                state.top_level_const_values = top_level_consts.clone();
-                            }
-                            ScalarConstRewrite::Deferred => {
-                                state.semantic_scalar_const_names.insert(decl.name.clone());
-                                blocks.push(Block::Const(decl));
-                            }
-                        }
-                    }
+                    blocks.push(Block::Const(decl));
                 }
                 Rule::events_block => {
                     append_or_merge_event_block(&mut blocks, parse_events_block(pair)?)?
@@ -306,14 +262,15 @@ fn parse_program_preprocessed(
                 Rule::assert_block => blocks.push(Block::Assert(parse_assert_decl(pair)?)),
                 Rule::proc_block => blocks.push(Block::Proc(parse_proc_block(pair)?)),
                 Rule::struct_block => blocks.push(Block::Struct(parse_struct_block(pair)?)),
-                Rule::def_block => blocks.push(Block::Def(parse_def_block(pair)?)),
+                Rule::def_block => {
+                    let def = parse_def_block(pair)?;
+                    blocks.push(Block::Def(def));
+                }
                 Rule::namespace_block => {
-                    let ns_decl = parse_namespace_decl(pair)?;
-                    process_namespace_decl(ns_decl, "", &top_level_consts, state, &mut blocks)?
+                    blocks.push(Block::Namespace(parse_namespace_decl_ast(pair)?));
                 }
                 Rule::namespace_alias_decl => {
-                    let alias = parse_namespace_alias_decl(pair)?;
-                    register_namespace_alias("", alias, state)?
+                    blocks.push(Block::NamespaceAlias(parse_namespace_alias_decl_ast(pair)?));
                 }
                 Rule::init_block => blocks.push(Block::Init(parse_exec_block(pair)?)),
                 Rule::block_exec_block => blocks.push(Block::Block(parse_block_exec_block(pair)?)),
@@ -322,9 +279,6 @@ fn parse_program_preprocessed(
                 _ => {}
             }
         }
-
-        rewrite_blocks_namespace_refs(&mut blocks, "", &top_level_consts, state, &mut generated)?;
-        blocks.extend(generated);
 
         Ok(Program { blocks })
     })
@@ -498,7 +452,12 @@ fn load_program_blocks_from_file(
             for block in &blocks {
                 if !matches!(
                     block,
-                    Block::Const(_) | Block::Struct(_) | Block::Def(_) | Block::Proc(_)
+                    Block::Const(_)
+                        | Block::Struct(_)
+                        | Block::Def(_)
+                        | Block::Proc(_)
+                        | Block::Namespace(_)
+                        | Block::NamespaceAlias(_)
                 ) {
                     return Err(annotate_diagnostics_with_file(
                         vec![Diagnostic::semantic_span(
@@ -661,7 +620,12 @@ fn load_builtin_module_blocks(
             for block in &blocks {
                 if !matches!(
                     block,
-                    Block::Const(_) | Block::Struct(_) | Block::Def(_) | Block::Proc(_)
+                    Block::Const(_)
+                        | Block::Struct(_)
+                        | Block::Def(_)
+                        | Block::Proc(_)
+                        | Block::Namespace(_)
+                        | Block::NamespaceAlias(_)
                 ) {
                     return Err(annotate_diagnostics_with_file(
                         vec![Diagnostic::semantic_span(

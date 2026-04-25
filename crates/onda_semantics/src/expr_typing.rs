@@ -150,39 +150,6 @@ fn is_buffer_receiver_symbol_for_builtin(base: &str, declared_symbols: &Declared
     has_declared_buffer_symbol_info(declared_symbols, base)
 }
 
-#[allow(dead_code)]
-pub(crate) fn infer_scalar_expr_type(
-    expr: &Expr,
-    state_scalars: &HashMap<String, PrimitiveType>,
-    declared_symbols: &DeclaredSymbolMap,
-    local_aliases: &LocalAliasTypes,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    locals: &HashSet<String>,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    param_names: &HashSet<String>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<PrimitiveType> {
-    let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
-    infer_scalar_expr_type_with_proc_arrays(
-        expr,
-        state_scalars,
-        declared_symbols,
-        local_aliases,
-        local_array_aliases,
-        locals,
-        input_names,
-        output_names,
-        param_names,
-        struct_instances,
-        struct_defs,
-        &empty_proc_array_roots,
-        errors,
-    )
-}
-
 fn infer_scalar_expr_type_with_proc_arrays(
     expr: &Expr,
     state_scalars: &HashMap<String, PrimitiveType>,
@@ -635,42 +602,6 @@ pub(crate) fn infer_expr_type_for_semantics_with_proc_arrays(
         struct_instances,
         struct_defs,
         proc_array_roots,
-        errors,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
-pub(crate) fn infer_expr_type_for_semantics_with_local_data(
-    expr: &Expr,
-    state_scalars: &HashMap<String, PrimitiveType>,
-    declared_symbols: &DeclaredSymbolMap,
-    param_structs: Option<&HashMap<String, String>>,
-    local_aliases: &LocalAliasTypes,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    locals: &HashSet<String>,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    param_names: &HashSet<String>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<PrimitiveType> {
-    let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
-    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-        expr,
-        state_scalars,
-        declared_symbols,
-        param_structs,
-        local_aliases,
-        local_array_aliases,
-        locals,
-        input_names,
-        output_names,
-        param_names,
-        struct_instances,
-        struct_defs,
-        &empty_proc_array_roots,
         errors,
     )
 }

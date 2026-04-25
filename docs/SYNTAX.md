@@ -778,6 +778,7 @@ Rules:
 - top-level and namespace scalar `const` declarations can call scalar-returning `const def`s, for example `const X = helper(0.5)`
 - untyped scalar const declarations preserve full `f64` / `i64` precision until the value's eventual use site applies its normal type rules
 - `const def` params support primitive scalars and fixed-size primitive arrays
+- every `const def` must declare an explicit return type, and every `return` is evaluated against that type; scalar returns are coerced/validated as that primitive type, while fixed-array returns must match the declared element type and length exactly
 - array-returning `const def` bodies can use local fixed primitive arrays, indexed local-array reads/writes, `if`, `for`, `loop`, `return`, pure builtin math, and calls to earlier visible const defs
 - const arrays and const slices can be passed to ordinary runtime `def` array params when the callee param is inferred read-only
 - writes through an array param, writes through its aliases, `unsafe_write`, or forwarding to a mutable callee make the param mutable and reject const-array args

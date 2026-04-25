@@ -64,21 +64,6 @@ impl ScopeFlowState {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn fork_scope_flow_state(
-    known_scalars: &HashSet<String>,
-    local_aliases: &LocalAliasTypes,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
-) -> ScopeFlowState {
-    ScopeFlowState::from_parts(
-        known_scalars.clone(),
-        local_aliases.clone(),
-        local_array_aliases.clone(),
-        local_proc_aliases.clone(),
-    )
-}
-
 pub(crate) fn fork_scope_flow_state_with_tuples(
     known_scalars: &HashSet<String>,
     local_aliases: &LocalAliasTypes,

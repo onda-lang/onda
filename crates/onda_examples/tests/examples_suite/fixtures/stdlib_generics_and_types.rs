@@ -460,6 +460,27 @@ sample {
 }
 "#;
 
+const STDLIB_STFT_DEFAULT_HANN_WINDOW_EXAMPLE: &str = r#"
+import std/fft
+outs 2
+init {
+  input: f32[4]
+  mags: f32[3]
+  window: f32[4]
+  input[0] = 0.0
+  input[1] = 1.0
+  input[2] = 0.0
+  input[3] = 0.0
+  stft: std::fft<4>::STFT<f32>
+}
+sample {
+  stft.store_window(window)
+  stft.forward_real_magnitude(input, mags)
+  out1 = window[0] + window[1] + window[2] + window[3]
+  out2 = mags[0] + mags[1] + mags[2]
+}
+"#;
+
 const STDLIB_REALFFT_STRUCT_EXAMPLE: &str = r#"
 import std/fft
 import std/osc
@@ -1561,4 +1582,3 @@ block {
   }
 }
 "#;
-

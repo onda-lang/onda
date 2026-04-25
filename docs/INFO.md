@@ -164,6 +164,7 @@
   - Top-level and namespace scalar `const` declarations can be initialized from scalar-returning `const def` calls, and semantic scalar const values fold into later compile-time and runtime uses.
   - Untyped semantic scalar const declarations preserve full `f64` / `i64` value precision until the eventual use site applies its normal type rules.
   - `const def` params support primitive scalars and fixed-size primitive arrays.
+  - Every `const def` must declare an explicit return type, and every `return` is evaluated against that type; scalar returns are coerced/validated as that primitive type, while fixed-array returns must match the declared element type and length exactly.
   - Fixed-array-returning `const def` bodies support local mutable primitive arrays, indexed local-array reads/writes, `if`, compile-time `for` / `loop`, pure builtin math, and calls to earlier visible const defs.
   - `const def` calls are lexical: forward references, recursion, and mutual recursion are rejected.
   - Const arrays and const slices can be passed to ordinary array parameters when semantic analysis infers the callee parameter is read-only; mutable callees still reject immutable const data.

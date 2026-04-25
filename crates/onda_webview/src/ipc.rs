@@ -110,12 +110,4 @@ impl IpcBridge {
         }
     }
 
-    /// Returns true if we have an active TCP connection.
-    #[allow(dead_code)]
-    pub fn is_connected(&self) -> bool {
-        self.writer
-            .lock()
-            .map(|writer| writer.is_some())
-            .unwrap_or(false)
-    }
 }

@@ -137,9 +137,9 @@ typed_assign_stmt = { ident ~ ":" ~ typed_decl_type ~ ("=" ~ expr)? }
 plain_assign_stmt = { assign_target ~ "=" ~ expr }
 assign_target = _{ slice_target | indexed_member_target | index_target | tuple_target | path_ident }
 tuple_target = { "(" ~ ident ~ ("," ~ ident)+ ~ ")" }
-indexed_member_target = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
-index_target = { path_ident ~ "[" ~ expr ~ "]" ~ ("[" ~ expr ~ "]")? }
-slice_target = { path_ident ~ "[" ~ slice_start? ~ ":" ~ slice_end? ~ "]" }
+indexed_member_target = { (namespace_ref | path_ident) ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
+index_target = { (namespace_ref | path_ident) ~ "[" ~ expr ~ "]" ~ ("[" ~ expr ~ "]")? }
+slice_target = { (namespace_ref | path_ident) ~ "[" ~ slice_start? ~ ":" ~ slice_end? ~ "]" }
 return_stmt = { "return" ~ expr }
 call_stmt = { call_expr }
 if_cond = { expr }
@@ -166,13 +166,13 @@ array_lit = { "[" ~ NEWLINE* ~ (expr ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expr)*)? ~ N
 call_field_expr = { call_expr ~ "." ~ ident }
 call_expr = { call_target ~ generic_type_arg_list? ~ "(" ~ NEWLINE* ~ arg_list? ~ NEWLINE* ~ ")" }
 call_target = { call_index_member_target | call_index_target | namespace_ref | path_ident }
-call_index_member_target = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
-call_index_target = { path_ident ~ "[" ~ expr ~ "]" ~ !"::" }
+call_index_member_target = { (namespace_ref | path_ident) ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" }
+call_index_target = { (namespace_ref | path_ident) ~ "[" ~ expr ~ "]" ~ !"::" }
 arg_list = { call_arg ~ (NEWLINE* ~ "," ~ NEWLINE* ~ call_arg)* ~ (NEWLINE* ~ ",")? }
 call_arg = { (ident ~ "=")? ~ expr }
-index_expr = { path_ident ~ "[" ~ expr ~ "]" ~ !"::" ~ ("[" ~ expr ~ "]")? }
-indexed_member_expr = { path_ident ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" ~ ("[" ~ expr ~ "]")? }
-slice_expr = { path_ident ~ "[" ~ slice_start? ~ ":" ~ slice_end? ~ "]" ~ !"::" }
+index_expr = { (namespace_ref | path_ident) ~ "[" ~ expr ~ "]" ~ !"::" ~ ("[" ~ expr ~ "]")? }
+indexed_member_expr = { (namespace_ref | path_ident) ~ "[" ~ expr ~ "]" ~ "." ~ ident ~ !"::" ~ ("[" ~ expr ~ "]")? }
+slice_expr = { (namespace_ref | path_ident) ~ "[" ~ slice_start? ~ ":" ~ slice_end? ~ "]" ~ !"::" }
 slice_start = { expr }
 slice_end = { expr }
 bool_lit = { "true" | "false" }

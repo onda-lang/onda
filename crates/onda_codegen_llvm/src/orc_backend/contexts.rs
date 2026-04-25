@@ -125,8 +125,6 @@ pub(super) struct LoweringCtx<'a> {
     pub(super) port_index_ins: Option<PortIndexMeta>,
     pub(super) port_index_outs: Option<PortIndexMeta>,
     pub(super) port_index_params: Option<PortIndexMeta>,
-    #[allow(dead_code)]
-    pub(super) out_ptrs: LLVMValueRef,
     pub(super) out_slot_ptr_array: Option<LLVMValueRef>,
 }
 

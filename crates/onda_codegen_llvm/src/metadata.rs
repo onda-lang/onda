@@ -1,5 +1,3 @@
-#![cfg_attr(not(feature = "llvm-orc"), allow(dead_code))]
-
 use std::collections::{HashMap, HashSet};
 
 use onda_frontend::{AssignTarget, CallArg, Expr, PrimitiveType, Stmt};

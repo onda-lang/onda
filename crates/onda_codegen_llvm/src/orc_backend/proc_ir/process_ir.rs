@@ -428,7 +428,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 port_index_ins,
                 port_index_outs,
                 port_index_params,
-                out_ptrs,
                 out_slot_ptr_array,
             };
             let mut block_locals = HashMap::new();
@@ -520,7 +519,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 port_index_ins,
                 port_index_outs,
                 port_index_params,
-                out_ptrs,
                 out_slot_ptr_array,
             };
 
@@ -783,7 +781,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 port_index_ins,
                 port_index_outs,
                 port_index_params,
-                out_ptrs,
                 out_slot_ptr_array,
             };
             let mut locals = HashMap::new();
@@ -970,7 +967,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             port_index_ins,
             port_index_outs,
             port_index_params,
-            out_ptrs,
             out_slot_ptr_array: None,
         };
 
@@ -1088,7 +1084,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 port_index_ins,
                 port_index_outs,
                 port_index_params,
-                out_ptrs,
                 out_slot_ptr_array,
             };
             let mut block_locals = HashMap::new();

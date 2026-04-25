@@ -1087,8 +1087,13 @@ sample:
     #[test]
     fn generic_proc_rewrite_specializes_nested_std_convolution_children_through_wrapper_namespace()
     {
-        let mut program =
+        let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let mut program = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
         let mut errors = Vec::new();
         rewrite_and_materialize_generic_processors(&mut program, &mut errors);
         assert!(
@@ -1139,8 +1144,13 @@ sample:
 
     #[test]
     fn build_proc_lowering_env_tracks_zero_latency_child_procs_through_wrapper_namespace() {
-        let mut program =
+        let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let mut program = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
         let mut errors = Vec::new();
         rewrite_and_materialize_generic_processors(&mut program, &mut errors);
         assert!(
@@ -1181,6 +1191,11 @@ sample:
     fn desugar_processors_accepts_wrapper_namespace_zero_latency_repro() {
         let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let program = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
         let mut errors = Vec::new();
         let _desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
         assert!(
@@ -1193,6 +1208,11 @@ sample:
     fn desugared_wrapper_namespace_program_has_no_raw_nested_proc_event_calls_left() {
         let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let program = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
         let mut errors = Vec::new();
         let desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
         assert!(

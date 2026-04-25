@@ -812,7 +812,7 @@ pub(super) fn parse_for_bound(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnost
     match pair.as_rule() {
         Rule::int_lit => Ok(Expr::int(parse_int(pair.as_str())? as i64).with_loc(loc)),
         Rule::path_ident | Rule::namespace_ref => {
-            Ok(Expr::var(pair.as_str().to_owned()).with_loc(loc))
+            Ok(Expr::var(pair_symbol_text(&pair)).with_loc(loc))
         }
         Rule::for_bound => {
             let mut inner = pair.into_inner();
@@ -1046,7 +1046,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
         )
         .with_loc(loc),
         Rule::ident | Rule::path_ident | Rule::namespace_ref => {
-            Expr::var(pair.as_str().to_owned()).with_loc(loc)
+            Expr::var(pair_symbol_text(&pair)).with_loc(loc)
         }
         Rule::indexed_member_expr => {
             let mut inner = pair.into_inner();
@@ -1365,7 +1365,7 @@ pub(super) fn parse_call_expr_parts(
 
 fn parse_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, Vec<CallTypeArg>) {
     match pair.as_rule() {
-        Rule::path_ident => (pair.as_str().to_owned(), Vec::new(), Vec::new()),
+        Rule::path_ident => (pair_symbol_text(&pair), Vec::new(), Vec::new()),
         Rule::namespace_ref => parse_namespace_call_target(pair),
         Rule::call_index_member_target => {
             let (name, args) = parse_call_index_member_target(pair);
@@ -1387,7 +1387,7 @@ fn parse_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, Vec<CallTyp
 }
 
 fn parse_namespace_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, Vec<CallTypeArg>) {
-    let raw = pair.as_str().to_owned();
+    let raw = pair_symbol_text(&pair);
     let mut segment_args = Vec::<Vec<(Option<String>, Expr)>>::new();
 
     for seg in pair.into_inner() {
@@ -1561,7 +1561,7 @@ fn parse_named_type_ref(
             }
             Rule::qualified_ident | Rule::ident => {
                 if name.is_none() {
-                    name = Some(item.as_str().to_owned());
+                    name = Some(pair_symbol_text(&item));
                 }
             }
             Rule::generic_type_arg_list => {

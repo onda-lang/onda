@@ -1,9 +1,10 @@
 use onda_frontend::{
-    ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec, BufferChannels,
-    BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp, ConstType,
-    DeclType, EventDef, EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType,
-    FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp, ParamDecl, PortDecl,
-    PrimitiveType, ProcessorDef, Program, SampleBlock, Stmt, StructDef,
+    ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec, BufferBlock,
+    BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp,
+    ConstType, DeclType, EventDef, EventParamType, Expr, FieldType, FnParamType,
+    FnReturnScalarType, FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp,
+    ParamBlock, ParamDecl, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
+    Stmt, StructDef,
 };
 
 pub(crate) fn primitive_type_name(ty: PrimitiveType) -> &'static str {
@@ -62,6 +63,8 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
                 &format!("assert({})", format_expr(&assert_decl.expr)),
             );
         }
+        Block::Namespace(namespace) => format_namespace(namespace, indent, out),
+        Block::NamespaceAlias(alias) => format_namespace_alias(alias, indent, out),
         Block::Proc(proc) => format_proc(proc, indent, out),
         Block::Struct(def) => format_struct(def, indent, out),
         Block::Def(def) => format_def(def, indent, out),
@@ -93,22 +96,218 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
     }
 }
 
-fn format_port_block(label: &str, ports: &[PortDecl], indent: usize, out: &mut String) {
-    push_line(out, indent, &format!("{label}:"));
+fn format_namespace(namespace: &onda_frontend::NamespaceDecl, indent: usize, out: &mut String) {
+    let header = if namespace.params.is_empty() {
+        format!("namespace {}:", namespace.name)
+    } else {
+        let params = namespace
+            .params
+            .iter()
+            .map(|param| format!("{} = {}", param.name, format_expr(&param.default)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("namespace {}<{}>:", namespace.name, params)
+    };
+    push_line(out, indent, &header);
+    if namespace.items.is_empty() {
+        push_line(out, indent + 1, "pass");
+        return;
+    }
+    for item in &namespace.items {
+        format_namespace_item(item, indent + 1, out);
+    }
+}
+
+fn format_namespace_item(item: &onda_frontend::NamespaceItem, indent: usize, out: &mut String) {
+    match item {
+        onda_frontend::NamespaceItem::Assert(assert_decl) => {
+            push_line(
+                out,
+                indent,
+                &format!("assert({})", format_expr(&assert_decl.expr)),
+            );
+        }
+        onda_frontend::NamespaceItem::Const(decl) => {
+            let mut text = format!("const {}", decl.name);
+            if let Some(ty) = &decl.ty {
+                text.push_str(": ");
+                text.push_str(&format_const_type(ty));
+            }
+            text.push_str(" = ");
+            text.push_str(&format_expr(&decl.expr));
+            push_line(out, indent, &text);
+        }
+        onda_frontend::NamespaceItem::Struct(def) => format_struct(def, indent, out),
+        onda_frontend::NamespaceItem::Def(def) => format_def(def, indent, out),
+        onda_frontend::NamespaceItem::Proc(proc) => format_proc(proc, indent, out),
+        onda_frontend::NamespaceItem::Namespace(namespace) => {
+            format_namespace(namespace, indent, out)
+        }
+        onda_frontend::NamespaceItem::Alias(alias) => format_namespace_alias(alias, indent, out),
+    }
+}
+
+fn format_namespace_alias(
+    alias: &onda_frontend::NamespaceAliasDecl,
+    indent: usize,
+    out: &mut String,
+) {
+    push_line(
+        out,
+        indent,
+        &format!(
+            "namespace {} = {}",
+            alias.name,
+            format_namespace_ref(&alias.target)
+        ),
+    );
+}
+
+fn format_namespace_ref(segments: &[onda_frontend::NamespaceRefSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| {
+            let mut text = segment.name.clone();
+            if let Some(args) = &segment.args {
+                text.push('<');
+                text.push_str(
+                    &args
+                        .iter()
+                        .map(format_namespace_call_arg)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+                text.push('>');
+            }
+            text
+        })
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+fn format_namespace_call_arg(arg: &onda_frontend::NamespaceCallArg) -> String {
+    if let Some(name) = &arg.name {
+        format!("{name} = {}", format_expr(&arg.expr))
+    } else {
+        format_expr(&arg.expr)
+    }
+}
+
+fn format_count_section_header(
+    label: &str,
+    count: Option<&Expr>,
+    default_ty: Option<String>,
+) -> String {
+    let mut header = label.to_owned();
+    if let Some(default_ty) = default_ty {
+        header.push_str(&default_ty);
+    }
+    if let Some(count) = count {
+        header.push(' ');
+        header.push_str(&format_expr(count));
+    }
+    header
+}
+
+fn format_port_block(label: &str, ports: &PortBlock, indent: usize, out: &mut String) {
+    format_port_section(
+        label,
+        &ports.decls,
+        ports.deferred_count.as_ref(),
+        ports
+            .deferred_default_ty
+            .as_ref()
+            .map(|ty| format!("<{}>", format_decl_type(ty))),
+        indent,
+        out,
+    );
+}
+
+fn format_port_section(
+    label: &str,
+    ports: &[PortDecl],
+    deferred_count: Option<&Expr>,
+    deferred_default_ty: Option<String>,
+    indent: usize,
+    out: &mut String,
+) {
+    let mut header = format_count_section_header(label, deferred_count, deferred_default_ty);
+    if !ports.is_empty() || deferred_count.is_none() {
+        header.push(':');
+    }
+    push_line(out, indent, &header);
     for port in ports {
         push_line(out, indent + 1, &format_port_decl(port));
     }
 }
 
-fn format_param_block(label: &str, params: &[ParamDecl], indent: usize, out: &mut String) {
-    push_line(out, indent, &format!("{label}:"));
+fn format_param_block(label: &str, params: &ParamBlock, indent: usize, out: &mut String) {
+    format_param_section(
+        label,
+        &params.decls,
+        params.deferred_count.as_ref(),
+        params
+            .deferred_default_ty
+            .as_ref()
+            .map(|ty| format!("<{}>", format_decl_type(ty))),
+        indent,
+        out,
+    );
+}
+
+fn format_param_section(
+    label: &str,
+    params: &[ParamDecl],
+    deferred_count: Option<&Expr>,
+    deferred_default_ty: Option<String>,
+    indent: usize,
+    out: &mut String,
+) {
+    let mut header = format_count_section_header(label, deferred_count, deferred_default_ty);
+    if !params.is_empty() || deferred_count.is_none() {
+        header.push(':');
+    }
+    push_line(out, indent, &header);
     for param in params {
         push_line(out, indent + 1, &format_param_decl(param));
     }
 }
 
-fn format_buffer_block(label: &str, buffers: &[BufferDecl], indent: usize, out: &mut String) {
-    push_line(out, indent, &format!("{label}:"));
+fn format_buffer_section_default_type(ty: &BufferType) -> String {
+    let elem = match &ty.elem {
+        BufferElemType::Primitive(prim) => primitive_type_name(*prim).to_owned(),
+        BufferElemType::Generic(name) => name.clone(),
+    };
+    format!("[{elem}]")
+}
+
+fn format_buffer_block(label: &str, buffers: &BufferBlock, indent: usize, out: &mut String) {
+    format_buffer_section(
+        label,
+        &buffers.decls,
+        buffers.deferred_count.as_ref(),
+        buffers
+            .deferred_default_ty
+            .as_ref()
+            .map(format_buffer_section_default_type),
+        indent,
+        out,
+    );
+}
+
+fn format_buffer_section(
+    label: &str,
+    buffers: &[BufferDecl],
+    deferred_count: Option<&Expr>,
+    deferred_default_ty: Option<String>,
+    indent: usize,
+    out: &mut String,
+) {
+    let mut header = format_count_section_header(label, deferred_count, deferred_default_ty);
+    if !buffers.is_empty() || deferred_count.is_none() {
+        header.push(':');
+    }
+    push_line(out, indent, &header);
     for buffer in buffers {
         let mut text = buffer.name.clone();
         if let Some(ty) = &buffer.ty {
@@ -164,14 +363,41 @@ fn format_proc(proc: &ProcessorDef, indent: usize, out: &mut String) {
         format!("proc {}<{}>:", proc.name, proc.type_params.join(", "))
     };
     push_line(out, indent, &header);
-    if !proc.ins.is_empty() {
-        format_port_block("ins", &proc.ins, indent + 1, out);
+    if !proc.ins.is_empty() || proc.ins_deferred_count.is_some() {
+        format_port_section(
+            "ins",
+            &proc.ins,
+            proc.ins_deferred_count.as_ref(),
+            proc.ins_deferred_default_ty
+                .as_ref()
+                .map(|ty| format!("<{}>", format_decl_type(ty))),
+            indent + 1,
+            out,
+        );
     }
-    if !proc.outs.is_empty() {
-        format_port_block("outs", &proc.outs, indent + 1, out);
+    if !proc.outs.is_empty() || proc.outs_deferred_count.is_some() {
+        format_port_section(
+            "outs",
+            &proc.outs,
+            proc.outs_deferred_count.as_ref(),
+            proc.outs_deferred_default_ty
+                .as_ref()
+                .map(|ty| format!("<{}>", format_decl_type(ty))),
+            indent + 1,
+            out,
+        );
     }
-    if !proc.params.is_empty() {
-        format_param_block("params", &proc.params, indent + 1, out);
+    if !proc.params.is_empty() || proc.params_deferred_count.is_some() {
+        format_param_section(
+            "params",
+            &proc.params,
+            proc.params_deferred_count.as_ref(),
+            proc.params_deferred_default_ty
+                .as_ref()
+                .map(|ty| format!("<{}>", format_decl_type(ty))),
+            indent + 1,
+            out,
+        );
     }
     if !proc.events.is_empty() {
         push_line(out, indent + 1, "events:");
@@ -179,8 +405,17 @@ fn format_proc(proc: &ProcessorDef, indent: usize, out: &mut String) {
             format_event(event, indent + 2, out);
         }
     }
-    if !proc.buffers.is_empty() {
-        format_buffer_block("buffers", &proc.buffers, indent + 1, out);
+    if !proc.buffers.is_empty() || proc.buffers_deferred_count.is_some() {
+        format_buffer_section(
+            "buffers",
+            &proc.buffers,
+            proc.buffers_deferred_count.as_ref(),
+            proc.buffers_deferred_default_ty
+                .as_ref()
+                .map(format_buffer_section_default_type),
+            indent + 1,
+            out,
+        );
     }
     if proc.has_init_block || !proc.init.body.is_empty() {
         format_init_block("init", &proc.init, indent + 1, out);

@@ -49,8 +49,8 @@ use module_loading::{parse_loc_from_raw, stmt_loc_from_pair};
 
 mod type_helpers;
 pub use module_loading::{
-    inject_auto_std_math, inject_auto_std_prelude, parse_program, parse_program_file,
-    parse_program_file_with_overlays, parse_program_with_path,
+    inject_auto_std_math, inject_auto_std_prelude, parse_namespace_ref_text_ast, parse_program,
+    parse_program_file, parse_program_file_with_overlays, parse_program_with_path,
 };
 use type_helpers::*;
 
@@ -77,6 +77,10 @@ pub(super) fn syntax_at_pair(pair: &Pair<'_, Rule>, message: impl Into<String>) 
     } else {
         Diagnostic::syntax_at(message, &loc)
     }
+}
+
+pub(super) fn pair_symbol_text(pair: &Pair<'_, Rule>) -> String {
+    pair.as_str().trim().to_owned()
 }
 
 pub(super) fn syntax_at_loc(loc: impl Into<SourceLoc>, message: impl Into<String>) -> Diagnostic {

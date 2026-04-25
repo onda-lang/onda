@@ -247,12 +247,15 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     return;
                 }
             }
-            if let Some(port_info) = match base.as_str() {
-                "ins" => env.port_index_ins,
-                "outs" => env.port_index_outs,
-                "params" => env.port_index_params,
-                _ => None,
-            } {
+            if matches!(
+                match base.as_str() {
+                    "ins" => env.port_index_ins,
+                    "outs" => env.port_index_outs,
+                    "params" => env.port_index_params,
+                    _ => None,
+                },
+                Some(_)
+            ) {
                 if env.scope == ScopeKind::Init {
                     push_expr_error(
                         errors,
@@ -260,7 +263,6 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         format!("'{base}[...]' is not allowed in init scope"),
                     );
                 }
-                let _ = port_info;
                 validate_expr(index, env, errors);
                 return;
             }

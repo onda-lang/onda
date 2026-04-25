@@ -63,7 +63,6 @@ pub struct JitProgram {
     compiled: Arc<orc_backend::OrcProcess>,
 }
 
-#[cfg_attr(not(feature = "llvm-orc"), allow(dead_code))]
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeState {
     pub(crate) state_words: Vec<u64>,
@@ -478,6 +477,76 @@ sample:
         );
 
         assert!((output - 1.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn namespaced_const_array_runs() {
+        let output = run_one_sample(
+            r#"
+namespace LUT:
+  const Table: f32[3] = [0.25, 0.5, 1.0]
+
+namespace Picked = LUT
+
+outs:
+  out1
+
+sample:
+  out1 = Picked::Table[1] + LUT::Table[2]
+"#,
+        );
+
+        assert!((output - 1.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn namespaced_array_returning_const_def_runs() {
+        let output = run_one_sample(
+            r#"
+namespace LUT<N = 3>:
+  const def ramp() -> f32[N]:
+    values: f32[N]
+    for i in 0..N:
+      values[i] = f32(i) * 0.5
+    return values
+
+  const Table: f32[N] = ramp()
+
+outs:
+  out1
+
+sample:
+  out1 = LUT<3>::Table[2]
+"#,
+        );
+
+        assert!((output - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn namespaced_const_arrays_emit_aot_object() {
+        let typed = typed_program(
+            r#"
+namespace LUT<N = 3>:
+  const def ramp() -> f32[N]:
+    values: f32[N]
+    for i in 0..N:
+      values[i] = f32(i) + 0.25
+    return values
+
+  const Table: f32[N] = ramp()
+
+outs:
+  out1
+
+sample:
+  out1 = LUT<3>::Table[2]
+"#,
+        );
+
+        let artifact = lower_to_object_with_options(typed, CodegenOptions::default())
+            .expect("namespaced const array AOT object should emit");
+        assert!(!artifact.object_bytes.is_empty());
     }
 
     #[test]
