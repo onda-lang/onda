@@ -1933,6 +1933,57 @@ const gain = 1.0
     }
 
     #[test]
+    fn scalar_const_names_conflict_with_function_params() {
+        let src = r#"
+const X = 1.0
+
+outs:
+  out1
+
+def f(X: f32):
+  return X
+
+sample:
+  out1 = f(2.0)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const/function parameter conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("function parameter 'X' conflicts with constant 'X'")),
+            "expected function parameter/const conflict, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn const_array_names_conflict_with_array_function_params() {
+        let src = r#"
+const Table: f32[] = [1.0]
+
+outs:
+  out1
+
+def first(Table: f32[]):
+  return Table[0]
+
+sample:
+  out1 = first([2.0])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("const array/function parameter conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("function parameter 'Table' conflicts with constant 'Table'")),
+            "expected function parameter/const array conflict, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn scalar_const_names_conflict_with_runtime_defs() {
         let src = r#"
 const foo = 1.0

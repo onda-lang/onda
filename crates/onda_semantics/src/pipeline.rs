@@ -251,6 +251,58 @@ fn top_level_const_symbol_names(program: &Program) -> HashSet<String> {
         .collect()
 }
 
+fn namespace_parent(ns: &str) -> Option<&str> {
+    ns.rsplit_once("::").map(|(parent, _)| parent)
+}
+
+fn namespace_candidates(current_ns: &str) -> Vec<String> {
+    if current_ns.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out = Vec::<String>::new();
+    let mut cur = Some(current_ns);
+    while let Some(ns) = cur {
+        out.push(ns.to_owned());
+        cur = namespace_parent(ns);
+    }
+    out.push(String::new());
+    out
+}
+
+fn namespace_join(parent: &str, child: &str) -> String {
+    if parent.is_empty() {
+        child.to_owned()
+    } else {
+        format!("{parent}::{child}")
+    }
+}
+
+fn symbol_namespace(name: &str) -> String {
+    name.rsplit_once("::")
+        .map(|(namespace, _)| namespace.to_owned())
+        .unwrap_or_default()
+}
+
+fn visible_const_symbol_for_local_name(
+    name: &str,
+    scope_ns: &str,
+    const_values: &HashMap<String, ConstValue>,
+) -> Option<String> {
+    if name.contains('.') {
+        return None;
+    }
+    if name.contains("::") {
+        return const_values.contains_key(name).then(|| name.to_owned());
+    }
+    for ns in namespace_candidates(scope_ns) {
+        let candidate = namespace_join(&ns, name);
+        if const_values.contains_key(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn zero_const_value(ty: PrimitiveType) -> TypedConstValue {
     match ty {
         PrimitiveType::F32 => TypedConstValue::F32(0.0),
@@ -3444,6 +3496,260 @@ fn reject_const_assignment_target(
     }
 }
 
+fn reject_const_shadowing_name(
+    symbol_kind: &str,
+    name: &str,
+    loc: Span,
+    scope_ns: &str,
+    const_values: &HashMap<String, ConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(const_name) = visible_const_symbol_for_local_name(name, scope_ns, const_values) {
+        errors.push(Diagnostic::semantic_span(
+            format!("{symbol_kind} '{name}' conflicts with constant '{const_name}'"),
+            loc.as_ref(),
+        ));
+    }
+}
+
+fn reject_const_shadowing_stmt(
+    stmt: &Stmt,
+    scope_ns: &str,
+    const_values: &HashMap<String, ConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match stmt {
+        Stmt::Assign {
+            target, target_loc, ..
+        } => {
+            if let AssignTarget::Tuple(names) = target {
+                for name in names {
+                    reject_const_shadowing_name(
+                        "tuple assignment target",
+                        name,
+                        *target_loc,
+                        scope_ns,
+                        const_values,
+                        errors,
+                    );
+                }
+            }
+        }
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            for nested in then_branch {
+                reject_const_shadowing_stmt(nested, scope_ns, const_values, errors);
+            }
+            for nested in else_branch {
+                reject_const_shadowing_stmt(nested, scope_ns, const_values, errors);
+            }
+        }
+        Stmt::For { var, loc, body, .. } => {
+            reject_const_shadowing_name("loop variable", var, *loc, scope_ns, const_values, errors);
+            for nested in body {
+                reject_const_shadowing_stmt(nested, scope_ns, const_values, errors);
+            }
+        }
+        Stmt::While { body, .. } => {
+            for nested in body {
+                reject_const_shadowing_stmt(nested, scope_ns, const_values, errors);
+            }
+        }
+        Stmt::Const { .. }
+        | Stmt::Expr { .. }
+        | Stmt::Return { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => {}
+    }
+}
+
+fn reject_const_shadowing_function(
+    def: &FunctionDef,
+    scope_ns: &str,
+    const_values: &HashMap<String, ConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &def.params {
+        reject_const_shadowing_name(
+            "function parameter",
+            &param.name,
+            param.loc,
+            scope_ns,
+            const_values,
+            errors,
+        );
+    }
+    for stmt in &def.body {
+        reject_const_shadowing_stmt(stmt, scope_ns, const_values, errors);
+    }
+}
+
+fn reject_const_shadowing_event(
+    event: &EventDef,
+    scope_ns: &str,
+    const_values: &HashMap<String, ConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &event.params {
+        reject_const_shadowing_name(
+            "event parameter",
+            &param.name,
+            param.loc,
+            scope_ns,
+            const_values,
+            errors,
+        );
+    }
+    for stmt in &event.body {
+        reject_const_shadowing_stmt(stmt, scope_ns, const_values, errors);
+    }
+}
+
+fn reject_const_shadowing_proc_decl(
+    proc_name: &str,
+    symbol_kind: &str,
+    name: &str,
+    loc: Span,
+    scope_ns: &str,
+    const_values: &HashMap<String, ConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(const_name) = visible_const_symbol_for_local_name(name, scope_ns, const_values) {
+        errors.push(Diagnostic::semantic_span(
+            format!("{symbol_kind} '{name}' in processor '{proc_name}' conflicts with constant '{const_name}'"),
+            loc.as_ref(),
+        ));
+    }
+}
+
+fn reject_const_shadowing_in_program(
+    program: &Program,
+    const_values: &HashMap<String, ConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for block in &program.blocks {
+        match block {
+            Block::Events(events) => {
+                for event in &events.events {
+                    let scope_ns = symbol_namespace(&event.name);
+                    reject_const_shadowing_event(event, &scope_ns, const_values, errors);
+                }
+            }
+            Block::Init(init) => {
+                for stmt in &init.body {
+                    reject_const_shadowing_stmt(stmt, "", const_values, errors);
+                }
+            }
+            Block::Block(block_exec) => {
+                for stmt in &block_exec.pre {
+                    reject_const_shadowing_stmt(stmt, "", const_values, errors);
+                }
+                if let Some(sample) = &block_exec.sample {
+                    for stmt in &sample.body {
+                        reject_const_shadowing_stmt(stmt, "", const_values, errors);
+                    }
+                }
+                for stmt in &block_exec.post {
+                    reject_const_shadowing_stmt(stmt, "", const_values, errors);
+                }
+            }
+            Block::Sample(sample) => {
+                for stmt in &sample.body {
+                    reject_const_shadowing_stmt(stmt, "", const_values, errors);
+                }
+            }
+            Block::Def(def) if !def.is_const => {
+                let scope_ns = symbol_namespace(&def.name);
+                reject_const_shadowing_function(def, &scope_ns, const_values, errors);
+            }
+            Block::Struct(struct_def) => {
+                let scope_ns = symbol_namespace(&struct_def.name);
+                for method in &struct_def.methods {
+                    reject_const_shadowing_function(method, &scope_ns, const_values, errors);
+                }
+            }
+            Block::Proc(proc) => {
+                let scope_ns = symbol_namespace(&proc.name);
+                for decl in &proc.ins {
+                    reject_const_shadowing_proc_decl(
+                        &proc.name,
+                        "processor input",
+                        &decl.name,
+                        decl.loc,
+                        &scope_ns,
+                        const_values,
+                        errors,
+                    );
+                }
+                for decl in &proc.outs {
+                    reject_const_shadowing_proc_decl(
+                        &proc.name,
+                        "processor output",
+                        &decl.name,
+                        decl.loc,
+                        &scope_ns,
+                        const_values,
+                        errors,
+                    );
+                }
+                for decl in &proc.params {
+                    reject_const_shadowing_proc_decl(
+                        &proc.name,
+                        "processor parameter",
+                        &decl.name,
+                        decl.loc,
+                        &scope_ns,
+                        const_values,
+                        errors,
+                    );
+                }
+                for decl in &proc.buffers {
+                    reject_const_shadowing_proc_decl(
+                        &proc.name,
+                        "processor buffer",
+                        &decl.name,
+                        decl.loc,
+                        &scope_ns,
+                        const_values,
+                        errors,
+                    );
+                }
+                for event in &proc.events {
+                    reject_const_shadowing_event(event, &scope_ns, const_values, errors);
+                }
+                for stmt in &proc.init.body {
+                    reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
+                }
+                for stmt in &proc.block_pre {
+                    reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
+                }
+                for stmt in &proc.sample {
+                    reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
+                }
+                for stmt in &proc.block_post {
+                    reject_const_shadowing_stmt(stmt, &scope_ns, const_values, errors);
+                }
+                for def in &proc.local_defs {
+                    reject_const_shadowing_function(def, &scope_ns, const_values, errors);
+                }
+            }
+            Block::Ins(_)
+            | Block::Outs(_)
+            | Block::Params(_)
+            | Block::Buffers(_)
+            | Block::Graph(_)
+            | Block::Const(_)
+            | Block::Def(_)
+            | Block::Assert(_)
+            | Block::Namespace(_)
+            | Block::NamespaceAlias(_) => {}
+        }
+    }
+}
+
 fn reject_const_assignments_stmt(
     stmt: &Stmt,
     const_values: &HashMap<String, ConstValue>,
@@ -4588,7 +4894,16 @@ fn preprocess_local_const_stmt(
                         fold_local_scalar_const_expr(end, local_consts);
                     }
                 }
-                AssignTarget::Tuple(_) => {}
+                AssignTarget::Tuple(names) => {
+                    for name in names {
+                        if local_consts.contains_key(name) {
+                            errors.push(Diagnostic::semantic_span(
+                                format!("cannot assign to constant '{name}'"),
+                                target_loc.as_ref(),
+                            ));
+                        }
+                    }
+                }
             }
             fold_local_scalar_const_expr(expr, local_consts);
         }
@@ -4620,12 +4935,20 @@ fn preprocess_local_const_stmt(
             );
         }
         Stmt::For {
+            loc,
+            var,
             step,
             start,
             end,
             body,
             ..
         } => {
+            if local_consts.contains_key(var) {
+                errors.push(Diagnostic::semantic_span(
+                    format!("loop variable '{var}' conflicts with local constant '{var}'"),
+                    loc.as_ref(),
+                ));
+            }
             if let Some(step) = step {
                 fold_local_scalar_const_expr(step, local_consts);
             }
@@ -4701,6 +5024,15 @@ fn preprocess_local_const_function(
     errors: &mut Vec<Diagnostic>,
 ) {
     for param in &mut def.params {
+        if inherited_consts.contains_key(&param.name) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "function parameter '{}' in '{}' conflicts with local constant '{}'",
+                    param.name, def.name, param.name
+                ),
+                param.loc.as_ref(),
+            ));
+        }
         fold_local_scalar_const_fn_param_type(&mut param.ty, inherited_consts);
         if let Some(default) = &mut param.default {
             fold_local_scalar_const_expr(default, inherited_consts);
@@ -4725,6 +5057,15 @@ fn preprocess_local_const_event(
     errors: &mut Vec<Diagnostic>,
 ) {
     for param in &mut event.params {
+        if inherited_consts.contains_key(&param.name) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "event parameter '{}' in '{}' conflicts with local constant '{}'",
+                    param.name, event.name, param.name
+                ),
+                param.loc.as_ref(),
+            ));
+        }
         fold_local_scalar_const_event_param_type(&mut param.ty, inherited_consts);
         if let Some(default) = &mut param.default {
             fold_local_scalar_const_expr(default, inherited_consts);
@@ -4754,6 +5095,71 @@ fn preprocess_local_const_graph(
                 fold_local_scalar_const_expr(index, inherited_consts);
             }
         }
+    }
+}
+
+fn reject_proc_local_const_decl_name(
+    proc_name: &str,
+    symbol_kind: &str,
+    name: &str,
+    loc: Span,
+    proc_consts: &HashMap<String, TypedConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if proc_consts.contains_key(name) {
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "{symbol_kind} '{name}' in processor '{proc_name}' conflicts with local constant '{name}'"
+            ),
+            loc.as_ref(),
+        ));
+    }
+}
+
+fn reject_proc_local_const_decl_conflicts(
+    proc: &ProcessorDef,
+    proc_consts: &HashMap<String, TypedConstValue>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for decl in &proc.ins {
+        reject_proc_local_const_decl_name(
+            &proc.name,
+            "processor input",
+            &decl.name,
+            decl.loc,
+            proc_consts,
+            errors,
+        );
+    }
+    for decl in &proc.outs {
+        reject_proc_local_const_decl_name(
+            &proc.name,
+            "processor output",
+            &decl.name,
+            decl.loc,
+            proc_consts,
+            errors,
+        );
+    }
+    for decl in &proc.params {
+        reject_proc_local_const_decl_name(
+            &proc.name,
+            "processor parameter",
+            &decl.name,
+            decl.loc,
+            proc_consts,
+            errors,
+        );
+    }
+    for decl in &proc.buffers {
+        reject_proc_local_const_decl_name(
+            &proc.name,
+            "processor buffer",
+            &decl.name,
+            decl.loc,
+            proc_consts,
+            errors,
+        );
     }
 }
 
@@ -4920,6 +5326,7 @@ fn preprocess_local_consts_in_block(
         }
         Block::Proc(proc) => {
             let proc_consts = preprocess_proc_local_consts(proc, artifacts, options, errors);
+            reject_proc_local_const_decl_conflicts(proc, &proc_consts, errors);
             if let Some(count) = &mut proc.ins_deferred_count {
                 fold_local_scalar_const_expr(count, &proc_consts);
             }
@@ -5600,6 +6007,7 @@ pub(crate) fn preprocess_const_semantics_for_lowering(
 
     let mut errors = Vec::new();
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
+    reject_const_shadowing_in_program(&program, &const_artifacts.const_values, &mut errors);
     reject_const_assignments_in_program(&program, &const_artifacts.const_values, &mut errors);
     evaluate_asserts(&mut program, options, &mut errors);
     if !errors.is_empty() {
@@ -5619,6 +6027,7 @@ pub fn lower_graphs_for_inspection_with_options(
 
     let mut errors = Vec::new();
     let const_artifacts = coerce_consts_and_expand_counts(&mut program, options, &mut errors);
+    reject_const_shadowing_in_program(&program, &const_artifacts.const_values, &mut errors);
     reject_const_assignments_in_program(&program, &const_artifacts.const_values, &mut errors);
     evaluate_asserts(&mut program, options, &mut errors);
     if !errors.is_empty() {
@@ -5664,6 +6073,7 @@ pub fn analyze_with_options(
         .cloned()
         .collect::<Vec<_>>();
     const_def_names.sort();
+    reject_const_shadowing_in_program(&program, &const_artifacts.const_values, &mut errors);
     reject_const_assignments_in_program(&program, &const_artifacts.const_values, &mut errors);
     evaluate_asserts(&mut program, options, &mut errors);
     if !errors.is_empty() {
