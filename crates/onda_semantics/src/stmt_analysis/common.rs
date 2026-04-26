@@ -20,11 +20,7 @@ impl ScopePolicy {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
-pub(crate) struct PortIndexInfo {
-    pub(crate) count: usize,
-    pub(crate) elem_ty: PrimitiveType,
-}
+pub(crate) struct PortIndexInfo;
 
 pub(crate) fn uniform_port_index_info_from_names(
     enabled: bool,
@@ -34,10 +30,7 @@ pub(crate) fn uniform_port_index_info_from_names(
     if !enabled || names.is_empty() {
         return None;
     }
-    uniform_port_type_from_names(names, types).map(|elem_ty| PortIndexInfo {
-        count: names.len(),
-        elem_ty,
-    })
+    uniform_port_type_from_names(names, types).map(|_| PortIndexInfo)
 }
 
 pub(crate) fn uniform_port_index_info_from_types(
@@ -48,7 +41,7 @@ pub(crate) fn uniform_port_index_info_from_types(
     if !enabled || count == 0 {
         return None;
     }
-    uniform_port_type_from_types(types).map(|elem_ty| PortIndexInfo { count, elem_ty })
+    uniform_port_type_from_types(types).map(|_| PortIndexInfo)
 }
 
 fn uniform_port_type_from_names(

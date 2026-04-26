@@ -22,6 +22,8 @@ pub enum Block {
     Events(EventBlock),
     Buffers(BufferBlock),
     Assert(AssertDecl),
+    Namespace(NamespaceDecl),
+    NamespaceAlias(NamespaceAliasDecl),
     Proc(ProcessorDef),
     Struct(StructDef),
     Def(FunctionDef),
@@ -41,6 +43,8 @@ impl Block {
             Self::Events(_) => BlockKind::Events,
             Self::Buffers(_) => BlockKind::Buffers,
             Self::Assert(_) => BlockKind::Assert,
+            Self::Namespace(_) => BlockKind::Namespace,
+            Self::NamespaceAlias(_) => BlockKind::NamespaceAlias,
             Self::Proc(_) => BlockKind::Proc,
             Self::Struct(_) => BlockKind::Struct,
             Self::Def(_) => BlockKind::Def,
@@ -59,6 +63,8 @@ impl Block {
             Self::Events(events) => events.loc.into(),
             Self::Buffers(buffers) => buffers.loc.into(),
             Self::Assert(assert_decl) => assert_decl.loc.into(),
+            Self::Namespace(namespace) => namespace.loc.into(),
+            Self::NamespaceAlias(alias) => alias.loc.into(),
             Self::Proc(proc_def) => proc_def.loc.into(),
             Self::Struct(struct_def) => struct_def.loc.into(),
             Self::Def(def) => def.loc.into(),
@@ -79,6 +85,8 @@ pub enum BlockKind {
     Events,
     Buffers,
     Assert,
+    Namespace,
+    NamespaceAlias,
     Proc,
     Struct,
     Def,
@@ -406,10 +414,54 @@ pub struct AssertDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct NamespaceDecl {
+    pub loc: Span,
+    pub name: String,
+    pub params: Vec<NamespaceTemplateParam>,
+    pub items: Vec<NamespaceItem>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamespaceTemplateParam {
+    pub name: String,
+    pub default: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NamespaceItem {
+    Assert(AssertDecl),
+    Const(ConstDecl),
+    Struct(StructDef),
+    Def(FunctionDef),
+    Proc(ProcessorDef),
+    Namespace(NamespaceDecl),
+    Alias(NamespaceAliasDecl),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamespaceAliasDecl {
+    pub loc: Span,
+    pub name: String,
+    pub target: Vec<NamespaceRefSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamespaceRefSegment {
+    pub name: String,
+    pub args: Option<Vec<NamespaceCallArg>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamespaceCallArg {
+    pub name: Option<String>,
+    pub expr: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConstDecl {
     pub loc: Span,
     pub name: String,
-    pub ty: Option<PrimitiveType>,
+    pub ty: Option<ConstType>,
     pub expr: Expr,
 }
 
@@ -455,6 +507,13 @@ pub enum PrimitiveType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum ConstType {
+    Scalar(PrimitiveType),
+    Array { elem: PrimitiveType, size: Expr },
+    Slice { elem: PrimitiveType },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum DeclType {
     Scalar(PrimitiveType),
     Generic(String),
@@ -490,6 +549,7 @@ pub enum FnReturnScalarType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FnReturnType {
     Scalar(FnReturnScalarType),
+    Array { elem: PrimitiveType, size: Expr },
     Tuple(Vec<FnReturnScalarType>),
 }
 
@@ -550,6 +610,7 @@ pub enum EventParamType {
 pub struct FunctionDef {
     pub loc: Span,
     pub name: String,
+    pub is_const: bool,
     pub type_params: Vec<String>,
     pub params: Vec<FnParamDecl>,
     pub return_ty: Option<FnReturnType>,

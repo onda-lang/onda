@@ -45,6 +45,7 @@ pub(super) fn pre_desugar_proc_local_hidden_def(
 ) -> FunctionDef {
     FunctionDef {
         loc: Default::default(),
+        is_const: false,
         type_params: local_def.type_params.clone(),
         name: proc_local_hidden_def_name(owner_proc, &local_def.name),
         params: local_def.params.clone(),
@@ -61,6 +62,7 @@ pub(super) fn owner_proc_local_hidden_def(
 ) -> FunctionDef {
     FunctionDef {
         loc: Default::default(),
+        is_const: false,
         type_params: local_def.type_params.clone(),
         name: proc_local_hidden_def_name(owner_proc, &local_def.name),
         params: proc_local_hidden_def_params(owner_proc, local_def),
@@ -78,6 +80,7 @@ pub(super) fn nested_wrapper_proc_local_hidden_def(
 ) -> FunctionDef {
     FunctionDef {
         loc: Default::default(),
+        is_const: false,
         type_params: local_def.type_params.clone(),
         name: nested_wrapper_local_def_name(owner_proc, nested_path, &local_def.name),
         params: proc_local_hidden_def_params(owner_proc, local_def),

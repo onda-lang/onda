@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::*;
 
 #[derive(Debug, Clone)]
@@ -789,6 +791,7 @@ pub(crate) fn prepare_function_overloads(
                     defaults: def.params.iter().map(|p| p.default.clone()).collect(),
                     param_types: def.params.iter().map(|p| p.ty.clone()).collect(),
                     type_params: def.type_params.clone(),
+                    readonly_array_params: HashSet::new(),
                 },
             });
     }

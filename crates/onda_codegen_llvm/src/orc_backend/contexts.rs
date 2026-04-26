@@ -97,6 +97,8 @@ pub(super) struct LoweringCtx<'a> {
     pub(super) input_index: &'a HashMap<String, u32>,
     pub(super) input_types: &'a HashMap<String, PrimitiveType>,
     pub(super) input_arrays: &'a HashMap<String, TypedArrayInfo>,
+    pub(super) const_arrays: &'a HashMap<String, TypedArrayInfo>,
+    pub(super) const_array_base_ptrs: &'a HashMap<String, LLVMValueRef>,
     pub(super) buffer_index: &'a HashMap<String, u32>,
     pub(super) buffer_elem_types: &'a HashMap<String, PrimitiveType>,
     pub(super) buffer_channels: &'a HashMap<String, TypedBufferChannels>,
@@ -123,8 +125,6 @@ pub(super) struct LoweringCtx<'a> {
     pub(super) port_index_ins: Option<PortIndexMeta>,
     pub(super) port_index_outs: Option<PortIndexMeta>,
     pub(super) port_index_params: Option<PortIndexMeta>,
-    #[allow(dead_code)]
-    pub(super) out_ptrs: LLVMValueRef,
     pub(super) out_slot_ptr_array: Option<LLVMValueRef>,
 }
 
@@ -148,6 +148,8 @@ pub(super) struct UserFnRegistry {
     pub(super) param_defaults: HashMap<String, Vec<Option<Expr>>>,
     pub(super) param_kinds: HashMap<String, Vec<TypedFnParam>>,
     pub(super) param_by_ref: HashMap<String, Vec<bool>>,
+    pub(super) const_arrays: HashMap<String, TypedArrayInfo>,
+    pub(super) const_array_base_ptrs: HashMap<String, LLVMValueRef>,
     pub(super) in_progress: HashSet<String>,
     pub(super) return_in_progress: HashSet<String>,
 }
@@ -174,6 +176,7 @@ pub(super) struct DefLoweringCtx<'a> {
     pub(super) array_len_values: HashMap<String, LLVMValueRef>,
     pub(super) array_elem_ty: HashMap<String, PrimitiveType>,
     pub(super) array_struct_roots: HashMap<String, String>,
+    pub(super) const_array_names: HashSet<String>,
     pub(super) struct_fields: &'a HashMap<String, Vec<TypedStructField>>,
     pub(super) user_fn_param_names: &'a HashMap<String, Vec<String>>,
     pub(super) user_fn_param_defaults: &'a HashMap<String, Vec<Option<Expr>>>,

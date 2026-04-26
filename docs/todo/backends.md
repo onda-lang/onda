@@ -122,6 +122,28 @@
     - Test the in-browser compiler path end-to-end: source -> compile-in-WASM -> instantiate ->
       verify output samples match the native reference.
 
+- Browser playground product
+  - Goal: make Onda shareable as a zero-install audio playground:
+    source editor -> diagnostics -> compile -> AudioWorklet playback -> param/event controls.
+  - Start with daemon-served compilation if that gets the UX moving faster:
+    - local server hosts editor UI
+    - daemon compiles to native JIT or `.wasm`
+    - browser UI controls params/buffers/events through the existing run-control model
+  - Move to fully in-browser compilation after the Binaryen backend exists:
+    - frontend + semantics + Binaryen codegen compiled to WASM
+    - no server required for simple examples
+    - examples can be embedded in documentation and shared as URLs
+  - Product requirements:
+    - fast compile feedback on typical stdlib/graph patches
+    - browser-safe audio start/stop UX
+    - deterministic examples with no required external files
+    - generated metadata drives controls instead of hand-written UI
+    - export/download of source, metadata, and compiled WASM artifact
+  - Testing:
+    - Playwright smoke test for source edit -> compile -> instantiate -> nonzero audio buffer
+    - numerical comparison against native render for checked-in playground examples
+    - browser compatibility pass for Chromium, Firefox, and Safari AudioWorklet behavior
+
 - C++ backend (`.hpp` export)
   - Add a backend that exports Onda programs to a single-file, self-contained C++ header class.
   - Generate deterministic `init`/`process` methods with no dynamic allocation in the audio callback.

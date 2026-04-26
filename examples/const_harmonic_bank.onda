@@ -1,0 +1,53 @@
+const NumPartials: i32 = 12
+
+const def harmonic_ratios() -> f32[NumPartials]:
+  values: f32[NumPartials]
+  for i in 0..NumPartials:
+    values[i] = f32(i + 1)
+  return values
+
+const def odd_rolloff() -> f32[NumPartials]:
+  values: f32[NumPartials]
+  for i in 0..NumPartials:
+    harmonic = f32(i + 1)
+    if ((i & 1) == 0):
+      values[i] = 1.0 / harmonic
+    else:
+      values[i] = 0.0
+  return values
+
+const def sum_array(values: f32[NumPartials]) -> f32:
+  total = 0.0
+  for i in 0..NumPartials:
+    total = total + values[i]
+  return total
+
+const def normalize(values: f32[NumPartials]) -> f32[NumPartials]:
+  scaled: f32[NumPartials]
+  total = sum_array(values)
+  for i in 0..NumPartials:
+    scaled[i] = values[i] / total
+  return scaled
+
+const Ratios = harmonic_ratios()
+const RawAmps = odd_rolloff()
+const Amps = normalize(RawAmps)
+
+params:
+  freq = 110.0 {20.0, 880.0}
+  brightness = 0.75 {0.0, 1.0}
+
+init:
+  phases: f32[NumPartials]
+
+sample:
+  mix = 0.0
+  for i in 0..NumPartials:
+    phases[i] = phases[i] + freq * Ratios[i] * TWOPI / SR
+    if (phases[i] > TWOPI):
+      phases[i] = phases[i] - TWOPI
+
+    tilt = 1.0 - (1.0 - brightness) * f32(i) / f32(NumPartials - 1)
+    mix = mix + sin(phases[i]) * Amps[i] * tilt
+
+  out1 = mix

@@ -64,21 +64,6 @@ impl ScopeFlowState {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn fork_scope_flow_state(
-    known_scalars: &HashSet<String>,
-    local_aliases: &LocalAliasTypes,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
-) -> ScopeFlowState {
-    ScopeFlowState::from_parts(
-        known_scalars.clone(),
-        local_aliases.clone(),
-        local_array_aliases.clone(),
-        local_proc_aliases.clone(),
-    )
-}
-
 pub(crate) fn fork_scope_flow_state_with_tuples(
     known_scalars: &HashSet<String>,
     local_aliases: &LocalAliasTypes,
@@ -217,8 +202,11 @@ pub(crate) fn build_scope_stmt_expr_env<'a>(
     array_vars: &'a HashMap<String, usize>,
     scope: ScopeKind,
 ) -> StmtExprAnalysisEnv<'a> {
+    let mut expr_env =
+        build_scope_expr_env(inputs, known_scalars, local_aliases, array_vars, scope);
+    expr_env.local_array_aliases = local_array_aliases;
     build_stmt_expr_env(
-        build_scope_expr_env(inputs, known_scalars, local_aliases, array_vars, scope),
+        expr_env,
         inputs.state_scalars,
         inputs.declared_symbols,
         local_aliases,
@@ -251,15 +239,17 @@ pub(crate) fn build_scope_stmt_expr_env_with_tuples<'a>(
     scope: ScopeKind,
     tuple_vars: &'a HashMap<String, usize>,
 ) -> StmtExprAnalysisEnv<'a> {
+    let mut expr_env = build_scope_expr_env_with_tuples(
+        inputs,
+        known_scalars,
+        local_aliases,
+        array_vars,
+        scope,
+        tuple_vars,
+    );
+    expr_env.local_array_aliases = local_array_aliases;
     build_stmt_expr_env(
-        build_scope_expr_env_with_tuples(
-            inputs,
-            known_scalars,
-            local_aliases,
-            array_vars,
-            scope,
-            tuple_vars,
-        ),
+        expr_env,
         inputs.state_scalars,
         inputs.declared_symbols,
         local_aliases,

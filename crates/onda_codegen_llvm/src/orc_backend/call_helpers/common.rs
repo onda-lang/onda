@@ -257,6 +257,9 @@ pub(in crate::orc_backend) fn lookup_orc_data_symbol_len(
     if let Some(info) = ctx.output_arrays.get(base) {
         return Some(info.len);
     }
+    if let Some(info) = ctx.const_arrays.get(base) {
+        return Some(info.len);
+    }
     if let Some(len) = ctx.array_len.get(base) {
         return Some(*len);
     }
@@ -299,6 +302,7 @@ pub(in crate::orc_backend) fn is_orc_builtin_unsafe_data_receiver(
         || ctx.input_arrays.contains_key(base)
         || ctx.param_arrays.contains_key(base)
         || ctx.output_arrays.contains_key(base)
+        || ctx.const_arrays.contains_key(base)
         || ctx.array_len.contains_key(base)
         || ctx.array_struct_len.contains_key(base)
         || ctx.buffer_index.contains_key(base)

@@ -60,6 +60,7 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
             array_len_values: HashMap::new(),
             array_elem_ty: HashMap::new(),
             array_struct_roots: HashMap::new(),
+            const_array_names: registry.const_arrays.keys().cloned().collect(),
             struct_fields,
             user_fn_param_names: &registry.param_names,
             user_fn_param_defaults: &registry.param_defaults,
@@ -68,6 +69,14 @@ pub(in crate::orc_backend) unsafe fn lower_user_function_body(
             user_registry: registry as *const UserFnRegistry,
             loop_stack: Vec::new(),
         };
+        for (name, info) in &registry.const_arrays {
+            let ptr = *registry.const_array_base_ptrs.get(name).ok_or_else(|| {
+                Diagnostic::internal(format!("missing const array global for '{name}'"))
+            })?;
+            ctx.array_ptrs.insert(name.clone(), ptr);
+            ctx.array_len.insert(name.clone(), info.len);
+            ctx.array_elem_ty.insert(name.clone(), info.elem_ty);
+        }
 
         let by_ref_flags = registry.param_by_ref.get(&def.name).ok_or_else(|| {
             Diagnostic::internal(format!(

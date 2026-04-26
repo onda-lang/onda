@@ -2,11 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use onda_frontend::{
     inject_auto_std_math, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
-    BlockKind, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg,
-    CallTypeArg, CmpOp, DeclRange, DeclType, DiagCtx, Diagnostic, EventDef, EventParamType, Expr,
-    FieldType, FnParamType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate,
-    InitBlock, ParamDecl, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc,
-    Stmt, StructDef, StructField,
+    BlockKind, BufferBlock, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn,
+    CallArg, CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, DiagCtx, Diagnostic,
+    EventDef, EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType, FnReturnType,
+    FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl,
+    NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment, ParamBlock, ParamDecl,
+    PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Stmt,
+    StructDef, StructField,
 };
 
 mod array_structs;
@@ -68,6 +70,7 @@ pub struct TypedProgram {
     pub in_arrays: HashMap<String, TypedArrayInfo>,
     pub out_arrays: HashMap<String, TypedArrayInfo>,
     pub param_arrays: HashMap<String, TypedArrayInfo>,
+    pub const_arrays: Vec<TypedConstArray>,
     pub params: Vec<TypedParam>,
     pub buffers: Vec<TypedBufferDecl>,
     pub structs: Vec<TypedStruct>,
@@ -115,6 +118,24 @@ pub enum TypedEventParamType {
     Scalar(PrimitiveType),
     Array { elem: PrimitiveType, len: usize },
     Slice { elem: PrimitiveType },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedConstArray {
+    pub name: String,
+    pub elem_ty: PrimitiveType,
+    pub len: usize,
+    pub values: Vec<TypedConstValue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstValue {
+    Scalar(TypedConstValue),
+    Array {
+        elem_ty: PrimitiveType,
+        len: usize,
+        values: Vec<TypedConstValue>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -409,7 +430,28 @@ fn with_stmt_diag_context_mut<T>(stmt: &mut Stmt, f: impl FnOnce(DiagCtx, &mut S
 mod tests {
     use super::*;
 
-    use onda_frontend::parse_program;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use onda_frontend::{parse_program, parse_program_file};
+
+    fn mk_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("onda_semantics_{prefix}_{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp test dir");
+        dir
+    }
+
+    fn write_file(path: &Path, text: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent");
+        }
+        fs::write(path, text).expect("write test file");
+    }
 
     #[test]
     fn expression_diagnostics_use_identifier_spans() {
@@ -437,6 +479,2576 @@ mod tests {
             .expect("missing duplicate param diagnostic");
 
         assert_eq!((diag.line, diag.column), (5, 3));
+    }
+
+    #[test]
+    fn top_level_const_array_reads_analyze() {
+        let src = r#"
+const Table: f32[3] = [0.25, 0.5, 1.0]
+
+outs:
+  out1
+
+sample:
+  out1 = Table[1]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("const array read should analyze");
+        assert_eq!(typed.const_arrays.len(), 1);
+        let table = &typed.const_arrays[0];
+        assert_eq!(table.name, "Table");
+        assert_eq!(table.elem_ty, PrimitiveType::F32);
+        assert_eq!(table.len, 3);
+        assert_eq!(table.values[1], TypedConstValue::F32(0.5));
+    }
+
+    #[test]
+    fn proc_bodies_can_read_const_arrays_with_runtime_index() {
+        let src = r#"
+const Table: f32[3] = [0.25, 0.5, 1.0]
+
+proc Voice:
+  params:
+    idx: i32 = 1
+  outs:
+    out1
+  sample:
+    out1 = Table[idx]
+
+outs:
+  out1
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("proc dynamic const array read should analyze");
+    }
+
+    #[test]
+    fn count_shorthand_expands_in_semantic_preprocessing_from_const_defs() {
+        let src = r#"
+const def count() -> i32:
+  return 3
+
+const N = count()
+
+ins N
+outs N
+params N
+buffers N
+
+sample:
+  outs[0] = ins[0] + param1
+  outs[1] = ins[1] + param2
+  outs[2] = ins[2] + param3
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("semantic count expansion should analyze");
+
+        assert_eq!(typed.ins, vec!["in1", "in2", "in3"]);
+        assert_eq!(typed.outs, vec!["out1", "out2", "out3"]);
+        assert_eq!(typed.params.len(), 3);
+        assert_eq!(typed.buffers.len(), 3);
+    }
+
+    #[test]
+    fn count_shorthand_accepts_direct_const_def_calls() {
+        let src = r#"
+const def count() -> i32:
+  return 2
+
+ins (count())
+outs (count())
+
+sample:
+  outs[0] = ins[0]
+  outs[1] = ins[1]
+"#;
+        let program = parse_program(src).expect("parse should preserve direct const def count");
+        let typed = analyze(program).expect("direct const def count should analyze");
+
+        assert_eq!(typed.ins, vec!["in1", "in2"]);
+        assert_eq!(typed.outs, vec!["out1", "out2"]);
+    }
+
+    #[test]
+    fn proc_local_scalar_consts_expand_counts_in_semantics() {
+        let src = r#"
+const def count() -> i32:
+  return 2
+
+proc Voice:
+  const N = count()
+  ins N
+  outs N
+  sample:
+    out1 = in1
+    out2 = in2
+
+outs 2
+init:
+  v = Voice()
+sample:
+  v(0.25, 0.5)
+  outs[0] = v.out1
+  outs[1] = v.out2
+"#;
+        let program = parse_program(src).expect("parse should preserve proc local consts");
+        let typed = analyze(program).expect("proc local const counts should analyze");
+
+        assert_eq!(typed.outs, vec!["out1", "out2"]);
+    }
+
+    #[test]
+    fn statement_local_scalar_consts_call_const_defs_in_semantics() {
+        let src = r#"
+const def gain() -> f32:
+  return 0.5
+
+outs:
+  out1
+
+sample:
+  const G = gain()
+  out1 = G
+"#;
+        let program = parse_program(src).expect("parse should preserve local consts");
+        let typed = analyze(program).expect("statement local const should analyze");
+
+        assert_eq!(typed.sample.len(), 1);
+        assert!(!matches!(typed.sample[0], Stmt::Const { .. }));
+    }
+
+    #[test]
+    fn assignment_to_statement_local_const_is_rejected_in_semantics() {
+        let src = r#"
+outs:
+  out1
+
+sample:
+  const X = 1
+  X = 2
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should preserve local consts");
+        let errors = analyze(program).expect_err("assignment to local const should fail");
+        assert!(errors
+            .iter()
+            .any(|diag| diag.message.contains("cannot assign to constant 'X'")));
+    }
+
+    #[test]
+    fn proc_local_const_arrays_are_rejected_in_semantics() {
+        let src = r#"
+proc Voice:
+  const Table = [1, 2]
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+init:
+  v = Voice()
+sample:
+  out1 = v.out1
+"#;
+        let program = parse_program(src).expect("parse should preserve proc local const array");
+        let errors = analyze(program).expect_err("proc local const array should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const arrays are only supported at top-level and namespace scope")));
+    }
+
+    #[test]
+    fn count_shorthand_rejects_forward_const_def_calls() {
+        let src = r#"
+ins N
+outs 1
+
+const def count() -> i32:
+  return 2
+
+const N = count()
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward count const def should fail");
+        assert!(errors.iter().any(|diag| {
+            diag.message
+                .contains("ins count expression uses non-constant symbol 'N'")
+        }));
+    }
+
+    #[test]
+    fn count_prefix_mismatch_is_reported_in_semantics() {
+        let src = r#"
+const def count() -> i32:
+  return 2
+
+const N = count()
+
+ins N:
+  in1
+
+outs 1
+sample:
+  out1 = in1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("count/list mismatch should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("ins block count (2) does not match explicit declaration count (1)")));
+    }
+
+    #[test]
+    fn count_shorthand_zero_diagnostic_uses_count_span() {
+        let src = "outs 0\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("zero count should fail");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("outs count expression must be greater than zero")
+            })
+            .expect("missing count diagnostic");
+
+        assert_eq!((diag.line, diag.column), (1, 6));
+        assert_eq!(diag.end_line, 1);
+        assert_eq!(diag.end_column, 7);
+    }
+
+    #[test]
+    fn scalar_const_validation_diagnostics_use_expr_span() {
+        let src = "const X = foo\nouts:\n  out1\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should preserve invalid const");
+        let errors = analyze(program).expect_err("invalid const should fail in semantics");
+        let diag = errors
+            .iter()
+            .find(|diag| {
+                diag.message
+                    .contains("const scalar 'X' uses non-constant symbol 'foo'")
+            })
+            .expect("missing const validation diagnostic");
+
+        assert_eq!((diag.line, diag.column), (1, 11));
+        assert_eq!(diag.end_line, 1);
+        assert_eq!(diag.end_column, 14);
+    }
+
+    #[test]
+    fn direct_const_def_calls_fold_in_array_sizes_defaults_and_oversampling() {
+        let src = r#"
+const def count() -> i32:
+  return 2
+
+const def values() -> f32[2]:
+  return [0.25, 0.75]
+
+params:
+  taps: f32[count()] = values()
+
+outs:
+  out1
+
+init:
+  state: f32[count()]
+
+sample count():
+  out1 = taps[0] + taps[1] + state[0]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("direct const def preprocessing should analyze");
+
+        assert_eq!(typed.sample_oversample_factor, 2);
+        assert_eq!(typed.param_arrays.get("taps").map(|info| info.len), Some(2));
+        let tap_defaults = typed
+            .params
+            .iter()
+            .map(|param| (param.name.as_str(), param.default))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            tap_defaults.get("taps[0]"),
+            Some(&TypedConstValue::F32(0.25))
+        );
+        assert_eq!(
+            tap_defaults.get("taps[1]"),
+            Some(&TypedConstValue::F32(0.75))
+        );
+        let state = typed
+            .array_vars
+            .iter()
+            .find(|array| array.name == "state")
+            .expect("typed state array");
+        assert_eq!(state.len, 2);
+    }
+
+    #[test]
+    fn direct_const_def_calls_fold_in_asserts_and_graph_delays() {
+        let src = r#"
+namespace Check:
+  const def ok() -> bool:
+    return true
+
+  assert(ok())
+
+const def delay() -> i32:
+  return 2
+
+ins 1
+outs 1
+
+graph:
+  in1 >>[delay()] out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("direct const def graph delay should analyze");
+    }
+
+    #[test]
+    fn const_def_signature_sizes_can_call_earlier_const_defs() {
+        let src = r#"
+const def count() -> i32:
+  return 3
+
+const def values(xs: f32[count()]) -> f32[count()]:
+  return xs
+
+const Table: f32[count()] = values([0.25, 0.5, 0.75])
+
+outs:
+  out1
+
+sample:
+  out1 = Table[2]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("const def signature sizes should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const table");
+        assert_eq!(table.len, 3);
+        assert_eq!(table.values[2], TypedConstValue::F32(0.75));
+    }
+
+    #[test]
+    fn namespace_template_args_accept_semantic_scalar_consts() {
+        let src = r#"
+const def count() -> i32:
+  return 4
+
+const Size = count()
+
+namespace LUT<N = 2>:
+  const Value = N
+  const Table: i32[N] = [0, 1, 2, 3]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(LUT<Size>::Value)
+"#;
+        let program = parse_program(src).expect("parse should preserve semantic template arg");
+        let typed = analyze(program).expect("semantic namespace template arg should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("typed const array");
+        assert_eq!(table.len, 4);
+        assert_eq!(table.values[3], TypedConstValue::I32(3));
+    }
+
+    #[test]
+    fn namespace_template_args_can_shadow_semantic_scalar_const_names() {
+        let src = r#"
+const def count() -> i32:
+  return 5
+
+const N = count()
+
+namespace LUT<N = 2>:
+  const Value = N
+
+outs:
+  out1
+
+sample:
+  out1 = f32(LUT<N>::Value)
+"#;
+        let program = parse_program(src).expect("parse should preserve shadowing template arg");
+        analyze(program).expect("shadowing semantic namespace template arg should analyze");
+    }
+
+    #[test]
+    fn namespace_alias_args_accept_semantic_scalar_consts() {
+        let src = r#"
+const def count() -> i32:
+  return 3
+
+const Size = count()
+
+namespace LUT<N = 2>:
+  const Table: i32[N] = [10, 20, 30]
+
+namespace Picked = LUT<Size>
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Picked::Table[2])
+"#;
+        let program = parse_program(src).expect("parse should preserve semantic alias arg");
+        let typed = analyze(program).expect("semantic namespace alias arg should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("typed const array");
+        assert_eq!(table.len, 3);
+        assert_eq!(table.values[2], TypedConstValue::I32(30));
+    }
+
+    #[test]
+    fn namespace_template_args_accept_direct_const_def_calls() {
+        let src = r#"
+const def count() -> i32:
+  return 3
+
+namespace LUT<N = 2>:
+  const Table: i32[N] = [10, 20, 30]
+
+namespace Picked = LUT<count()>
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Picked::Table[2])
+"#;
+        let program = parse_program(src).expect("parse should preserve direct const def arg");
+        let typed = analyze(program).expect("direct const def namespace arg should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("typed const array");
+        assert_eq!(table.len, 3);
+        assert_eq!(table.values[2], TypedConstValue::I32(30));
+    }
+
+    #[test]
+    fn namespace_template_defaults_accept_direct_const_def_calls() {
+        let src = r#"
+namespace Outer:
+  const def count() -> i32:
+    return 3
+
+  namespace Inner<N = count()>:
+    const Table: i32[N] = [0, 2, 4]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Outer::Inner::Table[2])
+"#;
+        let program = parse_program(src).expect("parse should preserve direct const def default");
+        let typed = analyze(program).expect("direct const def namespace default should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("typed const array");
+        assert_eq!(table.len, 3);
+        assert_eq!(table.values[2], TypedConstValue::I32(4));
+    }
+
+    #[test]
+    fn nested_namespace_template_defaults_accept_semantic_scalar_consts() {
+        let src = r#"
+namespace Outer:
+  const def count() -> i32:
+    return 3
+
+  const Size = count()
+
+  namespace Inner<N = Size>:
+    const Table: i32[N] = [0, 2, 4]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Outer::Inner::Table[2])
+"#;
+        let program = parse_program(src).expect("parse should preserve semantic nested default");
+        let typed = analyze(program).expect("semantic namespace default should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("typed const array");
+        assert_eq!(table.len, 3);
+        assert_eq!(table.values[2], TypedConstValue::I32(4));
+    }
+
+    #[test]
+    fn namespace_template_defaults_use_definition_scope_when_instantiated_elsewhere() {
+        let src = r#"
+const Size = 3
+
+namespace LUT<N = Size>:
+  const Value = N
+
+namespace Consumer:
+  const Size = 5
+  const Picked: i32[1] = [LUT::Value]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Consumer::Picked[0])
+"#;
+        let program = parse_program(src).expect("parse should preserve namespace default");
+        let typed = analyze(program).expect("definition-scoped namespace default should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Consumer::Picked")
+            .expect("typed const array");
+        assert_eq!(table.values, vec![TypedConstValue::I32(3)]);
+    }
+
+    #[test]
+    fn nested_namespace_const_arrays_and_const_defs_are_usable_from_code() {
+        let src = r#"
+namespace Outer<A = 2>:
+  namespace Inner<B = 3>:
+    const def ramp() -> f32[B]:
+      values: f32[B]
+      for i in 0..B:
+        values[i] = f32(A + i)
+      return values
+
+    const Table: f32[B] = ramp()
+
+    namespace Leaf<C = A + B>:
+      const Value = Table[1] + f32(C)
+
+outs:
+  out1
+
+sample:
+  out1 = Outer<2>::Inner<3>::Leaf::Value + Outer<2>::Inner<3>::Table[2]
+"#;
+        let program = parse_program(src).expect("parse should preserve nested namespace use");
+        let typed = analyze(program).expect("nested namespace consts should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("nested namespace const table");
+        assert_eq!(table.len, 3);
+        assert_eq!(
+            table.values,
+            vec![
+                TypedConstValue::F32(2.0),
+                TypedConstValue::F32(3.0),
+                TypedConstValue::F32(4.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn namespace_template_instantiations_dedup_by_evaluated_const_values() {
+        let src = r#"
+const def count() -> i32:
+  return 3
+
+namespace LUT<N = 2>:
+  const Table: i32[N] = [10, 20, 30]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(LUT<3>::Table[0] + LUT<count()>::Table[2])
+"#;
+        let program = parse_program(src).expect("parse should preserve namespace instantiations");
+        let typed = analyze(program).expect("deduped namespace instantiations should analyze");
+        let tables = typed
+            .const_arrays
+            .iter()
+            .filter(|array| array.name.contains("LUT__nsinst") && array.name.ends_with("::Table"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(tables.len(), 1, "const arrays: {:?}", typed.const_arrays);
+        assert_eq!(tables[0].values[2], TypedConstValue::I32(30));
+    }
+
+    #[test]
+    fn imported_namespaces_can_provide_const_arrays_and_const_defs() {
+        let dir = mk_temp_dir("imported_namespaced_consts");
+        let main = dir.join("main.onda");
+        let lib = dir.join("lib.onda");
+
+        write_file(
+            &lib,
+            r#"
+namespace Imported:
+  const def offset() -> i32:
+    return 2
+
+  namespace Tables<N = offset()>:
+    const def ramp() -> f32[N]:
+      values: f32[N]
+      for i in 0..N:
+        values[i] = f32(i + offset())
+      return values
+
+    const Table: f32[N] = ramp()
+"#,
+        );
+        write_file(
+            &main,
+            r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = Imported::Tables::Table[1]
+"#,
+        );
+
+        let program =
+            parse_program_file(&main).expect("program with namespace import should parse");
+        let typed = analyze(program).expect("imported namespace consts should analyze");
+        fs::remove_dir_all(&dir).ok();
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("imported namespace const table");
+        assert_eq!(table.len, 2);
+        assert_eq!(
+            table.values,
+            vec![TypedConstValue::F32(2.0), TypedConstValue::F32(3.0)]
+        );
+    }
+
+    #[test]
+    fn namespace_template_args_with_runtime_symbols_fail_in_semantics() {
+        let src = r#"
+namespace LUT<N = 2>:
+  const Value = N
+
+outs:
+  out1
+
+sample:
+  idx = 3
+  out1 = f32(LUT<idx>::Value)
+"#;
+        let program = parse_program(src).expect("parse should preserve template arg for semantics");
+        let errors = analyze(program).expect_err("runtime namespace template arg should fail");
+        assert!(
+            errors.iter().any(|diag| {
+                diag.message.contains("namespace template")
+                    && diag.message.contains("LUT")
+                    && diag.message.contains("uses non-constant symbol 'idx'")
+            }),
+            "diagnostics: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn namespace_template_bodies_use_definition_scope_for_consts() {
+        let src = r#"
+namespace LUT<N = 1>:
+  const Table: f32[1] = [Gain * f32(N)]
+
+const Gain = 0.5
+
+outs:
+  out1
+
+sample:
+  out1 = LUT<2>::Table[0]
+"#;
+        let program = parse_program(src).expect("parse should preserve template body");
+        let errors = analyze(program).expect_err("template body should not see later scalar const");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains(
+                "const array 'LUT__nsinst0::Table' element 0 uses non-constant symbol 'Gain'"
+            )),
+            "expected definition-scope diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_namespace_templates_and_aliases_fail_in_semantics() {
+        let src = r#"
+namespace Config<N = 1>:
+  const Value = N
+
+namespace Config<N = 1>:
+  const Value = N
+
+namespace Picked = Config<1>
+namespace Picked = Config<1>
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("duplicates should parse for semantic diagnostics");
+        let errors = analyze(program).expect_err("duplicate namespaces should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("duplicate namespace template 'Config'")));
+        assert!(errors
+            .iter()
+            .any(|diag| diag.message.contains("duplicate namespace alias 'Picked'")));
+    }
+
+    #[test]
+    fn namespace_template_argument_errors_are_semantic_diagnostics() {
+        let cases = [
+            (
+                "too many positional arguments",
+                r#"
+namespace Data<S = 1, C = 1>:
+  const Value = S + C
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Data<1, 2, 3>::Value)
+"#,
+                "namespace template 'Data' received too many positional arguments",
+            ),
+            (
+                "unknown named argument",
+                r#"
+namespace Data<S = 1, C = 1>:
+  const Value = S + C
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Data<Rows = 4>::Value)
+"#,
+                "namespace template 'Data' received unknown named arguments: Rows",
+            ),
+            (
+                "duplicate named argument",
+                r#"
+namespace Data<S = 1, C = 1>:
+  const Value = S + C
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Data<C = 2, C = 3>::Value)
+"#,
+                "namespace template 'Data' argument 'C' specified more than once",
+            ),
+            (
+                "unknown namespace template",
+                r#"
+outs:
+  out1
+
+sample:
+  out1 = f32(Missing<1>::Value)
+"#,
+                "unknown namespace template 'Missing'",
+            ),
+        ];
+
+        for (label, src, expected) in cases {
+            let program = parse_program(src).unwrap_or_else(|err| panic!("{label}: {err:?}"));
+            let errors = analyze(program).expect_err(label);
+            assert!(
+                errors.iter().any(|diag| diag.message.contains(expected)),
+                "{label}: expected {expected:?}, got {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn const_array_size_with_runtime_symbol_fails_in_semantics() {
+        let src = r#"
+const Table: f32[BadSize] = [1.0]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should preserve const array size");
+        let errors = analyze(program).expect_err("invalid const array size should fail");
+        assert!(
+            errors.iter().any(|diag| {
+                let message = &diag.message;
+                message.contains("const array 'Table' size uses non-constant symbol 'BadSize'")
+                    || message.contains(
+                        "const array 'Table' size must be a compile-time integer constant expression",
+                    )
+            }),
+            "diagnostics: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn const_array_writes_are_rejected() {
+        let src = r#"
+const Table = [1, 2, 3]
+
+outs:
+  out1
+
+sample:
+  Table[0] = 4
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const array write should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("cannot assign to immutable array alias 'Table'")));
+    }
+
+    #[test]
+    fn namespaced_const_array_alias_writes_are_rejected() {
+        let src = r#"
+namespace LUT:
+  const Table: f32[2] = [0.25, 0.5]
+
+namespace Picked = LUT
+
+outs:
+  out1
+
+sample:
+  Picked::Table[0] = 0.0
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("namespaced const array write should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("cannot assign to immutable array alias 'LUT::Table'")),
+            "diagnostics: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn const_array_unsafe_write_is_rejected() {
+        let src = r#"
+const Table = [1, 2, 3]
+
+outs:
+  out1
+
+sample:
+  unsafe_write(Table, 0, 4)
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const array unsafe_write should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("builtin 'unsafe_write' cannot write immutable array alias 'Table'")));
+    }
+
+    #[test]
+    fn const_array_method_unsafe_write_is_rejected() {
+        let src = r#"
+const Table = [1, 2, 3]
+
+outs:
+  out1
+
+sample:
+  Table.unsafe_write(0, 4)
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const array method unsafe_write should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("builtin 'unsafe_write' cannot write immutable array alias 'Table'")));
+    }
+
+    #[test]
+    fn const_arrays_can_be_passed_to_readonly_array_params() {
+        let src = r#"
+const Table: f32[3] = [1.0, 2.0, 3.0]
+
+def sum_first_last(arr: f32[]):
+  return arr[0] + arr[arr.len() - 1]
+
+outs:
+  out1
+
+sample:
+  out1 = sum_first_last(Table)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("const array readonly def arg should analyze");
+    }
+
+    #[test]
+    fn const_array_slices_can_be_passed_to_readonly_array_params() {
+        let src = r#"
+const Table: f32[3] = [1.0, 2.0, 3.0]
+
+def first(arr: f32[]):
+  return arr[0]
+
+outs:
+  out1
+
+sample:
+  out1 = first(Table[:])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("const array slice readonly def arg should analyze");
+    }
+
+    #[test]
+    fn const_arrays_cannot_be_passed_to_mutating_array_params() {
+        let src = r#"
+const Table: f32[3] = [1.0, 2.0, 3.0]
+
+def write_first(arr: f32[]):
+  arr[0] = 0.0
+  return arr[0]
+
+outs:
+  out1
+
+sample:
+  out1 = write_first(Table)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const array mutable def arg should fail");
+        assert!(errors.iter().any(|diag| diag.message.contains(
+            "cannot pass immutable array alias 'Table' to mutable array parameter 'arr'"
+        )));
+    }
+
+    #[test]
+    fn namespaced_const_arrays_cannot_be_passed_to_mutating_array_params() {
+        let src = r#"
+namespace LUT:
+  const Table: f32[3] = [1.0, 2.0, 3.0]
+
+namespace Picked = LUT
+
+def write_first(arr: f32[]):
+  arr[0] = 0.0
+  return arr[0]
+
+outs:
+  out1
+
+sample:
+  out1 = write_first(Picked::Table)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("namespaced const array mutable arg should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains(
+                "cannot pass immutable array alias 'LUT::Table' to mutable array parameter 'arr'"
+            )),
+            "diagnostics: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn const_arrays_cannot_be_passed_to_unsafe_write_array_params() {
+        let src = r#"
+const Table: f32[3] = [1.0, 2.0, 3.0]
+
+def write_first(arr: f32[]):
+  unsafe_write(arr, 0, 0.0)
+  return arr[0]
+
+outs:
+  out1
+
+sample:
+  out1 = write_first(Table)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const array unsafe_write def arg should fail");
+        assert!(errors.iter().any(|diag| diag.message.contains(
+            "cannot pass immutable array alias 'Table' to mutable array parameter 'arr'"
+        )));
+    }
+
+    #[test]
+    fn const_arrays_cannot_be_passed_to_method_unsafe_write_array_params() {
+        let src = r#"
+const Table: f32[3] = [1.0, 2.0, 3.0]
+
+def write_first(arr: f32[]):
+  arr.unsafe_write(0, 0.0)
+  return arr[0]
+
+outs:
+  out1
+
+sample:
+  out1 = write_first(Table)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("const array method unsafe_write def arg should fail");
+        assert!(errors.iter().any(|diag| diag.message.contains(
+            "cannot pass immutable array alias 'Table' to mutable array parameter 'arr'"
+        )));
+    }
+
+    #[test]
+    fn const_arrays_cannot_be_passed_through_mutating_array_alias_params() {
+        let src = r#"
+const Table: f32[3] = [1.0, 2.0, 3.0]
+
+def write_alias(arr: f32[]):
+  view = arr[:]
+  view[0] = 0.0
+  return view[0]
+
+outs:
+  out1
+
+sample:
+  out1 = write_alias(Table)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const array alias mutable def arg should fail");
+        assert!(errors.iter().any(|diag| diag.message.contains(
+            "cannot pass immutable array alias 'Table' to mutable array parameter 'arr'"
+        )));
+    }
+
+    #[test]
+    fn const_arrays_can_be_forwarded_through_readonly_array_params() {
+        let src = r#"
+const Table: f32[3] = [1.0, 2.0, 3.0]
+
+def first(arr: f32[]):
+  return arr[0]
+
+def wrap(arr: f32[]):
+  return first(arr)
+
+outs:
+  out1
+
+sample:
+  out1 = wrap(Table)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("const array readonly forwarded def arg should analyze");
+    }
+
+    #[test]
+    fn const_arrays_cannot_be_forwarded_to_mutating_array_params() {
+        let src = r#"
+const Table: f32[3] = [1.0, 2.0, 3.0]
+
+def write_first(arr: f32[]):
+  arr[0] = 0.0
+  return arr[0]
+
+def wrap(arr: f32[]):
+  return write_first(arr)
+
+outs:
+  out1
+
+sample:
+  out1 = wrap(Table)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("const array forwarded mutable def arg should fail");
+        assert!(errors.iter().any(|diag| diag.message.contains(
+            "cannot pass immutable array alias 'Table' to mutable array parameter 'arr'"
+        )));
+    }
+
+    #[test]
+    fn def_bodies_can_read_const_arrays() {
+        let src = r#"
+const Table = [1.0, 2.0, 3.0]
+
+def pick(i: i32):
+  return Table[i]
+
+outs:
+  out1
+
+sample:
+  out1 = pick(1)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("def const array read should analyze");
+    }
+
+    #[test]
+    fn const_array_len_and_static_index_are_compile_time_evaluable() {
+        let src = r#"
+const Table: i32[3] = [2, 4, 8]
+const Picked = Table[2]
+
+namespace Check:
+  assert(Table.len() == 3)
+  assert(Picked == 8)
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Table[1])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("const array compile-time reads should analyze");
+    }
+
+    #[test]
+    fn const_array_static_index_oob_is_semantic_error() {
+        let src = r#"
+const Table = [1, 2]
+
+namespace Check:
+  assert(Table[2] == 0)
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("oob const array index should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const array 'Table' index 2 is out of bounds for length 2")));
+    }
+
+    #[test]
+    fn const_array_values_can_initialize_fixed_array_defaults() {
+        let src = r#"
+const Spread: f32[2] = [0.2, 0.8]
+
+ins:
+  freqs: f32[2] = Spread
+
+params:
+  pan: f32[2] = Spread
+
+outs:
+  out1
+
+sample:
+  out1 = freqs[0] + pan[1]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("const array defaults should analyze");
+
+        assert_eq!(
+            typed.in_defaults.get("freqs[0]"),
+            Some(&TypedConstValue::F32(0.2))
+        );
+        assert_eq!(
+            typed.in_defaults.get("freqs[1]"),
+            Some(&TypedConstValue::F32(0.8))
+        );
+
+        let pan_defaults = typed
+            .params
+            .iter()
+            .map(|param| (param.name.as_str(), param.default))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(pan_defaults.get("pan[0]"), Some(&TypedConstValue::F32(0.2)));
+        assert_eq!(pan_defaults.get("pan[1]"), Some(&TypedConstValue::F32(0.8)));
+    }
+
+    #[test]
+    fn const_array_fixed_array_defaults_require_matching_length() {
+        let src = r#"
+const Spread: f32[3] = [0.2, 0.5, 0.8]
+
+ins:
+  freqs: f32[2] = Spread
+
+outs:
+  out1
+
+sample:
+  out1 = freqs[0]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("wrong-length const array default should fail");
+
+        assert!(errors.iter().any(|diag| diag.message.contains(
+            "input 'freqs' default const array 'Spread' has type f32[3], expected f32[2]"
+        )));
+    }
+
+    #[test]
+    fn const_array_fixed_array_defaults_require_matching_element_type() {
+        let src = r#"
+const Spread: f32[2] = [0.2, 0.8]
+
+params:
+  pan: f64[2] = Spread
+
+outs:
+  out1
+
+sample:
+  out1 = f32(pan[0])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("wrong-type const array default should fail");
+
+        assert!(errors.iter().any(|diag| diag.message.contains(
+            "param '<top-level>.pan' default const array 'Spread' has type f32[2], expected f64[2]"
+        )));
+    }
+
+    #[test]
+    fn const_array_event_defaults_require_matching_element_type() {
+        let src = r#"
+const Curve: f32[2] = [0.25, 0.75]
+
+init:
+  value = 0.0
+
+event set_curve(curve: f64[2] = Curve):
+  value = f32(curve[0])
+
+outs:
+  out1
+
+sample:
+  out1 = value
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("wrong-type event const array default should fail");
+
+        assert!(errors.iter().any(|diag| diag.message.contains(
+            "event 'set_curve.curve' default const array 'Curve' has type f32[2], expected f64[2]"
+        )));
+    }
+
+    #[test]
+    fn scalar_const_defs_can_initialize_const_array_elements() {
+        let src = r#"
+const def twice(x: f32) -> f32:
+  return x * 2.0
+
+const Table: f32[2] = [twice(0.5), twice(1.0)]
+
+outs:
+  out1
+
+sample:
+  out1 = Table[1]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("const def call in const array should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(
+            table.values,
+            vec![TypedConstValue::F32(1.0), TypedConstValue::F32(2.0)]
+        );
+        assert!(
+            typed.defs.iter().all(|def| def.name != "twice"),
+            "const defs should not be emitted as runtime defs"
+        );
+    }
+
+    #[test]
+    fn scalar_const_defs_can_call_earlier_const_defs() {
+        let src = r#"
+const def base() -> i32:
+  return 21
+
+const def doubled() -> i32:
+  return base() * 2
+
+const Table = [doubled()]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Table[0])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("const def calling earlier const def should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(table.elem_ty, PrimitiveType::I32);
+        assert_eq!(table.values, vec![TypedConstValue::I32(42)]);
+    }
+
+    #[test]
+    fn const_def_names_conflict_with_runtime_defs() {
+        let src = r#"
+const def foo() -> f32:
+  return 0.25
+
+def foo(x: f32):
+  return x * 2.0
+
+outs:
+  out1
+
+sample:
+  out1 = foo(0.5)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const def/runtime def name conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("const def name 'foo' conflicts with existing symbol")),
+            "expected const def name conflict, got {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|diag| !diag.message.contains("expects 0 argument")),
+            "runtime def call should not be intercepted by const folding: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_const_names_conflict_with_params() {
+        let src = r#"
+const gain = 1.0
+
+params:
+  gain = 0.5
+
+outs:
+  out1
+
+sample:
+  out1 = gain
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const/param name conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant name 'gain' conflicts with existing symbol")),
+            "expected const/param conflict, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_const_names_conflict_with_earlier_params_without_forward_ref_noise() {
+        let src = r#"
+params:
+  gain = 0.5
+
+outs:
+  out1
+
+sample:
+  out1 = gain
+
+const gain = 1.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("param/const name conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant name 'gain' conflicts with existing symbol")),
+            "expected param/const conflict, got {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|diag| !diag.message.contains("not visible before its declaration")),
+            "runtime param read should not be reported as forward const use: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_const_names_conflict_with_function_params() {
+        let src = r#"
+const X = 1.0
+
+outs:
+  out1
+
+def f(X: f32):
+  return X
+
+sample:
+  out1 = f(2.0)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const/function parameter conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("function parameter 'X' conflicts with constant 'X'")),
+            "expected function parameter/const conflict, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn const_array_names_conflict_with_array_function_params() {
+        let src = r#"
+const Table: f32[] = [1.0]
+
+outs:
+  out1
+
+def first(Table: f32[]):
+  return Table[0]
+
+sample:
+  out1 = first([2.0])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("const array/function parameter conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("function parameter 'Table' conflicts with constant 'Table'")),
+            "expected function parameter/const array conflict, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_const_names_conflict_with_runtime_defs() {
+        let src = r#"
+const foo = 1.0
+
+def foo(x: f32):
+  return x * 2.0
+
+outs:
+  out1
+
+sample:
+  out1 = foo(0.5)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const/runtime def name conflict should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant name 'foo' conflicts with existing symbol")),
+            "expected const/runtime def conflict, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_const_refs_reject_forward_scalar_consts() {
+        let src = r#"
+outs:
+  out1
+
+sample:
+  out1 = Later
+
+const Later = 0.5
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward scalar const use should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant 'Later' is not visible before its declaration")),
+            "expected forward scalar const diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_const_refs_reject_forward_const_arrays() {
+        let src = r#"
+outs:
+  out1
+
+sample:
+  idx = 0
+  out1 = Table[idx]
+
+const Table: f32[1] = [0.5]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward const array use should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant 'Table' is not visible before its declaration")),
+            "expected forward const array diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn declaration_defaults_reject_forward_const_arrays() {
+        let src = r#"
+params:
+  taps: f32[2] = Table
+
+const Table: f32[2] = [0.25, 0.75]
+
+outs:
+  out1
+
+sample:
+  out1 = taps[0]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward const array default should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant 'Table' is not visible before its declaration")),
+            "expected forward const array default diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn asserts_reject_forward_scalar_consts() {
+        let src = r#"
+namespace Check:
+  assert(Later == 1)
+
+const Later = 1
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward const assert should fail");
+
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("constant 'Later' is not visible before its declaration")),
+            "expected forward const assert diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn const_def_return_types_are_required_and_enforced() {
+        let src = r#"
+const def missing():
+  return 1.0
+
+const Table: f32[1] = [missing()]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("missing return type should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'missing' must declare an explicit return type")));
+
+        let src = r#"
+const def unused_missing():
+  return 1.0
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("unused missing return type should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'unused_missing' must declare an explicit return type")));
+
+        let src = r#"
+const def bad_scalar() -> i32:
+  return 0.5
+
+const Table: i32[1] = [bad_scalar()]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("wrong scalar return type should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'bad_scalar' return must be an integer constant")));
+
+        let src = r#"
+const def bad_array() -> f32[2]:
+  return [0.25]
+
+const Table: f32[2] = bad_array()
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("wrong array return shape should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("const def 'bad_array' return: expected array length 2, got 1")),
+            "expected const def return shape diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn unused_const_def_bodies_are_structurally_validated() {
+        let src = r#"
+const def unused_bad() -> f32:
+  sin(0.0)
+  return 1.0
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("unused unsupported const def body should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("const def 'unused_bad' statement is not supported")),
+            "expected unsupported const def statement diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn const_def_local_consts_are_immutable() {
+        let src = r#"
+const def bad() -> i32:
+  const X = 1
+  X = 2
+  return X
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("local const reassignment should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("const def 'bad' cannot assign to local const 'X'")),
+            "expected local const reassignment diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn unused_const_def_loop_vars_cannot_rebind_local_consts() {
+        let src = r#"
+const def bad() -> i32:
+  const X = 1
+  for X in 0..2:
+    const Y = X
+  return X
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("loop var local const reassignment should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("const def 'bad' cannot assign to local const 'X'")),
+            "expected loop var local const diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_const_defs_can_initialize_scalar_consts() {
+        let src = r#"
+const def curve_gain(x: f64) -> f64:
+  return x * x + 0.12345678901234568
+
+const Gain = curve_gain(0.5)
+const Table: f64[1] = [Gain]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Gain)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("const def scalar const should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(table.elem_ty, PrimitiveType::F64);
+        assert_eq!(
+            table.values,
+            vec![TypedConstValue::F64(
+                0.5_f64 * 0.5_f64 + 0.12345678901234568
+            )]
+        );
+    }
+
+    #[test]
+    fn scalar_consts_from_const_defs_preserve_i64_precision() {
+        let src = r#"
+const def big() -> i64:
+  return 9007199254740993
+
+const Big = big()
+const Table: i64[1] = [Big]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("i64 const def scalar const should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(table.elem_ty, PrimitiveType::I64);
+        assert_eq!(table.values, vec![TypedConstValue::I64(9007199254740993)]);
+    }
+
+    #[test]
+    fn scalar_consts_can_depend_on_semantic_scalar_consts() {
+        let src = r#"
+const def base() -> f64:
+  return 0.25
+
+const A = base()
+const B: f64 = A + 0.125
+const Table: f64[1] = [B]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(B)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("dependent semantic scalar consts should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(table.values, vec![TypedConstValue::F64(0.375)]);
+    }
+
+    #[test]
+    fn namespace_scalar_consts_from_const_defs_initialize_const_arrays() {
+        let src = r#"
+namespace LUT:
+  const def gain() -> f32:
+    return 0.25
+
+  const Gain = gain()
+  const Table: f32[1] = [Gain]
+
+outs:
+  out1
+
+sample:
+  out1 = LUT::Table[0]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("namespaced semantic scalar const should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("typed const array");
+        assert_eq!(table.values, vec![TypedConstValue::F32(0.25)]);
+    }
+
+    #[test]
+    fn const_defs_reject_forward_references_from_bodies() {
+        let src = r#"
+const def earlier() -> f32:
+  return later()
+
+const def later() -> f32:
+  return 1.0
+
+const Table: f32[1] = [earlier()]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward const def call should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'later' is not visible from const def 'earlier'")));
+    }
+
+    #[test]
+    fn const_defs_reject_forward_references_from_param_defaults() {
+        let src = r#"
+const def earlier(x: f32 = later()) -> f32:
+  return x
+
+const def later() -> f32:
+  return 1.0
+
+const Table: f32[1] = [earlier()]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("forward const def default should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'later' is not visible from const def 'earlier'")));
+    }
+
+    #[test]
+    fn const_defs_reject_direct_recursion() {
+        let src = r#"
+const def recurse() -> f32:
+  return recurse()
+
+const Table: f32[1] = [recurse()]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("recursive const def should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("recursive const def call involving 'recurse'")));
+    }
+
+    #[test]
+    fn const_defs_reject_mutual_recursion() {
+        let src = r#"
+const def a() -> f32:
+  return b()
+
+const def b() -> f32:
+  return a()
+
+const Table: f32[1] = [b()]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("mutually recursive const defs should fail");
+
+        assert!(errors
+            .iter()
+            .any(|diag| diag.message.contains("recursive const def call involving")));
+    }
+
+    #[test]
+    fn const_defs_reject_runtime_symbol_access() {
+        let src = r#"
+const def read_input() -> f32:
+  return in1
+
+ins:
+  in1
+
+const Table: f32[1] = [read_input()]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("runtime symbol const def should fail");
+
+        assert!(errors
+            .iter()
+            .any(|diag| diag.message.contains("non-constant symbol 'in1'")));
+    }
+
+    #[test]
+    fn const_defs_reject_ordinary_def_calls() {
+        let src = r#"
+def runtime_helper() -> f32:
+  return 1.0
+
+const def build() -> f32:
+  return runtime_helper()
+
+const Table: f32[1] = [build()]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("ordinary def const call should fail");
+
+        assert!(errors
+            .iter()
+            .any(|diag| diag.message.contains("unknown const def 'runtime_helper'")));
+    }
+
+    #[test]
+    fn const_defs_report_loop_iteration_cap() {
+        let src = r#"
+const def runaway() -> i32:
+  loop 1000001:
+    x = _
+  return 0
+
+const Table: i32[1] = [runaway()]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("const def loop cap should fail");
+
+        assert!(errors
+            .iter()
+            .any(|diag| diag.message.contains("loop exceeded 1000000 iterations")));
+    }
+
+    #[test]
+    fn const_defs_can_read_fixed_array_params() {
+        let src = r#"
+const Source: f32[3] = [0.25, 0.5, 1.0]
+
+const def mix(xs: f32[3]) -> f32:
+  return xs[0] + xs[2]
+
+const Table: f32[2] = [mix(Source), mix([1.0, 2.0, 4.0])]
+
+outs:
+  out1
+
+sample:
+  out1 = Table[1]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("fixed-array const def params should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(
+            table.values,
+            vec![TypedConstValue::F32(1.25), TypedConstValue::F32(5.0)]
+        );
+    }
+
+    #[test]
+    fn const_defs_can_read_any_length_array_params() {
+        let src = r#"
+const A: f32[] = [0.25, 0.5, 1.0]
+const B: f32[] = [2.0, 4.0]
+
+const def sum(xs: f32[]) -> f32:
+  total = 0.0
+  for i in 0..(xs.len()):
+    total = total + xs[i]
+  return total
+
+const Table: f32[] = [sum(A), sum(B), sum([10.0, 20.0, 30.0, 40.0])]
+
+outs:
+  out1
+
+sample:
+  out1 = Table[2]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("typed slice const def params should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(table.len, 3);
+        assert_eq!(
+            table.values,
+            vec![
+                TypedConstValue::F32(1.75),
+                TypedConstValue::F32(6.0),
+                TypedConstValue::F32(100.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn const_defs_can_read_untyped_any_primitive_array_params() {
+        let src = r#"
+const F: f32[] = [0.25, 0.5]
+const I: i32[] = [10, 20, 30]
+
+const def size(xs: []) -> i32:
+  return xs.len()
+
+const Sizes: i32[] = [size(F), size(I), size([true, false, true, false])]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Sizes[2])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("untyped slice const def params should analyze");
+
+        let sizes = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Sizes")
+            .expect("typed const array");
+        assert_eq!(
+            sizes.values,
+            vec![
+                TypedConstValue::I32(2),
+                TypedConstValue::I32(3),
+                TypedConstValue::I32(4)
+            ]
+        );
+    }
+
+    #[test]
+    fn const_def_slice_params_are_read_only() {
+        let src = r#"
+const Source: f32[] = [0.25, 0.5]
+
+const def bad(xs: f32[]) -> f32:
+  xs[0] = 1.0
+  return xs[0]
+
+const Value = bad(Source)
+
+outs:
+  out1
+
+sample:
+  out1 = Value
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("read-only const def slice write should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'bad' cannot write read-only array parameter 'xs'")));
+    }
+
+    #[test]
+    fn const_def_typed_slice_params_reject_wrong_element_type() {
+        let src = r#"
+const Source: i32[] = [1, 2]
+
+const def first(xs: f32[]) -> f32:
+  return xs[0]
+
+const Value = first(Source)
+
+outs:
+  out1
+
+sample:
+  out1 = Value
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("wrong-type const def slice arg should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'first' argument 'xs': expected f32[], got i32[2]")));
+    }
+
+    #[test]
+    fn const_array_slice_annotations_infer_initializer_length() {
+        let src = r#"
+const Full: f32[] = [0.0, 0.25, 0.5, 0.75]
+const Mid: f32[] = Full[1:-1]
+
+outs:
+  out1
+
+sample:
+  out1 = Mid[1]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("const slice annotation should infer length");
+
+        let full = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Full")
+            .expect("typed full array");
+        assert_eq!(full.len, 4);
+
+        let mid = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Mid")
+            .expect("typed mid array");
+        assert_eq!(mid.len, 2);
+        assert_eq!(
+            mid.values,
+            vec![TypedConstValue::F32(0.25), TypedConstValue::F32(0.5)]
+        );
+    }
+
+    #[test]
+    fn const_defs_can_return_arrays_derived_from_fixed_array_params() {
+        let src = r#"
+namespace LUT<N = 3>:
+  const Base: f32[N] = [1.0, 2.0, 3.0]
+
+  const def scale(xs: f32[N], gain: f32) -> f32[N]:
+    values: f32[N]
+    for i in 0..N:
+      values[i] = xs[i] * gain
+    return values
+
+  const Table: f32[N] = scale(Base, 0.5)
+
+outs:
+  out1
+
+sample:
+  out1 = LUT::Table[2]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("array-param const def should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("typed const array");
+        assert_eq!(
+            table.values,
+            vec![
+                TypedConstValue::F32(0.5),
+                TypedConstValue::F32(1.0),
+                TypedConstValue::F32(1.5)
+            ]
+        );
+    }
+
+    #[test]
+    fn const_defs_can_pass_local_arrays_to_fixed_array_params() {
+        let src = r#"
+const def copy(xs: f32[2]) -> f32[2]:
+  return xs
+
+const def swapped(xs: f32[2]) -> f32[2]:
+  values: f32[2]
+  values[0] = xs[1]
+  values[1] = xs[0]
+  return copy(values)
+
+const Table: f32[2] = copy(swapped([1.0, 2.0]))
+
+outs:
+  out1
+
+sample:
+  out1 = Table[0]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("local array const-def arg should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(
+            table.values,
+            vec![TypedConstValue::F32(2.0), TypedConstValue::F32(1.0)]
+        );
+    }
+
+    #[test]
+    fn const_def_fixed_array_params_require_matching_shape() {
+        let src = r#"
+const Source: f32[2] = [0.25, 0.5]
+
+const def first(xs: f32[3]) -> f32:
+  return xs[0]
+
+const Table: f32[1] = [first(Source)]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("wrong-shape const def array arg should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'first' argument 'xs': expected f32[3], got f32[2]")));
+    }
+
+    #[test]
+    fn namespaced_scalar_const_defs_can_initialize_const_arrays() {
+        let src = r#"
+namespace LUT:
+  const def gain() -> f32:
+    return 0.25
+
+  const Table: f32[1] = [gain()]
+
+outs:
+  out1
+
+sample:
+  out1 = LUT::Table[0]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("namespace const def should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("typed const array");
+        assert_eq!(table.values, vec![TypedConstValue::F32(0.25)]);
+    }
+
+    #[test]
+    fn const_defs_can_return_array_literals_for_const_array_initializers() {
+        let src = r#"
+const def table() -> f32[3]:
+  return [0.25, 0.5, 1.0]
+
+const Table: f32[3] = table()
+
+outs:
+  out1
+
+sample:
+  out1 = Table[2]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("array-returning const def should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(
+            table.values,
+            vec![
+                TypedConstValue::F32(0.25),
+                TypedConstValue::F32(0.5),
+                TypedConstValue::F32(1.0)
+            ]
+        );
+        assert!(
+            typed.defs.iter().all(|def| def.name != "table"),
+            "const defs should not be emitted as runtime defs"
+        );
+    }
+
+    #[test]
+    fn untyped_const_can_infer_array_returning_const_def_initializer() {
+        let src = r#"
+const N = 3
+
+const def harmonic_ratios() -> f32[N]:
+  values: f32[N]
+  for i in 0..N:
+    values[i] = f32(i + 1)
+  return values
+
+const Ratios = harmonic_ratios()
+
+outs:
+  out1
+
+sample:
+  out1 = Ratios[2]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("untyped array const def initializer should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Ratios")
+            .expect("typed const array");
+        assert_eq!(
+            table.values,
+            vec![
+                TypedConstValue::F32(1.0),
+                TypedConstValue::F32(2.0),
+                TypedConstValue::F32(3.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn const_defs_can_fill_local_arrays_with_compile_time_loops() {
+        let src = r#"
+const def ramp() -> f32[4]:
+  values: f32[4]
+  for i in 0..4:
+    values[i] = f32(i) + 0.5
+  return values
+
+const Table: f32[4] = ramp()
+
+outs:
+  out1
+
+sample:
+  out1 = Table[2]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("loop-filled const def array should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Table")
+            .expect("typed const array");
+        assert_eq!(
+            table.values,
+            vec![
+                TypedConstValue::F32(0.5),
+                TypedConstValue::F32(1.5),
+                TypedConstValue::F32(2.5),
+                TypedConstValue::F32(3.5)
+            ]
+        );
+    }
+
+    #[test]
+    fn namespace_const_defs_can_return_arrays_using_namespace_sizes() {
+        let src = r#"
+namespace LUT<N = 3>:
+  const def ramp() -> i32[N]:
+    values: i32[N]
+    loop N:
+      values[_] = _ * 2
+    return values
+
+  const Table: i32[N] = ramp()
+
+outs:
+  out1
+
+sample:
+  out1 = f32(LUT::Table[2])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("namespaced array-returning const def should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Table"))
+            .expect("typed const array");
+        assert_eq!(table.elem_ty, PrimitiveType::I32);
+        assert_eq!(
+            table.values,
+            vec![
+                TypedConstValue::I32(0),
+                TypedConstValue::I32(2),
+                TypedConstValue::I32(4)
+            ]
+        );
+    }
+
+    #[test]
+    fn const_defs_can_build_window_tables_with_builtin_math() {
+        let src = r#"
+namespace Windows<N = 4>:
+  const def hann() -> f32[N]:
+    values: f32[N]
+    for i in 0..N:
+      phase = TWO_PI * f32(i) / f32(N - 1)
+      values[i] = 0.5 - 0.5 * cos(phase)
+    return values
+
+  const Hann: f32[N] = hann()
+
+outs:
+  out1
+
+sample:
+  out1 = Windows::Hann[1]
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("const def hann table should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name.ends_with("::Hann"))
+            .expect("typed const array");
+        let values = table
+            .values
+            .iter()
+            .map(|value| match value {
+                TypedConstValue::F32(value) => *value,
+                other => panic!("expected f32 value, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert!((values[0] - 0.0).abs() < 1e-6);
+        assert!((values[1] - 0.75).abs() < 1e-6);
+        assert!((values[2] - 0.75).abs() < 1e-6);
+        assert!((values[3] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn non_const_defs_reject_array_return_annotations() {
+        let src = r#"
+def table() -> f32[2]:
+  return [0.0, 1.0]
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("ordinary def array return should fail");
+
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("function 'table' array return types are only supported for const defs")));
     }
 
     #[test]

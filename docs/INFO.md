@@ -156,11 +156,20 @@
   - Graph lowering rewrites into generated `init` / `block pre` / `sample` code before proc desugaring.
 - Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
   - Default constant types: `PI`/`TWO_PI` are `f64`; `SAMPLE_RATE` is `f32`; `BLOCK_SIZE` is `i32`.
-- User-defined scalar compile-time constants are supported via `const NAME = expr` and optional typed form `const NAME: T = expr`.
-  - Supported in top-level, namespaces, and executable scopes (`init`, `block`, `sample`, `events`, `def`).
+- User-defined compile-time constants are supported via `const NAME = expr`, optional scalar typed form `const NAME: T = expr`, fixed-array form `const NAME: T[N] = expr`, and inferred-length array form `const NAME: T[] = expr`.
+  - Scalar `const` declarations are supported in top-level, namespace, and executable scopes (`init`, `block`, `sample`, `events`, `def`).
+  - Primitive-array `const` declarations are supported at top-level and namespace scope.
   - Namespace consts can be referenced from outside with qualified paths and namespace instantiation, for example `NS::VALUE` or `std::convolution<8, 8>::HopSize`.
   - Initializers must be compile-time evaluable.
-  - Visibility is lexical; forward references and cycles are not part of the current implementation.
+  - Scalar-returning and fixed-array-returning `const def` helpers are supported at top level and namespace scope for later const-array initializers.
+  - Top-level and namespace scalar `const` declarations can be initialized from scalar-returning `const def` calls, and semantic scalar const values fold into later compile-time and runtime uses.
+  - Untyped semantic scalar const declarations preserve full `f64` / `i64` value precision until the eventual use site applies its normal type rules.
+  - `const def` params support primitive scalars, fixed-size primitive arrays, and read-only primitive array slice forms (`T[]` or untyped `[]`) over compile-time arrays of any length.
+  - Every `const def` must declare an explicit return type, and every `return` is evaluated against that type; scalar returns are coerced/validated as that primitive type, while fixed-array returns must match the declared element type and length exactly.
+  - Fixed-array-returning `const def` bodies support local mutable primitive arrays, indexed local-array reads/writes, `if`, compile-time `for` / `loop`, pure builtin math, and calls to earlier visible const defs.
+  - `const def` calls are lexical: forward references, recursion, and mutual recursion are rejected.
+  - Const arrays and const slices can be passed to ordinary array parameters when semantic analysis infers the callee parameter is read-only; mutable callees still reject immutable const data.
+  - Visibility is lexical; forward references and cycles are rejected.
   - Reassignment is rejected.
 - `std/prelude` is auto-imported during semantic analysis.
 - `std/prelude` currently imports `std/math`, `std/lookup`, and `std/random`.

@@ -325,6 +325,7 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
         defaults,
         param_types,
         type_params: Vec::new(),
+        readonly_array_params: HashSet::new(),
     }
 }
 
@@ -619,6 +620,7 @@ fn expand_proc_event_specs(
 fn build_proc_lowering_env(
     program: &Program,
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcLoweringEnv> {
     let mut proc_defs = program
@@ -768,6 +770,7 @@ fn build_proc_lowering_env(
             }
             pre_desugar_defs.push(FunctionDef {
                 loc: method.loc.clone(),
+                is_const: false,
                 type_params: Vec::new(),
                 name: format!("{struct_name}.{}", method.name),
                 params: method.params.clone(),
@@ -791,6 +794,7 @@ fn build_proc_lowering_env(
                 defaults: def.params.iter().map(|p| p.default.clone()).collect(),
                 param_types: def.params.iter().map(|p| p.ty.clone()).collect(),
                 type_params: def.type_params.clone(),
+                readonly_array_params: HashSet::new(),
             });
     }
     let pre_desugar_def_return_types = infer_def_return_types(
@@ -843,6 +847,7 @@ fn build_proc_lowering_env(
             &pre_desugar_def_return_types,
             &pre_desugar_fn_signatures,
             &proc_defs_by_name,
+            const_arrays,
             errors,
         );
         if shape.outs.is_empty() {
@@ -945,6 +950,7 @@ fn build_proc_lowering_env(
 pub(crate) fn desugar_processors(
     mut program: Program,
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcessorDesugarResult {
     // Validate proc-local def type params BEFORE generic proc specialization
@@ -998,7 +1004,7 @@ pub(crate) fn desugar_processors(
         proc_api,
         proc_order,
         lowering_shapes,
-    }) = build_proc_lowering_env(&program, options, errors)
+    }) = build_proc_lowering_env(&program, options, const_arrays, errors)
     else {
         return ProcessorDesugarResult {
             program,
@@ -1084,8 +1090,13 @@ sample:
     #[test]
     fn generic_proc_rewrite_specializes_nested_std_convolution_children_through_wrapper_namespace()
     {
-        let mut program =
+        let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let mut program = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
         let mut errors = Vec::new();
         rewrite_and_materialize_generic_processors(&mut program, &mut errors);
         assert!(
@@ -1136,16 +1147,27 @@ sample:
 
     #[test]
     fn build_proc_lowering_env_tracks_zero_latency_child_procs_through_wrapper_namespace() {
-        let mut program =
+        let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let mut program = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
         let mut errors = Vec::new();
         rewrite_and_materialize_generic_processors(&mut program, &mut errors);
         assert!(
             errors.is_empty(),
             "generic proc rewrite should not emit errors: {errors:?}"
         );
-        let env = build_proc_lowering_env(&program, AnalysisOptions::default(), &mut errors)
-            .expect("proc lowering env should exist");
+        let const_arrays = HashMap::new();
+        let env = build_proc_lowering_env(
+            &program,
+            AnalysisOptions::default(),
+            &const_arrays,
+            &mut errors,
+        )
+        .expect("proc lowering env should exist");
         assert!(
             errors.is_empty(),
             "proc lowering env should not emit errors: {errors:?}"
@@ -1178,8 +1200,19 @@ sample:
     fn desugar_processors_accepts_wrapper_namespace_zero_latency_repro() {
         let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let program = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
         let mut errors = Vec::new();
-        let _desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        let const_arrays = HashMap::new();
+        let _desugared = desugar_processors(
+            program,
+            AnalysisOptions::default(),
+            &const_arrays,
+            &mut errors,
+        );
         assert!(
             errors.is_empty(),
             "processor desugaring should not emit errors: {errors:?}"
@@ -1190,8 +1223,19 @@ sample:
     fn desugared_wrapper_namespace_program_has_no_raw_nested_proc_event_calls_left() {
         let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
+        let program = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
         let mut errors = Vec::new();
-        let desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        let const_arrays = HashMap::new();
+        let desugared = desugar_processors(
+            program,
+            AnalysisOptions::default(),
+            &const_arrays,
+            &mut errors,
+        );
         assert!(
             errors.is_empty(),
             "processor desugaring should not emit errors: {errors:?}"
@@ -1268,7 +1312,13 @@ sample:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let mut errors = Vec::new();
-        let desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        let const_arrays = HashMap::new();
+        let desugared = desugar_processors(
+            program,
+            AnalysisOptions::default(),
+            &const_arrays,
+            &mut errors,
+        );
         assert!(
             errors.is_empty(),
             "processor desugaring should not emit errors: {errors:?}"
@@ -1329,7 +1379,13 @@ sample:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let mut errors = Vec::new();
-        let desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        let const_arrays = HashMap::new();
+        let desugared = desugar_processors(
+            program,
+            AnalysisOptions::default(),
+            &const_arrays,
+            &mut errors,
+        );
         assert!(
             errors.is_empty(),
             "processor desugaring should not emit errors: {errors:?}"
@@ -1422,7 +1478,13 @@ sample:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let mut errors = Vec::new();
-        let desugared = desugar_processors(program, AnalysisOptions::default(), &mut errors);
+        let const_arrays = HashMap::new();
+        let desugared = desugar_processors(
+            program,
+            AnalysisOptions::default(),
+            &const_arrays,
+            &mut errors,
+        );
         assert!(
             errors.is_empty(),
             "processor desugaring should not emit errors: {errors:?}"

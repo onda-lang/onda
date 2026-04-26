@@ -79,41 +79,13 @@ fn validate_decl_defaults_and_ranges(
     Ok(())
 }
 
-fn validate_count_prefix_matches(
-    block_name: &str,
-    count_prefix: Option<usize>,
-    actual_count: usize,
-    loc: impl Into<SourceLoc>,
-) -> Result<(), Vec<Diagnostic>> {
-    let loc = loc.into();
-    if let Some(n) = count_prefix {
-        if n != actual_count {
-            return Err(vec![syntax_at_loc(
-                loc,
-                format!(
-                    "{block_name} block count prefix ({n}) does not match explicit declaration count ({actual_count})"
-                ),
-            )]);
-        }
-    }
-    Ok(())
-}
-
-enum SectionCount {
-    Literal(usize),
-    Deferred(Expr),
-}
-
-fn parse_section_count_inner(pair: Pair<'_, Rule>) -> Result<SectionCount, Vec<Diagnostic>> {
+fn parse_section_count_inner(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&pair);
     match pair.as_rule() {
-        Rule::int_lit => {
-            let n = parse_int(pair.as_str())?;
-            Ok(SectionCount::Literal(n as usize))
+        Rule::int_lit => Ok(Expr::int(parse_int(pair.as_str())? as i64).with_loc(loc)),
+        Rule::path_ident | Rule::namespace_ref => {
+            Ok(Expr::var(pair_symbol_text(&pair)).with_loc(loc))
         }
-        Rule::path_ident | Rule::namespace_ref => Ok(SectionCount::Deferred(
-            Expr::var(pair.as_str().to_owned()).with_loc(loc),
-        )),
         Rule::section_count => {
             let mut inner = pair.into_inner();
             let Some(inner_pair) = inner.next() else {
@@ -123,11 +95,11 @@ fn parse_section_count_inner(pair: Pair<'_, Rule>) -> Result<SectionCount, Vec<D
                 )]);
             };
             match inner_pair.as_rule() {
-                Rule::expr => Ok(SectionCount::Deferred(parse_expr(inner_pair)?)),
+                Rule::expr => parse_expr(inner_pair),
                 _ => parse_section_count_inner(inner_pair),
             }
         }
-        Rule::expr => Ok(SectionCount::Deferred(parse_expr(pair)?)),
+        Rule::expr => parse_expr(pair),
         _ => Err(vec![syntax_at_loc(
             loc.as_ref(),
             "section count must be an integer literal, constant name, or parenthesized expression",
@@ -145,8 +117,6 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
     let allow_default_and_range = block_pair.as_rule() == Rule::ins_block;
 
     let mut ports = Vec::new();
-    let mut has_list = false;
-    let mut count_prefix: Option<usize> = None;
     let mut deferred_count: Option<Expr> = None;
     let mut default_ty: Option<DeclType> = None;
 
@@ -156,30 +126,15 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
                 default_ty = Some(parse_section_default_decl_type(child, block_name)?);
             }
             Rule::section_count => {
-                let count_loc = stmt_loc_from_pair(&child);
-                if count_prefix.is_some() || deferred_count.is_some() {
+                if deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(
                         &child,
                         format!("{block_name} block count can only be specified once"),
                     )]);
                 }
-                match parse_section_count_inner(child)? {
-                    SectionCount::Literal(n) => {
-                        if n == 0 {
-                            return Err(vec![syntax_at_loc(
-                                count_loc.as_ref(),
-                                format!("{block_name} count shorthand must be greater than zero"),
-                            )]);
-                        }
-                        count_prefix = Some(n);
-                    }
-                    SectionCount::Deferred(expr) => {
-                        deferred_count = Some(expr);
-                    }
-                }
+                deferred_count = Some(parse_section_count_inner(child)?);
             }
             Rule::port_list => {
-                has_list = true;
                 for item in child.into_inner() {
                     if item.as_rule() != Rule::port_decl {
                         continue;
@@ -207,32 +162,6 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
         }
     }
 
-    if has_list {
-        if deferred_count.is_some() {
-            // Deferred count + explicit list: can't validate at parse time, defer to rewrite
-        } else {
-            validate_count_prefix_matches(
-                block_name,
-                count_prefix,
-                ports.len(),
-                block_loc.as_ref(),
-            )?;
-        }
-    } else if deferred_count.is_some() {
-        // Deferred count without explicit list: expansion happens in rewrite pass
-    } else if let Some(n) = count_prefix {
-        for idx in 1..=n {
-            ports.push(PortDecl {
-                loc: block_loc.clone(),
-                name: format!("{prefix}{idx}"),
-                ty: default_ty.clone(),
-                ty_loc: Span::ZERO,
-                default: None,
-                range: None,
-            });
-        }
-    }
-
     let deferred_default_ty = if deferred_count.is_some() {
         default_ty
     } else {
@@ -253,8 +182,6 @@ pub(super) fn parse_params_block(
 ) -> Result<ParamBlock, Vec<Diagnostic>> {
     let block_loc = stmt_loc_from_pair(&block_pair);
     let mut params = Vec::new();
-    let mut has_list = false;
-    let mut count_prefix: Option<usize> = None;
     let mut deferred_count: Option<Expr> = None;
     let mut default_ty: Option<DeclType> = None;
 
@@ -264,30 +191,15 @@ pub(super) fn parse_params_block(
                 default_ty = Some(parse_section_default_decl_type(child, "params")?);
             }
             Rule::section_count => {
-                let count_loc = stmt_loc_from_pair(&child);
-                if count_prefix.is_some() || deferred_count.is_some() {
+                if deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(
                         &child,
                         "params block count can only be specified once",
                     )]);
                 }
-                match parse_section_count_inner(child)? {
-                    SectionCount::Literal(n) => {
-                        if n == 0 {
-                            return Err(vec![syntax_at_loc(
-                                count_loc.as_ref(),
-                                "params count shorthand must be greater than zero",
-                            )]);
-                        }
-                        count_prefix = Some(n);
-                    }
-                    SectionCount::Deferred(expr) => {
-                        deferred_count = Some(expr);
-                    }
-                }
+                deferred_count = Some(parse_section_count_inner(child)?);
             }
             Rule::param_list => {
-                has_list = true;
                 for param_pair in child.into_inner() {
                     if param_pair.as_rule() != Rule::param_decl {
                         continue;
@@ -312,30 +224,6 @@ pub(super) fn parse_params_block(
         }
     }
 
-    if has_list {
-        if deferred_count.is_none() {
-            validate_count_prefix_matches(
-                "params",
-                count_prefix,
-                params.len(),
-                block_loc.as_ref(),
-            )?;
-        }
-    } else if deferred_count.is_some() {
-        // Expansion happens in rewrite pass
-    } else if let Some(n) = count_prefix {
-        for idx in 1..=n {
-            params.push(ParamDecl {
-                loc: block_loc.clone(),
-                name: format!("param{idx}"),
-                ty: default_ty.clone(),
-                ty_loc: Span::ZERO,
-                default: None,
-                range: None,
-            });
-        }
-    }
-
     let deferred_default_ty = if deferred_count.is_some() {
         default_ty
     } else {
@@ -357,7 +245,6 @@ pub(super) fn parse_buffers_block(
     let mut out = Vec::<BufferDecl>::new();
     let mut seen = HashSet::<String>::new();
 
-    let mut count_shorthand: Option<usize> = None;
     let mut deferred_count: Option<Expr> = None;
     let mut default_ty: Option<BufferType> = None;
 
@@ -367,30 +254,16 @@ pub(super) fn parse_buffers_block(
                 default_ty = Some(parse_section_default_buffer_type(child, "buffers")?);
             }
             Rule::section_count => {
-                let count_loc = stmt_loc_from_pair(&child);
-                if count_shorthand.is_some() || deferred_count.is_some() {
+                if deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(
                         &child,
                         "buffers block count can only be specified once",
                     )]);
                 }
-                match parse_section_count_inner(child)? {
-                    SectionCount::Literal(n) => {
-                        if n == 0 {
-                            return Err(vec![syntax_at_loc(
-                                count_loc.as_ref(),
-                                "buffers count shorthand must be greater than zero",
-                            )]);
-                        }
-                        count_shorthand = Some(n);
-                    }
-                    SectionCount::Deferred(expr) => {
-                        deferred_count = Some(expr);
-                    }
-                }
+                deferred_count = Some(parse_section_count_inner(child)?);
             }
             Rule::buffer_list => {
-                if count_shorthand.is_some() || deferred_count.is_some() {
+                if deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(
                         &child,
                         "buffers block cannot mix explicit declarations and count shorthand",
@@ -431,19 +304,6 @@ pub(super) fn parse_buffers_block(
                 }
             }
             _ => {}
-        }
-    }
-
-    if deferred_count.is_some() {
-        // Deferred count expansion happens in the namespace rewrite pass.
-    } else if let Some(n) = count_shorthand {
-        for idx in 1..=n {
-            out.push(BufferDecl {
-                loc: block_loc.clone(),
-                name: format!("buf{idx}"),
-                ty: default_ty.clone(),
-                ty_loc: Span::ZERO,
-            });
         }
     }
 
@@ -761,7 +621,7 @@ fn parse_graph_endpoint(pair: Pair<'_, Rule>) -> Result<GraphEndpoint, Vec<Diagn
 
     match first.as_rule() {
         Rule::path_ident => {
-            let path = first.as_str().to_owned();
+            let path = pair_symbol_text(&first);
             if let Some((proc, field)) = path.rsplit_once('.') {
                 Ok(GraphEndpoint::ProcField {
                     loc,
@@ -964,7 +824,14 @@ pub(super) fn parse_proc_block(
                 graph = Some(parse_graph_block(child)?);
             }
             Rule::def_block => {
-                local_defs.push(parse_def_block(child)?);
+                let def = parse_def_block(child)?;
+                if def.is_const {
+                    return Err(vec![syntax_at_loc(
+                        def.loc.as_ref(),
+                        "const defs are only supported at top-level and namespace scope",
+                    )]);
+                }
+                local_defs.push(def);
             }
             _ => {}
         }
@@ -1198,6 +1065,7 @@ pub(super) fn merge_inferred_integer_type(
 
 pub(super) fn parse_def_block(block_pair: Pair<'_, Rule>) -> Result<FunctionDef, Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&block_pair);
+    let is_const = block_pair.as_str().trim_start().starts_with("const");
     let mut name: Option<String> = None;
     let mut type_params = Vec::new();
     let mut params = Vec::new();
@@ -1247,6 +1115,7 @@ pub(super) fn parse_def_block(block_pair: Pair<'_, Rule>) -> Result<FunctionDef,
     Ok(FunctionDef {
         loc,
         name,
+        is_const,
         type_params,
         params,
         return_ty,

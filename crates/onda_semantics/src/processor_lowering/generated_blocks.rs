@@ -855,6 +855,7 @@ fn generate_nested_wrapper_defs(
 
         nested_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
+            is_const: false,
             type_params: Vec::new(),
             name: nested_init_fn_name(&proc.name, &nested_path),
             params: vec![onda_frontend::FnParamDecl {
@@ -1109,6 +1110,7 @@ fn generate_nested_wrapper_defs(
         );
         nested_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
+            is_const: false,
             type_params: Vec::new(),
             name: nested_step_name.clone(),
             params: nested_step_params.clone(),
@@ -1201,6 +1203,7 @@ fn generate_nested_wrapper_defs(
                     };
                 nested_defs.push(Block::Def(FunctionDef {
                     loc: Default::default(),
+                    is_const: false,
                     type_params: Vec::new(),
                     name: nested_event_fn_name(&proc.name, &nested_path, &event.name),
                     params: nested_event_params,
@@ -1325,6 +1328,7 @@ fn generate_nested_wrapper_defs(
             }
             nested_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
+                is_const: false,
                 type_params: Vec::new(),
                 name: nested_block_pre_fn_name(&proc.name, &nested_path),
                 params: nested_block_params.clone(),
@@ -1433,6 +1437,7 @@ fn generate_nested_wrapper_defs(
             }
             nested_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
+                is_const: false,
                 type_params: Vec::new(),
                 name: nested_block_post_fn_name(&proc.name, &nested_path),
                 params: nested_block_params,
@@ -1461,6 +1466,7 @@ fn generate_nested_wrapper_defs(
             }
             nested_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
+                is_const: false,
                 type_params: Vec::new(),
                 name: nested_call_out_fn_name(&proc.name, &nested_path, idx),
                 params: nested_step_params.clone(),
@@ -2057,6 +2063,7 @@ pub(super) fn generate_lowered_proc_blocks(
 
         generated_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
+            is_const: false,
             type_params: Vec::new(),
             name: format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX),
             params: vec![onda_frontend::FnParamDecl {
@@ -2166,6 +2173,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 };
                 generated_defs.push(Block::Def(FunctionDef {
                     loc: Default::default(),
+                    is_const: false,
                     type_params: Vec::new(),
                     name: format!("{}{}{}", proc.name, PROC_EVENT_FN_PREFIX, event.name),
                     params: event_params,
@@ -2366,6 +2374,7 @@ pub(super) fn generate_lowered_proc_blocks(
             }
             generated_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
+                is_const: false,
                 type_params: Vec::new(),
                 name: format!("{}{}", proc.name, PROC_BLOCK_PRE_FN_SUFFIX),
                 params: block_params.clone(),
@@ -2467,6 +2476,7 @@ pub(super) fn generate_lowered_proc_blocks(
             }
             generated_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
+                is_const: false,
                 type_params: Vec::new(),
                 name: format!("{}{}", proc.name, PROC_BLOCK_POST_FN_SUFFIX),
                 params: block_params,
@@ -2569,6 +2579,7 @@ pub(super) fn generate_lowered_proc_blocks(
         }
         generated_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
+            is_const: false,
             type_params: Vec::new(),
             name: step_fn_name.clone(),
             params: step_params.clone(),
@@ -2631,6 +2642,7 @@ pub(super) fn generate_lowered_proc_blocks(
             }
             generated_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
+                is_const: false,
                 type_params: Vec::new(),
                 name: format!("{}{}{}", proc.name, PROC_CALL_OUT_FN_PREFIX, idx),
                 params: step_params.clone(),

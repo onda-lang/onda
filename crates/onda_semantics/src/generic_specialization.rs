@@ -397,6 +397,10 @@ pub(crate) fn specialize_generic_struct_template(
                 FnReturnType::Scalar(scalar) => {
                     FnReturnType::Scalar(specialize_fn_return_scalar_type(scalar))
                 }
+                FnReturnType::Array { elem, size } => FnReturnType::Array {
+                    elem: *elem,
+                    size: size.clone(),
+                },
                 FnReturnType::Tuple(elems) => FnReturnType::Tuple(
                     elems
                         .iter()

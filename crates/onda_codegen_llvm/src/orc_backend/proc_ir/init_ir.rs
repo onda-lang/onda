@@ -6,6 +6,8 @@ pub(in crate::orc_backend) unsafe fn build_init_ir(
     module: LLVMModuleRef,
     context: LLVMContextRef,
     user_fns: &mut UserFnRegistry,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_array_base_ptrs: &HashMap<String, LLVMValueRef>,
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
@@ -87,6 +89,8 @@ pub(in crate::orc_backend) unsafe fn build_init_ir(
             input_index: &input_index,
             input_types: &input_types,
             input_arrays: &input_arrays,
+            const_arrays,
+            const_array_base_ptrs,
             buffer_index: &buffer_index,
             buffer_elem_types: &buffer_elem_types,
             buffer_channels: &buffer_channels,
@@ -113,7 +117,6 @@ pub(in crate::orc_backend) unsafe fn build_init_ir(
             port_index_ins: None,
             port_index_outs: None,
             port_index_params: None,
-            out_ptrs: LLVMConstPointerNull(float_ptr_ptr_ty),
             out_slot_ptr_array: None,
         };
 

@@ -27,10 +27,6 @@ pub(crate) enum DeclaredSymbolInfo {
         elem_ty: PrimitiveType,
         channels: BufferChannelInfo,
     },
-    #[allow(dead_code)]
-    StructField {
-        ty: PrimitiveType,
-    },
     FunctionReturn {
         ty: PrimitiveType,
     },
@@ -87,7 +83,6 @@ pub(crate) fn declared_symbol_scalar_type(
         Some(DeclaredSymbolInfo::Input { ty })
         | Some(DeclaredSymbolInfo::Output { ty })
         | Some(DeclaredSymbolInfo::Param { ty })
-        | Some(DeclaredSymbolInfo::StructField { ty })
         | Some(DeclaredSymbolInfo::FunctionReturn { ty }) => Some(*ty),
         Some(DeclaredSymbolInfo::DataArray { elem_ty }) => Some(*elem_ty),
         Some(DeclaredSymbolInfo::Buffer { elem_ty, .. }) => Some(*elem_ty),

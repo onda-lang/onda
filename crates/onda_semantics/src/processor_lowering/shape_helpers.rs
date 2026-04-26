@@ -850,6 +850,7 @@ pub(super) fn compute_proc_shape(
     fn_return_types: &HashMap<String, ReturnType>,
     fn_signatures_full: &HashMap<String, FnSignature>,
     proc_defs_by_name: &HashMap<String, onda_frontend::ProcessorDef>,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcBaseShape {
     let struct_symbols = struct_defs.keys().cloned().collect::<HashSet<_>>();
@@ -1053,10 +1054,12 @@ pub(super) fn compute_proc_shape(
         proc_resolution,
         top_level_proc_symbols: None,
     };
+    let mut init_local_array_aliases = HashMap::new();
+    seed_top_level_array_aliases(&mut init_local_array_aliases, const_arrays, false);
     let mut init_st = InitAnalysisState {
         known_scalars: HashSet::new(),
         local_aliases: HashMap::new(),
-        local_array_aliases: HashMap::new(),
+        local_array_aliases: init_local_array_aliases,
         declared_symbols,
         state_scalars: state_type_hints.clone(),
         state_arrays: HashMap::new(),
@@ -1225,6 +1228,7 @@ pub(super) fn compute_proc_shape(
                     defaults: Vec::new(),
                     param_types: Vec::new(),
                     type_params: Vec::new(),
+                    readonly_array_params: HashSet::new(),
                 },
             );
 
@@ -1314,6 +1318,7 @@ pub(super) fn compute_proc_shape(
         &proc_struct_instances_typed,
         &state.nested_procs,
         &proc_state_arrays,
+        const_arrays,
     );
     {
         let mut runtime_state = ExecutableOwnerRuntimeState {

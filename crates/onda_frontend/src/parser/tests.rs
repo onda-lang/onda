@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
-    ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg, DeclType,
-    EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType, FnReturnType, GraphEndpoint,
-    GraphRate, PrimitiveType, Stmt,
+    ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg,
+    ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
+    FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, NamespaceItem, PrimitiveType, Stmt,
 };
 
 use super::{
@@ -30,6 +30,32 @@ fn write_file(path: &Path, text: &str) {
         fs::create_dir_all(parent).expect("create parent");
     }
     fs::write(path, text).expect("write test file");
+}
+
+fn assert_deferred_int_count(expr: &Option<Expr>, expected: i64) {
+    fn expr_int_value(expr: &Expr) -> Option<i64> {
+        match expr {
+            Expr::Int { value, .. } => Some(*value),
+            Expr::Cast { expr, .. } => expr_int_value(expr),
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let lhs = expr_int_value(lhs)?;
+                let rhs = expr_int_value(rhs)?;
+                match op {
+                    BinaryOp::Add => Some(lhs + rhs),
+                    BinaryOp::Sub => Some(lhs - rhs),
+                    BinaryOp::Mul => Some(lhs * rhs),
+                    BinaryOp::Div if rhs != 0 => Some(lhs / rhs),
+                    BinaryOp::Mod if rhs != 0 => Some(lhs % rhs),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+    assert!(
+        expr.as_ref().and_then(expr_int_value) == Some(expected),
+        "expected deferred count {expected}, got {expr:?}"
+    );
 }
 
 #[test]
@@ -76,15 +102,15 @@ const lib_value = 2.0
         panic!("expected sample assignment");
     };
     let Expr::Binary { lhs, rhs, .. } = expr else {
-        panic!("expected folded binary expression");
+        panic!("expected binary expression");
     };
     assert!(matches!(
         lhs.as_ref(),
-        Expr::Number { value, .. } if (*value - 1.0).abs() < 1e-9
+        Expr::Var { name, .. } if name == "dep_value"
     ));
     assert!(matches!(
         rhs.as_ref(),
-        Expr::Number { value, .. } if (*value - 2.0).abs() < 1e-9
+        Expr::Var { name, .. } if name == "lib_value"
     ));
     fs::remove_dir_all(&dir).ok();
 }
@@ -378,12 +404,23 @@ sample {
 "#;
 
     let program = parse_program(src).expect("program should parse");
-    assert!(program.blocks.iter().any(|b| matches!(b, Block::Assert(_))));
+    let ns = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Namespace(ns) if ns.name == "FFT" => Some(ns),
+            _ => None,
+        })
+        .expect("FFT namespace");
+    assert!(ns
+        .items
+        .iter()
+        .any(|item| matches!(item, NamespaceItem::Assert(_))));
     assert!(
-        program.blocks.iter().any(
-            |b| matches!(b, Block::Struct(s) if s.name.contains("FFT") && s.name.ends_with("::Tag"))
-        ),
-        "expected instantiated namespaced struct"
+        ns.items
+            .iter()
+            .any(|item| matches!(item, NamespaceItem::Struct(s) if s.name == "Tag")),
+        "expected namespaced struct item"
     );
 }
 
@@ -1246,7 +1283,7 @@ sample { out1 = p(0.5) }
 }
 
 #[test]
-fn parses_and_rewrites_proc_level_consts() {
+fn preserves_proc_level_consts_for_semantics() {
     let src = r#"
 proc Voice {
   const N = 2
@@ -1272,12 +1309,19 @@ sample { out1 = 0.0 }
         })
         .expect("expected a proc block");
 
-    assert!(
-        proc.consts.is_empty(),
-        "proc consts should be stripped after rewrite"
-    );
-    assert_eq!(proc.ins.len(), 2);
-    assert_eq!(proc.outs.len(), 2);
+    assert_eq!(proc.consts.len(), 2, "proc consts should be retained");
+    assert_eq!(proc.consts[0].name, "N");
+    assert_eq!(proc.consts[1].name, "Z");
+    assert!(proc.ins.is_empty());
+    assert!(proc.outs.is_empty());
+    assert!(matches!(
+        proc.ins_deferred_count.as_ref(),
+        Some(Expr::Var { name, .. }) if name == "N"
+    ));
+    assert!(matches!(
+        proc.outs_deferred_count.as_ref(),
+        Some(Expr::Var { name, .. }) if name == "N"
+    ));
     assert!(matches!(
         &proc.sample[1],
         Stmt::Assign {
@@ -1288,12 +1332,12 @@ sample { out1 = 0.0 }
                     ..
                 },
             ..
-        } if matches!(&**expr, Expr::Int { value: 1, .. })
+        } if matches!(&**expr, Expr::Var { name, .. } if name == "Z")
     ));
 }
 
 #[test]
-fn parses_and_rewrites_proc_level_consts_using_namespace_consts() {
+fn preserves_proc_level_consts_using_namespace_consts_for_semantics() {
     let src = r#"
 namespace Synth<N = 2> {
   const Base = N + 1
@@ -1324,24 +1368,41 @@ sample {
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Proc(p) if p.name.contains("__nsinst") && p.name.ends_with("::Voice") => Some(p),
+            Block::Namespace(ns) if ns.name == "Synth" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Proc(p) if p.name == "Voice" => Some(p),
+                    _ => None,
+                })
+            }
             _ => None,
         })
-        .expect("expected an instantiated namespaced proc block");
+        .expect("expected namespaced proc block");
 
+    assert_eq!(proc.consts.len(), 1, "proc consts should be retained");
+    assert_eq!(proc.consts[0].name, "Count");
+    assert!(matches!(
+        &proc.consts[0].expr,
+        Expr::Binary { op: BinaryOp::Add, lhs, rhs, .. }
+            if matches!(lhs.as_ref(), Expr::Var { name, .. } if name == "Base")
+                && matches!(rhs.as_ref(), Expr::Int { value: 1, .. })
+    ));
+    assert!(proc.ins.is_empty());
+    assert!(proc.outs.is_empty());
+    assert!(matches!(
+        proc.ins_deferred_count.as_ref(),
+        Some(Expr::Var { name, .. }) if name == "Count"
+    ));
+    assert!(matches!(
+        proc.outs_deferred_count.as_ref(),
+        Some(Expr::Var { name, .. }) if name == "Count"
+    ));
     assert!(
-        proc.consts.is_empty(),
-        "proc consts should be stripped after rewrite"
+        stmt_contains_var_with_suffix(&proc.sample[2], "Count"),
+        "instantiated proc body should retain proc-local const symbols for semantics"
     );
-    assert_eq!(proc.ins.len(), 4);
-    assert_eq!(proc.outs.len(), 4);
     assert!(
-        !stmt_contains_var_with_suffix(&proc.sample[2], "Count"),
-        "instantiated proc body should not retain proc-local const symbols"
-    );
-    assert!(
-        !stmt_contains_var_with_suffix(&proc.sample[3], "Base"),
-        "instantiated proc body should not retain namespace const symbols"
+        stmt_contains_var_with_suffix(&proc.sample[3], "Base"),
+        "instantiated proc body should retain namespace const symbols for semantics"
     );
 }
 
@@ -1556,8 +1617,17 @@ outs 1
 sample:
   out1 = in1
 "#;
-    let result = parse_program(src);
-    assert!(result.is_err(), "expected count prefix mismatch error");
+    let program = parse_program(src).expect("parse should preserve count prefix for semantics");
+    let ins = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Ins(v) => Some(v),
+            _ => None,
+        })
+        .expect("ins block");
+    assert_eq!(ins.len(), 1);
+    assert_deferred_int_count(&ins.deferred_count, 2);
 }
 
 #[test]
@@ -1590,11 +1660,8 @@ sample { out1 = in1 + in2 + in3 + param1 + param2 + param3 + param4; out2 = 0.0 
             _ => None,
         })
         .expect("ins block");
-    assert_eq!(ins.len(), 3);
-    assert_eq!(ins[0].name, "in1");
-    assert_eq!(ins[1].name, "in2");
-    assert_eq!(ins[2].name, "in3");
-    assert!(ins.iter().all(|d| d.ty.is_none()));
+    assert!(ins.is_empty());
+    assert_deferred_int_count(&ins.deferred_count, 3);
 
     let outs = program
         .blocks
@@ -1604,10 +1671,8 @@ sample { out1 = in1 + in2 + in3 + param1 + param2 + param3 + param4; out2 = 0.0 
             _ => None,
         })
         .expect("outs block");
-    assert_eq!(outs.len(), 2);
-    assert_eq!(outs[0].name, "out1");
-    assert_eq!(outs[1].name, "out2");
-    assert!(outs.iter().all(|d| d.ty.is_none()));
+    assert!(outs.is_empty());
+    assert_deferred_int_count(&outs.deferred_count, 2);
 
     let params = program
         .blocks
@@ -1617,12 +1682,8 @@ sample { out1 = in1 + in2 + in3 + param1 + param2 + param3 + param4; out2 = 0.0 
             _ => None,
         })
         .expect("params block");
-    assert_eq!(params.len(), 4);
-    assert_eq!(params[0].name, "param1");
-    assert_eq!(params[1].name, "param2");
-    assert_eq!(params[2].name, "param3");
-    assert_eq!(params[3].name, "param4");
-    assert!(params.iter().all(|d| d.ty.is_none() && d.default.is_none()));
+    assert!(params.is_empty());
+    assert_deferred_int_count(&params.deferred_count, 4);
 }
 
 #[test]
@@ -1644,9 +1705,12 @@ sample { out1 = 0.0 }
             _ => None,
         })
         .expect("ins block");
-    assert_eq!(ins.len(), 2);
-    assert_eq!(ins[0].ty, Some(DeclType::Scalar(PrimitiveType::F64)));
-    assert_eq!(ins[1].ty, Some(DeclType::Scalar(PrimitiveType::F64)));
+    assert!(ins.is_empty());
+    assert_deferred_int_count(&ins.deferred_count, 2);
+    assert_eq!(
+        ins.deferred_default_ty,
+        Some(DeclType::Scalar(PrimitiveType::F64))
+    );
 
     let outs = program
         .blocks
@@ -1656,8 +1720,12 @@ sample { out1 = 0.0 }
             _ => None,
         })
         .expect("outs block");
-    assert_eq!(outs.len(), 1);
-    assert_eq!(outs[0].ty, Some(DeclType::Scalar(PrimitiveType::I32)));
+    assert!(outs.is_empty());
+    assert_deferred_int_count(&outs.deferred_count, 1);
+    assert_eq!(
+        outs.deferred_default_ty,
+        Some(DeclType::Scalar(PrimitiveType::I32))
+    );
 
     let params = program
         .blocks
@@ -1667,11 +1735,12 @@ sample { out1 = 0.0 }
             _ => None,
         })
         .expect("params block");
-    assert_eq!(params.len(), 3);
-    assert_eq!(params[0].ty, Some(DeclType::Scalar(PrimitiveType::Bool)));
-    assert_eq!(params[1].ty, Some(DeclType::Scalar(PrimitiveType::Bool)));
-    assert_eq!(params[2].ty, Some(DeclType::Scalar(PrimitiveType::Bool)));
-    assert!(params.iter().all(|d| d.default.is_none()));
+    assert!(params.is_empty());
+    assert_deferred_int_count(&params.deferred_count, 3);
+    assert_eq!(
+        params.deferred_default_ty,
+        Some(DeclType::Scalar(PrimitiveType::Bool))
+    );
 
     let buffers = program
         .blocks
@@ -1681,14 +1750,18 @@ sample { out1 = 0.0 }
             _ => None,
         })
         .expect("buffers block");
-    assert_eq!(buffers.len(), 2);
-    assert!(buffers.iter().all(|b| matches!(
-        b.ty.as_ref().map(|t| (&t.elem, &t.channels)),
+    assert!(buffers.is_empty());
+    assert_deferred_int_count(&buffers.deferred_count, 2);
+    assert!(matches!(
+        buffers
+            .deferred_default_ty
+            .as_ref()
+            .map(|t| (&t.elem, &t.channels)),
         Some((
             BufferElemType::Primitive(PrimitiveType::F32),
             crate::ast::BufferChannels::Mono
         ))
-    )));
+    ));
 }
 
 #[test]
@@ -1713,15 +1786,12 @@ sample { out1 = p(0.5, 0.25) }
             _ => None,
         })
         .expect("expected a proc block");
-    assert_eq!(proc.ins.len(), 2);
-    assert_eq!(proc.ins[0].name, "in1");
-    assert_eq!(proc.ins[1].name, "in2");
-    assert_eq!(proc.outs.len(), 1);
-    assert_eq!(proc.outs[0].name, "out1");
-    assert_eq!(proc.params.len(), 1);
-    assert_eq!(proc.params[0].name, "param1");
-    assert_eq!(proc.params[0].ty, None);
-    assert_eq!(proc.params[0].default, None);
+    assert!(proc.ins.is_empty());
+    assert!(proc.outs.is_empty());
+    assert!(proc.params.is_empty());
+    assert_deferred_int_count(&proc.ins_deferred_count, 2);
+    assert_deferred_int_count(&proc.outs_deferred_count, 1);
+    assert_deferred_int_count(&proc.params_deferred_count, 1);
 }
 
 #[test]
@@ -1792,10 +1862,8 @@ sample { out1 = 0.0 }
             _ => None,
         })
         .expect("buffers count block");
-    assert_eq!(buffers_count.len(), 3);
-    assert_eq!(buffers_count[0].name, "buf1");
-    assert_eq!(buffers_count[1].name, "buf2");
-    assert_eq!(buffers_count[2].name, "buf3");
+    assert!(buffers_count.is_empty());
+    assert_deferred_int_count(&buffers_count.deferred_count, 3);
 }
 
 #[test]
@@ -1814,10 +1882,11 @@ sample { out1 = 0.0 }
             _ => None,
         })
         .expect("buffers block");
-    assert_eq!(buffers.len(), 3);
-    assert_eq!(buffers[0].name, "buf1");
-    assert_eq!(buffers[1].name, "buf2");
-    assert_eq!(buffers[2].name, "buf3");
+    assert!(buffers.is_empty());
+    assert!(matches!(
+        buffers.deferred_count.as_ref(),
+        Some(Expr::Var { name, .. }) if name == "N"
+    ));
 }
 
 #[test]
@@ -1841,21 +1910,29 @@ sample:
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Proc(p) => Some(p),
+            Block::Namespace(ns) if ns.name == "DSP" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Proc(p) if p.name == "Delay" => Some(p),
+                    _ => None,
+                })
+            }
             _ => None,
         })
         .expect("proc block");
-    assert_eq!(proc.buffers.len(), 3);
-    assert!(proc.buffers.iter().enumerate().all(|(idx, b)| {
-        b.name == format!("buf{}", idx + 1)
-            && matches!(
-                b.ty.as_ref().map(|t| (&t.elem, &t.channels)),
-                Some((
-                    BufferElemType::Primitive(PrimitiveType::F32),
-                    crate::ast::BufferChannels::Mono
-                ))
-            )
-    }));
+    assert!(proc.buffers.is_empty());
+    assert!(matches!(
+        proc.buffers_deferred_count.as_ref(),
+        Some(Expr::Var { name, .. }) if name == "N"
+    ));
+    assert!(matches!(
+        proc.buffers_deferred_default_ty
+            .as_ref()
+            .map(|t| (&t.elem, &t.channels)),
+        Some((
+            BufferElemType::Primitive(PrimitiveType::F32),
+            crate::ast::BufferChannels::Mono
+        ))
+    ));
 }
 
 #[test]
@@ -2610,7 +2687,7 @@ sample:
 }
 
 #[test]
-fn parses_namespace_blocks_and_flattens_symbol_names() {
+fn parses_namespace_blocks_and_preserves_namespace_items() {
     let src = r#"
 namespace A:
   struct S:
@@ -2624,30 +2701,26 @@ sample:
   out1 = 0.0
 "#;
     let program = parse_program(src).expect("namespace source should parse");
-    let mut struct_names = program
+    let ns = program
         .blocks
         .iter()
-        .filter_map(|b| match b {
-            Block::Struct(s) => Some(s.name.clone()),
+        .find_map(|b| match b {
+            Block::Namespace(ns) if ns.name == "A" => Some(ns),
             _ => None,
         })
-        .collect::<Vec<_>>();
-    struct_names.sort();
-    assert_eq!(struct_names, vec!["A::S".to_owned()]);
-
-    let mut def_names = program
-        .blocks
+        .expect("A namespace");
+    assert!(ns
+        .items
         .iter()
-        .filter_map(|b| match b {
-            Block::Def(d) => Some(d.name.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    def_names.sort();
-    assert_eq!(
-        def_names,
-        vec!["A::B::run".to_owned(), "A::make".to_owned()]
-    );
+        .any(|item| matches!(item, NamespaceItem::Struct(s) if s.name == "S")));
+    assert!(ns
+        .items
+        .iter()
+        .any(|item| matches!(item, NamespaceItem::Def(d) if d.name == "make")));
+    assert!(ns.items.iter().any(|item| {
+        matches!(item, NamespaceItem::Namespace(nested) if nested.name == "B"
+            && nested.items.iter().any(|nested_item| matches!(nested_item, NamespaceItem::Def(d) if d.name == "run")))
+    }));
 }
 
 #[test]
@@ -2660,15 +2733,18 @@ sample:
   out1 = 0.0
 "#;
     let program = parse_program(src).expect("namespace path form should parse");
-    let def_name = program
+    let ns = program
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Def(d) => Some(d.name.clone()),
+            Block::Namespace(ns) if ns.name == "Top::Inner" => Some(ns),
             _ => None,
         })
-        .expect("def");
-    assert_eq!(def_name, "Top::Inner::run");
+        .expect("namespace");
+    assert!(ns
+        .items
+        .iter()
+        .any(|item| matches!(item, NamespaceItem::Def(d) if d.name == "run")));
 }
 
 #[test]
@@ -2686,16 +2762,19 @@ sample:
 "#;
     let program = parse_program(src).expect("templated namespace source should parse");
 
-    let struct_names = program
+    let ns = program
         .blocks
         .iter()
-        .filter_map(|b| match b {
-            Block::Struct(s) => Some(s.name.clone()),
+        .find_map(|b| match b {
+            Block::Namespace(ns) if ns.name == "Data" => Some(ns),
             _ => None,
         })
-        .collect::<Vec<_>>();
-    assert_eq!(struct_names.len(), 1);
-    assert!(struct_names[0].contains("__nsinst"));
+        .expect("Data namespace");
+    assert_eq!(ns.params.len(), 2);
+    assert!(ns
+        .items
+        .iter()
+        .any(|item| matches!(item, NamespaceItem::Struct(s) if s.name == "Data")));
 
     let init = program
         .blocks
@@ -2721,8 +2800,8 @@ sample:
         },
         _ => panic!("expected second init statement to be assignment"),
     };
-    assert_eq!(first_name, second_name);
-    assert!(first_name.contains("__nsinst"));
+    assert_eq!(first_name, "Data<SR, 1>::Data");
+    assert_eq!(second_name, "Data<S = SR, C = 1>::Data");
     assert!(first_name.ends_with("::Data"));
 }
 
@@ -2741,6 +2820,16 @@ sample:
   out1 = 0.0
 "#;
     let program = parse_program(src).expect("namespace alias should parse");
+    let alias = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::NamespaceAlias(alias) if alias.name == "D" => Some(alias),
+            _ => None,
+        })
+        .expect("namespace alias");
+    assert_eq!(alias.target[0].name, "Data");
+    assert_eq!(alias.target[0].args.as_ref().map(Vec::len), Some(2));
     let init = program
         .blocks
         .iter()
@@ -2756,7 +2845,7 @@ sample:
         },
         _ => panic!("expected assignment"),
     };
-    assert!(call_name.contains("__nsinst"));
+    assert_eq!(call_name, "D::Data");
     assert!(call_name.ends_with("::Data"));
 }
 
@@ -2789,7 +2878,7 @@ sample:
         },
         _ => panic!("expected assignment"),
     };
-    assert!(call_name.contains("__nsinst"));
+    assert_eq!(call_name, "Data::Data");
     assert!(call_name.ends_with("::Data"));
 }
 
@@ -2813,10 +2902,13 @@ sample:
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Def(d) if d.name == "A::make" => Some(d),
+            Block::Namespace(ns) if ns.name == "A" => ns.items.iter().find_map(|item| match item {
+                NamespaceItem::Def(d) if d.name == "make" => Some(d),
+                _ => None,
+            }),
             _ => None,
         })
-        .expect("A::make");
+        .expect("make def");
     let call_name = match &make_def.body[0] {
         Stmt::Assign { expr, .. } => match expr {
             Expr::UserCall { name, .. } => name.clone(),
@@ -2824,8 +2916,7 @@ sample:
         },
         _ => panic!("expected assignment"),
     };
-    assert!(call_name.starts_with("A::Data__nsinst"));
-    assert!(call_name.ends_with("::X"));
+    assert_eq!(call_name, "D::X");
 }
 
 #[test]
@@ -2848,10 +2939,13 @@ sample:
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Def(d) if d.name == "A::make" => Some(d),
+            Block::Namespace(ns) if ns.name == "A" => ns.items.iter().find_map(|item| match item {
+                NamespaceItem::Def(d) if d.name == "make" => Some(d),
+                _ => None,
+            }),
             _ => None,
         })
-        .expect("A::make");
+        .expect("make def");
     let (call_name, type_args) = match &make_def.body[0] {
         Stmt::Assign { expr, .. } => match expr {
             Expr::UserCall {
@@ -2861,8 +2955,7 @@ sample:
         },
         _ => panic!("expected assignment"),
     };
-    assert!(call_name.starts_with("A::Data__nsinst"));
-    assert!(call_name.ends_with("::Store"));
+    assert_eq!(call_name, "D::Store");
     assert_eq!(type_args, vec![CallTypeArg::Primitive(PrimitiveType::F64)]);
 }
 
@@ -3591,11 +3684,20 @@ sample {
 
     let program = parse_program_file(&main).expect("parse_program_file should succeed");
     assert!(
-        program.blocks.iter().any(|b| matches!(b, Block::Struct(_))),
+        program
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Namespace(ns) if ns.name == "DSP"
+            && ns.items.iter().any(|item| matches!(item, NamespaceItem::Struct(_))))),
         "expected imported struct to be present"
     );
     assert!(
-        program.blocks.iter().any(|b| matches!(b, Block::Def(_))),
+        program
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Namespace(ns) if ns.name == "DSP"
+            && ns.items.iter().any(|item| matches!(item, NamespaceItem::Def(_)))))
+            && program.blocks.iter().any(|b| matches!(b, Block::Def(_))),
         "expected imported defs to be present"
     );
     fs::remove_dir_all(&dir).ok();
@@ -3639,7 +3741,11 @@ sample {
 "#;
 
     let program = parse_program_with_path(overlay, &main).expect("overlay parse should succeed");
-    assert!(program.blocks.iter().any(|b| matches!(b, Block::Struct(_))));
+    assert!(program
+        .blocks
+        .iter()
+        .any(|b| matches!(b, Block::Namespace(ns) if ns.name == "DSP"
+        && ns.items.iter().any(|item| matches!(item, NamespaceItem::Struct(_))))));
     assert!(program.blocks.iter().any(|b| matches!(b, Block::Def(_))));
     fs::remove_dir_all(&dir).ok();
 }
@@ -3693,7 +3799,7 @@ def twice(x) { return x + x }
     };
     assert!(matches!(
         args[0].expr,
-        Expr::Number { value: n, .. } if (n - 0.25).abs() < 1e-9
+        Expr::Var { ref name, .. } if name == "SCALE"
     ));
     fs::remove_dir_all(&dir).ok();
 }
@@ -3781,8 +3887,11 @@ sample { out1 = twice(SCALE) }
         .expect("sample block");
     assert!(program.blocks.iter().any(|b| matches!(b, Block::Def(_))));
     assert!(
-        !program.blocks.iter().any(|b| matches!(b, Block::Const(_))),
-        "top-level consts should be folded away after rewrite"
+        program
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Const(decl) if decl.name == "SCALE")),
+        "top-level consts should be retained for semantics"
     );
     let Stmt::Assign { expr, .. } = &sample[0] else {
         panic!("expected sample assignment");
@@ -3792,7 +3901,7 @@ sample { out1 = twice(SCALE) }
     };
     assert!(matches!(
         args[0].expr,
-        Expr::Number { value: n, .. } if (n - 0.25).abs() < 1e-9
+        Expr::Var { ref name, .. } if name == "SCALE"
     ));
     fs::remove_dir_all(&dir).ok();
 }
@@ -3863,15 +3972,18 @@ sample { out1 = SCALE }
         })
         .expect("sample block");
     assert!(
-        !program.blocks.iter().any(|b| matches!(b, Block::Const(_))),
-        "included top-level consts should be folded away after rewrite"
+        program
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Const(decl) if decl.name == "SCALE")),
+        "included top-level consts should be retained for semantics"
     );
     let Stmt::Assign { expr, .. } = &sample[0] else {
         panic!("expected sample assignment");
     };
     assert!(matches!(
         expr,
-        Expr::Number { value: n, .. } if (*n - 0.25).abs() < 1e-9
+        Expr::Var { name, .. } if name == "SCALE"
     ));
     fs::remove_dir_all(&dir).ok();
 }
@@ -3932,7 +4044,8 @@ sample { out1 = std::export_math::sin(0.5) + std::export_math::exp(0.0) }
         program
             .blocks
             .iter()
-            .any(|b| matches!(b, Block::Def(d) if d.name.contains("std::export_math::sin"))),
+            .any(|b| matches!(b, Block::Namespace(ns) if ns.name == "std::export_math"
+                && ns.items.iter().any(|item| matches!(item, NamespaceItem::Def(d) if d.name == "sin")))),
         "expected std/export_math declarations to be imported"
     );
 }
@@ -3968,7 +4081,8 @@ sample {
         program
             .blocks
             .iter()
-            .any(|b| matches!(b, Block::Struct(s) if s.name.contains("std::data") && s.name.ends_with("::Data"))),
+            .any(|b| matches!(b, Block::Namespace(ns) if ns.name == "std::data"
+                && ns.items.iter().any(|item| matches!(item, NamespaceItem::Struct(s) if s.name == "Data")))),
         "expected std/data declarations to be imported"
     );
 }
@@ -4275,7 +4389,8 @@ sample {
         program
             .blocks
             .iter()
-            .any(|b| matches!(b, Block::Def(d) if d.name.contains("std::lookup::read"))),
+            .any(|b| matches!(b, Block::Namespace(ns) if ns.name == "std::lookup"
+                && ns.items.iter().any(|item| matches!(item, NamespaceItem::Def(d) if d.name == "read")))),
         "expected std/lookup declarations to be imported"
     );
 }
@@ -4684,25 +4799,18 @@ sample:
 "#;
     let program = parse_program(src).expect("2-level nested namespace template should parse");
 
-    // There should be exactly one struct emitted (flattened from the nested namespace)
-    let struct_names: Vec<_> = program
+    let outer = program
         .blocks
         .iter()
-        .filter_map(|b| match b {
-            Block::Struct(s) => Some(s.name.clone()),
+        .find_map(|b| match b {
+            Block::Namespace(ns) if ns.name == "Outer" => Some(ns),
             _ => None,
         })
-        .collect();
-    assert_eq!(
-        struct_names.len(),
-        1,
-        "expected 1 struct, got {struct_names:?}"
-    );
-    assert!(
-        struct_names[0].contains("__nsinst"),
-        "struct name should contain __nsinst: {}",
-        struct_names[0]
-    );
+        .expect("Outer namespace");
+    assert!(outer.items.iter().any(|item| {
+        matches!(item, NamespaceItem::Namespace(inner) if inner.name == "Inner"
+            && inner.items.iter().any(|nested| matches!(nested, NamespaceItem::Struct(s) if s.name == "S")))
+    }));
 
     // The init block should have a constructor call referencing the flattened struct
     let init = program
@@ -4721,14 +4829,7 @@ sample:
         },
         other => panic!("expected assignment, got {other:?}"),
     };
-    assert!(
-        call_name.contains("__nsinst"),
-        "call name should contain __nsinst: {call_name}"
-    );
-    assert!(
-        call_name.ends_with("::S"),
-        "call name should end with ::S: {call_name}"
-    );
+    assert_eq!(call_name, "Outer<10>::Inner<20>::S");
 }
 
 #[test]
@@ -4747,20 +4848,21 @@ sample:
 "#;
     let program = parse_program(src).expect("3-level nested namespace template should parse");
 
-    let struct_names: Vec<_> = program
+    let l1 = program
         .blocks
         .iter()
-        .filter_map(|b| match b {
-            Block::Struct(s) => Some(s.name.clone()),
+        .find_map(|b| match b {
+            Block::Namespace(ns) if ns.name == "L1" => Some(ns),
             _ => None,
         })
-        .collect();
-    assert_eq!(
-        struct_names.len(),
-        1,
-        "expected 1 struct, got {struct_names:?}"
-    );
-    assert!(struct_names[0].contains("__nsinst"));
+        .expect("L1 namespace");
+    assert!(l1.items.iter().any(|item| {
+        matches!(item, NamespaceItem::Namespace(l2) if l2.name == "L2"
+            && l2.items.iter().any(|nested| {
+                matches!(nested, NamespaceItem::Namespace(l3) if l3.name == "L3"
+                    && l3.items.iter().any(|leaf| matches!(leaf, NamespaceItem::Struct(s) if s.name == "S")))
+            }))
+    }));
 
     let init = program
         .blocks
@@ -4777,11 +4879,7 @@ sample:
         },
         other => panic!("expected assignment, got {other:?}"),
     };
-    assert!(call_name.contains("__nsinst"));
-    assert!(
-        call_name.ends_with("::S"),
-        "call name should end with ::S: {call_name}"
-    );
+    assert_eq!(call_name, "L1<10>::L2<20>::L3<30>::S");
 }
 
 #[test]
@@ -4800,20 +4898,18 @@ sample:
     let program =
         parse_program(src).expect("inner template using outer const as default should parse");
 
-    let struct_names: Vec<_> = program
+    let outer = program
         .blocks
         .iter()
-        .filter_map(|b| match b {
-            Block::Struct(s) => Some(s.name.clone()),
+        .find_map(|b| match b {
+            Block::Namespace(ns) if ns.name == "Outer" => Some(ns),
             _ => None,
         })
-        .collect();
-    assert_eq!(
-        struct_names.len(),
-        1,
-        "expected 1 struct, got {struct_names:?}"
-    );
-    assert!(struct_names[0].contains("__nsinst"));
+        .expect("Outer namespace");
+    assert!(outer.items.iter().any(|item| {
+        matches!(item, NamespaceItem::Namespace(inner) if inner.name == "Inner"
+            && matches!(inner.params[0].default, Expr::Var { ref name, .. } if name == "S"))
+    }));
 
     let init = program
         .blocks
@@ -4830,11 +4926,7 @@ sample:
         },
         other => panic!("expected assignment, got {other:?}"),
     };
-    assert!(call_name.contains("__nsinst"));
-    assert!(
-        call_name.ends_with("::Buf"),
-        "call name should end with ::Buf: {call_name}"
-    );
+    assert_eq!(call_name, "Outer<48000>::Inner::Buf");
 }
 
 #[test]
@@ -4853,20 +4945,10 @@ sample:
 "#;
     let program = parse_program(src).expect("nested namespace dedup should parse");
 
-    // Dedup: only one struct should be emitted for the same template args
-    let struct_names: Vec<_> = program
+    assert!(program
         .blocks
         .iter()
-        .filter_map(|b| match b {
-            Block::Struct(s) => Some(s.name.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        struct_names.len(),
-        1,
-        "dedup should produce exactly 1 struct, got {struct_names:?}"
-    );
+        .any(|b| matches!(b, Block::Namespace(ns) if ns.name == "Outer")));
 
     // Both constructor calls should reference the same struct name
     let init = program
@@ -4894,7 +4976,7 @@ sample:
     };
     assert_eq!(
         name_a, name_b,
-        "both calls should reference the same deduped struct"
+        "both calls should preserve the same namespace reference"
     );
 }
 
@@ -4918,7 +5000,12 @@ sample:
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Struct(s) if s.name.ends_with("::Store") => Some(s),
+            Block::Namespace(ns) if ns.name == "Data" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Struct(s) if s.name == "Store" => Some(s),
+                    _ => None,
+                })
+            }
             _ => None,
         })
         .expect("Store struct");
@@ -4958,14 +5045,7 @@ sample:
         },
         other => panic!("expected assignment, got {other:?}"),
     };
-    assert!(
-        call_name.contains("__nsinst"),
-        "call name should contain __nsinst: {call_name}"
-    );
-    assert!(
-        call_name.ends_with("::Store"),
-        "call name should end with ::Store: {call_name}"
-    );
+    assert_eq!(call_name, "Data<1024>::Store");
     assert_eq!(call_type_args.len(), 1);
     assert!(matches!(
         call_type_args[0],
@@ -4996,17 +5076,17 @@ sample:
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Proc(p) if p.name.ends_with("::Delay") => Some(p),
+            Block::Namespace(ns) if ns.name == "FX" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Proc(p) if p.name == "Delay" => Some(p),
+                    _ => None,
+                })
+            }
             _ => None,
         })
         .expect("Delay proc");
 
     assert_eq!(proc_def.type_params, vec!["T".to_owned()]);
-    assert!(
-        proc_def.name.contains("__nsinst"),
-        "proc name should contain __nsinst: {}",
-        proc_def.name
-    );
 }
 
 #[test]
@@ -5236,15 +5316,19 @@ sample:
         .expect("Container proc");
     assert_eq!(container.type_params, vec!["T".to_owned()]);
 
-    // Check that the Pair struct exists with the NS:: prefix
     let pair = program
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Struct(s) if s.name == "NS::Pair" => Some(s),
+            Block::Namespace(ns) if ns.name == "NS" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Struct(s) if s.name == "Pair" => Some(s),
+                    _ => None,
+                })
+            }
             _ => None,
         })
-        .expect("NS::Pair struct");
+        .expect("Pair struct");
     assert_eq!(pair.type_params, vec!["T".to_owned()]);
 }
 
@@ -5270,8 +5354,16 @@ sample {
     let program = parse_program(src).expect("const rewriting should succeed");
 
     assert!(
-        !program.blocks.iter().any(|b| matches!(b, Block::Const(_))),
-        "const declarations should be stripped from the rewritten program"
+        program
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Const(decl) if decl.name == "N")),
+        "top-level scalar const declarations should be retained for semantics"
+    );
+    assert!(
+        program.blocks.iter().any(|b| matches!(b, Block::Namespace(ns) if ns.name == "NS"
+            && ns.items.iter().any(|item| matches!(item, NamespaceItem::Const(decl) if decl.name == "M")))),
+        "namespace scalar const declarations should be retained for semantics"
     );
 
     let events = program
@@ -5286,27 +5378,34 @@ sample {
         events[0].params[0].ty,
         EventParamType::Array {
             elem: PrimitiveType::F32,
-            size: Expr::Int { value: 4, .. },
+            size: Expr::Var { ref name, .. },
         }
+            if name == "N"
     ));
 
     let def = program
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Def(d) if d.name == "NS::value" => Some(d),
+            Block::Namespace(ns) if ns.name == "NS" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Def(d) if d.name == "value" => Some(d),
+                    _ => None,
+                })
+            }
             _ => None,
         })
-        .expect("NS::value def");
+        .expect("value def");
     assert!(matches!(
         def.body[0],
         Stmt::Return {
             expr: Expr::Cast {
                 to: PrimitiveType::F32,
+                ref expr,
                 ..
             },
             ..
-        }
+        } if matches!(expr.as_ref(), Expr::Var { name, .. } if name == "M")
     ));
 
     let sample = program
@@ -5319,13 +5418,288 @@ sample {
         .expect("sample block");
     assert_eq!(
         sample.body.len(),
-        1,
-        "local const should be stripped from the sample body"
+        2,
+        "local const should be retained for semantics"
     );
+    assert!(matches!(
+        &sample.body[0],
+        Stmt::Const {
+            decl: ConstDecl {
+                name,
+                expr: Expr::Var { name: expr_name, .. },
+                ..
+            },
+            ..
+        } if name == "X" && expr_name == "N"
+    ));
+    assert!(matches!(
+        &sample.body[1],
+        Stmt::Assign {
+            expr:
+                Expr::Binary {
+                    lhs,
+                    ..
+                },
+            ..
+        } if expr_contains_var_with_suffix(lhs, "X")
+    ));
 }
 
 #[test]
-fn rewrites_qualified_namespace_const_paths_to_compile_time_values() {
+fn preserves_top_level_const_arrays_after_scalar_const_rewrite() {
+    let src = r#"
+const N = 3
+const Table: f32[N] = [0.25, 0.5, 1.0]
+"#;
+
+    let program = parse_program(src).expect("top-level const array should parse");
+    assert!(program
+        .blocks
+        .iter()
+        .any(|block| matches!(block, Block::Const(decl) if decl.name == "N")));
+    let table = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Const(decl) if decl.name == "Table" => Some(decl),
+            _ => None,
+        })
+        .expect("const array declaration should be retained");
+    match &table.ty {
+        Some(ConstType::Array { elem, size }) => {
+            assert_eq!(*elem, PrimitiveType::F32);
+            assert!(matches!(size, Expr::Var { name, .. } if name == "N"));
+        }
+        other => panic!("expected typed const array, got {other:?}"),
+    }
+    assert!(matches!(
+        &table.expr,
+        Expr::ArrayLiteral { values, .. } if values.len() == 3
+    ));
+}
+
+#[test]
+fn parses_const_array_slice_type_annotations() {
+    let src = r#"
+const Table: f32[] = [0.25, 0.5, 1.0]
+
+namespace NS:
+  const Flags: bool[] = [true, false]
+"#;
+
+    let program = parse_program(src).expect("const array slice annotations should parse");
+    let table = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Const(decl) if decl.name == "Table" => Some(decl),
+            _ => None,
+        })
+        .expect("top-level const array");
+    assert!(matches!(
+        &table.ty,
+        Some(ConstType::Slice { elem }) if *elem == PrimitiveType::F32
+    ));
+
+    let flags = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Namespace(ns) if ns.name == "NS" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Const(decl) if decl.name == "Flags" => Some(decl),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("namespace const array");
+    assert!(matches!(
+        &flags.ty,
+        Some(ConstType::Slice { elem }) if *elem == PrimitiveType::Bool
+    ));
+}
+
+#[test]
+fn parses_top_level_const_def() {
+    let src = r#"
+const def twice(x: f32) -> f32:
+  return x * 2.0
+
+const Table: f32[2] = [twice(0.5), twice(1.0)]
+"#;
+
+    let program = parse_program(src).expect("const def should parse");
+    let def = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Def(def) if def.name == "twice" => Some(def),
+            _ => None,
+        })
+        .expect("const def should be retained for semantics");
+    assert!(def.is_const);
+    assert_eq!(def.params.len(), 1);
+    assert!(matches!(
+        def.return_ty,
+        Some(FnReturnType::Scalar(FnReturnScalarType::Primitive(
+            PrimitiveType::F32
+        )))
+    ));
+}
+
+#[test]
+fn parses_const_def_array_return_type() {
+    let src = r#"
+const def table() -> f32[4]:
+  return [0.0, 0.25, 0.5, 0.75]
+"#;
+
+    let program = parse_program(src).expect("const def array return should parse");
+    let def = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Def(def) if def.name == "table" => Some(def),
+            _ => None,
+        })
+        .expect("const def should be retained for semantics");
+    assert!(def.is_const);
+    assert!(matches!(
+        def.return_ty,
+        Some(FnReturnType::Array {
+            elem: PrimitiveType::F32,
+            size: Expr::Int { value: 4, .. },
+        })
+    ));
+}
+
+#[test]
+fn qualifies_namespace_const_array_references() {
+    let src = r#"
+namespace LUT:
+  const Table = [1, 2, 3]
+
+outs:
+  out1
+
+sample:
+  out1 = LUT::Table[0]
+"#;
+
+    let program = parse_program(src).expect("namespace const array should parse");
+    assert!(program.blocks.iter().any(|block| {
+        matches!(block, Block::Namespace(ns) if ns.name == "LUT"
+            && ns.items.iter().any(|item| matches!(item, NamespaceItem::Const(decl) if decl.name == "Table")))
+    }));
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+    match &sample.body[0] {
+        Stmt::Assign { expr, .. } => {
+            assert!(matches!(expr, Expr::Index { base, .. } if base == "LUT::Table"));
+        }
+        other => panic!("expected assignment, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_index_and_slice_on_namespace_template_const_references() {
+    let src = r#"
+namespace LUT<N = 2>:
+  const Table: f32[N] = [0.5, 1.0]
+
+outs:
+  out1
+
+sample:
+  out1 = LUT<2>::Table[1]
+  dst[:] = LUT<2>::Table[:]
+"#;
+
+    let program = parse_program(src).expect("namespace-template const array refs should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
+        })
+        .expect("sample block");
+
+    match &sample.body[0] {
+        Stmt::Assign { expr, .. } => {
+            assert!(matches!(expr, Expr::Index { base, .. } if base == "LUT<2>::Table"));
+        }
+        other => panic!("expected index assignment, got {other:?}"),
+    }
+    match &sample.body[1] {
+        Stmt::Assign { target, expr, .. } => {
+            assert!(
+                matches!(target, AssignTarget::Slice { base, .. } if base == "dst"),
+                "expected slice assignment target, got {target:?}"
+            );
+            assert!(matches!(expr, Expr::Slice { base, .. } if base == "LUT<2>::Table"));
+        }
+        other => panic!("expected slice assignment, got {other:?}"),
+    }
+}
+
+#[test]
+fn preserves_proc_local_const_arrays_for_semantic_rejection() {
+    let src = r#"
+proc Voice:
+  const Table = [1, 2]
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("proc-local const arrays should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Proc(proc) if proc.name == "Voice" => Some(proc),
+            _ => None,
+        })
+        .expect("Voice proc");
+    assert!(matches!(
+        proc.consts.as_slice(),
+        [ConstDecl {
+            name,
+            expr: Expr::ArrayLiteral { values, .. },
+            ..
+        }] if name == "Table" && values.len() == 2
+    ));
+}
+
+#[test]
+fn rejects_proc_local_const_defs() {
+    let src = r#"
+proc Voice:
+  const def gain() -> f32:
+    return 1.0
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+"#;
+
+    let errors = parse_program(src).expect_err("proc-local const defs should be rejected");
+    assert!(errors.iter().any(|diag| diag
+        .message
+        .contains("const defs are only supported at top-level and namespace scope")));
+}
+
+#[test]
+fn qualifies_qualified_namespace_const_paths_for_semantics() {
     let src = r#"
 import std/convolution
 
@@ -5352,14 +5726,14 @@ sample {
 
     for stmt in &sample.body {
         assert!(
-            !stmt_contains_var_with_suffix(stmt, "::HopSize"),
-            "expected HopSize namespace const paths to fold away, got {stmt:?}"
+            stmt_contains_var_with_suffix(stmt, "::HopSize"),
+            "expected HopSize namespace const paths to be retained, got {stmt:?}"
         );
     }
 }
 
 #[test]
-fn rewrites_relative_nested_namespace_const_paths_from_current_namespace() {
+fn qualifies_relative_nested_namespace_const_paths_from_current_namespace() {
     let src = r#"
 namespace Outer:
   namespace Inner:
@@ -5383,15 +5757,20 @@ sample {
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Def(def) if def.name == "Outer::read" => Some(def),
+            Block::Namespace(ns) if ns.name == "Outer" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Def(def) if def.name == "read" => Some(def),
+                    _ => None,
+                })
+            }
             _ => None,
         })
-        .expect("Outer::read def");
+        .expect("read def");
 
     for stmt in &def.body {
         assert!(
-            !stmt_contains_var_with_suffix(stmt, "Inner::VALUE"),
-            "expected relative nested namespace const path to fold away, got {stmt:?}"
+            stmt_contains_var_with_suffix(stmt, "Inner::VALUE"),
+            "expected relative nested namespace const path to be retained, got {stmt:?}"
         );
     }
 }
@@ -5519,39 +5898,15 @@ sample:
         .blocks
         .iter()
         .find_map(|b| match b {
-            Block::Proc(p) if p.name.ends_with("::ZeroLatencyConvolver") => Some(p),
+            Block::Namespace(ns) if ns.name == "std::convolution" => {
+                ns.items.iter().find_map(|item| match item {
+                    NamespaceItem::Proc(p) if p.name == "ZeroLatencyConvolver" => Some(p),
+                    _ => None,
+                })
+            }
             _ => None,
         })
-        .expect("instantiated ZeroLatencyConvolver proc");
-
-    let init_calls: Vec<_> = zero_latency
-        .init
-        .body
-        .iter()
-        .filter_map(|stmt| match stmt {
-            Stmt::Assign {
-                target: AssignTarget::Var(name),
-                expr: Expr::UserCall {
-                    name: call_name, ..
-                },
-                ..
-            } => Some((name.clone(), call_name.clone())),
-            _ => None,
-        })
-        .collect();
-
-    assert!(
-        init_calls
-            .iter()
-            .any(|(name, call_name)| name == "td" && call_name.contains("::TimeDomainConvolver")),
-        "expected td ctor to be namespaced, got {init_calls:?}"
-    );
-    assert!(
-        init_calls
-            .iter()
-            .any(|(name, call_name)| name == "tail" && call_name.contains("::BlockConvolver")),
-        "expected tail ctor to be namespaced, got {init_calls:?}"
-    );
+        .expect("ZeroLatencyConvolver proc");
 
     let set_impulse = zero_latency
         .events
@@ -5839,21 +6194,16 @@ graph:
         .expect("graph block");
 
     assert_eq!(graph.edges.len(), 1);
-    assert!(matches!(
-        graph.edges[0].delay.as_ref(),
-        Some(Expr::Binary { op: BinaryOp::Add, lhs, rhs, .. })
-            if matches!(rhs.as_ref(), Expr::Int { value: 1, .. })
-                && matches!(
-                    lhs.as_ref(),
-                    Expr::Binary { op: BinaryOp::Add, lhs: inner_lhs, rhs: inner_rhs, .. }
-                        if matches!(inner_rhs.as_ref(), Expr::Int { value: 2, .. })
-                            && matches!(
-                                inner_lhs.as_ref(),
-                                Expr::Cast { to: PrimitiveType::I32, expr, .. }
-                                    if matches!(expr.as_ref(), Expr::Int { value: 1, .. })
-                            )
-                )
-    ));
+    assert!(
+        matches!(
+            graph.edges[0].delay.as_ref(),
+            Some(Expr::Binary { op: BinaryOp::Add, lhs, rhs, .. })
+                if matches!(rhs.as_ref(), Expr::Int { value: 1, .. })
+                    && matches!(lhs.as_ref(), Expr::Var { name, .. } if name == "DelayCfg<1>::LEN")
+        ),
+        "delay expr: {:?}",
+        graph.edges[0].delay
+    );
 }
 
 #[test]
@@ -6101,136 +6451,137 @@ fn graph_locations_capture_edge_and_endpoint_ranges() {
 }
 
 #[test]
-fn syntax_diagnostics_report_count_shorthand_span() {
+fn parses_count_shorthand_span_for_semantic_diagnostics() {
     let src = "outs 0\nsample:\n  out1 = 0.0\n";
-    let errors = parse_program(src).expect_err("invalid outs count should fail");
-    let diag = errors
+    let program = parse_program(src).expect("parse should preserve invalid count for semantics");
+    let outs = program
+        .blocks
         .iter()
-        .find(|diag| {
-            diag.message
-                .contains("outs count shorthand must be greater than zero")
+        .find_map(|block| match block {
+            Block::Outs(outs) => Some(outs),
+            _ => None,
         })
-        .expect("missing outs count diagnostic");
+        .expect("outs block");
+    let loc = outs.deferred_count.as_ref().expect("deferred count").loc();
 
-    assert_eq!((diag.line, diag.column), (1, 6));
-    assert_eq!(diag.end_line, 1);
-    assert_eq!(diag.end_column, 7);
+    assert_eq!((loc.line, loc.column), (1, 6));
+    assert_eq!(loc.end_line, 1);
+    assert_eq!(loc.end_column, 7);
 }
 
 #[test]
-fn const_validation_diagnostics_report_expr_span() {
+fn preserves_invalid_scalar_const_expr_for_semantics() {
     let src = "const X = foo\nouts:\n  out1\nsample:\n  out1 = 0.0\n";
-    let errors = parse_program(src).expect_err("invalid const should fail");
-    let diag = errors
+    let program = parse_program(src).expect("parser should preserve invalid const for semantics");
+    let decl = program
+        .blocks
         .iter()
-        .find(|diag| {
-            diag.message
-                .contains("const 'X': expression references non-compile-time symbol 'foo'")
+        .find_map(|block| match block {
+            Block::Const(decl) if decl.name == "X" => Some(decl),
+            _ => None,
         })
-        .expect("missing const validation diagnostic");
+        .expect("const declaration should be retained");
+    let loc = decl.expr.loc();
 
-    assert_eq!((diag.line, diag.column), (1, 11));
-    assert_eq!(diag.end_line, 1);
-    assert_eq!(diag.end_column, 14);
+    assert_eq!((loc.line, loc.column), (1, 11));
+    assert_eq!(loc.end_line, 1);
+    assert_eq!(loc.end_column, 14);
 }
 
 #[test]
 fn duplicate_namespace_template_diagnostics_report_namespace_span() {
     let src = "namespace Config<T = 1>:\n  struct A:\n    x: f32\nnamespace Config<T = 1>:\n  struct B:\n    x: f32\n";
-    let errors = parse_program(src).expect_err("duplicate namespace template should fail");
-    let diag = errors
-        .iter()
-        .find(|diag| {
-            diag.message
-                .contains("duplicate namespace template 'Config'")
-        })
-        .expect("missing duplicate namespace template diagnostic");
-
-    assert_eq!((diag.line, diag.column), (4, 11));
-    assert_eq!(diag.end_line, 4);
+    let program = parse_program(src).expect("duplicate namespace templates are semantic errors");
+    assert_eq!(
+        program
+            .blocks
+            .iter()
+            .filter(|block| matches!(block, Block::Namespace(ns) if ns.name == "Config"))
+            .count(),
+        2
+    );
 }
 
 #[test]
 fn duplicate_namespace_alias_diagnostics_report_alias_span() {
     let src = "namespace Alias = std::math\nnamespace Alias = std::math\n";
-    let errors = parse_program(src).expect_err("duplicate namespace alias should fail");
-    let diag = errors
-        .iter()
-        .find(|diag| diag.message.contains("duplicate namespace alias 'Alias'"))
-        .expect("missing duplicate namespace alias diagnostic");
-
-    assert_eq!((diag.line, diag.column), (2, 11));
-    assert_eq!(diag.end_line, 2);
+    let program = parse_program(src).expect("duplicate namespace aliases are semantic errors");
+    assert_eq!(
+        program
+            .blocks
+            .iter()
+            .filter(|block| matches!(block, Block::NamespaceAlias(alias) if alias.name == "Alias"))
+            .count(),
+        2
+    );
 }
 
 #[test]
 fn unknown_namespace_template_diagnostics_report_use_site_span() {
     let src = "outs:\n  out1\nsample:\n  out1 = Missing<1>::X\n";
-    let errors = parse_program(src).expect_err("unknown namespace template should fail");
-    let diag = errors
+    let program = parse_program(src).expect("unknown namespace templates are semantic errors");
+    let sample = program
+        .blocks
         .iter()
-        .find(|diag| {
-            diag.message
-                .contains("unknown namespace template 'Missing'")
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
         })
-        .expect("missing unknown namespace template diagnostic");
-
-    assert_eq!(diag.file.as_deref(), Some("<memory>"));
-    assert_eq!((diag.line, diag.column), (4, 10));
-    assert_eq!(diag.end_line, 4);
+        .expect("sample");
+    assert!(
+        matches!(&sample.body[0], Stmt::Assign { expr: Expr::Var { name, .. }, .. } if name == "Missing<1>::X")
+    );
 }
 
 #[test]
 fn namespace_template_argument_count_diagnostics_report_extra_arg_span() {
     let src = "namespace Data<S = SR, C = 1>:\n  const X = 0.0\nouts:\n  out1\nsample:\n  out1 = Data<1, 2, 3>::X\n";
-    let errors = parse_program(src).expect_err("too many namespace template args should fail");
-    let diag = errors
+    let program = parse_program(src).expect("argument count is validated semantically");
+    let sample = program
+        .blocks
         .iter()
-        .find(|diag| {
-            diag.message
-                .contains("namespace template 'Data' received too many positional arguments")
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(sample),
+            _ => None,
         })
-        .expect("missing namespace template argument count diagnostic");
-
-    assert_eq!(diag.file.as_deref(), Some("<memory>"));
-    assert_eq!((diag.line, diag.column), (6, 21));
-    assert_eq!(diag.end_line, 6);
+        .expect("sample");
+    assert!(
+        matches!(&sample.body[0], Stmt::Assign { expr: Expr::Var { name, .. }, .. } if name == "Data<1, 2, 3>::X")
+    );
 }
 
 #[test]
 fn typed_decl_namespace_template_diagnostics_report_type_span() {
     let src = "params:\n  gain: Missing<1>::X = 0.0\nouts:\n  out1\nsample:\n  out1 = 0.0\n";
-    let errors = parse_program(src)
-        .expect_err("unknown namespace template in typed parameter declaration should fail");
-    let diag = errors
+    let program = parse_program(src).expect("unknown namespace templates are semantic errors");
+    let params = program
+        .blocks
         .iter()
-        .find(|diag| {
-            diag.message
-                .contains("unknown namespace template 'Missing'")
+        .find_map(|block| match block {
+            Block::Params(params) => Some(params),
+            _ => None,
         })
-        .expect("missing typed parameter namespace template diagnostic");
-
-    assert_eq!(diag.file.as_deref(), Some("<memory>"));
-    assert_eq!((diag.line, diag.column), (2, 9));
-    assert_eq!(diag.end_line, 2);
+        .expect("params");
+    assert!(
+        matches!(params.decls[0].ty, Some(DeclType::Generic(ref name)) if name == "Missing<1>::X")
+    );
 }
 
 #[test]
 fn local_typed_decl_namespace_template_diagnostics_report_type_span() {
     let src = "outs:\n  out1\ninit:\n  x: Missing<1>::X = 0.0\nsample:\n  out1 = 0.0\n";
-    let errors =
-        parse_program(src).expect_err("unknown namespace template in local typed decl should fail");
-    let diag = errors
+    let program = parse_program(src).expect("unknown namespace templates are semantic errors");
+    let init = program
+        .blocks
         .iter()
-        .find(|diag| {
-            diag.message
-                .contains("unknown namespace template 'Missing'")
+        .find_map(|block| match block {
+            Block::Init(init) => Some(init),
+            _ => None,
         })
-        .expect("missing local typed decl namespace template diagnostic");
-
-    assert_eq!(diag.file.as_deref(), Some("<memory>"));
-    assert_eq!((diag.line, diag.column), (4, 6));
-    assert_eq!(diag.end_line, 4);
+        .expect("init");
+    assert!(
+        matches!(&init.body[0], Stmt::Assign { generic_decl_ty: Some(name), .. } if name.trim() == "Missing<1>::X")
+    );
 }
 
 #[test]

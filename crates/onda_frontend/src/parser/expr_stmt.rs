@@ -198,6 +198,7 @@ pub(super) fn parse_struct_method_decl(
     Ok(FunctionDef {
         loc,
         name,
+        is_const: false,
         type_params,
         params,
         return_ty,
@@ -243,7 +244,7 @@ pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Di
     }
     let loc = stmt_loc_from_pair(&pair);
     let mut name = None::<String>;
-    let mut ty = None::<PrimitiveType>;
+    let mut ty = None::<ConstType>;
     let mut expr = None::<Expr>;
     for child in pair.into_inner() {
         match child.as_rule() {
@@ -252,8 +253,8 @@ pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Di
                     name = Some(child.as_str().to_owned());
                 }
             }
-            Rule::type_name => {
-                ty = Some(parse_primitive_type(child.as_str()).map_err(|d| vec![d])?);
+            Rule::const_type => {
+                ty = Some(parse_const_type(child)?);
             }
             Rule::expr => {
                 expr = Some(parse_expr_inner(child));
@@ -276,6 +277,68 @@ pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Di
         ty,
         expr,
     })
+}
+
+fn parse_const_type(pair: Pair<'_, Rule>) -> Result<ConstType, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::const_type {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            "internal parser error: expected const type",
+        )]);
+    }
+    let loc = stmt_loc_from_pair(&pair);
+    let mut inner = pair.into_inner();
+    let Some(actual) = inner.next() else {
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing const type")]);
+    };
+    match actual.as_rule() {
+        Rule::type_name => Ok(ConstType::Scalar(
+            parse_primitive_type(actual.as_str()).map_err(|d| vec![d])?,
+        )),
+        Rule::fn_typed_array_param => {
+            let Some(elem_pair) = actual.into_inner().next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing const array element type",
+                )]);
+            };
+            if elem_pair.as_rule() != Rule::type_name {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "const array element type must be primitive",
+                )]);
+            }
+            Ok(ConstType::Slice {
+                elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+            })
+        }
+        Rule::array_type => {
+            let mut inner = actual.into_inner();
+            let Some(elem_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing const array element type",
+                )]);
+            };
+            let Some(size_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing const array size",
+                )]);
+            };
+            if elem_pair.as_rule() != Rule::type_name {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "const array element type must be primitive",
+                )]);
+            }
+            Ok(ConstType::Array {
+                elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+                size: parse_expr_inner(size_pair),
+            })
+        }
+        _ => Err(vec![syntax_at_loc(loc.as_ref(), "unsupported const type")]),
+    }
 }
 
 fn parse_const_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
@@ -766,7 +829,7 @@ pub(super) fn parse_for_bound(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnost
     match pair.as_rule() {
         Rule::int_lit => Ok(Expr::int(parse_int(pair.as_str())? as i64).with_loc(loc)),
         Rule::path_ident | Rule::namespace_ref => {
-            Ok(Expr::var(pair.as_str().to_owned()).with_loc(loc))
+            Ok(Expr::var(pair_symbol_text(&pair)).with_loc(loc))
         }
         Rule::for_bound => {
             let mut inner = pair.into_inner();
@@ -1000,7 +1063,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
         )
         .with_loc(loc),
         Rule::ident | Rule::path_ident | Rule::namespace_ref => {
-            Expr::var(pair.as_str().to_owned()).with_loc(loc)
+            Expr::var(pair_symbol_text(&pair)).with_loc(loc)
         }
         Rule::indexed_member_expr => {
             let mut inner = pair.into_inner();
@@ -1319,7 +1382,7 @@ pub(super) fn parse_call_expr_parts(
 
 fn parse_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, Vec<CallTypeArg>) {
     match pair.as_rule() {
-        Rule::path_ident => (pair.as_str().to_owned(), Vec::new(), Vec::new()),
+        Rule::path_ident => (pair_symbol_text(&pair), Vec::new(), Vec::new()),
         Rule::namespace_ref => parse_namespace_call_target(pair),
         Rule::call_index_member_target => {
             let (name, args) = parse_call_index_member_target(pair);
@@ -1341,7 +1404,7 @@ fn parse_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, Vec<CallTyp
 }
 
 fn parse_namespace_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, Vec<CallTypeArg>) {
-    let raw = pair.as_str().to_owned();
+    let raw = pair_symbol_text(&pair);
     let mut segment_args = Vec::<Vec<(Option<String>, Expr)>>::new();
 
     for seg in pair.into_inner() {
@@ -1515,7 +1578,7 @@ fn parse_named_type_ref(
             }
             Rule::qualified_ident | Rule::ident => {
                 if name.is_none() {
-                    name = Some(item.as_str().to_owned());
+                    name = Some(pair_symbol_text(&item));
                 }
             }
             Rule::generic_type_arg_list => {

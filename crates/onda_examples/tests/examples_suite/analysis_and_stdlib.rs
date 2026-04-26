@@ -1620,6 +1620,31 @@ fn stdlib_stft_hann_window_compile_and_run() {
 
 #[test]
 
+fn stdlib_stft_default_hann_window_compile_and_run() {
+    let frames = 2;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_STFT_DEFAULT_HANN_WINDOW_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 2);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for frame in 0..frames {
+        let base = frame * out_channels;
+
+        assert_near(output[base], 1.5, 1e-6);
+
+        assert_near(output[base + 1], 2.25, 1e-6);
+    }
+}
+
+#[test]
+
 fn stdlib_realfft_struct_compile_and_run() {
     let frames = 128;
 
@@ -3423,8 +3448,9 @@ sample {
 #[test]
 
 fn consts_reject_assignment_reserved_names_and_runtime_initializers() {
-    let errs = parse_program(CONST_ASSIGN_ERROR_EXAMPLE)
-        .expect_err("assigning to a const should be rejected");
+    let program =
+        parse_program(CONST_ASSIGN_ERROR_EXAMPLE).expect("local const assignment should parse");
+    let errs = analyze(program).expect_err("assigning to a const should be rejected");
 
     assert!(
         errs.iter()
@@ -3433,8 +3459,9 @@ fn consts_reject_assignment_reserved_names_and_runtime_initializers() {
         errs
     );
 
-    let errs = parse_program(CONST_RESERVED_NAME_ERROR_EXAMPLE)
-        .expect_err("builtin const names should be reserved");
+    let program =
+        parse_program(CONST_RESERVED_NAME_ERROR_EXAMPLE).expect("reserved const name should parse");
+    let errs = analyze(program).expect_err("builtin const names should be reserved");
 
     assert!(
         errs.iter()
@@ -3443,12 +3470,13 @@ fn consts_reject_assignment_reserved_names_and_runtime_initializers() {
         errs
     );
 
-    let errs = parse_program(CONST_RUNTIME_INIT_ERROR_EXAMPLE)
-        .expect_err("runtime initializer should be rejected");
+    let program = parse_program(CONST_RUNTIME_INIT_ERROR_EXAMPLE)
+        .expect("runtime const initializer should parse");
+    let errs = analyze(program).expect_err("runtime initializer should be rejected");
 
     assert!(
         errs.iter().any(|d| {
-            d.message.contains("const 'BAD'") && d.message.contains("non-compile-time symbol 'x'")
+            d.message.contains("const 'BAD'") && d.message.contains("non-constant symbol 'x'")
         }),
         "expected compile-time const initializer error, got {:?}",
         errs

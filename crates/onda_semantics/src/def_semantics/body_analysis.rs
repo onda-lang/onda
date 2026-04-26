@@ -110,16 +110,18 @@ pub(crate) fn analyze_def_stmt(
             };
         }
         macro_rules! scope_expr_env {
-            ($scope:expr) => {
-                build_scope_expr_env_with_tuples(
+            ($scope:expr) => {{
+                let mut env = build_scope_expr_env_with_tuples(
                     expr_inputs,
                     known_scalars,
                     local_aliases,
                     &array_vars,
                     $scope,
                     tuple_vars,
-                )
-            };
+                );
+                env.local_array_aliases = local_array_aliases;
+                env
+            }};
         }
         match stmt {
             Stmt::Const { .. } => {}

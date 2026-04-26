@@ -9,6 +9,7 @@ pub(crate) struct FnSignature {
     pub(crate) defaults: Vec<Option<Expr>>,
     pub(crate) param_types: Vec<Option<FnParamType>>,
     pub(crate) type_params: Vec<String>,
+    pub(crate) readonly_array_params: HashSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -18,6 +19,7 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) local_aliases: &'a LocalAliasTypes,
     pub(crate) outputs: &'a HashSet<String>,
     pub(crate) array_vars: &'a HashMap<String, usize>,
+    pub(crate) local_array_aliases: &'a HashMap<String, LocalArrayAliasInfo>,
     pub(crate) declared_symbols: &'a DeclaredSymbolMap,
     pub(crate) param_structs: &'a HashMap<String, String>,
     pub(crate) struct_instances: &'a HashMap<String, String>,
@@ -56,6 +58,8 @@ static EMPTY_TUPLE_VARS: std::sync::LazyLock<HashMap<String, usize>> =
     std::sync::LazyLock::new(HashMap::new);
 static EMPTY_LOCAL_ALIASES: std::sync::LazyLock<LocalAliasTypes> =
     std::sync::LazyLock::new(HashMap::new);
+static EMPTY_LOCAL_ARRAY_ALIASES: std::sync::LazyLock<HashMap<String, LocalArrayAliasInfo>> =
+    std::sync::LazyLock::new(HashMap::new);
 static EMPTY_PROC_ARRAY_ROOTS: std::sync::LazyLock<HashMap<String, ProcNestedArrayState>> =
     std::sync::LazyLock::new(HashMap::new);
 
@@ -78,6 +82,7 @@ pub(crate) fn build_expr_env<'a>(
         local_aliases: &EMPTY_LOCAL_ALIASES,
         outputs,
         array_vars,
+        local_array_aliases: &EMPTY_LOCAL_ARRAY_ALIASES,
         declared_symbols,
         param_structs,
         struct_instances,

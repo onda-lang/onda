@@ -6,6 +6,8 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
     module: LLVMModuleRef,
     context: LLVMContextRef,
     user_fns: &mut UserFnRegistry,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_array_base_ptrs: &HashMap<String, LLVMValueRef>,
     sample_rate: f32,
     block_size: usize,
     fast_math: bool,
@@ -398,6 +400,8 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 input_index: &input_index,
                 input_types: &input_types,
                 input_arrays: &typed.in_arrays,
+                const_arrays,
+                const_array_base_ptrs,
                 buffer_index: &buffer_meta.buffer_index,
                 buffer_elem_types: &buffer_meta.buffer_elem_types,
                 buffer_channels: &buffer_meta.buffer_channels,
@@ -424,7 +428,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 port_index_ins,
                 port_index_outs,
                 port_index_params,
-                out_ptrs,
                 out_slot_ptr_array,
             };
             let mut block_locals = HashMap::new();
@@ -488,6 +491,8 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 input_index: &input_index,
                 input_types: &input_types,
                 input_arrays: &typed.in_arrays,
+                const_arrays,
+                const_array_base_ptrs,
                 buffer_index: &buffer_meta.buffer_index,
                 buffer_elem_types: &buffer_meta.buffer_elem_types,
                 buffer_channels: &buffer_meta.buffer_channels,
@@ -514,7 +519,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 port_index_ins,
                 port_index_outs,
                 port_index_params,
-                out_ptrs,
                 out_slot_ptr_array,
             };
 
@@ -749,6 +753,8 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 input_index: &input_index,
                 input_types: &input_types,
                 input_arrays: &typed.in_arrays,
+                const_arrays,
+                const_array_base_ptrs,
                 buffer_index: &buffer_meta.buffer_index,
                 buffer_elem_types: &buffer_meta.buffer_elem_types,
                 buffer_channels: &buffer_meta.buffer_channels,
@@ -775,7 +781,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 port_index_ins,
                 port_index_outs,
                 port_index_params,
-                out_ptrs,
                 out_slot_ptr_array,
             };
             let mut locals = HashMap::new();
@@ -934,6 +939,8 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             input_index: &input_index,
             input_types: &input_types,
             input_arrays: &typed.in_arrays,
+            const_arrays,
+            const_array_base_ptrs,
             buffer_index: &buffer_meta.buffer_index,
             buffer_elem_types: &buffer_meta.buffer_elem_types,
             buffer_channels: &buffer_meta.buffer_channels,
@@ -960,7 +967,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             port_index_ins,
             port_index_outs,
             port_index_params,
-            out_ptrs,
             out_slot_ptr_array: None,
         };
 
@@ -1050,6 +1056,8 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 input_index: &input_index,
                 input_types: &input_types,
                 input_arrays: &typed.in_arrays,
+                const_arrays,
+                const_array_base_ptrs,
                 buffer_index: &buffer_meta.buffer_index,
                 buffer_elem_types: &buffer_meta.buffer_elem_types,
                 buffer_channels: &buffer_meta.buffer_channels,
@@ -1076,7 +1084,6 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 port_index_ins,
                 port_index_outs,
                 port_index_params,
-                out_ptrs,
                 out_slot_ptr_array,
             };
             let mut block_locals = HashMap::new();

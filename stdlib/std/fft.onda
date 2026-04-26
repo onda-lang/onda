@@ -4,6 +4,55 @@ import std/complex
 namespace std::fft<N = 256>:
   assert(N > 0 && (N & (N - 1)) == 0)
 
+  const def _hann_window() -> f64[N]:
+    values: f64[N]
+    if (N <= 1):
+      values[0] = 1.0
+    else:
+      denom = f64(N - 1)
+      for i in 0..N:
+        phase = TWO_PI * f64(i) / denom
+        values[i] = 0.5 - 0.5 * cos(phase)
+    return values
+  
+  const def _rectangular_window() -> f64[N]:
+    values: f64[N]
+    for i in 0..N:
+      values[i] = 1.0
+    return values
+
+  const def _hamming_window() -> f64[N]:
+    values: f64[N]
+    if (N <= 1):
+      values[0] = 1.0
+    else:
+      denom = f64(N - 1)
+      for i in 0..N:
+        phase = TWO_PI * f64(i) / denom
+        values[i] = 0.54 - 0.46 * cos(phase)
+    return values
+
+  const def _blackman_window() -> f64[N]:
+    values: f64[N]
+    if (N <= 1):
+      values[0] = 1.0
+    else:
+      denom = f64(N - 1)
+      for i in 0..N:
+        phase = TWO_PI * f64(i) / denom
+        values[i] = 0.42 - 0.5 * cos(phase) + 0.08 * cos(2.0 * phase)
+    return values
+
+  const Hann: f64[N] = _hann_window()
+  const Rectangular: f64[N] = _rectangular_window()
+  const Hamming: f64[N] = _hamming_window()
+  const Blackman: f64[N] = _blackman_window()
+
+  const _WindowHann: i32 = 1
+  const _WindowRectangular: i32 = 2
+  const _WindowHamming: i32 = 3
+  const _WindowBlackman: i32 = 4
+  
   def _min_i(a: i32, b: i32):
     if (a < b):
       return a
@@ -37,6 +86,7 @@ namespace std::fft<N = 256>:
     if (idx >= n):
       idx = idx - n
     return idx
+
 
   struct FFT<T>:
     bins: std::complex::Complex<T>[N]
@@ -270,8 +320,7 @@ namespace std::fft<N = 256>:
 
   struct STFT<T>:
     fft: FFT<T>
-    window: T[N]
-    window_ready: bool
+    window_kind: i32 = _WindowHann
 
     def size(self):
       return N
@@ -279,63 +328,50 @@ namespace std::fft<N = 256>:
     def real_bin_count(self):
       return (N >> 1) + 1
 
-    def _set_single_point_window(self, value: T):
-      self.window[0] = value
-      self.window_ready = true
-
-    def _window_denominator(self):
-      if (N <= 1):
-        return T(1.0)
-      return T(N - 1)
-
-    def _ensure_window(self):
-      if (!self.window_ready):
-        self.set_rectangular()
-
-    def set_rectangular(self):
-      for i in 0..N:
-        self.window[i] = 1.0
-      self.window_ready = true
+    def _window_value(self, i: i32) -> T:
+      if (self.window_kind == _WindowHann):
+        return T(Hann[i])
+      elif (self.window_kind == _WindowRectangular):
+        return T(Rectangular[i])
+      elif (self.window_kind == _WindowHamming):
+        return T(Hamming[i])
+      elif (self.window_kind == _WindowBlackman):
+        return T(Blackman[i])
+      return T(Hann[i])
 
     def set_hann(self):
-      if (N <= 1):
-        self._set_single_point_window(T(1.0))
-      else:
-        denom: T = self._window_denominator()
-        for i in 0..N:
-          phase: T = TWO_PI * T(i) / denom
-          self.window[i] = 0.5 - 0.5 * cos(phase)
-        self.window_ready = true
+      self.window_kind = _WindowHann
+
+    def set_rectangular(self):
+      self.window_kind = _WindowRectangular
 
     def set_hamming(self):
-      if (N <= 1):
-        self._set_single_point_window(T(1.0))
-      else:
-        denom: T = self._window_denominator()
-        for i in 0..N:
-          phase: T = TWO_PI * T(i) / denom
-          self.window[i] = 0.54 - 0.46 * cos(phase)
-        self.window_ready = true
+      self.window_kind = _WindowHamming
 
     def set_blackman(self):
-      if (N <= 1):
-        self._set_single_point_window(T(1.0))
-      else:
-        denom: T = self._window_denominator()
-        for i in 0..N:
-          phase: T = TWO_PI * T(i) / denom
-          self.window[i] = 0.42 - 0.5 * cos(phase) + 0.08 * cos(2.0 * phase)
-        self.window_ready = true
+      self.window_kind = _WindowBlackman
 
     def window_value(self, i: i32):
-      self._ensure_window()
-      return self.window[i]
+      return self._window_value(i)
 
     def store_window(self, output: T[]):
-      self._ensure_window()
       count = _min_i(output.len(), N)
-      for i in 0..count:
-        output[i] = self.window[i]
+      kind = self.window_kind
+      if (kind == _WindowHann):
+        for i in 0..count:
+          output[i] = T(Hann[i])
+      elif (kind == _WindowRectangular):
+        for i in 0..count:
+          output[i] = T(Rectangular[i])
+      elif (kind == _WindowHamming):
+        for i in 0..count:
+          output[i] = T(Hamming[i])
+      elif (kind == _WindowBlackman):
+        for i in 0..count:
+          output[i] = T(Blackman[i])
+      else:
+        for i in 0..count:
+          output[i] = T(Hann[i])
 
     def clear(self):
       self.fft.clear()
@@ -368,11 +404,24 @@ namespace std::fft<N = 256>:
       self.fft.store_real_spectrum_phase(output)
 
     def _load_windowed_real(self, input: T[]):
-      self._ensure_window()
       self.fft.clear()
       count = _min_i(input.len(), N)
-      for i in 0..count:
-        self.fft.set_bin(i, input[i] * self.window[i], 0.0)
+      kind = self.window_kind
+      if (kind == _WindowHann):
+        for i in 0..count:
+          self.fft.set_bin(i, input[i] * T(Hann[i]), 0.0)
+      elif (kind == _WindowRectangular):
+        for i in 0..count:
+          self.fft.set_bin(i, input[i] * T(Rectangular[i]), 0.0)
+      elif (kind == _WindowHamming):
+        for i in 0..count:
+          self.fft.set_bin(i, input[i] * T(Hamming[i]), 0.0)
+      elif (kind == _WindowBlackman):
+        for i in 0..count:
+          self.fft.set_bin(i, input[i] * T(Blackman[i]), 0.0)
+      else:
+        for i in 0..count:
+          self.fft.set_bin(i, input[i] * T(Hann[i]), 0.0)
 
     def forward_real(self, input: T[]):
       self._load_windowed_real(input)
@@ -398,12 +447,11 @@ namespace std::fft<N = 256>:
     fft: FFT<T>
     input: T[N]
     packed: T[N]
-    window: T[N]
+    window_kind: i32 = _WindowHann
     write: i32
     filled: i32
     since_hop: i32
     ready: bool
-    window_ready: bool
 
     def size(self):
       return N
@@ -414,33 +462,16 @@ namespace std::fft<N = 256>:
     def hop_size(self):
       return N >> 1
 
-    def _set_single_point_window(self, value: T):
-      self.window[0] = value
-      self.window_ready = true
-
-    def _window_denominator(self):
-      if (N <= 1):
-        return T(1.0)
-      return T(N - 1)
-
-    def _ensure_window(self):
-      if (!self.window_ready):
-        self.set_hann()
+    def _window_value(self, i: i32) -> T:
+      if (self.window_kind == _WindowHann):
+        return T(Hann[i])
+      return T(Rectangular[i])
 
     def set_rectangular(self):
-      for i in 0..N:
-        self.window[i] = 1.0
-      self.window_ready = true
+      self.window_kind = _WindowRectangular
 
     def set_hann(self):
-      if (N <= 1):
-        self._set_single_point_window(T(1.0))
-      else:
-        denom: T = self._window_denominator()
-        for i in 0..N:
-          phase: T = TWO_PI * T(i) / denom
-          self.window[i] = 0.5 - 0.5 * cos(phase)
-        self.window_ready = true
+      self.window_kind = _WindowHann
 
     def clear(self):
       self.fft.clear()
@@ -466,11 +497,16 @@ namespace std::fft<N = 256>:
       self.since_hop = self.since_hop + 1
       if (self.filled >= N && self.since_hop >= (N >> 1)):
         self.since_hop = 0
-        self._ensure_window()
         self.fft.clear()
-        for i in 0..N:
-          idx = _wrap_add(self.write, i, N)
-          self.fft.set_bin(i, self.input[idx] * self.window[i], 0.0)
+        kind = self.window_kind
+        if (kind == _WindowHann):
+          for i in 0..N:
+            idx = _wrap_add(self.write, i, N)
+            self.fft.set_bin(i, self.input[idx] * T(Hann[i]), 0.0)
+        else:
+          for i in 0..N:
+            idx = _wrap_add(self.write, i, N)
+            self.fft.set_bin(i, self.input[idx] * T(Rectangular[i]), 0.0)
         self.fft.forward()
         half = N >> 1
         real_count = half + 1
@@ -496,10 +532,9 @@ namespace std::fft<N = 256>:
     fft: FFT<T>
     output: T[N]
     norm: T[N]
-    window: T[N]
+    window_kind: i32 = _WindowHann
     frame: i32
     pending: i32
-    window_ready: bool
 
     def size(self):
       return N
@@ -507,33 +542,16 @@ namespace std::fft<N = 256>:
     def hop_size(self):
       return N >> 1
 
-    def _set_single_point_window(self, value: T):
-      self.window[0] = value
-      self.window_ready = true
-
-    def _window_denominator(self):
-      if (N <= 1):
-        return T(1.0)
-      return T(N - 1)
-
-    def _ensure_window(self):
-      if (!self.window_ready):
-        self.set_hann()
-
-    def set_rectangular(self):
-      for i in 0..N:
-        self.window[i] = 1.0
-      self.window_ready = true
+    def _window_value(self, i: i32) -> T:
+      if (self.window_kind == _WindowHann):
+        return T(Hann[i])
+      return T(Rectangular[i])
 
     def set_hann(self):
-      if (N <= 1):
-        self._set_single_point_window(T(1.0))
-      else:
-        denom: T = self._window_denominator()
-        for i in 0..N:
-          phase: T = TWO_PI * T(i) / denom
-          self.window[i] = 0.5 - 0.5 * cos(phase)
-        self.window_ready = true
+      self.window_kind = _WindowHann
+
+    def set_rectangular(self):
+      self.window_kind = _WindowRectangular
 
     def clear(self):
       self.fft.clear()
@@ -578,12 +596,19 @@ namespace std::fft<N = 256>:
       self._accumulate_ifft_frame()
 
     def _accumulate_ifft_frame(self):
-      self._ensure_window()
-      for i in 0..N:
-        idx = _wrap_add(self.frame, i, N)
-        w = self.window[i]
-        self.output[idx] = self.output[idx] + self.fft.real(i) * w
-        self.norm[idx] = self.norm[idx] + w * w
+      kind = self.window_kind
+      if (kind == _WindowHann):
+        for i in 0..N:
+          idx = _wrap_add(self.frame, i, N)
+          w = T(Hann[i])
+          self.output[idx] = self.output[idx] + self.fft.real(i) * w
+          self.norm[idx] = self.norm[idx] + w * w
+      else:
+        for i in 0..N:
+          idx = _wrap_add(self.frame, i, N)
+          w = T(Rectangular[i])
+          self.output[idx] = self.output[idx] + self.fft.real(i) * w
+          self.norm[idx] = self.norm[idx] + w * w
       self.pending = N
 
     def tick(self):

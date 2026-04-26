@@ -322,6 +322,25 @@ pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType,
             };
             parse_scalar(scalar_pair).map(FnReturnType::Scalar)
         }
+        Rule::fn_return_array_type => {
+            let mut inner = inner.into_inner();
+            let Some(elem_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing function return array element type",
+                )]);
+            };
+            let Some(size_pair) = inner.next() else {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    "missing function return array size",
+                )]);
+            };
+            Ok(FnReturnType::Array {
+                elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+                size: parse_expr(size_pair)?,
+            })
+        }
         Rule::fn_return_tuple_type => {
             let elems: Result<Vec<FnReturnScalarType>, Vec<Diagnostic>> = inner
                 .into_inner()
@@ -606,7 +625,7 @@ pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Di
 
 pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, Vec<Diagnostic>> {
     match pair.as_rule() {
-        Rule::path_ident => Ok(AssignTarget::Var(pair.as_str().to_owned())),
+        Rule::path_ident => Ok(AssignTarget::Var(pair_symbol_text(&pair))),
         Rule::slice_target => {
             let loc = stmt_loc_from_pair(&pair);
             let mut inner = pair.into_inner();
