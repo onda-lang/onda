@@ -392,7 +392,7 @@ unsafe fn compile_module_into_jit(
         proc_slot_buffer_ref_layouts,
     )?;
 
-    let ts_context = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(context);
+    let ts_context = llvm_orc_create_new_thread_safe_context_from_llvm_context(context);
     if ts_context.is_null() {
         LLVMDisposeModule(module);
         LLVMContextDispose(context);
