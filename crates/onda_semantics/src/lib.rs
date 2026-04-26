@@ -503,6 +503,32 @@ sample:
     }
 
     #[test]
+    fn proc_bodies_can_read_const_arrays_with_runtime_index() {
+        let src = r#"
+const Table: f32[3] = [0.25, 0.5, 1.0]
+
+proc Voice:
+  params:
+    idx: i32 = 1
+  outs:
+    out1
+  sample:
+    out1 = Table[idx]
+
+outs:
+  out1
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("proc dynamic const array read should analyze");
+    }
+
+    #[test]
     fn count_shorthand_expands_in_semantic_preprocessing_from_const_defs() {
         let src = r#"
 const def count() -> i32:
@@ -1158,6 +1184,30 @@ sample:
                     && diag.message.contains("uses non-constant symbol 'idx'")
             }),
             "diagnostics: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn namespace_template_bodies_use_definition_scope_for_consts() {
+        let src = r#"
+namespace LUT<N = 1>:
+  const Table: f32[1] = [Gain * f32(N)]
+
+const Gain = 0.5
+
+outs:
+  out1
+
+sample:
+  out1 = LUT<2>::Table[0]
+"#;
+        let program = parse_program(src).expect("parse should preserve template body");
+        let errors = analyze(program).expect_err("template body should not see later scalar const");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains(
+                "const array 'LUT__nsinst0::Table' element 0 uses non-constant symbol 'Gain'"
+            )),
+            "expected definition-scope diagnostic, got {errors:?}"
         );
     }
 
@@ -2098,6 +2148,55 @@ sample:
                 .message
                 .contains("const def 'unused_bad' statement is not supported")),
             "expected unsupported const def statement diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn const_def_local_consts_are_immutable() {
+        let src = r#"
+const def bad() -> i32:
+  const X = 1
+  X = 2
+  return X
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("local const reassignment should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("const def 'bad' cannot assign to local const 'X'")),
+            "expected local const reassignment diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn unused_const_def_loop_vars_cannot_rebind_local_consts() {
+        let src = r#"
+const def bad() -> i32:
+  const X = 1
+  for X in 0..2:
+    const Y = X
+  return X
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("loop var local const reassignment should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("const def 'bad' cannot assign to local const 'X'")),
+            "expected loop var local const diagnostic, got {errors:?}"
         );
     }
 

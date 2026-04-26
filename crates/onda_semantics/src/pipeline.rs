@@ -552,13 +552,21 @@ fn validate_const_def_body_shape(
                 .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
-    validate_const_def_stmt_shapes(&def.body, &def.name, &read_only_arrays, errors);
+    let mut local_const_names = HashSet::new();
+    validate_const_def_stmt_shapes(
+        &def.body,
+        &def.name,
+        &read_only_arrays,
+        &mut local_const_names,
+        errors,
+    );
 }
 
 fn validate_const_def_stmt_shapes(
     stmts: &[Stmt],
     def_name: &str,
     read_only_arrays: &HashSet<String>,
+    local_const_names: &mut HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
     for stmt in stmts {
@@ -579,7 +587,16 @@ fn validate_const_def_stmt_shapes(
                     continue;
                 }
                 match target {
-                    AssignTarget::Var(_) => {}
+                    AssignTarget::Var(name) => {
+                        if local_const_names.contains(name) {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "const def '{def_name}' cannot assign to local const '{name}'"
+                                ),
+                                stmt.assign_target_loc(),
+                            ));
+                        }
+                    }
                     AssignTarget::Index { base, .. } => {
                         if read_only_arrays.contains(base) {
                             errors.push(Diagnostic::semantic_span(
@@ -611,6 +628,14 @@ fn validate_const_def_stmt_shapes(
                         format!("const def '{def_name}' local const arrays are not supported"),
                         decl.loc.as_ref(),
                     ));
+                } else if !local_const_names.insert(decl.name.clone()) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "duplicate constant '{}' in const def '{def_name}'",
+                            decl.name
+                        ),
+                        decl.loc.as_ref(),
+                    ));
                 }
             }
             Stmt::If {
@@ -618,11 +643,38 @@ fn validate_const_def_stmt_shapes(
                 else_branch,
                 ..
             } => {
-                validate_const_def_stmt_shapes(then_branch, def_name, read_only_arrays, errors);
-                validate_const_def_stmt_shapes(else_branch, def_name, read_only_arrays, errors);
+                let mut then_const_names = local_const_names.clone();
+                validate_const_def_stmt_shapes(
+                    then_branch,
+                    def_name,
+                    read_only_arrays,
+                    &mut then_const_names,
+                    errors,
+                );
+                let mut else_const_names = local_const_names.clone();
+                validate_const_def_stmt_shapes(
+                    else_branch,
+                    def_name,
+                    read_only_arrays,
+                    &mut else_const_names,
+                    errors,
+                );
             }
-            Stmt::For { body, .. } => {
-                validate_const_def_stmt_shapes(body, def_name, read_only_arrays, errors);
+            Stmt::For { loc, var, body, .. } => {
+                if local_const_names.contains(var) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("const def '{def_name}' cannot assign to local const '{var}'"),
+                        *loc,
+                    ));
+                }
+                let mut loop_const_names = local_const_names.clone();
+                validate_const_def_stmt_shapes(
+                    body,
+                    def_name,
+                    read_only_arrays,
+                    &mut loop_const_names,
+                    errors,
+                );
             }
             Stmt::Expr { .. } | Stmt::While { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {
                 errors.push(Diagnostic::semantic_span(
@@ -1287,12 +1339,14 @@ fn eval_const_def_body(
     call_stack: &mut Vec<String>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ConstEvalValue> {
+    let mut local_const_names = HashSet::new();
     eval_const_def_stmt_list(
         &def.body,
         return_ty,
         locals,
         local_arrays,
         read_only_arrays,
+        &mut local_const_names,
         const_values,
         const_defs,
         options,
@@ -1785,6 +1839,7 @@ fn eval_const_for_stmt(
     locals: &mut HashMap<String, TypedConstValue>,
     local_arrays: &mut HashMap<String, ConstEvalArray>,
     read_only_arrays: &HashSet<String>,
+    local_const_names: &mut HashSet<String>,
     const_values: &HashMap<String, ConstValue>,
     const_defs: ConstDefRegistry<'_>,
     options: AnalysisOptions,
@@ -1836,10 +1891,18 @@ fn eval_const_for_stmt(
         ));
         return None;
     }
+    if local_const_names.contains(var) {
+        errors.push(Diagnostic::semantic_span(
+            format!("const def '{def_name}' cannot assign to local const '{var}'"),
+            start.loc(),
+        ));
+        return None;
+    }
 
     let saved_loop_var = locals.get(var).copied();
     let pre_loop_scalar_names = locals.keys().cloned().collect::<HashSet<_>>();
     let pre_loop_array_names = local_arrays.keys().cloned().collect::<HashSet<_>>();
+    let pre_loop_const_names = local_const_names.clone();
     let mut current = start_value;
     let mut iterations = 0usize;
     loop {
@@ -1879,6 +1942,7 @@ fn eval_const_for_stmt(
             locals,
             local_arrays,
             read_only_arrays,
+            local_const_names,
             const_values,
             const_defs,
             options,
@@ -1913,6 +1977,7 @@ fn eval_const_for_stmt(
 
     locals.retain(|name, _| pre_loop_scalar_names.contains(name));
     local_arrays.retain(|name, _| pre_loop_array_names.contains(name));
+    local_const_names.retain(|name| pre_loop_const_names.contains(name));
     match saved_loop_var {
         Some(value) => {
             locals.insert(var.to_owned(), value);
@@ -1931,6 +1996,7 @@ fn eval_const_def_stmt_list(
     locals: &mut HashMap<String, TypedConstValue>,
     local_arrays: &mut HashMap<String, ConstEvalArray>,
     read_only_arrays: &HashSet<String>,
+    local_const_names: &mut HashSet<String>,
     const_values: &HashMap<String, ConstValue>,
     const_defs: ConstDefRegistry<'_>,
     options: AnalysisOptions,
@@ -2045,6 +2111,13 @@ fn eval_const_def_stmt_list(
                     ));
                     return None;
                 };
+                if local_const_names.contains(name) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("const def '{def_name}' cannot assign to local const '{name}'"),
+                        stmt.assign_target_loc(),
+                    ));
+                    return None;
+                }
                 if matches!(expr, Expr::ArrayCtor { .. }) {
                     let array = eval_const_array_expr_with_defs(
                         expr,
@@ -2143,6 +2216,16 @@ fn eval_const_def_stmt_list(
                     call_stack,
                     errors,
                 )?;
+                if !local_const_names.insert(decl.name.clone()) {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "duplicate constant '{}' in const def '{def_name}'",
+                            decl.name
+                        ),
+                        decl.loc.as_ref(),
+                    ));
+                    return None;
+                }
                 locals.insert(decl.name.clone(), value);
             }
             Stmt::If {
@@ -2172,12 +2255,14 @@ fn eval_const_def_stmt_list(
                 };
                 let mut branch_locals = locals.clone();
                 let mut branch_arrays = local_arrays.clone();
+                let mut branch_const_names = local_const_names.clone();
                 if let Some(returned) = eval_const_def_stmt_list(
                     if take_then { then_branch } else { else_branch },
                     return_ty,
                     &mut branch_locals,
                     &mut branch_arrays,
                     read_only_arrays,
+                    &mut branch_const_names,
                     const_values,
                     const_defs,
                     options,
@@ -2189,6 +2274,7 @@ fn eval_const_def_stmt_list(
                 }
                 *locals = branch_locals;
                 *local_arrays = branch_arrays;
+                *local_const_names = branch_const_names;
             }
             Stmt::For {
                 var,
@@ -2211,6 +2297,7 @@ fn eval_const_def_stmt_list(
                     locals,
                     local_arrays,
                     read_only_arrays,
+                    local_const_names,
                     const_values,
                     const_defs,
                     options,
@@ -5593,7 +5680,7 @@ pub fn analyze_with_options(
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,
-    } = desugar_processors(program, options, &mut errors);
+    } = desugar_processors(program, options, &const_array_infos, &mut errors);
 
     let mut seen_singleton = HashSet::new();
     for block in &program.blocks {

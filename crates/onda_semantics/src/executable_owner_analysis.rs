@@ -309,6 +309,7 @@ pub(crate) fn build_proc_owner_analysis_plan_seeds(
     struct_instances: &HashMap<String, String>,
     nested_proc_instances: &HashMap<String, ProcNestedState>,
     state_arrays: &HashMap<String, usize>,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
 ) -> ExecutableOwnerAnalysisPlanSeeds {
     let known_scalar_extras = collect_proc_owner_known_scalar_extras(
         struct_instances,
@@ -317,6 +318,8 @@ pub(crate) fn build_proc_owner_analysis_plan_seeds(
     );
     let mut runtime_known_scalars = reserved.clone();
     extend_known_scalars(&mut runtime_known_scalars, known_scalar_extras.iter());
+    let mut const_array_aliases = HashMap::new();
+    seed_top_level_array_aliases(&mut const_array_aliases, const_arrays, false);
 
     ExecutableOwnerAnalysisPlanSeeds {
         empty_inputs: HashSet::new(),
@@ -329,14 +332,14 @@ pub(crate) fn build_proc_owner_analysis_plan_seeds(
             block_pre_known_scalars: runtime_known_scalars.clone(),
             sample_known_scalars: runtime_known_scalars.clone(),
             block_post_known_scalars: runtime_known_scalars,
-            block_pre_array_aliases: HashMap::new(),
-            sample_array_aliases: HashMap::new(),
-            block_post_array_aliases: HashMap::new(),
+            block_pre_array_aliases: const_array_aliases.clone(),
+            sample_array_aliases: const_array_aliases.clone(),
+            block_post_array_aliases: const_array_aliases.clone(),
         },
         event: ExecutableOwnerEventPlanSeed {
             known_scalar_base: reserved.clone(),
             known_scalar_extras,
-            array_alias_seed: HashMap::new(),
+            array_alias_seed: const_array_aliases,
             immutable_param_seed: HashSet::new(),
         },
     }

@@ -253,6 +253,47 @@ fn register_artifact_for_block(
     }
 }
 
+fn merge_generated_namespace_artifacts(
+    target: &mut SemanticConstArtifacts,
+    emitted: SemanticConstArtifacts,
+    namespace: &str,
+) {
+    let prefix = format!("{namespace}::");
+
+    let mut generated_defs = emitted
+        .const_defs
+        .into_iter()
+        .filter(|(name, _)| name.starts_with(&prefix))
+        .collect::<Vec<_>>();
+    generated_defs.sort_by_key(|(name, _)| {
+        emitted
+            .const_def_order
+            .get(name)
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+    for (name, def) in generated_defs {
+        target
+            .const_def_order
+            .insert(name.clone(), target.const_def_order.len());
+        target.const_defs.insert(name, def);
+    }
+
+    for (name, value) in emitted.const_values {
+        if name.starts_with(&prefix) && matches!(value, ConstValue::Scalar(_)) {
+            target.const_values.insert(name, value);
+        }
+    }
+
+    for array in emitted
+        .const_arrays
+        .into_iter()
+        .filter(|array| array.name.starts_with(&prefix))
+    {
+        record_const_array_artifact(target, array);
+    }
+}
+
 fn process_top_level_block(
     block: Block,
     template_consts: &HashMap<String, Expr>,
@@ -904,6 +945,8 @@ fn instantiate_namespace_template(
     let concrete_ns = namespace_join(parent, &concrete_leaf);
     state.instantiations.insert(key, concrete_ns.clone());
 
+    let saved_artifacts =
+        std::mem::replace(&mut state.artifacts, template.captured_artifacts.clone());
     emit_namespace_items(
         &template.decl.items,
         &concrete_ns,
@@ -913,6 +956,8 @@ fn instantiate_namespace_template(
         generated,
         errors,
     );
+    let emitted_artifacts = std::mem::replace(&mut state.artifacts, saved_artifacts);
+    merge_generated_namespace_artifacts(&mut state.artifacts, emitted_artifacts, &concrete_ns);
 
     Some(concrete_ns)
 }

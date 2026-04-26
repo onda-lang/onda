@@ -1725,14 +1725,3 @@ Why it is useful:
 - persistent state mutation from host events
 - proc use inside a playable patch
 
-## 12. Summary
-
-If you are new to Onda, the most useful learning order is:
-1. understand the block model: `ins`, `params`, `events` / `event`, `buffers`, `outs`, `init`, `block`, `sample`, `graph`
-2. learn the executable-scope rules for state and locals
-3. learn `def` and `struct`
-4. learn generics
-5. learn `proc` as the main reusable DSP abstraction
-6. finish with modules, namespaces, and imports
-
-That path matches how real Onda programs in this repository are structured.
