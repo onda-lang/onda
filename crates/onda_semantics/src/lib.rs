@@ -987,6 +987,35 @@ sample:
     }
 
     #[test]
+    fn namespace_template_defaults_use_definition_scope_when_instantiated_elsewhere() {
+        let src = r#"
+const Size = 3
+
+namespace LUT<N = Size>:
+  const Value = N
+
+namespace Consumer:
+  const Size = 5
+  const Picked: i32[1] = [LUT::Value]
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Consumer::Picked[0])
+"#;
+        let program = parse_program(src).expect("parse should preserve namespace default");
+        let typed = analyze(program).expect("definition-scoped namespace default should analyze");
+
+        let table = typed
+            .const_arrays
+            .iter()
+            .find(|array| array.name == "Consumer::Picked")
+            .expect("typed const array");
+        assert_eq!(table.values, vec![TypedConstValue::I32(3)]);
+    }
+
+    #[test]
     fn nested_namespace_const_arrays_and_const_defs_are_usable_from_code() {
         let src = r#"
 namespace Outer<A = 2>:
@@ -1994,6 +2023,22 @@ sample:
             .contains("const def 'missing' must declare an explicit return type")));
 
         let src = r#"
+const def unused_missing():
+  return 1.0
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("unused missing return type should fail");
+        assert!(errors.iter().any(|diag| diag
+            .message
+            .contains("const def 'unused_missing' must declare an explicit return type")));
+
+        let src = r#"
 const def bad_scalar() -> i32:
   return 0.5
 
@@ -2030,6 +2075,29 @@ sample:
                 .message
                 .contains("const def 'bad_array' return: expected array length 2, got 1")),
             "expected const def return shape diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn unused_const_def_bodies_are_structurally_validated() {
+        let src = r#"
+const def unused_bad() -> f32:
+  sin(0.0)
+  return 1.0
+
+outs:
+  out1
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("unused unsupported const def body should fail");
+        assert!(
+            errors.iter().any(|diag| diag
+                .message
+                .contains("const def 'unused_bad' statement is not supported")),
+            "expected unsupported const def statement diagnostic, got {errors:?}"
         );
     }
 

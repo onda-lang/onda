@@ -819,15 +819,17 @@ fn instantiate_namespace_template(
                 let span = default.loc().span();
                 (default, span, true)
             };
-        rewrite_expr(
-            &mut value_expr,
-            current_ns,
-            template_consts,
-            options,
-            state,
-            generated,
-            errors,
-        );
+        if !use_captured_artifacts {
+            rewrite_expr(
+                &mut value_expr,
+                current_ns,
+                template_consts,
+                options,
+                state,
+                generated,
+                errors,
+            );
+        }
         let eval_artifacts = if use_captured_artifacts {
             &template.captured_artifacts
         } else {

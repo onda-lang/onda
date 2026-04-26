@@ -501,6 +501,139 @@ fn const_def_return_type(
     }
 }
 
+fn validate_const_def_declaration(
+    def: &FunctionDef,
+    options: AnalysisOptions,
+    artifacts: &SemanticConstArtifacts,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if !def.type_params.is_empty() {
+        errors.push(Diagnostic::semantic_span(
+            format!("const def '{}' cannot declare type parameters", def.name),
+            def.loc,
+        ));
+        return;
+    }
+
+    let const_defs = const_def_registry(artifacts);
+    let mut call_stack = vec![def.name.clone()];
+    let _ = const_def_return_type(
+        def,
+        options,
+        &artifacts.const_values,
+        const_defs,
+        &mut call_stack,
+        errors,
+    );
+    let param_kinds = const_def_param_signature(
+        def,
+        options,
+        &artifacts.const_values,
+        const_defs,
+        &mut call_stack,
+        errors,
+    );
+    validate_const_def_body_shape(def, param_kinds.as_deref(), errors);
+}
+
+fn validate_const_def_body_shape(
+    def: &FunctionDef,
+    param_kinds: Option<&[ConstDefParamKind]>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let read_only_arrays = param_kinds
+        .map(|kinds| {
+            def.params
+                .iter()
+                .zip(kinds.iter())
+                .filter_map(|(param, kind)| {
+                    matches!(kind, ConstDefParamKind::Slice { .. }).then(|| param.name.clone())
+                })
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    validate_const_def_stmt_shapes(&def.body, &def.name, &read_only_arrays, errors);
+}
+
+fn validate_const_def_stmt_shapes(
+    stmts: &[Stmt],
+    def_name: &str,
+    read_only_arrays: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Return { .. } => {}
+            Stmt::Assign {
+                target,
+                generic_decl_ty,
+                ..
+            } => {
+                if generic_decl_ty.is_some() {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "const def '{def_name}' local declarations cannot use generic types"
+                        ),
+                        stmt.assign_target_loc(),
+                    ));
+                    continue;
+                }
+                match target {
+                    AssignTarget::Var(_) => {}
+                    AssignTarget::Index { base, .. } => {
+                        if read_only_arrays.contains(base) {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "const def '{def_name}' cannot write read-only array parameter '{base}'"
+                                ),
+                                stmt.assign_target_loc(),
+                            ));
+                        }
+                    }
+                    _ => {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "const def '{def_name}' can only assign scalar locals or indexed local arrays"
+                            ),
+                            stmt.assign_target_loc(),
+                        ));
+                    }
+                }
+            }
+            Stmt::Const { decl, .. } => {
+                if is_const_array_decl(decl)
+                    || matches!(
+                        decl.ty,
+                        Some(ConstType::Array { .. } | ConstType::Slice { .. })
+                    )
+                {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("const def '{def_name}' local const arrays are not supported"),
+                        decl.loc.as_ref(),
+                    ));
+                }
+            }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                validate_const_def_stmt_shapes(then_branch, def_name, read_only_arrays, errors);
+                validate_const_def_stmt_shapes(else_branch, def_name, read_only_arrays, errors);
+            }
+            Stmt::For { body, .. } => {
+                validate_const_def_stmt_shapes(body, def_name, read_only_arrays, errors);
+            }
+            Stmt::Expr { .. } | Stmt::While { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {
+                errors.push(Diagnostic::semantic_span(
+                    format!("const def '{def_name}' statement is not supported"),
+                    stmt.loc(),
+                ));
+            }
+        }
+    }
+}
+
 fn eval_const_builtin_call(
     func: BuiltinFn,
     args: &[Expr],
@@ -5077,6 +5210,7 @@ fn coerce_consts_and_expand_counts(
                     .const_def_order
                     .insert(def.name.clone(), artifacts.const_def_order.len());
                 artifacts.const_defs.insert(def.name.clone(), def.clone());
+                validate_const_def_declaration(def, options, &artifacts, errors);
             }
             Block::Const(decl) => {
                 if is_builtin_constant_name(&decl.name) {
