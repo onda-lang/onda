@@ -5,9 +5,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use onda_codegen_llvm::{CompileOptions, ExecutionBackend, TargetOptLevel};
 use onda_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use onda_runtime::{
-    bind_buffer, bind_input, bind_output, create_instance, process_checked, process_unchecked,
+    bind_buffer, bind_input, bind_output, create_instance, prepare_unchecked_process,
+    process_checked, process_checked_segment, process_unchecked, process_unchecked_segment,
     reset_instance_state, set_param_by_index, trigger_event_by_index, validate_bindings,
-    validate_buffers, validate_outputs, InstanceConfig,
+    validate_buffers, validate_outputs, InstanceConfig, PROCESS_BEGIN_BLOCK, PROCESS_END_BLOCK,
+    PROCESS_FULL_BLOCK,
 };
 use onda_semantics::{analyze, analyze_with_options, AnalysisOptions};
 include!("examples_suite/fixtures.rs");

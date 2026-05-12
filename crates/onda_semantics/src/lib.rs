@@ -3518,6 +3518,35 @@ sample:
     }
 
     #[test]
+    fn proc_input_and_param_array_indices_preserve_declared_element_type() {
+        let src = r#"
+proc Voice:
+  ins:
+    vals: i64[2] = [5, 6]
+  params:
+    gains: i64[2] = [1, 2]
+  outs:
+    out1
+  init:
+    start: i64 = gains[0]
+  sample:
+    total: i64 = vals[0] + gains[1] + start
+    out1 = f32(total)
+
+outs:
+  out1
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = voice(vals = [7, 8])
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("proc array port and param indices should preserve i64 type");
+    }
+
+    #[test]
     fn declaration_only_library_file_does_not_require_sample_block() {
         let src = "proc Mix:\n  ins:\n    dry\n    fb\n  sample:\n    out1 = (dry + fb) * 0.5\n\ndef clip(x) {\n  return x\n}\nconst SCALE = 0.5\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -4893,6 +4922,81 @@ sample:
     }
 
     #[test]
+    fn block_pre_cannot_read_sample_rate_inputs() {
+        let src = "ins:\n  in1\nouts:\n  out1\nblock:\n  held = in1\n  sample:\n    out1 = held\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("block pre input read should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|diag| diag.message.contains("unknown symbol 'in1'")),
+            "missing unknown-symbol diagnostic for block pre input read: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn block_pre_cannot_read_dynamic_inputs() {
+        let src = "ins 1\nouts:\n  out1\nblock:\n  held = ins[0]\n  sample:\n    out1 = held\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("block pre dynamic input read should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains("ins[i]")),
+            "missing dynamic-input diagnostic for block pre: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn block_post_cannot_read_dynamic_inputs() {
+        let src = "ins 1\nouts:\n  out1\nblock:\n  sample:\n    out1 = in1\n  held = ins[0]\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("block post dynamic input read should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains("ins[i]")),
+            "missing dynamic-input diagnostic for block post: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn block_pre_cannot_write_dynamic_outputs() {
+        let src = "outs 1\nblock:\n  outs[0] = 0.0\n  sample:\n    out1 = 1.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("block pre dynamic output write should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains("outs[i]")),
+            "missing dynamic-output diagnostic for block pre: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn block_pre_cannot_read_input_arrays() {
+        let src = "ins:\n  freqs: f32[2] = [220, 440]\nouts:\n  out1\nblock:\n  held = freqs[0]\n  sample:\n    out1 = held\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("block pre input array read should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains("freqs")),
+            "missing input-array diagnostic for block pre: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn block_pre_cannot_write_output_arrays() {
+        let src = "outs:\n  stereo: f32[2]\nblock:\n  stereo[0] = 0.0\n  sample:\n    stereo[0] = 1.0\n    stereo[1] = 1.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("block pre output array write should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains("stereo")),
+            "missing output-array diagnostic for block pre: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn block_pre_can_read_dynamic_params() {
+        let src = "params 2\nouts:\n  out1\nblock:\n  held = params[0] + params[1]\n  sample:\n    out1 = held\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("block pre dynamic param read should analyze");
+    }
+
+    #[test]
     fn nested_block_local_is_not_visible_in_sample() {
         let src =
             "outs:\n  out1\nblock:\n  if true:\n    nested = 1.0\n  sample:\n    out1 = nested\n";
@@ -4919,6 +5023,17 @@ sample:
         let src = "proc Voice:\n  outs:\n    out1\n  block:\n    pre_root = 1.0\n    sample:\n      out1 = pre_root\n    post_seen = pre_root\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
         let program = parse_program(src).expect("parse should succeed");
         analyze(program).expect("proc block pre vars should be visible in sample and post");
+    }
+
+    #[test]
+    fn proc_block_pre_cannot_read_dynamic_inputs() {
+        let src = "proc Voice:\n  ins 1\n  outs:\n    out1\n  block:\n    held = ins[0]\n    sample:\n      out1 = held\nins:\n  in1\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice(in1)\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("proc block pre dynamic input read should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains("ins[i]")),
+            "missing proc dynamic-input diagnostic for block pre: {errors:#?}"
+        );
     }
 
     #[test]

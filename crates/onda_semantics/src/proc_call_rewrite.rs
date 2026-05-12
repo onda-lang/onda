@@ -658,6 +658,36 @@ pub(super) fn expand_expr_to_slots(
     }
 }
 
+fn validate_fixed_array_event_arg(
+    expr: &Expr,
+    len: usize,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::ArrayLiteral { values, .. } => {
+            if values.len() != len {
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
+                    format!(
+                        "{context}: expected array argument with {len} elements, got {}",
+                        values.len()
+                    ),
+                );
+            }
+        }
+        Expr::Var { .. } => {}
+        _ => {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
+                format!("{context}: array argument requires an array literal or array symbol expression"),
+            );
+        }
+    }
+}
+
 pub(super) fn select_proc_array_initializer_expr_for_slot(
     expr: &Expr,
     slot_idx: usize,
@@ -945,12 +975,31 @@ pub(super) fn expand_proc_event_call_args(
                 continue;
             }
         };
-        if param.fixed_array_elem_ty.is_some() || param.slice_elem_ty.is_some() {
-            expanded.push(CallArg {
-                name: None,
-                expr: resolved_expr,
-            });
-            continue;
+        match param.ty {
+            ProcEventParamTypeSpec::FixedArray { len, .. } => {
+                validate_fixed_array_event_arg(
+                    &resolved_expr,
+                    len,
+                    &format!(
+                        "processor event call '{call_display_name}(...)' argument '{}'",
+                        param.name
+                    ),
+                    errors,
+                );
+                expanded.push(CallArg {
+                    name: None,
+                    expr: resolved_expr,
+                });
+                continue;
+            }
+            ProcEventParamTypeSpec::Slice { .. } => {
+                expanded.push(CallArg {
+                    name: None,
+                    expr: resolved_expr,
+                });
+                continue;
+            }
+            ProcEventParamTypeSpec::Scalar { .. } => {}
         }
         let slot_exprs = expand_expr_to_slots(
             &resolved_expr,
@@ -2054,7 +2103,7 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
     };
     if let Some(range) = param_slot.range {
         let original = std::mem::replace(expr, Expr::number(0.0));
-        *expr = clamp_expr_to_range(original, range);
+        *expr = cast_expr_to_primitive(clamp_expr_to_range(original, range), param_slot.ty);
     }
 }
 

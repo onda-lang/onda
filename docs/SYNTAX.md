@@ -305,7 +305,8 @@ Every proc also gets a builtin reserved `init(...)` event:
 - it mirrors the proc params in declaration order
 - it uses the concrete specialized param types
 - it cannot be redefined in the proc `events` block
-- it assigns the provided values into the proc params
+- it assigns the provided values into the proc params, then reruns that proc instance's `init` block
+- omitted arguments use the proc parameter defaults
 
 That makes calls such as these legal:
 
@@ -314,6 +315,11 @@ voice.init(0.5)
 voice.init(gain = 0.5)
 voices[i].init(freq = 220.0, amp = 0.1)
 ```
+
+This is useful for reconfiguring and resetting a reused proc instance in place.
+Because params are in scope in `init`, the rerun can rebuild derived state such
+as filter coefficients, phase, nested processor state, or fixed setup arrays
+from the new param values.
 
 ### 4.4 `buffers`
 
@@ -1724,4 +1730,3 @@ Why it is useful:
 - top-level `events`
 - persistent state mutation from host events
 - proc use inside a playable patch
-

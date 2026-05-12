@@ -9,10 +9,23 @@ struct ManagedDynamicProcArray {
     active_field: String,
 }
 
+fn proc_event_array_param_fn_ty(param_ty: ProcEventParamTypeSpec) -> Option<FnParamType> {
+    match param_ty {
+        ProcEventParamTypeSpec::FixedArray { elem_ty, len } => Some(FnParamType::SizedArray {
+            elem: Some(elem_ty),
+            generic_name: None,
+            size: Expr::int(len as i64),
+        }),
+        ProcEventParamTypeSpec::Slice { elem_ty } => Some(FnParamType::Array(Some(elem_ty))),
+        ProcEventParamTypeSpec::Scalar { .. } => None,
+    }
+}
+
 fn build_builtin_proc_init_event_parts<F>(
     receiver_ty: &str,
     param_specs: &[ProcParamSpec],
     mut target_for_slot: F,
+    init_fn_name: String,
 ) -> (Vec<onda_frontend::FnParamDecl>, Vec<Stmt>)
 where
     F: FnMut(&str) -> String,
@@ -39,7 +52,7 @@ where
             });
             let mut value = Expr::var(param.name.clone());
             if let Some(range) = slot.range {
-                value = clamp_expr_to_range(value, range);
+                value = cast_expr_to_primitive(clamp_expr_to_range(value, range), slot.ty);
             }
             event_body.push(Stmt::Assign {
                 loc: Default::default(),
@@ -58,11 +71,15 @@ where
             .slots
             .first()
             .map(|slot| slot.ty)
-            .unwrap_or(PrimitiveType::F32);
+            .expect("lowered processor array param must have at least one slot");
         event_params.push(onda_frontend::FnParamDecl {
             loc: Default::default(),
             name: param.name.clone(),
-            ty: Some(FnParamType::Array(Some(elem_ty))),
+            ty: Some(FnParamType::SizedArray {
+                elem: Some(elem_ty),
+                generic_name: None,
+                size: Expr::int(param.slots.len() as i64),
+            }),
             ty_loc: Default::default(),
             default: None,
         });
@@ -73,7 +90,7 @@ where
                 index: Box::new(Expr::int(idx as i64)),
             };
             if let Some(range) = slot.range {
-                value = clamp_expr_to_range(value, range);
+                value = cast_expr_to_primitive(clamp_expr_to_range(value, range), slot.ty);
             }
             event_body.push(Stmt::Assign {
                 loc: Default::default(),
@@ -87,6 +104,19 @@ where
             });
         }
     }
+
+    event_body.push(Stmt::Expr {
+        loc: Default::default(),
+        expr: Expr::UserCall {
+            loc: Default::default(),
+            name: init_fn_name,
+            type_args: Vec::new(),
+            args: vec![CallArg {
+                name: None,
+                expr: Expr::var("self"),
+            }],
+        },
+    });
 
     (event_params, event_body)
 }
@@ -1138,6 +1168,7 @@ fn generate_nested_wrapper_defs(
                             &proc.name,
                             &callee_shape.param_specs,
                             |slot| nested_field_name(&nested_path, slot),
+                            nested_init_fn_name(&proc.name, &nested_path),
                         )
                     } else {
                         let mut nested_event_params = Vec::<onda_frontend::FnParamDecl>::new();
@@ -1152,12 +1183,11 @@ fn generate_nested_wrapper_defs(
                         let mut callee_event_in_array_slots = HashMap::<String, Vec<String>>::new();
                         for param in &event_spec.params {
                             callee_event_ins_names.insert(param.name.clone());
-                            if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty)
-                            {
+                            if let Some(param_ty) = proc_event_array_param_fn_ty(param.ty) {
                                 nested_event_params.push(onda_frontend::FnParamDecl {
                                     loc: Default::default(),
                                     name: param.name.clone(),
-                                    ty: Some(FnParamType::Array(Some(elem_ty))),
+                                    ty: Some(param_ty),
                                     ty_loc: Default::default(),
                                     default: None,
                                 });
@@ -2107,9 +2137,12 @@ pub(super) fn generate_lowered_proc_blocks(
                     continue;
                 };
                 let (event_params, event_body) = if is_builtin_proc_init_event_name(&event.name) {
-                    build_builtin_proc_init_event_parts(&proc.name, &shape.param_specs, |slot| {
-                        format!("self.{slot}")
-                    })
+                    build_builtin_proc_init_event_parts(
+                        &proc.name,
+                        &shape.param_specs,
+                        |slot| format!("self.{slot}"),
+                        format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX),
+                    )
                 } else {
                     let mut event_params = Vec::<onda_frontend::FnParamDecl>::new();
                     event_params.push(onda_frontend::FnParamDecl {
@@ -2123,11 +2156,11 @@ pub(super) fn generate_lowered_proc_blocks(
                     let mut event_in_array_slots = HashMap::<String, Vec<String>>::new();
                     for param in &event_spec.params {
                         event_ins_names.insert(param.name.clone());
-                        if let Some(elem_ty) = param.fixed_array_elem_ty.or(param.slice_elem_ty) {
+                        if let Some(param_ty) = proc_event_array_param_fn_ty(param.ty) {
                             event_params.push(onda_frontend::FnParamDecl {
                                 loc: Default::default(),
                                 name: param.name.clone(),
-                                ty: Some(FnParamType::Array(Some(elem_ty))),
+                                ty: Some(param_ty),
                                 ty_loc: Default::default(),
                                 default: None,
                             });

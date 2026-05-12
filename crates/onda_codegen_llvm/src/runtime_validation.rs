@@ -1,7 +1,10 @@
 use onda_frontend::Diagnostic;
 
-use crate::primitives::{append_typed_const_bytes, primitive_type_bytes};
-use crate::{CodegenOptions, CompileOptions, DeclaredEvent, JitProgram, RuntimeState, TargetCpu};
+use crate::primitives::{append_typed_const_bytes, primitive_type_bytes, write_typed_const_bytes};
+use crate::{
+    CodegenOptions, CompileOptions, DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer,
+    RuntimeState, TargetCpu,
+};
 
 pub(crate) fn validate_compile_options(options: &CompileOptions) -> Result<(), Diagnostic> {
     if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
@@ -184,6 +187,26 @@ impl JitProgram {
         out
     }
 
+    pub fn write_default_param_bytes(&self, out: &mut [u8]) -> Result<(), Diagnostic> {
+        let expected = self.param_byte_size();
+        if out.len() != expected {
+            return Err(Diagnostic::runtime(
+                "runtime parameter default storage size does not match compiled program",
+                0,
+                0,
+            ));
+        }
+        let mut offset = 0usize;
+        for param in &self.typed.params {
+            offset = offset.saturating_add(write_typed_const_bytes(
+                &mut out[offset..],
+                param.default,
+                param.ty,
+            ));
+        }
+        Ok(())
+    }
+
     pub fn inputs(&self) -> &[crate::DeclaredIo] {
         self.inputs.as_slice()
     }
@@ -198,6 +221,10 @@ impl JitProgram {
 
     pub fn buffers(&self) -> &[crate::DeclaredBuffer] {
         self.buffers.as_slice()
+    }
+
+    pub fn state_entries(&self) -> &[crate::DeclaredState] {
+        self.state_entries.as_slice()
     }
 
     pub fn input_count(&self) -> usize {
@@ -220,6 +247,10 @@ impl JitProgram {
         self.events.len()
     }
 
+    pub fn state_count(&self) -> usize {
+        self.state_entries.len()
+    }
+
     pub fn input_name(&self, index: usize) -> Option<&str> {
         self.inputs.get(index).map(|io| io.name())
     }
@@ -238,6 +269,10 @@ impl JitProgram {
 
     pub fn event_name(&self, index: usize) -> Option<&str> {
         self.events.get(index).map(|event| event.name())
+    }
+
+    pub fn state_name(&self, index: usize) -> Option<&str> {
+        self.state_entries.get(index).map(|entry| entry.name())
     }
 
     pub fn input_index(&self, name: &str) -> Option<usize> {
@@ -276,6 +311,10 @@ impl JitProgram {
         self.buffers.get(index).map(|buffer| buffer.type_repr())
     }
 
+    pub fn state_type(&self, index: usize) -> Option<String> {
+        self.state_entries.get(index).map(|entry| entry.type_repr())
+    }
+
     pub fn event_payload_bytes(&self, index: usize) -> Option<usize> {
         self.events
             .get(index)
@@ -292,6 +331,10 @@ impl JitProgram {
 
     pub fn param_type_bytes(&self, index: usize) -> Option<usize> {
         self.params.get(index).map(|io| io.byte_size())
+    }
+
+    pub fn state_type_bytes(&self, index: usize) -> Option<usize> {
+        self.state_entries.get(index).map(|entry| entry.byte_size())
     }
 
     pub fn param_descriptor(&self, index: usize) -> Option<&crate::DeclaredIo> {
@@ -314,18 +357,37 @@ impl JitProgram {
         self.sample_rate
     }
 
+    pub fn state_size_bytes(&self) -> usize {
+        #[cfg(feature = "llvm-orc")]
+        {
+            return self.compiled.state_size_bytes();
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            0
+        }
+    }
+
     pub fn event_descriptor(&self, index: usize) -> Option<&crate::DeclaredEvent> {
         self.events.get(index)
     }
 
     pub fn initialize_state(&self, params: &[u8]) -> Result<RuntimeState, Diagnostic> {
+        self.initialize_state_with_allocator(params, None)
+    }
+
+    pub fn initialize_state_with_allocator(
+        &self,
+        params: &[u8],
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<RuntimeState, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            return initialize_state_orc(&self.compiled, params);
+            return initialize_state_orc(&self.compiled, params, allocator);
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = params;
+            let _ = (params, allocator);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
@@ -336,7 +398,9 @@ impl JitProgram {
         &self,
         state: &mut RuntimeState,
         params: &[u8],
+        start_frame: usize,
         frames: usize,
+        flags: u32,
         in_ptrs: &[*const u8],
         out_ptrs: &[*mut u8],
         buffer_ptrs: &[*mut u8],
@@ -350,7 +414,9 @@ impl JitProgram {
                 &self.compiled,
                 state,
                 params,
+                start_frame,
                 frames,
+                flags,
                 in_ptrs,
                 out_ptrs,
                 buffer_ptrs,
@@ -364,7 +430,9 @@ impl JitProgram {
             let _ = (
                 state,
                 params,
+                start_frame,
                 frames,
+                flags,
                 in_ptrs,
                 out_ptrs,
                 buffer_ptrs,
@@ -416,7 +484,9 @@ impl JitProgram {
         &self,
         state: &mut RuntimeState,
         params: &[u8],
+        start_frame: u32,
         frames: u32,
+        flags: u32,
         in_ptrs: &[*const u8],
         out_ptrs: &[*mut u8],
         buffer_ptrs: &[*mut u8],
@@ -430,7 +500,9 @@ impl JitProgram {
                 &self.compiled,
                 state,
                 params,
+                start_frame,
                 frames,
+                flags,
                 in_ptrs,
                 out_ptrs,
                 buffer_ptrs,
@@ -445,7 +517,9 @@ impl JitProgram {
             let _ = (
                 state,
                 params,
+                start_frame,
                 frames,
+                flags,
                 in_ptrs,
                 out_ptrs,
                 buffer_ptrs,
@@ -554,6 +628,66 @@ impl JitProgram {
     }
 }
 
+impl RuntimeState {
+    pub fn byte_size(&self) -> usize {
+        self.state_size_bytes
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        if self.state_size_bytes == 0 {
+            return &[];
+        }
+        // SAFETY: state_words is allocated as the backing storage for exactly
+        // state_size_bytes bytes rounded up to u64 words by initialize_state.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.state_words.as_ptr().cast::<u8>(),
+                self.state_size_bytes,
+            )
+        }
+    }
+
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        if self.state_size_bytes == 0 {
+            return &mut [];
+        }
+        // SAFETY: state_words is uniquely borrowed here and stores at least
+        // state_size_bytes bytes rounded up to u64 words.
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.state_words.as_mut_ptr().cast::<u8>(),
+                self.state_size_bytes,
+            )
+        }
+    }
+
+    pub fn copy_from_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
+        if bytes.len() != self.state_size_bytes {
+            return Err(Diagnostic::runtime(
+                format!(
+                    "state snapshot byte size mismatch: expected {}, got {}",
+                    self.state_size_bytes,
+                    bytes.len()
+                ),
+                0,
+                0,
+            ));
+        }
+        self.bytes_mut().copy_from_slice(bytes);
+        Ok(())
+    }
+
+    pub fn try_clone_with_allocator(
+        &self,
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<Self, Diagnostic> {
+        Ok(Self {
+            state_words: RuntimeBuffer::try_from_slice_in(self.state_words.as_slice(), allocator)?,
+            state_size_bytes: self.state_size_bytes,
+        })
+    }
+}
+
 #[cfg(feature = "llvm-orc")]
 fn required_state_words(state_size_bytes: usize) -> usize {
     (state_size_bytes + 7) / 8
@@ -634,7 +768,9 @@ fn process_checked_orc(
     compiled: &crate::orc_backend::OrcProcess,
     state: &mut RuntimeState,
     params: &[u8],
+    start_frame: usize,
     frames: usize,
+    flags: u32,
     in_ptrs: &[*const u8],
     out_ptrs: &[*mut u8],
     buffer_ptrs: &[*mut u8],
@@ -642,6 +778,13 @@ fn process_checked_orc(
     buffer_channels: &[i32],
     buffer_sample_rates: &[f32],
 ) -> Result<(), Diagnostic> {
+    let start_frame = u32::try_from(start_frame).map_err(|_| {
+        Diagnostic::runtime(
+            "start frame does not fit u32 for ORC process entrypoint",
+            0,
+            0,
+        )
+    })?;
     let frames = u32::try_from(frames).map_err(|_| {
         Diagnostic::runtime(
             "frame count does not fit u32 for ORC process entrypoint",
@@ -684,7 +827,9 @@ fn process_checked_orc(
     compiled.run(
         in_ptrs.as_ptr(),
         out_ptrs.as_ptr(),
+        start_frame,
         frames,
+        flags,
         params.as_ptr(),
         state.state_words.as_mut_ptr().cast::<u8>(),
         buffer_ptrs.as_ptr(),
@@ -727,7 +872,9 @@ unsafe fn process_unchecked_orc(
     compiled: &crate::orc_backend::OrcProcess,
     state: &mut RuntimeState,
     params: &[u8],
+    start_frame: u32,
     frames: u32,
+    flags: u32,
     in_ptrs: &[*const u8],
     out_ptrs: &[*mut u8],
     buffer_ptrs: &[*mut u8],
@@ -738,7 +885,9 @@ unsafe fn process_unchecked_orc(
     compiled.run(
         in_ptrs.as_ptr(),
         out_ptrs.as_ptr(),
+        start_frame,
         frames,
+        flags,
         params.as_ptr(),
         state.state_words.as_mut_ptr().cast::<u8>(),
         buffer_ptrs.as_ptr(),
@@ -820,10 +969,12 @@ unsafe fn trigger_event_orc_unchecked(
 fn initialize_state_orc(
     compiled: &crate::orc_backend::OrcProcess,
     params: &[u8],
+    allocator: Option<RuntimeAllocator>,
 ) -> Result<RuntimeState, Diagnostic> {
     validate_param_bytes(compiled, params)?;
     let state_size_bytes = compiled.state_size_bytes();
-    let mut state_words = vec![0_u64; required_state_words(state_size_bytes)];
+    let mut state_words =
+        RuntimeBuffer::try_from_elem_in(required_state_words(state_size_bytes), 0_u64, allocator)?;
     compiled.run_init(params.as_ptr(), state_words.as_mut_ptr().cast::<u8>());
     Ok(RuntimeState {
         state_words,

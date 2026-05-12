@@ -4,7 +4,8 @@ use onda_frontend::Span;
 
 use crate::processor_lowering::{
     coerce_typed_events, collect_runtime_state_roots, desugar_processors,
-    internal_proc_index_call_signature, lower_graph_blocks, validated_sample_oversample_factor,
+    internal_proc_index_call_signature, lower_graph_blocks,
+    prepare_processors_for_graph_inspection, validated_sample_oversample_factor,
     ProcessorDesugarResult,
 };
 use crate::*;
@@ -6036,6 +6037,10 @@ pub fn lower_graphs_for_inspection_with_options(
     program
         .blocks
         .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
+    prepare_processors_for_graph_inspection(&mut program, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     lower_graph_blocks(&mut program, options, &mut errors);
     if !errors.is_empty() {
         return Err(errors);

@@ -1,5 +1,11 @@
-use onda_codegen_llvm::{DeclaredBufferChannels, JitProgram, RuntimeState};
+use onda_codegen_llvm::{
+    DeclaredBufferChannels, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState,
+};
 use onda_frontend::{Diagnostic, PrimitiveType};
+
+pub const PROCESS_BEGIN_BLOCK: u32 = 1 << 0;
+pub const PROCESS_END_BLOCK: u32 = 1 << 1;
+pub const PROCESS_FULL_BLOCK: u32 = PROCESS_BEGIN_BLOCK | PROCESS_END_BLOCK;
 
 #[derive(Debug, Clone, Copy)]
 pub struct InstanceConfig {
@@ -13,19 +19,18 @@ pub struct InstanceConfig {
 pub struct Instance {
     pub(crate) program: JitProgram,
     pub(crate) config: InstanceConfig,
-    pub(crate) process_frames_u32: u32,
-    pub(crate) params: Vec<u8>,
+    pub(crate) params: RuntimeBuffer<u8>,
     pub(crate) state: RuntimeState,
     pub(crate) initial_state: RuntimeState,
-    pub(crate) input_bindings: Vec<Option<BoundInput>>,
-    pub(crate) output_bindings: Vec<Option<BoundOutput>>,
-    pub(crate) buffer_bindings: Vec<Option<BoundBuffer>>,
-    pub(crate) input_ptrs: Vec<*const u8>,
-    pub(crate) output_ptrs: Vec<*mut u8>,
-    pub(crate) buffer_ptrs: Vec<*mut u8>,
-    pub(crate) buffer_frames: Vec<i32>,
-    pub(crate) buffer_channels: Vec<i32>,
-    pub(crate) buffer_sample_rates: Vec<f32>,
+    pub(crate) input_bindings: RuntimeBuffer<Option<BoundInput>>,
+    pub(crate) output_bindings: RuntimeBuffer<Option<BoundOutput>>,
+    pub(crate) buffer_bindings: RuntimeBuffer<Option<BoundBuffer>>,
+    pub(crate) input_ptrs: RuntimeBuffer<*const u8>,
+    pub(crate) output_ptrs: RuntimeBuffer<*mut u8>,
+    pub(crate) buffer_ptrs: RuntimeBuffer<*mut u8>,
+    pub(crate) buffer_frames: RuntimeBuffer<i32>,
+    pub(crate) buffer_channels: RuntimeBuffer<i32>,
+    pub(crate) buffer_sample_rates: RuntimeBuffer<f32>,
     pub(crate) inputs_validated: bool,
     pub(crate) outputs_validated: bool,
     pub(crate) buffers_validated: bool,
@@ -81,6 +86,10 @@ impl Instance {
         self.program.event_count()
     }
 
+    pub fn state_count(&self) -> usize {
+        self.program.state_count()
+    }
+
     pub fn input_name(&self, index: usize) -> Option<&str> {
         self.program.input_name(index)
     }
@@ -101,6 +110,10 @@ impl Instance {
         self.program.event_name(index)
     }
 
+    pub fn state_name(&self, index: usize) -> Option<&str> {
+        self.program.state_name(index)
+    }
+
     pub fn input_index(&self, name: &str) -> Option<usize> {
         self.program.input_index(name)
     }
@@ -119,6 +132,10 @@ impl Instance {
 
     pub fn event_index(&self, name: &str) -> Option<usize> {
         self.program.event_index(name)
+    }
+
+    pub fn state_type(&self, index: usize) -> Option<String> {
+        self.program.state_type(index)
     }
 
     pub fn input_type(&self, index: usize) -> Option<String> {
@@ -152,11 +169,45 @@ impl Instance {
     pub fn event_payload_bytes(&self, index: usize) -> Option<usize> {
         self.program.event_payload_bytes(index)
     }
+
+    pub fn state_type_bytes(&self, index: usize) -> Option<usize> {
+        self.program.state_type_bytes(index)
+    }
+
+    pub fn state_size_bytes(&self) -> usize {
+        self.state.byte_size()
+    }
+
+    pub fn snapshot_state_bytes(&self) -> &[u8] {
+        self.state.bytes()
+    }
+
+    pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
+        self.state.copy_from_bytes(bytes)?;
+        self.buffers_validated = false;
+        Ok(())
+    }
 }
 
 pub fn create_instance(
     program: JitProgram,
     config: InstanceConfig,
+) -> Result<Instance, Diagnostic> {
+    create_instance_inner(program, config, None)
+}
+
+pub fn create_instance_with_allocator(
+    program: JitProgram,
+    config: InstanceConfig,
+    allocator: RuntimeAllocator,
+) -> Result<Instance, Diagnostic> {
+    create_instance_inner(program, config, Some(allocator))
+}
+
+fn create_instance_inner(
+    program: JitProgram,
+    config: InstanceConfig,
+    allocator: Option<RuntimeAllocator>,
 ) -> Result<Instance, Diagnostic> {
     if config.frames_per_block == 0 {
         return Err(Diagnostic::runtime(
@@ -198,7 +249,7 @@ pub fn create_instance(
             0,
         ));
     }
-    let process_frames_u32 = u32::try_from(config.frames_per_block).map_err(|_| {
+    u32::try_from(config.frames_per_block).map_err(|_| {
         Diagnostic::runtime(
             "frames_per_block does not fit u32 runtime/JIT process entrypoint",
             0,
@@ -209,9 +260,10 @@ pub fn create_instance(
     let required_in_channels = program.required_in_channels();
     let required_out_channels = program.required_out_channels();
 
-    let params = program.default_param_bytes();
-    let state = program.initialize_state(&params)?;
-    let initial_state = state.clone();
+    let mut params = RuntimeBuffer::try_from_elem_in(program.param_byte_size(), 0_u8, allocator)?;
+    program.write_default_param_bytes(&mut params)?;
+    let state = program.initialize_state_with_allocator(&params, allocator)?;
+    let initial_state = state.try_clone_with_allocator(allocator)?;
 
     let input_count = program.input_count();
     let output_count = program.output_count();
@@ -219,19 +271,30 @@ pub fn create_instance(
     Ok(Instance {
         program,
         config,
-        process_frames_u32,
         params,
         state,
         initial_state,
-        input_bindings: vec![None; input_count],
-        output_bindings: vec![None; output_count],
-        buffer_bindings: vec![None; buffer_count],
-        input_ptrs: vec![std::ptr::null(); required_in_channels],
-        output_ptrs: vec![std::ptr::null_mut(); required_out_channels],
-        buffer_ptrs: vec![std::ptr::null_mut(); buffer_count],
-        buffer_frames: vec![0_i32; buffer_count],
-        buffer_channels: vec![0_i32; buffer_count],
-        buffer_sample_rates: vec![0.0_f32; buffer_count],
+        input_bindings: RuntimeBuffer::try_from_elem_in(input_count, None, allocator)?,
+        output_bindings: RuntimeBuffer::try_from_elem_in(output_count, None, allocator)?,
+        buffer_bindings: RuntimeBuffer::try_from_elem_in(buffer_count, None, allocator)?,
+        input_ptrs: RuntimeBuffer::try_from_elem_in(
+            required_in_channels,
+            std::ptr::null(),
+            allocator,
+        )?,
+        output_ptrs: RuntimeBuffer::try_from_elem_in(
+            required_out_channels,
+            std::ptr::null_mut(),
+            allocator,
+        )?,
+        buffer_ptrs: RuntimeBuffer::try_from_elem_in(
+            buffer_count,
+            std::ptr::null_mut(),
+            allocator,
+        )?,
+        buffer_frames: RuntimeBuffer::try_from_elem_in(buffer_count, 0_i32, allocator)?,
+        buffer_channels: RuntimeBuffer::try_from_elem_in(buffer_count, 0_i32, allocator)?,
+        buffer_sample_rates: RuntimeBuffer::try_from_elem_in(buffer_count, 0.0_f32, allocator)?,
         inputs_validated: required_in_channels == 0,
         outputs_validated: required_out_channels == 0,
         buffers_validated: buffer_count == 0,
@@ -239,7 +302,11 @@ pub fn create_instance(
 }
 
 pub fn reset_instance_state(instance: &mut Instance) {
-    instance.state = instance.initial_state.clone();
+    instance
+        .state
+        .bytes_mut()
+        .copy_from_slice(instance.initial_state.bytes());
+    instance.buffers_validated = false;
 }
 
 pub fn set_param_by_index(
@@ -500,29 +567,6 @@ pub fn bind_buffer(
 
 pub fn validate_inputs(instance: &mut Instance) -> Result<(), Diagnostic> {
     let frames = instance.config.frames_per_block;
-    let input_descs = instance.program.inputs().to_vec();
-    for (in_idx, desc) in input_descs.iter().enumerate() {
-        let Some(binding) = instance.input_bindings.get(in_idx).and_then(|b| *b) else {
-            return Err(Diagnostic::runtime(
-                format!("required input '{}' is not bound", desc.name()),
-                0,
-                0,
-            ));
-        };
-        let expected = desc.byte_size().saturating_mul(frames);
-        if binding.bytes != expected {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "input '{}' bound buffer size {} does not match expected {}",
-                    desc.name(),
-                    binding.bytes,
-                    expected
-                ),
-                0,
-                0,
-            ));
-        }
-    }
     prepare_input_ptrs_from_bindings(instance, frames)?;
     instance.inputs_validated = true;
     Ok(())
@@ -571,13 +615,125 @@ pub fn validate_bindings(instance: &mut Instance) -> Result<(), Diagnostic> {
 }
 
 pub fn process_checked(instance: &mut Instance, frames: usize) -> Result<(), Diagnostic> {
-    if frames > instance.config.frames_per_block {
+    process_checked_segment(instance, 0, frames, PROCESS_FULL_BLOCK)
+}
+
+pub fn process_checked_segment(
+    instance: &mut Instance,
+    start_frame: usize,
+    frames: usize,
+    flags: u32,
+) -> Result<(), Diagnostic> {
+    validate_process_request(instance, start_frame, frames, flags)?;
+    validate_bindings_for_process(instance)?;
+    sync_proc_buffer_refs_for_process(instance)?;
+    instance.program.process_checked(
+        &mut instance.state,
+        &instance.params,
+        start_frame,
+        frames,
+        flags,
+        &instance.input_ptrs,
+        &instance.output_ptrs,
+        &instance.buffer_ptrs,
+        &instance.buffer_frames,
+        &instance.buffer_channels,
+        &instance.buffer_sample_rates,
+    )?;
+    Ok(())
+}
+
+pub fn prepare_unchecked_process(instance: &mut Instance) -> Result<(), Diagnostic> {
+    validate_bindings_for_process(instance)?;
+    sync_proc_buffer_refs_for_process(instance)
+}
+
+pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<(), Diagnostic> {
+    unsafe {
+        process_unchecked_segment(
+            instance,
+            0,
+            instance.config.frames_per_block,
+            PROCESS_FULL_BLOCK,
+        )
+    }
+}
+
+pub unsafe fn process_unchecked_segment(
+    instance: &mut Instance,
+    start_frame: usize,
+    frames: usize,
+    flags: u32,
+) -> Result<(), Diagnostic> {
+    validate_process_request(instance, start_frame, frames, flags)?;
+    debug_assert!(
+        instance.inputs_validated && instance.outputs_validated && instance.buffers_validated,
+        "process_unchecked called without validating required input/output/buffer bindings; this is UB in release builds"
+    );
+    let start_frame = u32::try_from(start_frame).map_err(|_| {
+        Diagnostic::runtime(
+            "start frame does not fit u32 runtime/JIT process entrypoint",
+            0,
+            0,
+        )
+    })?;
+    let frames = u32::try_from(frames).map_err(|_| {
+        Diagnostic::runtime(
+            "frame count does not fit u32 runtime/JIT process entrypoint",
+            0,
+            0,
+        )
+    })?;
+    unsafe {
+        instance.program.process_unchecked(
+            &mut instance.state,
+            &instance.params,
+            start_frame,
+            frames,
+            flags,
+            &instance.input_ptrs,
+            &instance.output_ptrs,
+            &instance.buffer_ptrs,
+            &instance.buffer_frames,
+            &instance.buffer_channels,
+            &instance.buffer_sample_rates,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_process_request(
+    instance: &Instance,
+    start_frame: usize,
+    frames: usize,
+    flags: u32,
+) -> Result<(), Diagnostic> {
+    let Some(end_frame) = start_frame.checked_add(frames) else {
         return Err(Diagnostic::runtime(
-            "frame count must be less than or equal to fixed instance block size",
+            "segment frame range overflows usize",
+            0,
+            0,
+        ));
+    };
+    if end_frame > instance.config.frames_per_block {
+        return Err(Diagnostic::runtime(
+            "segment start frame + frame count must be less than or equal to fixed instance block size",
             0,
             0,
         ));
     }
+    let unknown_flags = flags & !PROCESS_FULL_BLOCK;
+    if unknown_flags != 0 {
+        return Err(Diagnostic::runtime(
+            format!("unknown process flags 0x{unknown_flags:x}"),
+            0,
+            0,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_bindings_for_process(instance: &mut Instance) -> Result<(), Diagnostic> {
     if !instance.buffers_validated {
         validate_buffers(instance)?;
     }
@@ -587,27 +743,17 @@ pub fn process_checked(instance: &mut Instance, frames: usize) -> Result<(), Dia
     if !instance.outputs_validated {
         validate_outputs(instance)?;
     }
-    // Proc-local buffer-ref refresh/sync is intentionally tied to the checked
-    // path. `process_unchecked` must not perform hidden refresh work.
+    Ok(())
+}
+
+fn sync_proc_buffer_refs_for_process(instance: &mut Instance) -> Result<(), Diagnostic> {
     instance.program.sync_proc_buffer_refs_for_process_checked(
         &mut instance.state,
         &instance.buffer_ptrs,
         &instance.buffer_frames,
         &instance.buffer_channels,
         &instance.buffer_sample_rates,
-    )?;
-    instance.program.process_checked(
-        &mut instance.state,
-        &instance.params,
-        frames,
-        &instance.input_ptrs,
-        &instance.output_ptrs,
-        &instance.buffer_ptrs,
-        &instance.buffer_frames,
-        &instance.buffer_channels,
-        &instance.buffer_sample_rates,
-    )?;
-    Ok(())
+    )
 }
 
 pub fn trigger_event_by_index(
@@ -649,25 +795,6 @@ pub unsafe fn trigger_event_by_index_unchecked(
         &instance.buffer_channels,
         &instance.buffer_sample_rates,
     )
-}
-
-pub unsafe fn process_unchecked(instance: &mut Instance) -> Result<(), Diagnostic> {
-    debug_assert!(
-        instance.inputs_validated && instance.outputs_validated && instance.buffers_validated,
-        "process_unchecked called without validating required input/output/buffer bindings; this is UB in release builds"
-    );
-    instance.program.process_unchecked(
-        &mut instance.state,
-        &instance.params,
-        instance.process_frames_u32,
-        &instance.input_ptrs,
-        &instance.output_ptrs,
-        &instance.buffer_ptrs,
-        &instance.buffer_frames,
-        &instance.buffer_channels,
-        &instance.buffer_sample_rates,
-    )?;
-    Ok(())
 }
 
 fn prepare_buffer_ptrs_from_bindings(instance: &mut Instance) -> Result<(), Diagnostic> {

@@ -1,17 +1,24 @@
+use std::alloc::Layout;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 
 use onda_codegen_llvm::{
     lower_and_jit_with_options, CompileOptions, DeclaredBufferChannels, DeclaredEventParam,
-    JitProgram,
+    DeclaredState, JitProgram, RuntimeAllocator,
 };
 use onda_frontend::{parse_program, parse_program_file, DiagCode, Diagnostic, PrimitiveType};
 use onda_runtime::{
-    bind_buffer, bind_input, bind_output, create_instance, process_checked, process_unchecked,
-    reset_instance_state, set_param_by_index, trigger_event_by_index, validate_bindings,
-    validate_buffers, validate_inputs, validate_outputs, Instance, InstanceConfig,
+    bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
+    prepare_unchecked_process, process_checked, process_checked_segment, process_unchecked,
+    process_unchecked_segment, reset_instance_state, set_param_by_index, trigger_event_by_index,
+    trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
+    validate_outputs, Instance, InstanceConfig,
 };
 use onda_semantics::{analyze_with_options, AnalysisOptions};
+
+pub const ONDA_PROCESS_BEGIN_BLOCK: i32 = onda_runtime::PROCESS_BEGIN_BLOCK as i32;
+pub const ONDA_PROCESS_END_BLOCK: i32 = onda_runtime::PROCESS_END_BLOCK as i32;
+pub const ONDA_PROCESS_FULL_BLOCK: i32 = onda_runtime::PROCESS_FULL_BLOCK as i32;
 
 #[repr(C)]
 pub struct onda_diag_t {
@@ -33,6 +40,20 @@ pub struct onda_compile_options_t {
 }
 
 #[allow(non_camel_case_types)]
+pub type onda_alloc_fn =
+    unsafe extern "C" fn(context: *mut c_void, size: usize, align: usize) -> *mut c_void;
+#[allow(non_camel_case_types)]
+pub type onda_free_fn =
+    unsafe extern "C" fn(context: *mut c_void, ptr: *mut c_void, size: usize, align: usize);
+
+#[repr(C)]
+pub struct onda_allocator_t {
+    pub context: *mut c_void,
+    pub alloc: Option<onda_alloc_fn>,
+    pub free: Option<onda_free_fn>,
+}
+
+#[allow(non_camel_case_types)]
 pub struct onda_program {
     jit: JitProgram,
     input_names: Vec<CString>,
@@ -45,16 +66,25 @@ pub struct onda_program {
     buffer_types: Vec<CString>,
     event_names: Vec<CString>,
     event_param_names: Vec<Vec<CString>>,
+    state_names: Vec<CString>,
+    state_types: Vec<CString>,
 }
 
 #[allow(non_camel_case_types)]
 pub struct onda_instance {
+    allocation: OndaInstanceAllocation,
     inner: Instance,
+}
+
+#[derive(Clone, Copy)]
+struct OndaInstanceAllocation {
+    allocator: Option<RuntimeAllocator>,
 }
 
 const STATIC_ERR_INVALID_UTF8: &[u8] = b"source string is not valid UTF-8\0";
 const STATIC_ERR_NULL_ARG: &[u8] = b"null argument\0";
 const STATIC_ERR_INTERNAL: &[u8] = b"internal error\0";
+const STATIC_ERR_INVALID_ALLOCATOR: &[u8] = b"invalid allocator\0";
 
 fn build_cstring_cache(strings: Vec<String>, context: &str) -> Result<Vec<CString>, Diagnostic> {
     let mut out = Vec::with_capacity(strings.len());
@@ -142,6 +172,78 @@ fn write_diag(out_diag: *mut onda_diag_t, diag: onda_diag_t) {
             ptr::write(out_diag, diag);
         }
     }
+}
+
+fn static_runtime_diag(message: &'static [u8]) -> onda_diag_t {
+    onda_diag_t {
+        code: DiagCode::Runtime as i32,
+        line: 0,
+        column: 0,
+        end_line: 0,
+        end_column: 0,
+        message: message.as_ptr().cast::<c_char>(),
+        file: ptr::null(),
+        trace: ptr::null(),
+    }
+}
+
+unsafe fn runtime_allocator_from_c(
+    allocator: *const onda_allocator_t,
+) -> Result<RuntimeAllocator, onda_diag_t> {
+    if allocator.is_null() {
+        return Err(static_runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
+    }
+    let allocator = &*allocator;
+    let Some(alloc) = allocator.alloc else {
+        return Err(static_runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
+    };
+    let Some(free) = allocator.free else {
+        return Err(static_runtime_diag(STATIC_ERR_INVALID_ALLOCATOR));
+    };
+    Ok(RuntimeAllocator {
+        context: allocator.context,
+        alloc,
+        free,
+    })
+}
+
+fn allocate_instance_handle(
+    inner: Instance,
+    allocator: Option<RuntimeAllocator>,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_instance {
+    let allocation = OndaInstanceAllocation { allocator };
+    let Some(allocator) = allocator else {
+        return Box::into_raw(Box::new(onda_instance { allocation, inner }));
+    };
+
+    let layout = Layout::new::<onda_instance>();
+    let raw = unsafe { (allocator.alloc)(allocator.context, layout.size(), layout.align()) };
+    if raw.is_null() {
+        write_diag(
+            out_diag,
+            static_runtime_diag(b"runtime allocator returned null for instance handle\0"),
+        );
+        drop(inner);
+        return ptr::null_mut();
+    }
+    if (raw as usize) % layout.align() != 0 {
+        unsafe {
+            (allocator.free)(allocator.context, raw, layout.size(), layout.align());
+        }
+        write_diag(
+            out_diag,
+            static_runtime_diag(b"runtime allocator returned misaligned instance handle\0"),
+        );
+        drop(inner);
+        return ptr::null_mut();
+    }
+
+    let instance = raw.cast::<onda_instance>();
+    unsafe {
+        ptr::write(instance, onda_instance { allocation, inner });
+    }
+    instance
 }
 
 #[no_mangle]
@@ -410,6 +512,30 @@ unsafe fn onda_compile_impl(
             return ptr::null_mut();
         }
     };
+    let state_names = match build_cstring_cache(
+        (0..jit.state_count())
+            .filter_map(|idx| jit.state_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "state name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let state_types = match build_cstring_cache(
+        (0..jit.state_count())
+            .filter_map(|idx| jit.state_type(idx))
+            .collect(),
+        "state type",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
 
     Box::into_raw(Box::new(onda_program {
         jit,
@@ -423,6 +549,8 @@ unsafe fn onda_compile_impl(
         buffer_types,
         event_names,
         event_param_names,
+        state_names,
+        state_types,
     }))
 }
 
@@ -692,6 +820,30 @@ unsafe fn onda_compile_file_impl(
             return ptr::null_mut();
         }
     };
+    let state_names = match build_cstring_cache(
+        (0..jit.state_count())
+            .filter_map(|idx| jit.state_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "state name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let state_types = match build_cstring_cache(
+        (0..jit.state_count())
+            .filter_map(|idx| jit.state_type(idx))
+            .collect(),
+        "state type",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
 
     Box::into_raw(Box::new(onda_program {
         jit,
@@ -705,6 +857,8 @@ unsafe fn onda_compile_file_impl(
         buffer_types,
         event_names,
         event_param_names,
+        state_names,
+        state_types,
     }))
 }
 
@@ -723,38 +877,49 @@ pub unsafe extern "C" fn onda_instance_create(
     out_channels: i32,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_instance {
+    onda_instance_create_impl(program, in_channels, out_channels, None, out_diag)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_instance_create_with_allocator(
+    program: *const onda_program,
+    in_channels: i32,
+    out_channels: i32,
+    allocator: *const onda_allocator_t,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_instance {
+    let allocator = match runtime_allocator_from_c(allocator) {
+        Ok(allocator) => allocator,
+        Err(diag) => {
+            write_diag(out_diag, diag);
+            return ptr::null_mut();
+        }
+    };
+    onda_instance_create_impl(
+        program,
+        in_channels,
+        out_channels,
+        Some(allocator),
+        out_diag,
+    )
+}
+
+unsafe fn onda_instance_create_impl(
+    program: *const onda_program,
+    in_channels: i32,
+    out_channels: i32,
+    allocator: Option<RuntimeAllocator>,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_instance {
     if program.is_null() {
-        write_diag(
-            out_diag,
-            onda_diag_t {
-                code: DiagCode::Runtime as i32,
-                line: 0,
-                column: 0,
-                end_line: 0,
-                end_column: 0,
-                message: STATIC_ERR_NULL_ARG.as_ptr().cast::<c_char>(),
-                file: ptr::null(),
-                trace: ptr::null(),
-            },
-        );
+        write_diag(out_diag, static_runtime_diag(STATIC_ERR_NULL_ARG));
         return ptr::null_mut();
     }
 
     if in_channels < 0 || out_channels <= 0 {
         write_diag(
             out_diag,
-            onda_diag_t {
-                code: DiagCode::Runtime as i32,
-                line: 0,
-                column: 0,
-                end_line: 0,
-                end_column: 0,
-                message: b"invalid instance configuration\0"
-                    .as_ptr()
-                    .cast::<c_char>(),
-                file: ptr::null(),
-                trace: ptr::null(),
-            },
+            static_runtime_diag(b"invalid instance configuration\0"),
         );
         return ptr::null_mut();
     }
@@ -768,7 +933,11 @@ pub unsafe extern "C" fn onda_instance_create(
     };
 
     let jit = compiled.jit.clone();
-    let instance = match create_instance(jit, config) {
+    let instance = match allocator {
+        Some(allocator) => create_instance_with_allocator(jit, config, allocator),
+        None => create_instance(jit, config),
+    };
+    let instance = match instance {
         Ok(i) => i,
         Err(e) => {
             write_diag(out_diag, diag_to_c(&e));
@@ -776,7 +945,7 @@ pub unsafe extern "C" fn onda_instance_create(
         }
     };
 
-    Box::into_raw(Box::new(onda_instance { inner: instance }))
+    allocate_instance_handle(instance, allocator, out_diag)
 }
 
 #[no_mangle]
@@ -784,7 +953,19 @@ pub unsafe extern "C" fn onda_instance_destroy(instance: *mut onda_instance) {
     if instance.is_null() {
         return;
     }
-    drop(Box::from_raw(instance));
+    let allocator = (*instance).allocation.allocator;
+    if let Some(allocator) = allocator {
+        ptr::drop_in_place(instance);
+        let layout = Layout::new::<onda_instance>();
+        (allocator.free)(
+            allocator.context,
+            instance.cast::<c_void>(),
+            layout.size(),
+            layout.align(),
+        );
+    } else {
+        drop(Box::from_raw(instance));
+    }
 }
 
 #[no_mangle]
@@ -830,6 +1011,30 @@ pub unsafe extern "C" fn onda_trigger_event_by_index(
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
     match trigger_event_by_index(&mut (*instance).inner, index as usize, payload) {
+        Ok(_) => 0,
+        Err(_) => -2,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
+    instance: *mut onda_instance,
+    index: i32,
+    payload_ptr: *const c_void,
+    payload_bytes: i32,
+) -> i32 {
+    if instance.is_null() || index < 0 || payload_bytes < 0 {
+        return -1;
+    }
+    if payload_bytes > 0 && payload_ptr.is_null() {
+        return -1;
+    }
+    let payload = if payload_bytes == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
+    };
+    match trigger_event_by_index_unchecked(&mut (*instance).inner, index as usize, payload) {
         Ok(_) => 0,
         Err(_) => -2,
     }
@@ -913,12 +1118,85 @@ pub unsafe extern "C" fn onda_process_checked(instance: *mut onda_instance, fram
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_process_checked_segment(
+    instance: *mut onda_instance,
+    start_frame: i32,
+    frames: i32,
+    flags: i32,
+) -> i32 {
+    if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
+        return -1;
+    }
+    match process_checked_segment(
+        &mut (*instance).inner,
+        start_frame as usize,
+        frames as usize,
+        flags as u32,
+    ) {
+        Ok(_) => 0,
+        Err(_) => -2,
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_reset_instance_state(instance: *mut onda_instance) -> i32 {
     if instance.is_null() {
         return -1;
     }
     reset_instance_state(&mut (*instance).inner);
     0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_instance_state_bytes(instance: *const onda_instance) -> i32 {
+    if instance.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*instance).inner.state_size_bytes())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_instance_snapshot_state(
+    instance: *const onda_instance,
+    out_bytes: *mut c_void,
+    out_capacity: i32,
+) -> i32 {
+    if instance.is_null() || out_capacity < 0 {
+        return -1;
+    }
+    let bytes = (*instance).inner.snapshot_state_bytes();
+    let required = match i32::try_from(bytes.len()) {
+        Ok(value) => value,
+        Err(_) => return -1,
+    };
+    if out_bytes.is_null() || out_capacity < required {
+        return required;
+    }
+    ptr::copy_nonoverlapping(bytes.as_ptr(), out_bytes.cast::<u8>(), bytes.len());
+    required
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_instance_restore_state(
+    instance: *mut onda_instance,
+    bytes: *const c_void,
+    byte_count: i32,
+) -> i32 {
+    if instance.is_null() || byte_count < 0 {
+        return -1;
+    }
+    if byte_count > 0 && bytes.is_null() {
+        return -1;
+    }
+    let snapshot = if byte_count == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(bytes.cast::<u8>(), byte_count as usize)
+    };
+    match (*instance).inner.restore_state_bytes(snapshot) {
+        Ok(_) => 0,
+        Err(_) => -2,
+    }
 }
 
 #[no_mangle]
@@ -977,6 +1255,38 @@ pub unsafe extern "C" fn onda_process_unchecked(instance: *mut onda_instance) ->
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_prepare_unchecked_process(instance: *mut onda_instance) -> i32 {
+    if instance.is_null() {
+        return -1;
+    }
+    match prepare_unchecked_process(&mut (*instance).inner) {
+        Ok(_) => 0,
+        Err(_) => -2,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_process_unchecked_segment(
+    instance: *mut onda_instance,
+    start_frame: i32,
+    frames: i32,
+    flags: i32,
+) -> i32 {
+    if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
+        return -1;
+    }
+    match process_unchecked_segment(
+        &mut (*instance).inner,
+        start_frame as usize,
+        frames as usize,
+        flags as u32,
+    ) {
+        Ok(_) => 0,
+        Err(_) => -2,
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_input_count(program: *const onda_program) -> i32 {
     if program.is_null() {
         return -1;
@@ -1014,6 +1324,14 @@ pub unsafe extern "C" fn onda_event_count(program: *const onda_program) -> i32 {
         return -1;
     }
     saturating_usize_to_i32((*program).jit.event_count())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_state_count(program: *const onda_program) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*program).jit.state_count())
 }
 
 fn cstr_ptr_at(values: &[CString], index: i32) -> *const c_char {
@@ -1145,6 +1463,16 @@ unsafe fn event_param_descriptor<'a>(
         .and_then(|event| event.params().get(param_index as usize))
 }
 
+unsafe fn state_descriptor<'a>(
+    program: *const onda_program,
+    index: i32,
+) -> Option<&'a DeclaredState> {
+    if program.is_null() || index < 0 {
+        return None;
+    }
+    (*program).jit.state_entries().get(index as usize)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn onda_input_name(
     program: *const onda_program,
@@ -1198,6 +1526,17 @@ pub unsafe extern "C" fn onda_event_name(
         return ptr::null();
     }
     cstr_ptr_at(&(*program).event_names, index)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_state_name(
+    program: *const onda_program,
+    index: i32,
+) -> *const c_char {
+    if program.is_null() {
+        return ptr::null();
+    }
+    cstr_ptr_at(&(*program).state_names, index)
 }
 
 #[no_mangle]
@@ -1329,6 +1668,17 @@ pub unsafe extern "C" fn onda_buffer_type(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_state_type(
+    program: *const onda_program,
+    index: i32,
+) -> *const c_char {
+    if program.is_null() {
+        return ptr::null();
+    }
+    cstr_ptr_at(&(*program).state_types, index)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_input_type_bytes(program: *const onda_program, index: i32) -> i32 {
     if program.is_null() {
         return -1;
@@ -1350,6 +1700,14 @@ pub unsafe extern "C" fn onda_param_type_bytes(program: *const onda_program, ind
         return -1;
     }
     bytes_from_index(index, |idx| (*program).jit.param_type_bytes(idx))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_state_type_bytes(program: *const onda_program, index: i32) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    bytes_from_index(index, |idx| (*program).jit.state_type_bytes(idx))
 }
 
 #[no_mangle]
@@ -1574,6 +1932,13 @@ pub unsafe extern "C" fn onda_param_elem_type(program: *const onda_program, inde
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_state_elem_type(program: *const onda_program, index: i32) -> i32 {
+    state_descriptor(program, index)
+        .map(|d| primitive_type_to_i32(d.elem_ty()))
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_input_array_len(program: *const onda_program, index: i32) -> i32 {
     if program.is_null() {
         return -1;
@@ -1601,6 +1966,13 @@ pub unsafe extern "C" fn onda_param_array_len(program: *const onda_program, inde
     usize_from_index(index, |idx| {
         (*program).jit.params().get(idx).map(|d| d.array_len())
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_state_array_len(program: *const onda_program, index: i32) -> i32 {
+    state_descriptor(program, index)
+        .and_then(|d| i32::try_from(d.array_len()).ok())
+        .unwrap_or(-1)
 }
 
 #[no_mangle]
@@ -1661,6 +2033,21 @@ pub unsafe extern "C" fn onda_param_byte_offset(program: *const onda_program, in
     usize_from_index(index, |idx| {
         (*program).jit.params().get(idx).map(|d| d.byte_offset())
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_state_byte_offset(program: *const onda_program, index: i32) -> i32 {
+    state_descriptor(program, index)
+        .and_then(|d| i32::try_from(d.byte_offset()).ok())
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_state_total_bytes(program: *const onda_program) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*program).jit.state_size_bytes())
 }
 
 #[no_mangle]

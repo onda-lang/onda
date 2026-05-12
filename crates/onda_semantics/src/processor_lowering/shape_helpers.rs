@@ -840,6 +840,68 @@ fn is_proc_output_alias_name(name: &str, out_count: usize) -> bool {
     idx >= 1 && idx <= out_count
 }
 
+fn array_infos_from_slot_map(
+    slots_by_name: &HashMap<String, Vec<String>>,
+    slot_types: &HashMap<String, PrimitiveType>,
+) -> HashMap<String, TypedArrayInfo> {
+    slots_by_name
+        .iter()
+        .map(|(name, slots)| {
+            let elem_ty = slots
+                .iter()
+                .find_map(|slot| slot_types.get(slot).copied())
+                .unwrap_or(PrimitiveType::F32);
+            (
+                name.clone(),
+                TypedArrayInfo {
+                    elem_ty,
+                    len: slots.len(),
+                    offset: 0,
+                },
+            )
+        })
+        .collect()
+}
+
+fn array_infos_from_param_specs(param_specs: &[ProcParamSpec]) -> HashMap<String, TypedArrayInfo> {
+    param_specs
+        .iter()
+        .filter(|spec| spec.slots.len() > 1)
+        .map(|spec| {
+            let elem_ty = spec
+                .slots
+                .first()
+                .map(|slot| slot.ty)
+                .unwrap_or(PrimitiveType::F32);
+            (
+                spec.name.clone(),
+                TypedArrayInfo {
+                    elem_ty,
+                    len: spec.slots.len(),
+                    offset: 0,
+                },
+            )
+        })
+        .collect()
+}
+
+fn insert_declared_array_bases(
+    state_scalars: &mut HashMap<String, PrimitiveType>,
+    declared_symbols: &mut DeclaredSymbolMap,
+    arrays: &HashMap<String, TypedArrayInfo>,
+) {
+    for (name, info) in arrays {
+        insert_declared_symbol(
+            state_scalars,
+            declared_symbols,
+            name.clone(),
+            DeclaredSymbolInfo::DataArray {
+                elem_ty: info.elem_ty,
+            },
+        );
+    }
+}
+
 pub(super) fn compute_proc_shape(
     proc: &mut onda_frontend::ProcessorDef,
     sample_oversample_factor: usize,
@@ -863,6 +925,9 @@ pub(super) fn compute_proc_shape(
         expand_proc_port_specs(&proc.name, &out_ports, "output", options, errors);
     let (param_specs, mut field_array_slots) =
         expand_proc_param_specs(&proc.name, &proc.params, options, errors);
+    let proc_input_arrays = array_infos_from_slot_map(&in_array_slots, &in_types);
+    let proc_output_arrays = array_infos_from_slot_map(&out_array_slots, &out_types);
+    let proc_param_arrays = array_infos_from_param_specs(&param_specs);
     let buffer_specs = coerce_buffers(&proc.buffers, options, errors)
         .into_iter()
         .map(|b| ProcBufferSpec {
@@ -1001,6 +1066,21 @@ pub(super) fn compute_proc_shape(
         &param_slot_types,
         DeclaredScalarSymbolKind::Param,
     );
+    insert_declared_array_bases(
+        &mut state_type_hints,
+        &mut declared_symbols,
+        &proc_input_arrays,
+    );
+    insert_declared_array_bases(
+        &mut state_type_hints,
+        &mut declared_symbols,
+        &proc_output_arrays,
+    );
+    insert_declared_array_bases(
+        &mut state_type_hints,
+        &mut declared_symbols,
+        &proc_param_arrays,
+    );
     for (fn_name, ret_ty) in fn_return_types {
         if let ReturnType::Scalar(scalar_ty) = ret_ty {
             insert_declared_symbol(
@@ -1055,6 +1135,7 @@ pub(super) fn compute_proc_shape(
         top_level_proc_symbols: None,
     };
     let mut init_local_array_aliases = HashMap::new();
+    seed_top_level_array_aliases(&mut init_local_array_aliases, &proc_param_arrays, false);
     seed_top_level_array_aliases(&mut init_local_array_aliases, const_arrays, false);
     let mut init_st = InitAnalysisState {
         known_scalars: HashSet::new(),

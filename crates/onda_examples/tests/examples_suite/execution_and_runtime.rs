@@ -5507,6 +5507,289 @@ fn proc_block_wraps_sample_once_per_block() {
 }
 
 #[test]
+fn checked_segment_processing_runs_top_level_block_hooks_once_per_logical_block() {
+    let frames = 4;
+    let segment_frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+outs { out1 }
+init {
+  pre = 0.0
+  post = 0.0
+}
+block {
+  pre = pre + 1.0
+  sample {
+    out1 = pre * 100.0 + post
+  }
+  post = post + 1.0
+}
+"#,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_checked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK)
+        .expect("process first segment");
+    let first = decode_planar_f32(&out_bytes);
+    assert_near(first[0], 100.0, 1e-6);
+    assert_near(first[1], 100.0, 1e-6);
+
+    out_bytes.fill(0);
+    process_checked_segment(
+        &mut instance,
+        segment_frames,
+        segment_frames,
+        PROCESS_END_BLOCK,
+    )
+    .expect("process final segment");
+    let second = decode_planar_f32(&out_bytes);
+    assert_near(second[0], 0.0, 1e-6);
+    assert_near(second[1], 0.0, 1e-6);
+    assert_near(second[2], 100.0, 1e-6);
+    assert_near(second[3], 100.0, 1e-6);
+
+    out_bytes.fill(0);
+    process_checked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+        .expect("process next block");
+    let next = decode_planar_f32(&out_bytes);
+    for sample in next {
+        assert_near(sample, 201.0, 1e-6);
+    }
+}
+
+#[test]
+fn unchecked_segment_processing_runs_top_level_block_hooks_once_per_logical_block() {
+    let frames = 4;
+    let segment_frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+outs { out1 }
+init {
+  pre = 0.0
+  post = 0.0
+}
+block {
+  pre = pre + 1.0
+  sample {
+    out1 = pre * 100.0 + post
+  }
+  post = post + 1.0
+}
+"#,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+    prepare_unchecked_process(&mut instance).expect("prepare unchecked process");
+
+    unsafe {
+        process_unchecked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK)
+            .expect("process first unchecked segment");
+    }
+    let first = decode_planar_f32(&out_bytes);
+    assert_near(first[0], 100.0, 1e-6);
+    assert_near(first[1], 100.0, 1e-6);
+
+    out_bytes.fill(0);
+    unsafe {
+        process_unchecked_segment(
+            &mut instance,
+            segment_frames,
+            segment_frames,
+            PROCESS_END_BLOCK,
+        )
+        .expect("process final unchecked segment");
+    }
+    let second = decode_planar_f32(&out_bytes);
+    assert_near(second[0], 0.0, 1e-6);
+    assert_near(second[1], 0.0, 1e-6);
+    assert_near(second[2], 100.0, 1e-6);
+    assert_near(second[3], 100.0, 1e-6);
+
+    out_bytes.fill(0);
+    unsafe {
+        process_unchecked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+            .expect("process next unchecked block");
+    }
+    let next = decode_planar_f32(&out_bytes);
+    for sample in next {
+        assert_near(sample, 201.0, 1e-6);
+    }
+}
+
+#[test]
+fn checked_segment_processing_uses_start_frame_for_io_addressing() {
+    let frames = 4;
+    let segment_start = 2;
+    let segment_frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+ins { in1 }
+outs { out1 }
+sample {
+  out1 = in1 + 10.0
+}
+"#,
+        frames,
+    );
+
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 1);
+
+    let input = [1.0_f32, 2.0, 3.0, 4.0];
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_input(
+        &mut instance,
+        0,
+        input.as_ptr().cast::<u8>(),
+        input.len() * std::mem::size_of::<f32>(),
+    )
+    .expect("bind input");
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_checked_segment(
+        &mut instance,
+        segment_start,
+        segment_frames,
+        PROCESS_FULL_BLOCK,
+    )
+    .expect("process segment");
+    let output = decode_planar_f32(&out_bytes);
+    assert_near(output[0], 0.0, 1e-6);
+    assert_near(output[1], 0.0, 1e-6);
+    assert_near(output[2], 13.0, 1e-6);
+    assert_near(output[3], 14.0, 1e-6);
+}
+
+#[test]
+fn checked_oversampled_segment_processing_uses_start_frame_for_io_addressing() {
+    let frames = 4;
+    let segment_start = 2;
+    let segment_frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+outs { out1 }
+sample 2 {
+  out1 = 7.0
+}
+"#,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_checked_segment(
+        &mut instance,
+        segment_start,
+        segment_frames,
+        PROCESS_FULL_BLOCK,
+    )
+    .expect("process oversampled segment");
+    let output = decode_planar_f32(&out_bytes);
+    assert_near(output[0], 0.0, 1e-6);
+    assert_near(output[1], 0.0, 1e-6);
+    assert!(
+        output[2].abs() > 1e-6,
+        "expected oversampled segment to write frame 2, got {output:?}"
+    );
+    assert!(
+        output[3].abs() > 1e-6,
+        "expected oversampled segment to write frame 3, got {output:?}"
+    );
+}
+
+#[test]
+fn segmented_dynamic_proc_array_hooks_span_one_logical_block() {
+    let frames = 4;
+    let segment_frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+proc Voice {
+  outs { out1, pre, post }
+  init {
+    pre_count = 0.0
+    post_count = 0.0
+  }
+  block {
+    pre_count = pre_count + 1.0
+    sample {
+      out1 = 0.0
+      pre = pre_count
+      post = post_count
+    }
+    post_count = post_count + 1.0
+  }
+}
+outs { out1 }
+init {
+  voices: Voice[2] = [Voice(), Voice()]
+  idx: i32 = 1
+  i: i32 = 0
+}
+sample {
+  if i < 2 {
+    out1 = 0.0
+  } else {
+    voices[idx]()
+    v1 = voices[1]
+    out1 = v1.pre * 100.0 + v1.post
+  }
+  i = i + 1
+}
+"#,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_checked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK)
+        .expect("process inactive first segment");
+    let first = decode_planar_f32(&out_bytes);
+    assert_near(first[0], 0.0, 1e-6);
+    assert_near(first[1], 0.0, 1e-6);
+
+    out_bytes.fill(0);
+    process_checked_segment(
+        &mut instance,
+        segment_frames,
+        segment_frames,
+        PROCESS_END_BLOCK,
+    )
+    .expect("process active final segment");
+    let second = decode_planar_f32(&out_bytes);
+    assert_near(second[0], 0.0, 1e-6);
+    assert_near(second[1], 0.0, 1e-6);
+    assert_near(second[2], 100.0, 1e-6);
+    assert_near(second[3], 100.0, 1e-6);
+
+    out_bytes.fill(0);
+    process_checked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+        .expect("process next block");
+    let next = decode_planar_f32(&out_bytes);
+    for sample in next {
+        assert_near(sample, 201.0, 1e-6);
+    }
+}
+
+#[test]
 
 fn proc_without_block_has_only_step_entrypoint() {
     let parsed = parse_program(PROC_OPTIONAL_INIT_EXAMPLE).expect("parse should succeed");
@@ -7071,6 +7354,79 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_refresh_on_process
 }
 
 #[test]
+fn checked_end_segment_refreshes_proc_slot_buffer_refs_after_rebind() {
+    let frames = 4;
+    let segment_frames = 2;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_BUFFER_BINDING_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 2);
+
+    let mut buf1 = vec![0.25_f32; frames];
+    let mut buf2_old = vec![0.75_f32; frames];
+    let buf1_idx = instance.buffer_index("buf1").expect("buf1 index");
+    let buf2_idx = instance.buffer_index("buf2").expect("buf2 index");
+
+    bind_buffer(
+        &mut instance,
+        buf1_idx,
+        buf1.as_mut_ptr().cast::<u8>(),
+        buf1.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf1");
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_old.as_mut_ptr().cast::<u8>(),
+        buf2_old.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind old buf2");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_checked_segment(&mut instance, 0, segment_frames, PROCESS_BEGIN_BLOCK)
+        .expect("process begin segment with old buf2");
+
+    let mut buf2_new = vec![0.5_f32; frames];
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_new.as_mut_ptr().cast::<u8>(),
+        buf2_new.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind new buf2 before end segment");
+
+    out_bytes.fill(0);
+    process_checked_segment(
+        &mut instance,
+        segment_frames,
+        segment_frames,
+        PROCESS_END_BLOCK,
+    )
+    .expect("process end segment after rebind");
+    let out = decode_planar_f32(&out_bytes);
+    assert_near(out[0], 0.0, 1e-6);
+    assert_near(out[1], 0.0, 1e-6);
+    assert_near(out[2], 0.5, 1e-6);
+    assert_near(out[3], 0.5, 1e-6);
+}
+
+#[test]
 
 fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_process_unchecked()
 {
@@ -7161,6 +7517,81 @@ fn proc_instance_array_indexed_call_dynamic_index_buffer_refs_do_not_refresh_on_
     let out_refreshed = decode_planar_f32(&out_bytes);
 
     for sample in out_refreshed {
+        assert_near(sample, 0.5, 1e-6);
+    }
+}
+
+#[test]
+fn prepare_unchecked_process_refreshes_proc_slot_buffer_refs() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_INSTANCE_ARRAY_INDEXED_CALL_DYNAMIC_INDEX_BUFFER_BINDING_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+    assert_eq!(instance.buffer_count(), 2);
+
+    let mut buf1 = vec![0.25_f32; frames];
+    let mut buf2_old = vec![0.75_f32; frames];
+    let buf1_idx = instance.buffer_index("buf1").expect("buf1 index");
+    let buf2_idx = instance.buffer_index("buf2").expect("buf2 index");
+
+    bind_buffer(
+        &mut instance,
+        buf1_idx,
+        buf1.as_mut_ptr().cast::<u8>(),
+        buf1.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf1");
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_old.as_mut_ptr().cast::<u8>(),
+        buf2_old.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 old");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    prepare_unchecked_process(&mut instance).expect("prepare unchecked with old buf2");
+    unsafe {
+        process_unchecked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+            .expect("unchecked process with old buf2");
+    }
+    let out_old = decode_planar_f32(&out_bytes);
+    for sample in out_old {
+        assert_near(sample, 0.75, 1e-6);
+    }
+
+    let mut buf2_new = vec![0.5_f32; frames];
+    bind_buffer(
+        &mut instance,
+        buf2_idx,
+        buf2_new.as_mut_ptr().cast::<u8>(),
+        buf2_new.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buf2 new");
+
+    prepare_unchecked_process(&mut instance).expect("prepare unchecked after rebind");
+    unsafe {
+        process_unchecked_segment(&mut instance, 0, frames, PROCESS_FULL_BLOCK)
+            .expect("unchecked process with refreshed refs");
+    }
+    let out_new = decode_planar_f32(&out_bytes);
+    for sample in out_new {
         assert_near(sample, 0.5, 1e-6);
     }
 }

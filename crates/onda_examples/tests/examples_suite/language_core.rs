@@ -686,6 +686,258 @@ sample {
 
 #[test]
 
+fn proc_builtin_init_reruns_proc_init_with_new_params() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+
+outs { out1 }
+
+proc Voice {
+
+  params { freq = 2.0 }
+
+  outs { out1 }
+
+  init {
+    coeff = freq * 2.0
+    phase = 0.0
+  }
+
+  events {
+    dirty() {
+      phase = 99.0
+    }
+  }
+
+  sample {
+    phase = phase + 1.0
+    out1 = coeff + phase
+  }
+
+}
+
+events {
+  retune(value: f32) {
+    voice.dirty()
+    voice.init(freq = value)
+  }
+}
+
+init { voice = Voice(freq = 2.0) }
+
+sample { out1 = voice() }
+
+"#,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 5.0, 1e-6);
+
+    let payload = 3.0_f32.to_ne_bytes();
+
+    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 7.0, 1e-6);
+}
+
+#[test]
+
+fn proc_builtin_init_clamps_ranged_param_with_param_type() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+
+outs { out1 }
+
+proc Voice {
+
+  params { value = 1.0 {0.0, 5.0} }
+
+  outs { out1 }
+
+  init { stored = value }
+
+  sample { out1 = stored }
+
+}
+
+events {
+  retune(value: f32) {
+    voice.init(value = value)
+  }
+}
+
+init { voice = Voice(value = 1.0) }
+
+sample { out1 = voice() }
+
+"#,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 1.0, 1e-6);
+
+    let payload = 20.0_f32.to_ne_bytes();
+
+    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 5.0, 1e-6);
+}
+
+#[test]
+
+fn proc_builtin_init_omitted_array_param_uses_default() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+
+const Defaults: f32[2] = [1.0, 2.0]
+
+outs { out1 }
+
+proc Voice {
+
+  params { gains: f32[2] = Defaults }
+
+  outs { out1 }
+
+  init { stored = gains[0] + gains[1] }
+
+  sample { out1 = stored }
+
+}
+
+events {
+  reset() {
+    voice.init()
+  }
+}
+
+init { voice = Voice(gains = [3.0, 4.0]) }
+
+sample { out1 = voice() }
+
+"#,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 7.0, 1e-6);
+
+    trigger_event_by_index(&mut instance, 0, &[]).expect("event trigger should succeed");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 3.0, 1e-6);
+}
+
+#[test]
+
+fn proc_array_builtin_init_reruns_only_selected_slot_init() {
+    let frames = 1;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        r#"
+
+outs { out1 }
+
+proc Voice {
+
+  params { value = 1.0 }
+
+  outs { out1 }
+
+  init {
+    stored = value
+    phase = 0.0
+  }
+
+  events {
+    dirty() {
+      phase = 99.0
+    }
+  }
+
+  sample {
+    phase = phase + 1.0
+    out1 = stored + phase
+  }
+
+}
+
+events {
+  retune(slot: i32, value: f32) {
+    voices[slot].dirty()
+    voices[slot].init(value = value)
+  }
+}
+
+init { voices: Voice[2] = Voice(value = 1.0) }
+
+sample {
+  out1 = voices[0]() + (voices[1]() * 10.0)
+}
+
+"#,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 22.0, 1e-6);
+
+    let mut payload = Vec::new();
+
+    payload.extend_from_slice(&1_i32.to_ne_bytes());
+
+    payload.extend_from_slice(&3.0_f32.to_ne_bytes());
+
+    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 43.0, 1e-6);
+}
+
+#[test]
+
 fn proc_event_array_defaults_bind_omitted_args() {
     let frames = 4;
 

@@ -11,6 +11,7 @@ use crate::primitives::{
 };
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
+    DeclaredState,
 };
 
 pub(crate) struct ProgramMetadata {
@@ -19,6 +20,7 @@ pub(crate) struct ProgramMetadata {
     pub(crate) params: Vec<DeclaredIo>,
     pub(crate) events: Vec<DeclaredEvent>,
     pub(crate) buffers: Vec<DeclaredBuffer>,
+    pub(crate) state_entries: Vec<DeclaredState>,
     pub(crate) input_index: HashMap<String, usize>,
     pub(crate) output_index: HashMap<String, usize>,
     pub(crate) param_index: HashMap<String, usize>,
@@ -89,6 +91,36 @@ impl DeclaredIo {
 
     pub fn byte_size(&self) -> usize {
         primitive_type_bytes(self.elem_ty).saturating_mul(self.array_len)
+    }
+}
+
+impl DeclaredState {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn elem_ty(&self) -> PrimitiveType {
+        self.elem_ty
+    }
+
+    pub fn array_len(&self) -> usize {
+        self.array_len
+    }
+
+    pub fn byte_offset(&self) -> usize {
+        self.byte_offset
+    }
+
+    pub fn byte_size(&self) -> usize {
+        primitive_type_bytes(self.elem_ty).saturating_mul(self.array_len)
+    }
+
+    pub fn type_repr(&self) -> String {
+        if self.array_len == 1 {
+            primitive_type_name(self.elem_ty).to_owned()
+        } else {
+            format!("{}[{}]", primitive_type_name(self.elem_ty), self.array_len)
+        }
     }
 }
 
@@ -201,6 +233,7 @@ pub(crate) fn build_program_metadata(typed: &TypedProgram) -> ProgramMetadata {
     let params = build_declared_param_ios(typed);
     let events = build_declared_events(typed);
     let buffers = build_declared_buffers(typed);
+    let state_entries = build_declared_state_entries(typed);
 
     ProgramMetadata {
         input_index: build_name_to_index(&inputs),
@@ -217,7 +250,59 @@ pub(crate) fn build_program_metadata(typed: &TypedProgram) -> ProgramMetadata {
         params,
         events,
         buffers,
+        state_entries,
     }
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    if align <= 1 {
+        return value;
+    }
+    let rem = value % align;
+    if rem == 0 {
+        value
+    } else {
+        value + (align - rem)
+    }
+}
+
+fn primitive_size_align(ty: PrimitiveType) -> (usize, usize) {
+    match ty {
+        PrimitiveType::F32 | PrimitiveType::I32 => (4, 4),
+        PrimitiveType::F64 | PrimitiveType::I64 => (8, 8),
+        PrimitiveType::Bool => (1, 1),
+    }
+}
+
+fn build_declared_state_entries(typed: &TypedProgram) -> Vec<DeclaredState> {
+    let mut out = Vec::with_capacity(typed.state_vars.len() + typed.array_vars.len());
+    let mut offset = 0usize;
+
+    for (name, ty) in typed.state_vars.iter().zip(typed.state_types.iter()) {
+        let (size, align) = primitive_size_align(*ty);
+        offset = align_up(offset, align);
+        out.push(DeclaredState {
+            name: name.clone(),
+            elem_ty: *ty,
+            array_len: 1,
+            byte_offset: offset,
+        });
+        offset = offset.saturating_add(size);
+    }
+
+    for array_var in &typed.array_vars {
+        let (elem_size, elem_align) = primitive_size_align(array_var.elem_ty);
+        offset = align_up(offset, elem_align);
+        out.push(DeclaredState {
+            name: array_var.name.clone(),
+            elem_ty: array_var.elem_ty,
+            array_len: array_var.len,
+            byte_offset: offset,
+        });
+        offset = offset.saturating_add(elem_size.saturating_mul(array_var.len));
+    }
+
+    out
 }
 
 fn build_declared_port_ios(

@@ -223,7 +223,8 @@
   - Every proc also gets a reserved builtin `init(...)` event synthesized after proc specialization.
     - Its arguments mirror the proc params in declaration order, using the concrete specialized types.
     - It cannot be redefined inside the proc `events` block.
-    - Its generated body simply assigns the provided argument values into the proc params, reusing existing default/clamp behavior.
+    - Its generated body assigns the provided argument values into the proc params, reusing existing default/clamp behavior, then reruns that proc instance's lowered `init` block.
+    - This lets proc params drive derived init state during in-place reinitialization, including nested proc state and fixed setup values.
   - Proc-event calls are statement-only; unqualified calls never resolve to proc events.
   - A proc cannot directly instantiate its own proc type as state.
 - Functions (`def`):
@@ -315,6 +316,10 @@
     - Trigger point is proc `()` call evaluation (not plain slot retrieval).
     - `block pre` executes lazily once per active slot per block, on first `()` call to that slot.
     - `block post` executes once at block end for each slot that was called in that block.
+    - Runtime segment processing preserves logical block semantics: pre hooks
+      run only on `ONDA_PROCESS_BEGIN_BLOCK`, post hooks run only on
+      `ONDA_PROCESS_END_BLOCK`, and proc active-slot state spans the segments
+      between those flags.
     - Dynamic index handling is active-slot based (no conservative "run hooks for all slots" fallback).
     - Applies in top-level and nested/proc-lowered paths.
   - Non-`block` procs do not allocate/use active-slot hook tracking and keep the lower-overhead call path.
@@ -430,7 +435,17 @@
 - Optimized LLVM pipeline is used (`default<O3>` style pass pipeline + host-target settings).
 - Fixed compile-time block size per program/instance.
 - No callback-time allocations for compiler-managed DSP state; allocations happen during setup/init.
-- Runtime processing API is bound-buffer based (`process_checked`).
+- Runtime processing API is bound-buffer based (`process_checked`). Segment
+  variants are available for hosts that split one logical block around
+  sample-accurate events:
+  - `process_checked_segment(instance, start_frame, frames, flags)`
+  - `prepare_unchecked_process(instance)`
+  - `process_unchecked_segment(instance, start_frame, frames, flags)`
+  - segment variants keep the input/output bindings as full-block base
+    pointers; the JIT loops local frames `[0, frames)` and addresses bound I/O
+    at `start_frame + local_frame`
+  - flags are `ONDA_PROCESS_BEGIN_BLOCK`, `ONDA_PROCESS_END_BLOCK`, or both;
+    flags control block hooks only and do not imply an implicit runtime cursor.
 - Current runtime behavior:
   - all declared buffers must be bound before processing.
   - top-level ranged params are hoisted and clamped once per block in JITed code.
@@ -442,12 +457,13 @@
 - C ABI exposes compile/create/process/destroy and bind/set calls:
   - params: byte-typed `set_param_by_index`
   - events: `trigger_event_by_index`
-  - instance state lifecycle: `reset_instance_state`
+  - instance state lifecycle: `reset_instance_state`, raw state snapshot/restore
   - inputs/outputs: pointer + byte-size binding
   - buffers: pointer + frames + channels + sample rate + element type binding
   - outputs: `bind_output`
 - Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
   - `onda_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
+  - state metadata exposes declared state names, type text, element type, slot count, byte offset, entry byte size, and total instance state bytes.
 - CLI (`onda`) supports:
   - `compile <file> [--emit check|llvm-ir|obj] [--output] [--meta-out] [--target-triple <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <csv>] [--target-abi <name>] [--reloc-model <mode>] [--code-model <mode>] [--opt-level <0|1|2|3>] [--sample-rate <hz>] [--block-size <frames>] [--dump-graph] [--ir] [--meta]`
   - `lsp [--stdio]`

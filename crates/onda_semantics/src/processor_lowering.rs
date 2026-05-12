@@ -56,6 +56,14 @@ fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagn
     }
 }
 
+pub(crate) fn prepare_processors_for_graph_inspection(
+    program: &mut Program,
+    errors: &mut Vec<Diagnostic>,
+) {
+    rewrite_and_materialize_generic_processors(program, errors);
+    inject_builtin_proc_init_events(program, errors);
+}
+
 fn coerce_scalar_event_default(
     default_expr: &Expr,
     ty: PrimitiveType,
@@ -441,40 +449,44 @@ pub(crate) fn coerce_typed_events(
 }
 
 fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec {
-    let params = param_specs
-        .iter()
-        .map(|param| {
-            if param.slots.len() == 1 && param.slots[0].name == param.name {
-                let slot = &param.slots[0];
-                ProcEventParamSpec {
-                    name: param.name.clone(),
-                    slots: vec![ProcEventParamSlotSpec {
+    let params =
+        param_specs
+            .iter()
+            .map(|param| {
+                if param.slots.len() == 1 && param.slots[0].name == param.name {
+                    let slot = &param.slots[0];
+                    ProcEventParamSpec {
                         name: param.name.clone(),
-                        ty: slot.ty,
-                    }],
-                    fixed_array_elem_ty: None,
-                    slice_elem_ty: None,
-                    default: slot.default.clone(),
+                        slots: vec![ProcEventParamSlotSpec {
+                            name: param.name.clone(),
+                            ty: slot.ty,
+                        }],
+                        ty: ProcEventParamTypeSpec::Scalar { ty: slot.ty },
+                        default: slot.default.clone(),
+                    }
+                } else {
+                    let default_values = param
+                        .slots
+                        .iter()
+                        .map(|slot| slot.default.clone())
+                        .collect::<Option<Vec<_>>>();
+                    ProcEventParamSpec {
+                        name: param.name.clone(),
+                        slots: Vec::new(),
+                        ty: ProcEventParamTypeSpec::FixedArray {
+                            elem_ty: param.slots.first().map(|slot| slot.ty).expect(
+                                "lowered processor array param must have at least one slot",
+                            ),
+                            len: param.slots.len(),
+                        },
+                        default: default_values.map(|values| Expr::ArrayLiteral {
+                            loc: Default::default(),
+                            values,
+                        }),
+                    }
                 }
-            } else {
-                let default_values = param
-                    .slots
-                    .iter()
-                    .map(|slot| slot.default.clone())
-                    .collect::<Option<Vec<_>>>();
-                ProcEventParamSpec {
-                    name: param.name.clone(),
-                    slots: Vec::new(),
-                    fixed_array_elem_ty: param.slots.first().map(|slot| slot.ty),
-                    slice_elem_ty: None,
-                    default: default_values.map(|values| Expr::ArrayLiteral {
-                        loc: Default::default(),
-                        values,
-                    }),
-                }
-            }
-        })
-        .collect();
+            })
+            .collect();
     ProcEventSpec { params }
 }
 
@@ -523,8 +535,7 @@ fn expand_proc_event_specs(
                         name: param.name.clone(),
                         ty: *ty,
                     }],
-                    fixed_array_elem_ty: None,
-                    slice_elem_ty: None,
+                    ty: ProcEventParamTypeSpec::Scalar { ty: *ty },
                     default: validate_proc_event_default_expr(
                         param,
                         None,
@@ -555,8 +566,10 @@ fn expand_proc_event_specs(
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
-                        fixed_array_elem_ty: Some(*elem),
-                        slice_elem_ty: None,
+                        ty: ProcEventParamTypeSpec::FixedArray {
+                            elem_ty: *elem,
+                            len,
+                        },
                         default: validate_proc_event_default_expr(
                             param,
                             Some(len),
@@ -570,8 +583,7 @@ fn expand_proc_event_specs(
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
-                        fixed_array_elem_ty: None,
-                        slice_elem_ty: Some(*elem),
+                        ty: ProcEventParamTypeSpec::Slice { elem_ty: *elem },
                         default: validate_proc_event_default_expr(
                             param,
                             None,
@@ -596,8 +608,9 @@ fn expand_proc_event_specs(
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
-                        fixed_array_elem_ty: None,
-                        slice_elem_ty: Some(PrimitiveType::F32),
+                        ty: ProcEventParamTypeSpec::Slice {
+                            elem_ty: PrimitiveType::F32,
+                        },
                         default: validate_proc_event_default_expr(
                             param,
                             None,
@@ -1424,8 +1437,12 @@ sample:
             Some(FnParamType::Primitive(PrimitiveType::I32))
         ));
         assert!(matches!(
-            init_def.params[2].ty,
-            Some(FnParamType::Array(Some(PrimitiveType::F32)))
+            &init_def.params[2].ty,
+            Some(FnParamType::SizedArray {
+                elem: Some(PrimitiveType::F32),
+                generic_name: None,
+                size,
+            }) if matches!(size, Expr::Int { value: 2, .. })
         ));
         assert!(init_def.body.iter().any(|stmt| matches!(
             stmt,
@@ -1455,6 +1472,78 @@ sample:
                 && base == "mix"
                 && matches!(index.as_ref(), Expr::Int { value: 1, .. })
         )));
+        assert!(init_def.body.iter().any(|stmt| matches!(
+            stmt,
+            Stmt::Expr {
+                expr: Expr::UserCall { name, args, .. },
+                ..
+            } if name == "Voice.__proc_init" && args.len() == 1
+        )));
+    }
+
+    #[test]
+    fn analyze_rejects_builtin_proc_init_array_param_wrong_len() {
+        let src = r#"
+proc Voice:
+  params:
+    gains: f32[2] = [1.0, 2.0]
+  outs:
+    out1
+  init:
+    stored = gains[0] + gains[1]
+  sample:
+    out1 = stored
+
+outs:
+  out1
+events:
+  bad():
+    voice.init(gains = [9.0])
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("short proc.init array argument should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains(
+                "processor event call 'voice.init(...)' argument 'gains': expected array argument with 2 elements, got 1"
+            )),
+            "expected proc.init array length diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_rejects_builtin_proc_init_len_one_array_scalar_arg() {
+        let src = r#"
+proc Voice:
+  params:
+    gains: f32[1] = [1.0]
+  outs:
+    out1
+  sample:
+    out1 = gains[0]
+
+outs:
+  out1
+events:
+  bad():
+    voice.init(gains = 9.0)
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let errors =
+            analyze(program).expect_err("scalar proc.init argument for array param should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains(
+                "processor event call 'voice.init(...)' argument 'gains': array argument requires an array literal or array symbol expression"
+            )),
+            "expected proc.init array argument diagnostic, got {errors:?}"
+        );
     }
 
     #[test]
@@ -2706,6 +2795,34 @@ sample:
             )),
             "expected proc-local delay buffer sized from namespace generic expression: {:?}",
             proc.init.body
+        );
+    }
+
+    #[test]
+    fn lower_graphs_for_inspection_materializes_generic_std_processors() {
+        let src = r#"
+import std/osc
+
+outs 1
+
+init:
+  osc = std::osc::Sine()
+
+graph:
+  440.0 >> osc.freq
+  osc.out1 >> out1
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let lowered =
+            crate::lower_graphs_for_inspection_with_options(program, AnalysisOptions::default())
+                .expect("std generic processor graph should lower for inspection");
+
+        assert!(
+            lowered
+                .blocks
+                .iter()
+                .all(|block| !matches!(block, Block::Graph(_))),
+            "expected graph lowering to remove the top-level graph block"
         );
     }
 

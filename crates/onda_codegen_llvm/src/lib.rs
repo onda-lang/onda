@@ -1,4 +1,9 @@
+use std::alloc::Layout;
 use std::collections::HashMap;
+use std::ffi::c_void;
+use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
 use onda_frontend::{Diagnostic, PrimitiveType};
@@ -59,14 +64,245 @@ pub struct JitProgram {
     param_index: Arc<HashMap<String, usize>>,
     event_index: Arc<HashMap<String, usize>>,
     buffer_index: Arc<HashMap<String, usize>>,
+    state_entries: Arc<Vec<DeclaredState>>,
     #[cfg(feature = "llvm-orc")]
     compiled: Arc<orc_backend::OrcProcess>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Copy)]
+pub struct RuntimeAllocator {
+    pub context: *mut c_void,
+    pub alloc: unsafe extern "C" fn(*mut c_void, usize, usize) -> *mut c_void,
+    pub free: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize),
+}
+
+impl fmt::Debug for RuntimeAllocator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RuntimeAllocator")
+            .field("context", &self.context)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct RuntimeState {
-    pub(crate) state_words: Vec<u64>,
+    pub(crate) state_words: RuntimeBuffer<u64>,
     pub(crate) state_size_bytes: usize,
+}
+
+pub struct RuntimeBuffer<T: Copy> {
+    storage: RuntimeBufferStorage<T>,
+}
+
+enum RuntimeBufferStorage<T: Copy> {
+    Global(Vec<T>),
+    Custom(CustomRuntimeBuffer<T>),
+}
+
+struct CustomRuntimeBuffer<T: Copy> {
+    ptr: NonNull<T>,
+    len: usize,
+    allocator: RuntimeAllocator,
+}
+
+impl<T: Copy> RuntimeBuffer<T> {
+    pub fn from_vec(vec: Vec<T>) -> Self {
+        Self {
+            storage: RuntimeBufferStorage::Global(vec),
+        }
+    }
+
+    pub fn try_from_elem_in(
+        len: usize,
+        value: T,
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<Self, Diagnostic> {
+        let Some(allocator) = allocator else {
+            return Ok(Self::from_vec(vec![value; len]));
+        };
+        let buffer = CustomRuntimeBuffer::try_from_elem(len, value, allocator)?;
+        Ok(Self {
+            storage: RuntimeBufferStorage::Custom(buffer),
+        })
+    }
+
+    pub fn try_from_slice_in(
+        values: &[T],
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<Self, Diagnostic> {
+        let Some(allocator) = allocator else {
+            return Ok(Self::from_vec(values.to_vec()));
+        };
+        let buffer = CustomRuntimeBuffer::try_from_slice(values, allocator)?;
+        Ok(Self {
+            storage: RuntimeBufferStorage::Custom(buffer),
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.as_slice().is_empty()
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        match &self.storage {
+            RuntimeBufferStorage::Global(values) => values.as_slice(),
+            RuntimeBufferStorage::Custom(values) => values.as_slice(),
+        }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        match &mut self.storage {
+            RuntimeBufferStorage::Global(values) => values.as_mut_slice(),
+            RuntimeBufferStorage::Custom(values) => values.as_mut_slice(),
+        }
+    }
+
+    pub fn as_ptr(&self) -> *const T {
+        self.as_slice().as_ptr()
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.as_mut_slice().as_mut_ptr()
+    }
+}
+
+impl<T: Copy> Default for RuntimeBuffer<T> {
+    fn default() -> Self {
+        Self::from_vec(Vec::new())
+    }
+}
+
+impl<T: Copy> Deref for RuntimeBuffer<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<T: Copy> DerefMut for RuntimeBuffer<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
+}
+
+impl<T: Copy + fmt::Debug> fmt::Debug for RuntimeBuffer<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.as_slice()).finish()
+    }
+}
+
+impl<T: Copy> CustomRuntimeBuffer<T> {
+    fn try_from_elem(
+        len: usize,
+        value: T,
+        allocator: RuntimeAllocator,
+    ) -> Result<Self, Diagnostic> {
+        let layout = runtime_array_layout::<T>(len)?;
+        let ptr = allocate_custom_runtime_buffer::<T>(allocator, layout)?;
+        if len > 0 {
+            for idx in 0..len {
+                unsafe {
+                    ptr::write(ptr.as_ptr().add(idx), value);
+                }
+            }
+        }
+        Ok(Self {
+            ptr,
+            len,
+            allocator,
+        })
+    }
+
+    fn try_from_slice(values: &[T], allocator: RuntimeAllocator) -> Result<Self, Diagnostic> {
+        let layout = runtime_array_layout::<T>(values.len())?;
+        let ptr = allocate_custom_runtime_buffer::<T>(allocator, layout)?;
+        if !values.is_empty() {
+            unsafe {
+                ptr::copy_nonoverlapping(values.as_ptr(), ptr.as_ptr(), values.len());
+            }
+        }
+        Ok(Self {
+            ptr,
+            len: values.len(),
+            allocator,
+        })
+    }
+
+    fn as_slice(&self) -> &[T] {
+        if self.len == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        if self.len == 0 {
+            return &mut [];
+        }
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl<T: Copy> Drop for CustomRuntimeBuffer<T> {
+    fn drop(&mut self) {
+        if self.len == 0 {
+            return;
+        }
+        let Ok(layout) = Layout::array::<T>(self.len) else {
+            return;
+        };
+        unsafe {
+            (self.allocator.free)(
+                self.allocator.context,
+                self.ptr.as_ptr().cast::<c_void>(),
+                layout.size(),
+                layout.align(),
+            );
+        }
+    }
+}
+
+fn runtime_array_layout<T>(len: usize) -> Result<Layout, Diagnostic> {
+    Layout::array::<T>(len).map_err(|_| {
+        Diagnostic::runtime("runtime allocation layout exceeds addressable size", 0, 0)
+    })
+}
+
+fn allocate_custom_runtime_buffer<T>(
+    allocator: RuntimeAllocator,
+    layout: Layout,
+) -> Result<NonNull<T>, Diagnostic> {
+    if layout.size() == 0 {
+        return Ok(NonNull::dangling());
+    }
+    let raw = unsafe { (allocator.alloc)(allocator.context, layout.size(), layout.align()) };
+    let Some(ptr) = NonNull::new(raw.cast::<T>()) else {
+        return Err(Diagnostic::runtime("runtime allocator returned null", 0, 0));
+    };
+    if (ptr.as_ptr() as usize) % layout.align() != 0 {
+        unsafe {
+            (allocator.free)(allocator.context, raw, layout.size(), layout.align());
+        }
+        return Err(Diagnostic::runtime(
+            "runtime allocator returned misaligned memory",
+            0,
+            0,
+        ));
+    }
+    Ok(ptr)
+}
+
+#[derive(Debug, Clone)]
+pub struct DeclaredState {
+    name: String,
+    elem_ty: PrimitiveType,
+    array_len: usize,
+    byte_offset: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +439,7 @@ fn build_orc_program(
         params: Arc::new(metadata.params),
         events: Arc::new(metadata.events),
         buffers: Arc::new(metadata.buffers),
+        state_entries: Arc::new(metadata.state_entries),
         compiled: Arc::new(compiled),
     })
 }
@@ -324,7 +561,9 @@ mod tests {
             .process_checked(
                 &mut state,
                 &params,
+                0,
                 1,
+                1 | 2,
                 &input_ptrs,
                 &output_ptrs,
                 &buffer_ptrs,

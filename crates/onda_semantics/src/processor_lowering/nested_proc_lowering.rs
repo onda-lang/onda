@@ -1281,7 +1281,7 @@ pub(super) fn expand_nested_proc_ctor_assign(
                 .cloned()
                 .unwrap_or_else(|| slot.default.clone().unwrap_or(Expr::number(0.0)));
             let value = if let Some(range) = slot.range {
-                clamp_expr_to_range(value, range)
+                cast_expr_to_primitive(clamp_expr_to_range(value, range), slot.ty)
             } else {
                 value
             };
@@ -1429,7 +1429,7 @@ pub(super) fn expand_proc_instance_ctor_assign(
                 .cloned()
                 .unwrap_or_else(|| slot.default.clone().unwrap_or(Expr::number(0.0)));
             let value = if let Some(range) = slot.range {
-                clamp_expr_to_range(value, range)
+                cast_expr_to_primitive(clamp_expr_to_range(value, range), slot.ty)
             } else {
                 value
             };

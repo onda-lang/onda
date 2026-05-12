@@ -1,6 +1,9 @@
 use super::super::*;
 use super::*;
 
+const PROCESS_BEGIN_BLOCK_FLAG: u64 = 1 << 0;
+const PROCESS_END_BLOCK_FLAG: u64 = 1 << 1;
+
 pub(in crate::orc_backend) unsafe fn build_process_ir(
     typed: &TypedProgram,
     module: LLVMModuleRef,
@@ -29,6 +32,8 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
         float_ptr_ptr_ty,
         float_ptr_ptr_ty,
         i32_ty,
+        i32_ty,
+        i32_ty,
         i8_ptr_ty,
         i8_ptr_ty,
         i8_ptr_ptr_ty,
@@ -43,7 +48,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
     let fn_ref = LLVMAddFunction(module, fn_name.as_ptr(), fn_ty);
     add_enum_param_attribute(fn_ref, context, 1, b"noalias")?; // in_ptrs
     add_enum_param_attribute(fn_ref, context, 2, b"noalias")?; // out_ptrs
-    add_enum_param_attribute(fn_ref, context, 5, b"noalias")?; // state_ptr
+    add_enum_param_attribute(fn_ref, context, 7, b"noalias")?; // state_ptr
 
     let entry_name =
         CString::new("entry").map_err(|_| Diagnostic::internal("invalid block name"))?;
@@ -67,13 +72,15 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
 
         let in_ptrs = LLVMGetParam(fn_ref, 0);
         let out_ptrs = LLVMGetParam(fn_ref, 1);
-        let frames = LLVMGetParam(fn_ref, 2);
-        let params_ptr = LLVMGetParam(fn_ref, 3);
-        let state_ptr = LLVMGetParam(fn_ref, 4);
-        let buffer_ptrs = LLVMGetParam(fn_ref, 5);
-        let buffer_frames_ptr = LLVMGetParam(fn_ref, 6);
-        let buffer_channels_ptr = LLVMGetParam(fn_ref, 7);
-        let buffer_samplerates_ptr = LLVMGetParam(fn_ref, 8);
+        let start_frame = LLVMGetParam(fn_ref, 2);
+        let frames = LLVMGetParam(fn_ref, 3);
+        let process_flags = LLVMGetParam(fn_ref, 4);
+        let params_ptr = LLVMGetParam(fn_ref, 5);
+        let state_ptr = LLVMGetParam(fn_ref, 6);
+        let buffer_ptrs = LLVMGetParam(fn_ref, 7);
+        let buffer_frames_ptr = LLVMGetParam(fn_ref, 8);
+        let buffer_channels_ptr = LLVMGetParam(fn_ref, 9);
+        let buffer_samplerates_ptr = LLVMGetParam(fn_ref, 10);
 
         let zero_i32 = LLVMConstInt(i32_ty, 0, 0);
         let one_i32 = LLVMConstInt(i32_ty, 1, 0);
@@ -373,8 +380,37 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             }
         }
 
-        // Run optional block-level code once per process callback before per-sample loop.
+        let null_in_ptrs = LLVMConstPointerNull(float_ptr_ptr_ty);
+        let empty_out_slots = HashMap::<String, OutSlot>::new();
+        let empty_out_array_base_ptrs = HashMap::<String, LLVMValueRef>::new();
+        let empty_input_index = HashMap::<String, u32>::new();
+        let empty_input_types = HashMap::<String, PrimitiveType>::new();
+        let empty_input_arrays = HashMap::<String, TypedArrayInfo>::new();
+        let empty_output_arrays = HashMap::<String, TypedArrayInfo>::new();
+
+        // Run optional block-level code once per logical block, not once per
+        // segmented process call.
         if !typed.block_pre.is_empty() {
+            let block_pre_body =
+                LLVMAppendBasicBlockInContext(context, fn_ref, b"block_pre\0".as_ptr().cast());
+            let block_pre_end =
+                LLVMAppendBasicBlockInContext(context, fn_ref, b"block_pre_end\0".as_ptr().cast());
+            let begin_mask = LLVMConstInt(i32_ty, PROCESS_BEGIN_BLOCK_FLAG, 0);
+            let begin_bits = LLVMBuildAnd(
+                builder,
+                process_flags,
+                begin_mask,
+                b"begin_block_bits\0".as_ptr().cast(),
+            );
+            let should_run_pre = LLVMBuildICmp(
+                builder,
+                LLVMIntPredicate::LLVMIntNE,
+                begin_bits,
+                zero_i32,
+                b"should_run_block_pre\0".as_ptr().cast(),
+            );
+            LLVMBuildCondBr(builder, should_run_pre, block_pre_body, block_pre_end);
+            LLVMPositionBuilderAtEnd(builder, block_pre_body);
             let mut block_ctx = LoweringCtx {
                 builder,
                 context,
@@ -386,20 +422,20 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 fast_math_flags,
                 sample_rate: oversampled_sample_rate,
                 block_size: block_size as f32,
-                in_ptrs,
+                in_ptrs: null_in_ptrs,
                 params_ptr,
                 buffer_ptrs,
                 buffer_frames_ptr,
                 buffer_channels_ptr,
                 buffer_samplerates_ptr,
-                frame_idx: LLVMConstInt(i32_ty, 0, 0),
+                frame_idx: zero_i32,
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,
-                out_slots: &out_slots,
-                out_array_base_ptrs: &out_array_base_ptrs,
-                input_index: &input_index,
-                input_types: &input_types,
-                input_arrays: &typed.in_arrays,
+                out_slots: &empty_out_slots,
+                out_array_base_ptrs: &empty_out_array_base_ptrs,
+                input_index: &empty_input_index,
+                input_types: &empty_input_types,
+                input_arrays: &empty_input_arrays,
                 const_arrays,
                 const_array_base_ptrs,
                 buffer_index: &buffer_meta.buffer_index,
@@ -410,7 +446,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 param_byte_offset: &shared.param_byte_offset,
                 param_types: &shared.param_types,
                 param_arrays: &typed.param_arrays,
-                output_arrays: &typed.out_arrays,
+                output_arrays: &empty_output_arrays,
                 array_len: &storage.array_len,
                 array_len_values: HashMap::new(),
                 array_elem_ty: &storage.array_elem_ty,
@@ -425,10 +461,10 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 user_registry: user_fns as *const UserFnRegistry,
                 oversample_input_cache: None,
                 loop_stack: Vec::new(),
-                port_index_ins,
-                port_index_outs,
+                port_index_ins: None,
+                port_index_outs: None,
                 port_index_params,
-                out_slot_ptr_array,
+                out_slot_ptr_array: None,
             };
             let mut block_locals = HashMap::new();
             let mut block_aliases = HashMap::new();
@@ -444,6 +480,10 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                     &mut block_tuples,
                 )?;
             }
+            if !current_block_terminated(builder) {
+                LLVMBuildBr(builder, block_pre_end);
+            }
+            LLVMPositionBuilderAtEnd(builder, block_pre_end);
         }
 
         LLVMBuildBr(builder, loop_cond);
@@ -462,6 +502,12 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
         LLVMPositionBuilderAtEnd(builder, loop_body);
         let frame_in_body =
             LLVMBuildLoad2(builder, i32_ty, frame_idx, b"frame_body\0".as_ptr().cast());
+        let logical_frame_in_body = LLVMBuildAdd(
+            builder,
+            start_frame,
+            frame_in_body,
+            b"logical_frame_body\0".as_ptr().cast(),
+        );
         if sample_oversample_factor <= 1 {
             for slot in out_slots.values() {
                 LLVMBuildStore(builder, llvm_zero_for_primitive(context, slot.ty), slot.ptr);
@@ -483,7 +529,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 buffer_frames_ptr,
                 buffer_channels_ptr,
                 buffer_samplerates_ptr,
-                frame_idx: frame_in_body,
+                frame_idx: logical_frame_in_body,
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,
                 out_slots: &out_slots,
@@ -564,7 +610,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                     builder,
                     llvm_ty_for_primitive(context, in_ty),
                     in_ch_ptr_typed,
-                    frame_in_body,
+                    logical_frame_in_body,
                     b"os_in_sample_ptr\0",
                 );
                 let in_raw = LLVMBuildLoad2(
@@ -691,7 +737,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                         builder,
                         llvm_ty_for_primitive(context, in_ty),
                         in_ch_ptr_typed,
-                        frame_in_body,
+                        logical_frame_in_body,
                         b"os_sub_in_sample_ptr\0",
                     );
                     let in_raw = LLVMBuildLoad2(
@@ -745,7 +791,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 buffer_frames_ptr,
                 buffer_channels_ptr,
                 buffer_samplerates_ptr,
-                frame_idx: frame_in_body,
+                frame_idx: logical_frame_in_body,
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,
                 out_slots: &out_slots,
@@ -931,7 +977,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             buffer_frames_ptr,
             buffer_channels_ptr,
             buffer_samplerates_ptr,
-            frame_idx: frame_in_body,
+            frame_idx: logical_frame_in_body,
             state_slots: &storage.state_slots,
             array_base_ptrs: &storage.array_base_ptrs,
             out_slots: &out_slots,
@@ -1013,7 +1059,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 builder,
                 llvm_ty_for_primitive(context, out_ty),
                 out_ch_ptr,
-                frame_in_body,
+                logical_frame_in_body,
                 b"out_ptr\0",
             );
             LLVMBuildStore(builder, out_value, out_ptr_elt);
@@ -1029,8 +1075,28 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
 
         LLVMPositionBuilderAtEnd(builder, loop_exit);
 
-        // Run optional post-sample block-level code once per process callback.
+        // Run optional post-sample block-level code once per logical block.
         if !typed.block_post.is_empty() {
+            let block_post_body =
+                LLVMAppendBasicBlockInContext(context, fn_ref, b"block_post\0".as_ptr().cast());
+            let block_post_end =
+                LLVMAppendBasicBlockInContext(context, fn_ref, b"block_post_end\0".as_ptr().cast());
+            let end_mask = LLVMConstInt(i32_ty, PROCESS_END_BLOCK_FLAG, 0);
+            let end_bits = LLVMBuildAnd(
+                builder,
+                process_flags,
+                end_mask,
+                b"end_block_bits\0".as_ptr().cast(),
+            );
+            let should_run_post = LLVMBuildICmp(
+                builder,
+                LLVMIntPredicate::LLVMIntNE,
+                end_bits,
+                zero_i32,
+                b"should_run_block_post\0".as_ptr().cast(),
+            );
+            LLVMBuildCondBr(builder, should_run_post, block_post_body, block_post_end);
+            LLVMPositionBuilderAtEnd(builder, block_post_body);
             let mut block_ctx = LoweringCtx {
                 builder,
                 context,
@@ -1042,20 +1108,20 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 fast_math_flags,
                 sample_rate,
                 block_size: block_size as f32,
-                in_ptrs,
+                in_ptrs: null_in_ptrs,
                 params_ptr,
                 buffer_ptrs,
                 buffer_frames_ptr,
                 buffer_channels_ptr,
                 buffer_samplerates_ptr,
-                frame_idx: LLVMConstInt(i32_ty, 0, 0),
+                frame_idx: zero_i32,
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,
-                out_slots: &out_slots,
-                out_array_base_ptrs: &out_array_base_ptrs,
-                input_index: &input_index,
-                input_types: &input_types,
-                input_arrays: &typed.in_arrays,
+                out_slots: &empty_out_slots,
+                out_array_base_ptrs: &empty_out_array_base_ptrs,
+                input_index: &empty_input_index,
+                input_types: &empty_input_types,
+                input_arrays: &empty_input_arrays,
                 const_arrays,
                 const_array_base_ptrs,
                 buffer_index: &buffer_meta.buffer_index,
@@ -1066,7 +1132,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 param_byte_offset: &shared.param_byte_offset,
                 param_types: &shared.param_types,
                 param_arrays: &typed.param_arrays,
-                output_arrays: &typed.out_arrays,
+                output_arrays: &empty_output_arrays,
                 array_len: &storage.array_len,
                 array_len_values: HashMap::new(),
                 array_elem_ty: &storage.array_elem_ty,
@@ -1081,10 +1147,10 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 user_registry: user_fns as *const UserFnRegistry,
                 oversample_input_cache: None,
                 loop_stack: Vec::new(),
-                port_index_ins,
-                port_index_outs,
+                port_index_ins: None,
+                port_index_outs: None,
                 port_index_params,
-                out_slot_ptr_array,
+                out_slot_ptr_array: None,
             };
             let mut block_locals = HashMap::new();
             let mut block_aliases = HashMap::new();
@@ -1100,6 +1166,10 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                     &mut block_tuples,
                 )?;
             }
+            if !current_block_terminated(builder) {
+                LLVMBuildBr(builder, block_post_end);
+            }
+            LLVMPositionBuilderAtEnd(builder, block_post_end);
         }
         for (_idx, name) in typed.state_vars.iter().enumerate() {
             let slot = storage.state_slots.get(name).ok_or_else(|| {

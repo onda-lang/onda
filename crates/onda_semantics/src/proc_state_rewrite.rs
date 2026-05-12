@@ -69,9 +69,15 @@ pub(crate) struct ProcEventSpec {
 pub(crate) struct ProcEventParamSpec {
     pub(crate) name: String,
     pub(crate) slots: Vec<ProcEventParamSlotSpec>,
-    pub(crate) fixed_array_elem_ty: Option<PrimitiveType>,
-    pub(crate) slice_elem_ty: Option<PrimitiveType>,
+    pub(crate) ty: ProcEventParamTypeSpec,
     pub(crate) default: Option<Expr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcEventParamTypeSpec {
+    Scalar { ty: PrimitiveType },
+    FixedArray { elem_ty: PrimitiveType, len: usize },
+    Slice { elem_ty: PrimitiveType },
 }
 
 #[derive(Debug, Clone)]

@@ -56,6 +56,63 @@ pub(crate) fn append_typed_const_bytes(
     }
 }
 
+pub(crate) fn write_typed_const_bytes(
+    out: &mut [u8],
+    value: TypedConstValue,
+    ty: PrimitiveType,
+) -> usize {
+    match (ty, value) {
+        (PrimitiveType::F32, TypedConstValue::F32(v)) => {
+            out[..4].copy_from_slice(&v.to_ne_bytes());
+            4
+        }
+        (PrimitiveType::F64, TypedConstValue::F64(v)) => {
+            out[..8].copy_from_slice(&v.to_ne_bytes());
+            8
+        }
+        (PrimitiveType::I32, TypedConstValue::I32(v)) => {
+            out[..4].copy_from_slice(&v.to_ne_bytes());
+            4
+        }
+        (PrimitiveType::I64, TypedConstValue::I64(v)) => {
+            out[..8].copy_from_slice(&v.to_ne_bytes());
+            8
+        }
+        (PrimitiveType::Bool, TypedConstValue::Bool(v)) => {
+            out[0] = if v { 1 } else { 0 };
+            1
+        }
+        (PrimitiveType::F32, other) => {
+            let v = typed_const_to_f64(other) as f32;
+            out[..4].copy_from_slice(&v.to_ne_bytes());
+            4
+        }
+        (PrimitiveType::F64, other) => {
+            let v = typed_const_to_f64(other);
+            out[..8].copy_from_slice(&v.to_ne_bytes());
+            8
+        }
+        (PrimitiveType::I32, other) => {
+            let v = typed_const_to_f64(other) as i32;
+            out[..4].copy_from_slice(&v.to_ne_bytes());
+            4
+        }
+        (PrimitiveType::I64, other) => {
+            let v = typed_const_to_f64(other) as i64;
+            out[..8].copy_from_slice(&v.to_ne_bytes());
+            8
+        }
+        (PrimitiveType::Bool, other) => {
+            out[0] = if typed_const_to_f64(other) != 0.0 {
+                1
+            } else {
+                0
+            };
+            1
+        }
+    }
+}
+
 pub(crate) fn typed_const_to_f64(value: TypedConstValue) -> f64 {
     match value {
         TypedConstValue::F32(v) => v as f64,

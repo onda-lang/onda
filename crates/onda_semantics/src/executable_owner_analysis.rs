@@ -127,8 +127,8 @@ impl ExecutableOwnerAnalysisPlanSeeds {
             fn_signatures: inputs.fn_signatures,
             fn_return_types: inputs.fn_return_types,
             options: inputs.options,
-            port_index_ins: inputs.port_index_ins,
-            port_index_outs: inputs.port_index_outs,
+            port_index_ins: None,
+            port_index_outs: None,
             port_index_params: inputs.port_index_params,
         };
         let sample_common = ScopeAnalysisCtx {
@@ -249,6 +249,16 @@ fn build_top_level_event_array_aliases(
     aliases
 }
 
+fn build_top_level_block_array_aliases(
+    param_arrays: &HashMap<String, TypedArrayInfo>,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+) -> HashMap<String, LocalArrayAliasInfo> {
+    let mut aliases = HashMap::new();
+    seed_top_level_array_aliases(&mut aliases, param_arrays, false);
+    seed_top_level_array_aliases(&mut aliases, const_arrays, false);
+    aliases
+}
+
 fn collect_proc_owner_known_scalar_extras(
     struct_instances: &HashMap<String, String>,
     nested_proc_instances: &HashMap<String, ProcNestedState>,
@@ -271,8 +281,9 @@ pub(crate) fn build_top_level_owner_analysis_plan_seeds(
     param_arrays: &HashMap<String, TypedArrayInfo>,
     const_arrays: &HashMap<String, TypedArrayInfo>,
 ) -> ExecutableOwnerAnalysisPlanSeeds {
-    let runtime_array_aliases =
+    let sample_array_aliases =
         build_top_level_runtime_array_aliases(in_arrays, out_arrays, param_arrays, const_arrays);
+    let block_array_aliases = build_top_level_block_array_aliases(param_arrays, const_arrays);
     let block_pre_known_scalars = build_known_scalars_from_state(param_names, state_scalars);
     let mut sample_base = param_names.clone();
     sample_base.extend(input_names.iter().cloned());
@@ -290,9 +301,9 @@ pub(crate) fn build_top_level_owner_analysis_plan_seeds(
             block_pre_known_scalars,
             sample_known_scalars,
             block_post_known_scalars,
-            block_pre_array_aliases: runtime_array_aliases.clone(),
-            sample_array_aliases: runtime_array_aliases.clone(),
-            block_post_array_aliases: runtime_array_aliases,
+            block_pre_array_aliases: block_array_aliases.clone(),
+            sample_array_aliases,
+            block_post_array_aliases: block_array_aliases,
         },
         event: ExecutableOwnerEventPlanSeed {
             known_scalar_base: param_names.clone(),

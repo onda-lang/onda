@@ -1,3 +1,4 @@
+use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::{c_void, CStr, CString};
 
 use onda::*;
@@ -40,6 +41,34 @@ impl Drop for InstanceHandle {
             onda_instance_destroy(self.0);
         }
     }
+}
+
+#[derive(Default)]
+struct AllocStats {
+    allocs: usize,
+    frees: usize,
+    live: usize,
+}
+
+unsafe extern "C" fn test_alloc(context: *mut c_void, size: usize, align: usize) -> *mut c_void {
+    let stats = &mut *(context.cast::<AllocStats>());
+    let Ok(layout) = Layout::from_size_align(size, align) else {
+        return std::ptr::null_mut();
+    };
+    let ptr = alloc(layout).cast::<c_void>();
+    if !ptr.is_null() {
+        stats.allocs += 1;
+        stats.live += 1;
+    }
+    ptr
+}
+
+unsafe extern "C" fn test_free(context: *mut c_void, ptr: *mut c_void, size: usize, align: usize) {
+    let stats = &mut *(context.cast::<AllocStats>());
+    let layout = Layout::from_size_align(size, align).expect("valid free layout");
+    dealloc(ptr.cast::<u8>(), layout);
+    stats.frees += 1;
+    stats.live -= 1;
 }
 
 unsafe fn compile_program(src: &str) -> ProgramHandle {
@@ -415,6 +444,140 @@ sample { out1 = amp }
 }
 
 #[test]
+fn c_api_custom_allocator_instance_uses_allocator_and_frees_it() {
+    unsafe {
+        let frames = 512_i32;
+        let program = compile_program(
+            r#"
+outs { out1 }
+init { phase = 0.25 }
+sample {
+  phase = phase + 0.25
+  out1 = phase
+}
+"#,
+        );
+
+        let mut stats = AllocStats::default();
+        let allocator = onda_allocator_t {
+            context: (&mut stats as *mut AllocStats).cast::<c_void>(),
+            alloc: Some(test_alloc),
+            free: Some(test_free),
+        };
+        let mut diag = empty_diag();
+        let instance = onda_instance_create_with_allocator(program.0, 0, 1, &allocator, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        assert!(stats.allocs > 0);
+
+        let mut out = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            onda_bind_output(
+                instance,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_validate_bindings(instance), 0);
+        assert_eq!(onda_process_unchecked(instance), 0);
+        assert!((out[0] - 0.5).abs() < 1e-6);
+
+        onda_instance_destroy(instance);
+        assert_eq!(stats.live, 0);
+        assert_eq!(stats.allocs, stats.frees);
+    }
+}
+
+#[test]
+fn c_api_state_manifest_and_snapshot_restore_work() {
+    unsafe {
+        let frames = 512_i32;
+        let program = compile_program(
+            r#"
+outs { out1 }
+init { phase = 0.0 }
+sample {
+  phase = phase + 1.0
+  out1 = phase
+}
+"#,
+        );
+
+        assert_eq!(onda_state_count(program.0), 1);
+        assert_eq!(
+            CStr::from_ptr(onda_state_name(program.0, 0)).to_string_lossy(),
+            "phase"
+        );
+        assert_eq!(
+            CStr::from_ptr(onda_state_type(program.0, 0)).to_string_lossy(),
+            "f32"
+        );
+        assert_eq!(onda_state_elem_type(program.0, 0), 0);
+        assert_eq!(onda_state_array_len(program.0, 0), 1);
+        assert_eq!(onda_state_type_bytes(program.0, 0), 4);
+        assert_eq!(onda_state_byte_offset(program.0, 0), 0);
+        assert!(onda_state_total_bytes(program.0) >= 4);
+
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(out[0], 1.0);
+        assert_eq!(out[frames as usize - 1], 512.0);
+
+        let state_bytes = onda_instance_state_bytes(instance.0);
+        assert_eq!(state_bytes, onda_state_total_bytes(program.0));
+        let mut snapshot = vec![0_u8; state_bytes as usize];
+        assert_eq!(
+            onda_instance_snapshot_state(
+                instance.0,
+                snapshot.as_mut_ptr().cast::<c_void>(),
+                snapshot.len() as i32,
+            ),
+            state_bytes
+        );
+
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(out[0], 513.0);
+        assert_eq!(out[frames as usize - 1], 1024.0);
+
+        assert_eq!(
+            onda_instance_restore_state(
+                instance.0,
+                snapshot.as_ptr().cast::<c_void>(),
+                snapshot.len() as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+        assert_eq!(out[0], 513.0);
+        assert_eq!(out[frames as usize - 1], 1024.0);
+    }
+}
+
+#[test]
 fn c_api_compile_options_block_size_controls_runtime_block_size() {
     unsafe {
         let src = CString::new(
@@ -501,6 +664,238 @@ sample { out1 = 0.25 }
         }
         for sample in &out[sub_frames as usize..] {
             assert_eq!(*sample, -1.0);
+        }
+    }
+}
+
+#[test]
+fn c_api_process_checked_segment_gates_block_hooks() {
+    unsafe {
+        let frames = 512_i32;
+        let segment_frames = 128_i32;
+        let program = compile_program(
+            r#"
+outs { out1 }
+init {
+  pre = 0.0
+  post = 0.0
+}
+block {
+  pre = pre + 1.0
+  sample {
+    out1 = pre * 100.0 + post
+  }
+  post = post + 1.0
+}
+"#,
+        );
+
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+
+        assert_eq!(
+            onda_process_checked_segment(instance.0, 0, segment_frames, ONDA_PROCESS_BEGIN_BLOCK),
+            0
+        );
+        for sample in &out[..segment_frames as usize] {
+            assert!((*sample - 100.0).abs() < 1e-6);
+        }
+
+        out.fill(0.0);
+        assert_eq!(
+            onda_process_checked_segment(
+                instance.0,
+                segment_frames,
+                segment_frames,
+                ONDA_PROCESS_END_BLOCK
+            ),
+            0
+        );
+        for sample in &out[..segment_frames as usize] {
+            assert!(sample.abs() < 1e-6);
+        }
+        for sample in &out[segment_frames as usize..(segment_frames * 2) as usize] {
+            assert!((*sample - 100.0).abs() < 1e-6);
+        }
+
+        out.fill(0.0);
+        assert_eq!(
+            onda_process_checked_segment(instance.0, 0, frames, ONDA_PROCESS_FULL_BLOCK),
+            0
+        );
+        for sample in &out {
+            assert!((*sample - 201.0).abs() < 1e-6);
+        }
+
+        assert_eq!(
+            onda_process_checked_segment(instance.0, 0, frames, 1 << 8),
+            -2
+        );
+        assert_eq!(
+            onda_process_checked_segment(instance.0, frames - 1, 2, ONDA_PROCESS_END_BLOCK),
+            -2
+        );
+    }
+}
+
+#[test]
+fn c_api_process_checked_segment_uses_start_frame_for_io() {
+    unsafe {
+        let frames = 512_i32;
+        let start_frame = 128_i32;
+        let segment_frames = 2_i32;
+        let program = compile_program(
+            r#"
+ins { in1 }
+outs { out1 }
+sample {
+  out1 = in1 + 10.0
+}
+"#,
+        );
+
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 1, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let input = (0..frames).map(|frame| frame as f32).collect::<Vec<_>>();
+        let mut out = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            onda_bind_input(
+                instance.0,
+                0,
+                input.as_ptr().cast::<c_void>(),
+                (input.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+
+        assert_eq!(
+            onda_process_checked_segment(
+                instance.0,
+                start_frame,
+                segment_frames,
+                ONDA_PROCESS_FULL_BLOCK
+            ),
+            0
+        );
+        assert!(out[..start_frame as usize]
+            .iter()
+            .all(|sample| sample.abs() < 1e-6));
+        assert_eq!(out[start_frame as usize], 138.0);
+        assert_eq!(out[start_frame as usize + 1], 139.0);
+        assert!(out[start_frame as usize + segment_frames as usize..]
+            .iter()
+            .all(|sample| sample.abs() < 1e-6));
+    }
+}
+
+#[test]
+fn c_api_process_unchecked_segment_gates_block_hooks() {
+    unsafe {
+        let frames = 512_i32;
+        let segment_frames = 128_i32;
+        let program = compile_program(
+            r#"
+outs { out1 }
+init {
+  pre = 0.0
+  post = 0.0
+}
+block {
+  pre = pre + 1.0
+  sample {
+    out1 = pre * 100.0 + post
+  }
+  post = post + 1.0
+}
+"#,
+        );
+
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 0, 1, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        let mut out = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                out.as_mut_ptr().cast::<c_void>(),
+                (out.len() * std::mem::size_of::<f32>()) as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_prepare_unchecked_process(instance.0), 0);
+
+        assert_eq!(
+            onda_process_unchecked_segment(instance.0, 0, segment_frames, ONDA_PROCESS_BEGIN_BLOCK),
+            0
+        );
+        for sample in &out[..segment_frames as usize] {
+            assert!((*sample - 100.0).abs() < 1e-6);
+        }
+
+        out.fill(0.0);
+        assert_eq!(
+            onda_process_unchecked_segment(
+                instance.0,
+                segment_frames,
+                segment_frames,
+                ONDA_PROCESS_END_BLOCK
+            ),
+            0
+        );
+        for sample in &out[..segment_frames as usize] {
+            assert!(sample.abs() < 1e-6);
+        }
+        for sample in &out[segment_frames as usize..(segment_frames * 2) as usize] {
+            assert!((*sample - 100.0).abs() < 1e-6);
+        }
+
+        out.fill(0.0);
+        assert_eq!(
+            onda_process_unchecked_segment(instance.0, 0, frames, ONDA_PROCESS_FULL_BLOCK),
+            0
+        );
+        for sample in &out {
+            assert!((*sample - 201.0).abs() < 1e-6);
         }
     }
 }

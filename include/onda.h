@@ -1,6 +1,8 @@
 #ifndef ONDA_H
 #define ONDA_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,6 +48,16 @@ typedef struct {
   int block_size;
 } onda_compile_options_t;
 
+typedef void* (*onda_alloc_fn)(void* context, size_t size, size_t align);
+typedef void (*onda_free_fn)(void* context, void* ptr, size_t size, size_t align);
+
+/* Host allocator used by custom instance creation. */
+typedef struct {
+  void* context;
+  onda_alloc_fn alloc;
+  onda_free_fn free;
+} onda_allocator_t;
+
 /* Compiles Onda source and returns a program handle, or NULL on failure. */
 onda_program_t* onda_compile(
   const char* src_utf8,
@@ -70,7 +82,18 @@ onda_instance_t* onda_instance_create(
   int out_channels,
   onda_diag_t* out_diag
 );
-/* Destroys an instance handle created by onda_instance_create. */
+/* Creates a runtime instance whose instance-owned storage uses allocator.
+   The returned instance still retains a reference to the compiled program internally;
+   compiled/JIT memory is released when the last program/instance reference is gone.
+   allocator->alloc and allocator->free must be non-NULL and must honor size/align. */
+onda_instance_t* onda_instance_create_with_allocator(
+  const onda_program_t* program,
+  int in_channels,
+  int out_channels,
+  const onda_allocator_t* allocator,
+  onda_diag_t* out_diag
+);
+/* Destroys an instance handle created by onda_instance_create or onda_instance_create_with_allocator. */
 void onda_instance_destroy(onda_instance_t* instance);
 
 /* Sets a parameter by index from raw bytes; returns 0 on success, negative on error. */
@@ -84,6 +107,13 @@ int onda_set_param_by_index(
 /* Triggers one event by index with packed payload bytes; returns 0 on success, negative on error.
    Unknown event indices are ignored and return success. */
 int onda_trigger_event_by_index(
+  onda_instance_t* instance,
+  int index,
+  const void* payload_ptr,
+  int payload_bytes
+);
+/* Triggers one event without payload/binding validation; unsafe if payload/buffer metadata is invalid. */
+int onda_trigger_event_by_index_unchecked(
   onda_instance_t* instance,
   int index,
   const void* payload_ptr,
@@ -132,12 +162,47 @@ int onda_bind_buffer(
   int elem_type
 );
 
-/* Processes up to one block with current bindings and parameters; returns 0 on success.
+enum {
+  ONDA_PROCESS_BEGIN_BLOCK = 1 << 0,
+  ONDA_PROCESS_END_BLOCK = 1 << 1,
+  ONDA_PROCESS_FULL_BLOCK = ONDA_PROCESS_BEGIN_BLOCK | ONDA_PROCESS_END_BLOCK
+};
+
+/* Processes up to one logical block with current bindings and parameters; returns 0 on success.
    frames must be in [0, compile_time_block_size]. The runtime only reads/writes the first
-   `frames` samples of each bound input/output entry for the current call. */
+   `frames` samples of each bound input/output entry for the current call. This convenience
+   function runs block-pre and block-post hooks for this call. */
 int onda_process_checked(onda_instance_t* instance, int frames);
+/* Processes one segment of a logical block using full-block input/output bindings.
+   The JIT loops local frames [0, frames) and reads/writes bound I/O at
+   absolute frame start_frame + local_frame. Use ONDA_PROCESS_BEGIN_BLOCK on
+   the first segment and ONDA_PROCESS_END_BLOCK on the final segment. A single
+   unsplit block should pass start_frame=0 and ONDA_PROCESS_FULL_BLOCK. */
+int onda_process_checked_segment(
+  onda_instance_t* instance,
+  int start_frame,
+  int frames,
+  int flags
+);
 /* Resets instance DSP/state memory to the initial post-init state captured at instance creation. */
 int onda_reset_instance_state(onda_instance_t* instance);
+/* Returns the byte size of the instance state snapshot, or -1 on invalid instance handle. */
+int onda_instance_state_bytes(const onda_instance_t* instance);
+/*
+ * Copies the full instance state snapshot.
+ * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is returned.
+ */
+int onda_instance_snapshot_state(
+  const onda_instance_t* instance,
+  void* out_bytes,
+  int out_capacity
+);
+/* Restores a full state snapshot copied from a compatible program/instance; returns 0 on success. */
+int onda_instance_restore_state(
+  onda_instance_t* instance,
+  const void* bytes,
+  int byte_count
+);
 /* Validates all required domains (buffers, inputs, outputs); returns 0 on success. */
 int onda_validate_bindings(onda_instance_t* instance);
 /* Validates input bindings only; returns 0 on success. */
@@ -146,8 +211,19 @@ int onda_validate_inputs(onda_instance_t* instance);
 int onda_validate_outputs(onda_instance_t* instance);
 /* Validates buffer bindings only; returns 0 on success. */
 int onda_validate_buffers(onda_instance_t* instance);
-/* Processes without revalidation (unsafe if bindings are stale); returns 0 on success. */
+/* Validates all bindings and refreshes proc-slot buffer refs before unchecked processing. */
+int onda_prepare_unchecked_process(onda_instance_t* instance);
+/* Processes a full logical block without revalidation (unsafe if bindings are stale);
+   returns 0 on success. */
 int onda_process_unchecked(onda_instance_t* instance);
+/* Processes one logical-block segment without revalidation. Use the same full-block
+   binding, start_frame, frames, and flags contract as onda_process_checked_segment. */
+int onda_process_unchecked_segment(
+  onda_instance_t* instance,
+  int start_frame,
+  int frames,
+  int flags
+);
 
 /* Returns declared input entry count, or -1 on invalid program handle. */
 int onda_input_count(const onda_program_t* program);
@@ -159,6 +235,8 @@ int onda_param_count(const onda_program_t* program);
 int onda_buffer_count(const onda_program_t* program);
 /* Returns declared event entry count, or -1 on invalid program handle. */
 int onda_event_count(const onda_program_t* program);
+/* Returns declared state entry count, or -1 on invalid program handle. */
+int onda_state_count(const onda_program_t* program);
 
 /* Returns input name by index, or NULL if index/program is invalid. */
 const char* onda_input_name(const onda_program_t* program, int index);
@@ -170,6 +248,8 @@ const char* onda_param_name(const onda_program_t* program, int index);
 const char* onda_buffer_name(const onda_program_t* program, int index);
 /* Returns event name by index, or NULL if index/program is invalid. */
 const char* onda_event_name(const onda_program_t* program, int index);
+/* Returns state entry name by index, or NULL if index/program is invalid. */
+const char* onda_state_name(const onda_program_t* program, int index);
 /* Returns event parameter count, or -1 if event/program is invalid. */
 int onda_event_param_count(const onda_program_t* program, int event_index);
 /* Returns event parameter name, or NULL if event/parameter/program is invalid. */
@@ -194,6 +274,8 @@ const char* onda_output_type(const onda_program_t* program, int index);
 const char* onda_param_type(const onda_program_t* program, int index);
 /* Returns buffer type text (for example "buffer[f32[2]]"), or NULL if invalid. */
 const char* onda_buffer_type(const onda_program_t* program, int index);
+/* Returns state entry type text, or NULL if invalid. */
+const char* onda_state_type(const onda_program_t* program, int index);
 
 /* Returns input entry byte width, or -1 if invalid. */
 int onda_input_type_bytes(const onda_program_t* program, int index);
@@ -201,6 +283,8 @@ int onda_input_type_bytes(const onda_program_t* program, int index);
 int onda_output_type_bytes(const onda_program_t* program, int index);
 /* Returns parameter entry byte width, or -1 if invalid. */
 int onda_param_type_bytes(const onda_program_t* program, int index);
+/* Returns state entry byte width, or -1 if invalid. */
+int onda_state_type_bytes(const onda_program_t* program, int index);
 /* Returns event payload byte width for fixed-shape events, or -1 if invalid or dynamic. */
 int onda_event_payload_bytes(const onda_program_t* program, int index);
 /* Returns event parameter element primitive type id, or -1 if invalid. */
@@ -242,12 +326,16 @@ int onda_input_elem_type(const onda_program_t* program, int index);
 int onda_output_elem_type(const onda_program_t* program, int index);
 /* Returns parameter element primitive type id, or -1 if invalid. */
 int onda_param_elem_type(const onda_program_t* program, int index);
+/* Returns state entry element primitive type id, or -1 if invalid. */
+int onda_state_elem_type(const onda_program_t* program, int index);
 /* Returns input array length in channels/slots, or -1 if invalid. */
 int onda_input_array_len(const onda_program_t* program, int index);
 /* Returns output array length in channels/slots, or -1 if invalid. */
 int onda_output_array_len(const onda_program_t* program, int index);
 /* Returns parameter array length in slots, or -1 if invalid. */
 int onda_param_array_len(const onda_program_t* program, int index);
+/* Returns state entry array length in slots, or -1 if invalid. */
+int onda_state_array_len(const onda_program_t* program, int index);
 /* Returns input slot offset in flattened channel order, or -1 if invalid. */
 int onda_input_slot_offset(const onda_program_t* program, int index);
 /* Returns output slot offset in flattened channel order, or -1 if invalid. */
@@ -260,6 +348,10 @@ int onda_input_byte_offset(const onda_program_t* program, int index);
 int onda_output_byte_offset(const onda_program_t* program, int index);
 /* Returns parameter byte offset within packed param layout, or -1 if invalid. */
 int onda_param_byte_offset(const onda_program_t* program, int index);
+/* Returns state entry byte offset within the full instance state layout, or -1 if invalid. */
+int onda_state_byte_offset(const onda_program_t* program, int index);
+/* Returns total instance state byte size for this program, or -1 if invalid. */
+int onda_state_total_bytes(const onda_program_t* program);
 
 /* Returns 1 if input default exists, 0 if not, -1 if invalid. */
 int onda_input_has_default(const onda_program_t* program, int index);

@@ -449,6 +449,14 @@ pub(super) fn typed_const_expr(value: TypedConstValue) -> Expr {
     }
 }
 
+pub(super) fn cast_expr_to_primitive(expr: Expr, ty: PrimitiveType) -> Expr {
+    Expr::Cast {
+        loc: Default::default(),
+        to: ty,
+        expr: Box::new(expr),
+    }
+}
+
 pub(super) fn clamp_expr_to_range(expr: Expr, range: TypedValueRange) -> Expr {
     let min_expr = typed_const_expr(range.min);
     let max_expr = typed_const_expr(range.max);
