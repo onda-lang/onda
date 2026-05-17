@@ -58,11 +58,20 @@ pub(crate) fn is_builtin_function_name(name: &str) -> bool {
             | "fma"
             | "unsafe_read"
             | "unsafe_write"
+            | "unsafe_read2"
+            | "unsafe_write2"
     )
 }
 
 pub(crate) fn is_builtin_unsafe_data_fn(name: &str) -> bool {
     matches!(name, "unsafe_read" | "unsafe_write")
+}
+
+pub(crate) fn is_builtin_buffer_2d_unsafe_fn(name: &str) -> bool {
+    matches!(
+        name,
+        "unsafe_read2" | "unsafe_write2" | "__onda_buffer_read2" | "__onda_buffer_write2"
+    )
 }
 
 pub(crate) fn is_internal_buffer_2d_fn(name: &str) -> bool {
@@ -116,6 +125,24 @@ pub(crate) fn parse_unsafe_read_instance_base(name: &str) -> Option<&str> {
 pub(crate) fn parse_unsafe_write_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
     if method == "unsafe_write" {
+        Some(base)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn parse_unsafe_read2_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = split_instance_method_path(name)?;
+    if method == "unsafe_read2" {
+        Some(base)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn parse_unsafe_write2_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = split_instance_method_path(name)?;
+    if method == "unsafe_write2" {
         Some(base)
     } else {
         None

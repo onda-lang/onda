@@ -275,9 +275,16 @@ pub(super) struct LoweredUserCall {
 }
 
 pub(super) trait SharedUserCallSpecialCaseBackend {
-    unsafe fn lower_buffer_read2_call(&mut self, args: &[CallArg]) -> Result<OrcValue, Diagnostic>;
-    unsafe fn lower_buffer_write2_call(&mut self, args: &[CallArg])
-        -> Result<OrcValue, Diagnostic>;
+    unsafe fn lower_buffer_read2_call(
+        &mut self,
+        args: &[CallArg],
+        clamp_index: bool,
+    ) -> Result<OrcValue, Diagnostic>;
+    unsafe fn lower_buffer_write2_call(
+        &mut self,
+        args: &[CallArg],
+        clamp_index: bool,
+    ) -> Result<OrcValue, Diagnostic>;
 
     fn is_builtin_data_len_receiver(&self, base: &str) -> bool;
     unsafe fn lower_data_len_call(
@@ -330,10 +337,28 @@ pub(super) unsafe fn try_lower_user_call_special_case_common<
     args: &[CallArg],
 ) -> Option<Result<OrcValue, Diagnostic>> {
     if name == "__onda_buffer_read2" {
-        return Some(backend.lower_buffer_read2_call(args));
+        return Some(backend.lower_buffer_read2_call(args, true));
     }
     if name == "__onda_buffer_write2" {
-        return Some(backend.lower_buffer_write2_call(args));
+        return Some(backend.lower_buffer_write2_call(args, true));
+    }
+    if let Some(base) = parse_unsafe_read2_instance_base(name) {
+        if backend.is_builtin_buffer_receiver(base) {
+            let method_args = prepend_receiver_arg(base, args);
+            return Some(backend.lower_buffer_read2_call(&method_args, false));
+        }
+    }
+    if let Some(base) = parse_unsafe_write2_instance_base(name) {
+        if backend.is_builtin_buffer_receiver(base) {
+            let method_args = prepend_receiver_arg(base, args);
+            return Some(backend.lower_buffer_write2_call(&method_args, false));
+        }
+    }
+    if name == "unsafe_read2" {
+        return Some(backend.lower_buffer_read2_call(args, false));
+    }
+    if name == "unsafe_write2" {
+        return Some(backend.lower_buffer_write2_call(args, false));
     }
     if let Some(base) = parse_array_len_instance_base(name) {
         if backend.is_builtin_data_len_receiver(base) {

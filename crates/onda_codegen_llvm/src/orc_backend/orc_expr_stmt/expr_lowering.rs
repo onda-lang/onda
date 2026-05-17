@@ -10,7 +10,11 @@ struct OrcUserCallSpecialCaseBackend<'a, 'ctx> {
 }
 
 impl SharedUserCallSpecialCaseBackend for OrcUserCallSpecialCaseBackend<'_, '_> {
-    unsafe fn lower_buffer_read2_call(&mut self, args: &[CallArg]) -> Result<OrcValue, Diagnostic> {
+    unsafe fn lower_buffer_read2_call(
+        &mut self,
+        args: &[CallArg],
+        clamp_index: bool,
+    ) -> Result<OrcValue, Diagnostic> {
         lower_orc_buffer_read2_call(
             args,
             self.ctx,
@@ -18,13 +22,14 @@ impl SharedUserCallSpecialCaseBackend for OrcUserCallSpecialCaseBackend<'_, '_> 
             self.local_aliases,
             self.local_array_aliases,
             self.local_tuples,
-            true,
+            clamp_index,
         )
     }
 
     unsafe fn lower_buffer_write2_call(
         &mut self,
         args: &[CallArg],
+        clamp_index: bool,
     ) -> Result<OrcValue, Diagnostic> {
         lower_orc_buffer_write2_call(
             args,
@@ -33,7 +38,7 @@ impl SharedUserCallSpecialCaseBackend for OrcUserCallSpecialCaseBackend<'_, '_> 
             self.local_aliases,
             self.local_array_aliases,
             self.local_tuples,
-            true,
+            clamp_index,
         )
     }
 

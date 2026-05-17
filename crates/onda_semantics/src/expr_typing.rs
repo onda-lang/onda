@@ -3,9 +3,10 @@ use std::collections::{HashMap, HashSet};
 use onda_frontend::{BuiltinFn, CallArg, Diagnostic, Expr, PrimitiveType};
 
 use crate::builtins::{
-    builtin_constant_type, builtin_name, is_builtin_unsafe_data_fn, is_float_type,
-    is_internal_buffer_2d_fn, parse_array_len_instance_base, parse_buffer_chans_instance_base,
-    parse_buffer_samplerate_instance_base, parse_unsafe_read_instance_base,
+    builtin_constant_type, builtin_name, is_builtin_buffer_2d_unsafe_fn, is_builtin_unsafe_data_fn,
+    is_float_type, parse_array_len_instance_base, parse_buffer_chans_instance_base,
+    parse_buffer_samplerate_instance_base, parse_unsafe_read2_instance_base,
+    parse_unsafe_read_instance_base, parse_unsafe_write2_instance_base,
     parse_unsafe_write_instance_base,
 };
 use crate::decl_symbols::{
@@ -461,7 +462,15 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 }
                 return Some(PrimitiveType::F32);
             }
-            if is_internal_buffer_2d_fn(name) {
+            if let Some(base) = parse_unsafe_read2_instance_base(name)
+                .or_else(|| parse_unsafe_write2_instance_base(name))
+            {
+                if let Some((ty, _)) = declared_buffer_info(declared_symbols, base) {
+                    return Some(ty);
+                }
+                return Some(PrimitiveType::F32);
+            }
+            if is_builtin_buffer_2d_unsafe_fn(name) {
                 if let Some(CallArg {
                     expr: Expr::Var { name: base, .. },
                     ..

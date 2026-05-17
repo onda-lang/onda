@@ -830,6 +830,23 @@ sample {
 }
 "#;
 
+const BUFFER_STEREO_UNSAFE_2D_RW_EXAMPLE: &str = r#"
+buffers {
+  buf1: buffer[f32[2]]
+}
+outs {
+  out1
+}
+init {
+  idx: i32 = 1
+}
+sample {
+  unsafe_write2(buf1, 1, idx, 11.0)
+  buf1.unsafe_write2(1, idx, unsafe_read2(buf1, 1, idx) + 2.0)
+  out1 = buf1.unsafe_read2(1, idx)
+}
+"#;
+
 const BUFFER_STEREO_1D_INDEX_ERROR_EXAMPLE: &str = r#"
 buffers {
   buf1: buffer[f32[2]]
@@ -1039,4 +1056,3 @@ sample {
   out1 = read_ch(b, 1, 2)
 }
 "#;
-

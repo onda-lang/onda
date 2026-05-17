@@ -12,8 +12,8 @@ use call_inference::infer_stmt_calls;
 pub(crate) use call_inference::{resolve_call_args, resolve_call_args_at};
 
 use crate::builtins::{
-    builtin_constant_type, eval_data_size_expr, is_builtin_constant_name, is_internal_buffer_2d_fn,
-    parse_array_len_instance_base, parse_buffer_chans_instance_base,
+    builtin_constant_type, eval_data_size_expr, is_builtin_buffer_2d_unsafe_fn,
+    is_builtin_constant_name, parse_array_len_instance_base, parse_buffer_chans_instance_base,
     parse_buffer_samplerate_instance_base,
 };
 use crate::{

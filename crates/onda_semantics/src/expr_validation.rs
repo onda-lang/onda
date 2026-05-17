@@ -469,8 +469,8 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_unsafe_data_builtin_call(name, args, env, expr.loc(), errors);
                 return;
             }
-            if is_internal_buffer_2d_fn(name) {
-                validate_internal_buffer_2d_call(name, args, env, expr.loc(), errors);
+            if is_builtin_buffer_2d_unsafe_fn(name) {
+                validate_buffer_2d_unsafe_call(name, args, env, expr.loc(), errors);
                 return;
             }
             if name == PROC_INDEX_CALL_SENTINEL
@@ -565,6 +565,42 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         method_args.extend(args.iter().cloned());
                         validate_unsafe_data_builtin_call(
                             "unsafe_write",
+                            &method_args,
+                            env,
+                            expr.loc(),
+                            errors,
+                        );
+                        return;
+                    }
+                }
+                if let Some(base) = parse_unsafe_read2_instance_base(name) {
+                    if is_builtin_buffer_receiver(base, env) {
+                        let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                        method_args.push(CallArg {
+                            name: None,
+                            expr: Expr::var(base.to_owned()),
+                        });
+                        method_args.extend(args.iter().cloned());
+                        validate_buffer_2d_unsafe_call(
+                            "unsafe_read2",
+                            &method_args,
+                            env,
+                            expr.loc(),
+                            errors,
+                        );
+                        return;
+                    }
+                }
+                if let Some(base) = parse_unsafe_write2_instance_base(name) {
+                    if is_builtin_buffer_receiver(base, env) {
+                        let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
+                        method_args.push(CallArg {
+                            name: None,
+                            expr: Expr::var(base.to_owned()),
+                        });
+                        method_args.extend(args.iter().cloned());
+                        validate_buffer_2d_unsafe_call(
+                            "unsafe_write2",
                             &method_args,
                             env,
                             expr.loc(),
@@ -1304,24 +1340,28 @@ fn const_positive_usize(expr: &Expr) -> Option<usize> {
     }
 }
 
-fn validate_internal_buffer_2d_call(
+fn validate_buffer_2d_unsafe_call(
     name: &str,
     args: &[CallArg],
     env: ExprEnv<'_>,
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let expected_arity = if name == INTERNAL_BUFFER_READ2_FN {
-        3
+    let is_read = matches!(name, INTERNAL_BUFFER_READ2_FN | "unsafe_read2");
+    let is_write = matches!(name, INTERNAL_BUFFER_WRITE2_FN | "unsafe_write2");
+    let expected_arity = if is_read { 3 } else { 4 };
+    let label = if is_internal_buffer_2d_fn(name) {
+        "internal builtin"
     } else {
-        4
+        "builtin"
     };
     if args.len() != expected_arity {
         push_loc_error(
             errors,
             loc,
             format!(
-                "internal builtin '{}' expects {} positional arguments, got {}",
+                "{} '{}' expects {} positional arguments, got {}",
+                label,
                 name,
                 expected_arity,
                 args.len()
@@ -1333,10 +1373,7 @@ fn validate_internal_buffer_2d_call(
             push_loc_error(
                 errors,
                 loc,
-                format!(
-                    "internal builtin '{}' does not support named arguments",
-                    name
-                ),
+                format!("{} '{}' does not support named arguments", label, name),
             );
         }
     }
@@ -1360,8 +1397,8 @@ fn validate_internal_buffer_2d_call(
                         errors,
                         first.expr.loc().or(loc),
                         format!(
-                            "internal builtin '{}' first argument must be a declared buffer symbol, got '{}'",
-                            name, base
+                            "{} '{}' first argument must be a declared buffer symbol, got '{}'",
+                            label, name, base
                         ),
                     );
                 } else if !is_declared_multichannel_buffer_info(env.declared_symbols, base) {
@@ -1369,8 +1406,8 @@ fn validate_internal_buffer_2d_call(
                         errors,
                         first.expr.loc().or(loc),
                         format!(
-                            "internal builtin '{}' requires multichannel buffer indexing form, but '{}' is mono",
-                            name, base
+                            "{} '{}' requires multichannel buffer indexing form, but '{}' is mono",
+                            label, name, base
                         ),
                     );
                 }
@@ -1381,8 +1418,8 @@ fn validate_internal_buffer_2d_call(
                     errors,
                     other.loc().or(loc),
                     format!(
-                        "internal builtin '{}' first argument must be a declared buffer symbol variable",
-                        name
+                        "{} '{}' first argument must be a declared buffer symbol variable",
+                        label, name
                     ),
                 );
             }
@@ -1394,7 +1431,7 @@ fn validate_internal_buffer_2d_call(
     if let Some(sample_arg) = args.get(2) {
         validate_expr(&sample_arg.expr, env, errors);
     }
-    if name == INTERNAL_BUFFER_WRITE2_FN {
+    if is_write {
         if let Some(value_arg) = args.get(3) {
             validate_expr(&value_arg.expr, env, errors);
         }

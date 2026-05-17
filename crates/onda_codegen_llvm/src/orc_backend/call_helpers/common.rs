@@ -98,6 +98,22 @@ pub(in crate::orc_backend) fn parse_unsafe_write_instance_base(name: &str) -> Op
     Some(base)
 }
 
+pub(in crate::orc_backend) fn parse_unsafe_read2_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = name.rsplit_once('.')?;
+    if base.is_empty() || method != "unsafe_read2" {
+        return None;
+    }
+    Some(base)
+}
+
+pub(in crate::orc_backend) fn parse_unsafe_write2_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = name.rsplit_once('.')?;
+    if base.is_empty() || method != "unsafe_write2" {
+        return None;
+    }
+    Some(base)
+}
+
 pub(in crate::orc_backend) fn ensure_builtin_instance_call_no_args(
     method_name: &str,
     args: &[CallArg],

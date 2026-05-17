@@ -470,7 +470,12 @@ pub(super) fn infer_specialized_expr_return_type(
             }
             if matches!(
                 name.as_str(),
-                "__onda_buffer_read2" | "__onda_buffer_write2" | "unsafe_read" | "unsafe_write"
+                "__onda_buffer_read2"
+                    | "__onda_buffer_write2"
+                    | "unsafe_read"
+                    | "unsafe_write"
+                    | "unsafe_read2"
+                    | "unsafe_write2"
             ) {
                 if let Some(CallArg {
                     expr: Expr::Var { name: base, .. },

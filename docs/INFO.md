@@ -342,6 +342,10 @@
   - `unsafe_read` / `unsafe_write` for unchecked access (UB on OOB), via both
     `unsafe_read(buf, i)` / `unsafe_write(buf, i, v)` and method-style
     `buf.unsafe_read(i)` / `buf.unsafe_write(i, v)`.
+  - `unsafe_read2` / `unsafe_write2` provide the same unchecked access for
+    multi-channel buffers via `unsafe_read2(buf, ch, i)` /
+    `unsafe_write2(buf, ch, i, v)` and method-style
+    `buf.unsafe_read2(ch, i)` / `buf.unsafe_write2(ch, i, v)`.
 - Semantics:
   - `buf.len()` is frame count, not interleaved scalar count.
   - `buf.chans()` is the runtime channel count for dynamic buffers and the declared channel count for static buffers.

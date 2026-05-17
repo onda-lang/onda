@@ -1016,7 +1016,7 @@ fn apply_user_call_buffer_write_usage(
     param_writes: &mut [bool],
     global_writes: &mut HashSet<String>,
 ) {
-    if name == "unsafe_write" || name == "__onda_buffer_write2" {
+    if name == "unsafe_write" || name == "unsafe_write2" || name == "__onda_buffer_write2" {
         if let Some(first_arg) = args.first() {
             if let Expr::Var { name: base, .. } = &first_arg.expr {
                 mark_buffer_symbol_write(
@@ -1112,7 +1112,7 @@ fn mark_buffer_symbol_write(
 
 fn parse_unsafe_write_instance_base_for_metadata(name: &str) -> Option<&str> {
     let (base, method) = name.rsplit_once('.')?;
-    if base.is_empty() || method != "unsafe_write" {
+    if base.is_empty() || !matches!(method, "unsafe_write" | "unsafe_write2") {
         return None;
     }
     Some(base)

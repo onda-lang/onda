@@ -99,11 +99,33 @@ fn looks_like_namespace_ref(name: &str) -> bool {
 }
 
 fn split_named_type_base_and_suffix(name: &str) -> (&str, &str) {
-    if let Some(idx) = name.find('<') {
-        (&name[..idx], &name[idx..])
-    } else {
-        (name, "")
+    if !name.ends_with('>') {
+        return (name, "");
     }
+
+    let mut depth = 0usize;
+    for (idx, ch) in name.char_indices().rev() {
+        match ch {
+            '>' => depth += 1,
+            '<' => {
+                if depth == 0 {
+                    return (name, "");
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let base = name[..idx].trim_end();
+                    let suffix = name[idx..].trim_start();
+                    if base.is_empty() {
+                        return (name, "");
+                    }
+                    return (base, suffix);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (name, "")
 }
 
 fn format_call_args_as_type_suffix(args: &[NamespaceCallArg]) -> String {
@@ -2511,25 +2533,20 @@ fn rewrite_stmt(
                 AssignTarget::Tuple(_) => {}
             }
             if let Some(name) = generic_decl_ty {
-                if looks_like_namespace_ref(name) {
-                    if let Some(resolved) = resolve_namespace_symbol_name(
-                        name,
-                        current_ns,
-                        template_consts,
-                        options,
-                        state,
-                        generated,
-                        errors,
-                        typed_decl_ty_loc
-                            .as_ref()
-                            .or(target_loc.as_ref())
-                            .map(SourceLoc::from)
-                            .unwrap_or_default()
-                            .span(),
-                    ) {
-                        *name = resolved;
-                    }
-                }
+                rewrite_named_type_ref_name(
+                    name,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    typed_decl_ty_loc
+                        .as_ref()
+                        .or(target_loc.as_ref())
+                        .map(SourceLoc::from)
+                        .unwrap_or_default(),
+                );
             }
             rewrite_expr(
                 expr,

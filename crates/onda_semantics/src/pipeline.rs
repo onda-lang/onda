@@ -5995,6 +5995,69 @@ fn coerce_const_scalar(
     )
 }
 
+fn collect_struct_field_dependencies(def: &StructDef) -> Vec<String> {
+    let mut deps = Vec::<String>::new();
+    for field in &def.fields {
+        match &field.ty {
+            FieldType::Generic(name) => deps.push(name.clone()),
+            FieldType::Array(spec) => {
+                if let ArrayElemType::Struct(name) = &spec.elem {
+                    deps.push(name.clone());
+                }
+            }
+            FieldType::Scalar(_) | FieldType::Tuple(_) => {}
+        }
+    }
+    deps
+}
+
+fn order_struct_defs_for_field_dependencies(structs: &mut Vec<StructDef>) {
+    let index_by_name = structs
+        .iter()
+        .enumerate()
+        .map(|(idx, def)| (def.name.clone(), idx))
+        .collect::<HashMap<_, _>>();
+    if index_by_name.is_empty() {
+        return;
+    }
+
+    let deps_by_index = structs
+        .iter()
+        .map(collect_struct_field_dependencies)
+        .collect::<Vec<_>>();
+    let mut remaining = (0..structs.len()).collect::<Vec<_>>();
+    let mut ordered = Vec::<StructDef>::with_capacity(structs.len());
+
+    while !remaining.is_empty() {
+        let remaining_names = remaining
+            .iter()
+            .map(|idx| structs[*idx].name.as_str())
+            .collect::<HashSet<_>>();
+        let mut ready_pos = None;
+        for (pos, idx) in remaining.iter().enumerate() {
+            let self_name = structs[*idx].name.as_str();
+            let ready = deps_by_index[*idx].iter().all(|dep| {
+                dep == self_name
+                    || !index_by_name.contains_key(dep)
+                    || !remaining_names.contains(dep.as_str())
+            });
+            if ready {
+                ready_pos = Some(pos);
+                break;
+            }
+        }
+
+        let Some(pos) = ready_pos else {
+            ordered.extend(remaining.drain(..).map(|idx| structs[idx].clone()));
+            break;
+        };
+        let idx = remaining.remove(pos);
+        ordered.push(structs[idx].clone());
+    }
+
+    *structs = ordered;
+}
+
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     analyze_with_options(program, AnalysisOptions::default())
 }
@@ -6574,6 +6637,7 @@ pub fn analyze_with_options(
         generated.sort_by(|a, b| a.name.cmp(&b.name));
         struct_defs_raw.extend(generated);
     }
+    order_struct_defs_for_field_dependencies(&mut struct_defs_raw);
 
     check_local_port_duplicates(&raw_ins, "input", &mut errors);
     check_local_port_duplicates(&raw_outs, "output", &mut errors);

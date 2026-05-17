@@ -1561,6 +1561,52 @@ fn stdlib_fft_real_packed_roundtrip_compile_and_run() {
 }
 
 #[test]
+fn stdlib_fft_external_namespace_generic_field_method_compile_and_run() {
+    let src = r#"
+import std/fft
+
+namespace Wrap<N = 8>:
+  struct Real<T>:
+    fft: std::fft<N>::FFT<T>
+
+    def forward(self, input: T[], packed: T[]):
+      self.fft.forward_real_packed(input, packed)
+
+outs 1
+
+init:
+  w: Wrap<8>::Real<f32>
+  input: f32[8]
+  packed: f32[8]
+  input[0] = 1.0
+  input[1] = 0.0
+  input[2] = 0.0
+  input[3] = 0.0
+  input[4] = 0.0
+  input[5] = 0.0
+  input[6] = 0.0
+  input[7] = 0.0
+
+sample:
+  w.forward(input, packed)
+  out1 = packed[0] + packed[1] + packed[2] + packed[3] + packed[4] + packed[5] + packed[6] + packed[7]
+"#;
+
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in &output {
+        assert_near(*sample, 5.0, 1e-6);
+    }
+}
+
+#[test]
 
 fn stdlib_fft_real_spectrum_helpers_compile_and_run() {
     let frames = 2;

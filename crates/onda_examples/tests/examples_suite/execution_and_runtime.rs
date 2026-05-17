@@ -2586,6 +2586,51 @@ fn buffer_stereo_two_dim_write_works() {
 
 #[test]
 
+fn unsafe_2d_builtins_support_multichannel_buffers() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(BUFFER_STEREO_UNSAFE_2D_RW_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut buf = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0, //
+        4.0, 40.0,
+    ];
+
+    bind_buffer(
+        &mut instance,
+        0,
+        buf.as_mut_ptr().cast::<u8>(),
+        4,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind buffer");
+
+    let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
+
+    bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
+
+    process_checked(&mut instance, frames).expect("process checked");
+
+    let out = decode_planar_f32(&out_bytes);
+
+    for sample in out {
+        assert_near(sample, 13.0, 1e-6);
+    }
+
+    assert_near(buf[3], 13.0, 1e-6);
+}
+
+#[test]
+
 fn buffer_stereo_rejects_one_dim_indexing() {
     let parsed = parse_program(BUFFER_STEREO_1D_INDEX_ERROR_EXAMPLE).expect("parse should succeed");
 

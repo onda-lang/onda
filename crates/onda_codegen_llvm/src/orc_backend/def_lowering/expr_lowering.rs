@@ -9,15 +9,20 @@ struct DefUserCallSpecialCaseBackend<'a, 'ctx> {
 }
 
 impl SharedUserCallSpecialCaseBackend for DefUserCallSpecialCaseBackend<'_, '_> {
-    unsafe fn lower_buffer_read2_call(&mut self, args: &[CallArg]) -> Result<OrcValue, Diagnostic> {
-        lower_def_buffer_read2_call(args, self.ctx, true)
+    unsafe fn lower_buffer_read2_call(
+        &mut self,
+        args: &[CallArg],
+        clamp_index: bool,
+    ) -> Result<OrcValue, Diagnostic> {
+        lower_def_buffer_read2_call(args, self.ctx, clamp_index)
     }
 
     unsafe fn lower_buffer_write2_call(
         &mut self,
         args: &[CallArg],
+        clamp_index: bool,
     ) -> Result<OrcValue, Diagnostic> {
-        lower_def_buffer_write2_call(args, self.ctx, true)
+        lower_def_buffer_write2_call(args, self.ctx, clamp_index)
     }
 
     fn is_builtin_data_len_receiver(&self, base: &str) -> bool {

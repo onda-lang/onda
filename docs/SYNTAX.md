@@ -377,6 +377,10 @@ Other supported operations:
   - `buf.unsafe_write(i, v)`
   - `unsafe_read(buf, i)`
   - `unsafe_write(buf, i, v)`
+  - `buf.unsafe_read2(ch, i)`
+  - `buf.unsafe_write2(ch, i, v)`
+  - `unsafe_read2(buf, ch, i)`
+  - `unsafe_write2(buf, ch, i, v)`
 - primitive buffer slicing, covered later in the arrays section
 
 Rules:
