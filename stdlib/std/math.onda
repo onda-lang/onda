@@ -47,6 +47,48 @@ namespace std::math:
     t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
 
+  def linlin(x, in_lo, in_hi, out_lo, out_hi):
+    return map(in_lo, in_hi, out_lo, out_hi, x)
+
+  def linexp(x, in_lo, in_hi, out_lo, out_hi):
+    if (in_lo == in_hi):
+      return out_lo
+    return out_lo * pow(out_hi / out_lo, (x - in_lo) / (in_hi - in_lo))
+
+  def explin(x, in_lo, in_hi, out_lo, out_hi):
+    if (in_lo == in_hi):
+      return out_lo
+    return out_lo + (out_hi - out_lo) * log(x / in_lo) / log(in_hi / in_lo)
+
+  def expexp(x, in_lo, in_hi, out_lo, out_hi):
+    if (in_lo == in_hi):
+      return out_lo
+    return out_lo * pow(out_hi / out_lo, log(x / in_lo) / log(in_hi / in_lo))
+
+  def dbamp(db):
+    return pow(10.0, db * 0.05)
+
+  def ampdb(amp):
+    return log(max(abs(amp), 0.000000000001)) / log(10.0) * 20.0
+
+  def midicps(note):
+    return 440.0 * pow(2.0, (note - 69.0) / 12.0)
+
+  def cpsmidi(freq):
+    return log(freq / 440.0) / log(2.0) * 12.0 + 69.0
+
+  def midiratio(semitones):
+    return pow(2.0, semitones / 12.0)
+
+  def ratiomidi(ratio):
+    return log(ratio) / log(2.0) * 12.0
+
+  def octcps(oct):
+    return 440.0 * pow(2.0, oct - 4.75)
+
+  def cpsoct(freq):
+    return log(freq / 440.0) / log(2.0) + 4.75
+
 def clamp(x, lo, hi):
   return std::math::clamp(x, lo, hi)
 
@@ -73,3 +115,39 @@ def cubic_interp(y0, y1, y2, y3, t):
 
 def smoothstep(edge0, edge1, x):
   return std::math::smoothstep(edge0, edge1, x)
+
+def linlin(x, in_lo, in_hi, out_lo, out_hi):
+  return std::math::linlin(x, in_lo, in_hi, out_lo, out_hi)
+
+def linexp(x, in_lo, in_hi, out_lo, out_hi):
+  return std::math::linexp(x, in_lo, in_hi, out_lo, out_hi)
+
+def explin(x, in_lo, in_hi, out_lo, out_hi):
+  return std::math::explin(x, in_lo, in_hi, out_lo, out_hi)
+
+def expexp(x, in_lo, in_hi, out_lo, out_hi):
+  return std::math::expexp(x, in_lo, in_hi, out_lo, out_hi)
+
+def dbamp(db):
+  return std::math::dbamp(db)
+
+def ampdb(amp):
+  return std::math::ampdb(amp)
+
+def midicps(note):
+  return std::math::midicps(note)
+
+def cpsmidi(freq):
+  return std::math::cpsmidi(freq)
+
+def midiratio(semitones):
+  return std::math::midiratio(semitones)
+
+def ratiomidi(ratio):
+  return std::math::ratiomidi(ratio)
+
+def octcps(oct):
+  return std::math::octcps(oct)
+
+def cpsoct(freq):
+  return std::math::cpsoct(freq)
