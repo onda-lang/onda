@@ -358,6 +358,8 @@ fn builtin_constant_symbol_type(name: &str) -> Option<PrimitiveType> {
         "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
             Some(PrimitiveType::F32)
         }
+        "HOST_SR" | "HOST_SAMPLE_RATE" | "HOST_SAMPLERATE" | "host_sample_rate"
+        | "host_samplerate" => Some(PrimitiveType::F32),
         "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => Some(PrimitiveType::I32),
         _ => None,
     }

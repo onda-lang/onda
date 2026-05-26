@@ -143,7 +143,7 @@ fn collect_top_level_runtime_sections<'a>(blocks: &[&'a Block]) -> TopLevelRunti
 
     for block in blocks {
         match block {
-            Block::Ins(ports) | Block::Outs(ports) => {
+            Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
                 extend_runtime_owner_span(&mut sections.span, block.loc().span());
                 sections
                     .ports
@@ -497,7 +497,7 @@ fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
         Block::Const(decl) => {
             scope.consts.insert(decl.name.clone());
         }
-        Block::Ins(ports) | Block::Outs(ports) => {
+        Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
             for decl in &ports.decls {
                 scope.ports.insert(decl.name.clone());
             }

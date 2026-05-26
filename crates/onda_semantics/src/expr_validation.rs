@@ -14,6 +14,287 @@ fn init_buffer_runtime_message(what: &str) -> String {
     )
 }
 
+pub(crate) fn dynamic_param_surface_value_name<'a>(
+    expr: &'a Expr,
+    env: ExprEnv<'_>,
+) -> Option<&'a str> {
+    match expr {
+        Expr::Var { name, .. } => dynamic_param_surface_name(name, env),
+        Expr::Slice { base, .. } => dynamic_param_surface_name(base, env),
+        _ => None,
+    }
+}
+
+pub(crate) fn dynamic_param_surface_name<'a>(name: &'a str, env: ExprEnv<'_>) -> Option<&'a str> {
+    if env.locals.contains(name) || env.local_aliases.contains_key(name) {
+        return None;
+    }
+    env.dynamic_param_arrays.contains(name).then_some(name)
+}
+
+pub(crate) fn io_surface_value_name<'a>(expr: &'a Expr, env: ExprEnv<'_>) -> Option<&'a str> {
+    match expr {
+        Expr::Var { name, .. } => io_surface_name(name, env),
+        Expr::Slice { base, .. } => io_surface_name(base, env),
+        _ => None,
+    }
+}
+
+pub(crate) fn io_surface_name<'a>(name: &'a str, env: ExprEnv<'_>) -> Option<&'a str> {
+    if env.locals.contains(name) || env.local_aliases.contains_key(name) {
+        return None;
+    }
+    (env.io_surface_names.contains(name) || env.io_surface_array_names.contains(name))
+        .then_some(name)
+}
+
+pub(crate) fn io_surface_array_name<'a>(name: &'a str, env: ExprEnv<'_>) -> Option<&'a str> {
+    if env.locals.contains(name) || env.local_aliases.contains_key(name) {
+        return None;
+    }
+    env.io_surface_array_names.contains(name).then_some(name)
+}
+
+pub(crate) fn push_io_surface_scope_error(
+    errors: &mut Vec<Diagnostic>,
+    loc: SourceLoc,
+    name: &str,
+) {
+    push_loc_error(
+        errors,
+        loc,
+        format!("I/O symbol '{name}' is only available in block or sample"),
+    );
+}
+
+pub(crate) fn push_io_surface_value_error(
+    errors: &mut Vec<Diagnostic>,
+    loc: SourceLoc,
+    name: &str,
+) {
+    push_loc_error(
+        errors,
+        loc,
+        format!(
+            "I/O array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
+        ),
+    );
+}
+
+pub(crate) fn push_dynamic_param_surface_value_error(
+    errors: &mut Vec<Diagnostic>,
+    loc: SourceLoc,
+    name: &str,
+) {
+    push_loc_error(
+        errors,
+        loc,
+        format!(
+            "dynamic param array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
+        ),
+    );
+}
+
+pub(crate) fn push_dynamic_param_index_scope_error(
+    errors: &mut Vec<Diagnostic>,
+    expr: &Expr,
+    name: &str,
+) {
+    push_expr_error(
+        errors,
+        expr,
+        format!("dynamic param indexing '{name}[...]' is only allowed in block or sample"),
+    );
+}
+
+fn validate_block_bound_surface_plain_name(
+    name: &str,
+    loc: SourceLoc,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    if let Some(surface) = io_surface_name(name, env) {
+        if !env.io_surface_access_allowed {
+            push_io_surface_scope_error(errors, loc, surface);
+            return false;
+        }
+        if let Some(array_name) = io_surface_array_name(name, env) {
+            push_io_surface_value_error(errors, loc, array_name);
+            return false;
+        }
+        return true;
+    }
+    if let Some(surface) = dynamic_param_surface_name(name, env) {
+        push_dynamic_param_surface_value_error(errors, loc, surface);
+        return false;
+    }
+    true
+}
+
+pub(crate) fn validate_block_bound_surface_var_name(
+    name: &str,
+    loc: SourceLoc,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    if let Some((base, field)) = split_field_path(name, errors) {
+        let flat = format!("{base}.{field}");
+        return validate_block_bound_surface_plain_name(&flat, loc, env, errors)
+            && validate_block_bound_surface_plain_name(base, loc, env, errors);
+    }
+    validate_block_bound_surface_plain_name(name, loc, env, errors)
+}
+
+pub(crate) fn validate_block_bound_surface_expr(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let mut ok = true;
+    match expr {
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+        Expr::Var { name, .. } => {
+            ok &= validate_block_bound_surface_var_name(name, expr.loc(), env, errors);
+        }
+        Expr::Index { base, index, .. } => {
+            if let Some(surface) = io_surface_name(base, env) {
+                if !env.io_surface_access_allowed {
+                    push_io_surface_scope_error(errors, expr.loc(), surface);
+                    ok = false;
+                }
+                ok &= validate_block_bound_surface_expr(index, env, errors);
+                return ok;
+            }
+            if let Some(surface) = dynamic_param_surface_name(base, env) {
+                if !env.dynamic_param_indexing_allowed {
+                    push_dynamic_param_index_scope_error(errors, expr, surface);
+                    ok = false;
+                }
+                ok &= validate_block_bound_surface_expr(index, env, errors);
+                return ok;
+            }
+            ok &= validate_block_bound_surface_expr(index, env, errors);
+        }
+        Expr::Slice {
+            base, start, end, ..
+        } => {
+            if let Some(surface) = io_surface_name(base, env) {
+                if !env.io_surface_access_allowed {
+                    push_io_surface_scope_error(errors, expr.loc(), surface);
+                    ok = false;
+                } else if let Some(array_name) = io_surface_array_name(base, env) {
+                    push_io_surface_value_error(errors, expr.loc(), array_name);
+                    ok = false;
+                }
+            } else if let Some(surface) = dynamic_param_surface_name(base, env) {
+                push_dynamic_param_surface_value_error(errors, expr.loc(), surface);
+                ok = false;
+            }
+            if let Some(start) = start {
+                ok &= validate_block_bound_surface_expr(start, env, errors);
+            }
+            if let Some(end) = end {
+                ok &= validate_block_bound_surface_expr(end, env, errors);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            ok &= validate_block_bound_surface_expr(&spec.size, env, errors);
+            if let Some(values) = init {
+                for value in values {
+                    ok &= validate_block_bound_surface_expr(value, env, errors);
+                }
+            }
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                ok &= validate_block_bound_surface_expr(value, env, errors);
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            ok &= validate_block_bound_surface_expr(lhs, env, errors);
+            ok &= validate_block_bound_surface_expr(rhs, env, errors);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                ok &= validate_block_bound_surface_expr(arg, env, errors);
+            }
+        }
+        Expr::UserCall { args, .. } => {
+            for arg in args {
+                ok &= validate_block_bound_surface_expr(&arg.expr, env, errors);
+            }
+        }
+        Expr::Cast { expr: inner, .. }
+        | Expr::UnaryNot { expr: inner, .. }
+        | Expr::UnaryBitNot { expr: inner, .. } => {
+            ok &= validate_block_bound_surface_expr(inner, env, errors);
+        }
+    }
+    ok
+}
+
+pub(crate) fn validate_block_bound_surface_assign_target(
+    target: &AssignTarget,
+    loc: SourceLoc,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let mut ok = true;
+    match target {
+        AssignTarget::Var(name) => {
+            ok &= validate_block_bound_surface_var_name(name, loc, env, errors);
+        }
+        AssignTarget::Index { base, index } => {
+            if let Some(surface) = io_surface_name(base, env) {
+                if !env.io_surface_access_allowed {
+                    push_io_surface_scope_error(errors, loc, surface);
+                    ok = false;
+                }
+            } else if let Some(surface) = dynamic_param_surface_name(base, env) {
+                if !env.dynamic_param_indexing_allowed {
+                    push_loc_error(
+                        errors,
+                        loc,
+                        format!(
+                            "dynamic param indexing '{surface}[...]' is only allowed in block or sample"
+                        ),
+                    );
+                    ok = false;
+                }
+            }
+            ok &= validate_block_bound_surface_expr(index, env, errors);
+        }
+        AssignTarget::Slice { base, start, end } => {
+            if let Some(surface) = io_surface_name(base, env) {
+                if !env.io_surface_access_allowed {
+                    push_io_surface_scope_error(errors, loc, surface);
+                    ok = false;
+                } else if let Some(array_name) = io_surface_array_name(base, env) {
+                    push_io_surface_value_error(errors, loc, array_name);
+                    ok = false;
+                }
+            } else if let Some(surface) = dynamic_param_surface_name(base, env) {
+                push_dynamic_param_surface_value_error(errors, loc, surface);
+                ok = false;
+            }
+            if let Some(start) = start {
+                ok &= validate_block_bound_surface_expr(start, env, errors);
+            }
+            if let Some(end) = end {
+                ok &= validate_block_bound_surface_expr(end, env, errors);
+            }
+        }
+        AssignTarget::Tuple(names) => {
+            for name in names {
+                ok &= validate_block_bound_surface_var_name(name, loc, env, errors);
+            }
+        }
+    }
+    ok
+}
+
 pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diagnostic>) {
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
@@ -90,6 +371,16 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 }
 
                 let flat = format!("{base}.{field}");
+                if let Some(name) = io_surface_name(&flat, env) {
+                    if !env.io_surface_access_allowed {
+                        push_io_surface_scope_error(errors, expr.loc(), name);
+                        return;
+                    }
+                }
+                if let Some(name) = dynamic_param_surface_name(&flat, env) {
+                    push_dynamic_param_surface_value_error(errors, expr.loc(), name);
+                    return;
+                }
                 if env.array_vars.contains_key(&flat) {
                     push_expr_error(
                         errors,
@@ -98,10 +389,23 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     );
                     return;
                 }
+                if env.outputs.contains(&flat) {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!(
+                            "cannot read output symbol '{flat}' owned by the current program/proc"
+                        ),
+                    );
+                    return;
+                }
+                if let Some(name) = io_surface_array_name(&flat, env) {
+                    push_io_surface_value_error(errors, expr.loc(), name);
+                    return;
+                }
                 if !env.known_scalars.contains(&flat)
                     && !env.local_aliases.contains_key(&flat)
                     && !env.locals.contains(&flat)
-                    && !env.outputs.contains(&flat)
                 {
                     push_expr_error(
                         errors,
@@ -131,6 +435,30 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 );
                 return;
             }
+            if let Some(name) = io_surface_name(name, env) {
+                if !env.io_surface_access_allowed {
+                    push_io_surface_scope_error(errors, expr.loc(), name);
+                    return;
+                }
+            }
+            if env.output_arrays.contains(name) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!(
+                        "cannot read output array symbol '{name}' owned by the current program/proc"
+                    ),
+                );
+                return;
+            }
+            if let Some(name) = dynamic_param_surface_name(name, env) {
+                push_dynamic_param_surface_value_error(errors, expr.loc(), name);
+                return;
+            }
+            if let Some(name) = io_surface_array_name(name, env) {
+                push_io_surface_value_error(errors, expr.loc(), name);
+                return;
+            }
             if env.array_vars.contains_key(name) {
                 push_expr_error(
                     errors,
@@ -147,10 +475,15 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 );
                 return;
             }
-            if !env.known_scalars.contains(name)
-                && !env.locals.contains(name)
-                && !env.outputs.contains(name)
-            {
+            if env.outputs.contains(name) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!("cannot read output symbol '{name}' owned by the current program/proc"),
+                );
+                return;
+            }
+            if !env.known_scalars.contains(name) && !env.locals.contains(name) {
                 push_expr_error(
                     errors,
                     expr,
@@ -247,11 +580,46 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     return;
                 }
             }
+            if let Some(name) = io_surface_name(base, env) {
+                if !env.io_surface_access_allowed {
+                    push_io_surface_scope_error(errors, expr.loc(), name);
+                    validate_expr(index, env, errors);
+                    return;
+                }
+            }
+            if let Some(name) = dynamic_param_surface_name(base, env) {
+                if !env.dynamic_param_indexing_allowed {
+                    push_dynamic_param_index_scope_error(errors, expr, name);
+                }
+                validate_expr(index, env, errors);
+                return;
+            }
+            if matches!(base.as_str(), "outs" | "kouts") {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!(
+                        "cannot read output symbol '{}[i]' owned by the current program/proc",
+                        base
+                    ),
+                );
+                validate_expr(index, env, errors);
+                return;
+            }
+            if env.output_arrays.contains(base) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!(
+                        "cannot read output array symbol '{base}[...]' owned by the current program/proc"
+                    ),
+                );
+                validate_expr(index, env, errors);
+                return;
+            }
             if matches!(
                 match base.as_str() {
                     "ins" => env.port_index_ins,
-                    "outs" => env.port_index_outs,
-                    "params" => env.port_index_params,
                     _ => None,
                 },
                 Some(_)
@@ -266,13 +634,17 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_expr(index, env, errors);
                 return;
             }
-            if matches!(base.as_str(), "ins" | "outs" | "params") {
+            if matches!(base.as_str(), "ins" | "outs" | "kouts" | "params" | "kins") {
+                let requirement = match base.as_str() {
+                    "outs" => "explicit 'outs' block declaration with uniform types".to_owned(),
+                    "kouts" => "explicit 'kouts' block declaration with uniform types".to_owned(),
+                    "kins" => "top-level explicit 'kins' declaration with uniform types".to_owned(),
+                    _ => format!("explicit '{base}' block declaration with uniform types"),
+                };
                 push_expr_error(
                     errors,
                     expr,
-                    format!(
-                        "'{base}[i]' requires an explicit '{base}' block declaration with uniform types"
-                    ),
+                    format!("'{base}[i]' requires an {requirement}"),
                 );
                 validate_expr(index, env, errors);
                 return;
@@ -384,6 +756,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     );
                     return;
                 }
+            } else if let Some(name) =
+                io_surface_name(base, env).filter(|_| !env.io_surface_access_allowed)
+            {
+                push_io_surface_scope_error(errors, expr.loc(), name);
             } else if env.scope == ScopeKind::Init
                 && has_declared_buffer_symbol_info(env.declared_symbols, base)
             {
@@ -392,6 +768,18 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     expr,
                     init_buffer_runtime_message(&format!("buffer slicing '{}[...]'", base)),
                 );
+            } else if env.output_arrays.contains(base) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!(
+                        "cannot read output array symbol '{base}[...]' owned by the current program/proc"
+                    ),
+                );
+            } else if let Some(name) = dynamic_param_surface_name(base, env) {
+                push_dynamic_param_surface_value_error(errors, expr.loc(), name);
+            } else if let Some(name) = io_surface_array_name(base, env) {
+                push_io_surface_value_error(errors, expr.loc(), name);
             } else if !env.array_vars.contains_key(base)
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
@@ -610,6 +998,15 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     }
                 }
             }
+            if is_internal_proc_index_validation_call(name) {
+                for (idx, arg) in args.iter().enumerate() {
+                    if is_internal_proc_index_validation_arg(args, idx, arg.name.as_deref()) {
+                        continue;
+                    }
+                    validate_expr(&arg.expr, env, errors);
+                }
+                return;
+            }
             if let Some(sig) = env.fn_signatures.get(name) {
                 if sig.type_params.is_empty() {
                     if !type_args.is_empty() {
@@ -681,6 +1078,16 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             continue;
                         }
                         if is_function_array_param(param_ty) {
+                            if reject_protected_array_pointer_call_arg(
+                                name,
+                                &sig.params[idx],
+                                arg,
+                                env,
+                                expr.loc(),
+                                errors,
+                            ) {
+                                continue;
+                            }
                             if reject_immutable_array_call_arg(
                                 name,
                                 &sig.params[idx],
@@ -703,6 +1110,16 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             continue;
                         }
                         if param_ty.is_none() && is_by_ref_call_arg_expr(arg, env) {
+                            if reject_protected_array_pointer_call_arg(
+                                name,
+                                &sig.params[idx],
+                                arg,
+                                env,
+                                expr.loc(),
+                                errors,
+                            ) {
+                                continue;
+                            }
                             if reject_immutable_array_call_arg(
                                 name,
                                 &sig.params[idx],
@@ -776,6 +1193,17 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 return;
             }
 
+            if env.proc_event_names.contains(name) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!(
+                        "proc event '{name}' is receiver-only; unqualified calls never resolve to proc events. Use a proc-local def for shared internal logic, or call the event on a child proc instance"
+                    ),
+                );
+                return;
+            }
+
             push_expr_error(
                 errors,
                 expr,
@@ -800,6 +1228,34 @@ fn is_internal_proc_helper_call(name: &str) -> bool {
         || name.ends_with(PROC_STEP_FN_SUFFIX)
         || name.contains(PROC_CALL_OUT_FN_PREFIX)
         || name.contains(PROC_EVENT_FN_PREFIX)
+}
+
+fn is_internal_proc_index_validation_call(name: &str) -> bool {
+    name == PROC_INDEX_CALL_SENTINEL
+        || name
+            .strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
+            .is_some_and(|raw| raw == PROC_INDEX_CALL_SENTINEL)
+}
+
+fn is_internal_proc_index_validation_arg(
+    args: &[CallArg],
+    idx: usize,
+    arg_name: Option<&str>,
+) -> bool {
+    if matches!(
+        arg_name,
+        Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG) | Some(PROC_FIELD_SENTINEL_ARG)
+    ) {
+        return true;
+    }
+    if arg_name.is_some() {
+        return false;
+    }
+    args.iter()
+        .take(idx)
+        .filter(|arg| arg.name.is_none())
+        .count()
+        < 2
 }
 
 fn is_declared_struct_array_root_symbol(declared_symbols: &DeclaredSymbolMap, base: &str) -> bool {
@@ -850,6 +1306,8 @@ fn is_by_ref_call_arg_var(name: &str, env: ExprEnv<'_>) -> bool {
     env.struct_instances.contains_key(name)
         || env.param_structs.contains_key(name)
         || env.array_vars.contains_key(name)
+        || protected_proc_view_arg_name(name, env).is_some()
+        || env.output_arrays.contains(name)
         || has_declared_buffer_symbol_info(env.declared_symbols, name)
         || is_declared_struct_array_root_symbol(env.declared_symbols, name)
         || env.proc_array_roots.contains_key(name)
@@ -860,6 +1318,8 @@ fn is_by_ref_call_arg_expr(expr: &Expr, env: ExprEnv<'_>) -> bool {
         Expr::Var { name, .. } => is_by_ref_call_arg_var(name, env),
         Expr::Slice { base, .. } => {
             env.array_vars.contains_key(base)
+                || protected_proc_view_arg_name(base, env).is_some()
+                || env.output_arrays.contains(base)
                 || has_declared_buffer_symbol_info(env.declared_symbols, base)
                 || is_declared_struct_array_root_symbol(env.declared_symbols, base)
         }
@@ -886,6 +1346,60 @@ fn is_function_array_param(param_ty: Option<&FnParamType>) -> bool {
             | Some(FnParamType::ArrayGeneric(_))
             | Some(FnParamType::SizedArray { .. })
     )
+}
+
+fn protected_array_pointer_arg_name<'a>(expr: &'a Expr, env: ExprEnv<'_>) -> Option<&'a str> {
+    let name = match expr {
+        Expr::Var { name, .. } | Expr::Slice { base: name, .. } => name.as_str(),
+        _ => return None,
+    };
+    protected_proc_view_arg_name(name, env)
+        .or_else(|| env.output_arrays.contains(name).then_some(name))
+}
+
+fn protected_proc_view_arg_name<'a>(name: &'a str, env: ExprEnv<'_>) -> Option<&'a str> {
+    let Some((receiver, field)) = split_simple_field_path(name) else {
+        return None;
+    };
+    let protected_field = matches!(field, "ins" | "outs" | "kouts" | "params" | "kins");
+    if protected_field && env.proc_array_roots.contains_key(receiver) {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+fn reject_protected_array_pointer_call_arg(
+    fn_name: &str,
+    param_name: &str,
+    arg: &Expr,
+    env: ExprEnv<'_>,
+    call_loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    if let Some(arg_name) = dynamic_param_surface_value_name(arg, env) {
+        push_dynamic_param_surface_value_error(errors, arg.loc().or(call_loc), arg_name);
+        return true;
+    }
+    if let Some(arg_name) = io_surface_value_name(arg, env) {
+        if env.io_surface_access_allowed {
+            push_io_surface_value_error(errors, arg.loc().or(call_loc), arg_name);
+        } else {
+            push_io_surface_scope_error(errors, arg.loc().or(call_loc), arg_name);
+        }
+        return true;
+    }
+    let Some(arg_name) = protected_array_pointer_arg_name(arg, env) else {
+        return false;
+    };
+    push_loc_error(
+        errors,
+        arg.loc().or(call_loc),
+        format!(
+            "cannot pass protected array view '{arg_name}' to array parameter '{param_name}' of function '{fn_name}'"
+        ),
+    );
+    true
 }
 
 fn reject_immutable_array_call_arg(

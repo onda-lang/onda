@@ -384,6 +384,11 @@ pub(super) fn parse_event_param_type(
         Rule::type_name => Ok(EventParamType::Scalar(
             parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?,
         )),
+        Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+            Ok(EventParamType::GenericScalar {
+                name: inner.as_str().trim().to_owned(),
+            })
+        }
         Rule::fn_typed_array_param => {
             let Some(elem_pair) = inner.into_inner().next() else {
                 return Err(vec![syntax_at_loc(
@@ -423,9 +428,15 @@ pub(super) fn parse_event_param_type(
                     elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
                     size: parse_expr_inner(size_pair),
                 }),
+                Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+                    Ok(EventParamType::GenericArray {
+                        elem: elem_pair.as_str().trim().to_owned(),
+                        size: parse_expr_inner(size_pair),
+                    })
+                }
                 _ => Err(vec![syntax_at_loc(
                     loc.as_ref(),
-                    "event array parameters require primitive element type",
+                    "event array parameters require primitive or generic primitive element type",
                 )]),
             }
         }

@@ -2,28 +2,44 @@ use onda_frontend::{BinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr, LogicalOp, Pri
 
 use crate::AnalysisOptions;
 
+pub(crate) const HOST_SAMPLE_RATE_CONSTANT_NAMES: &[&str] = &[
+    "HOST_SR",
+    "HOST_SAMPLE_RATE",
+    "HOST_SAMPLERATE",
+    "host_sample_rate",
+    "host_samplerate",
+];
+
+pub(crate) fn is_host_sample_rate_constant_name(name: &str) -> bool {
+    HOST_SAMPLE_RATE_CONSTANT_NAMES.contains(&name)
+}
+
 pub(crate) fn is_builtin_constant_name(name: &str) -> bool {
-    matches!(
-        name,
-        "PI" | "TWO_PI"
-            | "TWOPI"
-            | "pi"
-            | "two_pi"
-            | "twopi"
-            | "SAMPLE_RATE"
-            | "SAMPLERATE"
-            | "SR"
-            | "sample_rate"
-            | "samplerate"
-            | "BLOCK_SIZE"
-            | "BLOCKSIZE"
-            | "BS"
-            | "block_size"
-            | "blocksize"
-    )
+    is_host_sample_rate_constant_name(name)
+        || matches!(
+            name,
+            "PI" | "TWO_PI"
+                | "TWOPI"
+                | "pi"
+                | "two_pi"
+                | "twopi"
+                | "SAMPLE_RATE"
+                | "SAMPLERATE"
+                | "SR"
+                | "sample_rate"
+                | "samplerate"
+                | "BLOCK_SIZE"
+                | "BLOCKSIZE"
+                | "BS"
+                | "block_size"
+                | "blocksize"
+        )
 }
 
 pub(crate) fn builtin_constant_type(name: &str) -> Option<PrimitiveType> {
+    if is_host_sample_rate_constant_name(name) {
+        return Some(PrimitiveType::F32);
+    }
     match name {
         "PI" | "pi" | "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => Some(PrimitiveType::F64),
         "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
@@ -197,6 +213,9 @@ pub(crate) fn is_float_type(ty: PrimitiveType) -> bool {
 }
 
 pub(crate) fn builtin_constant_value_f64(name: &str, options: AnalysisOptions) -> Option<f64> {
+    if is_host_sample_rate_constant_name(name) {
+        return Some(options.sample_rate as f64);
+    }
     match name {
         "PI" | "pi" => Some(std::f64::consts::PI),
         "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => Some(2.0 * std::f64::consts::PI),

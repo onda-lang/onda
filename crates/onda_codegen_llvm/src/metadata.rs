@@ -9,6 +9,9 @@ use onda_semantics::{
 use crate::primitives::{
     append_typed_const_bytes, primitive_type_bytes, primitive_type_name, typed_const_to_f64,
 };
+use crate::state_layout::{
+    compute_arrays_layout, compute_state_layout, ArrayLayoutEntry, StateLayoutEntry,
+};
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
     DeclaredState,
@@ -17,12 +20,14 @@ use crate::{
 pub(crate) struct ProgramMetadata {
     pub(crate) inputs: Vec<DeclaredIo>,
     pub(crate) outputs: Vec<DeclaredIo>,
+    pub(crate) control_outputs: Vec<DeclaredIo>,
     pub(crate) params: Vec<DeclaredIo>,
     pub(crate) events: Vec<DeclaredEvent>,
     pub(crate) buffers: Vec<DeclaredBuffer>,
     pub(crate) state_entries: Vec<DeclaredState>,
     pub(crate) input_index: HashMap<String, usize>,
     pub(crate) output_index: HashMap<String, usize>,
+    pub(crate) control_output_index: HashMap<String, usize>,
     pub(crate) param_index: HashMap<String, usize>,
     pub(crate) event_index: HashMap<String, usize>,
     pub(crate) buffer_index: HashMap<String, usize>,
@@ -47,6 +52,10 @@ impl DeclaredIo {
 
     pub fn byte_offset(&self) -> usize {
         self.byte_offset
+    }
+
+    pub(crate) fn state_byte_offset(&self) -> Option<usize> {
+        self.state_byte_offset
     }
 
     pub fn default(&self) -> Option<TypedConstValue> {
@@ -230,14 +239,30 @@ pub(crate) fn build_program_metadata(typed: &TypedProgram) -> ProgramMetadata {
         &empty_defaults,
         &empty_ranges,
     );
+    let state_layout =
+        compute_state_layout(typed).expect("typed program state layout should be valid");
+    let array_layout = compute_arrays_layout(typed, &state_layout)
+        .expect("typed program array layout should be valid");
+    let state_offsets = build_state_byte_offsets_from_layout(&state_layout, &array_layout);
+    let mut control_outputs = build_declared_port_ios(
+        &typed.control_outs,
+        &typed.control_out_types,
+        &typed.control_out_arrays,
+        &empty_defaults,
+        &empty_ranges,
+    );
+    for output in &mut control_outputs {
+        output.state_byte_offset = state_offsets.get(output.name()).copied();
+    }
     let params = build_declared_param_ios(typed);
     let events = build_declared_events(typed);
     let buffers = build_declared_buffers(typed);
-    let state_entries = build_declared_state_entries(typed);
+    let state_entries = build_declared_state_entries(typed, &state_layout, &array_layout);
 
     ProgramMetadata {
         input_index: build_name_to_index(&inputs),
         output_index: build_name_to_index(&outputs),
+        control_output_index: build_name_to_index(&control_outputs),
         param_index: build_name_to_index(&params),
         event_index: build_event_name_to_index(&events),
         buffer_index: buffers
@@ -247,6 +272,7 @@ pub(crate) fn build_program_metadata(typed: &TypedProgram) -> ProgramMetadata {
             .collect(),
         inputs,
         outputs,
+        control_outputs,
         params,
         events,
         buffers,
@@ -254,52 +280,54 @@ pub(crate) fn build_program_metadata(typed: &TypedProgram) -> ProgramMetadata {
     }
 }
 
-fn align_up(value: usize, align: usize) -> usize {
-    if align <= 1 {
-        return value;
-    }
-    let rem = value % align;
-    if rem == 0 {
-        value
-    } else {
-        value + (align - rem)
-    }
+fn build_state_byte_offsets_from_layout(
+    state_layout: &[StateLayoutEntry],
+    array_layout: &[ArrayLayoutEntry],
+) -> HashMap<String, usize> {
+    state_layout
+        .iter()
+        .map(|entry| (entry.name.clone(), entry.offset))
+        .chain(
+            array_layout
+                .iter()
+                .map(|entry| (entry.name.clone(), entry.offset)),
+        )
+        .collect()
 }
 
-fn primitive_size_align(ty: PrimitiveType) -> (usize, usize) {
-    match ty {
-        PrimitiveType::F32 | PrimitiveType::I32 => (4, 4),
-        PrimitiveType::F64 | PrimitiveType::I64 => (8, 8),
-        PrimitiveType::Bool => (1, 1),
+fn build_declared_state_entries(
+    typed: &TypedProgram,
+    state_layout: &[StateLayoutEntry],
+    array_layout: &[ArrayLayoutEntry],
+) -> Vec<DeclaredState> {
+    let control_scalars = typed.control_outs.iter().cloned().collect::<HashSet<_>>();
+    let control_arrays = typed
+        .control_out_arrays
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut out = Vec::with_capacity(state_layout.len() + array_layout.len());
+
+    for entry in state_layout {
+        if !control_scalars.contains(&entry.name) {
+            out.push(DeclaredState {
+                name: entry.name.clone(),
+                elem_ty: entry.ty,
+                array_len: 1,
+                byte_offset: entry.offset,
+            });
+        }
     }
-}
 
-fn build_declared_state_entries(typed: &TypedProgram) -> Vec<DeclaredState> {
-    let mut out = Vec::with_capacity(typed.state_vars.len() + typed.array_vars.len());
-    let mut offset = 0usize;
-
-    for (name, ty) in typed.state_vars.iter().zip(typed.state_types.iter()) {
-        let (size, align) = primitive_size_align(*ty);
-        offset = align_up(offset, align);
-        out.push(DeclaredState {
-            name: name.clone(),
-            elem_ty: *ty,
-            array_len: 1,
-            byte_offset: offset,
-        });
-        offset = offset.saturating_add(size);
-    }
-
-    for array_var in &typed.array_vars {
-        let (elem_size, elem_align) = primitive_size_align(array_var.elem_ty);
-        offset = align_up(offset, elem_align);
-        out.push(DeclaredState {
-            name: array_var.name.clone(),
-            elem_ty: array_var.elem_ty,
-            array_len: array_var.len,
-            byte_offset: offset,
-        });
-        offset = offset.saturating_add(elem_size.saturating_mul(array_var.len));
+    for entry in array_layout {
+        if !control_arrays.contains(&entry.name) {
+            out.push(DeclaredState {
+                name: entry.name.clone(),
+                elem_ty: entry.elem_ty,
+                array_len: entry.len,
+                byte_offset: entry.offset,
+            });
+        }
     }
 
     out
@@ -334,6 +362,7 @@ fn build_declared_port_ios(
                 array_len: info.len,
                 slot_offset: slot,
                 byte_offset,
+                state_byte_offset: None,
                 default: None,
                 default_bytes,
                 range: None,
@@ -353,6 +382,7 @@ fn build_declared_port_ios(
             array_len: 1,
             slot_offset: slot,
             byte_offset,
+            state_byte_offset: None,
             default,
             default_bytes: default.map(|value| typed_const_values_to_bytes(&[value], ty)),
             range,
@@ -387,6 +417,7 @@ fn build_declared_param_ios(typed: &TypedProgram) -> Vec<DeclaredIo> {
                 array_len: info.len,
                 slot_offset: slot,
                 byte_offset,
+                state_byte_offset: None,
                 default: None,
                 default_bytes: Some(typed_const_values_to_bytes(&default_bytes, info.elem_ty)),
                 range: None,
@@ -403,6 +434,7 @@ fn build_declared_param_ios(typed: &TypedProgram) -> Vec<DeclaredIo> {
             array_len: 1,
             slot_offset: slot,
             byte_offset,
+            state_byte_offset: None,
             default: Some(param.default),
             default_bytes: Some(typed_const_values_to_bytes(&[param.default], param.ty)),
             range: param.range,

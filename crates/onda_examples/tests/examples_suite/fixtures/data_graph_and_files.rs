@@ -474,8 +474,9 @@ sample {
 const TOP_LEVEL_OUTPUT_ARRAY_EXAMPLE: &str = r#"
 outs { out1: f32[2] }
 sample {
-  out1[0] = 0.25
-  out1[1] = out1[0] + 0.5
+  left = 0.25
+  out1[0] = left
+  out1[1] = left + 0.5
 }
 "#;
 
@@ -908,4 +909,3 @@ const STDLIB_F32_GRAPH_FILE_EXAMPLE: &str =
     include_str!("../../../../../examples/stdlib_f32_graph.onda");
 const SINE_WASM_FILE_EXAMPLE: &str =
     include_str!("../../../../../examples/web/sine_wasm_worklet/sine_wasm.onda");
-

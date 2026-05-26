@@ -50,6 +50,7 @@ fn classify_named_or_flattened_field(
 pub(crate) fn classify_runtime_like_indexed_binding(
     base: &str,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    state_scalars: &HashMap<String, PrimitiveType>,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     struct_instances: &HashMap<String, String>,
@@ -73,6 +74,13 @@ pub(crate) fn classify_runtime_like_indexed_binding(
             Some(elem_struct) => IndexedBindingKind::StructElementAlias(elem_struct.clone()),
             None => IndexedBindingKind::PrimitiveScalar,
         });
+    }
+    let flattened_proc_slot_prefix = format!("{base}[");
+    if state_scalars
+        .keys()
+        .any(|field| field.starts_with(&flattened_proc_slot_prefix))
+    {
+        return Some(IndexedBindingKind::ProcArrayAlias);
     }
     let Some((root, field)) = split_field_path(base, errors) else {
         return None;

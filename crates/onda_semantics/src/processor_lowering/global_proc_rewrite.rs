@@ -457,6 +457,7 @@ pub(super) fn rewrite_top_level_proc_calls(
         .find(|b| b.kind() == BlockKind::Init)
     {
         let mut rewritten_init = Vec::<Stmt>::new();
+        let mut constructor_setup_indices = HashSet::<usize>::new();
         for stmt in init.body.clone() {
             let mut pending_stmts = vec![stmt];
             if let Some(Stmt::Assign {
@@ -710,7 +711,10 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     })
                                     .collect::<Vec<_>>();
                             }
-                            rewritten_init.extend(ctor_assigns);
+                            for assign in ctor_assigns {
+                                constructor_setup_indices.insert(rewritten_init.len());
+                                rewritten_init.push(assign);
+                            }
                             rewritten_init.push(Stmt::Expr {
                                 loc: Default::default(),
                                 expr: Expr::UserCall {
@@ -750,12 +754,21 @@ pub(super) fn rewrite_top_level_proc_calls(
             }
         }
         init.body = rewritten_init;
-        rewrite_proc_calls_in_stmts(
+        rewrite_proc_calls_in_stmts_without_hooks(
             &mut init.body,
             &global_proc_instances,
             &global_proc_array_slots,
             &proc_api,
             errors,
+        );
+        inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
+            None,
+            &mut init.body,
+            &global_proc_instances,
+            &global_proc_array_slots,
+            &proc_api,
+            errors,
+            &constructor_setup_indices,
         );
     }
 

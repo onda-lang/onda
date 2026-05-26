@@ -513,8 +513,39 @@ fn analyze_assign_init(
             env
         }};
     }
+    macro_rules! validate_proc_init_expr_decl_order {
+        ($expr:expr, $pctx:expr, $decl_state:expr) => {{
+            if validate_block_bound_surface_expr($expr, scope_expr_env!(ScopeKind::Init), errors) {
+                validate_proc_expr_decl_order(
+                    $expr,
+                    $pctx.reserved,
+                    locals,
+                    &st.local_aliases,
+                    &st.local_array_aliases,
+                    $decl_state,
+                    errors,
+                )
+            } else {
+                false
+            }
+        }};
+    }
     match target {
         AssignTarget::Index { base, index } => {
+            if let Some(name) = io_surface_name(base, scope_expr_env!(ScopeKind::Init)) {
+                push_io_surface_scope_error(errors, target_loc, name);
+                validate_expr(index, scope_expr_env!(ScopeKind::Init), errors);
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                return;
+            }
+            if let Some(name) = dynamic_param_surface_name(base, scope_expr_env!(ScopeKind::Init)) {
+                target_error!(format!(
+                    "dynamic param indexing '{name}[...]' is only allowed in block or sample"
+                ),);
+                validate_expr(index, scope_expr_env!(ScopeKind::Init), errors);
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                return;
+            }
             if st.state_array_struct_roots.contains_key(base) {
                 target_error!(
                     format!(
@@ -567,24 +598,8 @@ fn analyze_assign_init(
                     target_error!(format!("symbol '{base}' used before declaration"),);
                     target_ok = false;
                 }
-                target_ok &= validate_proc_expr_decl_order(
-                    index,
-                    pctx.reserved,
-                    locals,
-                    &st.local_aliases,
-                    &st.local_array_aliases,
-                    &decl_state,
-                    errors,
-                );
-                target_ok &= validate_proc_expr_decl_order(
-                    expr,
-                    pctx.reserved,
-                    locals,
-                    &st.local_aliases,
-                    &st.local_array_aliases,
-                    &decl_state,
-                    errors,
-                );
+                target_ok &= validate_proc_init_expr_decl_order!(index, pctx, &decl_state);
+                target_ok &= validate_proc_init_expr_decl_order!(expr, pctx, &decl_state);
                 if !target_ok {
                     return;
                 }
@@ -650,6 +665,30 @@ fn analyze_assign_init(
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                 target_error!("typed declaration is only supported for plain scalar variables",);
             }
+            if let Some(name) = io_surface_name(base, scope_expr_env!(ScopeKind::Init)) {
+                push_io_surface_scope_error(errors, target_loc, name);
+                if let Some(start) = start {
+                    validate_expr(start, scope_expr_env!(ScopeKind::Init), errors);
+                }
+                if let Some(end) = end {
+                    validate_expr(end, scope_expr_env!(ScopeKind::Init), errors);
+                }
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                return;
+            }
+            if let Some(name) = dynamic_param_surface_name(base, scope_expr_env!(ScopeKind::Init)) {
+                target_error!(format!(
+                    "dynamic param array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
+                ),);
+                if let Some(start) = start {
+                    validate_expr(start, scope_expr_env!(ScopeKind::Init), errors);
+                }
+                if let Some(end) = end {
+                    validate_expr(end, scope_expr_env!(ScopeKind::Init), errors);
+                }
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                return;
+            }
             if let Some(pctx) = ctx.proc_init_resolution() {
                 let decl_state = build_decl_check_state(st);
                 let mut target_ok = true;
@@ -677,36 +716,12 @@ fn analyze_assign_init(
                     target_ok = false;
                 }
                 if let Some(start) = start {
-                    target_ok &= validate_proc_expr_decl_order(
-                        start,
-                        pctx.reserved,
-                        locals,
-                        &st.local_aliases,
-                        &st.local_array_aliases,
-                        &decl_state,
-                        errors,
-                    );
+                    target_ok &= validate_proc_init_expr_decl_order!(start, pctx, &decl_state);
                 }
                 if let Some(end) = end {
-                    target_ok &= validate_proc_expr_decl_order(
-                        end,
-                        pctx.reserved,
-                        locals,
-                        &st.local_aliases,
-                        &st.local_array_aliases,
-                        &decl_state,
-                        errors,
-                    );
+                    target_ok &= validate_proc_init_expr_decl_order!(end, pctx, &decl_state);
                 }
-                target_ok &= validate_proc_expr_decl_order(
-                    expr,
-                    pctx.reserved,
-                    locals,
-                    &st.local_aliases,
-                    &st.local_array_aliases,
-                    &decl_state,
-                    errors,
-                );
+                target_ok &= validate_proc_init_expr_decl_order!(expr, pctx, &decl_state);
                 if !target_ok {
                     return;
                 }
@@ -848,6 +863,15 @@ fn analyze_assign_init(
             if is_builtin_constant_name(name) {
                 target_error!(format!("cannot assign to builtin constant '{name}'"),);
             }
+            if !validate_block_bound_surface_var_name(
+                name,
+                target_loc,
+                scope_expr_env!(ScopeKind::Init),
+                errors,
+            ) {
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                return;
+            }
             if input_names.contains(name)
                 || output_names.contains(name)
                 || param_names.contains(name)
@@ -858,15 +882,7 @@ fn analyze_assign_init(
             // Proc mode: declaration-order validation
             if let Some(pctx) = ctx.proc_init_resolution() {
                 let decl_state = build_decl_check_state(st);
-                let decl_ok = validate_proc_expr_decl_order(
-                    expr,
-                    pctx.reserved,
-                    locals,
-                    &st.local_aliases,
-                    &st.local_array_aliases,
-                    &decl_state,
-                    errors,
-                );
+                let decl_ok = validate_proc_init_expr_decl_order!(expr, pctx, &decl_state);
                 if !decl_ok {
                     // Register placeholder so downstream doesn't see undeclared symbol
                     if is_plain_symbol(name)
@@ -1110,6 +1126,20 @@ fn analyze_assign_init(
                 base, start, end, ..
             } = expr
             {
+                if let Some(surface) =
+                    dynamic_param_surface_name(base, scope_expr_env!(ScopeKind::Init))
+                {
+                    target_error!(format!(
+                        "dynamic param array '{surface}' is not a first-class value; use '{surface}[i]' directly in block or sample"
+                    ),);
+                    if let Some(start) = start {
+                        validate_expr(start, scope_expr_env!(ScopeKind::Init), errors);
+                    }
+                    if let Some(end) = end {
+                        validate_expr(end, scope_expr_env!(ScopeKind::Init), errors);
+                    }
+                    return;
+                }
                 if declared_ty.is_some() || generic_decl_ty.is_some() {
                     target_error!(format!(
                         "typed declaration for '{name}' is not supported for slice aliases"
@@ -1736,6 +1766,7 @@ fn analyze_assign_init(
                     if let Some(binding_kind) = classify_runtime_like_indexed_binding(
                         base,
                         &st.local_array_aliases,
+                        &st.state_scalars,
                         &st.state_arrays,
                         &st.state_array_struct_roots,
                         &st.struct_instances,

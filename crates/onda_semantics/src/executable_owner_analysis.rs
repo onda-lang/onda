@@ -33,6 +33,7 @@ pub(crate) struct RuntimeScopePlan<'a> {
     pub(crate) runtime_local_aliases: LocalAliasTypes,
     pub(crate) runtime_local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     pub(crate) runtime_forbidden_assign_names: &'a HashSet<String>,
+    pub(crate) runtime_forbidden_assign_array_names: &'a HashSet<String>,
 }
 
 pub(crate) struct RuntimeScopeBodies<'a> {
@@ -43,18 +44,26 @@ pub(crate) struct RuntimeScopeBodies<'a> {
 
 pub(crate) struct RuntimeScopePlanInputs<'a> {
     pub(crate) sample_input_names: &'a HashSet<String>,
+    pub(crate) block_output_names: &'a HashSet<String>,
     pub(crate) sample_output_names: &'a HashSet<String>,
+    pub(crate) output_array_names: &'a HashSet<String>,
+    pub(crate) io_surface_names: &'a HashSet<String>,
+    pub(crate) io_surface_array_names: &'a HashSet<String>,
+    pub(crate) dynamic_param_array_names: &'a HashSet<String>,
     pub(crate) param_names: &'a HashSet<String>,
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
     pub(crate) fn_return_types: &'a HashMap<String, ReturnType>,
     pub(crate) options: AnalysisOptions,
     pub(crate) port_index_ins: Option<PortIndexInfo>,
-    pub(crate) port_index_outs: Option<PortIndexInfo>,
+    pub(crate) block_port_index_outs: Option<PortIndexInfo>,
+    pub(crate) sample_port_index_outs: Option<PortIndexInfo>,
     pub(crate) port_index_params: Option<PortIndexInfo>,
+    pub(crate) port_index_kins: Option<PortIndexInfo>,
     pub(crate) registration_input_names: &'a HashSet<String>,
     pub(crate) registration_output_names: &'a HashSet<String>,
     pub(crate) registration_param_names: &'a HashSet<String>,
+    pub(crate) proc_event_names: &'a HashSet<String>,
 }
 
 pub(crate) struct EventPlanInputs<'a> {
@@ -62,6 +71,10 @@ pub(crate) struct EventPlanInputs<'a> {
     pub(crate) init_writable_roots: &'a HashSet<String>,
     pub(crate) input_names: &'a HashSet<String>,
     pub(crate) output_names: &'a HashSet<String>,
+    pub(crate) output_array_names: &'a HashSet<String>,
+    pub(crate) io_surface_names: &'a HashSet<String>,
+    pub(crate) io_surface_array_names: &'a HashSet<String>,
+    pub(crate) dynamic_param_array_names: &'a HashSet<String>,
     pub(crate) param_names: &'a HashSet<String>,
     pub(crate) validation_input_names: &'a HashSet<String>,
     pub(crate) validation_output_names: &'a HashSet<String>,
@@ -72,6 +85,8 @@ pub(crate) struct EventPlanInputs<'a> {
     pub(crate) port_index_ins: Option<PortIndexInfo>,
     pub(crate) port_index_outs: Option<PortIndexInfo>,
     pub(crate) port_index_params: Option<PortIndexInfo>,
+    pub(crate) port_index_kins: Option<PortIndexInfo>,
+    pub(crate) proc_event_names: &'a HashSet<String>,
 }
 
 pub(crate) struct EventAnalysisPlan<'a> {
@@ -90,6 +105,8 @@ struct ExecutableOwnerRuntimePlanSeeds {
     sample_locals: HashSet<String>,
     block_forbidden_assign_names: HashSet<String>,
     sample_forbidden_assign_names: HashSet<String>,
+    block_forbidden_assign_array_names: HashSet<String>,
+    sample_forbidden_assign_array_names: HashSet<String>,
     block_pre_known_scalars: HashSet<String>,
     sample_known_scalars: HashSet<String>,
     block_post_known_scalars: HashSet<String>,
@@ -107,7 +124,6 @@ struct ExecutableOwnerEventPlanSeed {
 
 pub(crate) struct ExecutableOwnerAnalysisPlanSeeds {
     empty_inputs: HashSet<String>,
-    empty_outputs: HashSet<String>,
     runtime: ExecutableOwnerRuntimePlanSeeds,
     event: ExecutableOwnerEventPlanSeed,
 }
@@ -121,28 +137,40 @@ impl ExecutableOwnerAnalysisPlanSeeds {
         let block_common = ScopeAnalysisCtx {
             policy: ScopePolicy::Runtime(ScopeKind::Block),
             input_names: &self.empty_inputs,
-            output_names: &self.empty_outputs,
+            output_names: inputs.block_output_names,
+            output_array_names: inputs.output_array_names,
+            io_surface_names: inputs.io_surface_names,
+            io_surface_array_names: inputs.io_surface_array_names,
+            dynamic_param_array_names: inputs.dynamic_param_array_names,
             param_names: inputs.param_names,
             struct_defs: inputs.struct_defs,
             fn_signatures: inputs.fn_signatures,
             fn_return_types: inputs.fn_return_types,
             options: inputs.options,
             port_index_ins: None,
-            port_index_outs: None,
+            port_index_outs: inputs.block_port_index_outs,
             port_index_params: inputs.port_index_params,
+            port_index_kins: inputs.port_index_kins,
+            proc_event_names: inputs.proc_event_names,
         };
         let sample_common = ScopeAnalysisCtx {
             policy: ScopePolicy::Runtime(ScopeKind::Sample),
             input_names: inputs.sample_input_names,
             output_names: inputs.sample_output_names,
+            output_array_names: inputs.output_array_names,
+            io_surface_names: inputs.io_surface_names,
+            io_surface_array_names: inputs.io_surface_array_names,
+            dynamic_param_array_names: inputs.dynamic_param_array_names,
             param_names: inputs.param_names,
             struct_defs: inputs.struct_defs,
             fn_signatures: inputs.fn_signatures,
             fn_return_types: inputs.fn_return_types,
             options: inputs.options,
             port_index_ins: inputs.port_index_ins,
-            port_index_outs: inputs.port_index_outs,
+            port_index_outs: inputs.sample_port_index_outs,
             port_index_params: inputs.port_index_params,
+            port_index_kins: inputs.port_index_kins,
+            proc_event_names: inputs.proc_event_names,
         };
 
         [
@@ -158,6 +186,9 @@ impl ExecutableOwnerAnalysisPlanSeeds {
                 runtime_local_aliases: LocalAliasTypes::new(),
                 runtime_local_array_aliases: self.runtime.block_pre_array_aliases.clone(),
                 runtime_forbidden_assign_names: &self.runtime.block_forbidden_assign_names,
+                runtime_forbidden_assign_array_names: &self
+                    .runtime
+                    .block_forbidden_assign_array_names,
             },
             RuntimeScopePlan {
                 stmts: bodies.sample,
@@ -171,6 +202,9 @@ impl ExecutableOwnerAnalysisPlanSeeds {
                 runtime_local_aliases: LocalAliasTypes::new(),
                 runtime_local_array_aliases: self.runtime.sample_array_aliases.clone(),
                 runtime_forbidden_assign_names: &self.runtime.sample_forbidden_assign_names,
+                runtime_forbidden_assign_array_names: &self
+                    .runtime
+                    .sample_forbidden_assign_array_names,
             },
             RuntimeScopePlan {
                 stmts: bodies.block_post,
@@ -184,6 +218,9 @@ impl ExecutableOwnerAnalysisPlanSeeds {
                 runtime_local_aliases: LocalAliasTypes::new(),
                 runtime_local_array_aliases: self.runtime.block_post_array_aliases.clone(),
                 runtime_forbidden_assign_names: &self.runtime.block_forbidden_assign_names,
+                runtime_forbidden_assign_array_names: &self
+                    .runtime
+                    .block_forbidden_assign_array_names,
             },
         ]
     }
@@ -212,6 +249,10 @@ impl ExecutableOwnerAnalysisPlanSeeds {
                 policy: ScopePolicy::Event,
                 input_names: inputs.input_names,
                 output_names: inputs.output_names,
+                output_array_names: inputs.output_array_names,
+                io_surface_names: inputs.io_surface_names,
+                io_surface_array_names: inputs.io_surface_array_names,
+                dynamic_param_array_names: inputs.dynamic_param_array_names,
                 param_names: inputs.param_names,
                 struct_defs: inputs.struct_defs,
                 fn_signatures: inputs.fn_signatures,
@@ -220,6 +261,8 @@ impl ExecutableOwnerAnalysisPlanSeeds {
                 port_index_ins: inputs.port_index_ins,
                 port_index_outs: inputs.port_index_outs,
                 port_index_params: inputs.port_index_params,
+                port_index_kins: inputs.port_index_kins,
+                proc_event_names: inputs.proc_event_names,
             },
         }
     }
@@ -274,30 +317,40 @@ fn collect_proc_owner_known_scalar_extras(
 pub(crate) fn build_top_level_owner_analysis_plan_seeds(
     param_names: &HashSet<String>,
     input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
+    audio_output_names: &HashSet<String>,
+    control_output_names: &HashSet<String>,
     state_scalars: &HashMap<String, PrimitiveType>,
     in_arrays: &HashMap<String, TypedArrayInfo>,
-    out_arrays: &HashMap<String, TypedArrayInfo>,
+    audio_out_arrays: &HashMap<String, TypedArrayInfo>,
+    control_out_arrays: &HashMap<String, TypedArrayInfo>,
     param_arrays: &HashMap<String, TypedArrayInfo>,
     const_arrays: &HashMap<String, TypedArrayInfo>,
 ) -> ExecutableOwnerAnalysisPlanSeeds {
-    let sample_array_aliases =
-        build_top_level_runtime_array_aliases(in_arrays, out_arrays, param_arrays, const_arrays);
-    let block_array_aliases = build_top_level_block_array_aliases(param_arrays, const_arrays);
+    let sample_array_aliases = build_top_level_runtime_array_aliases(
+        in_arrays,
+        audio_out_arrays,
+        param_arrays,
+        const_arrays,
+    );
+    let mut block_array_aliases = build_top_level_block_array_aliases(param_arrays, const_arrays);
+    seed_top_level_array_aliases(&mut block_array_aliases, control_out_arrays, true);
     let block_pre_known_scalars = build_known_scalars_from_state(param_names, state_scalars);
     let mut sample_base = param_names.clone();
     sample_base.extend(input_names.iter().cloned());
     let sample_known_scalars = build_known_scalars_from_state(&sample_base, state_scalars);
     let block_post_known_scalars = build_known_scalars_from_state(param_names, state_scalars);
+    let audio_output_array_names = audio_out_arrays.keys().cloned().collect::<HashSet<_>>();
+    let control_output_array_names = control_out_arrays.keys().cloned().collect::<HashSet<_>>();
 
     ExecutableOwnerAnalysisPlanSeeds {
         empty_inputs: HashSet::new(),
-        empty_outputs: HashSet::new(),
         runtime: ExecutableOwnerRuntimePlanSeeds {
             block_locals: HashSet::new(),
             sample_locals: HashSet::new(),
-            block_forbidden_assign_names: output_names.clone(),
-            sample_forbidden_assign_names: HashSet::new(),
+            block_forbidden_assign_names: audio_output_names.clone(),
+            sample_forbidden_assign_names: control_output_names.clone(),
+            block_forbidden_assign_array_names: audio_output_array_names,
+            sample_forbidden_assign_array_names: control_output_array_names,
             block_pre_known_scalars,
             sample_known_scalars,
             block_post_known_scalars,
@@ -317,6 +370,8 @@ pub(crate) fn build_top_level_owner_analysis_plan_seeds(
 pub(crate) fn build_proc_owner_analysis_plan_seeds(
     reserved: &HashSet<String>,
     output_names: &HashSet<String>,
+    output_arrays: &HashMap<String, TypedArrayInfo>,
+    output_timing: OutputTiming,
     struct_instances: &HashMap<String, String>,
     nested_proc_instances: &HashMap<String, ProcNestedState>,
     state_arrays: &HashMap<String, usize>,
@@ -331,21 +386,49 @@ pub(crate) fn build_proc_owner_analysis_plan_seeds(
     extend_known_scalars(&mut runtime_known_scalars, known_scalar_extras.iter());
     let mut const_array_aliases = HashMap::new();
     seed_top_level_array_aliases(&mut const_array_aliases, const_arrays, false);
+    let output_array_names = output_arrays.keys().cloned().collect::<HashSet<_>>();
+    let mut block_array_aliases = const_array_aliases.clone();
+    let mut sample_array_aliases = const_array_aliases.clone();
+    match output_timing {
+        OutputTiming::Sample => {
+            seed_top_level_array_aliases(&mut sample_array_aliases, output_arrays, true);
+        }
+        OutputTiming::Block => {
+            seed_top_level_array_aliases(&mut block_array_aliases, output_arrays, true);
+        }
+    }
 
     ExecutableOwnerAnalysisPlanSeeds {
         empty_inputs: HashSet::new(),
-        empty_outputs: HashSet::new(),
         runtime: ExecutableOwnerRuntimePlanSeeds {
             block_locals: HashSet::new(),
             sample_locals: HashSet::new(),
-            block_forbidden_assign_names: output_names.clone(),
-            sample_forbidden_assign_names: HashSet::new(),
+            block_forbidden_assign_names: if output_timing == OutputTiming::Sample {
+                output_names.clone()
+            } else {
+                HashSet::new()
+            },
+            sample_forbidden_assign_names: if output_timing == OutputTiming::Block {
+                output_names.clone()
+            } else {
+                HashSet::new()
+            },
+            block_forbidden_assign_array_names: if output_timing == OutputTiming::Sample {
+                output_array_names.clone()
+            } else {
+                HashSet::new()
+            },
+            sample_forbidden_assign_array_names: if output_timing == OutputTiming::Block {
+                output_array_names
+            } else {
+                HashSet::new()
+            },
             block_pre_known_scalars: runtime_known_scalars.clone(),
             sample_known_scalars: runtime_known_scalars.clone(),
             block_post_known_scalars: runtime_known_scalars,
-            block_pre_array_aliases: const_array_aliases.clone(),
-            sample_array_aliases: const_array_aliases.clone(),
-            block_post_array_aliases: const_array_aliases.clone(),
+            block_pre_array_aliases: block_array_aliases.clone(),
+            sample_array_aliases,
+            block_post_array_aliases: block_array_aliases,
         },
         event: ExecutableOwnerEventPlanSeed {
             known_scalar_base: reserved.clone(),
@@ -443,6 +526,7 @@ pub(crate) fn analyze_owner_runtime_scopes<'a>(
             plan.runtime_local_aliases,
             plan.runtime_local_array_aliases,
             plan.runtime_forbidden_assign_names,
+            plan.runtime_forbidden_assign_array_names,
             runtime_state.state_tuples,
             errors,
         );

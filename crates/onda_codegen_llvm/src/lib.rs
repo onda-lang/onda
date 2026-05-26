@@ -15,6 +15,7 @@ mod metadata;
 mod orc_backend;
 mod primitives;
 mod runtime_validation;
+mod state_layout;
 mod target_config;
 
 pub use aot_artifact::{AotMetadata, AotObjectArtifact};
@@ -56,11 +57,13 @@ pub struct JitProgram {
     block_size: usize,
     inputs: Arc<Vec<DeclaredIo>>,
     outputs: Arc<Vec<DeclaredIo>>,
+    control_outputs: Arc<Vec<DeclaredIo>>,
     params: Arc<Vec<DeclaredIo>>,
     events: Arc<Vec<DeclaredEvent>>,
     buffers: Arc<Vec<DeclaredBuffer>>,
     input_index: Arc<HashMap<String, usize>>,
     output_index: Arc<HashMap<String, usize>>,
+    control_output_index: Arc<HashMap<String, usize>>,
     param_index: Arc<HashMap<String, usize>>,
     event_index: Arc<HashMap<String, usize>>,
     buffer_index: Arc<HashMap<String, usize>>,
@@ -312,6 +315,7 @@ pub struct DeclaredIo {
     array_len: usize,
     slot_offset: usize,
     byte_offset: usize,
+    state_byte_offset: Option<usize>,
     default: Option<TypedConstValue>,
     default_bytes: Option<Vec<u8>>,
     range: Option<TypedValueRange>,
@@ -431,11 +435,13 @@ fn build_orc_program(
         block_size,
         input_index: Arc::new(metadata.input_index),
         output_index: Arc::new(metadata.output_index),
+        control_output_index: Arc::new(metadata.control_output_index),
         param_index: Arc::new(metadata.param_index),
         event_index: Arc::new(metadata.event_index),
         buffer_index: Arc::new(metadata.buffer_index),
         inputs: Arc::new(metadata.inputs),
         outputs: Arc::new(metadata.outputs),
+        control_outputs: Arc::new(metadata.control_outputs),
         params: Arc::new(metadata.params),
         events: Arc::new(metadata.events),
         buffers: Arc::new(metadata.buffers),
@@ -546,7 +552,7 @@ mod tests {
 
     fn run_one_sample(src: &str) -> f32 {
         let program = lower_and_jit(typed_program(src)).expect("source should lower to JIT");
-        let params = vec![0_u8; program.param_byte_size()];
+        let params = program.default_param_bytes();
         let mut state = program
             .initialize_state(&params)
             .expect("state should initialize");
@@ -575,6 +581,58 @@ mod tests {
         output[0]
     }
 
+    fn run_one_block_control_outputs(src: &str) -> Vec<f32> {
+        let program = lower_and_jit(typed_program(src)).expect("source should lower to JIT");
+        let params = program.default_param_bytes();
+        let mut state = program
+            .initialize_state(&params)
+            .expect("state should initialize");
+        let input_ptrs: Vec<*const u8> = Vec::new();
+        let output_ptrs: Vec<*mut u8> = Vec::new();
+        let buffer_ptrs: Vec<*mut u8> = Vec::new();
+        let buffer_frames: Vec<i32> = Vec::new();
+        let buffer_channels: Vec<i32> = Vec::new();
+        let buffer_sample_rates: Vec<f32> = Vec::new();
+        program
+            .process_checked(
+                &mut state,
+                &params,
+                0,
+                1,
+                1 | 2,
+                &input_ptrs,
+                &output_ptrs,
+                &buffer_ptrs,
+                &buffer_frames,
+                &buffer_channels,
+                &buffer_sample_rates,
+            )
+            .expect("process should succeed");
+
+        let state_bytes = unsafe {
+            std::slice::from_raw_parts(
+                state.state_words.as_ptr().cast::<u8>(),
+                state.state_size_bytes,
+            )
+        };
+        let mut outputs = Vec::new();
+        for index in 0..program.control_output_count() {
+            let byte_len = program
+                .control_output_type_bytes(index)
+                .expect("control output should have byte size");
+            let start = program
+                .control_output_storage_byte_offset(index)
+                .expect("control output should have storage");
+            let end = start + byte_len;
+            for bytes in state_bytes[start..end].chunks_exact(std::mem::size_of::<f32>()) {
+                outputs.push(f32::from_ne_bytes(
+                    bytes.try_into().expect("control output should be f32"),
+                ));
+            }
+        }
+        outputs
+    }
+
     fn is_missing_target_backend(diags: &[Diagnostic]) -> bool {
         diags.iter().any(|diag| {
             diag.message.contains("LLVMGetTargetFromTriple failed")
@@ -582,6 +640,111 @@ mod tests {
                     .message
                     .contains("No available targets are compatible with triple")
         })
+    }
+
+    #[test]
+    fn dynamic_kins_indexing_runs() {
+        let output = run_one_sample(
+            r#"
+kins:
+  kin1 = 0.25
+  kin2 = 0.75
+
+sample:
+  out1 = kins[0] + kins[1]
+"#,
+        );
+
+        assert!((output - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn dynamic_kouts_indexing_runs() {
+        let outputs = run_one_block_control_outputs(
+            r#"
+kouts 2
+
+block:
+  kouts[0] = 0.25
+  kouts[1] = 0.75
+"#,
+        );
+
+        assert_eq!(outputs.len(), 2);
+        assert!((outputs[0] - 0.25).abs() < 1.0e-6);
+        assert!((outputs[1] - 0.75).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn control_output_array_state_offsets_match_runtime_layout() {
+        let outputs = run_one_block_control_outputs(
+            r#"
+kouts {
+  meter: f32[2]
+}
+
+block {
+  meter[0] = 0.25
+  meter[1] = 0.75
+}
+"#,
+        );
+
+        assert_eq!(outputs.len(), 2);
+        assert!((outputs[0] - 0.25).abs() < 1.0e-6);
+        assert!((outputs[1] - 0.75).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn nested_block_rate_proc_operator_runs() {
+        let outputs = run_one_block_control_outputs(
+            r#"
+proc Meter {
+  kouts { kout1 }
+
+  block:
+    kout1 = 2.0
+}
+
+proc Outer {
+  kouts { kout1 }
+
+  init:
+    meter = Meter()
+
+  block:
+    kout1 = meter()
+}
+
+kouts { meter }
+
+init:
+  outer = Outer()
+
+block:
+  meter = outer()
+"#,
+        );
+
+        assert_eq!(outputs.len(), 1);
+        assert!((outputs[0] - 2.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn mixed_dynamic_outs_and_kouts_indexing_runs() {
+        let output = run_one_sample(
+            r#"
+outs 1
+kouts 2
+
+block:
+  kouts[1] = 0.75
+  sample:
+    outs[0] = 0.25
+"#,
+        );
+
+        assert!((output - 0.25).abs() < 1.0e-6);
     }
 
     #[test]
@@ -640,6 +803,134 @@ sample:
         let ir = lower_to_llvm_ir_with_options(typed, CompileOptions::default())
             .expect("const array program should lower to LLVM IR");
         assert!(ir.contains("__onda_const_array_Table"));
+    }
+
+    #[test]
+    fn oversampled_proc_local_defs_specialize_with_effective_sample_rate() {
+        let typed = typed_program(
+            r#"
+proc Voice:
+  params:
+    gain = 1.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = SR / f32(BS)
+  outs:
+    out1
+  sample 2:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voice = Voice(gain = 2.0)
+sample:
+  out1 = voice()
+"#,
+        );
+
+        let ir = lower_to_llvm_ir_with_options(
+            typed,
+            CompileOptions {
+                backend: ExecutionBackend::Auto,
+                sample_rate: 48_000.0,
+                block_size: 4,
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .expect("oversampled proc-local bind hook should lower to LLVM IR");
+        assert!(
+            ir.contains("2.400000e+04"),
+            "expected bind hook to fold SR / BS as 96000 / 4, proving effective SR and host BS"
+        );
+    }
+
+    #[test]
+    fn oversampled_proc_local_consts_specialize_with_effective_sample_rate() {
+        let typed = typed_program(
+            r#"
+proc Voice:
+  const Frames = SR
+  params:
+    gain = 1.0 => update
+  init:
+    cached = 0.0
+  def update():
+    const LocalFrames = SR
+    cached = Frames + LocalFrames
+  outs:
+    out1
+  sample 2:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voice = Voice(gain = 2.0)
+sample:
+  out1 = voice()
+"#,
+        );
+
+        let ir = lower_to_llvm_ir_with_options(
+            typed,
+            CompileOptions {
+                backend: ExecutionBackend::Auto,
+                sample_rate: 48_000.0,
+                block_size: 4,
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .expect("oversampled proc-local constants should lower to LLVM IR");
+        assert!(
+            ir.contains("1.920000e+05"),
+            "expected proc-local and local SR constants to fold as 96000 + 96000 under sample 2"
+        );
+    }
+
+    #[test]
+    fn host_sr_builtin_stays_host_when_proc_sr_is_oversampled() {
+        let typed = typed_program(
+            r#"
+proc Voice:
+  params:
+    gain = 1.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = SR + HOST_SR + HOST_SAMPLE_RATE + HOST_SAMPLERATE + host_sample_rate + host_samplerate
+  outs:
+    out1
+  sample 2:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voice = Voice(gain = 2.0)
+sample:
+  out1 = voice()
+"#,
+        );
+
+        let ir = lower_to_llvm_ir_with_options(
+            typed,
+            CompileOptions {
+                backend: ExecutionBackend::Auto,
+                sample_rate: 48_000.0,
+                block_size: 4,
+                fast_math: false,
+                opt_level: TargetOptLevel::O0,
+            },
+        )
+        .expect("HOST_SR in an oversampled proc should lower to LLVM IR");
+        assert!(
+            ir.contains("3.360000e+05"),
+            "expected SR plus five HOST_SR aliases to fold as 96000 + 5 * 48000 under sample 2"
+        );
     }
 
     #[test]
@@ -865,5 +1156,41 @@ sample:
             const_artifact.metadata.runtime.state_size_bytes,
             base_artifact.metadata.runtime.state_size_bytes
         );
+    }
+
+    #[test]
+    fn aot_control_output_metadata_includes_state_offsets() {
+        let typed = typed_program(
+            r#"
+kouts {
+  meter: f64
+}
+
+init {
+  held = 1.0
+}
+
+block {
+  meter = f64(held)
+}
+"#,
+        );
+
+        let artifact = lower_to_object_with_options(typed, CodegenOptions::default())
+            .expect("control-output AOT object should emit");
+        let meter = artifact
+            .metadata
+            .metadata
+            .control_outputs
+            .first()
+            .expect("control output metadata should exist");
+
+        assert_eq!(meter.name, "meter");
+        assert_eq!(meter.byte_offset, 0);
+        let state_offset = meter
+            .state_byte_offset
+            .expect("control output should expose state byte offset");
+        assert_ne!(state_offset, meter.byte_offset);
+        assert!(state_offset < artifact.metadata.runtime.state_size_bytes);
     }
 }

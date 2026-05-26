@@ -74,6 +74,10 @@ impl Instance {
         self.program.output_count()
     }
 
+    pub fn control_output_count(&self) -> usize {
+        self.program.control_output_count()
+    }
+
     pub fn param_count(&self) -> usize {
         self.program.param_count()
     }
@@ -96,6 +100,10 @@ impl Instance {
 
     pub fn output_name(&self, index: usize) -> Option<&str> {
         self.program.output_name(index)
+    }
+
+    pub fn control_output_name(&self, index: usize) -> Option<&str> {
+        self.program.control_output_name(index)
     }
 
     pub fn param_name(&self, index: usize) -> Option<&str> {
@@ -122,6 +130,10 @@ impl Instance {
         self.program.output_index(name)
     }
 
+    pub fn control_output_index(&self, name: &str) -> Option<usize> {
+        self.program.control_output_index(name)
+    }
+
     pub fn param_index(&self, name: &str) -> Option<usize> {
         self.program.param_index(name)
     }
@@ -146,6 +158,10 @@ impl Instance {
         self.program.output_type(index)
     }
 
+    pub fn control_output_type(&self, index: usize) -> Option<String> {
+        self.program.control_output_type(index)
+    }
+
     pub fn param_type(&self, index: usize) -> Option<String> {
         self.program.param_type(index)
     }
@@ -160,6 +176,26 @@ impl Instance {
 
     pub fn output_type_bytes(&self, index: usize) -> Option<usize> {
         self.program.output_type_bytes(index)
+    }
+
+    pub fn control_output_type_bytes(&self, index: usize) -> Option<usize> {
+        self.program.control_output_type_bytes(index)
+    }
+
+    pub fn control_output_elem_type(&self, index: usize) -> Option<PrimitiveType> {
+        self.program.control_output_elem_type(index)
+    }
+
+    pub fn control_output_array_len(&self, index: usize) -> Option<usize> {
+        self.program.control_output_array_len(index)
+    }
+
+    pub fn control_output_slot_offset(&self, index: usize) -> Option<usize> {
+        self.program.control_output_slot_offset(index)
+    }
+
+    pub fn control_output_byte_offset(&self, index: usize) -> Option<usize> {
+        self.program.control_output_byte_offset(index)
     }
 
     pub fn param_type_bytes(&self, index: usize) -> Option<usize> {
@@ -216,9 +252,9 @@ fn create_instance_inner(
             0,
         ));
     }
-    if config.out_channels == 0 {
+    if config.out_channels == 0 && program.required_out_channels() > 0 {
         return Err(Diagnostic::runtime(
-            "out_channels must be greater than zero",
+            "out_channels must be greater than zero when the program has audio outputs",
             0,
             0,
         ));
@@ -348,6 +384,55 @@ pub fn set_param_by_index(
         ));
     }
     instance.params[start..end].copy_from_slice(value_bytes);
+    Ok(())
+}
+
+pub fn read_control_output_bytes(
+    instance: &Instance,
+    index: usize,
+    out: &mut [u8],
+) -> Result<(), Diagnostic> {
+    let Some(desc) = instance.program.control_output_descriptor(index) else {
+        return Err(Diagnostic::runtime(
+            format!("unknown control output index {index}"),
+            0,
+            0,
+        ));
+    };
+    let expected_bytes = desc.byte_size();
+    if out.len() != expected_bytes {
+        return Err(Diagnostic::runtime(
+            format!(
+                "control output '{}' expects {} destination bytes, got {}",
+                desc.name(),
+                expected_bytes,
+                out.len()
+            ),
+            0,
+            0,
+        ));
+    }
+    let Some(start) = instance.program.control_output_storage_byte_offset(index) else {
+        return Err(Diagnostic::runtime(
+            format!("control output '{}' has no runtime storage", desc.name()),
+            0,
+            0,
+        ));
+    };
+    let end = start.saturating_add(expected_bytes);
+    let state = instance.state.bytes();
+    if end > state.len() {
+        return Err(Diagnostic::runtime(
+            format!(
+                "control output '{}' byte range [{start}, {end}) is out of bounds for runtime storage ({})",
+                desc.name(),
+                state.len()
+            ),
+            0,
+            0,
+        ));
+    }
+    out.copy_from_slice(&state[start..end]);
     Ok(())
 }
 

@@ -54,9 +54,43 @@ pub(crate) fn specialize_generic_proc_event_param_type(
 ) -> EventParamType {
     match ty {
         EventParamType::Scalar(prim) => EventParamType::Scalar(*prim),
+        EventParamType::GenericScalar { name } => match type_bindings.get(name).copied() {
+            Some(bound) => EventParamType::Scalar(bound),
+            None => {
+                push_semantic(
+                    diag,
+                    errors,
+                    format!(
+                        "processor '{}.{}' event parameter '{}' references unknown generic scalar type '{}'",
+                        proc_name, event_name, param_name, name
+                    ),
+                );
+                EventParamType::Scalar(PrimitiveType::F32)
+            }
+        },
         EventParamType::Array { elem, size } => EventParamType::Array {
             elem: *elem,
             size: size.clone(),
+        },
+        EventParamType::GenericArray { elem, size } => match type_bindings.get(elem).copied() {
+            Some(bound) => EventParamType::Array {
+                elem: bound,
+                size: size.clone(),
+            },
+            None => {
+                push_semantic(
+                    diag,
+                    errors,
+                    format!(
+                        "processor '{}.{}' event parameter '{}' references unknown generic array element type '{}'",
+                        proc_name, event_name, param_name, elem
+                    ),
+                );
+                EventParamType::Array {
+                    elem: PrimitiveType::F32,
+                    size: size.clone(),
+                }
+            }
         },
         EventParamType::Slice { elem } => EventParamType::Slice { elem: *elem },
         EventParamType::GenericSlice { elem } => match type_bindings.get(elem).copied() {
@@ -459,6 +493,8 @@ pub(crate) fn specialize_generic_proc_template(
         .map(|decl| PortDecl {
             loc: decl.loc.clone(),
             name: decl.name.clone(),
+            output_timing: decl.output_timing,
+            output_timing_loc: decl.output_timing_loc,
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_decl_type(
                     ty,
@@ -481,6 +517,8 @@ pub(crate) fn specialize_generic_proc_template(
         .map(|decl| PortDecl {
             loc: decl.loc.clone(),
             name: decl.name.clone(),
+            output_timing: decl.output_timing,
+            output_timing_loc: decl.output_timing_loc,
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_decl_type(
                     ty,
@@ -517,6 +555,7 @@ pub(crate) fn specialize_generic_proc_template(
             ty_loc: decl.ty_loc.clone(),
             default: decl.default.clone(),
             range: decl.range.clone(),
+            bind: decl.bind.clone(),
         })
         .collect::<Vec<_>>();
     for input in &mut ins {
@@ -862,6 +901,8 @@ pub(crate) fn specialize_generic_proc_template(
         outs,
         outs_deferred_count: None,
         outs_deferred_default_ty: None,
+        outs_timing: template.outs_timing,
+        outs_timing_loc: template.outs_timing_loc,
         params,
         params_deferred_count: None,
         params_deferred_default_ty: None,

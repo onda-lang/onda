@@ -554,6 +554,8 @@ fn builtin_constant_typed_value(
         "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
             Some(ConstDefaultValue::F32(sample_rate))
         }
+        "HOST_SR" | "HOST_SAMPLE_RATE" | "HOST_SAMPLERATE" | "host_sample_rate"
+        | "host_samplerate" => Some(ConstDefaultValue::F32(sample_rate)),
         "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => {
             Some(ConstDefaultValue::I32(block_size as i32))
         }

@@ -215,6 +215,10 @@ impl JitProgram {
         self.outputs.as_slice()
     }
 
+    pub fn control_outputs(&self) -> &[crate::DeclaredIo] {
+        self.control_outputs.as_slice()
+    }
+
     pub fn params(&self) -> &[crate::DeclaredIo] {
         self.params.as_slice()
     }
@@ -233,6 +237,10 @@ impl JitProgram {
 
     pub fn output_count(&self) -> usize {
         self.outputs.len()
+    }
+
+    pub fn control_output_count(&self) -> usize {
+        self.control_outputs.len()
     }
 
     pub fn param_count(&self) -> usize {
@@ -259,6 +267,10 @@ impl JitProgram {
         self.outputs.get(index).map(|io| io.name())
     }
 
+    pub fn control_output_name(&self, index: usize) -> Option<&str> {
+        self.control_outputs.get(index).map(|io| io.name())
+    }
+
     pub fn param_name(&self, index: usize) -> Option<&str> {
         self.params.get(index).map(|io| io.name())
     }
@@ -283,6 +295,10 @@ impl JitProgram {
         self.output_index.get(name).copied()
     }
 
+    pub fn control_output_index(&self, name: &str) -> Option<usize> {
+        self.control_output_index.get(name).copied()
+    }
+
     pub fn param_index(&self, name: &str) -> Option<usize> {
         self.param_index.get(name).copied()
     }
@@ -301,6 +317,10 @@ impl JitProgram {
 
     pub fn output_type(&self, index: usize) -> Option<String> {
         self.outputs.get(index).map(|io| io.type_repr())
+    }
+
+    pub fn control_output_type(&self, index: usize) -> Option<String> {
+        self.control_outputs.get(index).map(|io| io.type_repr())
     }
 
     pub fn param_type(&self, index: usize) -> Option<String> {
@@ -327,6 +347,36 @@ impl JitProgram {
 
     pub fn output_type_bytes(&self, index: usize) -> Option<usize> {
         self.outputs.get(index).map(|io| io.byte_size())
+    }
+
+    pub fn control_output_type_bytes(&self, index: usize) -> Option<usize> {
+        self.control_outputs.get(index).map(|io| io.byte_size())
+    }
+
+    pub fn control_output_elem_type(&self, index: usize) -> Option<onda_frontend::PrimitiveType> {
+        self.control_outputs.get(index).map(|io| io.elem_ty())
+    }
+
+    pub fn control_output_array_len(&self, index: usize) -> Option<usize> {
+        self.control_outputs.get(index).map(|io| io.array_len())
+    }
+
+    pub fn control_output_slot_offset(&self, index: usize) -> Option<usize> {
+        self.control_outputs.get(index).map(|io| io.slot_offset())
+    }
+
+    pub fn control_output_byte_offset(&self, index: usize) -> Option<usize> {
+        self.control_outputs.get(index).map(|io| io.byte_offset())
+    }
+
+    pub fn control_output_storage_byte_offset(&self, index: usize) -> Option<usize> {
+        self.control_outputs
+            .get(index)
+            .and_then(|io| io.state_byte_offset())
+    }
+
+    pub fn control_output_descriptor(&self, index: usize) -> Option<&crate::DeclaredIo> {
+        self.control_outputs.get(index)
     }
 
     pub fn param_type_bytes(&self, index: usize) -> Option<usize> {

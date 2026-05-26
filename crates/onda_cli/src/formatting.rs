@@ -38,7 +38,8 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
     match block {
         Block::Ins(ports) => format_port_block("ins", ports, indent, out),
         Block::Outs(ports) => format_port_block("outs", ports, indent, out),
-        Block::Params(params) => format_param_block("params", params, indent, out),
+        Block::KOuts(ports) => format_port_block("kouts", ports, indent, out),
+        Block::Params(params) => format_param_block(params, indent, out),
         Block::Const(decl) => {
             let mut text = format!("const {}", decl.name);
             if let Some(ty) = &decl.ty {
@@ -241,7 +242,11 @@ fn format_port_section(
     }
 }
 
-fn format_param_block(label: &str, params: &ParamBlock, indent: usize, out: &mut String) {
+fn format_param_block(params: &ParamBlock, indent: usize, out: &mut String) {
+    let label = match params.deferred_prefix.as_str() {
+        "kin" => "kins",
+        _ => "params",
+    };
     format_param_section(
         label,
         &params.decls,
@@ -376,8 +381,12 @@ fn format_proc(proc: &ProcessorDef, indent: usize, out: &mut String) {
         );
     }
     if !proc.outs.is_empty() || proc.outs_deferred_count.is_some() {
+        let outs_section = match proc.outs_timing {
+            onda_frontend::OutputTiming::Sample => "outs",
+            onda_frontend::OutputTiming::Block => "kouts",
+        };
         format_port_section(
-            "outs",
+            outs_section,
             &proc.outs,
             proc.outs_deferred_count.as_ref(),
             proc.outs_deferred_default_ty
@@ -974,8 +983,12 @@ fn format_buffer_type(ty: &BufferType) -> String {
 fn format_event_param_type(ty: &EventParamType) -> String {
     match ty {
         EventParamType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
+        EventParamType::GenericScalar { name } => name.clone(),
         EventParamType::Array { elem, size } => {
             format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
+        }
+        EventParamType::GenericArray { elem, size } => {
+            format!("{}[{}]", elem, format_expr(size))
         }
         EventParamType::Slice { elem } => format!("{}[]", primitive_type_name(*elem)),
         EventParamType::GenericSlice { elem } => format!("{elem}[]"),
@@ -1024,6 +1037,10 @@ fn format_param_decl(param: &ParamDecl) -> String {
         }
         text.push_str(&format_expr(&range.max));
         text.push('}');
+    }
+    if let Some(bind) = &param.bind {
+        text.push_str(" => ");
+        text.push_str(bind);
     }
     text
 }

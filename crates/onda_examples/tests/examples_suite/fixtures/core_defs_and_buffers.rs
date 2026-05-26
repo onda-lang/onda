@@ -59,8 +59,9 @@ sample {
 const FOR_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
-  out1 = 0.0;
-  for i in 0..4 { out1 = out1 + i / 10.0 }
+  acc = 0.0;
+  for i in 0..4 { acc = acc + i / 10.0 }
+  out1 = acc
 }
 "#;
 
@@ -94,10 +95,11 @@ sample {
 const LOOP_SUGAR_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
-  out1 = 0.0
+  acc = 0.0
   loop 4 {
-    out1 = out1 + 1.0
+    acc = acc + 1.0
   }
+  out1 = acc
 }
 "#;
 
@@ -107,10 +109,11 @@ init {
   n: i32 = 4
 }
 sample {
-  out1 = 0.0
+  acc = 0.0
   for i in 0..n {
-    out1 = out1 + 1.0
+    acc = acc + 1.0
   }
+  out1 = acc
 }
 "#;
 
@@ -120,20 +123,22 @@ init {
   n: i32 = 5
 }
 sample {
-  out1 = 0.0
+  acc = 0.0
   for i in 0..(n - 1) {
-    out1 = out1 + 1.0
+    acc = acc + 1.0
   }
+  out1 = acc
 }
 "#;
 
 const FOR_DESCENDING_STEP_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
-  out1 = 0.0
+  acc = 0.0
   for i @ -1 in 3..=1 {
-    out1 = out1 + i / 10.0
+    acc = acc + i / 10.0
   }
+  out1 = acc
 }
 "#;
 
@@ -143,10 +148,11 @@ init {
   n: i32 = 4
 }
 sample {
-  out1 = 0.0
+  acc = 0.0
   loop n {
-    out1 = out1 + 1.0
+    acc = acc + 1.0
   }
+  out1 = acc
 }
 "#;
 

@@ -240,7 +240,10 @@ fn parse_program_preprocessed(
             match pair.as_rule() {
                 Rule::ins_block => blocks.push(Block::Ins(parse_port_block(pair)?)),
                 Rule::outs_block => blocks.push(Block::Outs(parse_port_block(pair)?)),
-                Rule::params_block => blocks.push(Block::Params(parse_params_block(pair)?)),
+                Rule::kouts_block => blocks.push(Block::KOuts(parse_port_block(pair)?)),
+                Rule::params_block | Rule::kins_block => {
+                    blocks.push(Block::Params(parse_params_block(pair)?))
+                }
                 Rule::const_block => {
                     let decl = parse_const_decl(pair)?;
                     if !top_level_const_names.insert(decl.name.clone()) {

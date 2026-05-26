@@ -929,7 +929,7 @@ unsafe fn lower_orc_index_assign(
     local_array_aliases: &mut HashMap<String, LocalArrayAlias>,
     local_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<(), Diagnostic> {
-    if base == "outs" {
+    if base == "outs" || base == "kouts" {
         if let (Some(meta), Some(arr)) = (ctx.port_index_outs, ctx.out_slot_ptr_array) {
             let typed_val = lower_expr(
                 expr,

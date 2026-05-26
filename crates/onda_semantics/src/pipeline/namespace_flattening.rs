@@ -281,7 +281,6 @@ fn merge_generated_namespace_artifacts(
     namespace: &str,
 ) {
     let prefix = format!("{namespace}::");
-
     let mut generated_defs = emitted
         .const_defs
         .into_iter()
@@ -1157,7 +1156,7 @@ fn rewrite_block_namespace_refs(
     errors: &mut Vec<Diagnostic>,
 ) {
     match block {
-        Block::Ins(port_block) | Block::Outs(port_block) => {
+        Block::Ins(port_block) | Block::Outs(port_block) | Block::KOuts(port_block) => {
             rewrite_deferred_port_count(
                 port_block,
                 current_ns,
@@ -2060,6 +2059,39 @@ fn rewrite_event_def(
                     state,
                     generated,
                     errors,
+                );
+            }
+            EventParamType::GenericArray { elem, size } => {
+                rewrite_named_type_ref_name(
+                    elem,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    param.ty_loc.as_ref().or(param.loc.as_ref()),
+                );
+                rewrite_expr(
+                    size,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                );
+            }
+            EventParamType::GenericScalar { name } => {
+                rewrite_named_type_ref_name(
+                    name,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    param.ty_loc.as_ref().or(param.loc.as_ref()),
                 );
             }
             EventParamType::GenericSlice { elem } => {

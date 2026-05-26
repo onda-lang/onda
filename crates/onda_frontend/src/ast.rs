@@ -17,6 +17,7 @@ impl Program {
 pub enum Block {
     Ins(PortBlock),
     Outs(PortBlock),
+    KOuts(PortBlock),
     Params(ParamBlock),
     Const(ConstDecl),
     Events(EventBlock),
@@ -38,6 +39,7 @@ impl Block {
         match self {
             Self::Ins(_) => BlockKind::Ins,
             Self::Outs(_) => BlockKind::Outs,
+            Self::KOuts(_) => BlockKind::KOuts,
             Self::Params(_) => BlockKind::Params,
             Self::Const(_) => BlockKind::Const,
             Self::Events(_) => BlockKind::Events,
@@ -57,7 +59,7 @@ impl Block {
 
     pub fn loc(&self) -> SourceLoc {
         match self {
-            Self::Ins(ports) | Self::Outs(ports) => ports.loc.into(),
+            Self::Ins(ports) | Self::Outs(ports) | Self::KOuts(ports) => ports.loc.into(),
             Self::Params(params) => params.loc.into(),
             Self::Const(decl) => decl.loc.into(),
             Self::Events(events) => events.loc.into(),
@@ -80,6 +82,7 @@ impl Block {
 pub enum BlockKind {
     Ins,
     Outs,
+    KOuts,
     Params,
     Const,
     Events,
@@ -103,6 +106,8 @@ pub struct PortBlock {
     pub deferred_count: Option<Expr>,
     pub deferred_default_ty: Option<DeclType>,
     pub deferred_prefix: String,
+    pub output_timing: OutputTiming,
+    pub output_timing_loc: Span,
 }
 
 impl Deref for PortBlock {
@@ -143,6 +148,7 @@ pub struct ParamBlock {
     pub decls: Vec<ParamDecl>,
     pub deferred_count: Option<Expr>,
     pub deferred_default_ty: Option<DeclType>,
+    pub deferred_prefix: String,
 }
 
 impl Deref for ParamBlock {
@@ -377,10 +383,18 @@ impl<'a> IntoIterator for &'a mut InitBlock {
 pub struct PortDecl {
     pub loc: Span,
     pub name: String,
+    pub output_timing: Option<OutputTiming>,
+    pub output_timing_loc: Span,
     pub ty: Option<DeclType>,
     pub ty_loc: Span,
     pub default: Option<Expr>,
     pub range: Option<DeclRange>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum OutputTiming {
+    Sample,
+    Block,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -391,6 +405,7 @@ pub struct ParamDecl {
     pub ty_loc: Span,
     pub default: Option<Expr>,
     pub range: Option<DeclRange>,
+    pub bind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -477,6 +492,8 @@ pub struct ProcessorDef {
     pub outs: Vec<PortDecl>,
     pub outs_deferred_count: Option<Expr>,
     pub outs_deferred_default_ty: Option<DeclType>,
+    pub outs_timing: OutputTiming,
+    pub outs_timing_loc: Span,
     pub params: Vec<ParamDecl>,
     pub params_deferred_count: Option<Expr>,
     pub params_deferred_default_ty: Option<DeclType>,
@@ -601,7 +618,9 @@ pub struct EventParamDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventParamType {
     Scalar(PrimitiveType),
+    GenericScalar { name: String },
     Array { elem: PrimitiveType, size: Expr },
+    GenericArray { elem: String, size: Expr },
     Slice { elem: PrimitiveType },
     GenericSlice { elem: String },
 }

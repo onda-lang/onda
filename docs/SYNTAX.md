@@ -194,10 +194,19 @@ params:
   spread: f32[2] = [0.25, 0.75]
 ```
 
+At top level only, `kins` is an alias for `params`:
+
+```onda
+kins:
+  cutoff = 1200.0
+  resonance = 0.5
+```
+
 Count shorthand and section default types work the same way as `ins`:
 
 ```onda
 params 2
+kins 2
 
 params<i32>:
   mode
@@ -213,6 +222,23 @@ params:
   voices: i32 = 4 {16}
 ```
 
+Inside a `proc`, a primitive scalar param can bind a proc-local update hook:
+
+```onda
+proc Voice:
+  params:
+    freq = 440.0 {20.0, 20000.0} => update_freq
+
+  init:
+    phase_inc = 0.0
+
+  def update_freq():
+    phase_inc = freq / sample_rate
+
+  sample:
+    out1 = 0.0
+```
+
 Rules:
 - omitted parameter types without a default value default to `f32`
 - omitted parameter types with a default value infer from the default using the same untyped-literal rules as ordinary assignments:
@@ -223,10 +249,37 @@ Rules:
 - fixed-size array param defaults must provide exactly the declared element count when written as array literals
 - ranges are supported only on scalar params
 - arrays are supported, but array params cannot have ranges
+- `params N` expands to `param1..paramN`
+- top-level `kins N` expands to `kin1..kinN`
+- top-level `paramN` or `kinN` usage can implicitly create parameters up to
+  that ordinal, matching the `inN` / `outN` inference style
+- input/output surfaces are block/sample-bound: `inN`, `outN`, `koutN`,
+  declared input/output arrays, and synthetic `ins` / `outs` / `kouts` views
+  cannot be read, written, passed, returned, or stored from `init`, `event`,
+  or `def` bodies
+- I/O arrays are not first-class values; use direct indexed access in
+  block/sample code instead of assigning, slicing, or passing `ins`, `outs`,
+  `kouts`, or declared input/output arrays
 - `params[i]` is supported under the same dynamic-indexing rules as `ins[i]`
+- at top level, `kins[i]` is the matching dynamic-index view for explicit
+  `kins` declarations
+- dynamic param surfaces are not first-class array values: `params`, `kins`,
+  and child proc views such as `child.params` cannot be assigned to locals,
+  sliced, passed to functions/events, returned, or stored
+- dynamic param indexing is only valid as a direct `params[i]` / `kins[i]` /
+  `child.params[i]` access in block or sample code
+- top-level code may declare either `params` or `kins`, not both
+- `kins` is not valid inside a `proc`; proc parameter sections are always
+  spelled `params`
 - top-level params are readable in executable code but are not writable from top-level event handlers
 - proc constructor arguments for params are named-only
 - scalar parameter families can use count shorthand such as `params N`, while fixed-size parameter arrays can use types such as `T[N]`
+- `=> hook_name` is only supported on primitive scalar proc params
+- the hook target must be a proc-local `def` in the same proc, with zero parameters, no explicit return type, and no `return`
+- a bound hook runs after the param store and range clamp; construction and builtin `init(...)` run bound hooks after the proc `init` body in param declaration order
+- bound hooks may read owner params, update init-rooted state, and assign named params on child procs; child param hooks cascade through nested children after each child store and range clamp
+- bound hooks cannot assign owner params, inputs, outputs, child proc inputs/outputs/internal state, or child dynamic `params[i]`, and cannot call child proc receivers/events
+- when a proc has bound params, dynamic `params[i] = ...` assignments are rejected; assign the named param instead
 
 ### 4.3 `events`
 
@@ -283,16 +336,17 @@ Supported event parameter types:
 - primitive scalars
 - fixed-size primitive arrays: `T[N]`
 - read-only primitive slices: `T[]`
-- for proc events only, generic primitive slices such as `T[]` when `T` is a proc generic parameter specialized to a primitive
+- for proc events only, generic primitive placeholders such as `T`, `T[N]`, and `T[]` when `T` is a proc generic parameter specialized to a primitive
 
 Rules:
 - event params without an explicit type default to `f32`
-- defaults work for scalar params and fixed-size primitive array params
+- defaults work for scalar params and fixed-size array params, including generic proc event forms after specialization
 - fixed-array and slice params are read-only in handlers
 - top-level events run immediately on the audio thread
 - proc events are reached through explicit receiver calls such as `voice.note_on(...)`
 - proc-event calls are statement-only, not expressions
 - unqualified calls never resolve to proc events
+- a proc cannot call its own event handler as an internal subroutine; put shared internal logic in a proc-local `def`, and have the event call that helper
 - top-level handlers may write only to existing top-level state rooted in `init`
 - proc handlers may write proc state rooted in `init` declarations and proc params
 - handlers cannot write inputs or outputs
@@ -305,7 +359,7 @@ Every proc also gets a builtin reserved `init(...)` event:
 - it mirrors the proc params in declaration order
 - it uses the concrete specialized param types
 - it cannot be redefined in the proc `events` block
-- it assigns the provided values into the proc params, then reruns that proc instance's `init` block
+- it assigns the provided values into the proc params, reruns that proc instance's `init` block, then runs any bound param hooks
 - omitted arguments use the proc parameter defaults
 
 That makes calls such as these legal:
@@ -389,9 +443,9 @@ Rules:
 - `buffers` count shorthand accepts the same compile-time integer expressions as other section counts, including `const` values and namespace integer template parameters
 - runtime binding validates element type and channel constraints
 
-### 4.5 `outs`
+### 4.5 `outs` and `kouts`
 
-`outs` declares output ports.
+`outs` declares sample-rate audio output ports.
 
 ```onda
 outs:
@@ -399,21 +453,62 @@ outs:
   stereo: f32[2]
 ```
 
+`kouts` declares block-rate control output ports.
+
+```onda
+kouts:
+  rms: f32
+  peak: f32
+```
+
+Top-level programs may declare both sections:
+
+```onda
+outs:
+  out1
+  out2
+
+kouts:
+  rms: f32
+  peak: f32
+```
+
 Count shorthand and section default types work the same way as `ins`:
 
 ```onda
 outs 2
+kouts 2
 
 outs<f64>:
   left
   right
+
+kouts<f32> 4
 ```
 
 Rules:
 - omitted output types default to `f32`
 - `outs N` expands to `out1..outN`
+- `kouts N` expands to `kout1..koutN`
 - if `outN` is used without an `outs` block, it is implicitly created as `f32`
-- `outs[i] = expr` is supported when outputs were declared explicitly and uses clamped 0-based runtime indexing
+- if `koutN` is used without a `kouts` block, it is implicitly created as `f32`
+- implicit top-level `outN` inference is sample-rate/audio-only
+- numbered `outN` names are reserved for audio outputs; use `koutN` for
+  numbered control outputs
+- top-level `outs` and `kouts` names must be disjoint; one symbol cannot be
+  both an audio output and a control output
+- a processor declares either `outs` or `kouts`, not both
+- `kouts` processors use `block` with no nested `sample`, cannot declare `ins`,
+  and cannot declare `graph`
+- top-level `kouts` are host-visible control outputs and use the
+  `onda_control_output_*` metadata/read APIs
+- `outs[i] = expr` is supported when outputs were declared explicitly, all
+  indexed audio output slots have one scalar type, and the current scope is
+  sample-rate code
+- `kouts[i] = expr` is supported when control outputs were declared explicitly,
+  all indexed control output slots have one scalar type, and the current scope
+  is block-rate code
+- indices use clamped 0-based runtime indexing
 
 ### 4.6 `init`
 
@@ -535,7 +630,20 @@ Rules for oversampled `sample` blocks:
 Runtime behavior of oversampling:
 - input reads are interpolated across oversample substeps
 - params are held within the base sample
+- top-level `sample N` code uses the effective sample rate:
+  `SR = host SR * N`
+- inside a proc, every proc-owned `SR` reference uses that proc's runtime
+  sample rate. This includes proc-local consts, params, ports, state arrays,
+  child proc-array sizes, `init`, `block`, `sample`, events, proc-local defs,
+  bind hooks, and typed local arrays.
+- `HOST_SR` and its aliases (`HOST_SAMPLE_RATE`, `HOST_SAMPLERATE`,
+  `host_sample_rate`, `host_samplerate`) always use the host sample rate,
+  including inside oversampled procs
+- `BS` remains the logical host block size
 - outputs are filtered and decimated back to the base rate
+
+Use `HOST_SR` or one of its aliases for host-sized tables inside an
+oversampled proc.
 
 ### 4.9 `graph`
 
@@ -671,11 +779,12 @@ Builtin compile-time constants:
 - `PI`, `pi`
 - `TWO_PI`, `TWOPI`, `two_pi`, `twopi`
 - `SAMPLE_RATE`, `SAMPLERATE`, `SR`, `sample_rate`, `samplerate`
+- `HOST_SR`, `HOST_SAMPLE_RATE`, `HOST_SAMPLERATE`, `host_sample_rate`, `host_samplerate`
 - `BLOCK_SIZE`, `BLOCKSIZE`, `BS`, `block_size`, `blocksize`
 
 Default builtin constant types:
 - `PI` and `TWO_PI` are `f64`
-- `SAMPLE_RATE` is `f32`
+- `SAMPLE_RATE` and host sample-rate aliases are `f32`
 - `BLOCK_SIZE` is `i32`
 
 ### 5.2.1 Numeric literals, precision, and automatic narrowing
@@ -1363,13 +1472,23 @@ Constructor rules:
 
 Call and access forms:
 - `p(...)`
-- `p(...).out1`
+- `p(...).out1` for sample-rate `outs` procs
+- `p(...).kout1` for block-rate `kouts` procs
 - `p(...).endpointName`
-- `p.out1`
+- `p.out1` for sample-rate `outs` procs
+- `p.kout1` for block-rate `kouts` procs
 - `p.endpointName`
 - statement call form: `p(...)`
 
 For single-output procs, `p(...)` is scalar sugar for the first output.
+
+Proc call argument rules:
+- positional call arguments bind inputs only
+- named call arguments can bind either inputs or params
+- named param arguments store the clamped param value before the call runs
+- if a bound param hook is attached, the hook runs after that store and before the call
+- multiple proc calls in one expression are evaluated in source order; named param stores happen at the corresponding call-argument position
+- named param arguments are not supported inside logical `&&` / `||` expressions or `while` conditions; assign the param explicitly before the proc call in those cases
 
 ### 9.3 Proc-local defs
 

@@ -73,6 +73,8 @@
   - `ins N` -> `in1..inN`
   - `outs N` -> `out1..outN`
   - `params N` -> `param1..paramN`
+  - top-level `kins N` -> `kin1..kinN`
+  - `kouts N` -> `kout1..koutN`
   - `buffers N` -> `buf1..bufN`
 - For `ins` / `outs` / `params`, count prefix + explicit list is supported (`ins 2: ...`) and must match the explicit declaration count.
 - For `buffers`, explicit declarations and count shorthand still cannot be mixed in the same block.
@@ -80,16 +82,47 @@
   - `const N = 4; ins N` expands to `in1..in4`.
   - `outs (N + 1)` supports parenthesized arithmetic.
   - Namespace template params work inside proc definitions: `namespace Synth<Num = 2>: proc Voice: ins Num`.
-- Dynamic port indexing is supported for `ins`, `outs`, and `params` when declared with an explicit block:
+- Dynamic port indexing is supported for `ins`, `outs`, `kouts`, `params`, and
+  top-level `kins` when declared with an explicit block:
   - `ins[i]`, `outs[i]`, `params[i]` use runtime 0-based integer indices.
+  - `kins[i]` indexes explicit top-level `kins` declarations.
+  - `kouts[i]` indexes explicit block-rate control output declarations.
   - Indices are clamped to the valid range at runtime.
-  - `outs[i] = expr` is a write; `ins[i]` and `params[i]` are reads.
+  - `outs[i] = expr` and `kouts[i] = expr` are writes; `ins[i]`, `params[i]`,
+    and `kins[i]` are reads.
+  - Input/output surfaces are block/sample-bound. `inN`, `outN`, `koutN`,
+    declared input/output arrays, and synthetic `ins` / `outs` / `kouts`
+    views cannot be read, written, passed, returned, or stored from `init`,
+    `event`, or `def` bodies.
+  - I/O array surfaces are not first-class array values: use direct indexed
+    access in block/sample code instead of assigning, slicing, or passing
+    `ins`, `outs`, `kouts`, or declared input/output arrays.
+  - Dynamic param surfaces are not first-class array values: `params`, `kins`,
+    and child proc views such as `child.params` cannot be assigned to locals,
+    sliced, passed to functions/events, returned, or stored.
+  - Dynamic param indexing is only valid as a direct `params[i]` / `kins[i]` /
+    `child.params[i]` access in block or sample code.
   - Port indexing requires an explicit declaration block; implicit ports cannot be indexed.
-  - Works at both top-level and inside processors.
+  - `outs[i]` / `kouts[i]` additionally require all indexed output slots to
+    have one scalar type and the matching timing.
+  - `ins` / `outs` / `kouts` / `params` indexing works at both top-level and
+    inside processors where those sections are valid; `kins` is top-level only.
 - Section default type shorthand is supported for IO/param/buffer sections:
-  - `ins<T>: ...`, `outs<f64>: ...`, `params<i32>: ...`, `buffers[T]: ...`
+  - `ins<T>: ...`, `outs<f64>: ...`, `params<i32>: ...`, top-level `kins<i32>: ...`, `buffers[T]: ...`
   - Also works with count shorthand (`ins<f64> 2`, `buffers[T] 4`).
   - Per-entry explicit types override the section default.
+- Top-level `kins` is an alias for `params`; declare either `params` or `kins`, not both. Proc parameter sections are always spelled `params`.
+- Top-level `kinN` and `paramN`, and proc-local `paramN`, can be inferred from
+  usage the same way `inN` / `outN` are inferred.
+- Audio and control outputs:
+  - `outs` declares sample-rate audio outputs.
+  - `kouts` declares block-rate control outputs.
+  - Top-level programs may declare both `outs` and `kouts`.
+  - Top-level audio and control output names must be disjoint.
+  - Numbered audio outputs use `outN`; numbered control outputs use `koutN`.
+  - Top-level and proc `koutN` outputs can be inferred from usage.
+  - Top-level `kouts` use separate `onda_control_output_*` metadata/read APIs.
+  - A proc declares either `outs` or `kouts`, not both.
 - `init` section default scalar type shorthand is supported:
   - `init<f64>: ...`, `init<T>: ...`
   - Applies to untyped scalar declarations in `init`.
@@ -154,8 +187,8 @@
   - Whole-array routing and element-wise array expressions are supported where shapes match exactly.
   - Cycles are rejected unless broken by positive sample delay.
   - Graph lowering rewrites into generated `init` / `block pre` / `sample` code before proc desugaring.
-- Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
-  - Default constant types: `PI`/`TWO_PI` are `f64`; `SAMPLE_RATE` is `f32`; `BLOCK_SIZE` is `i32`.
+- Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `HOST_SR`/`HOST_SAMPLE_RATE`/`HOST_SAMPLERATE`/`host_sample_rate`/`host_samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
+  - Default constant types: `PI`/`TWO_PI` are `f64`; `SAMPLE_RATE` and host sample-rate aliases are `f32`; `BLOCK_SIZE` is `i32`.
 - User-defined compile-time constants are supported via `const NAME = expr`, optional scalar typed form `const NAME: T = expr`, fixed-array form `const NAME: T[N] = expr`, and inferred-length array form `const NAME: T[] = expr`.
   - Scalar `const` declarations are supported in top-level, namespace, and executable scopes (`init`, `block`, `sample`, `events`, `def`).
   - Primitive-array `const` declarations are supported at top-level and namespace scope.
@@ -210,11 +243,11 @@
     `event name(...): ...` is equivalent to adding that handler inside `events:`.
 - Top-level event params support primitive scalars and fixed-size primitive arrays.
 - Event params support read-only primitive slice forms such as `f32[]` for both top-level and proc events.
-- Proc events also support generic primitive slices such as `T[]` when `T` is a proc generic type parameter that specializes to a primitive.
+- Proc events also support generic primitive placeholders such as `T`, `T[N]`, and `T[]` when `T` is a proc generic type parameter that specializes to a primitive.
 - Event array/slice params are passed as read-only references.
 - Fixed-array event params are lowered internally as array-typed params rather than one scalar arg per element.
   - Event params without explicit type default to `f32`.
-  - Event defaults support both primitive scalars and fixed-size primitive arrays.
+  - Event defaults support both primitive scalars and fixed-size arrays, including generic proc event forms after specialization.
   - Event handlers can declare local fixed-size primitive arrays via untyped literals (for example `b = [1, 2, 3]`).
   - Event handlers can write init-root state only (plus local symbols); output/input/event-param writes are rejected.
   - Top-level handlers are host-triggered and run immediately on the audio thread.
@@ -225,7 +258,7 @@
     - It cannot be redefined inside the proc `events` block.
     - Its generated body assigns the provided argument values into the proc params, reusing existing default/clamp behavior, then reruns that proc instance's lowered `init` block.
     - This lets proc params drive derived init state during in-place reinitialization, including nested proc state and fixed setup values.
-  - Proc-event calls are statement-only; unqualified calls never resolve to proc events.
+  - Proc-event calls are statement-only; unqualified calls never resolve to proc events. A proc cannot use its own event handler as an internal subroutine; put shared internal logic in a proc-local `def` and have the event call that helper.
   - A proc cannot directly instantiate its own proc type as state.
 - Functions (`def`):
   - positional + named args, default values, early return.
@@ -282,13 +315,16 @@
 - proc-local `def` blocks are supported inside `proc` bodies. They act as private helper subroutines with implicit state access (no `self`), callable from `init`, `sample`, `block`, `events`, and other proc-local defs. They support parameters, return values, and transitive calls. Recursive/mutually recursive calls are rejected. Implementation lowers them to hidden ordinary defs with an implicit proc receiver, so argument binding/defaults/return behavior follow the normal `def` pipeline rather than a bespoke inline-only model.
 - generic typed local declarations (`x: T = ...`) are supported in all executable scopes of a generic owner (`init`, `sample`, `block`, `def` methods, `events`).
 - Processor call forms:
-  - `p(...)` (scalar return for single-out procs; sugar for `p.out1` / endpoint name)
-  - direct endpoint call read: `p(...).<endpointName>` (also supports `.outN` alias)
+  - `p(...)` (scalar/control return for single-output procs; sugar for the first endpoint)
+  - direct endpoint call read: `p(...).<endpointName>` (also supports the timing-specific ordinal alias: `.outN` for `outs`, `.koutN` for `kouts`)
   - endpoint reads: `p.<endpointName>`
-  - ordinal reads: `p.outN` (1-based alias to the Nth declared endpoint)
+  - ordinal reads: `p.outN` / `p.koutN` (1-based aliases to the Nth declared audio/control endpoint)
   - statement call + field reads is supported for stateful updates + explicit output access
 - Nested processor state/composition is supported, including deep nesting.
 - Processor constructor arguments for params/buffers are enforced as named-only.
+- Named proc call arguments can bind params, but named param arguments are
+  rejected inside logical `&&` / `||` expressions and `while` conditions; use an
+  explicit param assignment before the proc call there.
 - The builtin proc `init(...)` event is positional/named like any other proc event call and is useful for proc arrays or post-construction reconfiguration:
   - `voices[idx].init(i, i * 2, i * 3)`
 - Processor instance arrays are supported in `init` (top-level and proc-level) via typed declarations such as:
@@ -304,7 +340,7 @@
     - array symbol for non-buffer args: per-slot indexed read (`g: f32[2] = [...]`, then `gain = g`)
   - Indexed proc-array dispatch supports both literal and runtime indices:
     - `voices[idx](...)`
-    - `voices[idx](...).outN` / named output endpoint
+    - `voices[idx](...).outN` / `voices[idx](...).koutN` / named output endpoint
     - statement call form: `voices[idx](...)`
     - indexed param/field access: `voices[idx].gain`
     - indexed scalar field assignment: `voices[idx].gain = value`
@@ -328,6 +364,10 @@
   - syntax: `sample N:` where `N` is any compile-time integer constant expression that resolves to one of `{1,2,4,8,16,32,64,128,256,512}`.
   - oversampling path is compiler-managed (input interpolation, held params, filtered decimation).
   - proc-level oversampling uses the same codegen-rate specialization model as top-level oversampling (unified behavior model, no source-level `SR` rewrite hack).
+  - inside a proc, every proc-owned `SR` reference uses that proc's runtime sample rate, including proc-local consts, params/ports/state sizes, child proc-array sizes, `init`, `block`, `sample`, events, proc-local defs, bind hooks, and typed local arrays.
+  - `sample:` and `sample 1:` use the host sample rate; `sample N:` uses `SR = host SR * N`.
+  - `BS` remains the logical host block size.
+  - `HOST_SR` and its aliases (`HOST_SAMPLE_RATE`, `HOST_SAMPLERATE`, `host_sample_rate`, `host_samplerate`) are always the host sample rate, including inside oversampled procs.
 
 ### External buffers
 - Implemented in language, semantics, runtime, and C API.

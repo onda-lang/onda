@@ -9,8 +9,8 @@ pub use ast::{
     EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl, FnParamType, FnReturnScalarType,
     FnReturnType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock,
     LogicalOp, NamespaceAliasDecl, NamespaceCallArg, NamespaceDecl, NamespaceItem,
-    NamespaceRefSegment, NamespaceTemplateParam, ParamBlock, ParamDecl, PortBlock, PortDecl,
-    PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef,
+    NamespaceRefSegment, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamDecl, PortBlock,
+    PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef,
     StructField,
 };
 pub use diagnostics::{DiagCode, DiagCtx, Diagnostic};

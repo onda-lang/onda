@@ -56,6 +56,7 @@ pub(super) fn build_graph_proc_surfaces(
             .flat_map(|spec| spec.slots.iter().cloned())
             .map(|slot| (slot.name.clone(), slot))
             .collect::<HashMap<_, _>>();
+        let has_bound_params = params.values().any(|slot| slot.bind.is_some());
         out.insert(
             proc.name.clone(),
             GraphProcSurface {
@@ -63,7 +64,11 @@ pub(super) fn build_graph_proc_surfaces(
                 api: ProcApi {
                     ins: in_ports,
                     params,
-                    outs: outs.clone(),
+                    has_bound_params,
+                    outputs: ProcOutputs {
+                        names: outs.clone(),
+                        timing: proc.outs_timing,
+                    },
                     events: HashMap::new(),
                     buffers: Vec::new(),
                     has_block: false,
@@ -186,6 +191,8 @@ fn graph_port_decls_with_numbered_aliases(
             ports.push(PortDecl {
                 loc: Default::default(),
                 name: alias,
+                output_timing: None,
+                output_timing_loc: Default::default(),
                 ty: None,
                 ty_loc: Default::default(),
                 default: None,

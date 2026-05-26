@@ -2,11 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use onda_frontend::Span;
 
+use crate::builtins::HOST_SAMPLE_RATE_CONSTANT_NAMES;
 use crate::processor_lowering::{
     coerce_typed_events, collect_runtime_state_roots, desugar_processors,
-    internal_proc_index_call_signature, lower_graph_blocks,
-    prepare_processors_for_graph_inspection, validated_sample_oversample_factor,
-    ProcessorDesugarResult,
+    internal_proc_index_call_signature, lower_graph_blocks, nested_call_out_fn_name,
+    nested_step_fn_name, prepare_processors_for_graph_inspection, proc_runtime_analysis_options,
+    validated_sample_oversample_factor, ProcLoweringShape, ProcessorDesugarResult,
 };
 use crate::*;
 
@@ -34,6 +35,7 @@ fn preprocess_program_for_analysis(
     validate_analysis_options(options)?;
     inject_auto_std_math(&mut program)?;
     flatten_namespaces_for_semantics(&mut program, options)?;
+    fold_host_sr_builtin(&mut program, options);
     Ok(program)
 }
 
@@ -108,6 +110,310 @@ fn const_array_literal_expr(values: &[TypedConstValue], loc: SourceLoc) -> Expr 
             .iter()
             .map(|value| typed_const_expr_with_loc(*value, loc))
             .collect(),
+    }
+}
+
+fn host_sr_const_map(options: AnalysisOptions) -> HashMap<String, TypedConstValue> {
+    HOST_SAMPLE_RATE_CONSTANT_NAMES
+        .iter()
+        .map(|name| {
+            (
+                (*name).to_owned(),
+                TypedConstValue::F32(options.sample_rate),
+            )
+        })
+        .collect()
+}
+
+fn fold_host_sr_const_type(ty: &mut Option<ConstType>, consts: &HashMap<String, TypedConstValue>) {
+    if let Some(ConstType::Array { size, .. }) = ty {
+        fold_local_scalar_const_expr(size, consts);
+    }
+}
+
+fn fold_host_sr_const_decl(decl: &mut ConstDecl, consts: &HashMap<String, TypedConstValue>) {
+    fold_host_sr_const_type(&mut decl.ty, consts);
+    fold_local_scalar_const_expr(&mut decl.expr, consts);
+}
+
+fn fold_host_sr_event(event: &mut EventDef, consts: &HashMap<String, TypedConstValue>) {
+    for param in &mut event.params {
+        fold_local_scalar_const_event_param_type(&mut param.ty, consts);
+        if let Some(default) = &mut param.default {
+            fold_local_scalar_const_expr(default, consts);
+        }
+    }
+    fold_host_sr_stmts(&mut event.body, consts);
+}
+
+fn fold_host_sr_function(def: &mut FunctionDef, consts: &HashMap<String, TypedConstValue>) {
+    for param in &mut def.params {
+        fold_local_scalar_const_fn_param_type(&mut param.ty, consts);
+        if let Some(default) = &mut param.default {
+            fold_local_scalar_const_expr(default, consts);
+        }
+    }
+    fold_local_scalar_const_return_type(&mut def.return_ty, consts);
+    fold_host_sr_stmts(&mut def.body, consts);
+}
+
+fn fold_host_sr_assign_target(
+    target: &mut AssignTarget,
+    consts: &HashMap<String, TypedConstValue>,
+) {
+    match target {
+        AssignTarget::Index { index, .. } => fold_local_scalar_const_expr(index, consts),
+        AssignTarget::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                fold_local_scalar_const_expr(start, consts);
+            }
+            if let Some(end) = end {
+                fold_local_scalar_const_expr(end, consts);
+            }
+        }
+        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
+    }
+}
+
+fn fold_host_sr_stmt(stmt: &mut Stmt, consts: &HashMap<String, TypedConstValue>) {
+    match stmt {
+        Stmt::Const { decl, .. } => fold_host_sr_const_decl(decl, consts),
+        Stmt::Assign { target, expr, .. } => {
+            fold_host_sr_assign_target(target, consts);
+            fold_local_scalar_const_expr(expr, consts);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            fold_local_scalar_const_expr(expr, consts);
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            fold_local_scalar_const_expr(cond, consts);
+            fold_host_sr_stmts(then_branch, consts);
+            fold_host_sr_stmts(else_branch, consts);
+        }
+        Stmt::For {
+            step,
+            start,
+            end,
+            body,
+            ..
+        } => {
+            if let Some(step) = step {
+                fold_local_scalar_const_expr(step, consts);
+            }
+            fold_local_scalar_const_expr(start, consts);
+            fold_local_scalar_const_expr(end, consts);
+            fold_host_sr_stmts(body, consts);
+        }
+        Stmt::While { cond, body, .. } => {
+            fold_local_scalar_const_expr(cond, consts);
+            fold_host_sr_stmts(body, consts);
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn fold_host_sr_stmts(stmts: &mut [Stmt], consts: &HashMap<String, TypedConstValue>) {
+    for stmt in stmts {
+        fold_host_sr_stmt(stmt, consts);
+    }
+}
+
+fn fold_host_sr_graph(graph: &mut GraphBlock, consts: &HashMap<String, TypedConstValue>) {
+    for edge in &mut graph.edges {
+        fold_local_scalar_const_expr(&mut edge.source, consts);
+        if let Some(delay) = &mut edge.delay {
+            fold_local_scalar_const_expr(delay, consts);
+        }
+        for dest in &mut edge.dests {
+            if let GraphEndpoint::ProcIndexedField { index, .. } = dest {
+                fold_local_scalar_const_expr(index, consts);
+            }
+        }
+    }
+}
+
+fn fold_host_sr_namespace_ref_segment(
+    segment: &mut NamespaceRefSegment,
+    consts: &HashMap<String, TypedConstValue>,
+) {
+    if let Some(args) = &mut segment.args {
+        for arg in args {
+            fold_local_scalar_const_expr(&mut arg.expr, consts);
+        }
+    }
+}
+
+fn fold_host_sr_namespace_alias(
+    alias: &mut NamespaceAliasDecl,
+    consts: &HashMap<String, TypedConstValue>,
+) {
+    for segment in &mut alias.target {
+        fold_host_sr_namespace_ref_segment(segment, consts);
+    }
+}
+
+fn fold_host_sr_namespace(
+    namespace: &mut NamespaceDecl,
+    consts: &HashMap<String, TypedConstValue>,
+) {
+    for param in &mut namespace.params {
+        fold_local_scalar_const_expr(&mut param.default, consts);
+    }
+    for item in &mut namespace.items {
+        match item {
+            NamespaceItem::Assert(assert_decl) => {
+                fold_local_scalar_const_expr(&mut assert_decl.expr, consts);
+            }
+            NamespaceItem::Const(decl) => fold_host_sr_const_decl(decl, consts),
+            NamespaceItem::Struct(struct_def) => fold_host_sr_struct(struct_def, consts),
+            NamespaceItem::Def(def) => fold_host_sr_function(def, consts),
+            NamespaceItem::Proc(proc) => fold_host_sr_proc(proc, consts),
+            NamespaceItem::Namespace(inner) => fold_host_sr_namespace(inner, consts),
+            NamespaceItem::Alias(alias) => fold_host_sr_namespace_alias(alias, consts),
+        }
+    }
+}
+
+fn fold_host_sr_struct(struct_def: &mut StructDef, consts: &HashMap<String, TypedConstValue>) {
+    for field in &mut struct_def.fields {
+        fold_local_scalar_const_field_type(&mut field.ty, consts);
+        if let Some(default) = &mut field.default {
+            fold_local_scalar_const_expr(default, consts);
+        }
+    }
+    for method in &mut struct_def.methods {
+        fold_host_sr_function(method, consts);
+    }
+}
+
+fn fold_host_sr_proc(proc: &mut ProcessorDef, consts: &HashMap<String, TypedConstValue>) {
+    for decl in &mut proc.consts {
+        fold_host_sr_const_decl(decl, consts);
+    }
+    for expr in [
+        &mut proc.ins_deferred_count,
+        &mut proc.outs_deferred_count,
+        &mut proc.params_deferred_count,
+        &mut proc.buffers_deferred_count,
+        &mut proc.sample_oversample_factor,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        fold_local_scalar_const_expr(expr, consts);
+    }
+    for ty in [
+        &mut proc.ins_deferred_default_ty,
+        &mut proc.outs_deferred_default_ty,
+        &mut proc.params_deferred_default_ty,
+        &mut proc.init.default_ty,
+    ] {
+        fold_local_scalar_const_decl_type(ty, consts);
+    }
+    fold_local_scalar_const_buffer_type(&mut proc.buffers_deferred_default_ty, consts);
+    for decl in &mut proc.ins {
+        fold_local_scalar_const_port_decl(decl, consts);
+    }
+    for decl in &mut proc.outs {
+        fold_local_scalar_const_port_decl(decl, consts);
+    }
+    for decl in &mut proc.params {
+        fold_local_scalar_const_param_decl(decl, consts);
+    }
+    for decl in &mut proc.buffers {
+        fold_local_scalar_const_buffer_type(&mut decl.ty, consts);
+    }
+    fold_host_sr_stmts(&mut proc.init.body, consts);
+    fold_host_sr_stmts(&mut proc.block_pre, consts);
+    fold_host_sr_stmts(&mut proc.sample, consts);
+    fold_host_sr_stmts(&mut proc.block_post, consts);
+    if let Some(graph) = &mut proc.graph {
+        fold_host_sr_graph(graph, consts);
+    }
+    for event in &mut proc.events {
+        fold_host_sr_event(event, consts);
+    }
+    for def in &mut proc.local_defs {
+        fold_host_sr_function(def, consts);
+    }
+}
+
+fn fold_host_sr_block(block: &mut Block, consts: &HashMap<String, TypedConstValue>) {
+    match block {
+        Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
+            if let Some(count) = &mut ports.deferred_count {
+                fold_local_scalar_const_expr(count, consts);
+            }
+            fold_local_scalar_const_decl_type(&mut ports.deferred_default_ty, consts);
+            for decl in &mut ports.decls {
+                fold_local_scalar_const_port_decl(decl, consts);
+            }
+        }
+        Block::Params(params) => {
+            if let Some(count) = &mut params.deferred_count {
+                fold_local_scalar_const_expr(count, consts);
+            }
+            fold_local_scalar_const_decl_type(&mut params.deferred_default_ty, consts);
+            for decl in &mut params.decls {
+                fold_local_scalar_const_param_decl(decl, consts);
+            }
+        }
+        Block::Buffers(buffers) => {
+            if let Some(count) = &mut buffers.deferred_count {
+                fold_local_scalar_const_expr(count, consts);
+            }
+            fold_local_scalar_const_buffer_type(&mut buffers.deferred_default_ty, consts);
+            for decl in &mut buffers.decls {
+                fold_local_scalar_const_buffer_type(&mut decl.ty, consts);
+            }
+        }
+        Block::Const(decl) => fold_host_sr_const_decl(decl, consts),
+        Block::Events(events) => {
+            for event in &mut events.events {
+                fold_host_sr_event(event, consts);
+            }
+        }
+        Block::Assert(assert_decl) => {
+            fold_local_scalar_const_expr(&mut assert_decl.expr, consts);
+        }
+        Block::Namespace(namespace) => fold_host_sr_namespace(namespace, consts),
+        Block::NamespaceAlias(alias) => fold_host_sr_namespace_alias(alias, consts),
+        Block::Proc(proc) => fold_host_sr_proc(proc, consts),
+        Block::Struct(struct_def) => fold_host_sr_struct(struct_def, consts),
+        Block::Def(def) => fold_host_sr_function(def, consts),
+        Block::Init(init) => {
+            fold_local_scalar_const_decl_type(&mut init.default_ty, consts);
+            fold_host_sr_stmts(&mut init.body, consts);
+        }
+        Block::Block(block_exec) => {
+            fold_host_sr_stmts(&mut block_exec.pre, consts);
+            if let Some(sample) = &mut block_exec.sample {
+                if let Some(factor) = &mut sample.oversample_factor {
+                    fold_local_scalar_const_expr(factor, consts);
+                }
+                fold_host_sr_stmts(&mut sample.body, consts);
+            }
+            fold_host_sr_stmts(&mut block_exec.post, consts);
+        }
+        Block::Sample(sample) => {
+            if let Some(factor) = &mut sample.oversample_factor {
+                fold_local_scalar_const_expr(factor, consts);
+            }
+            fold_host_sr_stmts(&mut sample.body, consts);
+        }
+        Block::Graph(graph) => fold_host_sr_graph(graph, consts),
+    }
+}
+
+fn fold_host_sr_builtin(program: &mut Program, options: AnalysisOptions) {
+    let consts = host_sr_const_map(options);
+    for block in &mut program.blocks {
+        fold_host_sr_block(block, &consts);
     }
 }
 
@@ -201,6 +507,11 @@ struct SemanticConstArtifacts {
     const_def_order: HashMap<String, usize>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ProcLocalConstArtifacts {
+    values: HashMap<String, TypedConstValue>,
+}
+
 fn record_const_array_artifact(artifacts: &mut SemanticConstArtifacts, array: TypedConstArray) {
     artifacts.const_values.insert(
         array.name.clone(),
@@ -218,7 +529,7 @@ fn ordinary_top_level_symbol_names(program: &Program) -> HashSet<String> {
         .blocks
         .iter()
         .flat_map(|block| match block {
-            Block::Ins(ports) | Block::Outs(ports) => ports
+            Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => ports
                 .decls
                 .iter()
                 .map(|decl| decl.name.clone())
@@ -2413,6 +2724,9 @@ fn event_array_default_target(
         EventParamType::Array { elem, size } => {
             eval_data_size_expr_silent(size, options).map(|len| (Some(*elem), len))
         }
+        EventParamType::GenericArray { size, .. } => {
+            eval_data_size_expr_silent(size, options).map(|len| (None, len))
+        }
         _ => None,
     }
 }
@@ -2598,8 +2912,11 @@ fn fold_event_param_type_const_arrays(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if let EventParamType::Array { size, .. } = ty {
-        fold_const_array_expr(size, const_values, options, errors, false);
+    match ty {
+        EventParamType::Array { size, .. } | EventParamType::GenericArray { size, .. } => {
+            fold_const_array_expr(size, const_values, options, errors, false);
+        }
+        _ => {}
     }
 }
 
@@ -2944,8 +3261,11 @@ fn reject_forward_const_refs_event_param_type(
     future_consts: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if let EventParamType::Array { size, .. } = ty {
-        reject_forward_const_refs_expr(size, visible_consts, future_consts, errors);
+    match ty {
+        EventParamType::Array { size, .. } | EventParamType::GenericArray { size, .. } => {
+            reject_forward_const_refs_expr(size, visible_consts, future_consts, errors);
+        }
+        _ => {}
     }
 }
 
@@ -3136,7 +3456,7 @@ fn reject_forward_const_refs_in_block(
     errors: &mut Vec<Diagnostic>,
 ) {
     match block {
-        Block::Ins(ports) | Block::Outs(ports) => {
+        Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
             if let Some(count) = &ports.deferred_count {
                 reject_forward_const_refs_expr(count, visible_consts, future_consts, errors);
             }
@@ -3314,6 +3634,7 @@ fn fold_const_array_exprs_in_block(
     block: &mut Block,
     const_values: &HashMap<String, ConstValue>,
     options: AnalysisOptions,
+    structural_options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
     match block {
@@ -3325,7 +3646,7 @@ fn fold_const_array_exprs_in_block(
                 fold_port_decl_const_arrays(decl, "input", const_values, options, errors);
             }
         }
-        Block::Outs(ports) => {
+        Block::Outs(ports) | Block::KOuts(ports) => {
             if let Some(count) = &mut ports.deferred_count {
                 fold_const_array_expr(count, const_values, options, errors, false);
             }
@@ -3453,7 +3774,7 @@ fn fold_const_array_exprs_in_block(
                 fold_const_array_expr(count, const_values, options, errors, false);
             }
             if let Some(factor) = &mut proc.sample_oversample_factor {
-                fold_const_array_expr(factor, const_values, options, errors, false);
+                fold_const_array_expr(factor, const_values, structural_options, errors, false);
             }
             for event in &mut proc.events {
                 fold_event_const_arrays(event, const_values, options, errors);
@@ -3739,6 +4060,7 @@ fn reject_const_shadowing_in_program(
             }
             Block::Ins(_)
             | Block::Outs(_)
+            | Block::KOuts(_)
             | Block::Params(_)
             | Block::Buffers(_)
             | Block::Graph(_)
@@ -3868,6 +4190,7 @@ fn reject_const_assignments_in_program(
             }
             Block::Ins(_)
             | Block::Outs(_)
+            | Block::KOuts(_)
             | Block::Params(_)
             | Block::Buffers(_)
             | Block::Graph(_)
@@ -4052,8 +4375,11 @@ fn fold_direct_const_def_event_param_type(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if let EventParamType::Array { size, .. } = ty {
-        fold_direct_const_def_call_expr(size, artifacts, options, context, errors);
+    match ty {
+        EventParamType::Array { size, .. } | EventParamType::GenericArray { size, .. } => {
+            fold_direct_const_def_call_expr(size, artifacts, options, context, errors);
+        }
+        _ => {}
     }
 }
 
@@ -4324,10 +4650,11 @@ fn fold_direct_const_def_calls_in_block(
     block: &mut Block,
     artifacts: &SemanticConstArtifacts,
     options: AnalysisOptions,
+    structural_options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
     match block {
-        Block::Ins(ports) | Block::Outs(ports) => {
+        Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
             if let Some(default_ty) = &mut ports.deferred_default_ty {
                 let mut ty = Some(default_ty.clone());
                 fold_direct_const_def_decl_type(
@@ -4589,7 +4916,7 @@ fn fold_direct_const_def_calls_in_block(
                 fold_direct_const_def_call_expr(
                     factor,
                     artifacts,
-                    options,
+                    structural_options,
                     &format!("processor '{}' sample oversample factor", proc.name),
                     errors,
                 );
@@ -4731,8 +5058,11 @@ fn fold_local_scalar_const_event_param_type(
     ty: &mut EventParamType,
     local_consts: &HashMap<String, TypedConstValue>,
 ) {
-    if let EventParamType::Array { size, .. } = ty {
-        fold_local_scalar_const_expr(size, local_consts);
+    match ty {
+        EventParamType::Array { size, .. } | EventParamType::GenericArray { size, .. } => {
+            fold_local_scalar_const_expr(size, local_consts);
+        }
+        _ => {}
     }
 }
 
@@ -4857,6 +5187,38 @@ fn eval_local_scalar_const_decl(
         &context,
         &mut Vec::new(),
         errors,
+    )
+}
+
+fn proc_sample_oversample_factor_for_proc_context(
+    proc: &ProcessorDef,
+    proc_consts: &HashMap<String, TypedConstValue>,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+) -> usize {
+    let Some(factor) = proc.sample_oversample_factor.as_ref() else {
+        return 1;
+    };
+    let local_arrays = HashMap::new();
+    let mut scratch = Vec::<Diagnostic>::new();
+    let Some(folded) = fold_const_eval_expr(
+        factor,
+        proc_consts,
+        &local_arrays,
+        &artifacts.const_values,
+        const_def_registry(artifacts),
+        options,
+        &format!("processor '{}' sample oversample factor", proc.name),
+        &mut Vec::new(),
+        &mut scratch,
+    ) else {
+        return 1;
+    };
+    validated_sample_oversample_factor(
+        Some(&folded),
+        options,
+        &format!("processor '{}' sample oversample factor", proc.name),
+        &mut scratch,
     )
 }
 
@@ -5164,15 +5526,16 @@ fn reject_proc_local_const_decl_conflicts(
     }
 }
 
-fn preprocess_proc_local_consts(
-    proc: &mut ProcessorDef,
+fn preprocess_proc_local_const_decls(
+    proc_name: &str,
+    consts: &[onda_frontend::ConstDecl],
     artifacts: &SemanticConstArtifacts,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
-) -> HashMap<String, TypedConstValue> {
-    let mut proc_consts = HashMap::<String, TypedConstValue>::new();
+) -> ProcLocalConstArtifacts {
+    let mut out = ProcLocalConstArtifacts::default();
     let mut proc_const_names = HashSet::<String>::new();
-    for decl in &proc.consts {
+    for decl in consts {
         if !proc_const_names.insert(decl.name.clone()) {
             errors.push(Diagnostic::semantic_span(
                 format!("duplicate proc constant '{}'", decl.name),
@@ -5182,17 +5545,28 @@ fn preprocess_proc_local_consts(
         }
         if let Some(value) = eval_local_scalar_const_decl(
             decl,
-            &proc_consts,
+            &out.values,
             artifacts,
             options,
-            &format!("processor '{}'", proc.name),
+            &format!("processor '{proc_name}'"),
             errors,
         ) {
-            proc_consts.insert(decl.name.clone(), value);
+            out.values.insert(decl.name.clone(), value);
         }
     }
+    out
+}
+
+fn preprocess_proc_local_consts(
+    proc: &mut ProcessorDef,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> ProcLocalConstArtifacts {
+    let out =
+        preprocess_proc_local_const_decls(&proc.name, &proc.consts, artifacts, options, errors);
     proc.consts.clear();
-    proc_consts
+    out
 }
 
 fn preprocess_local_consts_in_block(
@@ -5203,7 +5577,7 @@ fn preprocess_local_consts_in_block(
 ) {
     let empty_consts = HashMap::<String, TypedConstValue>::new();
     match block {
-        Block::Ins(ports) | Block::Outs(ports) => {
+        Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
             if let Some(default_ty) = &mut ports.deferred_default_ty {
                 let mut ty = Some(default_ty.clone());
                 fold_local_scalar_const_decl_type(&mut ty, &empty_consts);
@@ -5326,110 +5700,139 @@ fn preprocess_local_consts_in_block(
             }
         }
         Block::Proc(proc) => {
-            let proc_consts = preprocess_proc_local_consts(proc, artifacts, options, errors);
-            reject_proc_local_const_decl_conflicts(proc, &proc_consts, errors);
+            let factor_proc_consts = {
+                let mut scratch_errors = Vec::new();
+                preprocess_proc_local_const_decls(
+                    &proc.name,
+                    &proc.consts,
+                    artifacts,
+                    options,
+                    &mut scratch_errors,
+                )
+            };
+            let sample_oversample_factor = proc_sample_oversample_factor_for_proc_context(
+                proc,
+                &factor_proc_consts.values,
+                artifacts,
+                options,
+            );
+            let proc_options = proc_runtime_analysis_options(options, sample_oversample_factor);
+            let proc_consts = preprocess_proc_local_consts(proc, artifacts, proc_options, errors);
+            reject_proc_local_const_decl_conflicts(proc, &proc_consts.values, errors);
             if let Some(count) = &mut proc.ins_deferred_count {
-                fold_local_scalar_const_expr(count, &proc_consts);
+                fold_local_scalar_const_expr(count, &proc_consts.values);
             }
             if let Some(default_ty) = &mut proc.ins_deferred_default_ty {
                 let mut ty = Some(default_ty.clone());
-                fold_local_scalar_const_decl_type(&mut ty, &proc_consts);
+                fold_local_scalar_const_decl_type(&mut ty, &proc_consts.values);
                 if let Some(folded) = ty {
                     *default_ty = folded;
                 }
             }
             if let Some(count) = &mut proc.outs_deferred_count {
-                fold_local_scalar_const_expr(count, &proc_consts);
+                fold_local_scalar_const_expr(count, &proc_consts.values);
             }
             if let Some(default_ty) = &mut proc.outs_deferred_default_ty {
                 let mut ty = Some(default_ty.clone());
-                fold_local_scalar_const_decl_type(&mut ty, &proc_consts);
+                fold_local_scalar_const_decl_type(&mut ty, &proc_consts.values);
                 if let Some(folded) = ty {
                     *default_ty = folded;
                 }
             }
             if let Some(count) = &mut proc.params_deferred_count {
-                fold_local_scalar_const_expr(count, &proc_consts);
+                fold_local_scalar_const_expr(count, &proc_consts.values);
             }
             if let Some(default_ty) = &mut proc.params_deferred_default_ty {
                 let mut ty = Some(default_ty.clone());
-                fold_local_scalar_const_decl_type(&mut ty, &proc_consts);
+                fold_local_scalar_const_decl_type(&mut ty, &proc_consts.values);
                 if let Some(folded) = ty {
                     *default_ty = folded;
                 }
             }
             if let Some(count) = &mut proc.buffers_deferred_count {
-                fold_local_scalar_const_expr(count, &proc_consts);
+                fold_local_scalar_const_expr(count, &proc_consts.values);
             }
             if let Some(default_ty) = &mut proc.buffers_deferred_default_ty {
                 let mut ty = Some(default_ty.clone());
-                fold_local_scalar_const_buffer_type(&mut ty, &proc_consts);
+                fold_local_scalar_const_buffer_type(&mut ty, &proc_consts.values);
                 if let Some(folded) = ty {
                     *default_ty = folded;
                 }
             }
             for decl in &mut proc.ins {
-                fold_local_scalar_const_port_decl(decl, &proc_consts);
+                fold_local_scalar_const_port_decl(decl, &proc_consts.values);
             }
             for decl in &mut proc.outs {
-                fold_local_scalar_const_port_decl(decl, &proc_consts);
+                fold_local_scalar_const_port_decl(decl, &proc_consts.values);
             }
             for decl in &mut proc.params {
-                fold_local_scalar_const_param_decl(decl, &proc_consts);
+                fold_local_scalar_const_param_decl(decl, &proc_consts.values);
             }
             for decl in &mut proc.buffers {
-                fold_local_scalar_const_buffer_type(&mut decl.ty, &proc_consts);
+                fold_local_scalar_const_buffer_type(&mut decl.ty, &proc_consts.values);
             }
             if let Some(default_ty) = &mut proc.init.default_ty {
                 let mut ty = Some(default_ty.clone());
-                fold_local_scalar_const_decl_type(&mut ty, &proc_consts);
+                fold_local_scalar_const_decl_type(&mut ty, &proc_consts.values);
                 if let Some(folded) = ty {
                     *default_ty = folded;
                 }
             }
             if let Some(factor) = &mut proc.sample_oversample_factor {
-                fold_local_scalar_const_expr(factor, &proc_consts);
+                fold_local_scalar_const_expr(factor, &factor_proc_consts.values);
             }
             for event in &mut proc.events {
-                preprocess_local_const_event(event, &proc_consts, artifacts, options, errors);
+                preprocess_local_const_event(
+                    event,
+                    &proc_consts.values,
+                    artifacts,
+                    proc_options,
+                    errors,
+                );
             }
             preprocess_local_const_stmts(
                 &mut proc.init.body,
-                &proc_consts,
+                &proc_consts.values,
                 artifacts,
-                options,
+                proc_options,
                 &format!("processor '{}' init", proc.name),
                 errors,
             );
             preprocess_local_const_stmts(
                 &mut proc.block_pre,
-                &proc_consts,
+                &proc_consts.values,
                 artifacts,
-                options,
+                proc_options,
                 &format!("processor '{}' block pre", proc.name),
                 errors,
             );
             preprocess_local_const_stmts(
                 &mut proc.sample,
-                &proc_consts,
+                &proc_consts.values,
                 artifacts,
-                options,
+                proc_options,
                 &format!("processor '{}' sample", proc.name),
                 errors,
             );
             preprocess_local_const_stmts(
                 &mut proc.block_post,
-                &proc_consts,
+                &proc_consts.values,
                 artifacts,
-                options,
+                proc_options,
                 &format!("processor '{}' block post", proc.name),
                 errors,
             );
             if let Some(graph) = &mut proc.graph {
-                preprocess_local_const_graph(graph, &proc_consts);
+                preprocess_local_const_graph(graph, &proc_consts.values);
             }
             for def in &mut proc.local_defs {
-                preprocess_local_const_function(def, &proc_consts, artifacts, options, errors);
+                preprocess_local_const_function(
+                    def,
+                    &proc_consts.values,
+                    artifacts,
+                    proc_options,
+                    errors,
+                );
             }
         }
         Block::Const(_) | Block::Def(_) | Block::Namespace(_) | Block::NamespaceAlias(_) => {}
@@ -5489,6 +5892,8 @@ fn expand_port_count_shorthand(
             decls.push(PortDecl {
                 loc,
                 name: format!("{prefix}{idx}"),
+                output_timing: None,
+                output_timing_loc: Span::ZERO,
                 ty: default_ty.clone(),
                 ty_loc: Span::ZERO,
                 default: None,
@@ -5511,6 +5916,7 @@ fn expand_param_count_shorthand(
     decls: &mut Vec<ParamDecl>,
     deferred_count: &mut Option<Expr>,
     deferred_default_ty: &mut Option<DeclType>,
+    prefix: &str,
     block_label: &str,
     loc: Span,
     artifacts: &SemanticConstArtifacts,
@@ -5534,11 +5940,12 @@ fn expand_param_count_shorthand(
         for idx in 1..=count {
             decls.push(ParamDecl {
                 loc,
-                name: format!("param{idx}"),
+                name: format!("{prefix}{idx}"),
                 ty: default_ty.clone(),
                 ty_loc: Span::ZERO,
                 default: None,
                 range: None,
+                bind: None,
             });
         }
     } else if decls.len() != count {
@@ -5619,8 +6026,17 @@ fn expand_proc_count_shorthand(
         &mut proc.outs,
         &mut proc.outs_deferred_count,
         &mut proc.outs_deferred_default_ty,
-        "out",
-        &format!("processor '{proc_name}' outs"),
+        match proc.outs_timing {
+            OutputTiming::Sample => "out",
+            OutputTiming::Block => "kout",
+        },
+        &format!(
+            "processor '{proc_name}' {}",
+            match proc.outs_timing {
+                OutputTiming::Sample => "outs",
+                OutputTiming::Block => "kouts",
+            }
+        ),
         loc,
         artifacts,
         options,
@@ -5630,6 +6046,7 @@ fn expand_proc_count_shorthand(
         &mut proc.params,
         &mut proc.params_deferred_count,
         &mut proc.params_deferred_default_ty,
+        "param",
         &format!("processor '{proc_name}' params"),
         loc,
         artifacts,
@@ -5646,6 +6063,21 @@ fn expand_proc_count_shorthand(
         options,
         errors,
     );
+}
+
+fn proc_options_for_count_expansion(
+    proc: &ProcessorDef,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+) -> AnalysisOptions {
+    let empty_proc_consts = HashMap::new();
+    let sample_oversample_factor = proc_sample_oversample_factor_for_proc_context(
+        proc,
+        &empty_proc_consts,
+        artifacts,
+        options,
+    );
+    proc_runtime_analysis_options(options, sample_oversample_factor)
 }
 
 fn coerce_consts_and_expand_counts(
@@ -5796,7 +6228,7 @@ fn coerce_consts_and_expand_counts(
                     options,
                     errors,
                 );
-                fold_direct_const_def_calls_in_block(block, &artifacts, options, errors);
+                fold_direct_const_def_calls_in_block(block, &artifacts, options, options, errors);
             }
             Block::Outs(ports) => {
                 let prefix = ports.deferred_prefix.clone();
@@ -5811,20 +6243,38 @@ fn coerce_consts_and_expand_counts(
                     options,
                     errors,
                 );
-                fold_direct_const_def_calls_in_block(block, &artifacts, options, errors);
+                fold_direct_const_def_calls_in_block(block, &artifacts, options, options, errors);
+            }
+            Block::KOuts(ports) => {
+                let prefix = ports.deferred_prefix.clone();
+                expand_port_count_shorthand(
+                    &mut ports.decls,
+                    &mut ports.deferred_count,
+                    &mut ports.deferred_default_ty,
+                    &prefix,
+                    "kouts",
+                    ports.loc,
+                    &artifacts,
+                    options,
+                    errors,
+                );
+                fold_direct_const_def_calls_in_block(block, &artifacts, options, options, errors);
             }
             Block::Params(params) => {
+                let prefix = params.deferred_prefix.clone();
+                let block_label = if prefix == "kin" { "kins" } else { "params" };
                 expand_param_count_shorthand(
                     &mut params.decls,
                     &mut params.deferred_count,
                     &mut params.deferred_default_ty,
-                    "params",
+                    &prefix,
+                    block_label,
                     params.loc,
                     &artifacts,
                     options,
                     errors,
                 );
-                fold_direct_const_def_calls_in_block(block, &artifacts, options, errors);
+                fold_direct_const_def_calls_in_block(block, &artifacts, options, options, errors);
             }
             Block::Buffers(buffers) => {
                 expand_buffer_count_shorthand(
@@ -5837,15 +6287,32 @@ fn coerce_consts_and_expand_counts(
                     options,
                     errors,
                 );
-                fold_direct_const_def_calls_in_block(block, &artifacts, options, errors);
+                fold_direct_const_def_calls_in_block(block, &artifacts, options, options, errors);
             }
             Block::Proc(proc) => {
-                expand_proc_count_shorthand(proc, &artifacts, options, errors);
-                fold_direct_const_def_calls_in_block(block, &artifacts, options, errors);
+                let proc_options = proc_options_for_count_expansion(proc, &artifacts, options);
+                expand_proc_count_shorthand(proc, &artifacts, proc_options, errors);
+                fold_direct_const_def_calls_in_block(
+                    block,
+                    &artifacts,
+                    proc_options,
+                    options,
+                    errors,
+                );
             }
-            _ => fold_direct_const_def_calls_in_block(block, &artifacts, options, errors),
+            _ => fold_direct_const_def_calls_in_block(block, &artifacts, options, options, errors),
         }
-        fold_const_array_exprs_in_block(block, &artifacts.const_values, options, errors);
+        let const_array_options = match block {
+            Block::Proc(proc) => proc_options_for_count_expansion(proc, &artifacts, options),
+            _ => options,
+        };
+        fold_const_array_exprs_in_block(
+            block,
+            &artifacts.const_values,
+            const_array_options,
+            options,
+            errors,
+        );
         reject_forward_const_refs_in_block(
             block,
             &artifacts.const_values,
@@ -6182,16 +6649,27 @@ pub fn analyze_with_options(
         Some(Block::Ins(v)) => v.decls.clone(),
         _ => Vec::new(),
     };
-    let outs_explicit = program.block(BlockKind::Outs).is_some();
+    let audio_outs_explicit = program.block(BlockKind::Outs).is_some();
     let raw_outs = match program.block(BlockKind::Outs) {
         Some(Block::Outs(v)) => v.decls.clone(),
         _ => Vec::new(),
     };
-    let params_explicit = program.block(BlockKind::Params).is_some();
-    let params = match program.block(BlockKind::Params) {
-        Some(Block::Params(v)) => v.decls.clone(),
+    let control_outs_explicit = program.block(BlockKind::KOuts).is_some();
+    let raw_kouts = match program.block(BlockKind::KOuts) {
+        Some(Block::KOuts(v)) => v.decls.clone(),
         _ => Vec::new(),
     };
+    let outs_explicit = audio_outs_explicit || control_outs_explicit;
+    let params_block = program
+        .block(BlockKind::Params)
+        .and_then(|block| match block {
+            Block::Params(v) => Some(v),
+            _ => None,
+        });
+    let params_explicit = params_block.is_some();
+    let raw_params = params_block.map(|v| v.decls.clone()).unwrap_or_default();
+    let explicit_param_prefix = params_block.map(|v| v.deferred_prefix.as_str());
+    let params_block_is_kins = matches!(explicit_param_prefix, Some("kin"));
     let mut events = match program.block(BlockKind::Events) {
         Some(Block::Events(v)) => v.events.clone(),
         _ => Vec::new(),
@@ -6242,17 +6720,14 @@ pub fn analyze_with_options(
         block_pre = exec.pre.clone();
         block_post = exec.post.clone();
         nested_block_sample = exec.sample.clone();
-        if nested_block_sample.is_none() {
-            errors.push(Diagnostic::semantic_span(
-                "block section must include nested 'sample' block",
-                exec.loc.as_ref(),
-            ));
-        }
     }
+    let block_section_without_sample =
+        program.block(BlockKind::Block).is_some() && nested_block_sample.is_none();
     let top_sample = match program.block(BlockKind::Sample) {
         Some(Block::Sample(v)) => Some(v.clone()),
         _ => None,
     };
+    let has_top_sample_block = top_sample.is_some();
     let sample_conflict_loc = top_sample
         .as_ref()
         .and_then(|sample| sample.loc.cloned())
@@ -6295,8 +6770,13 @@ pub fn analyze_with_options(
         && program.block(BlockKind::Block).is_none()
         && requires_entry_sample(&program)
     {
+        let missing_entry_message = if control_outs_explicit && !audio_outs_explicit {
+            "missing required 'block' section"
+        } else {
+            "missing required 'sample' block"
+        };
         errors.push(Diagnostic::semantic_span(
-            "missing required 'sample' block",
+            missing_entry_message,
             missing_sample_loc,
         ));
     }
@@ -6641,21 +7121,125 @@ pub fn analyze_with_options(
 
     check_local_port_duplicates(&raw_ins, "input", &mut errors);
     check_local_port_duplicates(&raw_outs, "output", &mut errors);
+    check_local_port_duplicates(&raw_kouts, "control output", &mut errors);
+    check_local_param_duplicates(&raw_params, &mut errors);
+    check_control_output_reserved_audio_names(&raw_kouts, "control output", &mut errors);
 
     let inferred_io = infer_numbered_io_from_sample(&sample);
+    let mut inferred_owner_names = IoInference::default();
+    for stmt in &init {
+        infer_io_from_stmt(stmt, &mut inferred_owner_names);
+    }
+    for stmt in &block_pre {
+        infer_io_from_stmt(stmt, &mut inferred_owner_names);
+    }
+    for stmt in &sample {
+        infer_io_from_stmt(stmt, &mut inferred_owner_names);
+    }
+    for stmt in &block_post {
+        infer_io_from_stmt(stmt, &mut inferred_owner_names);
+    }
+    for event in &events {
+        for stmt in &event.body {
+            infer_io_from_stmt(stmt, &mut inferred_owner_names);
+        }
+    }
+    let inferred_param_prefix = match explicit_param_prefix {
+        Some("kin") => {
+            if inferred_owner_names.max_param > 0 {
+                errors.push(Diagnostic::semantic_span(
+                    "implicit paramN parameters cannot be mixed with a kins block; use kinN names with kins",
+                    Span::ZERO,
+                ));
+            }
+            "kin"
+        }
+        Some(_) => {
+            if inferred_owner_names.max_kin > 0 {
+                errors.push(Diagnostic::semantic_span(
+                    "implicit kinN parameters cannot be mixed with a params block; use paramN names with params",
+                    Span::ZERO,
+                ));
+            }
+            "param"
+        }
+        None if inferred_owner_names.max_kin > 0 && inferred_owner_names.max_param == 0 => "kin",
+        None => {
+            if inferred_owner_names.max_kin > 0 && inferred_owner_names.max_param > 0 {
+                errors.push(Diagnostic::semantic_span(
+                    "implicit kinN and paramN parameters cannot be mixed in the same top-level program",
+                    Span::ZERO,
+                ));
+            }
+            "param"
+        }
+    };
+    let inferred_param_max = if inferred_param_prefix == "kin" {
+        inferred_owner_names.max_kin
+    } else {
+        inferred_owner_names.max_param
+    };
+    let params =
+        normalize_numbered_param_decls(&raw_params, inferred_param_prefix, inferred_param_max);
+
     let ins_ports = normalize_numbered_port_decls(&raw_ins, "in", inferred_io.max_in);
-    let outs_ports = normalize_numbered_port_decls(&raw_outs, "out", inferred_io.max_out);
+    let mut audio_out_ports = normalize_numbered_port_decls(&raw_outs, "out", inferred_io.max_out);
+    for port in &mut audio_out_ports {
+        port.output_timing = Some(OutputTiming::Sample);
+    }
+    let mut control_out_ports =
+        normalize_numbered_port_decls(&raw_kouts, "kout", inferred_owner_names.max_kout);
+    for port in &mut control_out_ports {
+        port.output_timing = Some(OutputTiming::Block);
+    }
+    check_port_name_conflicts(
+        &audio_out_ports,
+        "output",
+        &control_out_ports,
+        "control output",
+        &mut errors,
+    );
     let input_declared_names = ins_ports.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
-    let output_declared_names = outs_ports
+    let mut output_declared_names = audio_out_ports
         .iter()
         .map(|p| p.name.clone())
         .collect::<Vec<_>>();
+    output_declared_names.extend(control_out_ports.iter().map(|p| p.name.clone()));
     let (ins, in_types, in_arrays, in_defaults, in_ranges) =
         expand_port_decls(&ins_ports, "input", options, &mut errors);
     let (outs, out_types, out_arrays, _out_defaults, _out_ranges) =
-        expand_port_decls(&outs_ports, "output", options, &mut errors);
+        expand_port_decls(&audio_out_ports, "output", options, &mut errors);
+    let (
+        control_outs,
+        control_out_types,
+        control_out_arrays,
+        _control_out_defaults,
+        _control_out_ranges,
+    ) = expand_port_decls(&control_out_ports, "control output", options, &mut errors);
+    if !outs.is_empty() && block_section_without_sample && !has_top_sample_block {
+        let block_loc = program
+            .block(BlockKind::Block)
+            .map(Block::loc)
+            .unwrap_or_default();
+        errors.push(Diagnostic::semantic_span(
+            "block section with sample-rate outputs must include nested 'sample' block",
+            block_loc,
+        ));
+    }
 
     let (typed_params, param_arrays) = coerce_params(&params, options, &mut errors);
+    let port_index_params = uniform_port_index_info_from_types(
+        params_explicit,
+        typed_params.len(),
+        typed_params.iter().map(|param| param.ty),
+    );
+    let mut dynamic_param_array_names = HashSet::<String>::new();
+    if port_index_params.is_some() {
+        dynamic_param_array_names.insert("params".to_owned());
+        if params_block_is_kins {
+            dynamic_param_array_names.insert("kins".to_owned());
+        }
+    }
     let typed_buffers = coerce_buffers(&buffers, options, &mut errors);
     let param_types = typed_params
         .iter()
@@ -7535,6 +8119,41 @@ pub fn analyze_with_options(
 
     let input_names: HashSet<String> = ins.iter().cloned().collect();
     let output_names: HashSet<String> = outs.iter().cloned().collect();
+    let control_output_names: HashSet<String> = control_outs.iter().cloned().collect();
+    let all_output_names = output_names
+        .union(&control_output_names)
+        .cloned()
+        .collect::<HashSet<_>>();
+    let all_output_array_names = out_arrays
+        .keys()
+        .chain(control_out_arrays.keys())
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut io_surface_array_names = in_arrays
+        .keys()
+        .chain(all_output_array_names.iter())
+        .cloned()
+        .collect::<HashSet<_>>();
+    if ins_explicit && !ins.is_empty() {
+        io_surface_array_names.insert("ins".to_owned());
+    }
+    if audio_outs_explicit && !outs.is_empty() {
+        io_surface_array_names.insert("outs".to_owned());
+    }
+    if control_outs_explicit && !control_outs.is_empty() {
+        io_surface_array_names.insert("kouts".to_owned());
+    }
+    let mut io_surface_names = input_names
+        .union(&all_output_names)
+        .cloned()
+        .collect::<HashSet<_>>();
+    io_surface_names.extend(io_surface_array_names.iter().cloned());
+    let mut all_output_types = out_types.clone();
+    all_output_types.extend(
+        control_out_types
+            .iter()
+            .map(|(name, ty)| (name.clone(), *ty)),
+    );
     let param_names: HashSet<String> = typed_params.iter().map(|p| p.name.clone()).collect();
     let def_return_types = infer_def_return_types(&defs, &fn_signatures, &struct_defs);
     validate_def_return_types(
@@ -7569,8 +8188,8 @@ pub fn analyze_with_options(
     set_declared_symbol_types(
         &mut state_scalars,
         &mut declared_symbols,
-        &output_names,
-        &out_types,
+        &all_output_names,
+        &all_output_types,
         DeclaredScalarSymbolKind::Output,
     );
     set_declared_symbol_types(
@@ -7614,8 +8233,6 @@ pub fn analyze_with_options(
     let init_locals = HashSet::new();
     let init_local_aliases = LocalAliasTypes::new();
     let mut init_local_data_aliases = HashMap::new();
-    seed_top_level_array_aliases(&mut init_local_data_aliases, &in_arrays, false);
-    seed_top_level_array_aliases(&mut init_local_data_aliases, &out_arrays, false);
     seed_top_level_array_aliases(&mut init_local_data_aliases, &param_arrays, false);
     seed_top_level_array_aliases(&mut init_local_data_aliases, &const_array_infos, false);
 
@@ -7629,12 +8246,17 @@ pub fn analyze_with_options(
             _ => None,
         })
         .collect::<HashSet<_>>();
+    let no_proc_event_names = HashSet::<String>::new();
     let init_ctx = InitAnalysisCtx {
         context_label: "top-level",
         common: ScopeAnalysisCtx {
             policy: ScopePolicy::Init,
             input_names: &input_names,
-            output_names: &output_names,
+            output_names: &all_output_names,
+            output_array_names: &all_output_array_names,
+            io_surface_names: &io_surface_names,
+            io_surface_array_names: &io_surface_array_names,
+            dynamic_param_array_names: &dynamic_param_array_names,
             param_names: &param_names,
             struct_defs: &struct_defs,
             fn_signatures: &fn_signatures,
@@ -7643,6 +8265,8 @@ pub fn analyze_with_options(
             port_index_ins: None,
             port_index_outs: None,
             port_index_params: None,
+            port_index_kins: None,
+            proc_event_names: &no_proc_event_names,
         },
         init_default_ty,
         proc_resolution: None,
@@ -7668,15 +8292,37 @@ pub fn analyze_with_options(
         known_scalars: _init_known_scalars,
         local_aliases: _init_local_aliases,
         local_array_aliases: _init_local_data_aliases,
-        declared_symbols,
+        mut declared_symbols,
         mut state_scalars,
-        state_arrays,
+        mut state_arrays,
         state_array_struct_roots,
         struct_instances,
         nested_proc_arrays,
         state_tuples,
         ..
     } = init_st;
+    let control_out_array_slots = control_out_arrays
+        .iter()
+        .flat_map(|(name, info)| (0..info.len).map(move |idx| format!("{name}[{idx}]")))
+        .collect::<HashSet<_>>();
+    for name in &control_outs {
+        if control_out_array_slots.contains(name) {
+            continue;
+        }
+        let ty = *control_out_types.get(name).unwrap_or(&PrimitiveType::F32);
+        state_scalars.insert(name.clone(), ty);
+    }
+    for (name, info) in &control_out_arrays {
+        state_arrays.insert(name.clone(), info.len);
+        insert_declared_symbol(
+            &mut state_scalars,
+            &mut declared_symbols,
+            name.clone(),
+            DeclaredSymbolInfo::DataArray {
+                elem_ty: info.elem_ty,
+            },
+        );
+    }
     let init_writable_roots = collect_runtime_state_roots(&state_scalars, &state_arrays);
     let empty_nested_proc_instances = HashMap::<String, ProcNestedState>::new();
 
@@ -7696,21 +8342,29 @@ pub fn analyze_with_options(
     );
 
     let port_index_ins = uniform_port_index_info_from_names(ins_explicit, &ins, &in_types);
-    let port_index_outs = uniform_port_index_info_from_names(outs_explicit, &outs, &out_types);
-    let port_index_params = uniform_port_index_info_from_types(
-        params_explicit,
-        typed_params.len(),
-        typed_params.iter().map(|param| param.ty),
+    let sample_port_index_outs =
+        uniform_port_index_info_from_names(audio_outs_explicit, &outs, &out_types);
+    let block_port_index_outs = uniform_port_index_info_from_names(
+        control_outs_explicit,
+        &control_outs,
+        &control_out_types,
     );
+    let port_index_kins = if params_block_is_kins {
+        port_index_params
+    } else {
+        None
+    };
 
     let typed_events = coerce_typed_events(&events, true, "top-level", options, &mut errors);
     let analysis_plan_seeds = build_top_level_owner_analysis_plan_seeds(
         &param_names,
         &input_names,
         &output_names,
+        &control_output_names,
         &state_scalars,
         &in_arrays,
         &out_arrays,
+        &control_out_arrays,
         &param_arrays,
         &const_array_infos,
     );
@@ -7735,18 +8389,26 @@ pub fn analyze_with_options(
                 },
                 RuntimeScopePlanInputs {
                     sample_input_names: &input_names,
+                    block_output_names: &control_output_names,
                     sample_output_names: &output_names,
+                    output_array_names: &all_output_array_names,
+                    io_surface_names: &io_surface_names,
+                    io_surface_array_names: &io_surface_array_names,
+                    dynamic_param_array_names: &dynamic_param_array_names,
                     param_names: &param_names,
                     struct_defs: &struct_defs,
                     fn_signatures: &fn_signatures,
                     fn_return_types: &def_return_types,
                     options,
                     port_index_ins,
-                    port_index_outs,
+                    block_port_index_outs,
+                    sample_port_index_outs,
                     port_index_params,
+                    port_index_kins,
                     registration_input_names: &input_names,
-                    registration_output_names: &output_names,
+                    registration_output_names: &all_output_names,
                     registration_param_names: &param_names,
+                    proc_event_names: &no_proc_event_names,
                 },
             ),
             &mut errors,
@@ -7760,10 +8422,14 @@ pub fn analyze_with_options(
                     typed_events: &typed_events,
                     init_writable_roots: &init_writable_roots,
                     input_names: &input_names,
-                    output_names: &output_names,
+                    output_names: &all_output_names,
+                    output_array_names: &all_output_array_names,
+                    io_surface_names: &io_surface_names,
+                    io_surface_array_names: &io_surface_array_names,
+                    dynamic_param_array_names: &dynamic_param_array_names,
                     param_names: &param_names,
                     validation_input_names: &input_names,
-                    validation_output_names: &output_names,
+                    validation_output_names: &all_output_names,
                     struct_defs: &struct_defs,
                     fn_signatures: &fn_signatures,
                     fn_return_types: &def_return_types,
@@ -7771,6 +8437,8 @@ pub fn analyze_with_options(
                     port_index_ins: None,
                     port_index_outs: None,
                     port_index_params: None,
+                    port_index_kins: None,
+                    proc_event_names: &no_proc_event_names,
                 },
             ),
             &mut errors,
@@ -7787,6 +8455,15 @@ pub fn analyze_with_options(
     let current_declared_symbols = &declared_symbols;
     let mut inferred_array_bindings = HashMap::<String, InferredArrayParam>::new();
     for (name, info) in &out_arrays {
+        inferred_array_bindings.insert(
+            name.clone(),
+            InferredArrayParam {
+                elem_ty: info.elem_ty,
+                len: info.len,
+            },
+        );
+    }
+    for (name, info) in &control_out_arrays {
         inferred_array_bindings.insert(
             name.clone(),
             InferredArrayParam {
@@ -7890,6 +8567,17 @@ pub fn analyze_with_options(
         reachable_def_names.contains(&def.name)
             || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs)
     }) {
+        let def_param_names = def
+            .params
+            .iter()
+            .map(|p| p.name.clone())
+            .collect::<HashSet<_>>();
+        let mut def_io_surface_names = io_surface_names.clone();
+        let mut def_io_surface_array_names = io_surface_array_names.clone();
+        for param in &def_param_names {
+            def_io_surface_names.remove(param);
+            def_io_surface_array_names.remove(param);
+        }
         let fn_known = def
             .params
             .iter()
@@ -8167,6 +8855,10 @@ pub fn analyze_with_options(
                 policy: ScopePolicy::Def,
                 input_names: &def_global_inputs,
                 output_names: &def_global_outputs,
+                output_array_names: &all_output_array_names,
+                io_surface_names: &def_io_surface_names,
+                io_surface_array_names: &def_io_surface_array_names,
+                dynamic_param_array_names: &dynamic_param_array_names,
                 param_names: &def_global_params,
                 struct_defs: &def_struct_defs,
                 fn_signatures: &fn_signatures,
@@ -8175,6 +8867,8 @@ pub fn analyze_with_options(
                 port_index_ins: None,
                 port_index_outs: None,
                 port_index_params: None,
+                port_index_kins: None,
+                proc_event_names: &no_proc_event_names,
             },
             locals: &fn_locals,
             declared_symbols: &def_declared_symbols,
@@ -8256,9 +8950,12 @@ pub fn analyze_with_options(
         reject_non_sample_proc_operator_calls(
             &init,
             &block_pre,
+            &sample,
             &block_post,
             &typed_events,
             &defs,
+            &proc_api,
+            &lowering_shapes,
             &mut errors,
         );
         if !errors.is_empty() {
@@ -8313,13 +9010,16 @@ pub fn analyze_with_options(
         Ok(TypedProgram {
             ins,
             outs,
+            control_outs,
             in_types,
             out_types,
+            control_out_types,
             param_types,
             in_defaults,
             in_ranges,
             in_arrays,
             out_arrays,
+            control_out_arrays,
             param_arrays,
             const_arrays,
             params: typed_params,
@@ -8340,6 +9040,8 @@ pub fn analyze_with_options(
             array_vars: typed_data,
             array_struct_roots: typed_data_roots,
             ins_explicit,
+            audio_outs_explicit,
+            control_outs_explicit,
             outs_explicit,
             params_explicit,
         })
@@ -8354,6 +9056,7 @@ fn requires_entry_sample(program: &Program) -> bool {
             block.kind(),
             BlockKind::Ins
                 | BlockKind::Outs
+                | BlockKind::KOuts
                 | BlockKind::Params
                 | BlockKind::Events
                 | BlockKind::Buffers
@@ -8558,75 +9261,153 @@ fn collect_reachable_def_names(
     reachable
 }
 
-fn is_proc_sample_call_name(name: &str) -> bool {
-    name.ends_with(PROC_STEP_FN_SUFFIX) || name.contains(PROC_CALL_OUT_FN_PREFIX)
+fn def_is_block_generated_root(name: &str) -> bool {
+    name.ends_with(PROC_BLOCK_PRE_FN_SUFFIX) || name.ends_with(PROC_BLOCK_POST_FN_SUFFIX)
 }
 
-fn def_is_non_sample_generated_root(name: &str) -> bool {
-    name.ends_with(PROC_INIT_FN_SUFFIX)
-        || name.ends_with(PROC_BLOCK_PRE_FN_SUFFIX)
-        || name.ends_with(PROC_BLOCK_POST_FN_SUFFIX)
-        || name.contains(PROC_EVENT_FN_PREFIX)
+fn def_is_neither_phase_generated_root(name: &str) -> bool {
+    name.ends_with(PROC_INIT_FN_SUFFIX) || name.contains(PROC_EVENT_FN_PREFIX)
 }
 
-fn collect_proc_sample_call_diags_from_expr(expr: &Expr, out: &mut Vec<DiagCtx>) {
+fn proc_name_for_lowered_proc_call(name: &str) -> Option<&str> {
+    if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
+        return Some(step_proc);
+    }
+    let (call_proc, out_idx_raw) = name.rsplit_once(PROC_CALL_OUT_FN_PREFIX)?;
+    out_idx_raw.parse::<usize>().ok()?;
+    Some(call_proc)
+}
+
+fn lowered_proc_call_timing(
+    name: &str,
+    proc_api: &HashMap<String, ProcApi>,
+    generated_proc_call_timing: &HashMap<String, OutputTiming>,
+) -> Option<OutputTiming> {
+    if let Some(timing) = generated_proc_call_timing.get(name).copied() {
+        return Some(timing);
+    }
+    let proc_name = proc_name_for_lowered_proc_call(name)?;
+    proc_api.get(proc_name).map(|api| api.outputs.timing)
+}
+
+fn generated_proc_call_timing_map(
+    proc_api: &HashMap<String, ProcApi>,
+    lowering_shapes: &HashMap<String, ProcLoweringShape>,
+) -> HashMap<String, OutputTiming> {
+    let mut out = HashMap::<String, OutputTiming>::new();
+    for (owner_proc, shape) in lowering_shapes {
+        for (nested_var, nested) in &shape.state.nested_procs {
+            let Some(api) = proc_api.get(&nested.proc_name) else {
+                continue;
+            };
+            out.insert(
+                nested_step_fn_name(owner_proc, nested_var),
+                api.outputs.timing,
+            );
+            for out_idx in 0..api.outputs.names.len() {
+                out.insert(
+                    nested_call_out_fn_name(owner_proc, nested_var, out_idx),
+                    api.outputs.timing,
+                );
+            }
+        }
+    }
+    out
+}
+
+fn collect_proc_call_diags_from_expr(
+    expr: &Expr,
+    proc_api: &HashMap<String, ProcApi>,
+    generated_proc_call_timing: &HashMap<String, OutputTiming>,
+    out: &mut Vec<(DiagCtx, OutputTiming)>,
+) {
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
-                collect_proc_sample_call_diags_from_expr(value, out);
+                collect_proc_call_diags_from_expr(value, proc_api, generated_proc_call_timing, out);
             }
         }
-        Expr::Index { index, .. } => collect_proc_sample_call_diags_from_expr(index, out),
+        Expr::Index { index, .. } => {
+            collect_proc_call_diags_from_expr(index, proc_api, generated_proc_call_timing, out)
+        }
         Expr::Slice { start, end, .. } => {
             if let Some(start) = start {
-                collect_proc_sample_call_diags_from_expr(start, out);
+                collect_proc_call_diags_from_expr(start, proc_api, generated_proc_call_timing, out);
             }
             if let Some(end) = end {
-                collect_proc_sample_call_diags_from_expr(end, out);
+                collect_proc_call_diags_from_expr(end, proc_api, generated_proc_call_timing, out);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
-            collect_proc_sample_call_diags_from_expr(&spec.size, out);
+            collect_proc_call_diags_from_expr(
+                &spec.size,
+                proc_api,
+                generated_proc_call_timing,
+                out,
+            );
             if let Some(values) = init {
                 for value in values {
-                    collect_proc_sample_call_diags_from_expr(value, out);
+                    collect_proc_call_diags_from_expr(
+                        value,
+                        proc_api,
+                        generated_proc_call_timing,
+                        out,
+                    );
                 }
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            collect_proc_sample_call_diags_from_expr(lhs, out);
-            collect_proc_sample_call_diags_from_expr(rhs, out);
+            collect_proc_call_diags_from_expr(lhs, proc_api, generated_proc_call_timing, out);
+            collect_proc_call_diags_from_expr(rhs, proc_api, generated_proc_call_timing, out);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                collect_proc_sample_call_diags_from_expr(arg, out);
+                collect_proc_call_diags_from_expr(arg, proc_api, generated_proc_call_timing, out);
             }
         }
         Expr::UserCall {
             name, args, loc, ..
         } => {
-            if is_proc_sample_call_name(name) {
-                out.push(DiagCtx::new(*loc));
+            if let Some(timing) =
+                lowered_proc_call_timing(name, proc_api, generated_proc_call_timing)
+            {
+                out.push((DiagCtx::new(*loc), timing));
             }
             for arg in args {
-                collect_proc_sample_call_diags_from_expr(&arg.expr, out);
+                collect_proc_call_diags_from_expr(
+                    &arg.expr,
+                    proc_api,
+                    generated_proc_call_timing,
+                    out,
+                );
             }
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_proc_sample_call_diags_from_expr(expr, out);
+            collect_proc_call_diags_from_expr(expr, proc_api, generated_proc_call_timing, out);
         }
     }
 }
 
-fn collect_proc_sample_call_diags_from_stmts(stmts: &[Stmt], out: &mut Vec<DiagCtx>) {
+fn collect_proc_call_diags_from_stmts(
+    stmts: &[Stmt],
+    proc_api: &HashMap<String, ProcApi>,
+    generated_proc_call_timing: &HashMap<String, OutputTiming>,
+    out: &mut Vec<(DiagCtx, OutputTiming)>,
+) {
     for stmt in stmts {
         match stmt {
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Const { decl, .. } => collect_proc_call_diags_from_expr(
+                &decl.expr,
+                proc_api,
+                generated_proc_call_timing,
+                out,
+            ),
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                collect_proc_sample_call_diags_from_expr(expr, out);
+                collect_proc_call_diags_from_expr(expr, proc_api, generated_proc_call_timing, out);
             }
             Stmt::If {
                 cond,
@@ -8634,9 +9415,19 @@ fn collect_proc_sample_call_diags_from_stmts(stmts: &[Stmt], out: &mut Vec<DiagC
                 else_branch,
                 ..
             } => {
-                collect_proc_sample_call_diags_from_expr(cond, out);
-                collect_proc_sample_call_diags_from_stmts(then_branch, out);
-                collect_proc_sample_call_diags_from_stmts(else_branch, out);
+                collect_proc_call_diags_from_expr(cond, proc_api, generated_proc_call_timing, out);
+                collect_proc_call_diags_from_stmts(
+                    then_branch,
+                    proc_api,
+                    generated_proc_call_timing,
+                    out,
+                );
+                collect_proc_call_diags_from_stmts(
+                    else_branch,
+                    proc_api,
+                    generated_proc_call_timing,
+                    out,
+                );
             }
             Stmt::For {
                 start,
@@ -8645,48 +9436,136 @@ fn collect_proc_sample_call_diags_from_stmts(stmts: &[Stmt], out: &mut Vec<DiagC
                 body,
                 ..
             } => {
-                collect_proc_sample_call_diags_from_expr(start, out);
-                collect_proc_sample_call_diags_from_expr(end, out);
+                collect_proc_call_diags_from_expr(start, proc_api, generated_proc_call_timing, out);
+                collect_proc_call_diags_from_expr(end, proc_api, generated_proc_call_timing, out);
                 if let Some(step) = step {
-                    collect_proc_sample_call_diags_from_expr(step, out);
+                    collect_proc_call_diags_from_expr(
+                        step,
+                        proc_api,
+                        generated_proc_call_timing,
+                        out,
+                    );
                 }
-                collect_proc_sample_call_diags_from_stmts(body, out);
+                collect_proc_call_diags_from_stmts(body, proc_api, generated_proc_call_timing, out);
             }
             Stmt::While { cond, body, .. } => {
-                collect_proc_sample_call_diags_from_expr(cond, out);
-                collect_proc_sample_call_diags_from_stmts(body, out);
+                collect_proc_call_diags_from_expr(cond, proc_api, generated_proc_call_timing, out);
+                collect_proc_call_diags_from_stmts(body, proc_api, generated_proc_call_timing, out);
             }
         }
     }
 }
 
-fn push_non_sample_proc_call_errors(stmts: &[Stmt], context: &str, errors: &mut Vec<Diagnostic>) {
-    let mut diags = Vec::<DiagCtx>::new();
-    collect_proc_sample_call_diags_from_stmts(stmts, &mut diags);
-    for diag in diags {
+fn push_proc_call_phase_errors(
+    stmts: &[Stmt],
+    context: &str,
+    allowed: Option<OutputTiming>,
+    proc_api: &HashMap<String, ProcApi>,
+    generated_proc_call_timing: &HashMap<String, OutputTiming>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut diags = Vec::<(DiagCtx, OutputTiming)>::new();
+    collect_proc_call_diags_from_stmts(stmts, proc_api, generated_proc_call_timing, &mut diags);
+    for (diag, timing) in diags {
+        if Some(timing) == allowed {
+            continue;
+        }
+        let required = match timing {
+            OutputTiming::Sample => "sample",
+            OutputTiming::Block => "block",
+        };
         push_semantic(
             diag,
             errors,
-            format!(
-                "proc operator '()' is only allowed in sample; found non-sample use in {context}"
-            ),
+            format!("proc operator '()' for {required}-rate proc is only allowed in {required}; found use in {context}"),
         );
     }
+}
+
+fn collect_reachable_defs_for_phase(
+    roots: &[&[Stmt]],
+    generated_root: impl Fn(&str) -> bool,
+    defs: &[FunctionDef],
+    def_names: &HashSet<String>,
+    def_map: &HashMap<String, &FunctionDef>,
+) -> HashSet<String> {
+    let mut pending = Vec::<String>::new();
+    let mut seen_pending = HashSet::<String>::new();
+    for root in roots {
+        seed_called_typed_defs_from_stmts(root, def_names, &mut pending, &mut seen_pending);
+    }
+    for def in defs {
+        if generated_root(&def.name) && seen_pending.insert(def.name.clone()) {
+            pending.push(def.name.clone());
+        }
+    }
+
+    let mut reachable = HashSet::<String>::new();
+    while let Some(name) = pending.pop() {
+        if !reachable.insert(name.clone()) {
+            continue;
+        }
+        let Some(def) = def_map.get(&name) else {
+            continue;
+        };
+        seed_called_typed_defs_from_stmts(&def.body, def_names, &mut pending, &mut seen_pending);
+    }
+    reachable
 }
 
 fn reject_non_sample_proc_operator_calls(
     init: &[Stmt],
     block_pre: &[Stmt],
+    sample: &[Stmt],
     block_post: &[Stmt],
     events: &[TypedEvent],
     defs: &[FunctionDef],
+    proc_api: &HashMap<String, ProcApi>,
+    lowering_shapes: &HashMap<String, ProcLoweringShape>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    push_non_sample_proc_call_errors(init, "init", errors);
-    push_non_sample_proc_call_errors(block_pre, "block pre", errors);
-    push_non_sample_proc_call_errors(block_post, "block post", errors);
+    let generated_proc_call_timing = generated_proc_call_timing_map(proc_api, lowering_shapes);
+    push_proc_call_phase_errors(
+        init,
+        "init",
+        None,
+        proc_api,
+        &generated_proc_call_timing,
+        errors,
+    );
+    push_proc_call_phase_errors(
+        block_pre,
+        "block pre",
+        Some(OutputTiming::Block),
+        proc_api,
+        &generated_proc_call_timing,
+        errors,
+    );
+    push_proc_call_phase_errors(
+        sample,
+        "sample",
+        Some(OutputTiming::Sample),
+        proc_api,
+        &generated_proc_call_timing,
+        errors,
+    );
+    push_proc_call_phase_errors(
+        block_post,
+        "block post",
+        Some(OutputTiming::Block),
+        proc_api,
+        &generated_proc_call_timing,
+        errors,
+    );
     for event in events {
-        push_non_sample_proc_call_errors(&event.body, &format!("event '{}'", event.name), errors);
+        push_proc_call_phase_errors(
+            &event.body,
+            &format!("event '{}'", event.name),
+            None,
+            proc_api,
+            &generated_proc_call_timing,
+            errors,
+        );
     }
 
     let def_names = defs
@@ -8697,52 +9576,79 @@ fn reject_non_sample_proc_operator_calls(
         .iter()
         .map(|def| (def.name.clone(), def))
         .collect::<HashMap<_, _>>();
-    let mut defs_with_proc_calls = HashMap::<String, Vec<DiagCtx>>::new();
+    let mut defs_with_proc_calls = HashMap::<String, Vec<(DiagCtx, OutputTiming)>>::new();
     for def in defs {
-        let mut proc_call_diags = Vec::<DiagCtx>::new();
-        collect_proc_sample_call_diags_from_stmts(&def.body, &mut proc_call_diags);
+        let mut proc_call_diags = Vec::<(DiagCtx, OutputTiming)>::new();
+        collect_proc_call_diags_from_stmts(
+            &def.body,
+            proc_api,
+            &generated_proc_call_timing,
+            &mut proc_call_diags,
+        );
         if !proc_call_diags.is_empty() {
             defs_with_proc_calls.insert(def.name.clone(), proc_call_diags);
         }
     }
 
-    let mut pending = Vec::<String>::new();
-    let mut seen_pending = HashSet::<String>::new();
-    seed_called_typed_defs_from_stmts(init, &def_names, &mut pending, &mut seen_pending);
-    seed_called_typed_defs_from_stmts(block_pre, &def_names, &mut pending, &mut seen_pending);
-    seed_called_typed_defs_from_stmts(block_post, &def_names, &mut pending, &mut seen_pending);
+    let block_reachable_defs = collect_reachable_defs_for_phase(
+        &[block_pre, block_post],
+        |name| {
+            def_is_block_generated_root(name)
+                || lowered_proc_call_timing(name, proc_api, &generated_proc_call_timing)
+                    == Some(OutputTiming::Block)
+        },
+        defs,
+        &def_names,
+        &def_map,
+    );
+    let sample_reachable_defs = collect_reachable_defs_for_phase(
+        &[sample],
+        |name| {
+            lowered_proc_call_timing(name, proc_api, &generated_proc_call_timing)
+                == Some(OutputTiming::Sample)
+        },
+        defs,
+        &def_names,
+        &def_map,
+    );
+    let mut neither_roots = Vec::<&[Stmt]>::new();
+    neither_roots.push(init);
     for event in events {
-        seed_called_typed_defs_from_stmts(&event.body, &def_names, &mut pending, &mut seen_pending);
+        neither_roots.push(&event.body);
     }
-    for def in defs {
-        if def_is_non_sample_generated_root(&def.name) && seen_pending.insert(def.name.clone()) {
-            pending.push(def.name.clone());
-        }
-    }
-
-    let mut non_sample_reachable_defs = HashSet::<String>::new();
-    while let Some(name) = pending.pop() {
-        if !non_sample_reachable_defs.insert(name.clone()) {
-            continue;
-        }
-        let Some(def) = def_map.get(&name) else {
-            continue;
-        };
-        seed_called_typed_defs_from_stmts(&def.body, &def_names, &mut pending, &mut seen_pending);
-    }
+    let neither_reachable_defs = collect_reachable_defs_for_phase(
+        &neither_roots,
+        def_is_neither_phase_generated_root,
+        defs,
+        &def_names,
+        &def_map,
+    );
 
     for (def_name, proc_call_diags) in defs_with_proc_calls {
-        if !non_sample_reachable_defs.contains(&def_name) {
-            continue;
-        }
-        for diag in proc_call_diags {
+        for (diag, timing) in proc_call_diags {
+            let allowed = match timing {
+                OutputTiming::Sample => {
+                    sample_reachable_defs.contains(&def_name)
+                        && !block_reachable_defs.contains(&def_name)
+                        && !neither_reachable_defs.contains(&def_name)
+                }
+                OutputTiming::Block => {
+                    block_reachable_defs.contains(&def_name)
+                        && !sample_reachable_defs.contains(&def_name)
+                        && !neither_reachable_defs.contains(&def_name)
+                }
+            };
+            if allowed {
+                continue;
+            }
+            let required = match timing {
+                OutputTiming::Sample => "sample",
+                OutputTiming::Block => "block",
+            };
             push_semantic(
                 diag,
                 errors,
-                format!(
-                    "proc operator '()' is only allowed in sample; call in '{}' is not provably sample-only",
-                    def_name
-                ),
+                format!("proc operator '()' for {required}-rate proc is only allowed in {required}; call in '{def_name}' is not provably {required}-only"),
             );
         }
     }

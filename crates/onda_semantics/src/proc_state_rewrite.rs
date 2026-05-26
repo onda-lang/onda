@@ -24,11 +24,18 @@ pub(crate) const INTERNAL_BUFFER_WRITE2_FN: &str = "__onda_buffer_write2";
 pub(crate) struct ProcApi {
     pub(crate) ins: Vec<ProcPortSpec>,
     pub(crate) params: HashMap<String, ProcParamSlotSpec>,
-    pub(crate) outs: Vec<String>,
+    pub(crate) has_bound_params: bool,
+    pub(crate) outputs: ProcOutputs,
     pub(crate) events: HashMap<String, ProcEventSpec>,
     pub(crate) buffers: Vec<ProcBufferSpec>,
     pub(crate) has_block: bool,
     pub(crate) sample_oversample_factor: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProcOutputs {
+    pub(crate) names: Vec<String>,
+    pub(crate) timing: OutputTiming,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +52,7 @@ pub(crate) struct ProcParamSlotSpec {
     pub(crate) ty: PrimitiveType,
     pub(crate) default: Option<Expr>,
     pub(crate) range: Option<TypedValueRange>,
+    pub(crate) bind: Option<String>,
 }
 
 #[derive(Debug, Clone)]

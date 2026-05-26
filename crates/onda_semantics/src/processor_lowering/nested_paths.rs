@@ -8,7 +8,7 @@ pub(super) fn nested_init_fn_name(owner_proc: &str, nested_var: &str) -> String 
     format!("{owner_proc}.__proc_nested_{nested_var}_init")
 }
 
-pub(super) fn nested_step_fn_name(owner_proc: &str, nested_var: &str) -> String {
+pub(crate) fn nested_step_fn_name(owner_proc: &str, nested_var: &str) -> String {
     format!("{owner_proc}.__proc_nested_{nested_var}_step")
 }
 
@@ -24,7 +24,7 @@ pub(super) fn nested_block_post_fn_name(owner_proc: &str, nested_var: &str) -> S
     format!("{owner_proc}.__proc_nested_{nested_var}_block_post")
 }
 
-pub(super) fn nested_call_out_fn_name(
+pub(crate) fn nested_call_out_fn_name(
     owner_proc: &str,
     nested_var: &str,
     out_idx: usize,

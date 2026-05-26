@@ -4830,6 +4830,853 @@ fn typed_widening_assignment_compiles_and_runs() {
 
 #[test]
 
+fn proc_param_bind_hooks_compile_and_run() {
+    let frames = 4;
+    let cases = [
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  v = Voice(gain = 4.0)
+sample:
+  out1 = v()
+"#,
+            2.0,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  v = Voice(gain = 0.0)
+  v.gain = 0.25
+sample:
+  out1 = v()
+"#,
+            0.5,
+        ),
+        (
+            r#"
+proc Voice<T>:
+  params:
+    gain: T = 0.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = f32(gain) * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  v = Voice<f64>(gain = f64(0.25))
+sample:
+  out1 = v()
+"#,
+            0.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def apply(x: f32):
+    cached = x * 2.0
+  def update():
+    apply(gain)
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  v = Voice(gain = 0.25)
+sample:
+  out1 = v()
+"#,
+            0.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voices: Voice[2] = Voice()
+  voices[0].gain = 0.25
+  voice = voices[1]
+  voice.gain = 0.5
+sample:
+  out1 = voices[0]() + voices[1]()
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voices: Voice[2] = Voice()
+  for i in 0..2:
+    voices[i].gain = f32(i + 1) * 0.25
+sample:
+  out1 = voices[0]() + voices[1]()
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  v = Voice(gain = 0.25)
+  v.init(gain = 0.75)
+sample:
+  out1 = v()
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    a = 0.0 => mark
+    b = 0.0 => mark
+  init:
+    updates = 0.0
+  def mark():
+    updates = updates + 1.0
+  outs:
+    out1
+  sample:
+    out1 = updates
+
+outs:
+  out1
+init:
+  v = Voice(a = 1.0, b = 2.0)
+  v.a = 3.0
+  v.b = 4.0
+sample:
+  out1 = v()
+"#,
+            4.0,
+        ),
+        (
+            r#"
+proc Child:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Parent:
+  params:
+    gain = 0.0 => update
+  init:
+    child = Child()
+  def update():
+    child.gain = gain
+  outs:
+    out1
+  sample:
+    out1 = child()
+
+outs:
+  out1
+init:
+  p = Parent(gain = 4.0)
+sample:
+  out1 = p()
+"#,
+            2.0,
+        ),
+        (
+            r#"
+proc Child:
+  params:
+    gain = 0.0 => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Parent:
+  params:
+    gain = 0.0 => update
+  init:
+    child = Child()
+  def push_child():
+    child.gain = gain
+  def update():
+    push_child()
+  outs:
+    out1
+  sample:
+    out1 = child()
+
+outs:
+  out1
+init:
+  p = Parent(gain = 0.25)
+sample:
+  out1 = p()
+"#,
+            0.5,
+        ),
+        (
+            r#"
+proc Leaf:
+  params:
+    gain = 0.0 => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 4.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Mid:
+  params:
+    gain = 0.0 => update
+  init:
+    leaf = Leaf()
+  def update():
+    leaf.gain = gain + 0.25
+  outs:
+    out1
+  sample:
+    out1 = leaf()
+
+proc Parent:
+  params:
+    gain = 0.0 => update
+  init:
+    mid = Mid()
+  def update():
+    mid.gain = gain + 0.25
+  outs:
+    out1
+  sample:
+    out1 = mid()
+
+outs:
+  out1
+init:
+  p = Parent(gain = 0.25)
+sample:
+  out1 = p()
+"#,
+            3.0,
+        ),
+        (
+            r#"
+proc Child:
+  params:
+    gain = 0.0 => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Parent:
+  params:
+    gain = 0.0 => update
+  init:
+    children: Child[2] = Child()
+  def update():
+    for i in 0..2:
+      children[i].gain = gain + f32(i) * 0.25
+  outs:
+    out1
+  sample:
+    out1 = children[0]() + children[1]()
+
+outs:
+  out1
+init:
+  p = Parent(gain = 0.25)
+sample:
+  out1 = p()
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  v = Voice()
+sample:
+  out1 = v(gain = 0.25)
+"#,
+            0.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  v = Voice()
+sample:
+  out1 = v(gain = 0.25) + v(gain = 0.5)
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Voice:
+  ins:
+    x = 0.0
+  params:
+    gain = 1.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = gain
+  outs:
+    out1
+  sample:
+    out1 = x + cached
+
+outs:
+  out1
+init:
+  v = Voice()
+sample:
+  v.gain = 1.0
+  out1 = v(v(), gain = 2.0)
+"#,
+            3.0,
+        ),
+        (
+            r#"
+proc Voice:
+  ins:
+    x = 0.0
+  params:
+    gain = 1.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = gain
+  outs:
+    out1
+  sample:
+    out1 = x + cached
+
+outs:
+  out1
+init:
+  v = Voice()
+sample:
+  v.gain = 1.0
+  out1 = v(gain = 2.0, x = v())
+"#,
+            4.0,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voices: Voice[2] = Voice()
+sample:
+  out1 = voices[0](gain = 0.25) + voices[1](gain = 0.5)
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voices: Voice[2] = Voice()
+sample:
+  mix = 0.0
+  for i in 0..2:
+    mix = mix + voices[i](gain = f32(i + 1) * 0.25)
+  out1 = mix
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 1.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = gain
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  v = Voice()
+sample:
+  v.gain = 1.0
+  out1 = v() + v(gain = 2.0)
+"#,
+            3.0,
+        ),
+        (
+            r#"
+proc Voice:
+  ins:
+    x = 0.0
+  params:
+    gain = 1.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = gain
+  outs:
+    out1
+  sample:
+    out1 = x + cached
+
+outs:
+  out1
+init:
+  v = Voice()
+sample:
+  out1 = v(x = 0.5, gain = 0.25)
+"#,
+            0.75,
+        ),
+        (
+            r#"
+proc Pair:
+  params:
+    gains: f32[2] = [0.0, 0.0]
+  outs:
+    out1
+  sample:
+    out1 = gains[0] + gains[1]
+
+outs:
+  out1
+init:
+  p = Pair()
+sample:
+  out1 = p(gains = [0.25, 0.75])
+"#,
+            1.0,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voices: Voice[2] = Voice()
+sample:
+  mix = 0.0
+  for i in 0..2:
+    voice = voices[i]
+    mix = mix + voice(gain = f32(i + 1) * 0.25)
+  out1 = mix
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Child:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Parent:
+  init:
+    child = Child()
+  outs:
+    out1
+  sample:
+    out1 = child(gain = 0.25)
+
+outs:
+  out1
+init:
+  p = Parent()
+sample:
+  out1 = p()
+"#,
+            0.5,
+        ),
+        (
+            r#"
+proc Child:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Parent:
+  init:
+    children: Child[2] = Child()
+  outs:
+    out1
+  sample:
+    mix = 0.0
+    for i in 0..2:
+      mix = mix + children[i](gain = f32(i + 1) * 0.25)
+    out1 = mix
+
+outs:
+  out1
+init:
+  p = Parent()
+sample:
+  out1 = p()
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Child:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Parent:
+  init:
+    children: Child[2] = Child()
+  outs:
+    out1
+  sample:
+    mix = 0.0
+    for i in 0..2:
+      child = children[i]
+      mix = mix + child(gain = f32(i + 1) * 0.25)
+    out1 = mix
+
+outs:
+  out1
+init:
+  p = Parent()
+sample:
+  out1 = p()
+"#,
+            1.5,
+        ),
+        (
+            r#"
+proc Leaf:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Mid:
+  params:
+    gain = 0.0
+  init:
+    leaf = Leaf()
+  outs:
+    out1
+  sample:
+    out1 = leaf(gain = gain)
+
+proc Parent:
+  init:
+    mid = Mid()
+  outs:
+    out1
+  sample:
+    mid.gain = 0.25
+    out1 = mid()
+
+outs:
+  out1
+init:
+  p = Parent()
+sample:
+  out1 = p()
+"#,
+            0.5,
+        ),
+        (
+            r#"
+proc Child:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+proc Parent:
+  params:
+    gain = 0.0 => update
+  init:
+    children: Child[2] = Child()
+  def update():
+    for i in 0..2:
+      children[i].gain = gain + f32(i)
+  outs:
+    out1
+  sample:
+    out1 = children[0]() + children[1]()
+
+outs:
+  out1
+init:
+  p = Parent(gain = 2.0)
+sample:
+  out1 = p()
+"#,
+            4.0,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  v = Voice()
+graph:
+  0.25 >> v.gain
+  v.out1 >> out1
+"#,
+            0.5,
+        ),
+        (
+            r#"
+proc Voice:
+  params:
+    gain = 0.0 {0.0, 1.0} => update
+  init:
+    cached = -10.0
+  def update():
+    cached = gain * 2.0
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voices: Voice[2] = Voice()
+graph:
+  0.25 >> voices[0].gain
+  0.5 >> voices[1].gain
+  voices[0].out1 + voices[1].out1 >> out1
+"#,
+            1.5,
+        ),
+    ];
+
+    for (case_idx, (src, expected)) in cases.into_iter().enumerate() {
+        let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+        assert_eq!(in_channels, 0);
+        assert_eq!(out_channels, 1);
+
+        let mut output = vec![0.0_f32; frames];
+
+        process_interleaved(&mut instance, &[], &mut output, frames)
+            .expect("process should succeed");
+
+        for (sample_idx, sample) in output.iter().enumerate() {
+            assert!(
+                (*sample - expected).abs() <= 1e-6,
+                "case {case_idx}, sample {sample_idx}: expected {sample} ~= {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+
 fn typed_init_f64_state_preserves_precision() {
     let frames = 4;
 

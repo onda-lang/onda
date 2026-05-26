@@ -471,6 +471,15 @@ pub(crate) fn coerce_params(
             ));
             continue;
         }
+        if let Some(bind) = &param.bind {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "param '{}' uses bind hook '=> {bind}', but binds are only supported on processor params",
+                    param.name
+                ),
+                param_loc,
+            ));
+        }
         if !seen.insert(param.name.as_str()) {
             errors.push(Diagnostic::semantic_span(
                 format!("duplicate param '{}'", param.name),

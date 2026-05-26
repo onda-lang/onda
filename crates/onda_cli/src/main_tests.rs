@@ -632,6 +632,37 @@ sample:
 }
 
 #[test]
+fn format_program_preserves_kins_and_param_bind_hooks() {
+    let program = parse_program(
+        r#"
+kins<f64> 2
+
+proc Voice:
+  params:
+    gain = 1.0 {0.0, 1.0} => update
+  def update():
+    cached = gain
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#,
+    )
+    .expect("program should parse");
+
+    let formatted = super::formatting::format_program(&program);
+    assert!(formatted.contains("kins<f64> 2\n"));
+    assert!(formatted.contains("    gain = 1.0 {0.0, 1.0} => update\n"));
+}
+
+#[test]
 fn format_diag_snippet_underlines_same_line_ranges() {
     let dir = std::env::temp_dir();
     let path = dir.join("onda_cli_diag_range_test.onda");
