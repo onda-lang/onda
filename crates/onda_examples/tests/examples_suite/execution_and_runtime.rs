@@ -71,6 +71,115 @@ sample {
 }
 "#;
 
+const STDLIB_OSC_PHASOR_DYNAMIC_PARAM_EXAMPLE: &str = r#"
+import std/osc
+
+outs { out1 }
+
+init {
+  phasor = std::osc::Phasor(freq = 0.0)
+  idx: i32 = 0
+}
+
+sample {
+  if (idx == 0) {
+    out1 = phasor(freq = 0.0)
+  } else {
+    out1 = phasor(freq = SR * 0.25)
+  }
+  idx = idx + 1
+}
+"#;
+
+const PROC_BIND_HOOK_INIT_USES_TOP_LEVEL_OVERSAMPLE_RATE_EXAMPLE: &str = r#"
+proc Voice {
+  params {
+    freq = 48000.0 => update
+  }
+  init {
+    cached = 0.0
+  }
+  def update() {
+    cached = freq / SR
+  }
+  outs { out1 }
+  sample {
+    out1 = cached
+  }
+}
+
+outs { out1 }
+
+init {
+  voice = Voice()
+}
+
+sample 2 {
+  out1 = voice()
+}
+"#;
+
+const PROC_BIND_HOOK_INIT_THROUGH_DEF_PROC_ARRAY_USES_OVERSAMPLE_RATE_EXAMPLE: &str = r#"
+proc Voice {
+  params {
+    freq = 48000.0 => update
+  }
+  init {
+    cached = 0.0
+  }
+  def update() {
+    cached = freq / SR
+  }
+  outs { out1 }
+  sample {
+    out1 = cached
+  }
+}
+
+outs { out1 }
+
+def run(voices) {
+  return voices[0]()
+}
+
+init {
+  voices: Voice[1] = Voice()
+}
+
+sample 2 {
+  out1 = run(voices)
+}
+"#;
+
+const EXPLICIT_OVERSAMPLED_PROC_FROM_OVERSAMPLED_CONTEXT_REJECTED_EXAMPLE: &str = r#"
+proc Child {
+  outs { out1 }
+  sample 2 {
+    out1 = 0.0
+  }
+}
+
+proc Parent {
+  init {
+    child = Child()
+  }
+  outs { out1 }
+  sample {
+    out1 = child()
+  }
+}
+
+outs { out1 }
+
+init {
+  parent = Parent()
+}
+
+sample 4 {
+  out1 = parent()
+}
+"#;
+
 const STDLIB_OSC_TRIANGLE_F64_EXAMPLE: &str = r#"
 import std/osc
 
@@ -579,6 +688,87 @@ fn stdlib_square_supports_f64_and_stays_bounded() {
     assert!(
         output.iter().all(|sample| sample.abs() <= 0.3),
         "expected square output to stay within amp bounds, got {output:?}"
+    );
+}
+
+#[test]
+
+fn stdlib_osc_phasor_param_call_updates_within_block() {
+    let frames = 4;
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_OSC_PHASOR_DYNAMIC_PARAM_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 0.0, 1e-6);
+    assert_near(output[1], 0.25, 1e-6);
+    assert_near(output[2], 0.5, 1e-6);
+    assert_near(output[3], 0.75, 1e-6);
+}
+
+#[test]
+
+fn proc_bind_hook_init_uses_top_level_oversample_rate() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_BIND_HOOK_INIT_USES_TOP_LEVEL_OVERSAMPLE_RATE_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[frames - 1], 0.5, 1e-3);
+}
+
+#[test]
+
+fn proc_bind_hook_init_through_def_proc_array_uses_oversample_rate() {
+    let frames = 256;
+
+    let (mut instance, in_channels, out_channels) = compile_instance(
+        PROC_BIND_HOOK_INIT_THROUGH_DEF_PROC_ARRAY_USES_OVERSAMPLE_RATE_EXAMPLE,
+        frames,
+    );
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[frames - 1], 0.5, 1e-3);
+}
+
+#[test]
+
+fn explicit_oversampled_proc_from_oversampled_context_is_rejected() {
+    let parsed = parse_program(EXPLICIT_OVERSAMPLED_PROC_FROM_OVERSAMPLED_CONTEXT_REJECTED_EXAMPLE)
+        .expect("parse should succeed");
+
+    let err = analyze(parsed).expect_err("nested explicit oversampling should be rejected");
+    let joined = err
+        .iter()
+        .map(|diag| diag.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        joined.contains("cannot call explicitly oversampled child"),
+        "unexpected diagnostics: {joined}"
     );
 }
 

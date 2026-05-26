@@ -337,7 +337,13 @@ fn resolve_graph_proc_dest(
             ty,
         ));
     }
-    if surface.api.outputs.names.iter().any(|out| out == resolved_out) {
+    if surface
+        .api
+        .outputs
+        .names
+        .iter()
+        .any(|out| out == resolved_out)
+    {
         push_graph_error(
             errors,
             loc,
@@ -1420,7 +1426,13 @@ fn validate_graph_proc_field_source(
     };
     let resolved_out = resolve_graph_proc_output_name(surface, field);
     let resolved_in = resolve_graph_proc_input_name(surface, field);
-    if surface.api.outputs.names.iter().any(|out| out == resolved_out) {
+    if surface
+        .api
+        .outputs
+        .names
+        .iter()
+        .any(|out| out == resolved_out)
+    {
         if surface.api.outputs.timing == OutputTiming::Block {
             push_graph_error(
                 errors,

@@ -640,6 +640,7 @@ kins<f64> 2
 proc Voice:
   params:
     gain = 1.0 {0.0, 1.0} => update
+    pin coeffs: f32[2] = [0.5, 0.25]
   def update():
     cached = gain
   outs:
@@ -660,6 +661,7 @@ sample:
     let formatted = super::formatting::format_program(&program);
     assert!(formatted.contains("kins<f64> 2\n"));
     assert!(formatted.contains("    gain = 1.0 {0.0, 1.0} => update\n"));
+    assert!(formatted.contains("    pin coeffs: f32[2] = [0.5, 0.25]\n"));
 }
 
 #[test]

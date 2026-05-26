@@ -265,12 +265,14 @@ struct ProcLoweringEnv {
 pub(crate) struct TopLevelProcRewriteMeta {
     pub(crate) global_proc_instances: HashMap<String, ProcCallInstance>,
     pub(crate) global_proc_array_slots: HashMap<String, Vec<String>>,
+    pub(crate) global_proc_instance_oversample_factors: HashMap<String, usize>,
 }
 
 pub(crate) struct ProcessorDesugarResult {
     pub(crate) program: Program,
     pub(crate) def_sample_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
+    pub(crate) proc_instance_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_api: HashMap<String, ProcApi>,
     pub(crate) lowering_shapes: HashMap<String, ProcLoweringShape>,
     pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
@@ -1237,6 +1239,7 @@ pub(crate) fn desugar_processors(
             program,
             def_sample_oversample_factors: HashMap::new(),
             proc_step_oversample_meta: HashMap::new(),
+            proc_instance_oversample_factors: HashMap::new(),
             proc_api: HashMap::new(),
             lowering_shapes: HashMap::new(),
             top_level_proc_rewrite: TopLevelProcRewriteMeta::default(),
@@ -1277,12 +1280,22 @@ pub(crate) fn desugar_processors(
     program.blocks.extend(generated_structs);
     program.blocks.extend(generated_defs);
 
-    let top_level_proc_rewrite =
-        rewrite_top_level_proc_calls(&mut program, options, &lowering_shapes, &proc_api, errors);
+    let top_level_proc_rewrite = rewrite_top_level_proc_calls(
+        &mut program,
+        options,
+        &proc_defs_by_name,
+        &lowering_shapes,
+        &proc_api,
+        errors,
+    );
+    let proc_instance_oversample_factors = top_level_proc_rewrite
+        .global_proc_instance_oversample_factors
+        .clone();
     ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
+        proc_instance_oversample_factors,
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,

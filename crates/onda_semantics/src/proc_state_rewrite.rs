@@ -49,6 +49,7 @@ pub(crate) struct ProcPortSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct ProcParamSlotSpec {
     pub(crate) name: String,
+    pub(crate) pinned: bool,
     pub(crate) ty: PrimitiveType,
     pub(crate) default: Option<Expr>,
     pub(crate) range: Option<TypedValueRange>,
@@ -59,6 +60,12 @@ pub(crate) struct ProcParamSlotSpec {
 pub(crate) struct ProcParamSpec {
     pub(crate) name: String,
     pub(crate) slots: Vec<ProcParamSlotSpec>,
+}
+
+impl ProcParamSpec {
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.slots.iter().any(|slot| slot.pinned)
+    }
 }
 
 #[derive(Debug, Clone)]

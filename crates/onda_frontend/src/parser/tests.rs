@@ -938,6 +938,23 @@ sample {
 }
 
 #[test]
+fn rejects_pin_keyword_as_identifier() {
+    let cases = [
+        "params:\n  pin = 1.0\n",
+        "params:\n  pin gain = 1.0\n",
+        "sample:\n  pin = 1.0\n",
+        "proc Voice:\n  params:\n    pin = 1.0\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
+    ];
+
+    for src in cases {
+        assert!(
+            parse_program(src).is_err(),
+            "'pin' should be reserved as a keyword, source parsed: {src}"
+        );
+    }
+}
+
+#[test]
 fn parses_def_and_call() {
     let src = r#"
 outs { out1 }
@@ -6684,6 +6701,38 @@ sample:
 
     assert_eq!(proc.params[0].name, "freq");
     assert_eq!(proc.params[0].bind.as_deref(), Some("update_freq"));
+}
+
+#[test]
+fn parses_proc_pinned_params() {
+    let src = r#"
+proc Voice:
+  params:
+    pin cutoff = 1000.0
+    pin coeffs: f32[2] = [0.5, 0.25]
+  outs:
+    out1
+  sample:
+    out1 = cutoff + coeffs[0]
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("pinned processor params should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Proc(proc) if proc.name == "Voice" => Some(proc),
+            _ => None,
+        })
+        .expect("Voice proc");
+
+    assert_eq!(proc.params[0].name, "cutoff");
+    assert!(proc.params[0].pinned);
+    assert_eq!(proc.params[1].name, "coeffs");
+    assert!(proc.params[1].pinned);
+    assert_eq!(proc.params.len(), 2);
 }
 
 #[test]

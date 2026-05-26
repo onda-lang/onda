@@ -1019,7 +1019,11 @@ fn format_port_decl(port: &PortDecl) -> String {
 }
 
 fn format_param_decl(param: &ParamDecl) -> String {
-    let mut text = param.name.clone();
+    let mut text = String::new();
+    if param.pinned {
+        text.push_str("pin ");
+    }
+    text.push_str(&param.name);
     if let Some(ty) = &param.ty {
         text.push_str(": ");
         text.push_str(&format_decl_type(ty));

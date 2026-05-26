@@ -3,18 +3,20 @@ namespace std::osc:
     outs<T> 1
 
     params<T>:
-      freq = 1.0
+      freq = 1.0 => update_freq
 
     init<T>:
       phase = 0.0
+      incr = 0.0
 
-    block:
-      incr: T = freq / SR
-      sample:
-        phase = phase + incr
-        if (phase >= 1.0):
-          phase = phase - 1.0
-        out1 = phase
+    def update_freq():
+      incr = freq / SR
+
+    sample:
+      phase = phase + incr
+      if (phase >= 1.0):
+        phase = phase - 1.0
+      out1 = phase
         
   proc Sine<T>:
     outs<T> 1
@@ -26,10 +28,8 @@ namespace std::osc:
     init:
       phasor = Phasor(freq = freq)
 
-    block:
-      phasor.freq = freq
-      sample:
-        out1 = sin(phasor() * TWO_PI) * amp
+    sample:
+      out1 = sin(phasor(freq = freq) * TWO_PI) * amp
   
   def poly_blep(t, dt):
     zero = dt - dt
@@ -48,67 +48,71 @@ namespace std::osc:
     outs<T> 1
 
     params<T>:
-      freq = 440.0
+      freq = 440.0 => update_freq
       amp = 1.0
 
-    init:
+    init<T>:
       phasor = Phasor(freq = freq)
+      dt = 0.0
 
-    block:
-      phasor.freq = freq
-      dt: T = freq / SR
-      sample:
-        phase = phasor()
-        base = phase + phase - 1.0
-        out1 = (base - std::osc::poly_blep(phase, dt)) * amp
+    def update_freq():
+      dt = freq / SR
+
+    sample:
+      phase = phasor(freq = freq)
+      base = phase + phase - 1.0
+      out1 = (base - std::osc::poly_blep(phase, dt)) * amp
 
   proc SawDown<T>:
     outs<T> 1
 
     params<T>:
-      freq = 440.0
+      freq = 440.0 => update_freq
       amp = 1.0
 
-    init:
+    init<T>:
       phasor = Phasor(freq = freq)
+      dt = 0.0
 
-    block:
-      phasor.freq = freq
-      dt: T = freq / SR
-      sample:
-        phase = phasor()
-        base = 1.0 - phase - phase
-        out1 = (base + std::osc::poly_blep(phase, dt)) * amp
+    def update_freq():
+      dt = freq / SR
+
+    sample:
+      phase = phasor(freq = freq)
+      base = 1.0 - phase - phase
+      out1 = (base + std::osc::poly_blep(phase, dt)) * amp
 
   proc Pulse<T>:
     outs<T> 1
 
     params<T>:
-      freq = 440.0
-      width = 0.5
+      freq = 440.0 => update_shape
+      width = 0.5 => update_shape
       amp = 1.0
 
-    init:
+    init<T>:
       phasor = Phasor(freq = freq)
+      width_v = 0.5
+      dt = 0.0
 
-    block:
-      phasor.freq = freq
-      width_v: T = clamp(width, T(0.001), T(0.999))
-      dt: T = freq / SR
-      sample:
-        phase = phasor()
-        if (phase < width_v):
-          wave = 1.0
-        else:
-          wave = -1.0
+    def update_shape():
+      width_v = clamp(width, T(0.001), T(0.999))
+      dt = freq / SR
 
-        phase2: T = phase - width_v
-        if (phase2 < 0.0):
-          phase2 = phase2 + 1.0
+    sample:
+      phase = phasor(freq = freq)
+      if (phase < width_v):
+        wave = 1.0
+      else:
+        wave = -1.0
 
-        wave = wave + std::osc::poly_blep(phase, dt)
-        wave = wave - std::osc::poly_blep(phase2, dt)
-        out1 = wave * amp
+      phase2: T = phase - width_v
+      if (phase2 < 0.0):
+        phase2 = phase2 + 1.0
+
+      wave = wave + std::osc::poly_blep(phase, dt)
+      wave = wave - std::osc::poly_blep(phase2, dt)
+      out1 = wave * amp
 
   proc Square<T>:
     outs<T> 1
@@ -120,26 +124,24 @@ namespace std::osc:
     init:
       pulse = Pulse(freq = freq, width = 0.5, amp = amp)
 
-    block:
-      pulse.freq = freq
-      pulse.amp = amp
-      sample:
-        out1 = pulse()
+    sample:
+      out1 = pulse(freq = freq, amp = amp)
 
   proc Triangle<T>:
     outs<T> 1
 
     params<T>:
-      freq = 440.0
+      freq = 440.0 => update_freq
       amp = 1.0
 
     init<T>:
       pulse = Pulse(freq = freq, width = 0.5, amp = 1.0)
       tri = -1.0
+      dt = 0.0
 
-    block:
-      pulse.freq = freq
-      dt: T = freq / SR
-      sample:
-        tri = clamp(tri + pulse() * dt * T(4.0), T(-1.0), T(1.0))
-        out1 = tri * amp
+    def update_freq():
+      dt = freq / SR
+
+    sample:
+      tri = clamp(tri + pulse(freq = freq) * dt * T(4.0), T(-1.0), T(1.0))
+      out1 = tri * amp

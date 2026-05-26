@@ -53,10 +53,21 @@ pub(super) fn build_graph_proc_surfaces(
             expand_proc_param_specs(&proc.name, &proc.params, options, errors);
         let params = param_specs
             .iter()
+            .filter(|spec| !spec.is_pinned())
             .flat_map(|spec| spec.slots.iter().cloned())
             .map(|slot| (slot.name.clone(), slot))
             .collect::<HashMap<_, _>>();
         let has_bound_params = params.values().any(|slot| slot.bind.is_some());
+        let pinned_param_names = proc
+            .params
+            .iter()
+            .filter(|param| param.pinned)
+            .map(|param| param.name.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let param_array_slots = param_array_slots
+            .into_iter()
+            .filter(|(name, _)| !pinned_param_names.contains(name))
+            .collect::<HashMap<_, _>>();
         out.insert(
             proc.name.clone(),
             GraphProcSurface {
@@ -82,6 +93,7 @@ pub(super) fn build_graph_proc_surfaces(
                     options,
                     errors,
                     &proc.name,
+                    false,
                 ),
                 out_value_types: value_types_from_ports(
                     &graph_outs,
@@ -132,7 +144,7 @@ pub(super) fn graph_owner_surface_from_program(
         ),
         param_value_types: match program.block(BlockKind::Params) {
             Some(Block::Params(params)) => {
-                value_types_from_params(params, options, errors, "top-level")
+                value_types_from_params(params, options, errors, "top-level", true)
             }
             _ => HashMap::new(),
         },
@@ -160,7 +172,7 @@ pub(super) fn graph_owner_surface_from_proc(
         graph_port_decls_with_numbered_aliases(&proc.outs, "out", inferred_io.max_out);
     GraphOwnerSurface {
         input_value_types: value_types_from_ports(&graph_ins, options, errors, &proc.name, "input"),
-        param_value_types: value_types_from_params(&proc.params, options, errors, &proc.name),
+        param_value_types: value_types_from_params(&proc.params, options, errors, &proc.name, true),
         output_value_types: value_types_from_ports(
             &graph_outs,
             options,
@@ -316,9 +328,13 @@ fn value_types_from_params(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
     owner_context: &str,
+    include_pinned: bool,
 ) -> HashMap<String, GraphValueType> {
     let mut out = HashMap::<String, GraphValueType>::new();
     for param in params {
+        if param.pinned && !include_pinned {
+            continue;
+        }
         let ty = match param.ty.as_ref() {
             Some(DeclType::Array { size, .. } | DeclType::ArrayGeneric { size, .. }) => {
                 value_type_from_decl_type(

@@ -1358,6 +1358,9 @@ fn build_child_proc_surfaces(
             }
         }
         for spec in &param_specs {
+            if spec.is_pinned() {
+                continue;
+            }
             surface.params.insert(spec.name.clone());
             surface
                 .params
@@ -1368,6 +1371,7 @@ fn build_child_proc_surfaces(
         }
         if param_specs
             .iter()
+            .filter(|spec| !spec.is_pinned())
             .map(|spec| spec.slots.len())
             .sum::<usize>()
             > 1

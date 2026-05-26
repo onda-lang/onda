@@ -8,6 +8,7 @@ use crate::processor_lowering::{
     internal_proc_index_call_signature, lower_graph_blocks, nested_call_out_fn_name,
     nested_step_fn_name, prepare_processors_for_graph_inspection, proc_runtime_analysis_options,
     validated_sample_oversample_factor, ProcLoweringShape, ProcessorDesugarResult,
+    TopLevelProcRewriteMeta,
 };
 use crate::*;
 
@@ -5941,6 +5942,7 @@ fn expand_param_count_shorthand(
             decls.push(ParamDecl {
                 loc,
                 name: format!("{prefix}{idx}"),
+                pinned: false,
                 ty: default_ty.clone(),
                 ty_loc: Span::ZERO,
                 default: None,
@@ -6622,6 +6624,7 @@ pub fn analyze_with_options(
         program,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
+        proc_instance_oversample_factors,
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,
@@ -9006,6 +9009,25 @@ pub fn analyze_with_options(
             .into_iter()
             .filter(|def| reachable_defs.contains(&def.name))
             .collect::<Vec<_>>();
+        let mut proc_instance_oversample_factors = proc_instance_oversample_factors;
+        if sample_oversample_factor > 1 {
+            let defs_by_name = typed_defs
+                .iter()
+                .map(|def| (def.name.clone(), def))
+                .collect::<HashMap<_, _>>();
+            collect_def_proc_arg_oversample_factors_from_stmts(
+                &sample,
+                sample_oversample_factor,
+                &defs_by_name,
+                &top_level_proc_rewrite,
+                &proc_api,
+                &mut proc_instance_oversample_factors,
+                &mut errors,
+            );
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
 
         Ok(TypedProgram {
             ins,
@@ -9029,6 +9051,7 @@ pub fn analyze_with_options(
             events: typed_events,
             def_sample_oversample_factors,
             proc_step_oversample_meta,
+            proc_instance_oversample_factors,
             init,
             block_pre,
             sample_oversample_factor,
@@ -9066,6 +9089,412 @@ fn requires_entry_sample(program: &Program) -> bool {
                 | BlockKind::Graph
         )
     })
+}
+
+fn record_top_level_proc_arg_oversample_factor(
+    instance_name: &str,
+    sample_oversample_factor: usize,
+    top_level_proc_rewrite: &TopLevelProcRewriteMeta,
+    proc_api: &HashMap<String, ProcApi>,
+    out: &mut HashMap<String, usize>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some(instance) = top_level_proc_rewrite
+        .global_proc_instances
+        .get(instance_name)
+    else {
+        return;
+    };
+    let Some(api) = proc_api.get(&instance.proc_name) else {
+        return;
+    };
+    let proc_oversample_factor = api.sample_oversample_factor.max(1);
+    if sample_oversample_factor > 1 && proc_oversample_factor > 1 {
+        push_semantic(
+            DiagCtx::default(),
+            errors,
+            format!(
+                "cannot pass explicitly oversampled processor '{}' (sample {}) into oversampled context (sample {})",
+                instance.proc_name, proc_oversample_factor, sample_oversample_factor
+            ),
+        );
+    }
+    let effective_factor = if proc_oversample_factor > 1 {
+        proc_oversample_factor
+    } else {
+        sample_oversample_factor.max(1)
+    };
+    if effective_factor <= 1 {
+        return;
+    }
+    if let Some(previous) = out.get(instance_name).copied() {
+        if previous != effective_factor {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
+                format!(
+                    "processor instance '{}' is required at both sample {} and sample {}; a physical processor instance can only have one effective oversampling rate",
+                    instance_name, previous, effective_factor
+                ),
+            );
+        }
+        return;
+    }
+    out.insert(instance_name.to_owned(), effective_factor);
+}
+
+fn record_top_level_proc_array_arg_oversample_factor(
+    base: &str,
+    sample_oversample_factor: usize,
+    top_level_proc_rewrite: &TopLevelProcRewriteMeta,
+    proc_api: &HashMap<String, ProcApi>,
+    out: &mut HashMap<String, usize>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some(slots) = top_level_proc_rewrite.global_proc_array_slots.get(base) else {
+        return;
+    };
+    for slot in slots {
+        record_top_level_proc_arg_oversample_factor(
+            slot,
+            sample_oversample_factor,
+            top_level_proc_rewrite,
+            proc_api,
+            out,
+            errors,
+        );
+    }
+    let mut slot_factors = slots.iter().filter_map(|slot| out.get(slot).copied());
+    let Some(first) = slot_factors.next() else {
+        return;
+    };
+    if slots
+        .iter()
+        .all(|slot| out.get(slot).copied() == Some(first))
+    {
+        out.insert(base.to_owned(), first);
+    }
+}
+
+fn resolved_def_call_arg<'a>(
+    args: &'a [CallArg],
+    param_names: &[String],
+    param_idx: usize,
+) -> Option<&'a Expr> {
+    let param_name = param_names.get(param_idx)?;
+    if let Some(named) = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some(param_name.as_str()))
+    {
+        return Some(&named.expr);
+    }
+    let mut positional_idx = 0usize;
+    for arg in args {
+        if arg.name.is_some() {
+            continue;
+        }
+        if positional_idx == param_idx {
+            return Some(&arg.expr);
+        }
+        positional_idx += 1;
+    }
+    None
+}
+
+fn collect_def_proc_arg_oversample_factors_from_expr(
+    expr: &Expr,
+    sample_oversample_factor: usize,
+    defs_by_name: &HashMap<String, &TypedFunction>,
+    top_level_proc_rewrite: &TopLevelProcRewriteMeta,
+    proc_api: &HashMap<String, ProcApi>,
+    out: &mut HashMap<String, usize>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::UserCall { name, args, .. } => {
+            if let Some(def) = defs_by_name.get(name) {
+                for (param_idx, kind) in def.param_kinds.iter().enumerate() {
+                    let Some(arg_expr) = resolved_def_call_arg(args, &def.params, param_idx) else {
+                        continue;
+                    };
+                    match (kind, arg_expr) {
+                        (TypedFnParam::ProcArray { .. }, Expr::Var { name: base, .. }) => {
+                            record_top_level_proc_array_arg_oversample_factor(
+                                base,
+                                sample_oversample_factor,
+                                top_level_proc_rewrite,
+                                proc_api,
+                                out,
+                                errors,
+                            );
+                        }
+                        (TypedFnParam::Struct { struct_name }, Expr::Var { name, .. }) => {
+                            let Some(instance) =
+                                top_level_proc_rewrite.global_proc_instances.get(name)
+                            else {
+                                continue;
+                            };
+                            if &instance.proc_name == struct_name {
+                                record_top_level_proc_arg_oversample_factor(
+                                    name,
+                                    sample_oversample_factor,
+                                    top_level_proc_rewrite,
+                                    proc_api,
+                                    out,
+                                    errors,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for arg in args {
+                collect_def_proc_arg_oversample_factors_from_expr(
+                    &arg.expr,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+            }
+        }
+        Expr::Index { index, .. } => collect_def_proc_arg_oversample_factors_from_expr(
+            index,
+            sample_oversample_factor,
+            defs_by_name,
+            top_level_proc_rewrite,
+            proc_api,
+            out,
+            errors,
+        ),
+        Expr::Slice { start, end, .. } => {
+            if let Some(start) = start {
+                collect_def_proc_arg_oversample_factors_from_expr(
+                    start,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+            }
+            if let Some(end) = end {
+                collect_def_proc_arg_oversample_factors_from_expr(
+                    end,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            collect_def_proc_arg_oversample_factors_from_expr(
+                &spec.size,
+                sample_oversample_factor,
+                defs_by_name,
+                top_level_proc_rewrite,
+                proc_api,
+                out,
+                errors,
+            );
+            if let Some(values) = init {
+                for value in values {
+                    collect_def_proc_arg_oversample_factors_from_expr(
+                        value,
+                        sample_oversample_factor,
+                        defs_by_name,
+                        top_level_proc_rewrite,
+                        proc_api,
+                        out,
+                        errors,
+                    );
+                }
+            }
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            collect_def_proc_arg_oversample_factors_from_expr(
+                lhs,
+                sample_oversample_factor,
+                defs_by_name,
+                top_level_proc_rewrite,
+                proc_api,
+                out,
+                errors,
+            );
+            collect_def_proc_arg_oversample_factors_from_expr(
+                rhs,
+                sample_oversample_factor,
+                defs_by_name,
+                top_level_proc_rewrite,
+                proc_api,
+                out,
+                errors,
+            );
+        }
+        Expr::Call { args, .. }
+        | Expr::ArrayLiteral { values: args, .. }
+        | Expr::Tuple { values: args, .. } => {
+            for arg in args {
+                collect_def_proc_arg_oversample_factors_from_expr(
+                    arg,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            collect_def_proc_arg_oversample_factors_from_expr(
+                expr,
+                sample_oversample_factor,
+                defs_by_name,
+                top_level_proc_rewrite,
+                proc_api,
+                out,
+                errors,
+            );
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+}
+
+fn collect_def_proc_arg_oversample_factors_from_stmts(
+    stmts: &[Stmt],
+    sample_oversample_factor: usize,
+    defs_by_name: &HashMap<String, &TypedFunction>,
+    top_level_proc_rewrite: &TopLevelProcRewriteMeta,
+    proc_api: &HashMap<String, ProcApi>,
+    out: &mut HashMap<String, usize>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+                collect_def_proc_arg_oversample_factors_from_expr(
+                    expr,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_def_proc_arg_oversample_factors_from_expr(
+                    cond,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+                collect_def_proc_arg_oversample_factors_from_stmts(
+                    then_branch,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+                collect_def_proc_arg_oversample_factors_from_stmts(
+                    else_branch,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+            }
+            Stmt::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                collect_def_proc_arg_oversample_factors_from_expr(
+                    start,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+                collect_def_proc_arg_oversample_factors_from_expr(
+                    end,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+                if let Some(step) = step {
+                    collect_def_proc_arg_oversample_factors_from_expr(
+                        step,
+                        sample_oversample_factor,
+                        defs_by_name,
+                        top_level_proc_rewrite,
+                        proc_api,
+                        out,
+                        errors,
+                    );
+                }
+                collect_def_proc_arg_oversample_factors_from_stmts(
+                    body,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_def_proc_arg_oversample_factors_from_expr(
+                    cond,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+                collect_def_proc_arg_oversample_factors_from_stmts(
+                    body,
+                    sample_oversample_factor,
+                    defs_by_name,
+                    top_level_proc_rewrite,
+                    proc_api,
+                    out,
+                    errors,
+                );
+            }
+        }
+    }
 }
 
 /// Pre-monomorphization validation of generic def call-site type arguments.

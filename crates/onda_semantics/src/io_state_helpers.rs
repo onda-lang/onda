@@ -440,6 +440,7 @@ pub(crate) fn normalize_numbered_param_decls(
             explicit_map.get(&name).cloned().unwrap_or(ParamDecl {
                 loc: Default::default(),
                 name,
+                pinned: false,
                 ty: None,
                 ty_loc: Default::default(),
                 default: None,

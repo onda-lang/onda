@@ -480,6 +480,15 @@ pub(crate) fn coerce_params(
                 param_loc,
             ));
         }
+        if param.pinned {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "param '{}' uses 'pin', but pinned params are only supported on processor params",
+                    param.name
+                ),
+                param_loc,
+            ));
+        }
         if !seen.insert(param.name.as_str()) {
             errors.push(Diagnostic::semantic_span(
                 format!("duplicate param '{}'", param.name),

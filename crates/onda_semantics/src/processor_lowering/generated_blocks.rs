@@ -527,6 +527,10 @@ fn generate_nested_wrapper_defs(
             continue;
         };
         let callee_api = proc_api.get(&callee_proc_name);
+        let callee_sample_oversample_factor = callee_api
+            .map(|api| api.sample_oversample_factor)
+            .unwrap_or(1)
+            .max(1);
         let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
         let proc_ns = namespace_of_symbol(&callee_proc_name);
         let mut callee_ins_names = callee_shape.ins.iter().cloned().collect::<HashSet<_>>();
@@ -1000,6 +1004,10 @@ fn generate_nested_wrapper_defs(
             &callee_shape.param_specs,
         ));
 
+        def_sample_oversample_factors.insert(
+            nested_init_fn_name(&proc.name, &nested_path),
+            callee_sample_oversample_factor,
+        );
         nested_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
             is_const: false,
@@ -1149,10 +1157,6 @@ fn generate_nested_wrapper_defs(
             });
         }
         let nested_step_name = nested_step_fn_name(&proc.name, &nested_path);
-        let callee_sample_oversample_factor = proc_api
-            .get(&callee_proc_name)
-            .map(|api| api.sample_oversample_factor)
-            .unwrap_or(1);
         if callee_sample_oversample_factor > 1 {
             let stage_count = proc_os_sinc_stage_count(callee_sample_oversample_factor);
             let mut input_state_fields = HashMap::<String, ProcInputOversampleStateFields>::new();
@@ -1365,11 +1369,14 @@ fn generate_nested_wrapper_defs(
                         );
                         (nested_event_params, nested_event_body)
                     };
+                let nested_event_name = nested_event_fn_name(&proc.name, &nested_path, &event.name);
+                def_sample_oversample_factors
+                    .insert(nested_event_name.clone(), callee_sample_oversample_factor);
                 nested_defs.push(Block::Def(FunctionDef {
                     loc: Default::default(),
                     is_const: false,
                     type_params: Vec::new(),
-                    name: nested_event_fn_name(&proc.name, &nested_path, &event.name),
+                    name: nested_event_name,
                     params: nested_event_params,
                     return_ty: None,
                     return_ty_loc: Default::default(),
@@ -1494,11 +1501,16 @@ fn generate_nested_wrapper_defs(
                 proc_api,
                 errors,
             );
+            let nested_block_pre_name = nested_block_pre_fn_name(&proc.name, &nested_path);
+            def_sample_oversample_factors.insert(
+                nested_block_pre_name.clone(),
+                callee_sample_oversample_factor,
+            );
             nested_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
                 is_const: false,
                 type_params: Vec::new(),
-                name: nested_block_pre_fn_name(&proc.name, &nested_path),
+                name: nested_block_pre_name,
                 params: nested_block_params.clone(),
                 return_ty: None,
                 return_ty_loc: Default::default(),
@@ -1607,11 +1619,16 @@ fn generate_nested_wrapper_defs(
                 proc_api,
                 errors,
             );
+            let nested_block_post_name = nested_block_post_fn_name(&proc.name, &nested_path);
+            def_sample_oversample_factors.insert(
+                nested_block_post_name.clone(),
+                callee_sample_oversample_factor,
+            );
             nested_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
                 is_const: false,
                 type_params: Vec::new(),
-                name: nested_block_post_fn_name(&proc.name, &nested_path),
+                name: nested_block_post_name,
                 params: nested_block_params,
                 return_ty: None,
                 return_ty_loc: Default::default(),

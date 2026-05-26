@@ -4,44 +4,52 @@ namespace std::smoothing:
     outs<T> 1
 
     params<T>:
-      time_s = 0.05
+      time_s = 0.05 => update_time
 
     init<T>:
       y = 0.0
+      coef = 0.0
 
-    block:
-      sample:
-        if (time_s <= 0.0):
-          y = in1
-        else:
-          coef: T = exp(T(-1.0) / max(time_s * SR, T(1.0)))
-          y = in1 + (y - in1) * coef
-        out1 = y
+    def update_time():
+      if (time_s <= 0.0):
+        coef = 0.0
+      else:
+        coef = exp(T(-1.0) / max(time_s * SR, T(1.0)))
+
+    sample:
+      y = in1 + (y - in1) * coef
+      out1 = y
 
   proc LagUD<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      attack_s = 0.01
-      release_s = 0.1
+      attack_s = 0.01 => update_attack
+      release_s = 0.1 => update_release
 
     init<T>:
       y = 0.0
+      attack_coef = 0.0
+      release_coef = 0.0
+
+    def update_attack():
+      if (attack_s <= 0.0):
+        attack_coef = 0.0
+      else:
+        attack_coef = exp(T(-1.0) / max(attack_s * SR, T(1.0)))
+
+    def update_release():
+      if (release_s <= 0.0):
+        release_coef = 0.0
+      else:
+        release_coef = exp(T(-1.0) / max(release_s * SR, T(1.0)))
 
     sample:
       if (in1 > y):
-        if (attack_s <= 0.0):
-          y = in1
-        else:
-          coef: T = exp(T(-1.0) / max(attack_s * SR, T(1.0)))
-          y = in1 + (y - in1) * coef
+        y = in1 + (y - in1) * attack_coef
       else:
-        if (release_s <= 0.0):
-          y = in1
-        else:
-          coef: T = exp(T(-1.0) / max(release_s * SR, T(1.0)))
-          y = in1 + (y - in1) * coef
+        y = in1 + (y - in1) * release_coef
       out1 = y
 
   proc Slew<T>:
@@ -49,21 +57,26 @@ namespace std::smoothing:
     outs<T> 1
 
     params<T>:
-      rise_per_s = 1.0
-      fall_per_s = 1.0
+      rise_per_s = 1.0 => update_rise
+      fall_per_s = 1.0 => update_fall
 
     init<T>:
       y = 0.0
+      rise_step = 0.0
+      fall_step = 0.0
 
-    block:
-      rise_step: T = max(rise_per_s, T(0.0)) / SR
-      fall_step: T = max(fall_per_s, T(0.0)) / SR
-      sample:
-        delta = in1 - y
-        if (delta > rise_step):
-          y = y + rise_step
-        elif (delta < -fall_step):
-          y = y - fall_step
-        else:
-          y = in1
-        out1 = y
+    def update_rise():
+      rise_step = max(rise_per_s, T(0.0)) / SR
+
+    def update_fall():
+      fall_step = max(fall_per_s, T(0.0)) / SR
+
+    sample:
+      delta = in1 - y
+      if (delta > rise_step):
+        y = y + rise_step
+      elif (delta < -fall_step):
+        y = y - fall_step
+      else:
+        y = in1
+      out1 = y

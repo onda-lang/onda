@@ -401,6 +401,7 @@ pub enum OutputTiming {
 pub struct ParamDecl {
     pub loc: Span,
     pub name: String,
+    pub pinned: bool,
     pub ty: Option<DeclType>,
     pub ty_loc: Span,
     pub default: Option<Expr>,

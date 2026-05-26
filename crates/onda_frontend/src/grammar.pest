@@ -43,6 +43,12 @@ params_block = {
     | (section_count ~ NEWLINE*)
   )
 }
+proc_params_block = {
+  "params" ~ section_default_decl_type? ~ (
+    (section_count? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_param_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
+    | (section_count ~ NEWLINE*)
+  )
+}
 kins_block = {
   "kins" ~ section_default_decl_type? ~ (
     (section_count? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ param_list? ~ NEWLINE* ~ "}" ~ NEWLINE*)
@@ -63,7 +69,7 @@ event_param_list = { event_param_decl ~ ("," ~ event_param_decl)* }
 event_param_decl = { ident ~ (":" ~ event_param_type)? ~ ("=" ~ expr)? }
 event_param_type = { array_type | fn_typed_array_param | type_name | named_type }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
-proc_item = _{ ins_block | outs_block | kouts_block | params_block | const_block | events_block | event_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
+proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | const_block | events_block | event_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 def_block = { ("const" ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" ~ fn_param_list? ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
@@ -107,8 +113,11 @@ tuple_type = { "(" ~ type_name ~ ("," ~ type_name)+ ~ ")" }
 decl_range = { "{" ~ expr ~ ("," ~ expr)? ~ "}" }
 port_decl = { ident ~ (":" ~ decl_type)? ~ ("=" ~ expr)? ~ decl_range? }
 param_list = { param_decl ~ (list_sep+ ~ param_decl)* ~ list_sep* }
+proc_param_list = { proc_param_decl ~ (list_sep+ ~ proc_param_decl)* ~ list_sep* }
+param_pin = @{ "pin" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 param_bind = { "=>" ~ ident }
 param_decl = { ident ~ (":" ~ decl_type)? ~ ("=" ~ expr)? ~ decl_range? ~ param_bind? }
+proc_param_decl = { param_pin? ~ ident ~ (":" ~ decl_type)? ~ ("=" ~ expr)? ~ decl_range? ~ param_bind? }
 buffer_list = { buffer_decl ~ (list_sep+ ~ buffer_decl)* ~ list_sep* }
 buffer_decl = { ident ~ (":" ~ buffer_decl_type)? }
 buffer_decl_type = { buffer_type | buffer_inner }
@@ -205,7 +214,7 @@ mul_op = { "*" | "/" | "%" }
 cmp_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" }
 
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
-keyword = _{ ("while" | "break" | "continue") ~ !ident_char }
+keyword = _{ ("while" | "break" | "continue" | "pin") ~ !ident_char }
 ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 int_lit = @{ ASCII_DIGIT+ }
 number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }

@@ -86,6 +86,7 @@ pub(super) fn is_reserved_word(name: &str) -> bool {
             | "sample"
             | "block"
             | "graph"
+            | "pin"
     )
 }
 
@@ -208,7 +209,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                         }
                     }
                     SourceProcSectionKind::Params => {
-                        if let Some(name) = extract_leading_ident(trimmed) {
+                        if let Some(name) = extract_param_decl_name(trimmed, true) {
                             index.scopes[proc_owner_idx]
                                 .scope
                                 .parameters
@@ -428,7 +429,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                         }
                     }
                     SourceTopLevelSectionKind::Params => {
-                        if let Some(name) = extract_leading_ident(trimmed) {
+                        if let Some(name) = extract_param_decl_name(trimmed, false) {
                             index.scopes[section.owner_idx]
                                 .scope
                                 .parameters
@@ -809,6 +810,27 @@ fn source_assignment_target_name(trimmed: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn extract_param_decl_name(trimmed: &str, allow_pin: bool) -> Option<&str> {
+    let name = extract_leading_ident(trimmed)?;
+    if name != "pin" {
+        return Some(name);
+    }
+    if !allow_pin {
+        return None;
+    }
+    let rest = trimmed[name.len()..].trim_start();
+    let pinned_name = extract_leading_ident(rest)?;
+    if is_reserved_identifier(pinned_name) {
+        None
+    } else {
+        Some(pinned_name)
+    }
+}
+
+fn is_reserved_identifier(name: &str) -> bool {
+    matches!(name, "while" | "break" | "continue" | "pin")
 }
 
 fn collect_source_local_symbols(index: &mut SemanticScopeIndex, scope_idx: usize, trimmed: &str) {

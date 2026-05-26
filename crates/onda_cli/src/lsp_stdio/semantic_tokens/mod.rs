@@ -17,6 +17,7 @@ pub(super) const SEMANTIC_TOKEN_TYPE_FUNCTION: u32 = 4;
 pub(super) const SEMANTIC_TOKEN_TYPE_TYPE: u32 = 5;
 pub(super) const SEMANTIC_TOKEN_TYPE_NAMESPACE: u32 = 6;
 pub(super) const SEMANTIC_TOKEN_TYPE_STATE: u32 = 7;
+pub(super) const SEMANTIC_TOKEN_TYPE_KEYWORD: u32 = 8;
 
 const SEMANTIC_TOKEN_LEGEND: &[&str] = &[
     "enumMember",
@@ -27,6 +28,7 @@ const SEMANTIC_TOKEN_LEGEND: &[&str] = &[
     "type",
     "namespace",
     "state",
+    "keyword",
 ];
 
 const BUILTIN_CONSTS: &[&str] = &[
@@ -293,9 +295,6 @@ pub(super) fn semantic_tokens_for_document(
     scan_identifiers(
         source,
         |name, line, start, length, after_dot, is_call, in_ns_path, is_named_arg_label| {
-            if is_named_arg_label {
-                return;
-            }
             if identifier_is_in_import_path(&source_lines, line, start) {
                 let token_type = source_decl_scope
                     .imported_token_type_for(name)
@@ -308,6 +307,19 @@ pub(super) fn semantic_tokens_for_document(
                     token_type,
                     token_modifiers: 0,
                 });
+                return;
+            }
+            if is_semantic_keyword(name, &source_lines, line, start) {
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type: SEMANTIC_TOKEN_TYPE_KEYWORD,
+                    token_modifiers: 0,
+                });
+                return;
+            }
+            if is_named_arg_label {
                 return;
             }
             if name == "self" {
@@ -398,6 +410,40 @@ pub(super) fn semantic_tokens_for_document(
             && a.token_modifiers == b.token_modifiers
     });
     tokens
+}
+
+fn is_semantic_keyword(name: &str, source_lines: &[&str], line: u32, start: u32) -> bool {
+    if name == "pin" {
+        return true;
+    }
+    if !matches!(
+        name,
+        "if" | "elif"
+            | "else"
+            | "for"
+            | "while"
+            | "loop"
+            | "break"
+            | "continue"
+            | "return"
+            | "assert"
+    ) {
+        return false;
+    }
+
+    let Some(line_text) = source_lines.get(line as usize) else {
+        return false;
+    };
+    let start = start as usize;
+    if start > line_text.len() {
+        return false;
+    }
+    let before = &line_text[..start];
+    let before_trimmed = before.trim_end();
+    before_trimmed.is_empty()
+        || before_trimmed.ends_with('{')
+        || before_trimmed.ends_with('}')
+        || before_trimmed.ends_with(';')
 }
 
 pub(super) fn encode_semantic_tokens(tokens: &[SemanticToken]) -> Vec<u32> {

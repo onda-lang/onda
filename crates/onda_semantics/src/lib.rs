@@ -81,6 +81,7 @@ pub struct TypedProgram {
     pub events: Vec<TypedEvent>,
     pub def_sample_oversample_factors: HashMap<String, usize>,
     pub proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
+    pub proc_instance_oversample_factors: HashMap<String, usize>,
     pub init: Vec<Stmt>,
     pub block_pre: Vec<Stmt>,
     pub sample_oversample_factor: usize,
@@ -1355,6 +1356,90 @@ sample:
 "#,
             "named param arguments are not supported in while conditions",
         );
+    }
+
+    #[test]
+    fn pinned_proc_params_accept_constructor_and_builtin_init() {
+        let src = r#"
+proc Voice:
+  params:
+    pin cutoff = 1000.0
+    pin coeffs: f32[2] = [0.5, 0.25]
+    gain = 1.0
+  init:
+    cached = cutoff + coeffs[0] + coeffs[1] + gain
+  event refresh(cutoff_v: f32, coeffs_v: f32[2]):
+    cutoff = cutoff_v
+    coeffs[0] = coeffs_v[0]
+    coeffs[1] = coeffs_v[1]
+    cached = cutoff + coeffs[0] + coeffs[1] + gain
+  outs:
+    out1
+  sample:
+    out1 = cached
+
+outs:
+  out1
+events:
+  reset():
+    voice.init(cutoff = 1500.0, coeffs = [0.2, 0.3], gain = 0.75)
+init:
+  voice = Voice(cutoff = 1200.0, coeffs = [0.1, 0.2], gain = 0.5)
+sample:
+  out1 = voice(gain = 0.25)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("pinned constructor/init params should analyze");
+    }
+
+    #[test]
+    fn pinned_proc_params_reject_external_access() {
+        let cases = [
+            (
+                "field assignment",
+                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.cutoff = 1200.0\n  out1 = voice()\n",
+                "param 'cutoff' is pinned and cannot be assigned",
+            ),
+            (
+                "field read",
+                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.cutoff\n",
+                "param 'cutoff' is pinned and cannot be read",
+            ),
+            (
+                "array assignment",
+                "proc Voice:\n  params:\n    pin coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.coeffs[0] = 0.1\n  out1 = voice()\n",
+                "param 'coeffs' is pinned and cannot be assigned",
+            ),
+            (
+                "array read",
+                "proc Voice:\n  params:\n    pin coeffs: f32[2] = [0.5, 0.25]\n  outs:\n    out1\n  sample:\n    out1 = coeffs[0]\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.coeffs[0]\n",
+                "param 'coeffs' is pinned and cannot be read",
+            ),
+            (
+                "named call arg",
+                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice(cutoff = 1200.0)\n",
+                "named argument 'cutoff' is pinned",
+            ),
+            (
+                "dynamic params read",
+                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  out1 = voice.params[0]\n",
+                "has pinned params, so dynamic param access",
+            ),
+            (
+                "dynamic params assignment",
+                "proc Voice:\n  params:\n    pin cutoff = 1000.0\n    gain = 1.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff + gain\nouts:\n  out1\ninit:\n  voice = Voice()\nsample:\n  voice.params[0] = 0.5\n  out1 = voice()\n",
+                "has pinned params, so assignment through dynamic",
+            ),
+        ];
+
+        for (label, src, expected) in cases {
+            let program = parse_program(src).expect(label);
+            let errors = analyze(program).expect_err(label);
+            assert!(
+                errors.iter().any(|diag| diag.message.contains(expected)),
+                "case '{label}' expected diagnostic containing '{expected}', got {errors:?}"
+            );
+        }
     }
 
     #[test]

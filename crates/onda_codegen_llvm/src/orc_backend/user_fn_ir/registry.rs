@@ -191,6 +191,7 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
         host_block_size: block_size,
         sample_oversample_factors: typed.def_sample_oversample_factors.clone(),
         proc_step_oversample_meta: typed.proc_step_oversample_meta.clone(),
+        proc_instance_oversample_factors: typed.proc_instance_oversample_factors.clone(),
         refs,
         base_return_tys,
         mono_refs: HashMap::new(),

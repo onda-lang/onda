@@ -322,9 +322,20 @@
   - statement call + field reads is supported for stateful updates + explicit output access
 - Nested processor state/composition is supported, including deep nesting.
 - Processor constructor arguments for params/buffers are enforced as named-only.
+- Proc params can be marked with the reserved `pin` keyword to keep them out of
+  external live-modulation surfaces. Pinned params may be passed to the
+  constructor or builtin `init(...)`, and may be read/written by owner proc
+  code, but external `child.param`, `child.param = ...`, live named proc call
+  args, graph param edges, and dynamic `child.params[...]` access are rejected.
+  Top-level params do not have a `pin` concept.
 - Named proc call arguments can bind params, but named param arguments are
   rejected inside logical `&&` / `||` expressions and `while` conditions; use an
   explicit param assignment before the proc call there.
+- Bound proc-param hooks (`=> hook_name`) are immediate per-param reactions and
+  are not batched or coalesced across multiple assignments. Use them for
+  single-param derived state or child-param cascades; use an explicit proc event
+  or setter for coupled params that should rebuild shared state once after
+  several values change.
 - The builtin proc `init(...)` event is positional/named like any other proc event call and is useful for proc arrays or post-construction reconfiguration:
   - `voices[idx].init(i, i * 2, i * 3)`
 - Processor instance arrays are supported in `init` (top-level and proc-level) via typed declarations such as:
@@ -362,7 +373,18 @@
   - Proc-slot buffer refs (`ptr`/`frames`/`channels`) are refreshed on the safe `process_checked` path; `process_unchecked` does not perform hidden refresh.
 - Sample oversampling is implemented for both top-level and proc sample blocks:
   - syntax: `sample N:` where `N` is any compile-time integer constant expression that resolves to one of `{1,2,4,8,16,32,64,128,256,512}`.
-  - oversampling path is compiler-managed (input interpolation, held params, filtered decimation).
+  - oversampling path is compiler-managed (audio input interpolation, held params, filtered decimation).
+  - top-level `ins` and proc `ins` are audio-rate boundaries. When an
+    oversampled proc is called from a lower-rate scope, the caller supplies one
+    input value and the proc interpolates that input across its internal
+    substeps.
+  - params are control-rate boundaries and are held across oversample substeps
+    unless the expression assigning them is itself evaluated in an oversampled
+    scope.
+  - generated signal code runs at the rate of the scope that evaluates it. A
+    host-rate oscillator feeding an oversampled distortion proc is evaluated at
+    host rate and then interpolated into the proc; an oscillator evaluated
+    inside the oversampled scope runs at the oversampled rate.
   - proc-level oversampling uses the same codegen-rate specialization model as top-level oversampling (unified behavior model, no source-level `SR` rewrite hack).
   - inside a proc, every proc-owned `SR` reference uses that proc's runtime sample rate, including proc-local consts, params/ports/state sizes, child proc-array sizes, `init`, `block`, `sample`, events, proc-local defs, bind hooks, and typed local arrays.
   - `sample:` and `sample 1:` use the host sample rate; `sample N:` uses `SR = host SR * N`.

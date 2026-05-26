@@ -141,6 +141,7 @@ pub(super) struct UserFnRegistry {
     pub(super) host_block_size: usize,
     pub(super) sample_oversample_factors: HashMap<String, usize>,
     pub(super) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
+    pub(super) proc_instance_oversample_factors: HashMap<String, usize>,
     pub(super) refs: HashMap<String, LLVMValueRef>,
     pub(super) base_return_tys: HashMap<String, ReturnType>,
     pub(super) mono_refs: HashMap<String, LLVMValueRef>,

@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Default)]
 struct ParsedNamedDecl {
+    pinned: bool,
     ty: Option<DeclType>,
     ty_loc: Span,
     default: Option<Expr>,
@@ -82,6 +83,7 @@ fn parse_named_decl(
     let mut name: Option<String> = None;
     for item in pair.into_inner() {
         match item.as_rule() {
+            Rule::param_pin => parsed.pinned = true,
             Rule::ident if name.is_none() => {
                 name = Some(item.as_str().to_owned());
             }
@@ -251,9 +253,12 @@ pub(super) fn parse_params_block(
                 }
                 deferred_count = Some(parse_section_count_inner(child)?);
             }
-            Rule::param_list => {
+            Rule::param_list | Rule::proc_param_list => {
                 for param_pair in child.into_inner() {
-                    if param_pair.as_rule() != Rule::param_decl {
+                    if !matches!(
+                        param_pair.as_rule(),
+                        Rule::param_decl | Rule::proc_param_decl
+                    ) {
                         continue;
                     }
                     let (loc, name, parsed) = parse_named_decl(
@@ -265,6 +270,7 @@ pub(super) fn parse_params_block(
                     params.push(ParamDecl {
                         loc,
                         name,
+                        pinned: parsed.pinned,
                         ty,
                         ty_loc: parsed.ty_loc,
                         default: parsed.default,
@@ -833,7 +839,7 @@ pub(super) fn parse_proc_block(
                 outs_timing = pb.output_timing;
                 outs_timing_loc = pb.output_timing_loc;
             }
-            Rule::params_block => {
+            Rule::params_block | Rule::proc_params_block => {
                 if !params.is_empty() || params_deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(&child, "duplicate proc params block")]);
                 }

@@ -273,13 +273,54 @@ Rules:
   spelled `params`
 - top-level params are readable in executable code but are not writable from top-level event handlers
 - proc constructor arguments for params are named-only
+- proc params may be prefixed with `pin` when they should be initialized and
+  updated only through the owning proc's controlled code path:
+  `pin cutoff = 1000.0`
+- `pin` is a reserved keyword. It is only valid as a proc-param prefix, not as
+  an identifier or top-level param modifier, and it applies to scalar params
+  and fixed-size array params
+- pinned params are accepted by processor constructors and the builtin
+  `proc.init(...)` event, and the owning proc may read or assign them from its
+  own `init`, `sample`, `block`, `event`, or proc-local `def` bodies
+- external direct access to pinned params is rejected: `child.cutoff`,
+  `child.cutoff = ...`, `child.coeffs[i]`, `child.coeffs[i] = ...`, and live
+  named proc call arguments such as `child(cutoff = ...)`
+- when a child proc has any pinned params, external dynamic
+  `child.params[i]` access is rejected; use a named live param for public
+  modulation, pass pinned values to the constructor or `init(...)`, or expose an
+  event/setter that preserves the proc's invariants
 - scalar parameter families can use count shorthand such as `params N`, while fixed-size parameter arrays can use types such as `T[N]`
 - `=> hook_name` is only supported on primitive scalar proc params
 - the hook target must be a proc-local `def` in the same proc, with zero parameters, no explicit return type, and no `return`
 - a bound hook runs after the param store and range clamp; construction and builtin `init(...)` run bound hooks after the proc `init` body in param declaration order
+- bound hooks are immediate per-param reactions; the compiler does not batch or coalesce hooks across multiple assignments
+- use bound hooks for single-param derived state, validation, or child-param cascades
+- use an explicit proc event or proc-local setter for coupled params that should rebuild shared state once after several values change
 - bound hooks may read owner params, update init-rooted state, and assign named params on child procs; child param hooks cascade through nested children after each child store and range clamp
 - bound hooks cannot assign owner params, inputs, outputs, child proc inputs/outputs/internal state, or child dynamic `params[i]`, and cannot call child proc receivers/events
 - when a proc has bound params, dynamic `params[i] = ...` assignments are rejected; assign the named param instead
+
+For example, a filter with coupled `cutoff` and `q` coefficients should prefer
+an event/setter over attaching the same hook to both params:
+
+```onda
+proc Filter:
+  params:
+    pin cutoff = 1000.0
+    pin q = 0.707
+
+  init:
+    coeff = 0.0
+    compute_coeffs()
+
+  def compute_coeffs():
+    coeff = cutoff / max(q, 0.01)
+
+  event set_coeffs(cutoff_v, q_v):
+    cutoff = cutoff_v
+    q = q_v
+    compute_coeffs()
+```
 
 ### 4.3 `events`
 
@@ -628,8 +669,16 @@ Rules for oversampled `sample` blocks:
 - invalid factors are semantic errors
 
 Runtime behavior of oversampling:
-- input reads are interpolated across oversample substeps
-- params are held within the base sample
+- audio input reads are interpolated across oversample substeps
+- proc `ins` are audio-rate boundaries: when an oversampled proc is called
+  from a lower-rate scope, the caller supplies one input value and the proc
+  interpolates it across its internal substeps
+- params are control-rate boundaries and are held within the base sample
+- generated signal code runs at the rate of the scope that evaluates it. For
+  example, a host-rate oscillator feeding an oversampled distortion proc is
+  evaluated once per host sample, then interpolated into the distortion proc;
+  an oscillator evaluated inside the oversampled scope runs at the oversampled
+  rate.
 - top-level `sample N` code uses the effective sample rate:
   `SR = host SR * N`
 - inside a proc, every proc-owned `SR` reference uses that proc's runtime
@@ -1486,6 +1535,8 @@ Proc call argument rules:
 - positional call arguments bind inputs only
 - named call arguments can bind either inputs or params
 - named param arguments store the clamped param value before the call runs
+- pinned params cannot be set with named proc call arguments; pass them to the
+  constructor or builtin `init(...)`, or expose an event/setter
 - if a bound param hook is attached, the hook runs after that store and before the call
 - multiple proc calls in one expression are evaluated in source order; named param stores happen at the corresponding call-argument position
 - named param arguments are not supported inside logical `&&` / `||` expressions or `while` conditions; assign the param explicitly before the proc call in those cases

@@ -29,6 +29,7 @@ enum ProcCallArgKind {
     Internal,
     Input,
     Param,
+    PinnedParam,
     Ambiguous,
     Unknown,
 }
@@ -637,6 +638,22 @@ fn collect_proc_array_call_targets(
 ) {
     if let Some(slot) = extract_proc_index_slot(args, proc_array_slots) {
         out.insert(slot);
+        return;
+    }
+
+    let base_expr = named_call_arg_expr(args, PROC_INDEX_BASE_ARG).or_else(|| {
+        args.first()
+            .filter(|arg| arg.name.is_none())
+            .map(|arg| &arg.expr)
+    });
+    let Some(Expr::Var { name: base, .. }) = base_expr else {
+        return;
+    };
+    let Some(array_base) = resolve_proc_array_base_key(base, proc_array_slots) else {
+        return;
+    };
+    if let Some(slots) = proc_array_slots.get(&array_base) {
+        out.extend(slots.iter().cloned());
     }
 }
 
@@ -1000,8 +1017,15 @@ fn proc_input_arg_names(api: &ProcApi) -> HashSet<String> {
         .collect()
 }
 
-fn proc_named_param_slots(api: &ProcApi, name: &str) -> Option<Vec<ProcParamSlotSpec>> {
+fn proc_named_param_slots(
+    api: &ProcApi,
+    name: &str,
+    include_pinned: bool,
+) -> Option<Vec<ProcParamSlotSpec>> {
     if let Some(slot) = api.params.get(name) {
+        if slot.pinned && !include_pinned {
+            return None;
+        }
         return Some(vec![slot.clone()]);
     }
 
@@ -1010,6 +1034,9 @@ fn proc_named_param_slots(api: &ProcApi, name: &str) -> Option<Vec<ProcParamSlot
         .params
         .values()
         .filter_map(|slot| {
+            if slot.pinned && !include_pinned {
+                return None;
+            }
             let rest = slot.name.strip_prefix(&prefix)?;
             let idx = rest.strip_suffix(']')?.parse::<usize>().ok()?;
             Some((idx, slot.clone()))
@@ -1022,6 +1049,35 @@ fn proc_named_param_slots(api: &ProcApi, name: &str) -> Option<Vec<ProcParamSlot
     Some(slots.into_iter().map(|(_, slot)| slot).collect())
 }
 
+fn proc_param_slots_for_api<'a>(api: &'a ProcApi, name: &str) -> Vec<&'a ProcParamSlotSpec> {
+    if let Some(slot) = api.params.get(name) {
+        return vec![slot];
+    }
+
+    let prefix = format!("{name}[");
+    let mut slots = api
+        .params
+        .values()
+        .filter_map(|slot| {
+            let rest = slot.name.strip_prefix(&prefix)?;
+            let idx = rest.strip_suffix(']')?.parse::<usize>().ok()?;
+            Some((idx, slot))
+        })
+        .collect::<Vec<_>>();
+    slots.sort_by_key(|(idx, _)| *idx);
+    slots.into_iter().map(|(_, slot)| slot).collect()
+}
+
+fn proc_param_field_is_pinned(api: &ProcApi, field: &str) -> bool {
+    proc_param_slots_for_api(api, field)
+        .into_iter()
+        .any(|slot| slot.pinned)
+}
+
+fn proc_has_pinned_params(api: &ProcApi) -> bool {
+    api.params.values().any(|slot| slot.pinned)
+}
+
 fn proc_call_arg_kind(api: &ProcApi, arg_name: Option<&str>) -> ProcCallArgKind {
     let Some(name) = arg_name else {
         return ProcCallArgKind::Input;
@@ -1030,12 +1086,14 @@ fn proc_call_arg_kind(api: &ProcApi, arg_name: Option<&str>) -> ProcCallArgKind 
         return ProcCallArgKind::Internal;
     }
     let is_input = proc_input_arg_names(api).contains(name);
-    let is_param = proc_named_param_slots(api, name).is_some();
-    match (is_input, is_param) {
-        (true, true) => ProcCallArgKind::Ambiguous,
-        (true, false) => ProcCallArgKind::Input,
-        (false, true) => ProcCallArgKind::Param,
-        (false, false) => ProcCallArgKind::Unknown,
+    let is_param = proc_named_param_slots(api, name, false).is_some();
+    let is_pinned_param = !is_param && proc_named_param_slots(api, name, true).is_some();
+    match (is_input, is_param, is_pinned_param) {
+        (_, _, true) => ProcCallArgKind::PinnedParam,
+        (true, true, false) => ProcCallArgKind::Ambiguous,
+        (true, false, false) => ProcCallArgKind::Input,
+        (false, true, false) => ProcCallArgKind::Param,
+        (false, false, false) => ProcCallArgKind::Unknown,
     }
 }
 
@@ -1475,7 +1533,7 @@ fn lower_named_proc_param_call_expr(
     let has_named_param_arg = args.iter().any(|arg| {
         matches!(
             proc_call_arg_kind(&target.api, arg.name.as_deref()),
-            ProcCallArgKind::Param | ProcCallArgKind::Ambiguous
+            ProcCallArgKind::Param | ProcCallArgKind::PinnedParam | ProcCallArgKind::Ambiguous
         )
     });
     if !has_named_param_arg {
@@ -1551,7 +1609,7 @@ fn lower_named_proc_param_call_expr(
                     );
                     continue;
                 }
-                let Some(slots) = proc_named_param_slots(&target.api, &arg_name) else {
+                let Some(slots) = proc_named_param_slots(&target.api, &arg_name, false) else {
                     continue;
                 };
                 for (slot_idx, slot) in slots.iter().enumerate() {
@@ -1580,6 +1638,18 @@ fn lower_named_proc_param_call_expr(
                     errors,
                     format!(
                         "processor call '{}(...)' named argument '{}' matches both an input and a param",
+                        target.display_name, arg_name
+                    ),
+                );
+                lowered_args.push(arg);
+            }
+            ProcCallArgKind::PinnedParam => {
+                let arg_name = arg.name.clone().unwrap_or_default();
+                push_semantic(
+                    DiagCtx::new(arg.expr.loc()),
+                    errors,
+                    format!(
+                        "processor call '{}(...)' named argument '{}' is pinned and cannot be used as a live param argument; pass it to the constructor or builtin init(...), or expose an event",
                         target.display_name, arg_name
                     ),
                 );
@@ -1680,7 +1750,9 @@ fn reject_named_proc_param_calls_in_expr(
                 let has_named_param_arg = args.iter().any(|arg| {
                     matches!(
                         proc_call_arg_kind(&target.api, arg.name.as_deref()),
-                        ProcCallArgKind::Param | ProcCallArgKind::Ambiguous
+                        ProcCallArgKind::Param
+                            | ProcCallArgKind::PinnedParam
+                            | ProcCallArgKind::Ambiguous
                     )
                 });
                 if has_named_param_arg {
@@ -2254,6 +2326,7 @@ pub(super) fn expand_proc_param_specs(
                     name: param.name.clone(),
                     slots: vec![ProcParamSlotSpec {
                         name: param.name.clone(),
+                        pinned: param.pinned,
                         ty,
                         default: Some(typed_const_expr(default)),
                         range,
@@ -2298,6 +2371,7 @@ pub(super) fn expand_proc_param_specs(
                     name: param.name.clone(),
                     slots: vec![ProcParamSlotSpec {
                         name: param.name.clone(),
+                        pinned: param.pinned,
                         ty: PrimitiveType::F32,
                         default: Some(typed_const_expr(default)),
                         range,
@@ -2376,6 +2450,7 @@ pub(super) fn expand_proc_param_specs(
                     slot_names.push(slot_name.clone());
                     slots.push(ProcParamSlotSpec {
                         name: slot_name,
+                        pinned: param.pinned,
                         ty: PrimitiveType::F32,
                         default: slot_defaults.get(idx).cloned().unwrap_or(None),
                         range: None,
@@ -2472,6 +2547,7 @@ pub(super) fn expand_proc_param_specs(
                     slot_names.push(slot_name.clone());
                     slots.push(ProcParamSlotSpec {
                         name: slot_name,
+                        pinned: param.pinned,
                         ty: *elem,
                         default: slot_defaults
                             .get(idx)
@@ -2512,10 +2588,21 @@ pub(super) fn rewrite_proc_calls_in_expr(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let expr_diag = DiagCtx::new(expr.loc());
+    let expr_loc = expr.loc();
+    let expr_diag = DiagCtx::new(expr_loc);
     match expr {
         Expr::Index { base, index, .. } => {
             rewrite_proc_calls_in_expr(index, proc_vars, proc_array_slots, proc_api, errors);
+            if reject_pinned_proc_param_read_path(
+                base,
+                expr_loc.into(),
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+                errors,
+            ) {
+                return;
+            }
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
         }
         Expr::Slice {
@@ -2526,6 +2613,16 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
             if let Some(end) = end {
                 rewrite_proc_calls_in_expr(end, proc_vars, proc_array_slots, proc_api, errors);
+            }
+            if reject_pinned_proc_param_read_path(
+                base,
+                expr_loc.into(),
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+                errors,
+            ) {
+                return;
             }
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
         }
@@ -2709,6 +2806,16 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     else {
                         return;
                     };
+                    if proc_param_field_is_pinned(&api, &field_name) {
+                        push_semantic(
+                            expr_diag,
+                            errors,
+                            format!(
+                                "processor '{proc_name}' param '{field_name}' is pinned and cannot be read through '{array_base}.{field_name}'"
+                            ),
+                        );
+                        return;
+                    }
                     let Some(out_idx) = resolve_proc_output_field_index(
                         &api,
                         &field_name,
@@ -2749,6 +2856,16 @@ pub(super) fn rewrite_proc_calls_in_expr(
                     return;
                 };
                 if let Some(param_slot) = api.params.get(&field_name) {
+                    if param_slot.pinned {
+                        push_semantic(
+                            expr_diag,
+                            errors,
+                            format!(
+                                "processor '{proc_name}' param '{field_name}' is pinned and cannot be read through '{proc_var}.{field_name}'"
+                            ),
+                        );
+                        return;
+                    }
                     *expr = Expr::var(format!("{proc_var}.{}", param_slot.name));
                     return;
                 }
@@ -2985,6 +3102,16 @@ pub(super) fn rewrite_proc_calls_in_expr(
             }
         }
         Expr::Var { name, .. } => {
+            if reject_pinned_proc_param_read_path(
+                name,
+                expr_loc.into(),
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+                errors,
+            ) {
+                return;
+            }
             normalize_proc_output_alias_path(name, proc_vars, proc_api);
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
@@ -3226,6 +3353,21 @@ fn proc_param_slot_for_receiver<'a>(
     Some((proc_name, slot))
 }
 
+fn proc_pinned_param_field_for_receiver<'a>(
+    receiver: &str,
+    field: &str,
+    proc_vars: &'a HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &'a HashMap<String, ProcApi>,
+) -> Option<(&'a str, &'a ProcApi)> {
+    let (proc_name, api) = proc_api_for_receiver(receiver, proc_vars, proc_array_slots, proc_api)?;
+    if proc_param_field_is_pinned(api, field) {
+        Some((proc_name, api))
+    } else {
+        None
+    }
+}
+
 fn proc_array_receiver_expr_base(receiver: &str, array_base: String) -> String {
     if receiver.starts_with("self.") && !array_base.starts_with("self.") {
         format!("self.{array_base}")
@@ -3433,6 +3575,22 @@ fn proc_param_slot_for_nested_path<'a>(
     Some((proc_name, slot))
 }
 
+fn proc_pinned_param_field_for_nested_path<'a>(
+    nested_path: &str,
+    field: &str,
+    proc_vars: &'a HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &'a HashMap<String, ProcApi>,
+) -> Option<(&'a str, &'a ProcApi)> {
+    let (proc_name, api) =
+        proc_api_for_nested_path(nested_path, proc_vars, proc_array_slots, proc_api)?;
+    if proc_param_field_is_pinned(api, field) {
+        Some((proc_name, api))
+    } else {
+        None
+    }
+}
+
 fn bound_proc_param_hook_stmts_for_flattened_nested_target(
     owner_proc: Option<&str>,
     nested_path: &str,
@@ -3527,6 +3685,165 @@ fn dynamic_params_assignment_target<'a>(
     Some((proc_name, api, base.clone()))
 }
 
+fn pinned_proc_param_assignment_target<'a>(
+    target: &AssignTarget,
+    proc_vars: &'a HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &'a HashMap<String, ProcApi>,
+) -> Option<(&'a str, String, String)> {
+    let (base, field) = match target {
+        AssignTarget::Var(name) => {
+            if let Some((nested_path, field)) = flattened_nested_proc_field(name, proc_vars) {
+                if let Some((proc_name, _api)) = proc_pinned_param_field_for_nested_path(
+                    &nested_path,
+                    field,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                ) {
+                    return Some((proc_name, nested_path, field.to_owned()));
+                }
+            }
+            split_receiver_field(name)?
+        }
+        AssignTarget::Index { base, .. } | AssignTarget::Slice { base, .. } => {
+            if let Some((nested_path, field)) = flattened_nested_proc_field(base, proc_vars) {
+                if let Some((proc_name, _api)) = proc_pinned_param_field_for_nested_path(
+                    &nested_path,
+                    field,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                ) {
+                    return Some((proc_name, nested_path, field.to_owned()));
+                }
+            }
+            split_receiver_field(base)?
+        }
+        AssignTarget::Tuple(_) => return None,
+    };
+    if base == "self" {
+        return None;
+    }
+    let (proc_name, _api) =
+        proc_pinned_param_field_for_receiver(base, field, proc_vars, proc_array_slots, proc_api)?;
+    Some((proc_name, base.to_owned(), field.to_owned()))
+}
+
+fn reject_pinned_proc_param_assignment(
+    target: &AssignTarget,
+    target_loc: Span,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some((proc_name, receiver, field)) =
+        pinned_proc_param_assignment_target(target, proc_vars, proc_array_slots, proc_api)
+    else {
+        return;
+    };
+    push_semantic(
+        DiagCtx::new(target_loc),
+        errors,
+        format!(
+            "processor '{proc_name}' param '{field}' is pinned and cannot be assigned through '{receiver}.{field}'; pass it to the constructor or builtin init(...), or expose an event"
+        ),
+    );
+}
+
+enum PinnedParamReadAccess<'a> {
+    Field {
+        proc_name: &'a str,
+        receiver: String,
+        field: String,
+    },
+    DynamicParams {
+        proc_name: &'a str,
+        display: String,
+    },
+}
+
+fn pinned_proc_param_read_access<'a>(
+    path: &str,
+    proc_vars: &'a HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &'a HashMap<String, ProcApi>,
+) -> Option<PinnedParamReadAccess<'a>> {
+    if let Some((nested_path, field)) = flattened_nested_proc_field(path, proc_vars) {
+        let (proc_name, api) =
+            proc_api_for_nested_path(&nested_path, proc_vars, proc_array_slots, proc_api)?;
+        if field == "params" && proc_has_pinned_params(api) {
+            return Some(PinnedParamReadAccess::DynamicParams {
+                proc_name,
+                display: format!("{nested_path}.params"),
+            });
+        }
+        if proc_param_field_is_pinned(api, field) {
+            return Some(PinnedParamReadAccess::Field {
+                proc_name,
+                receiver: nested_path,
+                field: field.to_owned(),
+            });
+        }
+    }
+
+    let (receiver, field) = split_receiver_field(path)?;
+    if receiver == "self" {
+        return None;
+    }
+    let (proc_name, api) = proc_api_for_receiver(receiver, proc_vars, proc_array_slots, proc_api)?;
+    if field == "params" && proc_has_pinned_params(api) {
+        return Some(PinnedParamReadAccess::DynamicParams {
+            proc_name,
+            display: path.to_owned(),
+        });
+    }
+    if proc_param_field_is_pinned(api, field) {
+        return Some(PinnedParamReadAccess::Field {
+            proc_name,
+            receiver: receiver.to_owned(),
+            field: field.to_owned(),
+        });
+    }
+    None
+}
+
+fn reject_pinned_proc_param_read_path(
+    path: &str,
+    loc: Span,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Some(access) = pinned_proc_param_read_access(path, proc_vars, proc_array_slots, proc_api)
+    else {
+        return false;
+    };
+    match access {
+        PinnedParamReadAccess::Field {
+            proc_name,
+            receiver,
+            field,
+        } => push_semantic(
+            DiagCtx::new(loc),
+            errors,
+            format!(
+                "processor '{proc_name}' param '{field}' is pinned and cannot be read through '{receiver}.{field}'"
+            ),
+        ),
+        PinnedParamReadAccess::DynamicParams { proc_name, display } => push_semantic(
+            DiagCtx::new(loc),
+            errors,
+            format!(
+                "processor '{proc_name}' has pinned params, so dynamic param access through '{display}[...]' is not supported"
+            ),
+        ),
+    }
+    true
+}
+
 fn reject_bound_proc_dynamic_params_assignment(
     target: &AssignTarget,
     target_loc: Span,
@@ -3540,6 +3857,16 @@ fn reject_bound_proc_dynamic_params_assignment(
     else {
         return;
     };
+    if proc_has_pinned_params(api) {
+        push_semantic(
+            DiagCtx::new(target_loc),
+            errors,
+            format!(
+                "processor '{proc_name}' has pinned params, so assignment through dynamic '{display}[...]' is not supported; assign a live named param or expose an event"
+            ),
+        );
+        return;
+    }
     if !api.has_bound_params {
         return;
     }
@@ -3756,14 +4083,24 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
             target, target_loc, ..
         } = &stmt
         {
-            reject_bound_proc_dynamic_params_assignment(
-                target,
-                *target_loc,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                errors,
-            );
+            if !skip_hook {
+                reject_pinned_proc_param_assignment(
+                    target,
+                    *target_loc,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    errors,
+                );
+                reject_bound_proc_dynamic_params_assignment(
+                    target,
+                    *target_loc,
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                    errors,
+                );
+            }
         }
         if let Stmt::Assign { target, expr, .. } = &mut stmt {
             maybe_clamp_proc_param_assignment_expr(
