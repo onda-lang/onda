@@ -16,7 +16,8 @@ use crate::ast::{
     EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl, FnParamType, FunctionDef,
     GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, LogicalOp, OutputTiming,
     ParamBlock, ParamDecl, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
-    SourceLoc, Span, Stmt, StructDef, StructField,
+    SourceLoc, Span, Stmt, StructDef, StructField, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_WRITE2_FN,
 };
 use crate::diagnostics::Diagnostic;
 
@@ -32,10 +33,52 @@ const SAFI_BASE_ARG: &str = "__safi_base";
 const SAFI_IDX_ARG: &str = "__safi_idx";
 const SAFI_FIELD_ARG: &str = "__safi_field";
 const SAFI_FIELD_IDX_ARG: &str = "__safi_field_idx";
-const BUFFER_READ2_INTERNAL_FN: &str = "__onda_buffer_read2";
-const BUFFER_WRITE2_INTERNAL_FN: &str = "__onda_buffer_write2";
 const STDLIB_AUTO_IMPORT_MODULES: &[&str] = &["std/prelude"];
 const STDLIB_MODULE_PREFIX: &str = "std/";
+
+pub const LANGUAGE_KEYWORDS: &[&str] = &[
+    "import",
+    "include",
+    "ins",
+    "inputs",
+    "outs",
+    "outputs",
+    "kouts",
+    "params",
+    "kins",
+    "events",
+    "event",
+    "buffers",
+    "init",
+    "block",
+    "sample",
+    "graph",
+    "const",
+    "def",
+    "struct",
+    "proc",
+    "processor",
+    "namespace",
+    "use",
+    "pub",
+    "as",
+    "pin",
+    "if",
+    "elif",
+    "else",
+    "for",
+    "in",
+    "while",
+    "loop",
+    "break",
+    "continue",
+    "return",
+    "assert",
+    "true",
+    "false",
+];
+
+pub const RESERVED_IDENTIFIER_WORDS: &[&str] = &["while", "break", "continue", "pin", "as", "pub"];
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
@@ -53,6 +96,37 @@ pub use module_loading::{
     parse_program_file, parse_program_file_with_overlays, parse_program_with_path,
 };
 use type_helpers::*;
+
+pub fn stdlib_module_source(module: &str) -> Option<&'static str> {
+    loading_support::builtin_std_module_source(module)
+}
+
+pub fn stdlib_module_names() -> impl Iterator<Item = &'static str> {
+    loading_support::builtin_std_module_names()
+}
+
+pub fn is_language_keyword(name: &str) -> bool {
+    LANGUAGE_KEYWORDS.contains(&name)
+}
+
+pub fn language_type_names() -> impl Iterator<Item = &'static str> {
+    PrimitiveType::ALL
+        .into_iter()
+        .map(PrimitiveType::name)
+        .chain(std::iter::once("buffer"))
+}
+
+pub fn is_language_type_name(name: &str) -> bool {
+    PrimitiveType::is_name(name) || name == "buffer"
+}
+
+pub fn is_reserved_identifier(name: &str) -> bool {
+    RESERVED_IDENTIFIER_WORDS.contains(&name)
+}
+
+pub fn is_reserved_word(name: &str) -> bool {
+    is_language_keyword(name) || is_language_type_name(name)
+}
 
 mod expr_stmt;
 use expr_stmt::*;

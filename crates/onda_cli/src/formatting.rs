@@ -8,13 +8,7 @@ use onda_frontend::{
 };
 
 pub(crate) fn primitive_type_name(ty: PrimitiveType) -> &'static str {
-    match ty {
-        PrimitiveType::F32 => "f32",
-        PrimitiveType::F64 => "f64",
-        PrimitiveType::I32 => "i32",
-        PrimitiveType::I64 => "i64",
-        PrimitiveType::Bool => "bool",
-    }
+    ty.name()
 }
 
 pub(crate) fn format_program(program: &Program) -> String {
@@ -66,6 +60,7 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
         }
         Block::Namespace(namespace) => format_namespace(namespace, indent, out),
         Block::NamespaceAlias(alias) => format_namespace_alias(alias, indent, out),
+        Block::Use(use_decl) => format_use_decl(use_decl, indent, out),
         Block::Proc(proc) => format_proc(proc, indent, out),
         Block::Struct(def) => format_struct(def, indent, out),
         Block::Def(def) => format_def(def, indent, out),
@@ -145,6 +140,7 @@ fn format_namespace_item(item: &onda_frontend::NamespaceItem, indent: usize, out
             format_namespace(namespace, indent, out)
         }
         onda_frontend::NamespaceItem::Alias(alias) => format_namespace_alias(alias, indent, out),
+        onda_frontend::NamespaceItem::Use(use_decl) => format_use_decl(use_decl, indent, out),
     }
 }
 
@@ -162,6 +158,19 @@ fn format_namespace_alias(
             format_namespace_ref(&alias.target)
         ),
     );
+}
+
+fn format_use_decl(use_decl: &onda_frontend::UseDecl, indent: usize, out: &mut String) {
+    let mut text = if use_decl.public {
+        format!("pub use {}", format_namespace_ref(&use_decl.target))
+    } else {
+        format!("use {}", format_namespace_ref(&use_decl.target))
+    };
+    if let Some(alias) = &use_decl.alias {
+        text.push_str(" as ");
+        text.push_str(alias);
+    }
+    push_line(out, indent, &text);
 }
 
 fn format_namespace_ref(segments: &[onda_frontend::NamespaceRefSegment]) -> String {
@@ -857,7 +866,7 @@ fn format_call_type_arg(arg: &CallTypeArg) -> String {
     }
 }
 
-fn format_decl_type(ty: &DeclType) -> String {
+pub(crate) fn format_decl_type(ty: &DeclType) -> String {
     match ty {
         DeclType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
         DeclType::Generic(name) => name.clone(),
@@ -909,7 +918,7 @@ fn format_array_type_spec(spec: &ArrayTypeSpec) -> String {
     format!("{elem}[{}]", format_expr(spec.size.as_ref()))
 }
 
-fn format_fn_param_type(ty: &FnParamType) -> String {
+pub(crate) fn format_fn_param_type(ty: &FnParamType) -> String {
     match ty {
         FnParamType::Primitive(ty) => primitive_type_name(*ty).to_owned(),
         FnParamType::Struct(name) => name.clone(),
@@ -929,7 +938,7 @@ fn format_fn_param_type(ty: &FnParamType) -> String {
             } else {
                 "?".to_owned()
             };
-            format!("{type_str}[{size:?}]")
+            format!("{type_str}[{}]", format_expr(size))
         }
         FnParamType::BareBuffer => "buffer".to_owned(),
         FnParamType::Tuple(elems) => {
@@ -967,7 +976,7 @@ fn format_fn_return_type(ty: &FnReturnType) -> String {
     }
 }
 
-fn format_buffer_type(ty: &BufferType) -> String {
+pub(crate) fn format_buffer_type(ty: &BufferType) -> String {
     let elem = match &ty.elem {
         BufferElemType::Primitive(ty) => primitive_type_name(*ty).to_owned(),
         BufferElemType::Generic(name) => name.clone(),
@@ -980,7 +989,7 @@ fn format_buffer_type(ty: &BufferType) -> String {
     format!("buffer[{elem}{channels}]")
 }
 
-fn format_event_param_type(ty: &EventParamType) -> String {
+pub(crate) fn format_event_param_type(ty: &EventParamType) -> String {
     match ty {
         EventParamType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
         EventParamType::GenericScalar { name } => name.clone(),
@@ -1050,26 +1059,7 @@ fn format_param_decl(param: &ParamDecl) -> String {
 }
 
 fn format_builtin_fn(func: BuiltinFn) -> &'static str {
-    match func {
-        BuiltinFn::Sin => "sin",
-        BuiltinFn::Cos => "cos",
-        BuiltinFn::Tan => "tan",
-        BuiltinFn::Tanh => "tanh",
-        BuiltinFn::Atan => "atan",
-        BuiltinFn::Atan2 => "atan2",
-        BuiltinFn::Exp => "exp",
-        BuiltinFn::Log => "log",
-        BuiltinFn::Sqrt => "sqrt",
-        BuiltinFn::Pow => "pow",
-        BuiltinFn::Abs => "abs",
-        BuiltinFn::Floor => "floor",
-        BuiltinFn::Ceil => "ceil",
-        BuiltinFn::Round => "round",
-        BuiltinFn::Trunc => "trunc",
-        BuiltinFn::Min => "min",
-        BuiltinFn::Max => "max",
-        BuiltinFn::Fma => "fma",
-    }
+    func.name()
 }
 
 fn format_binary_op(op: BinaryOp) -> &'static str {

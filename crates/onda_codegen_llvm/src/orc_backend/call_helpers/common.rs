@@ -58,62 +58,6 @@ pub(in crate::orc_backend) fn ensure_internal_buffer_2d_call_positional_arity(
     Ok(())
 }
 
-pub(in crate::orc_backend) fn parse_array_len_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = name.rsplit_once('.')?;
-    if base.is_empty() || method != "len" {
-        return None;
-    }
-    Some(base)
-}
-
-pub(in crate::orc_backend) fn parse_buffer_chans_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = name.rsplit_once('.')?;
-    if base.is_empty() || method != "chans" {
-        return None;
-    }
-    Some(base)
-}
-
-pub(in crate::orc_backend) fn parse_buffer_samplerate_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = name.rsplit_once('.')?;
-    if base.is_empty() || method != "samplerate" {
-        return None;
-    }
-    Some(base)
-}
-
-pub(in crate::orc_backend) fn parse_unsafe_read_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = name.rsplit_once('.')?;
-    if base.is_empty() || method != "unsafe_read" {
-        return None;
-    }
-    Some(base)
-}
-
-pub(in crate::orc_backend) fn parse_unsafe_write_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = name.rsplit_once('.')?;
-    if base.is_empty() || method != "unsafe_write" {
-        return None;
-    }
-    Some(base)
-}
-
-pub(in crate::orc_backend) fn parse_unsafe_read2_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = name.rsplit_once('.')?;
-    if base.is_empty() || method != "unsafe_read2" {
-        return None;
-    }
-    Some(base)
-}
-
-pub(in crate::orc_backend) fn parse_unsafe_write2_instance_base(name: &str) -> Option<&str> {
-    let (base, method) = name.rsplit_once('.')?;
-    if base.is_empty() || method != "unsafe_write2" {
-        return None;
-    }
-    Some(base)
-}
-
 pub(in crate::orc_backend) fn ensure_builtin_instance_call_no_args(
     method_name: &str,
     args: &[CallArg],
@@ -546,20 +490,13 @@ fn builtin_constant_typed_value(
     sample_rate: f32,
     block_size: f32,
 ) -> Option<ConstDefaultValue> {
-    match name {
-        "PI" | "pi" => Some(ConstDefaultValue::F64(std::f64::consts::PI)),
-        "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => {
-            Some(ConstDefaultValue::F64(2.0 * std::f64::consts::PI))
-        }
-        "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
+    match builtin_constant(name)?.value {
+        BuiltinConstantValue::Pi => Some(ConstDefaultValue::F64(std::f64::consts::PI)),
+        BuiltinConstantValue::TwoPi => Some(ConstDefaultValue::F64(2.0 * std::f64::consts::PI)),
+        BuiltinConstantValue::SampleRate | BuiltinConstantValue::HostSampleRate => {
             Some(ConstDefaultValue::F32(sample_rate))
         }
-        "HOST_SR" | "HOST_SAMPLE_RATE" | "HOST_SAMPLERATE" | "host_sample_rate"
-        | "host_samplerate" => Some(ConstDefaultValue::F32(sample_rate)),
-        "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => {
-            Some(ConstDefaultValue::I32(block_size as i32))
-        }
-        _ => None,
+        BuiltinConstantValue::BlockSize => Some(ConstDefaultValue::I32(block_size as i32)),
     }
 }
 

@@ -382,10 +382,10 @@ pub(super) unsafe fn try_lower_user_call_special_case_common<
     name: &str,
     args: &[CallArg],
 ) -> Option<Result<OrcValue, Diagnostic>> {
-    if name == "__onda_buffer_read2" {
+    if name == INTERNAL_BUFFER_READ2_FN {
         return Some(backend.lower_buffer_read2_call(args, true));
     }
-    if name == "__onda_buffer_write2" {
+    if name == INTERNAL_BUFFER_WRITE2_FN {
         return Some(backend.lower_buffer_write2_call(args, true));
     }
     if let Some(base) = parse_unsafe_read2_instance_base(name) {
@@ -400,10 +400,10 @@ pub(super) unsafe fn try_lower_user_call_special_case_common<
             return Some(backend.lower_buffer_write2_call(&method_args, false));
         }
     }
-    if name == "unsafe_read2" {
+    if name == UNSAFE_READ2_FN {
         return Some(backend.lower_buffer_read2_call(args, false));
     }
-    if name == "unsafe_write2" {
+    if name == UNSAFE_WRITE2_FN {
         return Some(backend.lower_buffer_write2_call(args, false));
     }
     if let Some(base) = parse_array_len_instance_base(name) {
@@ -433,10 +433,10 @@ pub(super) unsafe fn try_lower_user_call_special_case_common<
             return Some(backend.lower_unsafe_data_write_call(&method_args));
         }
     }
-    if name == "unsafe_read" {
+    if name == UNSAFE_READ_FN {
         return Some(backend.lower_unsafe_data_read_call(args));
     }
-    if name == "unsafe_write" {
+    if name == UNSAFE_WRITE_FN {
         return Some(backend.lower_unsafe_data_write_call(args));
     }
     None

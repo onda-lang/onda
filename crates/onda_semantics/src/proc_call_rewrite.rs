@@ -5114,13 +5114,6 @@ pub(super) fn desugar_expr_instance_method_calls(
     }
 }
 
-fn is_builtin_instance_method_name(method: &str) -> bool {
-    matches!(
-        method,
-        "len" | "chans" | "unsafe_read" | "unsafe_write" | "unsafe_read2" | "unsafe_write2"
-    )
-}
-
 pub(super) fn desugar_init_instance_method_calls(
     stmt: &mut Stmt,
     struct_instances: &mut HashMap<String, String>,

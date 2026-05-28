@@ -9,6 +9,64 @@ use super::STDLIB_MODULE_PREFIX;
 
 const ONDA_SOURCE_EXTENSIONS: &[&str] = &["onda", "on"];
 
+const BUILTIN_STD_MODULES: &[(&str, &str)] = &[
+    ("std/math", include_str!("../../../../stdlib/std/math.onda")),
+    (
+        "std/export_math",
+        include_str!("../../../../stdlib/std/export_math.onda"),
+    ),
+    (
+        "std/complex",
+        include_str!("../../../../stdlib/std/complex.onda"),
+    ),
+    ("std/osc", include_str!("../../../../stdlib/std/osc.onda")),
+    (
+        "std/filter",
+        include_str!("../../../../stdlib/std/filter.onda"),
+    ),
+    ("std/env", include_str!("../../../../stdlib/std/env.onda")),
+    (
+        "std/noise",
+        include_str!("../../../../stdlib/std/noise.onda"),
+    ),
+    (
+        "std/levels",
+        include_str!("../../../../stdlib/std/levels.onda"),
+    ),
+    ("std/mix", include_str!("../../../../stdlib/std/mix.onda")),
+    ("std/gain", include_str!("../../../../stdlib/std/gain.onda")),
+    (
+        "std/pitch",
+        include_str!("../../../../stdlib/std/pitch.onda"),
+    ),
+    (
+        "std/smoothing",
+        include_str!("../../../../stdlib/std/smoothing.onda"),
+    ),
+    (
+        "std/delay",
+        include_str!("../../../../stdlib/std/delay.onda"),
+    ),
+    ("std/data", include_str!("../../../../stdlib/std/data.onda")),
+    ("std/fft", include_str!("../../../../stdlib/std/fft.onda")),
+    (
+        "std/convolution",
+        include_str!("../../../../stdlib/std/convolution.onda"),
+    ),
+    (
+        "std/lookup",
+        include_str!("../../../../stdlib/std/lookup.onda"),
+    ),
+    (
+        "std/random",
+        include_str!("../../../../stdlib/std/random.onda"),
+    ),
+    (
+        "std/prelude",
+        include_str!("../../../../stdlib/std/prelude.onda"),
+    ),
+];
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(super) enum FileLoadMode {
     Entry,
@@ -34,28 +92,13 @@ pub(super) enum TopLevelItem {
 }
 
 pub(super) fn builtin_std_module_source(module: &str) -> Option<&'static str> {
-    match module {
-        "std/math" => Some(include_str!("../../../../stdlib/std/math.onda")),
-        "std/export_math" => Some(include_str!("../../../../stdlib/std/export_math.onda")),
-        "std/complex" => Some(include_str!("../../../../stdlib/std/complex.onda")),
-        "std/osc" => Some(include_str!("../../../../stdlib/std/osc.onda")),
-        "std/filter" => Some(include_str!("../../../../stdlib/std/filter.onda")),
-        "std/env" => Some(include_str!("../../../../stdlib/std/env.onda")),
-        "std/noise" => Some(include_str!("../../../../stdlib/std/noise.onda")),
-        "std/levels" => Some(include_str!("../../../../stdlib/std/levels.onda")),
-        "std/mix" => Some(include_str!("../../../../stdlib/std/mix.onda")),
-        "std/gain" => Some(include_str!("../../../../stdlib/std/gain.onda")),
-        "std/pitch" => Some(include_str!("../../../../stdlib/std/pitch.onda")),
-        "std/smoothing" => Some(include_str!("../../../../stdlib/std/smoothing.onda")),
-        "std/delay" => Some(include_str!("../../../../stdlib/std/delay.onda")),
-        "std/data" => Some(include_str!("../../../../stdlib/std/data.onda")),
-        "std/fft" => Some(include_str!("../../../../stdlib/std/fft.onda")),
-        "std/convolution" => Some(include_str!("../../../../stdlib/std/convolution.onda")),
-        "std/lookup" => Some(include_str!("../../../../stdlib/std/lookup.onda")),
-        "std/random" => Some(include_str!("../../../../stdlib/std/random.onda")),
-        "std/prelude" => Some(include_str!("../../../../stdlib/std/prelude.onda")),
-        _ => None,
-    }
+    BUILTIN_STD_MODULES
+        .iter()
+        .find_map(|(name, source)| (*name == module).then_some(*source))
+}
+
+pub(super) fn builtin_std_module_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN_STD_MODULES.iter().map(|(name, _)| *name)
 }
 
 pub(super) fn is_builtin_std_module_path(module: &str) -> bool {

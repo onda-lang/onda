@@ -56,10 +56,16 @@
 - Statement separators support both newline and `;`.
 - Import system is implemented:
   - `include "path.onda"` (quoted, `.onda` suffix required).
-  - `import module/path` (resolved as `module/path.onda`, imported once, declaration-only files limited to `const` / `struct` / `def` / `proc`).
+  - `import module/path` (resolved as `module/path.onda`, imported once, declaration-only files limited to `const` / `struct` / `def` / `proc` / `namespace` / `use`).
   - Built-in std modules via `import std/...` are supported from both file and in-memory source compilation paths.
 - Namespaces with `::` are supported.
 - Namespace templates are supported (`namespace Name<S = ...>: ...`) with compile-time int args, inline instantiation (`Name<...>::...`), and namespace aliases (`namespace Alias = Name<...>`).
+- `use` declarations are supported at top level and inside namespaces:
+  - `use NS` brings direct namespace members into unqualified lookup.
+  - `use NS::Symbol` brings one declaration into unqualified lookup.
+  - `use Target as Alias` aliases the whole target as either a namespace alias or symbol alias.
+  - Plain top-level `use` is private to its source file; `pub use` re-exports through imports.
+  - Explicit-use collisions are diagnosed at unqualified use sites; qualified names remain valid.
 - Surface syntax split:
   - `<>` is used for namespace instantiation, generic type specialization, and section default type modifiers on `ins` / `outs` / `params` / `init`.
   - `[]` is reserved for arrays, indexing, slices, and buffer/channel forms.
@@ -440,14 +446,22 @@
   - `textDocument/didSave` — updates and publishes diagnostics.
   - `textDocument/didClose` — closes document, clears diagnostics for the file and its transitive dependencies.
   - `textDocument/semanticTokens/full` — full semantic tokens (no incremental support).
+  - `textDocument/completion` — symbols, namespace members, receiver members, and named arguments.
+  - `textDocument/hover` — user definitions, proc calls, builtins, and language types.
+  - `textDocument/definition` — definitions for symbols, namespace paths, imports, receiver members, and named arguments.
+  - `textDocument/documentSymbol` — outline symbols for top-level and nested declarations.
 - Advertised capabilities:
   - `textDocumentSync`: open/close + full change sync + save.
+  - `completionProvider`: identifier, namespace, receiver-member, and call-argument completions.
+  - `hoverProvider`
+  - `definitionProvider`
+  - `documentSymbolProvider`
   - `semanticTokensProvider`: full semantic tokens with four token types:
     - `enumMember` — `const` names.
     - `variable` — local variables, state vars.
     - `port` — `ins`/`outs`/`buffers` port names.
     - `parameter` — `params` parameter names.
-  - No hover, completion, go-to-definition, references, or code actions are currently implemented.
+  - References, code actions, rename, formatting, and incremental semantic tokens are not implemented.
 - Diagnostics are published per-file on open and save, grouped by URI across transitive imports. Stale diagnostics from previously-erroring files are cleared.
 - Semantic tokens are computed from the parsed AST (not the typed AST), so they work even when the file has semantic errors. A regex-based fallback provides `const` highlighting when parsing fails entirely.
 

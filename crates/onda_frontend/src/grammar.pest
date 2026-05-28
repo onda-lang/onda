@@ -3,11 +3,13 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 
 program = { SOI ~ NEWLINE* ~ block* ~ EOI }
-block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | const_block | events_block | event_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | init_block | block_exec_block | sample_block | graph_block }
+block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | const_block | events_block | event_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
 
 namespace_block = { "namespace" ~ namespace_decl_head ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 namespace_alias_decl = { "namespace" ~ ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ namespace_any_ref ~ NEWLINE* }
-namespace_item = _{ assert_block | const_block | struct_block | def_block | proc_block | namespace_block | namespace_alias_decl }
+use_pub = { "pub" }
+use_decl = { use_pub? ~ "use" ~ namespace_any_ref ~ (NEWLINE* ~ "as" ~ NEWLINE* ~ ident)? ~ NEWLINE* }
+namespace_item = _{ assert_block | const_block | struct_block | def_block | proc_block | namespace_block | namespace_alias_decl | use_decl }
 namespace_decl_head = { namespace_name ~ namespace_param_list? }
 namespace_name = @{ ident ~ ("::" ~ ident)* }
 namespace_param_list = { "<" ~ namespace_param_decl ~ ("," ~ namespace_param_decl)* ~ ">" }
@@ -214,7 +216,7 @@ mul_op = { "*" | "/" | "%" }
 cmp_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" }
 
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
-keyword = _{ ("while" | "break" | "continue" | "pin") ~ !ident_char }
+keyword = _{ ("while" | "break" | "continue" | "pin" | "as" | "pub") ~ !ident_char }
 ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 int_lit = @{ ASCII_DIGIT+ }
 number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }

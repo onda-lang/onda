@@ -31,25 +31,6 @@ const SEMANTIC_TOKEN_LEGEND: &[&str] = &[
     "keyword",
 ];
 
-const BUILTIN_CONSTS: &[&str] = &[
-    "PI",
-    "pi",
-    "TWO_PI",
-    "TWOPI",
-    "two_pi",
-    "twopi",
-    "SAMPLE_RATE",
-    "SAMPLERATE",
-    "SR",
-    "sample_rate",
-    "samplerate",
-    "BLOCK_SIZE",
-    "BLOCKSIZE",
-    "BS",
-    "block_size",
-    "blocksize",
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SemanticToken {
     pub(super) line: u32,
@@ -416,18 +397,7 @@ fn is_semantic_keyword(name: &str, source_lines: &[&str], line: u32, start: u32)
     if name == "pin" {
         return true;
     }
-    if !matches!(
-        name,
-        "if" | "elif"
-            | "else"
-            | "for"
-            | "while"
-            | "loop"
-            | "break"
-            | "continue"
-            | "return"
-            | "assert"
-    ) {
+    if !onda_frontend::is_language_keyword(name) {
         return false;
     }
 

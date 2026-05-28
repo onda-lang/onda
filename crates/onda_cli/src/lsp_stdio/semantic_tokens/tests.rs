@@ -66,6 +66,20 @@ fn reserved_words_include_singular_event_keyword() {
 }
 
 #[test]
+fn builtin_host_sample_rate_alias_is_semantic_constant() {
+    let source = "sample:\n  out1 = HOST_SR\n";
+    let tokens = semantic_tokens_for_document(source, None);
+    let host_tokens = find_tokens_named(&tokens, source, "HOST_SR");
+
+    assert!(
+        host_tokens
+            .iter()
+            .any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+        "HOST_SR should use the shared builtin constant catalog: {host_tokens:?}"
+    );
+}
+
+#[test]
 fn source_declaration_scope_excludes_scoped_symbols() {
     let source = concat!(
         "proc Env:\n",

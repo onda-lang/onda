@@ -3018,6 +3018,72 @@ sample:
 }
 
 #[test]
+fn parses_top_level_use_declarations() {
+    let src = r#"
+use std::math
+use std::fft<512> as fft512
+use std::fft<1024>::FFT as FFT1024
+pub use std::random::Rng as Random
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("use declarations should parse");
+    let uses = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Use(use_decl) => Some(use_decl),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(uses.len(), 4);
+    assert_eq!(uses[0].target[0].name, "std");
+    assert_eq!(uses[0].target[1].name, "math");
+    assert_eq!(uses[0].alias, None);
+    assert!(!uses[0].public);
+    assert_eq!(uses[1].target[1].name, "fft");
+    assert_eq!(uses[1].target[1].args.as_ref().map(Vec::len), Some(1));
+    assert_eq!(uses[1].alias.as_deref(), Some("fft512"));
+    assert!(!uses[1].public);
+    assert_eq!(uses[2].target[2].name, "FFT");
+    assert_eq!(uses[2].alias.as_deref(), Some("FFT1024"));
+    assert!(!uses[2].public);
+    assert_eq!(uses[3].target[2].name, "Rng");
+    assert_eq!(uses[3].alias.as_deref(), Some("Random"));
+    assert!(uses[3].public);
+}
+
+#[test]
+fn parses_namespace_local_use_declarations() {
+    let src = r#"
+namespace DSP:
+  use std::math
+  def run(x):
+    return clamp(x, 0.0, 1.0)
+
+sample:
+  out1 = DSP::run(0.5)
+"#;
+    let program = parse_program(src).expect("namespace-local use declaration should parse");
+    let ns = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Namespace(ns) if ns.name == "DSP" => Some(ns),
+            _ => None,
+        })
+        .expect("DSP namespace");
+    assert!(ns.items.iter().any(|item| matches!(
+        item,
+        NamespaceItem::Use(use_decl)
+            if use_decl.target.len() == 2
+                && use_decl.target[0].name == "std"
+                && use_decl.target[1].name == "math"
+    )));
+}
+
+#[test]
 fn parses_namespace_template_implicit_default_instantiation() {
     let src = r#"
 namespace Data<S = SR, C = 1>:

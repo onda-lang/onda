@@ -8,11 +8,11 @@ use onda_frontend::{
     FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl,
     NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock,
     ParamDecl, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc,
-    Stmt, StructDef, StructField,
+    Stmt, StructDef, StructField, UseDecl, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
 };
 
 mod array_structs;
-mod builtins;
+pub mod builtins;
 mod decl_symbols;
 mod declaration_coercion;
 mod def_semantics;
@@ -1989,6 +1989,366 @@ sample:
             .expect("typed const array");
         assert_eq!(table.len, 3);
         assert_eq!(table.values[2], TypedConstValue::I32(30));
+    }
+
+    #[test]
+    fn use_namespace_brings_members_into_unqualified_scope() {
+        let src = r#"
+import std/math
+use std::math
+
+outs:
+  out1
+
+sample:
+  out1 = clamp(2.0, 0.0, 1.0) + lerp(0.0, 2.0, 0.25)
+"#;
+        let program = parse_program(src).expect("parse should preserve use namespace");
+        analyze(program).expect("namespace use should analyze");
+    }
+
+    #[test]
+    fn use_symbol_brings_one_member_into_unqualified_scope() {
+        let src = r#"
+import std/random
+use std::random::Rng
+
+outs:
+  out1
+
+init:
+  rng = Rng<f32>(state = 123)
+
+sample:
+  out1 = rng.next()
+"#;
+        let program = parse_program(src).expect("parse should preserve use symbol");
+        analyze(program).expect("symbol use should analyze");
+    }
+
+    #[test]
+    fn use_const_assignment_targets_resolve_to_imported_const() {
+        let src = r#"
+namespace NS:
+  const X = 1
+
+use NS::X
+
+outs:
+  out1
+
+init:
+  X = 2
+
+sample:
+  out1 = f32(X)
+"#;
+        assert_analyze_error_contains(src, "cannot assign to constant 'NS::X'");
+    }
+
+    #[test]
+    fn use_const_array_assignment_targets_resolve_to_imported_const_array() {
+        let src = r#"
+namespace NS:
+  const Table: f32[2] = [0.25, 0.5]
+
+use NS::Table
+
+outs:
+  out1
+
+sample:
+  Table[0] = 0.0
+  out1 = Table[1]
+"#;
+        assert_analyze_error_contains(src, "cannot assign to immutable array alias 'NS::Table'");
+    }
+
+    #[test]
+    fn use_namespace_aliases_can_coexist_for_template_instantiations() {
+        let src = r#"
+import std/fft
+use std::fft<8> as fft8
+use std::fft<16> as fft16
+
+outs:
+  out1
+
+init:
+  a = fft8::FFT<f32>()
+  b = fft16::FFT<f32>()
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should preserve namespace use aliases");
+        analyze(program).expect("namespace use aliases should analyze");
+    }
+
+    #[test]
+    fn use_symbol_alias_can_name_template_member() {
+        let src = r#"
+import std/fft
+use std::fft<8>::FFT as FFT8
+
+outs:
+  out1
+
+init:
+  fft = FFT8<f32>()
+
+sample:
+  out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should preserve symbol use alias");
+        analyze(program).expect("symbol use alias should analyze");
+    }
+
+    #[test]
+    fn explicit_use_collision_requires_qualified_name() {
+        let src = r#"
+import std/math
+use std::math
+
+outs:
+  out1
+
+def clamp(x, lo, hi):
+  return x
+
+sample:
+  out1 = clamp(2.0, 0.0, 1.0)
+"#;
+        assert_analyze_error_contains(src, "ambiguous unqualified symbol 'clamp'");
+    }
+
+    #[test]
+    fn explicit_use_collision_allows_qualified_name() {
+        let src = r#"
+import std/math
+use std::math
+
+outs:
+  out1
+
+def clamp(x, lo, hi):
+  return x
+
+sample:
+  out1 = std::math::clamp(2.0, 0.0, 1.0)
+"#;
+        let program = parse_program(src).expect("parse should preserve qualified use collision");
+        analyze(program).expect("qualified name should avoid explicit use ambiguity");
+    }
+
+    #[test]
+    fn use_namespace_does_not_capture_function_parameter_reads() {
+        let src = r#"
+import std/math
+use std::math
+
+outs:
+  out1
+
+def id(clamp):
+  return clamp
+
+sample:
+  out1 = id(0.5)
+"#;
+        let program = parse_program(src).expect("parse should preserve local shadowing");
+        analyze(program).expect("function parameter should shadow explicit use member");
+    }
+
+    #[test]
+    fn use_namespace_does_not_capture_local_variable_reads() {
+        let src = r#"
+import std/math
+use std::math
+
+outs:
+  out1
+
+sample:
+  clamp = 0.5
+  out1 = clamp
+"#;
+        let program = parse_program(src).expect("parse should preserve local assignment");
+        analyze(program)
+            .expect("local variable should shadow explicit use member after assignment");
+    }
+
+    #[test]
+    fn imported_private_use_is_not_reexported() {
+        let dir = mk_temp_dir("private_use_not_reexported");
+        write_file(
+            &dir.join("lib.onda"),
+            r#"
+namespace helpers:
+  def shape(x):
+    return x
+
+use helpers
+
+def shaped(x):
+  return shape(x)
+"#,
+        );
+        write_file(
+            &dir.join("main.onda"),
+            r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = shape(in1)
+"#,
+        );
+
+        let program = parse_program_file(&dir.join("main.onda")).expect("parse should load import");
+        let errors = analyze(program).expect_err("private imported use should not reexport");
+        assert!(
+            errors.iter().any(|diag| {
+                diag.message.contains("unknown symbol 'shape'")
+                    || diag.message.contains("unknown function 'shape'")
+            }),
+            "expected unknown private use symbol, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn imported_private_use_still_works_inside_imported_file() {
+        let dir = mk_temp_dir("private_use_internal");
+        write_file(
+            &dir.join("lib.onda"),
+            r#"
+namespace helpers:
+  def shape(x):
+    return x
+
+use helpers
+
+def shaped(x):
+  return shape(x)
+"#,
+        );
+        write_file(
+            &dir.join("main.onda"),
+            r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = shaped(in1)
+"#,
+        );
+
+        let program = parse_program_file(&dir.join("main.onda")).expect("parse should load import");
+        analyze(program).expect("private imported use should work inside imported file");
+    }
+
+    #[test]
+    fn imported_pub_use_is_reexported() {
+        let dir = mk_temp_dir("pub_use_reexported");
+        write_file(
+            &dir.join("lib.onda"),
+            r#"
+namespace helpers:
+  def shape(x):
+    return x
+
+pub use helpers
+"#,
+        );
+        write_file(
+            &dir.join("main.onda"),
+            r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = shape(in1)
+"#,
+        );
+
+        let program = parse_program_file(&dir.join("main.onda")).expect("parse should load import");
+        analyze(program).expect("pub use from imported file should reexport");
+    }
+
+    #[test]
+    fn imported_pub_use_alias_is_reexported() {
+        let dir = mk_temp_dir("pub_use_alias_reexported");
+        write_file(
+            &dir.join("lib.onda"),
+            r#"
+namespace helpers:
+  def shape(x):
+    return x
+
+pub use helpers as h
+"#,
+        );
+        write_file(
+            &dir.join("main.onda"),
+            r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = h::shape(in1)
+"#,
+        );
+
+        let program = parse_program_file(&dir.join("main.onda")).expect("parse should load import");
+        analyze(program).expect("pub use alias from imported file should reexport");
+    }
+
+    #[test]
+    fn imported_private_use_alias_is_file_scoped() {
+        let dir = mk_temp_dir("private_use_alias_scoped");
+        write_file(
+            &dir.join("lib.onda"),
+            r#"
+namespace helpers:
+  def shape(x):
+    return x
+
+use helpers as h
+
+def shaped(x):
+  return h::shape(x)
+"#,
+        );
+        write_file(
+            &dir.join("main.onda"),
+            r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = h::shape(in1)
+"#,
+        );
+
+        let program = parse_program_file(&dir.join("main.onda")).expect("parse should load import");
+        let errors = analyze(program).expect_err("private imported alias should not reexport");
+        assert!(
+            errors.iter().any(|diag| {
+                diag.message.contains("unknown namespace 'h'")
+                    || diag.message.contains("unknown symbol 'h'")
+            }),
+            "expected unknown private alias, got {errors:?}"
+        );
     }
 
     #[test]
@@ -4581,6 +4941,134 @@ sample:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         analyze(program).expect("generic proc array defaults should analyze");
+    }
+
+    #[test]
+    fn uninstantiated_generic_proc_rejects_unknown_forwarded_ctor_type_arg() {
+        let src = r#"
+proc Child<T>:
+  outs<T> 1
+  sample:
+    out1 = 0.0
+
+proc Wrapper<T>:
+  init:
+    child = Child<thisisnotvalid>()
+  sample:
+    child()
+"#;
+
+        assert_analyze_error_contains(src, "unknown generic type argument 'thisisnotvalid'");
+    }
+
+    #[test]
+    fn uninstantiated_generic_proc_allows_declared_forwarded_ctor_type_arg() {
+        let src = r#"
+proc Child<T>:
+  outs<T> 1
+  sample:
+    out1 = 0.0
+
+proc Wrapper<T>:
+  init:
+    child = Child<T>()
+  sample:
+    child()
+"#;
+
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("declared forwarded generic type arg should analyze");
+    }
+
+    #[test]
+    fn uninstantiated_namespace_template_proc_rejects_unknown_forwarded_ctor_type_arg() {
+        let src = r#"
+namespace dsp:
+  proc Child<T>:
+    outs<T> 1
+    sample:
+      out1 = 0.0
+
+  namespace Wrap<N = 4>:
+    namespace Mono:
+      proc Parent<T>:
+        init:
+          child = Child<thisisnotvalid>()
+        sample:
+          child()
+"#;
+
+        assert_analyze_error_contains(src, "unknown generic type argument 'thisisnotvalid'");
+    }
+
+    #[test]
+    fn uninstantiated_namespace_template_proc_allows_declared_forwarded_ctor_type_arg() {
+        let src = r#"
+namespace dsp:
+  proc Child<T>:
+    outs<T> 1
+    sample:
+      out1 = 0.0
+
+  namespace Wrap<N = 4>:
+    namespace Mono:
+      proc Parent<T>:
+        init:
+          child = Child<T>()
+        sample:
+          child()
+"#;
+
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("declared forwarded namespace template type arg should analyze");
+    }
+
+    #[test]
+    fn uninstantiated_namespace_template_proc_rejects_unknown_template_member() {
+        let src = r#"
+import std/convolution
+
+namespace Test<FFTSize = 64, MaxKernel = 1024>:
+  proc Wrapper<T>:
+    outs<T> 1
+    init:
+      t = std::convolution<FFTSize, MaxKernel>::nope
+    sample:
+      out1 = 0.0
+"#;
+
+        assert_analyze_error_contains(src, "unknown symbol 'nope' in namespace 'std::convolution'");
+    }
+
+    #[test]
+    fn uninstantiated_namespace_template_proc_rejects_unknown_static_array_size() {
+        let src = r#"
+namespace Test<MaxKernel = 1024>:
+  proc Wrapper<T>:
+    outs<T> 1
+    init:
+      current_ir: T[MaxKrnel]
+    sample:
+      out1 = 0.0
+"#;
+
+        assert_analyze_error_contains(src, "unknown constant 'MaxKrnel'");
+    }
+
+    #[test]
+    fn uninstantiated_namespace_template_proc_allows_declared_static_array_size() {
+        let src = r#"
+namespace Test<MaxKernel = 1024>:
+  proc Wrapper<T>:
+    outs<T> 1
+    init:
+      current_ir: T[MaxKernel]
+    sample:
+      out1 = 0.0
+"#;
+
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("declared namespace template size should analyze");
     }
 
     #[test]

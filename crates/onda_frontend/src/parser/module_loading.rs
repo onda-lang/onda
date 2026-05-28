@@ -37,6 +37,7 @@ fn block_decl_name(block: &Block) -> Option<&str> {
         Block::Const(c) => Some(c.name.as_str()),
         Block::Namespace(ns) => Some(ns.name.as_str()),
         Block::NamespaceAlias(alias) => Some(alias.name.as_str()),
+        Block::Use(_) => None,
         Block::Struct(s) => Some(s.name.as_str()),
         Block::Def(d) => Some(d.name.as_str()),
         Block::Proc(p) => Some(p.name.as_str()),
@@ -275,6 +276,9 @@ fn parse_program_preprocessed(
                 Rule::namespace_alias_decl => {
                     blocks.push(Block::NamespaceAlias(parse_namespace_alias_decl_ast(pair)?));
                 }
+                Rule::use_decl => {
+                    blocks.push(Block::Use(parse_use_decl_ast(pair)?));
+                }
                 Rule::init_block => blocks.push(Block::Init(parse_exec_block(pair)?)),
                 Rule::block_exec_block => blocks.push(Block::Block(parse_block_exec_block(pair)?)),
                 Rule::sample_block => blocks.push(Block::Sample(parse_sample_block(pair)?)),
@@ -461,11 +465,12 @@ fn load_program_blocks_from_file(
                         | Block::Proc(_)
                         | Block::Namespace(_)
                         | Block::NamespaceAlias(_)
+                        | Block::Use(_)
                 ) {
                     return Err(annotate_diagnostics_with_file(
                         vec![Diagnostic::semantic_span(
                             format!(
-                                "imported file '{}' can only contain const/struct/def/proc declarations",
+                                "imported file '{}' can only contain const/struct/def/proc/namespace/use declarations",
                                 display_path(&canonical)
                             ),
                             block.loc(),
@@ -629,11 +634,12 @@ fn load_builtin_module_blocks(
                         | Block::Proc(_)
                         | Block::Namespace(_)
                         | Block::NamespaceAlias(_)
+                        | Block::Use(_)
                 ) {
                     return Err(annotate_diagnostics_with_file(
                         vec![Diagnostic::semantic_span(
                             format!(
-                                "imported built-in std module '{module}' can only contain const/struct/def/proc declarations"
+                                "imported built-in std module '{module}' can only contain const/struct/def/proc/namespace/use declarations"
                             ),
                             block.loc(),
                         )],

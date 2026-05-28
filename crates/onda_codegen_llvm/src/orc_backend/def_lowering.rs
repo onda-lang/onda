@@ -484,11 +484,11 @@ pub(super) unsafe fn lower_def_buffer_read2_call(
 ) -> Result<OrcValue, Diagnostic> {
     ensure_internal_buffer_2d_call_positional_arity(
         args,
-        "__onda_buffer_read2",
+        INTERNAL_BUFFER_READ2_FN,
         3,
         "def lowering",
     )?;
-    let base = builtin_data_call_base_symbol(args, "__onda_buffer_read2", "def lowering")?;
+    let base = builtin_data_call_base_symbol(args, INTERNAL_BUFFER_READ2_FN, "def lowering")?;
     let ch_expr = &args[1].expr;
     let sample_expr = &args[2].expr;
     let data = lower_def_buffer_element_ptr_2d(ctx, base, ch_expr, sample_expr, clamp_index)?;
@@ -510,11 +510,11 @@ pub(super) unsafe fn lower_def_buffer_write2_call(
 ) -> Result<OrcValue, Diagnostic> {
     ensure_internal_buffer_2d_call_positional_arity(
         args,
-        "__onda_buffer_write2",
+        INTERNAL_BUFFER_WRITE2_FN,
         4,
         "def lowering",
     )?;
-    let base = builtin_data_call_base_symbol(args, "__onda_buffer_write2", "def lowering")?;
+    let base = builtin_data_call_base_symbol(args, INTERNAL_BUFFER_WRITE2_FN, "def lowering")?;
     let ch_expr = &args[1].expr;
     let sample_expr = &args[2].expr;
     let value_expr = &args[3].expr;

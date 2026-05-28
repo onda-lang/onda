@@ -52,6 +52,7 @@ The main top-level blocks are:
 - `struct`
 - `proc` / `processor`
 - `namespace`
+- `use`
 
 You will also see file-level declarations that are not blocks:
 - `import module/path`
@@ -60,7 +61,7 @@ You will also see file-level declarations that are not blocks:
 There are two big categories:
 
 - Declaration blocks
-  - `ins`, `params`, `events` / `event`, `buffers`, `outs`, `const`, `def`, `struct`, `proc`, `namespace`
+  - `ins`, `params`, `events` / `event`, `buffers`, `outs`, `const`, `def`, `struct`, `proc`, `namespace`, `use`
 - Executable blocks
   - `init`, `block`, `sample`, `graph`
 
@@ -1687,7 +1688,7 @@ Current built-in std modules include:
 Today it brings in `std/math`, `std/lookup`, and `std/random`.
 
 Current imported-file restriction:
-- declaration-only files are limited to `const`, `struct`, `def`, and `proc`
+- declaration-only files are limited to `const`, `struct`, `def`, `proc`, `namespace`, and `use`
 
 ### 10.2 `include`
 
@@ -1821,6 +1822,58 @@ init:
 Related notes:
 - ordinary `const` values can also be used in array sizes and section counts
 - namespace consts can be derived from namespace integer params and reused elsewhere
+
+### 10.6 `use`
+
+Use declarations bring namespace members into unqualified lookup without changing how modules are loaded.
+Use `import` first when the target lives in another module.
+
+```onda
+import std/math
+import std/random
+import std/fft
+
+use std::math
+use std::random::Rng
+use std::fft<512> as fft512
+use std::fft<1024> as fft1024
+pub use std::lookup
+
+init:
+  rng = Rng<f32>()
+  a = fft512::FFT<f32>()
+  b = fft1024::FFT<f32>()
+
+sample:
+  out1 = clamp(in1, -1.0, 1.0)
+```
+
+Forms:
+- `use Namespace` brings all direct declarations in that namespace into unqualified lookup
+- `use Namespace::Symbol` brings one declaration into unqualified lookup
+- `use Namespace as Alias` creates a namespace alias, so use sites keep `Alias::...`
+- `use Namespace::Symbol as Alias` creates a symbol alias
+- `pub use ...` re-exports the use declaration through imports
+
+Rules:
+- `as` applies only to the whole `use` declaration
+- `use` is allowed at top level and inside `namespace`
+- plain top-level `use` is private to the source file where it appears
+- imported files expose only `pub use` declarations to the importing file
+- fully qualified paths always keep working
+- explicit `use` collisions are errors at unqualified use sites; qualify the name to disambiguate
+
+```onda
+import std/math
+use std::math
+
+def clamp(x, lo, hi):
+  return x
+
+sample:
+  # clamp(...) is ambiguous here
+  out1 = std::math::clamp(in1, 0.0, 1.0)
+```
 
 ## 11. Examples that put it all together
 

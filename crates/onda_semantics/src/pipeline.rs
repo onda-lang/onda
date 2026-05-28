@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 use onda_frontend::Span;
 
-use crate::builtins::HOST_SAMPLE_RATE_CONSTANT_NAMES;
 use crate::processor_lowering::{
     coerce_typed_events, collect_runtime_state_roots, desugar_processors,
     internal_proc_index_call_signature, lower_graph_blocks, nested_call_out_fn_name,
@@ -115,14 +114,8 @@ fn const_array_literal_expr(values: &[TypedConstValue], loc: SourceLoc) -> Expr 
 }
 
 fn host_sr_const_map(options: AnalysisOptions) -> HashMap<String, TypedConstValue> {
-    HOST_SAMPLE_RATE_CONSTANT_NAMES
-        .iter()
-        .map(|name| {
-            (
-                (*name).to_owned(),
-                TypedConstValue::F32(options.sample_rate),
-            )
-        })
+    host_sample_rate_constant_names()
+        .map(|name| (name.to_owned(), TypedConstValue::F32(options.sample_rate)))
         .collect()
 }
 
@@ -258,6 +251,12 @@ fn fold_host_sr_namespace_alias(
     }
 }
 
+fn fold_host_sr_use(use_decl: &mut UseDecl, consts: &HashMap<String, TypedConstValue>) {
+    for segment in &mut use_decl.target {
+        fold_host_sr_namespace_ref_segment(segment, consts);
+    }
+}
+
 fn fold_host_sr_namespace(
     namespace: &mut NamespaceDecl,
     consts: &HashMap<String, TypedConstValue>,
@@ -276,6 +275,7 @@ fn fold_host_sr_namespace(
             NamespaceItem::Proc(proc) => fold_host_sr_proc(proc, consts),
             NamespaceItem::Namespace(inner) => fold_host_sr_namespace(inner, consts),
             NamespaceItem::Alias(alias) => fold_host_sr_namespace_alias(alias, consts),
+            NamespaceItem::Use(use_decl) => fold_host_sr_use(use_decl, consts),
         }
     }
 }
@@ -384,6 +384,7 @@ fn fold_host_sr_block(block: &mut Block, consts: &HashMap<String, TypedConstValu
         }
         Block::Namespace(namespace) => fold_host_sr_namespace(namespace, consts),
         Block::NamespaceAlias(alias) => fold_host_sr_namespace_alias(alias, consts),
+        Block::Use(use_decl) => fold_host_sr_use(use_decl, consts),
         Block::Proc(proc) => fold_host_sr_proc(proc, consts),
         Block::Struct(struct_def) => fold_host_sr_struct(struct_def, consts),
         Block::Def(def) => fold_host_sr_function(def, consts),
@@ -3627,7 +3628,11 @@ fn reject_forward_const_refs_in_block(
                 reject_forward_const_refs_function(def, visible_consts, future_consts, errors);
             }
         }
-        Block::Const(_) | Block::Def(_) | Block::Namespace(_) | Block::NamespaceAlias(_) => {}
+        Block::Const(_)
+        | Block::Def(_)
+        | Block::Namespace(_)
+        | Block::NamespaceAlias(_)
+        | Block::Use(_) => {}
     }
 }
 
@@ -3799,7 +3804,11 @@ fn fold_const_array_exprs_in_block(
                 fold_function_const_arrays(def, const_values, options, errors);
             }
         }
-        Block::Const(_) | Block::Def(_) | Block::Namespace(_) | Block::NamespaceAlias(_) => {}
+        Block::Const(_)
+        | Block::Def(_)
+        | Block::Namespace(_)
+        | Block::NamespaceAlias(_)
+        | Block::Use(_) => {}
     }
 }
 
@@ -4069,7 +4078,8 @@ fn reject_const_shadowing_in_program(
             | Block::Def(_)
             | Block::Assert(_)
             | Block::Namespace(_)
-            | Block::NamespaceAlias(_) => {}
+            | Block::NamespaceAlias(_)
+            | Block::Use(_) => {}
         }
     }
 }
@@ -4198,7 +4208,8 @@ fn reject_const_assignments_in_program(
             | Block::Const(_)
             | Block::Assert(_)
             | Block::Namespace(_)
-            | Block::NamespaceAlias(_) => {}
+            | Block::NamespaceAlias(_)
+            | Block::Use(_) => {}
         }
     }
 }
@@ -4944,7 +4955,11 @@ fn fold_direct_const_def_calls_in_block(
                 fold_direct_const_def_function(def, artifacts, options, errors);
             }
         }
-        Block::Const(_) | Block::Def(_) | Block::Namespace(_) | Block::NamespaceAlias(_) => {}
+        Block::Const(_)
+        | Block::Def(_)
+        | Block::Namespace(_)
+        | Block::NamespaceAlias(_)
+        | Block::Use(_) => {}
     }
 }
 
@@ -5836,7 +5851,11 @@ fn preprocess_local_consts_in_block(
                 );
             }
         }
-        Block::Const(_) | Block::Def(_) | Block::Namespace(_) | Block::NamespaceAlias(_) => {}
+        Block::Const(_)
+        | Block::Def(_)
+        | Block::Namespace(_)
+        | Block::NamespaceAlias(_)
+        | Block::Use(_) => {}
     }
 }
 
@@ -10117,7 +10136,7 @@ fn mark_readonly_param_expr_uses_as_mutable(
 ) {
     match expr {
         Expr::UserCall { name, args, .. } => {
-            if name == "unsafe_write" {
+            if name == UNSAFE_WRITE_FN {
                 if let Some(source_param) = args
                     .first()
                     .and_then(|arg| readonly_alias_source(&arg.expr, aliases))
@@ -10125,7 +10144,7 @@ fn mark_readonly_param_expr_uses_as_mutable(
                     mutable_params.insert(source_param.to_owned());
                 }
             } else if let Some((base, method)) = name.rsplit_once('.') {
-                if method == "unsafe_write" {
+                if method == UNSAFE_WRITE_FN {
                     if let Some(source_param) = aliases.get(base) {
                         mutable_params.insert(source_param.clone());
                     }

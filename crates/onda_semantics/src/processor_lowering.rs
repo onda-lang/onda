@@ -12,6 +12,7 @@ mod nested_proc_lowering;
 mod proc_local_defs;
 mod shape_helpers;
 use generated_blocks::*;
+pub(crate) use generic_proc_rewrite::validate_generic_proc_template_forwarded_type_args;
 use generic_proc_rewrite::*;
 use global_proc_rewrite::*;
 pub(crate) use graph_lowering::*;

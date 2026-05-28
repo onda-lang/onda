@@ -12,12 +12,12 @@ pub(in crate::orc_backend) unsafe fn lower_orc_buffer_read2_call(
 ) -> Result<OrcValue, Diagnostic> {
     ensure_internal_buffer_2d_call_positional_arity(
         args,
-        "__onda_buffer_read2",
+        INTERNAL_BUFFER_READ2_FN,
         3,
         "ORC expression lowering",
     )?;
     let base =
-        builtin_data_call_base_symbol(args, "__onda_buffer_read2", "ORC expression lowering")?;
+        builtin_data_call_base_symbol(args, INTERNAL_BUFFER_READ2_FN, "ORC expression lowering")?;
     let ch_expr = &args[1].expr;
     let sample_expr = &args[2].expr;
     let data = lower_buffer_element_ptr_2d(
@@ -53,12 +53,12 @@ pub(in crate::orc_backend) unsafe fn lower_orc_buffer_write2_call(
 ) -> Result<OrcValue, Diagnostic> {
     ensure_internal_buffer_2d_call_positional_arity(
         args,
-        "__onda_buffer_write2",
+        INTERNAL_BUFFER_WRITE2_FN,
         4,
         "ORC expression lowering",
     )?;
     let base =
-        builtin_data_call_base_symbol(args, "__onda_buffer_write2", "ORC expression lowering")?;
+        builtin_data_call_base_symbol(args, INTERNAL_BUFFER_WRITE2_FN, "ORC expression lowering")?;
     let ch_expr = &args[1].expr;
     let sample_expr = &args[2].expr;
     let value_expr = &args[3].expr;
@@ -97,8 +97,8 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_read_call(
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
     local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    ensure_builtin_data_call_positional_arity(args, "unsafe_read", 2, "ORC expression lowering")?;
-    let base = builtin_data_call_base_symbol(args, "unsafe_read", "ORC expression lowering")?;
+    ensure_builtin_data_call_positional_arity(args, UNSAFE_READ_FN, 2, "ORC expression lowering")?;
+    let base = builtin_data_call_base_symbol(args, UNSAFE_READ_FN, "ORC expression lowering")?;
     let index_expr = &args[1].expr;
     if let Some(info) = ctx.input_arrays.get(base).copied() {
         return lower_input_array_index_read(
@@ -195,8 +195,8 @@ pub(in crate::orc_backend) unsafe fn lower_orc_unsafe_data_write_call(
     local_array_aliases: &HashMap<String, LocalArrayAlias>,
     local_tuples: &HashMap<String, Vec<PrimitiveType>>,
 ) -> Result<OrcValue, Diagnostic> {
-    ensure_builtin_data_call_positional_arity(args, "unsafe_write", 3, "ORC expression lowering")?;
-    let base = builtin_data_call_base_symbol(args, "unsafe_write", "ORC expression lowering")?;
+    ensure_builtin_data_call_positional_arity(args, UNSAFE_WRITE_FN, 3, "ORC expression lowering")?;
+    let base = builtin_data_call_base_symbol(args, UNSAFE_WRITE_FN, "ORC expression lowering")?;
     let index_expr = &args[1].expr;
     let value_expr = &args[2].expr;
     if ctx.input_arrays.contains_key(base)
@@ -288,8 +288,8 @@ pub(in crate::orc_backend) unsafe fn lower_def_unsafe_data_read_call(
     args: &[CallArg],
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<OrcValue, Diagnostic> {
-    ensure_builtin_data_call_positional_arity(args, "unsafe_read", 2, "def lowering")?;
-    let base = builtin_data_call_base_symbol(args, "unsafe_read", "def lowering")?;
+    ensure_builtin_data_call_positional_arity(args, UNSAFE_READ_FN, 2, "def lowering")?;
+    let base = builtin_data_call_base_symbol(args, UNSAFE_READ_FN, "def lowering")?;
     let data = lower_def_data_element_ptr(ctx, base, &args[1].expr, false)?;
     Ok(OrcValue {
         value: LLVMBuildLoad2(
@@ -306,8 +306,8 @@ pub(in crate::orc_backend) unsafe fn lower_def_unsafe_data_write_call(
     args: &[CallArg],
     ctx: &mut DefLoweringCtx<'_>,
 ) -> Result<OrcValue, Diagnostic> {
-    ensure_builtin_data_call_positional_arity(args, "unsafe_write", 3, "def lowering")?;
-    let base = builtin_data_call_base_symbol(args, "unsafe_write", "def lowering")?;
+    ensure_builtin_data_call_positional_arity(args, UNSAFE_WRITE_FN, 3, "def lowering")?;
+    let base = builtin_data_call_base_symbol(args, UNSAFE_WRITE_FN, "def lowering")?;
     if ctx.const_array_names.contains(base) {
         return Err(Diagnostic::internal(format!(
             "unsafe_write cannot target const array '{base}' in def lowering"

@@ -25,6 +25,7 @@ pub enum Block {
     Assert(AssertDecl),
     Namespace(NamespaceDecl),
     NamespaceAlias(NamespaceAliasDecl),
+    Use(UseDecl),
     Proc(ProcessorDef),
     Struct(StructDef),
     Def(FunctionDef),
@@ -47,6 +48,7 @@ impl Block {
             Self::Assert(_) => BlockKind::Assert,
             Self::Namespace(_) => BlockKind::Namespace,
             Self::NamespaceAlias(_) => BlockKind::NamespaceAlias,
+            Self::Use(_) => BlockKind::Use,
             Self::Proc(_) => BlockKind::Proc,
             Self::Struct(_) => BlockKind::Struct,
             Self::Def(_) => BlockKind::Def,
@@ -67,6 +69,7 @@ impl Block {
             Self::Assert(assert_decl) => assert_decl.loc.into(),
             Self::Namespace(namespace) => namespace.loc.into(),
             Self::NamespaceAlias(alias) => alias.loc.into(),
+            Self::Use(use_decl) => use_decl.loc.into(),
             Self::Proc(proc_def) => proc_def.loc.into(),
             Self::Struct(struct_def) => struct_def.loc.into(),
             Self::Def(def) => def.loc.into(),
@@ -90,6 +93,7 @@ pub enum BlockKind {
     Assert,
     Namespace,
     NamespaceAlias,
+    Use,
     Proc,
     Struct,
     Def,
@@ -452,6 +456,7 @@ pub enum NamespaceItem {
     Proc(ProcessorDef),
     Namespace(NamespaceDecl),
     Alias(NamespaceAliasDecl),
+    Use(UseDecl),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -459,6 +464,14 @@ pub struct NamespaceAliasDecl {
     pub loc: Span,
     pub name: String,
     pub target: Vec<NamespaceRefSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UseDecl {
+    pub loc: Span,
+    pub target: Vec<NamespaceRefSegment>,
+    pub alias: Option<String>,
+    pub public: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -523,6 +536,35 @@ pub enum PrimitiveType {
     I64,
     Bool,
 }
+
+impl PrimitiveType {
+    pub const ALL: [Self; 5] = [Self::F32, Self::F64, Self::I32, Self::I64, Self::Bool];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::Bool => "bool",
+        }
+    }
+
+    pub fn from_name(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|ty| ty.name() == text)
+    }
+
+    pub fn is_name(text: &str) -> bool {
+        Self::from_name(text).is_some()
+    }
+
+    pub fn is_numeric(self) -> bool {
+        !matches!(self, Self::Bool)
+    }
+}
+
+pub const INTERNAL_BUFFER_READ2_FN: &str = "__onda_buffer_read2";
+pub const INTERNAL_BUFFER_WRITE2_FN: &str = "__onda_buffer_write2";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstType {
@@ -1566,6 +1608,96 @@ pub enum BuiltinFn {
     Min,
     Max,
     Fma,
+}
+
+impl BuiltinFn {
+    pub const ALL: [Self; 18] = [
+        Self::Sin,
+        Self::Cos,
+        Self::Tan,
+        Self::Tanh,
+        Self::Atan,
+        Self::Atan2,
+        Self::Exp,
+        Self::Log,
+        Self::Sqrt,
+        Self::Pow,
+        Self::Abs,
+        Self::Floor,
+        Self::Ceil,
+        Self::Round,
+        Self::Trunc,
+        Self::Min,
+        Self::Max,
+        Self::Fma,
+    ];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "sin" => Some(Self::Sin),
+            "cos" => Some(Self::Cos),
+            "tan" => Some(Self::Tan),
+            "tanh" => Some(Self::Tanh),
+            "atan" => Some(Self::Atan),
+            "atan2" => Some(Self::Atan2),
+            "exp" => Some(Self::Exp),
+            "log" => Some(Self::Log),
+            "sqrt" => Some(Self::Sqrt),
+            "pow" => Some(Self::Pow),
+            "abs" | "fabs" => Some(Self::Abs),
+            "floor" => Some(Self::Floor),
+            "ceil" => Some(Self::Ceil),
+            "round" => Some(Self::Round),
+            "trunc" => Some(Self::Trunc),
+            "min" => Some(Self::Min),
+            "max" => Some(Self::Max),
+            "fma" => Some(Self::Fma),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Sin => "sin",
+            Self::Cos => "cos",
+            Self::Tan => "tan",
+            Self::Tanh => "tanh",
+            Self::Atan => "atan",
+            Self::Atan2 => "atan2",
+            Self::Exp => "exp",
+            Self::Log => "log",
+            Self::Sqrt => "sqrt",
+            Self::Pow => "pow",
+            Self::Abs => "abs",
+            Self::Floor => "floor",
+            Self::Ceil => "ceil",
+            Self::Round => "round",
+            Self::Trunc => "trunc",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::Fma => "fma",
+        }
+    }
+
+    pub fn arity(self) -> usize {
+        match self {
+            Self::Sin
+            | Self::Cos
+            | Self::Tan
+            | Self::Tanh
+            | Self::Atan
+            | Self::Exp
+            | Self::Log
+            | Self::Sqrt
+            | Self::Abs
+            | Self::Floor
+            | Self::Ceil
+            | Self::Round
+            | Self::Trunc => 1,
+            Self::Pow | Self::Atan2 | Self::Min | Self::Max => 2,
+            Self::Fma => 3,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

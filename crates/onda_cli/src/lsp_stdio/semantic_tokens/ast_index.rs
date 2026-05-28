@@ -4,15 +4,16 @@ use std::path::Path;
 use onda_frontend::{
     AssignTarget, Block, BlockExec, EventDef, FunctionDef, ProcessorDef, Program, Span, Stmt,
 };
+use onda_semantics::builtins::builtin_constant_names;
 
-use super::{SemanticScope, SemanticScopeIndex, BUILTIN_CONSTS};
+use super::{SemanticScope, SemanticScopeIndex};
 
 pub(super) fn build_semantic_scope_index(
     program: &Program,
     current_file_key: Option<&str>,
 ) -> SemanticScopeIndex {
     let mut index = SemanticScopeIndex::default();
-    for &name in BUILTIN_CONSTS {
+    for name in builtin_constant_names() {
         index.document_scope.consts.insert(name.to_owned());
     }
 

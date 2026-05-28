@@ -32,9 +32,17 @@ use llvm_sys::transforms::pass_builder::{
 use llvm_sys::{LLVMFastMathFlags, LLVMFastMathNone, LLVMIntPredicate, LLVMRealPredicate};
 use onda_frontend::{
     AssignTarget, BinaryOp, BuiltinFn, CallArg, CallTypeArg, CmpOp, Diagnostic, Expr, LogicalOp,
-    PrimitiveType, Stmt,
+    PrimitiveType, Stmt, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
 };
 use onda_semantics::{
+    builtins::{
+        builtin_constant, builtin_constant_type, is_builtin_buffer_2d_unsafe_fn,
+        is_builtin_unsafe_data_fn, parse_array_len_instance_base, parse_buffer_chans_instance_base,
+        parse_buffer_samplerate_instance_base, parse_unsafe_read2_instance_base,
+        parse_unsafe_read_instance_base, parse_unsafe_write2_instance_base,
+        parse_unsafe_write_instance_base, BuiltinConstantValue, UNSAFE_READ2_FN, UNSAFE_READ_FN,
+        UNSAFE_WRITE2_FN, UNSAFE_WRITE_FN,
+    },
     internal_names::{
         sanitize_runtime_symbol_component, PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL,
         PROC_INDEX_EXPR_ARG,

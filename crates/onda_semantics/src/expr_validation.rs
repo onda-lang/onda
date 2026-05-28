@@ -934,7 +934,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         });
                         method_args.extend(args.iter().cloned());
                         validate_unsafe_data_builtin_call(
-                            "unsafe_read",
+                            UNSAFE_READ_FN,
                             &method_args,
                             env,
                             expr.loc(),
@@ -952,7 +952,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         });
                         method_args.extend(args.iter().cloned());
                         validate_unsafe_data_builtin_call(
-                            "unsafe_write",
+                            UNSAFE_WRITE_FN,
                             &method_args,
                             env,
                             expr.loc(),
@@ -970,7 +970,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         });
                         method_args.extend(args.iter().cloned());
                         validate_buffer_2d_unsafe_call(
-                            "unsafe_read2",
+                            UNSAFE_READ2_FN,
                             &method_args,
                             env,
                             expr.loc(),
@@ -988,7 +988,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         });
                         method_args.extend(args.iter().cloned());
                         validate_buffer_2d_unsafe_call(
-                            "unsafe_write2",
+                            UNSAFE_WRITE2_FN,
                             &method_args,
                             env,
                             expr.loc(),
@@ -1861,8 +1861,8 @@ fn validate_buffer_2d_unsafe_call(
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let is_read = matches!(name, INTERNAL_BUFFER_READ2_FN | "unsafe_read2");
-    let is_write = matches!(name, INTERNAL_BUFFER_WRITE2_FN | "unsafe_write2");
+    let is_read = matches!(name, INTERNAL_BUFFER_READ2_FN) || name == UNSAFE_READ2_FN;
+    let is_write = matches!(name, INTERNAL_BUFFER_WRITE2_FN) || name == UNSAFE_WRITE2_FN;
     let expected_arity = if is_read { 3 } else { 4 };
     let label = if is_internal_buffer_2d_fn(name) {
         "internal builtin"
@@ -2162,7 +2162,7 @@ fn validate_unsafe_data_builtin_call(
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let expected_arity = if name == "unsafe_read" { 2 } else { 3 };
+    let expected_arity = if name == UNSAFE_READ_FN { 2 } else { 3 };
     if args.len() != expected_arity {
         push_loc_error(
             errors,
@@ -2201,7 +2201,7 @@ fn validate_unsafe_data_builtin_call(
                         )),
                     );
                 }
-                if name == "unsafe_write"
+                if name == UNSAFE_WRITE_FN
                     && env
                         .local_array_aliases
                         .get(base)
@@ -2323,7 +2323,7 @@ fn validate_unsafe_data_builtin_call(
     if let Some(index_arg) = args.get(1) {
         validate_expr(&index_arg.expr, env, errors);
     }
-    if name == "unsafe_write" {
+    if name == UNSAFE_WRITE_FN {
         if let Some(value_arg) = args.get(2) {
             validate_expr(&value_arg.expr, env, errors);
         }

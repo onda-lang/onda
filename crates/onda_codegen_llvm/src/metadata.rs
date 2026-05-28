@@ -2,6 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use onda_frontend::{AssignTarget, CallArg, Expr, PrimitiveType, Stmt};
 use onda_semantics::{
+    builtins::{
+        is_builtin_buffer_write_function_name, parse_unsafe_write2_instance_base,
+        parse_unsafe_write_instance_base,
+    },
     TypedArrayInfo, TypedBufferChannels, TypedBufferDecl, TypedConstValue, TypedEventParamDefault,
     TypedEventParamType, TypedFnParam, TypedProgram, TypedValueRange,
 };
@@ -1048,7 +1052,7 @@ fn apply_user_call_buffer_write_usage(
     param_writes: &mut [bool],
     global_writes: &mut HashSet<String>,
 ) {
-    if name == "unsafe_write" || name == "unsafe_write2" || name == "__onda_buffer_write2" {
+    if is_builtin_buffer_write_function_name(name) {
         if let Some(first_arg) = args.first() {
             if let Expr::Var { name: base, .. } = &first_arg.expr {
                 mark_buffer_symbol_write(
@@ -1060,7 +1064,9 @@ fn apply_user_call_buffer_write_usage(
                 );
             }
         }
-    } else if let Some(base) = parse_unsafe_write_instance_base_for_metadata(name) {
+    } else if let Some(base) =
+        parse_unsafe_write_instance_base(name).or_else(|| parse_unsafe_write2_instance_base(name))
+    {
         mark_buffer_symbol_write(
             base,
             top_level_buffers,
@@ -1140,14 +1146,6 @@ fn mark_buffer_symbol_write(
             *slot = true;
         }
     }
-}
-
-fn parse_unsafe_write_instance_base_for_metadata(name: &str) -> Option<&str> {
-    let (base, method) = name.rsplit_once('.')?;
-    if base.is_empty() || !matches!(method, "unsafe_write" | "unsafe_write2") {
-        return None;
-    }
-    Some(base)
 }
 
 fn build_declared_events(typed: &TypedProgram) -> Vec<DeclaredEvent> {
