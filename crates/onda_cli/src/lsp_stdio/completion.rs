@@ -20,6 +20,11 @@ use crate::formatting::{
     format_fn_param_type,
 };
 
+use super::position::{
+    byte_index_for_lsp_character, byte_offset_for_lsp_position, span_end_position,
+    span_start_position, LspPosition,
+};
+
 const COMPLETION_ITEM_KIND_METHOD: u32 = 2;
 const COMPLETION_ITEM_KIND_FUNCTION: u32 = 3;
 const COMPLETION_ITEM_KIND_CONSTRUCTOR: u32 = 4;
@@ -307,6 +312,86 @@ enum SymbolKind {
     Namespace,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum CompletionSortGroup {
+    LocalVariable,
+    ScopeVariable,
+    ScopeDef,
+    Namespace,
+    Struct,
+    Proc,
+    Def,
+    Event,
+    Const,
+    Type,
+    ImportModule,
+    ImportFile,
+    Keyword,
+}
+
+impl CompletionSortGroup {
+    fn prefix(self) -> &'static str {
+        match self {
+            CompletionSortGroup::LocalVariable => "00",
+            CompletionSortGroup::ScopeVariable => "01",
+            CompletionSortGroup::ScopeDef => "02",
+            CompletionSortGroup::Namespace => "10",
+            CompletionSortGroup::Struct => "11",
+            CompletionSortGroup::Proc => "12",
+            CompletionSortGroup::Def => "13",
+            CompletionSortGroup::Event => "14",
+            CompletionSortGroup::Const => "15",
+            CompletionSortGroup::Type => "20",
+            CompletionSortGroup::ImportModule => "00",
+            CompletionSortGroup::ImportFile => "01",
+            CompletionSortGroup::Keyword => "90",
+        }
+    }
+}
+
+fn completion_sort_text(group: CompletionSortGroup, label: &str) -> String {
+    format!("{}_{label}", group.prefix())
+}
+
+fn declaration_sort_text(kind: SymbolKind, label: &str) -> String {
+    completion_sort_text(declaration_sort_group(kind), label)
+}
+
+fn declaration_sort_group(kind: SymbolKind) -> CompletionSortGroup {
+    match kind {
+        SymbolKind::Namespace => CompletionSortGroup::Namespace,
+        SymbolKind::Struct => CompletionSortGroup::Struct,
+        SymbolKind::Proc => CompletionSortGroup::Proc,
+        SymbolKind::Def => CompletionSortGroup::Def,
+        SymbolKind::Const => CompletionSortGroup::Const,
+    }
+}
+
+fn completion_kind_sort_group(kind: u32) -> CompletionSortGroup {
+    match kind {
+        COMPLETION_ITEM_KIND_CONSTANT => CompletionSortGroup::Const,
+        COMPLETION_ITEM_KIND_FUNCTION => CompletionSortGroup::Def,
+        COMPLETION_ITEM_KIND_CONSTRUCTOR => CompletionSortGroup::Proc,
+        COMPLETION_ITEM_KIND_STRUCT => CompletionSortGroup::Struct,
+        COMPLETION_ITEM_KIND_MODULE => CompletionSortGroup::Namespace,
+        COMPLETION_ITEM_KIND_EVENT => CompletionSortGroup::Event,
+        COMPLETION_ITEM_KIND_TYPE_PARAMETER => CompletionSortGroup::Type,
+        COMPLETION_ITEM_KIND_KEYWORD => CompletionSortGroup::Keyword,
+        COMPLETION_ITEM_KIND_FIELD
+        | COMPLETION_ITEM_KIND_PROPERTY
+        | COMPLETION_ITEM_KIND_VARIABLE => CompletionSortGroup::ScopeVariable,
+        COMPLETION_ITEM_KIND_METHOD => CompletionSortGroup::ScopeDef,
+        _ => CompletionSortGroup::LocalVariable,
+    }
+}
+
+fn stmt_variable_sort_group(detail: &str) -> CompletionSortGroup {
+    match detail {
+        "state" => CompletionSortGroup::ScopeVariable,
+        _ => CompletionSortGroup::LocalVariable,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct ProcInfo {
     name: String,
@@ -387,6 +472,7 @@ struct CompletionScope {
 #[derive(Debug, Default)]
 struct CompletionIndex {
     current_file_key: Option<String>,
+    source: String,
     position: CompletionPosition,
     symbols: Vec<SymbolInfo>,
     members_by_namespace: HashMap<String, Vec<SymbolInfo>>,
@@ -410,6 +496,7 @@ impl CompletionIndex {
     ) -> Self {
         let mut index = Self {
             current_file_key: path.map(normalize_file_key_for_path),
+            source: source.to_owned(),
             position,
             ..Self::default()
         };
@@ -704,8 +791,22 @@ impl CompletionIndex {
     }
 
     fn collect_source_variables(&mut self, source: &str) {
-        for line in source.lines() {
-            let code = line.split('#').next().unwrap_or(line).trim_start();
+        for (line_no, line) in source.lines().enumerate() {
+            let line_no = line_no as u32;
+            if line_no > self.position.line {
+                break;
+            }
+            let visible_line = if line_no == self.position.line {
+                let byte = byte_index_for_lsp_character(line, self.position.character);
+                &line[..byte]
+            } else {
+                line
+            };
+            let code = visible_line
+                .split('#')
+                .next()
+                .unwrap_or(visible_line)
+                .trim_start();
             if code.is_empty() {
                 continue;
             }
@@ -752,7 +853,7 @@ impl CompletionIndex {
         let mut items = Vec::<CompletionItem>::new();
         let mut state_items = Vec::<CompletionItem>::new();
         let mut instances = HashMap::<String, InstanceInfo>::new();
-        let mut stmt_regions = Vec::<(Span, &[Stmt])>::new();
+        let mut stmt_regions = Vec::<(Span, &[Stmt], bool)>::new();
 
         for block in blocks {
             if !self.span_belongs_to_current_file(block.loc().span()) {
@@ -785,27 +886,27 @@ impl CompletionIndex {
                 }
                 Block::Init(init) => {
                     extend_span(&mut span, init.loc);
-                    collect_stmt_items(&init.body, "state", true, &mut state_items);
+                    self.collect_stmt_items(&init.body, "state", true, &mut state_items);
                     self.collect_stmt_scope_instances(&init.body, "", true, &mut instances);
-                    stmt_regions.push((init.loc, init.body.as_slice()));
+                    stmt_regions.push((init.loc, init.body.as_slice(), true));
                 }
                 Block::Block(exec) => {
                     extend_span(&mut span, exec.loc);
-                    collect_stmt_items(&exec.pre, "state", true, &mut state_items);
+                    self.collect_stmt_items(&exec.pre, "state", true, &mut state_items);
                     self.collect_stmt_scope_instances(&exec.pre, "", true, &mut instances);
                     if let Some(pre_span) = span_for_stmt_body(&exec.pre) {
-                        stmt_regions.push((pre_span, exec.pre.as_slice()));
+                        stmt_regions.push((pre_span, exec.pre.as_slice(), true));
                     }
                     if let Some(sample) = &exec.sample {
-                        stmt_regions.push((sample.loc, sample.body.as_slice()));
+                        stmt_regions.push((sample.loc, sample.body.as_slice(), false));
                     }
                     if let Some(post_span) = span_for_stmt_body(&exec.post) {
-                        stmt_regions.push((post_span, exec.post.as_slice()));
+                        stmt_regions.push((post_span, exec.post.as_slice(), false));
                     }
                 }
                 Block::Sample(sample) => {
                     extend_span(&mut span, sample.loc);
-                    stmt_regions.push((sample.loc, sample.body.as_slice()));
+                    stmt_regions.push((sample.loc, sample.body.as_slice(), false));
                 }
                 Block::Graph(graph) => {
                     extend_span(&mut span, graph.loc);
@@ -816,8 +917,12 @@ impl CompletionIndex {
 
         items.extend(state_items);
         let owner_idx = self.push_scope(None, "", span?, items, instances)?;
-        for (span, stmts) in stmt_regions {
-            self.collect_stmt_scope(Some(owner_idx), span, stmts);
+        for (span, stmts, skip_top_level_assignments) in stmt_regions {
+            if skip_top_level_assignments {
+                self.collect_stmt_scope_without_top_level_assignments(Some(owner_idx), span, stmts);
+            } else {
+                self.collect_stmt_scope(Some(owner_idx), span, stmts);
+            }
         }
         Some(owner_idx)
     }
@@ -867,14 +972,14 @@ impl CompletionIndex {
         }
         for def in &proc_def.local_defs {
             let info = function_info_from_def(def);
-            items.push(function_item(
+            items.push(scope_function_item(
                 &info,
                 "proc-local def",
                 COMPLETION_ITEM_KIND_FUNCTION,
             ));
         }
-        collect_stmt_items(&proc_def.init.body, "state", true, &mut items);
-        collect_stmt_items(&proc_def.block_pre, "state", true, &mut items);
+        self.collect_stmt_items(&proc_def.init.body, "state", true, &mut items);
+        self.collect_stmt_items(&proc_def.block_pre, "state", true, &mut items);
         let scope_namespace = self.child_scope_namespace(parent, namespace);
         self.collect_stmt_scope_instances(
             &proc_def.init.body,
@@ -895,13 +1000,17 @@ impl CompletionIndex {
             items,
             instances,
         )?;
-        self.collect_stmt_scope(
+        self.collect_stmt_scope_without_top_level_assignments(
             Some(owner_idx),
             span_for_init_scope(&proc_def.init),
             &proc_def.init.body,
         );
         if let Some(span) = span_for_stmt_body(&proc_def.block_pre) {
-            self.collect_stmt_scope(Some(owner_idx), span, &proc_def.block_pre);
+            self.collect_stmt_scope_without_top_level_assignments(
+                Some(owner_idx),
+                span,
+                &proc_def.block_pre,
+            );
         }
         if let Some(span) = span_for_stmt_body(&proc_def.sample) {
             self.collect_stmt_scope(Some(owner_idx), span, &proc_def.sample);
@@ -932,7 +1041,10 @@ impl CompletionIndex {
             items.push(
                 CompletionItem::new(field.name.clone(), COMPLETION_ITEM_KIND_FIELD)
                     .detail("struct field")
-                    .sort_text(format!("2_{}", field.name)),
+                    .sort_text(completion_sort_text(
+                        CompletionSortGroup::ScopeVariable,
+                        &field.name,
+                    )),
             );
         }
         for method in &struct_def.methods {
@@ -985,7 +1097,7 @@ impl CompletionIndex {
                         .detail(format_proc_detail(&info))
                         .insert_text(callable_insert_text(&proc_def.name, &info.type_params))
                         .snippet(callable_snippet(&proc_def.name, &info.type_params))
-                        .sort_text(format!("1_{}", proc_def.name)),
+                        .sort_text(declaration_sort_text(SymbolKind::Proc, &proc_def.name)),
                     );
                 }
                 NamespaceItem::Struct(struct_def) => {
@@ -998,7 +1110,7 @@ impl CompletionIndex {
                                 &struct_def.name,
                                 &info.type_params,
                             ))
-                            .sort_text(format!("1_{}", struct_def.name));
+                            .sort_text(declaration_sort_text(SymbolKind::Struct, &struct_def.name));
                     if let Some(insert_text) = type_insert_text(&struct_def.name, &info.type_params)
                     {
                         item = item.insert_text(insert_text);
@@ -1064,9 +1176,9 @@ impl CompletionIndex {
             items.push(type_param_item(type_param));
         }
         for param in &def.params {
-            items.push(param_item(&param.name, "argument"));
+            items.push(argument_item(&param.name, "argument"));
         }
-        collect_stmt_items(&def.body, detail, false, &mut items);
+        self.collect_stmt_items(&def.body, detail, false, &mut items);
         let mut instances = HashMap::<String, InstanceInfo>::new();
         let scope_namespace = self.child_scope_namespace(parent, namespace);
         self.collect_stmt_scope_instances(&def.body, &scope_namespace, false, &mut instances);
@@ -1084,9 +1196,9 @@ impl CompletionIndex {
     fn collect_event_scope(&mut self, parent: usize, event: &EventDef) -> Option<usize> {
         let mut items = Vec::<CompletionItem>::new();
         for param in &event.params {
-            items.push(param_item(&param.name, "event parameter"));
+            items.push(argument_item(&param.name, "event parameter"));
         }
-        collect_stmt_items(&event.body, "event local", false, &mut items);
+        self.collect_stmt_items(&event.body, "event local", false, &mut items);
         let mut instances = HashMap::<String, InstanceInfo>::new();
         let scope_namespace = self.child_scope_namespace(Some(parent), "");
         self.collect_stmt_scope_instances(&event.body, &scope_namespace, false, &mut instances);
@@ -1110,20 +1222,104 @@ impl CompletionIndex {
         self.collect_stmt_scope_with_seed(parent, span, stmts, Vec::new(), HashMap::new())
     }
 
+    fn collect_stmt_scope_without_top_level_assignments(
+        &mut self,
+        parent: Option<usize>,
+        span: Span,
+        stmts: &[Stmt],
+    ) -> Option<usize> {
+        let items = self.collect_flow_local_stmt_items(stmts, "local");
+        self.collect_stmt_scope_with_seed_and_mode(
+            parent,
+            span,
+            stmts,
+            items,
+            HashMap::new(),
+            false,
+        )
+    }
+
     fn collect_stmt_scope_with_seed(
+        &mut self,
+        parent: Option<usize>,
+        span: Span,
+        stmts: &[Stmt],
+        items: Vec<CompletionItem>,
+        instances: HashMap<String, InstanceInfo>,
+    ) -> Option<usize> {
+        self.collect_stmt_scope_with_seed_and_mode(parent, span, stmts, items, instances, true)
+    }
+
+    fn collect_stmt_scope_with_seed_and_mode(
         &mut self,
         parent: Option<usize>,
         span: Span,
         stmts: &[Stmt],
         mut items: Vec<CompletionItem>,
         mut instances: HashMap<String, InstanceInfo>,
+        collect_direct_stmt_items: bool,
     ) -> Option<usize> {
-        collect_stmt_items(stmts, "local", false, &mut items);
+        if collect_direct_stmt_items {
+            self.collect_stmt_items(stmts, "local", false, &mut items);
+        }
         let scope_namespace = self.child_scope_namespace(parent, "");
         self.collect_stmt_scope_instances(stmts, &scope_namespace, false, &mut instances);
         let scope_idx = self.push_scope(parent, &scope_namespace, span, items, instances)?;
         self.collect_nested_stmt_scopes(scope_idx, stmts);
         Some(scope_idx)
+    }
+
+    fn collect_flow_local_stmt_items(&self, stmts: &[Stmt], detail: &str) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        for stmt in stmts {
+            match stmt {
+                Stmt::Const { loc, decl, .. } => {
+                    if self.span_start_is_visible(*loc) {
+                        push_completion_item_once(&mut items, const_item(&decl.name));
+                    }
+                }
+                Stmt::If {
+                    loc,
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    if self.span_end_is_visible(*loc) {
+                        let mut then_items = Vec::new();
+                        self.collect_visible_stmt_items(
+                            then_branch,
+                            detail,
+                            false,
+                            &mut then_items,
+                        );
+                        let mut else_items = Vec::new();
+                        self.collect_visible_stmt_items(
+                            else_branch,
+                            detail,
+                            false,
+                            &mut else_items,
+                        );
+                        let else_labels = else_items
+                            .iter()
+                            .map(|item| item.label.clone())
+                            .collect::<BTreeSet<_>>();
+                        for item in then_items {
+                            if else_labels.contains(&item.label) {
+                                push_completion_item_once(&mut items, item);
+                            }
+                        }
+                    }
+                }
+                Stmt::Assign { .. }
+                | Stmt::For { .. }
+                | Stmt::While { .. }
+                | Stmt::Expr { .. }
+                | Stmt::Return { .. }
+                | Stmt::Break { .. }
+                | Stmt::Continue { .. } => {}
+            }
+        }
+        items
     }
 
     fn collect_nested_stmt_scopes(&mut self, parent: usize, stmts: &[Stmt]) {
@@ -1193,21 +1389,29 @@ impl CompletionIndex {
     ) {
         for stmt in stmts {
             match stmt {
-                Stmt::Assign { target, expr, .. } => {
-                    if let Some(name) = assign_target_name(target) {
-                        if let Some(instance) =
-                            self.instance_from_expr_in_namespace(expr, namespace)
-                        {
-                            out.insert(name.to_owned(), instance);
+                Stmt::Assign {
+                    target,
+                    target_loc,
+                    expr,
+                    ..
+                } => {
+                    if self.span_start_is_visible(*target_loc) {
+                        if let Some(name) = assign_target_name(target) {
+                            if let Some(instance) =
+                                self.instance_from_expr_in_namespace(expr, namespace)
+                            {
+                                out.insert(name.to_owned(), instance);
+                            }
                         }
                     }
                 }
                 Stmt::If {
+                    loc,
                     then_branch,
                     else_branch,
                     ..
                 } => {
-                    if !top_level_assigns_only {
+                    if !top_level_assigns_only && self.span_end_is_visible(*loc) {
                         let mut then_instances = out.clone();
                         self.collect_visible_stmt_instances(
                             then_branch,
@@ -1319,14 +1523,14 @@ impl CompletionIndex {
             out.push(
                 CompletionItem::new(keyword, COMPLETION_ITEM_KIND_KEYWORD)
                     .detail("keyword")
-                    .sort_text(format!("9_{keyword}")),
+                    .sort_text(completion_sort_text(CompletionSortGroup::Keyword, keyword)),
             );
         }
         for ty in language_type_names() {
             out.push(
                 CompletionItem::new(ty, COMPLETION_ITEM_KIND_TYPE_PARAMETER)
                     .detail("type")
-                    .sort_text(format!("1_{ty}")),
+                    .sort_text(completion_sort_text(CompletionSortGroup::Type, ty)),
             );
         }
         for symbol in &self.symbols {
@@ -1345,7 +1549,7 @@ impl CompletionIndex {
             out.push(
                 CompletionItem::new(ns.clone(), COMPLETION_ITEM_KIND_MODULE)
                     .detail("namespace")
-                    .sort_text(format!("0_{ns}")),
+                    .sort_text(declaration_sort_text(SymbolKind::Namespace, ns)),
             );
         }
         for item in self.visible_use_items() {
@@ -1356,7 +1560,10 @@ impl CompletionIndex {
             out.push(
                 CompletionItem::new(name.clone(), COMPLETION_ITEM_KIND_VARIABLE)
                     .detail("local")
-                    .sort_text(format!("2_{name}")),
+                    .sort_text(completion_sort_text(
+                        CompletionSortGroup::LocalVariable,
+                        name,
+                    )),
             );
         }
         if prefix.is_empty() {
@@ -1385,7 +1592,7 @@ impl CompletionIndex {
                 out.push(
                     CompletionItem::new(name.clone(), COMPLETION_ITEM_KIND_MODULE)
                         .detail("namespace")
-                        .sort_text(format!("0_{name}")),
+                        .sort_text(declaration_sort_text(SymbolKind::Namespace, name)),
                 );
             }
         }
@@ -1412,14 +1619,20 @@ impl CompletionIndex {
                 out.push(
                     CompletionItem::new(name.clone(), COMPLETION_ITEM_KIND_PROPERTY)
                         .detail("proc input")
-                        .sort_text(format!("1_{name}")),
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::ScopeVariable,
+                            name,
+                        )),
                 );
             }
             for name in &proc_info.outs {
                 out.push(
                     CompletionItem::new(name.clone(), COMPLETION_ITEM_KIND_PROPERTY)
                         .detail("proc output")
-                        .sort_text(format!("2_{name}")),
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::ScopeVariable,
+                            name,
+                        )),
                 );
             }
             for param in &proc_info.params {
@@ -1427,7 +1640,10 @@ impl CompletionIndex {
                     out.push(
                         CompletionItem::new(param.name.clone(), COMPLETION_ITEM_KIND_PROPERTY)
                             .detail("proc param")
-                            .sort_text(format!("3_{}", param.name)),
+                            .sort_text(completion_sort_text(
+                                CompletionSortGroup::ScopeVariable,
+                                &param.name,
+                            )),
                     );
                 }
             }
@@ -1435,7 +1651,10 @@ impl CompletionIndex {
                 out.push(
                     CompletionItem::new("params", COMPLETION_ITEM_KIND_PROPERTY)
                         .detail("dynamic proc params")
-                        .sort_text("4_params"),
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::ScopeVariable,
+                            "params",
+                        )),
                 );
             }
             for event in &proc_info.events {
@@ -1445,7 +1664,10 @@ impl CompletionIndex {
                         .detail(format!("event {}({})", event.name, event.signature))
                         .insert_text(format!("{}(", event.name))
                         .snippet(format!("{}($1)", event.name))
-                        .sort_text(format!("5_{}", event.name)),
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::Event,
+                            &event.name,
+                        )),
                 );
             }
             out.push(
@@ -1454,7 +1676,7 @@ impl CompletionIndex {
                     .detail(format!("event init({})", proc_init_signature(proc_info)))
                     .insert_text("init(")
                     .snippet("init($1)")
-                    .sort_text("5_init"),
+                    .sort_text(completion_sort_text(CompletionSortGroup::Event, "init")),
             );
             for def in &proc_info.local_defs {
                 out.push(
@@ -1466,7 +1688,10 @@ impl CompletionIndex {
                         .detail(format_function_detail("proc-local def", def))
                         .insert_text(format!("{}(", def.name))
                         .snippet(format!("{}($1)", def.name))
-                        .sort_text(format!("6_{}", def.name)),
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::ScopeDef,
+                            &def.name,
+                        )),
                 );
             }
         } else if let Some(struct_info) = self.structs.get(&instance.type_name) {
@@ -1474,7 +1699,10 @@ impl CompletionIndex {
                 out.push(
                     CompletionItem::new(field.clone(), COMPLETION_ITEM_KIND_FIELD)
                         .detail("struct field")
-                        .sort_text(format!("1_{field}")),
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::ScopeVariable,
+                            field,
+                        )),
                 );
             }
             for method in &struct_info.methods {
@@ -1487,7 +1715,10 @@ impl CompletionIndex {
                         .detail(format_function_detail("method", method))
                         .insert_text(format!("{}(", method.name))
                         .snippet(format!("{}($1)", method.name))
-                        .sort_text(format!("2_{}", method.name)),
+                        .sort_text(completion_sort_text(
+                            CompletionSortGroup::ScopeDef,
+                            &method.name,
+                        )),
                 );
             }
         }
@@ -1496,7 +1727,10 @@ impl CompletionIndex {
                 CompletionItem::new(ARRAY_LEN_METHOD, COMPLETION_ITEM_KIND_METHOD)
                     .detail("built-in call .len()")
                     .insert_text(format!("{ARRAY_LEN_METHOD}()"))
-                    .sort_text("0_len"),
+                    .sort_text(completion_sort_text(
+                        CompletionSortGroup::ScopeDef,
+                        ARRAY_LEN_METHOD,
+                    )),
             );
         }
         out.into_iter()
@@ -1594,13 +1828,14 @@ impl CompletionIndex {
                 return vec![
                     CompletionItem::new(alias.clone(), COMPLETION_ITEM_KIND_MODULE)
                         .detail(format!("namespace alias for {target}"))
-                        .sort_text(format!("0_{alias}")),
+                        .sort_text(declaration_sort_text(SymbolKind::Namespace, alias)),
                 ];
             }
             if let Some(symbol) = self.symbol_by_full_name(&target) {
                 let mut item = symbol_completion_item(symbol, false);
                 item.label = alias.clone();
                 item.insert_text = Some(alias.clone());
+                item.sort_text = Some(declaration_sort_text(symbol.kind, alias));
                 item.detail = Some(format!(
                     "{} alias for {}",
                     symbol_kind_detail(symbol.kind),
@@ -1639,12 +1874,13 @@ impl CompletionIndex {
                     out.push(
                         CompletionItem::new(alias.clone(), COMPLETION_ITEM_KIND_MODULE)
                             .detail(format!("namespace alias for {target}"))
-                            .sort_text(format!("0_{alias}")),
+                            .sort_text(declaration_sort_text(SymbolKind::Namespace, alias)),
                     );
                 } else if let Some(symbol) = self.symbol_by_full_name(&target) {
                     let mut item = symbol_completion_item(symbol, false);
                     item.label = alias.clone();
                     item.insert_text = Some(alias.clone());
+                    item.sort_text = Some(declaration_sort_text(symbol.kind, alias));
                     item.detail = Some(format!(
                         "{} alias for {}",
                         symbol_kind_detail(symbol.kind),
@@ -1884,6 +2120,98 @@ impl CompletionIndex {
     fn symbol_by_full_name(&self, name: &str) -> Option<&SymbolInfo> {
         self.symbols.iter().find(|symbol| symbol.full_name == name)
     }
+
+    fn collect_stmt_items(
+        &self,
+        stmts: &[Stmt],
+        detail: &str,
+        top_level_assigns_only: bool,
+        out: &mut Vec<CompletionItem>,
+    ) {
+        self.collect_visible_stmt_items(stmts, detail, top_level_assigns_only, out);
+    }
+
+    fn collect_visible_stmt_items(
+        &self,
+        stmts: &[Stmt],
+        detail: &str,
+        top_level_assigns_only: bool,
+        out: &mut Vec<CompletionItem>,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Const { loc, decl, .. } => {
+                    if self.span_start_is_visible(*loc) {
+                        push_completion_item_once(out, const_item(&decl.name));
+                    }
+                }
+                Stmt::Assign {
+                    target, target_loc, ..
+                } => {
+                    if self.span_start_is_visible(*target_loc) {
+                        for name in assign_target_names(target) {
+                            push_completion_item_once(out, variable_item(name, detail));
+                        }
+                    }
+                }
+                Stmt::If {
+                    loc,
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    if !top_level_assigns_only && self.span_end_is_visible(*loc) {
+                        let mut then_items = out.clone();
+                        self.collect_visible_stmt_items(
+                            then_branch,
+                            detail,
+                            false,
+                            &mut then_items,
+                        );
+                        let mut else_items = out.clone();
+                        self.collect_visible_stmt_items(
+                            else_branch,
+                            detail,
+                            false,
+                            &mut else_items,
+                        );
+                        let base_labels = out
+                            .iter()
+                            .map(|item| item.label.clone())
+                            .collect::<BTreeSet<_>>();
+                        let else_labels = else_items
+                            .iter()
+                            .map(|item| item.label.clone())
+                            .collect::<BTreeSet<_>>();
+                        for item in then_items {
+                            if base_labels.contains(&item.label)
+                                || else_labels.contains(&item.label)
+                            {
+                                push_completion_item_once(out, item);
+                            }
+                        }
+                    }
+                }
+                Stmt::For { .. } | Stmt::While { .. } => {}
+                Stmt::Expr { .. }
+                | Stmt::Return { .. }
+                | Stmt::Break { .. }
+                | Stmt::Continue { .. } => {}
+            }
+        }
+    }
+
+    fn span_start_is_visible(&self, span: Span) -> bool {
+        span_start_position(&self.source, span) <= self.current_lsp_position()
+    }
+
+    fn span_end_is_visible(&self, span: Span) -> bool {
+        span_end_position(&self.source, span) <= self.current_lsp_position()
+    }
+
+    fn current_lsp_position(&self) -> LspPosition {
+        LspPosition::new(self.position.line, self.position.character)
+    }
 }
 
 impl CompletionScope {
@@ -1892,6 +2220,9 @@ impl CompletionScope {
             return false;
         }
         if line == self.start_line && column < self.start_column {
+            return false;
+        }
+        if self.start_line == self.end_line && line == self.end_line && column > self.end_column {
             return false;
         }
         true
@@ -1906,65 +2237,6 @@ impl CompletionScope {
         let self_col_span = self.end_column.saturating_sub(self.start_column);
         let other_col_span = other.end_column.saturating_sub(other.start_column);
         self_col_span < other_col_span
-    }
-}
-
-fn collect_stmt_items(
-    stmts: &[Stmt],
-    detail: &str,
-    top_level_assigns_only: bool,
-    out: &mut Vec<CompletionItem>,
-) {
-    collect_visible_stmt_items(stmts, detail, top_level_assigns_only, out);
-}
-
-fn collect_visible_stmt_items(
-    stmts: &[Stmt],
-    detail: &str,
-    top_level_assigns_only: bool,
-    out: &mut Vec<CompletionItem>,
-) {
-    for stmt in stmts {
-        match stmt {
-            Stmt::Const { decl, .. } => {
-                push_completion_item_once(out, const_item(&decl.name));
-            }
-            Stmt::Assign { target, .. } => {
-                for name in assign_target_names(target) {
-                    push_completion_item_once(out, variable_item(name, detail));
-                }
-            }
-            Stmt::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                if !top_level_assigns_only {
-                    let mut then_items = out.clone();
-                    collect_visible_stmt_items(then_branch, detail, false, &mut then_items);
-                    let mut else_items = out.clone();
-                    collect_visible_stmt_items(else_branch, detail, false, &mut else_items);
-                    let base_labels = out
-                        .iter()
-                        .map(|item| item.label.clone())
-                        .collect::<BTreeSet<_>>();
-                    let else_labels = else_items
-                        .iter()
-                        .map(|item| item.label.clone())
-                        .collect::<BTreeSet<_>>();
-                    for item in then_items {
-                        if base_labels.contains(&item.label) || else_labels.contains(&item.label) {
-                            push_completion_item_once(out, item);
-                        }
-                    }
-                }
-            }
-            Stmt::For { .. } | Stmt::While { .. } => {}
-            Stmt::Expr { .. }
-            | Stmt::Return { .. }
-            | Stmt::Break { .. }
-            | Stmt::Continue { .. } => {}
-        }
     }
 }
 
@@ -2081,31 +2353,46 @@ fn proc_output_prefix(proc_def: &ProcessorDef) -> &'static str {
 fn port_item(name: &str, detail: &str) -> CompletionItem {
     CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_PROPERTY)
         .detail(detail)
-        .sort_text(format!("2_{name}"))
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::ScopeVariable,
+            name,
+        ))
 }
 
 fn param_item(name: &str, detail: &str) -> CompletionItem {
     CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_PROPERTY)
         .detail(detail)
-        .sort_text(format!("2_{name}"))
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::ScopeVariable,
+            name,
+        ))
+}
+
+fn argument_item(name: &str, detail: &str) -> CompletionItem {
+    CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_PROPERTY)
+        .detail(detail)
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::LocalVariable,
+            name,
+        ))
 }
 
 fn variable_item(name: &str, detail: &str) -> CompletionItem {
     CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_VARIABLE)
         .detail(detail)
-        .sort_text(format!("3_{name}"))
+        .sort_text(completion_sort_text(stmt_variable_sort_group(detail), name))
 }
 
 fn const_item(name: &str) -> CompletionItem {
     CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_CONSTANT)
         .detail("const")
-        .sort_text(format!("1_{name}"))
+        .sort_text(declaration_sort_text(SymbolKind::Const, name))
 }
 
 fn type_param_item(name: &str) -> CompletionItem {
     CompletionItem::new(name.to_owned(), COMPLETION_ITEM_KIND_TYPE_PARAMETER)
         .detail("type parameter")
-        .sort_text(format!("1_{name}"))
+        .sort_text(completion_sort_text(CompletionSortGroup::Type, name))
 }
 
 fn namespace_item(name: &str) -> CompletionItem {
@@ -2121,7 +2408,7 @@ fn namespace_item_with_type_params(
         .maybe_label_detail(generic_label_detail(type_params))
         .detail(detail)
         .maybe_snippet(type_completion_snippet(name, type_params))
-        .sort_text(format!("0_{name}"));
+        .sort_text(declaration_sort_text(SymbolKind::Namespace, name));
     if let Some(insert_text) = type_insert_text(name, type_params) {
         item = item.insert_text(insert_text);
     }
@@ -2134,10 +2421,26 @@ fn event_item(event: &EventDef) -> CompletionItem {
         .detail(format!("event {}({})", event.name, event_signature(event)))
         .insert_text(format!("{}(", event.name))
         .snippet(format!("{}($1)", event.name))
-        .sort_text(format!("4_{}", event.name))
+        .sort_text(completion_sort_text(
+            CompletionSortGroup::Event,
+            &event.name,
+        ))
 }
 
 fn function_item(info: &FunctionInfo, detail: &str, kind: u32) -> CompletionItem {
+    function_item_with_sort_group(info, detail, kind, CompletionSortGroup::Def)
+}
+
+fn scope_function_item(info: &FunctionInfo, detail: &str, kind: u32) -> CompletionItem {
+    function_item_with_sort_group(info, detail, kind, CompletionSortGroup::ScopeDef)
+}
+
+fn function_item_with_sort_group(
+    info: &FunctionInfo,
+    detail: &str,
+    kind: u32,
+    sort_group: CompletionSortGroup,
+) -> CompletionItem {
     CompletionItem::new(info.name.clone(), kind)
         .maybe_label_detail(Some(callable_label_detail(
             &info.type_params,
@@ -2146,7 +2449,7 @@ fn function_item(info: &FunctionInfo, detail: &str, kind: u32) -> CompletionItem
         .detail(format_function_detail(detail, info))
         .insert_text(callable_insert_text(&info.name, &info.type_params))
         .snippet(callable_snippet(&info.name, &info.type_params))
-        .sort_text(format!("1_{}", info.name))
+        .sort_text(completion_sort_text(sort_group, &info.name))
 }
 
 fn span_for_stmt(stmt: &Stmt) -> Span {
@@ -2294,7 +2597,7 @@ fn symbol_completion_item(symbol: &SymbolInfo, qualified_member: bool) -> Comple
                 .clone()
                 .unwrap_or_else(|| symbol_kind_detail(symbol.kind).to_owned()),
         )
-        .sort_text(format!("1_{}", symbol.label));
+        .sort_text(declaration_sort_text(symbol.kind, &symbol.label));
     if matches!(symbol.kind, SymbolKind::Def | SymbolKind::Proc) {
         item = item
             .insert_text(callable_insert_text(&symbol.label, &symbol.type_params))
@@ -2327,7 +2630,10 @@ fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionIt
                 CompletionItem::new(module, COMPLETION_ITEM_KIND_MODULE)
                     .detail("std module")
                     .insert_text(module)
-                    .sort_text(format!("0_{module}")),
+                    .sort_text(completion_sort_text(
+                        CompletionSortGroup::ImportModule,
+                        module,
+                    )),
             );
         }
     }
@@ -2365,7 +2671,10 @@ fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionIt
                         CompletionItem::new(format!("{rel}/"), COMPLETION_ITEM_KIND_FILE)
                             .detail("folder")
                             .insert_text(format!("{rel}/"))
-                            .sort_text(format!("1_{rel}/")),
+                            .sort_text(completion_sort_text(
+                                CompletionSortGroup::ImportFile,
+                                &format!("{rel}/"),
+                            )),
                     );
                 } else if matches!(
                     entry_path.extension().and_then(|ext| ext.to_str()),
@@ -2379,7 +2688,10 @@ fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionIt
                         CompletionItem::new(without_ext.to_owned(), COMPLETION_ITEM_KIND_FILE)
                             .detail("Onda module")
                             .insert_text(without_ext.to_owned())
-                            .sort_text(format!("1_{without_ext}")),
+                            .sort_text(completion_sort_text(
+                                CompletionSortGroup::ImportFile,
+                                without_ext,
+                            )),
                     );
                 }
             }
@@ -2392,6 +2704,9 @@ fn filter_and_encode(items: Vec<CompletionItem>, prefix: &str, snippets: bool) -
     let mut dedup =
         BTreeMap::<(String, u32, Option<String>, Option<String>), CompletionItem>::new();
     for item in items {
+        if is_generated_completion_label(&item.label) {
+            continue;
+        }
         if !prefix.is_empty() && !item.label.starts_with(prefix) {
             continue;
         }
@@ -2403,10 +2718,30 @@ fn filter_and_encode(items: Vec<CompletionItem>, prefix: &str, snippets: bool) -
         );
         dedup.entry(key).or_insert(item);
     }
-    dedup
-        .into_values()
+    let mut items = dedup.into_values().collect::<Vec<_>>();
+    items.sort_by(|left, right| completion_order_key(left).cmp(&completion_order_key(right)));
+    items
+        .into_iter()
         .map(|item| item.to_lsp(snippets))
         .collect()
+}
+
+fn is_generated_completion_label(label: &str) -> bool {
+    label.starts_with("__onda")
+}
+
+fn completion_order_key(
+    item: &CompletionItem,
+) -> (String, String, u32, Option<String>, Option<String>) {
+    (
+        item.sort_text.clone().unwrap_or_else(|| {
+            completion_sort_text(completion_kind_sort_group(item.kind), &item.label)
+        }),
+        item.label.clone(),
+        item.kind,
+        item.label_detail.clone(),
+        item.detail.clone(),
+    )
 }
 
 fn event_info_from_def(event: &EventDef) -> EventInfo {
@@ -2815,22 +3150,7 @@ fn receiver_root(receiver: &str) -> &str {
 }
 
 fn byte_offset_for_position(source: &str, position: CompletionPosition) -> usize {
-    let mut offset = 0usize;
-    for (line_no, line) in source.split_inclusive('\n').enumerate() {
-        if line_no as u32 == position.line {
-            let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
-            return offset + byte_index_for_character(line_without_newline, position.character);
-        }
-        offset += line.len();
-    }
-    source.len()
-}
-
-fn byte_index_for_character(line: &str, character: u32) -> usize {
-    line.char_indices()
-        .nth(character as usize)
-        .map(|(idx, _)| idx)
-        .unwrap_or(line.len())
+    byte_offset_for_lsp_position(source, LspPosition::new(position.line, position.character))
 }
 
 fn source_with_current_line_placeholder(source: &str, offset: usize) -> String {

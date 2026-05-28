@@ -12,6 +12,7 @@ mod completion;
 mod diagnostics;
 mod navigation;
 mod path_utils;
+mod position;
 mod semantic_tokens;
 
 use completion::{
@@ -802,8 +803,8 @@ mod tests {
         let line = before.bytes().filter(|b| *b == b'\n').count() as u32;
         let character = before
             .rsplit_once('\n')
-            .map(|(_, tail)| tail.len())
-            .unwrap_or(before.len()) as u32;
+            .map(|(_, tail)| tail.encode_utf16().count())
+            .unwrap_or_else(|| before.encode_utf16().count()) as u32;
         Position { line, character }
     }
 
@@ -1724,6 +1725,100 @@ sample:
     }
 
     #[test]
+    fn completion_does_not_offer_future_locals() {
+        let dir = mk_temp_dir("completion_future_local");
+        let main = dir.join("main.onda");
+        let source = r#"
+outs:
+  out1
+
+sample:
+  earlier = 1.0
+  out1 =
+  later = earlier
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_labels_for(&mut server, &main, source, "out1 =");
+
+        assert!(
+            !labels.contains(&"later".to_owned()),
+            "future local should not complete before declaration: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"earlier".to_owned()),
+            "earlier local should still complete: {labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_hides_generated_onda_symbols() {
+        let dir = mk_temp_dir("completion_generated_onda_symbols");
+        let main = dir.join("main.onda");
+        let source = r#"
+outs:
+  out1
+
+sample:
+  visible = 1.0
+  __onda_internal = 2.0
+  out1 =
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_labels_for(&mut server, &main, source, "out1 =");
+
+        assert!(
+            labels.contains(&"visible".to_owned()),
+            "ordinary local should complete: {labels:?}"
+        );
+        assert!(
+            labels.iter().all(|label| !label.starts_with("__onda")),
+            "generated/internal symbols should not complete: {labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_does_not_duplicate_init_state_as_local() {
+        let dir = mk_temp_dir("completion_init_state_dedup");
+        let main = dir.join("main.onda");
+        let source = r#"
+outs:
+  out1
+
+init:
+  phase = 0.0
+  ph
+
+sample:
+  out1 = phase
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let items = completion_items_for(&mut server, &main, source, "  ph");
+        let phase_details = items
+            .iter()
+            .filter(|item| item["label"] == json!("phase"))
+            .map(|item| item["detail"].as_str().unwrap_or_default().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            phase_details,
+            vec!["state".to_owned()],
+            "init state should complete once as state: {items:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn completion_lists_namespace_members_on_incomplete_line() {
         let dir = mk_temp_dir("completion_namespace_members");
         let main = dir.join("main.onda");
@@ -1855,6 +1950,173 @@ namespace DSP:
         assert!(labels.contains(&"Voice".to_owned()), "labels: {labels:?}");
         assert!(labels.contains(&"Inner".to_owned()), "labels: {labels:?}");
         assert!(labels.contains(&"shape".to_owned()), "labels: {labels:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_orders_namespace_members_by_declaration_kind() {
+        let dir = mk_temp_dir("completion_namespace_member_order");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace DSP:
+  namespace Zoo:
+    const X = 1
+
+  namespace Alpha:
+    const X = 1
+
+  struct ZStruct:
+    value: f32
+
+  struct AStruct:
+    value: f32
+
+  proc ZProc:
+    outs:
+      out1
+    sample:
+      out1 = 0.0
+
+  proc AProc:
+    outs:
+      out1
+    sample:
+      out1 = 0.0
+
+  def zdef():
+    return 0.0
+
+  def adef():
+    return 0.0
+
+  const ZConst = 1
+  const AConst = 1
+
+outs:
+  out1
+
+sample:
+  out1 = DSP::
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let items = completion_items_for(&mut server, &main, source, "DSP::");
+        let expected = vec![
+            "Alpha", "Zoo", "AStruct", "ZStruct", "AProc", "ZProc", "adef", "zdef", "AConst",
+            "ZConst",
+        ];
+        let labels = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .filter(|label| expected.contains(label))
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, expected, "items: {items:?}");
+        for (label, sort_text) in [
+            ("Alpha", "10_Alpha"),
+            ("AStruct", "11_AStruct"),
+            ("AProc", "12_AProc"),
+            ("adef", "13_adef"),
+            ("AConst", "15_AConst"),
+        ] {
+            let item = items
+                .iter()
+                .find(|item| item["label"] == json!(label))
+                .unwrap_or_else(|| panic!("missing {label} in {items:?}"));
+            assert_eq!(item["sortText"], json!(sort_text), "item: {item:?}");
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_orders_scope_symbols_before_declarations_and_events_after_defs() {
+        let dir = mk_temp_dir("completion_scope_symbol_order");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace gNs:
+  const X = 1
+
+struct hStruct:
+  value: f32
+
+proc iProc:
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+def j_def():
+  return 0.0
+
+const zConst = 1
+
+proc Voice:
+  ins:
+    c_in
+
+  buffers:
+    b_buf: f32
+
+  params:
+    e_param = 0.0
+
+  outs:
+    d_out
+
+  events:
+    k_event():
+      e_param = 1.0
+
+  def f_proc_def():
+    return e_param
+
+  sample:
+    a_local = 0.0
+    d_out =
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let items = completion_items_for(&mut server, &main, source, "d_out =");
+        let expected = vec![
+            "a_local",
+            "b_buf",
+            "c_in",
+            "d_out",
+            "e_param",
+            "f_proc_def",
+            "gNs",
+            "hStruct",
+            "iProc",
+            "j_def",
+            "k_event",
+            "zConst",
+        ];
+        let labels = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .filter(|label| expected.contains(label))
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, expected, "items: {items:?}");
+        for (label, sort_text) in [
+            ("a_local", "00_a_local"),
+            ("b_buf", "01_b_buf"),
+            ("f_proc_def", "02_f_proc_def"),
+            ("gNs", "10_gNs"),
+            ("j_def", "13_j_def"),
+            ("k_event", "14_k_event"),
+            ("zConst", "15_zConst"),
+        ] {
+            let item = items
+                .iter()
+                .find(|item| item["label"] == json!(label))
+                .unwrap_or_else(|| panic!("missing {label} in {items:?}"));
+            assert_eq!(item["sortText"], json!(sort_text), "item: {item:?}");
+        }
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -2987,6 +3249,35 @@ sample:
             loop_var,
             json!(null),
             "loop variable should not resolve after loop"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn definition_does_not_resolve_future_locals() {
+        let dir = mk_temp_dir("definition_future_local");
+        let main = dir.join("main.onda");
+        let source = r#"
+outs:
+  out1
+
+sample:
+  earlier = 1.0
+  out1 = earlier + later
+  later = 2.0
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let earlier = definition_for(&mut server, &main, source, "out1 = earlier");
+        let later = definition_for(&mut server, &main, source, "+ later");
+
+        assert_ne!(earlier, json!(null), "earlier local should resolve");
+        assert_eq!(
+            later,
+            json!(null),
+            "future local should not resolve before declaration"
         );
 
         fs::remove_dir_all(&dir).ok();

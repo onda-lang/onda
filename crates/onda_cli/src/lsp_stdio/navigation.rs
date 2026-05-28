@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
@@ -23,6 +24,11 @@ use crate::formatting::{
 };
 
 use super::path_utils::path_to_file_uri;
+use super::position::{
+    byte_index_for_lsp_character, byte_offset_for_lsp_position, fallback_span_end_position,
+    fallback_span_start_position, line_at_position, lsp_character_for_byte, span_end_position,
+    span_start_position, LspPosition,
+};
 
 const SYMBOL_KIND_NAMESPACE: u32 = 3;
 const SYMBOL_KIND_METHOD: u32 = 6;
@@ -47,7 +53,7 @@ pub(super) fn hover_for_document(
 ) -> Option<Value> {
     let token = source_token_at_position(source, position)?;
     let parsed = parse_for_navigation(source, path, overlays, Some(position));
-    let index = NavigationIndex::build(parsed.as_ref(), source, path);
+    let index = NavigationIndex::build(parsed.as_ref(), source, path, Some(position));
     let hover = index
         .callable_hover_for_token(source, &token)
         .or_else(|| {
@@ -78,9 +84,9 @@ pub(super) fn definition_for_document(
     }
 
     let parsed = parse_for_navigation(source, path, overlays, Some(position));
-    let index = NavigationIndex::build(parsed.as_ref(), source, path);
+    let index = NavigationIndex::build(parsed.as_ref(), source, path, Some(position));
     let definition = index.resolve_token(source, &token)?;
-    definition.location_json(path)
+    definition.location_json(path, source, overlays)
 }
 
 pub(super) fn document_symbols_for_document(
@@ -92,7 +98,7 @@ pub(super) fn document_symbols_for_document(
         return Vec::new();
     };
     let current_file_key = path.map(normalize_file_key_for_path);
-    document_symbols_for_program(&program, current_file_key.as_deref())
+    document_symbols_for_program(&program, current_file_key.as_deref(), source)
 }
 
 fn parse_for_navigation(
@@ -106,7 +112,10 @@ fn parse_for_navigation(
             return Some(program);
         }
         if let Some(position) = position {
-            let offset = byte_offset_for_position(source, position);
+            let offset = byte_offset_for_lsp_position(
+                source,
+                LspPosition::new(position.line, position.character),
+            );
             let sanitized = source_with_current_line_placeholder(source, offset);
             let mut sanitized_overlays = overlays.clone();
             sanitized_overlays.insert(path.to_path_buf(), sanitized);
@@ -170,14 +179,20 @@ impl DefinitionInfo {
         format!("```onda\n{}\n```{}", self.detail, file)
     }
 
-    fn location_json(&self, fallback_path: Option<&Path>) -> Option<Value> {
+    fn location_json(
+        &self,
+        fallback_path: Option<&Path>,
+        fallback_source: &str,
+        overlays: &HashMap<PathBuf, String>,
+    ) -> Option<Value> {
         if self.span.is_zero() {
             return None;
         }
         let uri = uri_for_span(self.span, fallback_path)?;
+        let source = source_for_span(self.span, fallback_path, fallback_source, overlays);
         Some(json!({
             "uri": uri,
-            "range": span_range_json(self.span),
+            "range": span_range_json(self.span, source.as_deref()),
         }))
     }
 }
@@ -252,6 +267,8 @@ struct NavigationScope {
 #[derive(Debug, Default)]
 struct NavigationIndex {
     current_file_key: Option<String>,
+    source: String,
+    position: Option<NavigationPosition>,
     definitions: Vec<DefinitionInfo>,
     by_full_name: HashMap<String, usize>,
     namespace_members: HashMap<String, HashMap<String, usize>>,
@@ -266,9 +283,16 @@ struct NavigationIndex {
 }
 
 impl NavigationIndex {
-    fn build(program: Option<&Program>, source: &str, path: Option<&Path>) -> Self {
+    fn build(
+        program: Option<&Program>,
+        source: &str,
+        path: Option<&Path>,
+        position: Option<NavigationPosition>,
+    ) -> Self {
         let mut index = Self {
             current_file_key: path.map(normalize_file_key_for_path),
+            source: source.to_owned(),
+            position,
             ..Self::default()
         };
 
@@ -1246,19 +1270,27 @@ impl NavigationIndex {
     ) {
         for stmt in stmts {
             match stmt {
-                Stmt::Assign { target, expr, .. } => {
-                    if let Some(name) = assign_target_name(target) {
-                        if let Some(instance) = self.instance_from_expr(expr, namespace) {
-                            out.insert(name.to_owned(), instance);
+                Stmt::Assign {
+                    target,
+                    target_loc,
+                    expr,
+                    ..
+                } => {
+                    if self.span_start_is_visible(*target_loc) {
+                        if let Some(name) = assign_target_name(target) {
+                            if let Some(instance) = self.instance_from_expr(expr, namespace) {
+                                out.insert(name.to_owned(), instance);
+                            }
                         }
                     }
                 }
                 Stmt::If {
+                    loc,
                     then_branch,
                     else_branch,
                     ..
                 } => {
-                    if !top_level_assigns_only {
+                    if !top_level_assigns_only && self.span_end_is_visible(*loc) {
                         let mut then_instances = out.clone();
                         self.collect_visible_stmt_instances(
                             then_branch,
@@ -1310,24 +1342,29 @@ impl NavigationIndex {
     ) {
         for stmt in stmts {
             match stmt {
-                Stmt::Const { decl, .. } => {
-                    let idx = self.add_const_definition(owner, decl);
-                    out.insert(decl.name.clone(), idx);
+                Stmt::Const { loc, decl, .. } => {
+                    if self.span_start_is_visible(*loc) {
+                        let idx = self.add_const_definition(owner, decl);
+                        out.entry(decl.name.clone()).or_insert(idx);
+                    }
                 }
                 Stmt::Assign {
                     target, target_loc, ..
                 } => {
-                    for name in assign_target_names(target) {
-                        let idx = self.add_local_variable_definition(owner, name, *target_loc);
-                        out.insert(name.to_owned(), idx);
+                    if self.span_start_is_visible(*target_loc) {
+                        for name in assign_target_names(target) {
+                            let idx = self.add_local_variable_definition(owner, name, *target_loc);
+                            out.entry(name.to_owned()).or_insert(idx);
+                        }
                     }
                 }
                 Stmt::If {
+                    loc,
                     then_branch,
                     else_branch,
                     ..
                 } => {
-                    if !top_level_assigns_only {
+                    if !top_level_assigns_only && self.span_end_is_visible(*loc) {
                         let mut then_defs = out.clone();
                         self.collect_visible_stmt_definitions(
                             owner,
@@ -1345,7 +1382,7 @@ impl NavigationIndex {
                         let base_names = out.keys().cloned().collect::<HashSet<_>>();
                         for (name, idx) in then_defs {
                             if base_names.contains(&name) || else_defs.contains_key(&name) {
-                                out.insert(name, idx);
+                                out.entry(name).or_insert(idx);
                             }
                         }
                     }
@@ -1357,6 +1394,21 @@ impl NavigationIndex {
                 | Stmt::Continue { .. } => {}
             }
         }
+    }
+
+    fn span_start_is_visible(&self, span: Span) -> bool {
+        let Some(position) = self.position else {
+            return true;
+        };
+        span_start_position(&self.source, span)
+            <= LspPosition::new(position.line, position.character)
+    }
+
+    fn span_end_is_visible(&self, span: Span) -> bool {
+        let Some(position) = self.position else {
+            return true;
+        };
+        span_end_position(&self.source, span) <= LspPosition::new(position.line, position.character)
     }
 
     fn push_scope(
@@ -2023,47 +2075,58 @@ impl NavigationScope {
     }
 }
 
-fn document_symbols_for_program(program: &Program, current_file_key: Option<&str>) -> Vec<Value> {
+fn document_symbols_for_program(
+    program: &Program,
+    current_file_key: Option<&str>,
+    source: &str,
+) -> Vec<Value> {
     let mut symbols = Vec::new();
     for block in &program.blocks {
         if !span_belongs_to_current_file(block.loc().span(), current_file_key) {
             continue;
         }
-        if let Some(symbol) = document_symbol_for_block(block) {
+        if let Some(symbol) = document_symbol_for_block(block, source) {
             symbols.push(symbol);
         }
     }
     symbols
 }
 
-fn document_symbol_for_block(block: &Block) -> Option<Value> {
+fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
     match block {
         Block::Const(decl) => Some(document_symbol(
             &decl.name,
             SYMBOL_KIND_CONSTANT,
             decl.loc,
+            source,
             vec![],
         )),
-        Block::Def(def) => Some(document_symbol_for_function(def, SYMBOL_KIND_FUNCTION)),
-        Block::Proc(proc_def) => Some(document_symbol_for_proc(proc_def)),
-        Block::Struct(struct_def) => Some(document_symbol_for_struct(struct_def)),
-        Block::Namespace(ns) => Some(document_symbol_for_namespace(ns)),
+        Block::Def(def) => Some(document_symbol_for_function(
+            def,
+            SYMBOL_KIND_FUNCTION,
+            source,
+        )),
+        Block::Proc(proc_def) => Some(document_symbol_for_proc(proc_def, source)),
+        Block::Struct(struct_def) => Some(document_symbol_for_struct(struct_def, source)),
+        Block::Namespace(ns) => Some(document_symbol_for_namespace(ns, source)),
         Block::NamespaceAlias(alias) => Some(document_symbol(
             &alias.name,
             SYMBOL_KIND_NAMESPACE,
             alias.loc,
+            source,
             vec![],
         )),
         Block::Events(events) => {
             let children = events
                 .events
                 .iter()
-                .map(document_symbol_for_event)
+                .map(|event| document_symbol_for_event(event, source))
                 .collect::<Vec<_>>();
             Some(document_symbol(
                 "events",
                 SYMBOL_KIND_EVENT,
                 events.loc,
+                source,
                 children,
             ))
         }
@@ -2071,31 +2134,35 @@ fn document_symbol_for_block(block: &Block) -> Option<Value> {
             "init",
             SYMBOL_KIND_METHOD,
             init.loc,
+            source,
             vec![],
         )),
         Block::Sample(sample) => Some(document_symbol(
             "sample",
             SYMBOL_KIND_METHOD,
             sample.loc,
+            source,
             vec![],
         )),
         Block::Block(exec) => Some(document_symbol(
             "block",
             SYMBOL_KIND_METHOD,
             exec.loc,
+            source,
             vec![],
         )),
         Block::Graph(graph) => Some(document_symbol(
             "graph",
             SYMBOL_KIND_METHOD,
             graph.loc,
+            source,
             vec![],
         )),
         _ => None,
     }
 }
 
-fn document_symbol_for_namespace(ns: &NamespaceDecl) -> Value {
+fn document_symbol_for_namespace(ns: &NamespaceDecl, source: &str) -> Value {
     let mut children = Vec::new();
     for item in &ns.items {
         let symbol = match item {
@@ -2103,18 +2170,24 @@ fn document_symbol_for_namespace(ns: &NamespaceDecl) -> Value {
                 &decl.name,
                 SYMBOL_KIND_CONSTANT,
                 decl.loc,
+                source,
                 vec![],
             )),
-            NamespaceItem::Def(def) => {
-                Some(document_symbol_for_function(def, SYMBOL_KIND_FUNCTION))
+            NamespaceItem::Def(def) => Some(document_symbol_for_function(
+                def,
+                SYMBOL_KIND_FUNCTION,
+                source,
+            )),
+            NamespaceItem::Proc(proc_def) => Some(document_symbol_for_proc(proc_def, source)),
+            NamespaceItem::Struct(struct_def) => {
+                Some(document_symbol_for_struct(struct_def, source))
             }
-            NamespaceItem::Proc(proc_def) => Some(document_symbol_for_proc(proc_def)),
-            NamespaceItem::Struct(struct_def) => Some(document_symbol_for_struct(struct_def)),
-            NamespaceItem::Namespace(child) => Some(document_symbol_for_namespace(child)),
+            NamespaceItem::Namespace(child) => Some(document_symbol_for_namespace(child, source)),
             NamespaceItem::Alias(alias) => Some(document_symbol(
                 &alias.name,
                 SYMBOL_KIND_NAMESPACE,
                 alias.loc,
+                source,
                 vec![],
             )),
             NamespaceItem::Use(_) | NamespaceItem::Assert(_) => None,
@@ -2123,92 +2196,96 @@ fn document_symbol_for_namespace(ns: &NamespaceDecl) -> Value {
             children.push(symbol);
         }
     }
-    document_symbol(&ns.name, SYMBOL_KIND_NAMESPACE, ns.loc, children)
+    document_symbol(&ns.name, SYMBOL_KIND_NAMESPACE, ns.loc, source, children)
 }
 
-fn document_symbol_for_proc(proc_def: &ProcessorDef) -> Value {
+fn document_symbol_for_proc(proc_def: &ProcessorDef, source: &str) -> Value {
     let mut children = Vec::new();
     children.extend(
-        proc_def
-            .consts
-            .iter()
-            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_CONSTANT, decl.loc, vec![])),
+        proc_def.consts.iter().map(|decl| {
+            document_symbol(&decl.name, SYMBOL_KIND_CONSTANT, decl.loc, source, vec![])
+        }),
     );
     children.extend(
         proc_def
             .ins
             .iter()
-            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_FIELD, decl.loc, vec![])),
+            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_FIELD, decl.loc, source, vec![])),
     );
     children.extend(
         proc_def
             .outs
             .iter()
-            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_FIELD, decl.loc, vec![])),
+            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_FIELD, decl.loc, source, vec![])),
     );
     children.extend(
-        proc_def
-            .params
-            .iter()
-            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_VARIABLE, decl.loc, vec![])),
+        proc_def.params.iter().map(|decl| {
+            document_symbol(&decl.name, SYMBOL_KIND_VARIABLE, decl.loc, source, vec![])
+        }),
     );
     children.extend(
         proc_def
             .buffers
             .iter()
-            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_FIELD, decl.loc, vec![])),
+            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_FIELD, decl.loc, source, vec![])),
     );
-    children.extend(proc_def.events.iter().map(document_symbol_for_event));
+    children.extend(
+        proc_def
+            .events
+            .iter()
+            .map(|event| document_symbol_for_event(event, source)),
+    );
     children.extend(
         proc_def
             .local_defs
             .iter()
-            .map(|def| document_symbol_for_function(def, SYMBOL_KIND_METHOD)),
+            .map(|def| document_symbol_for_function(def, SYMBOL_KIND_METHOD, source)),
     );
     document_symbol(
         &proc_def.name,
         SYMBOL_KIND_CONSTRUCTOR,
         proc_def.loc,
+        source,
         children,
     )
 }
 
-fn document_symbol_for_struct(struct_def: &StructDef) -> Value {
+fn document_symbol_for_struct(struct_def: &StructDef, source: &str) -> Value {
     let mut children = Vec::new();
     children.extend(
-        struct_def
-            .fields
-            .iter()
-            .map(|field| document_symbol(&field.name, SYMBOL_KIND_FIELD, field.loc, vec![])),
+        struct_def.fields.iter().map(|field| {
+            document_symbol(&field.name, SYMBOL_KIND_FIELD, field.loc, source, vec![])
+        }),
     );
     children.extend(
         struct_def
             .methods
             .iter()
-            .map(|method| document_symbol_for_function(method, SYMBOL_KIND_METHOD)),
+            .map(|method| document_symbol_for_function(method, SYMBOL_KIND_METHOD, source)),
     );
     document_symbol(
         &struct_def.name,
         SYMBOL_KIND_STRUCT,
         struct_def.loc,
+        source,
         children,
     )
 }
 
-fn document_symbol_for_function(def: &FunctionDef, kind: u32) -> Value {
-    document_symbol(&def.name, kind, def.loc, vec![])
+fn document_symbol_for_function(def: &FunctionDef, kind: u32, source: &str) -> Value {
+    document_symbol(&def.name, kind, def.loc, source, vec![])
 }
 
-fn document_symbol_for_event(event: &EventDef) -> Value {
-    document_symbol(&event.name, SYMBOL_KIND_EVENT, event.loc, vec![])
+fn document_symbol_for_event(event: &EventDef, source: &str) -> Value {
+    document_symbol(&event.name, SYMBOL_KIND_EVENT, event.loc, source, vec![])
 }
 
-fn document_symbol(name: &str, kind: u32, span: Span, children: Vec<Value>) -> Value {
+fn document_symbol(name: &str, kind: u32, span: Span, source: &str, children: Vec<Value>) -> Value {
     let mut symbol = json!({
         "name": name,
         "kind": kind,
-        "range": span_range_json(span),
-        "selectionRange": span_range_json(span),
+        "range": span_range_json(span, Some(source)),
+        "selectionRange": span_range_json(span, Some(source)),
     });
     if !children.is_empty() {
         symbol["children"] = json!(children);
@@ -2216,15 +2293,21 @@ fn document_symbol(name: &str, kind: u32, span: Span, children: Vec<Value>) -> V
     symbol
 }
 
-fn span_range_json(span: Span) -> Value {
+fn span_range_json(span: Span, source: Option<&str>) -> Value {
+    let start = source
+        .map(|source| span_start_position(source, span))
+        .unwrap_or_else(|| fallback_span_start_position(span));
+    let end = source
+        .map(|source| span_end_position(source, span))
+        .unwrap_or_else(|| fallback_span_end_position(span));
     json!({
         "start": {
-            "line": span.line.saturating_sub(1),
-            "character": u32::from(span.column.saturating_sub(1)),
+            "line": start.line,
+            "character": start.character,
         },
         "end": {
-            "line": span.end_line().saturating_sub(1),
-            "character": u32::from(span.end_column.saturating_sub(1)),
+            "line": end.line,
+            "character": end.character,
         },
     })
 }
@@ -2235,6 +2318,37 @@ fn uri_for_span(span: Span, fallback_path: Option<&Path>) -> Option<String> {
         .map(|file| path_for_span_file(&file))
         .or_else(|| fallback_path.map(Path::to_path_buf))?;
     Some(path_to_file_uri(&path))
+}
+
+fn source_for_span<'a>(
+    span: Span,
+    fallback_path: Option<&Path>,
+    fallback_source: &'a str,
+    overlays: &'a HashMap<PathBuf, String>,
+) -> Option<Cow<'a, str>> {
+    let Some(file) = span.file() else {
+        return Some(Cow::Borrowed(fallback_source));
+    };
+    if let Some(module) = stdlib_module_from_virtual_file(&file) {
+        return onda_frontend::stdlib_module_source(module).map(Cow::Borrowed);
+    }
+
+    let file_key = normalize_file_key(&file);
+    if fallback_path
+        .map(normalize_file_key_for_path)
+        .is_some_and(|key| key == file_key)
+    {
+        return Some(Cow::Borrowed(fallback_source));
+    }
+    for (path, text) in overlays {
+        if normalize_file_key_for_path(path) == file_key {
+            return Some(Cow::Borrowed(text.as_str()));
+        }
+    }
+
+    fs::read_to_string(path_for_span_file(&file))
+        .ok()
+        .map(Cow::Owned)
 }
 
 fn path_for_span_file(file: &str) -> PathBuf {
@@ -2550,7 +2664,7 @@ fn token_is_followed_by_call_start(source: &str, offset: usize) -> bool {
 
 fn source_token_at_position(source: &str, position: NavigationPosition) -> Option<SourceToken> {
     let (line_start, line_end, line_text) = line_at_position(source, position.line)?;
-    let mut byte = byte_index_for_character(line_text, position.character);
+    let mut byte = byte_index_for_lsp_character(line_text, position.character);
     if byte == line_text.len() || !is_ident_byte(line_text.as_bytes().get(byte).copied()) {
         if byte == 0 {
             return None;
@@ -2589,52 +2703,13 @@ fn source_token_at_position(source: &str, position: NavigationPosition) -> Optio
     Some(SourceToken {
         name,
         line: position.line,
-        start_character: character_index_for_byte(line_text, start),
-        end_character: character_index_for_byte(line_text, end),
+        start_character: lsp_character_for_byte(line_text, start),
+        end_character: lsp_character_for_byte(line_text, end),
         byte_start: line_start + start,
         byte_end: line_start + end,
         line_start,
         line_end,
     })
-}
-
-fn line_at_position(source: &str, line: u32) -> Option<(usize, usize, &str)> {
-    let mut start = 0usize;
-    for (line_no, segment) in source.split_inclusive('\n').enumerate() {
-        let end = start + segment.len();
-        if line_no as u32 == line {
-            let line_end = if segment.ends_with('\n') {
-                end - 1
-            } else {
-                end
-            };
-            return Some((start, line_end, &source[start..line_end]));
-        }
-        start = end;
-    }
-    if line as usize == source.lines().count() {
-        Some((source.len(), source.len(), ""))
-    } else {
-        None
-    }
-}
-
-fn byte_offset_for_position(source: &str, position: NavigationPosition) -> usize {
-    let Some((line_start, _, line_text)) = line_at_position(source, position.line) else {
-        return source.len();
-    };
-    line_start + byte_index_for_character(line_text, position.character)
-}
-
-fn byte_index_for_character(line: &str, character: u32) -> usize {
-    line.char_indices()
-        .nth(character as usize)
-        .map(|(idx, _)| idx)
-        .unwrap_or(line.len())
-}
-
-fn character_index_for_byte(line: &str, byte: usize) -> u32 {
-    line[..byte.min(line.len())].chars().count() as u32
 }
 
 fn previous_char_start(line: &str, byte: usize) -> Option<usize> {
