@@ -2,10 +2,58 @@ use super::*;
 
 #[derive(Default)]
 struct ParsedNamedDecl {
+    pinned: bool,
     ty: Option<DeclType>,
     ty_loc: Span,
     default: Option<Expr>,
     range: Option<DeclRange>,
+    bind: Option<String>,
+}
+
+fn parse_port_decl_pair(
+    item: Pair<'_, Rule>,
+    default_ty: &Option<DeclType>,
+    block_name: &str,
+    allow_default_and_range: bool,
+) -> Result<PortDecl, Vec<Diagnostic>> {
+    let (loc, name, parsed) = parse_named_decl(
+        item,
+        "missing port identifier",
+        "missing port declaration type",
+    )?;
+    if !allow_default_and_range {
+        validate_decl_defaults_and_ranges(&parsed, block_name, loc.as_ref())?;
+    }
+    Ok(PortDecl {
+        loc,
+        name,
+        output_timing: None,
+        output_timing_loc: Span::ZERO,
+        ty: parsed.ty.or_else(|| default_ty.clone()),
+        ty_loc: parsed.ty_loc,
+        default: parsed.default,
+        range: parsed.range,
+    })
+}
+
+fn parse_port_list_items(
+    list_pair: Pair<'_, Rule>,
+    default_ty: &Option<DeclType>,
+    block_name: &str,
+    allow_default_and_range: bool,
+) -> Result<Vec<PortDecl>, Vec<Diagnostic>> {
+    let mut ports = Vec::new();
+    for item in list_pair.into_inner() {
+        if item.as_rule() == Rule::port_decl {
+            ports.push(parse_port_decl_pair(
+                item,
+                default_ty,
+                block_name,
+                allow_default_and_range,
+            )?);
+        }
+    }
+    Ok(ports)
 }
 
 fn parse_decl_type_item(
@@ -31,14 +79,14 @@ fn parse_named_decl(
     missing_type_message: &str,
 ) -> Result<(Span, String, ParsedNamedDecl), Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&pair);
-    let mut inner = pair.into_inner();
-    let Some(name_pair) = inner.next() else {
-        return Err(vec![syntax_at_loc(loc.as_ref(), missing_name_message)]);
-    };
-
     let mut parsed = ParsedNamedDecl::default();
-    for item in inner {
+    let mut name: Option<String> = None;
+    for item in pair.into_inner() {
         match item.as_rule() {
+            Rule::param_pin => parsed.pinned = true,
+            Rule::ident if name.is_none() => {
+                name = Some(item.as_str().to_owned());
+            }
             Rule::decl_type
             | Rule::type_name
             | Rule::array_type
@@ -51,11 +99,19 @@ fn parse_named_decl(
             }
             Rule::expr => parsed.default = Some(parse_expr_inner(item)),
             Rule::decl_range => parsed.range = Some(parse_decl_range_pair(item)?),
+            Rule::param_bind => {
+                if let Some(bind_pair) = item.into_inner().next() {
+                    parsed.bind = Some(bind_pair.as_str().to_owned());
+                }
+            }
             _ => {}
         }
     }
 
-    Ok((loc, name_pair.as_str().to_owned(), parsed))
+    let Some(name) = name else {
+        return Err(vec![syntax_at_loc(loc.as_ref(), missing_name_message)]);
+    };
+    Ok((loc, name, parsed))
 }
 
 fn validate_decl_defaults_and_ranges(
@@ -109,12 +165,14 @@ fn parse_section_count_inner(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnosti
 
 pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, Vec<Diagnostic>> {
     let block_loc = stmt_loc_from_pair(&block_pair);
-    let (block_name, prefix) = match block_pair.as_rule() {
-        Rule::ins_block => ("ins", "in"),
-        Rule::outs_block => ("outs", "out"),
-        _ => ("ports", "port"),
+    let block_rule = block_pair.as_rule();
+    let (block_name, prefix, output_timing, output_timing_loc) = match block_rule {
+        Rule::ins_block => ("ins", "in", OutputTiming::Sample, Span::ZERO),
+        Rule::outs_block => ("outs", "out", OutputTiming::Sample, Span::ZERO),
+        Rule::kouts_block => ("kouts", "kout", OutputTiming::Block, block_loc),
+        _ => ("ports", "port", OutputTiming::Sample, Span::ZERO),
     };
-    let allow_default_and_range = block_pair.as_rule() == Rule::ins_block;
+    let allow_default_and_range = block_rule == Rule::ins_block;
 
     let mut ports = Vec::new();
     let mut deferred_count: Option<Expr> = None;
@@ -126,6 +184,12 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
                 default_ty = Some(parse_section_default_decl_type(child, block_name)?);
             }
             Rule::section_count => {
+                if block_rule == Rule::outs_block && matches!(child.as_str(), "block" | "sample") {
+                    return Err(vec![syntax_at_pair(
+                        &child,
+                        "outs does not accept rate words; use kouts for control-rate outputs",
+                    )]);
+                }
                 if deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(
                         &child,
@@ -135,28 +199,12 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
                 deferred_count = Some(parse_section_count_inner(child)?);
             }
             Rule::port_list => {
-                for item in child.into_inner() {
-                    if item.as_rule() != Rule::port_decl {
-                        continue;
-                    }
-                    let (loc, name, parsed) = parse_named_decl(
-                        item,
-                        "missing port identifier",
-                        "missing port declaration type",
-                    )?;
-                    if !allow_default_and_range {
-                        validate_decl_defaults_and_ranges(&parsed, block_name, loc.as_ref())?;
-                    }
-                    let ty = parsed.ty.or_else(|| default_ty.clone());
-                    ports.push(PortDecl {
-                        loc,
-                        name,
-                        ty,
-                        ty_loc: parsed.ty_loc,
-                        default: parsed.default,
-                        range: parsed.range,
-                    });
-                }
+                ports.extend(parse_port_list_items(
+                    child,
+                    &default_ty,
+                    block_name,
+                    allow_default_and_range,
+                )?);
             }
             _ => {}
         }
@@ -174,6 +222,8 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
         deferred_count,
         deferred_default_ty,
         deferred_prefix: prefix.to_owned(),
+        output_timing,
+        output_timing_loc,
     })
 }
 
@@ -181,6 +231,10 @@ pub(super) fn parse_params_block(
     block_pair: Pair<'_, Rule>,
 ) -> Result<ParamBlock, Vec<Diagnostic>> {
     let block_loc = stmt_loc_from_pair(&block_pair);
+    let (block_name, prefix) = match block_pair.as_rule() {
+        Rule::kins_block => ("kins", "kin"),
+        _ => ("params", "param"),
+    };
     let mut params = Vec::new();
     let mut deferred_count: Option<Expr> = None;
     let mut default_ty: Option<DeclType> = None;
@@ -188,20 +242,23 @@ pub(super) fn parse_params_block(
     for child in block_pair.into_inner() {
         match child.as_rule() {
             Rule::section_default_decl_type => {
-                default_ty = Some(parse_section_default_decl_type(child, "params")?);
+                default_ty = Some(parse_section_default_decl_type(child, block_name)?);
             }
             Rule::section_count => {
                 if deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(
                         &child,
-                        "params block count can only be specified once",
+                        format!("{block_name} block count can only be specified once"),
                     )]);
                 }
                 deferred_count = Some(parse_section_count_inner(child)?);
             }
-            Rule::param_list => {
+            Rule::param_list | Rule::proc_param_list => {
                 for param_pair in child.into_inner() {
-                    if param_pair.as_rule() != Rule::param_decl {
+                    if !matches!(
+                        param_pair.as_rule(),
+                        Rule::param_decl | Rule::proc_param_decl
+                    ) {
                         continue;
                     }
                     let (loc, name, parsed) = parse_named_decl(
@@ -213,10 +270,12 @@ pub(super) fn parse_params_block(
                     params.push(ParamDecl {
                         loc,
                         name,
+                        pinned: parsed.pinned,
                         ty,
                         ty_loc: parsed.ty_loc,
                         default: parsed.default,
                         range: parsed.range,
+                        bind: parsed.bind,
                     });
                 }
             }
@@ -235,6 +294,7 @@ pub(super) fn parse_params_block(
         decls: params,
         deferred_count,
         deferred_default_ty,
+        deferred_prefix: prefix.to_owned(),
     })
 }
 
@@ -717,6 +777,9 @@ pub(super) fn parse_proc_block(
     let mut outs = Vec::new();
     let mut outs_deferred_count: Option<Expr> = None;
     let mut outs_deferred_default_ty: Option<DeclType> = None;
+    let mut seen_output_block = false;
+    let mut outs_timing = OutputTiming::Sample;
+    let mut outs_timing_loc = Span::ZERO;
     let mut params = Vec::new();
     let mut params_deferred_count: Option<Expr> = None;
     let mut params_deferred_default_ty: Option<DeclType> = None;
@@ -764,16 +827,19 @@ pub(super) fn parse_proc_block(
                 ins_deferred_count = pb.deferred_count;
                 ins_deferred_default_ty = pb.deferred_default_ty;
             }
-            Rule::outs_block => {
-                if !outs.is_empty() || outs_deferred_count.is_some() {
-                    return Err(vec![syntax_at_pair(&child, "duplicate proc outs block")]);
+            Rule::outs_block | Rule::kouts_block => {
+                if seen_output_block {
+                    return Err(vec![syntax_at_pair(&child, "duplicate proc output block")]);
                 }
+                seen_output_block = true;
                 let pb = parse_port_block(child)?;
                 outs = pb.decls;
                 outs_deferred_count = pb.deferred_count;
                 outs_deferred_default_ty = pb.deferred_default_ty;
+                outs_timing = pb.output_timing;
+                outs_timing_loc = pb.output_timing_loc;
             }
-            Rule::params_block => {
+            Rule::params_block | Rule::proc_params_block => {
                 if !params.is_empty() || params_deferred_count.is_some() {
                     return Err(vec![syntax_at_pair(&child, "duplicate proc params block")]);
                 }
@@ -852,15 +918,9 @@ pub(super) fn parse_proc_block(
                 "proc sample block cannot be declared both directly and inside block section",
             )]);
         }
-        let Some(nested_sample) = exec.sample else {
-            return Err(vec![syntax_at_loc(
-                loc.as_ref(),
-                "proc block section must include nested 'sample' block",
-            )]);
-        };
         block_pre = exec.pre;
         block_post = exec.post;
-        sample = Some(nested_sample);
+        sample = exec.sample;
     }
 
     if graph.is_some() && (sample.is_some() || has_block_block) {
@@ -889,6 +949,8 @@ pub(super) fn parse_proc_block(
         outs,
         outs_deferred_count,
         outs_deferred_default_ty,
+        outs_timing,
+        outs_timing_loc,
         params,
         params_deferred_count,
         params_deferred_default_ty,

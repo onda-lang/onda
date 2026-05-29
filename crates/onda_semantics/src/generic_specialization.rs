@@ -495,7 +495,7 @@ pub(crate) fn generic_inference_seed_for_top_level(blocks: &[Block]) -> GenericI
     for block in blocks {
         match block {
             Block::Const(_) => {}
-            Block::Ins(ports) | Block::Outs(ports) => {
+            Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
                 for port in ports {
                     add_decl_type_to_generic_inference_locals(
                         &port.name,

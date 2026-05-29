@@ -4,6 +4,15 @@ pub(crate) fn runtime_symbol_root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
 }
 
+fn runtime_scope_label(scope: ScopeKind) -> &'static str {
+    match scope {
+        ScopeKind::Block => "block",
+        ScopeKind::Sample => "sample",
+        ScopeKind::Init => "init",
+        ScopeKind::Def => "def",
+    }
+}
+
 fn infer_runtime_slice_alias_info(
     base: &str,
     start: Option<&Expr>,
@@ -60,6 +69,7 @@ pub(crate) struct RuntimeStmtAnalysisCtx<'a> {
     pub registration_output_names: &'a HashSet<String>,
     pub registration_param_names: &'a HashSet<String>,
     pub forbidden_assign_names: &'a HashSet<String>,
+    pub forbidden_assign_array_names: &'a HashSet<String>,
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub event_policy: Option<EventStmtPolicy<'a>>,
     pub state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
@@ -209,6 +219,7 @@ fn build_runtime_stmt_analysis_ctx<'a>(
     registration_output_names: &'a HashSet<String>,
     registration_param_names: &'a HashSet<String>,
     forbidden_assign_names: &'a HashSet<String>,
+    forbidden_assign_array_names: &'a HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
     state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
 ) -> RuntimeStmtAnalysisCtx<'a> {
@@ -225,6 +236,7 @@ fn build_runtime_stmt_analysis_ctx<'a>(
         registration_output_names,
         registration_param_names,
         forbidden_assign_names,
+        forbidden_assign_array_names,
         event_policy,
         state_tuples,
     }
@@ -272,6 +284,7 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     struct_instances: &HashMap<String, String>,
     forbidden_assign_names: &HashSet<String>,
+    forbidden_assign_array_names: &HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
     state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
@@ -290,6 +303,7 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
         common.output_names,
         common.param_names,
         forbidden_assign_names,
+        forbidden_assign_array_names,
         event_policy,
         state_tuples,
     );
@@ -334,6 +348,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
     runtime_local_aliases: LocalAliasTypes,
     runtime_local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     runtime_forbidden_assign_names: &HashSet<String>,
+    runtime_forbidden_assign_array_names: &HashSet<String>,
     state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -350,6 +365,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         registration_output_names,
         registration_param_names,
         runtime_forbidden_assign_names,
+        runtime_forbidden_assign_array_names,
         None,
         state_tuples,
     );
@@ -440,6 +456,10 @@ pub(crate) fn analyze_runtime_events(
             policy: ScopePolicy::Event,
             input_names: &empty_runtime_inputs,
             output_names: &empty_runtime_outputs,
+            output_array_names: common.output_array_names,
+            io_surface_names: common.io_surface_names,
+            io_surface_array_names: common.io_surface_array_names,
+            dynamic_param_array_names: common.dynamic_param_array_names,
             param_names: &event_param_immutable,
             struct_defs: common.struct_defs,
             fn_signatures: common.fn_signatures,
@@ -448,6 +468,8 @@ pub(crate) fn analyze_runtime_events(
             port_index_ins: None,
             port_index_outs: None,
             port_index_params: None,
+            port_index_kins: None,
+            proc_event_names: common.proc_event_names,
         };
         let event_policy = EventStmtPolicy {
             init_writable_roots,
@@ -477,6 +499,7 @@ pub(crate) fn analyze_runtime_events(
             },
             struct_instances,
             validation_output_names,
+            common.output_array_names,
             Some(event_policy),
             &HashMap::new(),
             errors,
@@ -569,6 +592,11 @@ fn analyze_runtime_stmt_inner(
     let input_names = common.input_names;
     let output_names = common.output_names;
     let forbidden_assign_names = ctx.forbidden_assign_names;
+    let forbidden_assign_array_names = ctx.forbidden_assign_array_names;
+    let expr_output_names = output_names
+        .union(forbidden_assign_names)
+        .cloned()
+        .collect::<HashSet<_>>();
     let param_names = common.param_names;
     let struct_defs = common.struct_defs;
     let fn_signatures = common.fn_signatures;
@@ -586,7 +614,7 @@ fn analyze_runtime_stmt_inner(
             declared_symbols,
             &empty_param_structs,
             struct_instances,
-            output_names,
+            &expr_output_names,
             proc_array_roots,
         );
         match stmt {
@@ -631,10 +659,19 @@ fn analyze_runtime_stmt_inner(
                     state_arrays,
                     state_array_struct_roots,
                     proc_array_roots,
+                    ctx.common.proc_event_names,
                     struct_instances,
                     input_names,
                     output_names,
+                    common.output_array_names,
+                    common.io_surface_names,
+                    common.io_surface_array_names,
+                    matches!(common.policy, ScopePolicy::Runtime(_)),
+                    common.dynamic_param_array_names,
+                    matches!(common.policy, ScopePolicy::Runtime(_)),
+                    &expr_output_names,
                     forbidden_assign_names,
+                    forbidden_assign_array_names,
                     param_names,
                     struct_defs,
                     fn_signatures,
@@ -643,6 +680,7 @@ fn analyze_runtime_stmt_inner(
                     common.port_index_ins,
                     common.port_index_outs,
                     common.port_index_params,
+                    common.port_index_kins,
                     ctx.state_tuples,
                     errors,
                 );
@@ -845,10 +883,19 @@ fn analyze_assign_sample(
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    proc_event_names: &HashSet<String>,
     struct_instances: &HashMap<String, String>,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
+    output_array_names: &HashSet<String>,
+    io_surface_names: &HashSet<String>,
+    io_surface_array_names: &HashSet<String>,
+    io_surface_access_allowed: bool,
+    dynamic_param_array_names: &HashSet<String>,
+    dynamic_param_indexing_allowed: bool,
+    expr_output_names: &HashSet<String>,
     forbidden_assign_names: &HashSet<String>,
+    forbidden_assign_array_names: &HashSet<String>,
     param_names: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -857,6 +904,7 @@ fn analyze_assign_sample(
     port_index_ins: Option<PortIndexInfo>,
     port_index_outs: Option<PortIndexInfo>,
     port_index_params: Option<PortIndexInfo>,
+    port_index_kins: Option<PortIndexInfo>,
     state_tuples: &HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -870,14 +918,22 @@ fn analyze_assign_sample(
         struct_instances,
         input_names,
         output_names,
+        output_array_names,
+        io_surface_names,
+        io_surface_array_names,
+        io_surface_access_allowed,
+        dynamic_param_array_names,
+        dynamic_param_indexing_allowed,
         param_names,
         struct_defs,
         fn_signatures,
-        expr_outputs: output_names,
+        expr_outputs: expr_output_names,
         port_index_ins,
         port_index_outs,
         port_index_params,
+        port_index_kins,
         proc_array_roots,
+        proc_event_names,
     };
     let stmt_expr_env = |scope| {
         build_scope_stmt_expr_env_with_tuples(
@@ -916,6 +972,23 @@ fn analyze_assign_sample(
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                 target_error!("typed declaration is only supported for plain scalar variables",);
             }
+            if let Some(name) = io_surface_name(base, scope_expr_env!()) {
+                if !scope_expr_env!().io_surface_access_allowed {
+                    push_io_surface_scope_error(errors, target_loc, name);
+                    validate_expr(index, scope_expr_env!(), errors);
+                    validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                    return;
+                }
+            }
+            if forbidden_assign_array_names.contains(base) {
+                target_error!(format!(
+                    "cannot assign to output array symbol '{base}' in {}",
+                    runtime_scope_label(scope)
+                ));
+                validate_expr(index, scope_expr_env!(), errors);
+                validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                return;
+            }
             if state_array_struct_roots.contains_key(base) {
                 target_error!(
                     format!(
@@ -951,10 +1024,26 @@ fn analyze_assign_sample(
                     return;
                 }
             }
-            if base == "outs" {
-                if scope_expr_env!().port_index_outs.is_none() {
+            if let Some(name) = dynamic_param_surface_name(base, scope_expr_env!()) {
+                if !scope_expr_env!().dynamic_param_indexing_allowed {
+                    target_error!(format!(
+                        "dynamic param indexing '{name}[...]' is only allowed in block or sample"
+                    ),);
+                    validate_expr(index, scope_expr_env!(), errors);
+                    validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                    return;
+                }
+            }
+            if matches!(base.as_str(), "outs" | "kouts") {
+                let output_index_allowed = matches!(
+                    (base.as_str(), scope),
+                    ("outs", ScopeKind::Sample) | ("kouts", ScopeKind::Block)
+                );
+                if !output_index_allowed || scope_expr_env!().port_index_outs.is_none() {
                     target_error!(
-                        "outs[i] requires an explicit 'outs' block declaration with uniform types",
+                        format!(
+                            "{base}[i] assignment requires explicit {base} declarations with uniform type in the current scope"
+                        ),
                     );
                 }
                 validate_expr(index, scope_expr_env!(), errors);
@@ -965,7 +1054,7 @@ fn analyze_assign_sample(
                 );
                 return;
             }
-            if matches!(base.as_str(), "ins" | "params") {
+            if matches!(base.as_str(), "ins" | "params" | "kins") {
                 target_error!(format!("cannot assign to immutable '{base}[i]'"),);
                 validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(
@@ -1062,6 +1151,42 @@ fn analyze_assign_sample(
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                 target_error!("typed declaration is only supported for plain scalar variables",);
             }
+            if !validate_block_bound_surface_assign_target(
+                target,
+                target_loc,
+                scope_expr_env!(),
+                errors,
+            ) {
+                validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                return;
+            }
+            if let Some(name) = io_surface_name(base, scope_expr_env!()) {
+                if !scope_expr_env!().io_surface_access_allowed {
+                    push_io_surface_scope_error(errors, target_loc, name);
+                    if let Some(start) = start {
+                        validate_expr(start, scope_expr_env!(), errors);
+                    }
+                    if let Some(end) = end {
+                        validate_expr(end, scope_expr_env!(), errors);
+                    }
+                    validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                    return;
+                }
+            }
+            if forbidden_assign_array_names.contains(base) {
+                target_error!(format!(
+                    "cannot assign to output array symbol '{base}' in {}",
+                    runtime_scope_label(scope)
+                ));
+                if let Some(start) = start {
+                    validate_expr(start, scope_expr_env!(), errors);
+                }
+                if let Some(end) = end {
+                    validate_expr(end, scope_expr_env!(), errors);
+                }
+                validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                return;
+            }
             if let Some((root, field)) = split_root_field_path(base) {
                 if state_array_struct_roots.contains_key(root)
                     && !proc_array_roots.contains_key(root)
@@ -1074,6 +1199,19 @@ fn analyze_assign_sample(
                     );
                     return;
                 }
+            }
+            if let Some(name) = dynamic_param_surface_name(base, scope_expr_env!()) {
+                target_error!(format!(
+                    "dynamic param array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
+                ),);
+                if let Some(start) = start {
+                    validate_expr(start, scope_expr_env!(), errors);
+                }
+                if let Some(end) = end {
+                    validate_expr(end, scope_expr_env!(), errors);
+                }
+                validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                return;
             }
             let Some(target_info) = infer_runtime_slice_alias_info(
                 base,
@@ -1188,8 +1326,23 @@ fn analyze_assign_sample(
             if is_builtin_constant_name(name) {
                 target_error!(format!("cannot assign to builtin constant '{name}'"),);
             }
+            if !validate_block_bound_surface_var_name(name, target_loc, scope_expr_env!(), errors) {
+                validate_expr(expr, scope_expr_env!(), errors);
+                return;
+            }
             if forbidden_assign_names.contains(name) {
-                target_error!(format!("cannot assign to output symbol '{name}' in block"),);
+                target_error!(format!(
+                    "cannot assign to output symbol '{name}' in {}",
+                    runtime_scope_label(scope)
+                ));
+            }
+            if forbidden_assign_array_names.contains(name) {
+                target_error!(format!(
+                    "cannot assign to output array symbol '{name}' in {}",
+                    runtime_scope_label(scope)
+                ));
+                validate_expr(expr, scope_expr_env!(), errors);
+                return;
             }
             if let Expr::ArrayCtor { spec, init, .. } = expr {
                 if is_typed_decl {
@@ -1398,6 +1551,18 @@ fn analyze_assign_sample(
                 base, start, end, ..
             } = expr
             {
+                if let Some(name) = dynamic_param_surface_name(base, scope_expr_env!()) {
+                    target_error!(format!(
+                        "dynamic param array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
+                    ),);
+                    if let Some(start) = start {
+                        validate_expr(start, scope_expr_env!(), errors);
+                    }
+                    if let Some(end) = end {
+                        validate_expr(end, scope_expr_env!(), errors);
+                    }
+                    return;
+                }
                 if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
                     target_error!(format!(
                         "typed declaration for '{name}' is not supported for slice aliases"
@@ -1442,6 +1607,8 @@ fn analyze_assign_sample(
             }
 
             if local_aliases.contains_key(name) {
+                let expr_for_validation =
+                    rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
                 if matches!(expr, Expr::ArrayCtor { .. }) {
                     target_error!("array[...] construction is only allowed in init",);
                 }
@@ -1450,9 +1617,9 @@ fn analyze_assign_sample(
                         target_error!("struct construction is only allowed in init",);
                     }
                 }
-                validate_expr(expr, scope_expr_env!(), errors);
+                validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                 let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                    expr,
+                    &expr_for_validation,
                     state_scalars,
                     declared_symbols,
                     None,
@@ -1503,10 +1670,12 @@ fn analyze_assign_sample(
                                     "struct field '{flat}' must be initialized in init"
                                 ));
                             }
-                            validate_expr(expr, scope_expr_env!(), errors);
+                            let expr_for_validation =
+                                rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+                            validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                             let expr_ty =
                                 infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                                    expr,
+                                    &expr_for_validation,
                                     state_scalars,
                                     declared_symbols,
                                     None,
@@ -1573,6 +1742,7 @@ fn analyze_assign_sample(
                     if let Some(binding_kind) = classify_runtime_like_indexed_binding(
                         base,
                         local_array_aliases,
+                        state_scalars,
                         state_arrays,
                         state_array_struct_roots,
                         struct_instances,
@@ -1748,6 +1918,15 @@ fn analyze_assign_sample(
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+            let mut targets_ok = true;
+            for target_name in targets {
+                targets_ok &= validate_block_bound_surface_var_name(
+                    target_name,
+                    target_loc,
+                    scope_expr_env!(),
+                    errors,
+                );
+            }
             // Validate destructuring arity against the RHS tuple length
             let rhs_arity =
                 infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types).or_else(|| {
@@ -1769,6 +1948,9 @@ fn analyze_assign_sample(
                         0,
                     ));
                 }
+            }
+            if !targets_ok {
+                return;
             }
             clear_tuple_var_bindings(tuple_vars, targets.iter());
             for target_name in targets {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::proc_call_rewrite::lower_named_proc_param_calls_in_stmts;
 
 #[derive(Debug, Clone)]
 struct ManagedDynamicProcArray {
@@ -19,6 +20,80 @@ fn proc_event_array_param_fn_ty(param_ty: ProcEventParamTypeSpec) -> Option<FnPa
         ProcEventParamTypeSpec::Slice { elem_ty } => Some(FnParamType::Array(Some(elem_ty))),
         ProcEventParamTypeSpec::Scalar { .. } => None,
     }
+}
+
+fn proc_bind_hook_call_stmt(proc_name: &str, hook: &str, receiver: Expr) -> Stmt {
+    Stmt::Expr {
+        loc: Default::default(),
+        expr: Expr::UserCall {
+            loc: Default::default(),
+            name: proc_local_hidden_def_name(proc_name, hook),
+            type_args: Vec::new(),
+            args: vec![CallArg {
+                name: None,
+                expr: receiver,
+            }],
+        },
+    }
+}
+
+fn nested_proc_bind_hook_call_stmt(owner_proc: &str, nested_path: &str, hook: &str) -> Stmt {
+    Stmt::Expr {
+        loc: Default::default(),
+        expr: Expr::UserCall {
+            loc: Default::default(),
+            name: proc_local_nested_bind_hidden_def_name(owner_proc, nested_path, hook),
+            type_args: Vec::new(),
+            args: vec![CallArg {
+                name: None,
+                expr: Expr::var("self"),
+            }],
+        },
+    }
+}
+
+fn after_init_bind_hook_stmts_for_receiver(
+    proc_name: &str,
+    param_specs: &[ProcParamSpec],
+    receiver: Expr,
+) -> Vec<Stmt> {
+    param_specs
+        .iter()
+        .filter_map(|param| {
+            if param.slots.len() == 1 && param.slots[0].name == param.name {
+                param.slots[0]
+                    .bind
+                    .as_ref()
+                    .map(|hook| proc_bind_hook_call_stmt(proc_name, hook, receiver.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn after_init_nested_bind_hook_stmts(
+    owner_proc: &str,
+    nested_path: &str,
+    param_specs: &[ProcParamSpec],
+) -> Vec<Stmt> {
+    param_specs
+        .iter()
+        .filter_map(|spec| {
+            if spec.slots.len() == 1 && spec.slots[0].name == spec.name {
+                spec.slots[0]
+                    .bind
+                    .as_ref()
+                    .map(|hook| nested_proc_bind_hook_call_stmt(owner_proc, nested_path, hook))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn after_init_bind_hook_stmts(proc_name: &str, param_specs: &[ProcParamSpec]) -> Vec<Stmt> {
+    after_init_bind_hook_stmts_for_receiver(proc_name, param_specs, Expr::var("self"))
 }
 
 fn build_builtin_proc_init_event_parts<F>(
@@ -452,6 +527,10 @@ fn generate_nested_wrapper_defs(
             continue;
         };
         let callee_api = proc_api.get(&callee_proc_name);
+        let callee_sample_oversample_factor = callee_api
+            .map(|api| api.sample_oversample_factor)
+            .unwrap_or(1)
+            .max(1);
         let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
         let proc_ns = namespace_of_symbol(&callee_proc_name);
         let mut callee_ins_names = callee_shape.ins.iter().cloned().collect::<HashSet<_>>();
@@ -475,9 +554,35 @@ fn generate_nested_wrapper_defs(
                 )
             })
             .collect::<HashMap<_, _>>();
+        let mut nested_hook_instances = nested_instances.clone();
+        nested_hook_instances.insert(
+            nested_path.clone(),
+            ProcCallInstance {
+                proc_name: callee_proc_name.clone(),
+                buffer_args: Vec::new(),
+            },
+        );
+        for (name, state) in &callee_shape.state.nested_procs {
+            nested_hook_instances.insert(
+                nested_field_name(&nested_path, name),
+                ProcCallInstance {
+                    proc_name: state.proc_name.clone(),
+                    buffer_args: Vec::new(),
+                },
+            );
+        }
 
         let mut nested_init_body = Vec::<Stmt>::new();
-        for stmt in &callee_proc.init {
+        let mut constructor_setup_indices = HashSet::<usize>::new();
+        let mut callee_init_stmts = callee_proc.init.clone();
+        lower_named_proc_param_calls_in_stmts(
+            &mut callee_init_stmts,
+            &callee_nested_instances,
+            &callee_shape.nested_proc_array_slots,
+            &proc_api,
+            errors,
+        );
+        for stmt in &callee_init_stmts {
             if let Stmt::Assign {
                 target: AssignTarget::Var(array_var),
                 expr: expr @ Expr::ArrayCtor { init, .. },
@@ -674,6 +779,7 @@ fn generate_nested_wrapper_defs(
                                 &proc_api,
                                 errors,
                             ) {
+                                constructor_setup_indices.insert(nested_init_body.len());
                                 nested_init_body.push(rewritten);
                             }
                         }
@@ -773,6 +879,7 @@ fn generate_nested_wrapper_defs(
                             &proc_api,
                             errors,
                         ) {
+                            constructor_setup_indices.insert(nested_init_body.len());
                             nested_init_body.push(rewritten);
                         }
                     }
@@ -882,7 +989,25 @@ fn generate_nested_wrapper_defs(
                 nested_init_body.push(rewritten);
             }
         }
+        inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
+            Some(&proc.name),
+            &mut nested_init_body,
+            &nested_hook_instances,
+            &shape.nested_proc_array_slots,
+            proc_api,
+            errors,
+            &constructor_setup_indices,
+        );
+        nested_init_body.extend(after_init_nested_bind_hook_stmts(
+            &proc.name,
+            &nested_path,
+            &callee_shape.param_specs,
+        ));
 
+        def_sample_oversample_factors.insert(
+            nested_init_fn_name(&proc.name, &nested_path),
+            callee_sample_oversample_factor,
+        );
         nested_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
             is_const: false,
@@ -935,40 +1060,8 @@ fn generate_nested_wrapper_defs(
         let mut nested_step_body = Vec::<Stmt>::new();
         for local_def in unique_proc_local_defs(callee_proc) {
             let mut body = Vec::<Stmt>::new();
-            for stmt in &local_def.body {
-                let Some(rewritten) = lower_callee_stmt_for_nested_wrapper(
-                    stmt,
-                    &proc.name,
-                    &callee_proc_name,
-                    &nested_path,
-                    &callee_shape,
-                    &callee_nested_instances,
-                    &callee_ins_names,
-                    &callee_shape.field_array_slots,
-                    &callee_shape.in_array_slots,
-                    &callee_shape.nested_proc_array_slots,
-                    &proc_api,
-                    errors,
-                ) else {
-                    continue;
-                };
-                body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
-                    rewritten,
-                    &nested_managed_dynamic_arrays,
-                    &proc_api,
-                    &mut used_nested_managed_dynamic_arrays,
-                ));
-            }
-            nested_defs.push(Block::Def(nested_wrapper_proc_local_hidden_def(
-                &proc.name,
-                &nested_path,
-                &local_def,
-                body,
-            )));
-        }
-        for stmt in &callee_proc.sample {
-            let Some(rewritten) = lower_callee_stmt_for_nested_wrapper(
-                stmt,
+            for rewritten in lower_callee_stmts_for_nested_wrapper(
+                local_def.body.clone(),
                 &proc.name,
                 &callee_proc_name,
                 &nested_path,
@@ -980,9 +1073,48 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.nested_proc_array_slots,
                 &proc_api,
                 errors,
-            ) else {
-                continue;
-            };
+            ) {
+                body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
+                    rewritten,
+                    &nested_managed_dynamic_arrays,
+                    &proc_api,
+                    &mut used_nested_managed_dynamic_arrays,
+                ));
+            }
+            inject_bound_proc_param_hooks_in_stmts(
+                Some(&proc.name),
+                &mut body,
+                &nested_hook_instances,
+                &shape.nested_proc_array_slots,
+                proc_api,
+                errors,
+            );
+            nested_defs.push(Block::Def(nested_wrapper_proc_local_hidden_def(
+                &proc.name,
+                &nested_path,
+                &local_def,
+                body,
+            )));
+        }
+        let nested_step_source = if callee_proc.outs_timing == OutputTiming::Block {
+            callee_proc.block_pre.clone()
+        } else {
+            callee_proc.sample.clone()
+        };
+        for rewritten in lower_callee_stmts_for_nested_wrapper(
+            nested_step_source,
+            &proc.name,
+            &callee_proc_name,
+            &nested_path,
+            &callee_shape,
+            &callee_nested_instances,
+            &callee_ins_names,
+            &callee_shape.field_array_slots,
+            &callee_shape.in_array_slots,
+            &callee_shape.nested_proc_array_slots,
+            &proc_api,
+            errors,
+        ) {
             nested_step_body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                 rewritten,
                 &nested_managed_dynamic_arrays,
@@ -990,6 +1122,14 @@ fn generate_nested_wrapper_defs(
                 &mut used_nested_managed_dynamic_arrays,
             ));
         }
+        inject_bound_proc_param_hooks_in_stmts(
+            Some(&proc.name),
+            &mut nested_step_body,
+            &nested_hook_instances,
+            &shape.nested_proc_array_slots,
+            proc_api,
+            errors,
+        );
         let mut nested_step_params = Vec::<onda_frontend::FnParamDecl>::new();
         nested_step_params.push(onda_frontend::FnParamDecl {
             loc: Default::default(),
@@ -1017,10 +1157,6 @@ fn generate_nested_wrapper_defs(
             });
         }
         let nested_step_name = nested_step_fn_name(&proc.name, &nested_path);
-        let callee_sample_oversample_factor = proc_api
-            .get(&callee_proc_name)
-            .map(|api| api.sample_oversample_factor)
-            .unwrap_or(1);
         if callee_sample_oversample_factor > 1 {
             let stage_count = proc_os_sinc_stage_count(callee_sample_oversample_factor);
             let mut input_state_fields = HashMap::<String, ProcInputOversampleStateFields>::new();
@@ -1209,33 +1345,38 @@ fn generate_nested_wrapper_defs(
                                 callee_event_in_array_slots.insert(param.name.clone(), slot_names);
                             }
                         }
-                        let nested_event_body = event
-                            .body
-                            .iter()
-                            .filter_map(|stmt| {
-                                lower_callee_stmt_for_nested_wrapper(
-                                    stmt,
-                                    &proc.name,
-                                    &callee_proc_name,
-                                    &nested_path,
-                                    &callee_shape,
-                                    &callee_nested_instances,
-                                    &callee_event_ins_names,
-                                    &callee_shape.field_array_slots,
-                                    &callee_event_in_array_slots,
-                                    &callee_shape.nested_proc_array_slots,
-                                    &proc_api,
-                                    errors,
-                                )
-                            })
-                            .collect::<Vec<_>>();
+                        let mut nested_event_body = lower_callee_stmts_for_nested_wrapper(
+                            event.body.clone(),
+                            &proc.name,
+                            &callee_proc_name,
+                            &nested_path,
+                            &callee_shape,
+                            &callee_nested_instances,
+                            &callee_event_ins_names,
+                            &callee_shape.field_array_slots,
+                            &callee_event_in_array_slots,
+                            &callee_shape.nested_proc_array_slots,
+                            &proc_api,
+                            errors,
+                        );
+                        inject_bound_proc_param_hooks_in_stmts(
+                            Some(&proc.name),
+                            &mut nested_event_body,
+                            &nested_hook_instances,
+                            &shape.nested_proc_array_slots,
+                            proc_api,
+                            errors,
+                        );
                         (nested_event_params, nested_event_body)
                     };
+                let nested_event_name = nested_event_fn_name(&proc.name, &nested_path, &event.name);
+                def_sample_oversample_factors
+                    .insert(nested_event_name.clone(), callee_sample_oversample_factor);
                 nested_defs.push(Block::Def(FunctionDef {
                     loc: Default::default(),
                     is_const: false,
                     type_params: Vec::new(),
-                    name: nested_event_fn_name(&proc.name, &nested_path, &event.name),
+                    name: nested_event_name,
                     params: nested_event_params,
                     return_ty: None,
                     return_ty_loc: Default::default(),
@@ -1267,24 +1408,20 @@ fn generate_nested_wrapper_defs(
                 });
             }
             let mut nested_block_pre_body = Vec::<Stmt>::new();
-            for stmt in &callee_proc.block_pre {
-                if let Some(rewritten) = lower_callee_stmt_for_nested_wrapper(
-                    stmt,
-                    &proc.name,
-                    &callee_proc_name,
-                    &nested_path,
-                    &callee_shape,
-                    &callee_nested_instances,
-                    &callee_ins_names,
-                    &callee_shape.field_array_slots,
-                    &callee_shape.in_array_slots,
-                    &callee_shape.nested_proc_array_slots,
-                    &proc_api,
-                    errors,
-                ) {
-                    nested_block_pre_body.push(rewritten);
-                }
-            }
+            nested_block_pre_body.extend(lower_callee_stmts_for_nested_wrapper(
+                callee_proc.block_pre.clone(),
+                &proc.name,
+                &callee_proc_name,
+                &nested_path,
+                &callee_shape,
+                &callee_nested_instances,
+                &callee_ins_names,
+                &callee_shape.field_array_slots,
+                &callee_shape.in_array_slots,
+                &callee_shape.nested_proc_array_slots,
+                &proc_api,
+                errors,
+            ));
             let mut called_callee_nested = collect_called_proc_instances_in_stmts(
                 &callee_proc.sample,
                 &callee_nested_instances,
@@ -1356,11 +1493,24 @@ fn generate_nested_wrapper_defs(
                     },
                 });
             }
+            inject_bound_proc_param_hooks_in_stmts(
+                Some(&proc.name),
+                &mut nested_block_pre_body,
+                &nested_hook_instances,
+                &shape.nested_proc_array_slots,
+                proc_api,
+                errors,
+            );
+            let nested_block_pre_name = nested_block_pre_fn_name(&proc.name, &nested_path);
+            def_sample_oversample_factors.insert(
+                nested_block_pre_name.clone(),
+                callee_sample_oversample_factor,
+            );
             nested_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
                 is_const: false,
                 type_params: Vec::new(),
-                name: nested_block_pre_fn_name(&proc.name, &nested_path),
+                name: nested_block_pre_name,
                 params: nested_block_params.clone(),
                 return_ty: None,
                 return_ty_loc: Default::default(),
@@ -1401,24 +1551,20 @@ fn generate_nested_wrapper_defs(
                     },
                 });
             }
-            for stmt in &callee_proc.block_post {
-                if let Some(rewritten) = lower_callee_stmt_for_nested_wrapper(
-                    stmt,
-                    &proc.name,
-                    &callee_proc_name,
-                    &nested_path,
-                    &callee_shape,
-                    &callee_nested_instances,
-                    &callee_ins_names,
-                    &callee_shape.field_array_slots,
-                    &callee_shape.in_array_slots,
-                    &callee_shape.nested_proc_array_slots,
-                    &proc_api,
-                    errors,
-                ) {
-                    nested_block_post_body.push(rewritten);
-                }
-            }
+            nested_block_post_body.extend(lower_callee_stmts_for_nested_wrapper(
+                callee_proc.block_post.clone(),
+                &proc.name,
+                &callee_proc_name,
+                &nested_path,
+                &callee_shape,
+                &callee_nested_instances,
+                &callee_ins_names,
+                &callee_shape.field_array_slots,
+                &callee_shape.in_array_slots,
+                &callee_shape.nested_proc_array_slots,
+                &proc_api,
+                errors,
+            ));
             for managed in &nested_managed_arrays {
                 for (slot_idx, slot_name) in managed.slots.iter().enumerate() {
                     let raw_slot_name = managed.raw_slots.get(slot_idx);
@@ -1465,11 +1611,24 @@ fn generate_nested_wrapper_defs(
                     });
                 }
             }
+            inject_bound_proc_param_hooks_in_stmts(
+                Some(&proc.name),
+                &mut nested_block_post_body,
+                &nested_hook_instances,
+                &shape.nested_proc_array_slots,
+                proc_api,
+                errors,
+            );
+            let nested_block_post_name = nested_block_post_fn_name(&proc.name, &nested_path);
+            def_sample_oversample_factors.insert(
+                nested_block_post_name.clone(),
+                callee_sample_oversample_factor,
+            );
             nested_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
                 is_const: false,
                 type_params: Vec::new(),
-                name: nested_block_post_fn_name(&proc.name, &nested_path),
+                name: nested_block_post_name,
                 params: nested_block_params,
                 return_ty: None,
                 return_ty_loc: Default::default(),
@@ -1550,6 +1709,11 @@ pub(super) fn generate_lowered_proc_blocks(
         let Some(shape) = lowering_shapes.get(proc_name).cloned() else {
             continue;
         };
+        let proc_sample_oversample_factor = proc_api
+            .get(&proc.name)
+            .map(|api| api.sample_oversample_factor)
+            .unwrap_or(1)
+            .max(1);
 
         let mut nested_vars = shape.state.nested_procs.keys().cloned().collect::<Vec<_>>();
         nested_vars.sort();
@@ -1577,6 +1741,14 @@ pub(super) fn generate_lowered_proc_blocks(
                 },
             );
         }
+        let mut hook_proc_instances = nested_instances.clone();
+        hook_proc_instances.insert(
+            "self".to_owned(),
+            ProcCallInstance {
+                proc_name: proc.name.clone(),
+                buffer_args: Vec::new(),
+            },
+        );
 
         let struct_idx = generated_structs.len();
         generated_structs.push(Block::Struct(onda_frontend::StructDef {
@@ -1622,15 +1794,29 @@ pub(super) fn generate_lowered_proc_blocks(
         for slots in write_slots {
             let clamp_name = proc_write_helper_name(&proc.name, &slots, false);
             if generated_write_helpers.insert(clamp_name) {
-                generated_defs.push(Block::Def(build_proc_write_helper(
-                    &proc.name, &slots, false,
-                )));
+                let mut helper = build_proc_write_helper(&proc.name, &slots, false);
+                inject_bound_proc_param_hooks_in_stmts(
+                    Some(&proc.name),
+                    &mut helper.body,
+                    &hook_proc_instances,
+                    &shape.nested_proc_array_slots,
+                    proc_api,
+                    errors,
+                );
+                generated_defs.push(Block::Def(helper));
             }
             let unsafe_name = proc_write_helper_name(&proc.name, &slots, true);
             if generated_write_helpers.insert(unsafe_name) {
-                generated_defs.push(Block::Def(build_proc_write_helper(
-                    &proc.name, &slots, true,
-                )));
+                let mut helper = build_proc_write_helper(&proc.name, &slots, true);
+                inject_bound_proc_param_hooks_in_stmts(
+                    Some(&proc.name),
+                    &mut helper.body,
+                    &hook_proc_instances,
+                    &shape.nested_proc_array_slots,
+                    proc_api,
+                    errors,
+                );
+                generated_defs.push(Block::Def(helper));
             }
         }
 
@@ -1643,9 +1829,18 @@ pub(super) fn generate_lowered_proc_blocks(
         }
 
         let mut init_body = Vec::<Stmt>::new();
+        let mut constructor_setup_indices = HashSet::<usize>::new();
         let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
         let proc_ns = namespace_of_symbol(&proc.name);
-        for stmt in &proc.init {
+        let mut proc_init_stmts = proc.init.clone();
+        lower_named_proc_param_calls_in_stmts(
+            &mut proc_init_stmts,
+            &nested_instances,
+            &shape.nested_proc_array_slots,
+            &proc_api,
+            errors,
+        );
+        for stmt in &proc_init_stmts {
             if let Stmt::Assign {
                 target: AssignTarget::Var(array_var),
                 expr: expr @ Expr::ArrayCtor { init, .. },
@@ -1821,6 +2016,7 @@ pub(super) fn generate_lowered_proc_blocks(
                                 &proc_api,
                                 errors,
                             ) {
+                                constructor_setup_indices.insert(init_body.len());
                                 init_body.push(rewritten);
                             }
                         }
@@ -1998,6 +2194,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             &proc_api,
                             errors,
                         ) {
+                            constructor_setup_indices.insert(init_body.len());
                             init_body.push(rewritten);
                         }
                     }
@@ -2091,11 +2288,23 @@ pub(super) fn generate_lowered_proc_blocks(
             }
         }
 
+        inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
+            Some(&proc.name),
+            &mut init_body,
+            &hook_proc_instances,
+            &shape.nested_proc_array_slots,
+            proc_api,
+            errors,
+            &constructor_setup_indices,
+        );
+        init_body.extend(after_init_bind_hook_stmts(&proc.name, &shape.param_specs));
+        let init_fn_name = format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX);
+        def_sample_oversample_factors.insert(init_fn_name.clone(), proc_sample_oversample_factor);
         generated_defs.push(Block::Def(FunctionDef {
             loc: Default::default(),
             is_const: false,
             type_params: Vec::new(),
-            name: format!("{}{}", proc.name, PROC_INIT_FN_SUFFIX),
+            name: init_fn_name,
             params: vec![onda_frontend::FnParamDecl {
                 loc: Default::default(),
                 name: "self".to_owned(),
@@ -2182,33 +2391,38 @@ pub(super) fn generate_lowered_proc_blocks(
                             event_in_array_slots.insert(param.name.clone(), slot_names);
                         }
                     }
-                    let event_body = event
-                        .body
-                        .iter()
-                        .filter_map(|stmt| {
-                            rewrite_owner_proc_stmt(
-                                stmt.clone(),
-                                &proc.name,
-                                &shape.field_names,
-                                &shape.array_field_names,
-                                &event_ins_names,
-                                &shape.field_array_slots,
-                                &event_in_array_slots,
-                                &shape.nested_proc_array_slots,
-                                &shape.nested_fields,
-                                &nested_instances,
-                                &proc_api,
-                                errors,
-                            )
-                        })
-                        .collect::<Vec<_>>();
+                    let mut event_body = rewrite_owner_proc_stmts(
+                        event.body.clone(),
+                        &proc.name,
+                        &shape.field_names,
+                        &shape.array_field_names,
+                        &event_ins_names,
+                        &shape.field_array_slots,
+                        &event_in_array_slots,
+                        &shape.nested_proc_array_slots,
+                        &shape.nested_fields,
+                        &nested_instances,
+                        &proc_api,
+                        errors,
+                    );
+                    inject_bound_proc_param_hooks_in_stmts(
+                        Some(&proc.name),
+                        &mut event_body,
+                        &hook_proc_instances,
+                        &shape.nested_proc_array_slots,
+                        proc_api,
+                        errors,
+                    );
                     (event_params, event_body)
                 };
+                let event_fn_name = format!("{}{}{}", proc.name, PROC_EVENT_FN_PREFIX, event.name);
+                def_sample_oversample_factors
+                    .insert(event_fn_name.clone(), proc_sample_oversample_factor);
                 generated_defs.push(Block::Def(FunctionDef {
                     loc: Default::default(),
                     is_const: false,
                     type_params: Vec::new(),
-                    name: format!("{}{}{}", proc.name, PROC_EVENT_FN_PREFIX, event.name),
+                    name: event_fn_name,
                     params: event_params,
                     return_ty: None,
                     return_ty_loc: Default::default(),
@@ -2248,37 +2462,8 @@ pub(super) fn generate_lowered_proc_blocks(
         let mut step_body = Vec::<Stmt>::new();
         for local_def in unique_proc_local_defs(proc) {
             let mut body = Vec::<Stmt>::new();
-            for stmt in &local_def.body {
-                let Some(rewritten) = rewrite_owner_proc_stmt(
-                    stmt.clone(),
-                    &proc.name,
-                    &shape.field_names,
-                    &shape.array_field_names,
-                    &ins_names,
-                    &shape.field_array_slots,
-                    &shape.in_array_slots,
-                    &shape.nested_proc_array_slots,
-                    &shape.nested_fields,
-                    &nested_instances,
-                    &proc_api,
-                    errors,
-                ) else {
-                    continue;
-                };
-                body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
-                    rewritten,
-                    &managed_dynamic_arrays,
-                    &proc_api,
-                    &mut used_managed_dynamic_arrays,
-                ));
-            }
-            generated_defs.push(Block::Def(owner_proc_local_hidden_def(
-                &proc.name, &local_def, body,
-            )));
-        }
-        for stmt in &proc.sample {
-            let Some(rewritten) = rewrite_owner_proc_stmt(
-                stmt.clone(),
+            for rewritten in rewrite_owner_proc_stmts(
+                local_def.body.clone(),
                 &proc.name,
                 &shape.field_names,
                 &shape.array_field_names,
@@ -2290,9 +2475,48 @@ pub(super) fn generate_lowered_proc_blocks(
                 &nested_instances,
                 &proc_api,
                 errors,
-            ) else {
-                continue;
-            };
+            ) {
+                body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
+                    rewritten,
+                    &managed_dynamic_arrays,
+                    &proc_api,
+                    &mut used_managed_dynamic_arrays,
+                ));
+            }
+            inject_bound_proc_param_hooks_in_stmts(
+                Some(&proc.name),
+                &mut body,
+                &hook_proc_instances,
+                &shape.nested_proc_array_slots,
+                proc_api,
+                errors,
+            );
+            let local_fn_name = proc_local_hidden_def_name(&proc.name, &local_def.name);
+            def_sample_oversample_factors
+                .insert(local_fn_name.clone(), proc_sample_oversample_factor);
+            generated_defs.push(Block::Def(owner_proc_local_hidden_def(
+                &proc.name, &local_def, body,
+            )));
+        }
+        let proc_step_source = if proc.outs_timing == OutputTiming::Block {
+            proc.block_pre.clone()
+        } else {
+            proc.sample.clone()
+        };
+        for rewritten in rewrite_owner_proc_stmts(
+            proc_step_source,
+            &proc.name,
+            &shape.field_names,
+            &shape.array_field_names,
+            &ins_names,
+            &shape.field_array_slots,
+            &shape.in_array_slots,
+            &shape.nested_proc_array_slots,
+            &shape.nested_fields,
+            &nested_instances,
+            &proc_api,
+            errors,
+        ) {
             step_body.extend(rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                 rewritten,
                 &managed_dynamic_arrays,
@@ -2300,10 +2524,18 @@ pub(super) fn generate_lowered_proc_blocks(
                 &mut used_managed_dynamic_arrays,
             ));
         }
+        inject_bound_proc_param_hooks_in_stmts(
+            Some(&proc.name),
+            &mut step_body,
+            &hook_proc_instances,
+            &shape.nested_proc_array_slots,
+            proc_api,
+            errors,
+        );
 
         let proc_has_effective_block = proc_api
             .get(&proc.name)
-            .map(|api| api.has_block)
+            .map(|api| api.has_block && api.outputs.timing == OutputTiming::Sample)
             .unwrap_or(proc.has_block_block);
         if proc_has_effective_block {
             let mut block_params = Vec::<onda_frontend::FnParamDecl>::new();
@@ -2324,27 +2556,23 @@ pub(super) fn generate_lowered_proc_blocks(
                 });
             }
             let mut block_pre_body = Vec::<Stmt>::new();
-            for stmt in &proc.block_pre {
-                if let Some(rewritten) = rewrite_owner_proc_stmt(
-                    stmt.clone(),
-                    &proc.name,
-                    &shape.field_names,
-                    &shape.array_field_names,
-                    &ins_names,
-                    &shape.field_array_slots,
-                    &shape.in_array_slots,
-                    &shape.nested_proc_array_slots,
-                    &shape.nested_fields,
-                    &nested_instances,
-                    &proc_api,
-                    errors,
-                ) {
-                    block_pre_body.push(rewritten);
-                }
-            }
+            block_pre_body.extend(rewrite_owner_proc_stmts(
+                proc.block_pre.clone(),
+                &proc.name,
+                &shape.field_names,
+                &shape.array_field_names,
+                &ins_names,
+                &shape.field_array_slots,
+                &shape.in_array_slots,
+                &shape.nested_proc_array_slots,
+                &shape.nested_fields,
+                &nested_instances,
+                &proc_api,
+                errors,
+            ));
             let mut called_nested = collect_called_proc_instances_in_stmts(
                 &proc.sample,
-                &nested_instances,
+                &hook_proc_instances,
                 &shape.nested_proc_array_slots,
             );
             for array_base in &used_managed_dynamic_arrays {
@@ -2405,11 +2633,22 @@ pub(super) fn generate_lowered_proc_blocks(
                     },
                 });
             }
+            inject_bound_proc_param_hooks_in_stmts(
+                Some(&proc.name),
+                &mut block_pre_body,
+                &hook_proc_instances,
+                &shape.nested_proc_array_slots,
+                proc_api,
+                errors,
+            );
+            let block_pre_fn_name = format!("{}{}", proc.name, PROC_BLOCK_PRE_FN_SUFFIX);
+            def_sample_oversample_factors
+                .insert(block_pre_fn_name.clone(), proc_sample_oversample_factor);
             generated_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
                 is_const: false,
                 type_params: Vec::new(),
-                name: format!("{}{}", proc.name, PROC_BLOCK_PRE_FN_SUFFIX),
+                name: block_pre_fn_name,
                 params: block_params.clone(),
                 return_ty: None,
                 return_ty_loc: Default::default(),
@@ -2447,24 +2686,20 @@ pub(super) fn generate_lowered_proc_blocks(
                     },
                 });
             }
-            for stmt in &proc.block_post {
-                if let Some(rewritten) = rewrite_owner_proc_stmt(
-                    stmt.clone(),
-                    &proc.name,
-                    &shape.field_names,
-                    &shape.array_field_names,
-                    &ins_names,
-                    &shape.field_array_slots,
-                    &shape.in_array_slots,
-                    &shape.nested_proc_array_slots,
-                    &shape.nested_fields,
-                    &nested_instances,
-                    &proc_api,
-                    errors,
-                ) {
-                    block_post_body.push(rewritten);
-                }
-            }
+            block_post_body.extend(rewrite_owner_proc_stmts(
+                proc.block_post.clone(),
+                &proc.name,
+                &shape.field_names,
+                &shape.array_field_names,
+                &ins_names,
+                &shape.field_array_slots,
+                &shape.in_array_slots,
+                &shape.nested_proc_array_slots,
+                &shape.nested_fields,
+                &nested_instances,
+                &proc_api,
+                errors,
+            ));
             for managed in &managed_arrays {
                 for (slot_idx, slot_name) in managed.slots.iter().enumerate() {
                     let Some(instance) = nested_instances.get(slot_name) else {
@@ -2507,11 +2742,22 @@ pub(super) fn generate_lowered_proc_blocks(
                     });
                 }
             }
+            inject_bound_proc_param_hooks_in_stmts(
+                Some(&proc.name),
+                &mut block_post_body,
+                &hook_proc_instances,
+                &shape.nested_proc_array_slots,
+                proc_api,
+                errors,
+            );
+            let block_post_fn_name = format!("{}{}", proc.name, PROC_BLOCK_POST_FN_SUFFIX);
+            def_sample_oversample_factors
+                .insert(block_post_fn_name.clone(), proc_sample_oversample_factor);
             generated_defs.push(Block::Def(FunctionDef {
                 loc: Default::default(),
                 is_const: false,
                 type_params: Vec::new(),
-                name: format!("{}{}", proc.name, PROC_BLOCK_POST_FN_SUFFIX),
+                name: block_post_fn_name,
                 params: block_params,
                 return_ty: None,
                 return_ty_loc: Default::default(),
@@ -2546,11 +2792,6 @@ pub(super) fn generate_lowered_proc_blocks(
             });
         }
         let step_fn_name = format!("{}{}", proc.name, PROC_STEP_FN_SUFFIX);
-        let proc_sample_oversample_factor = proc_api
-            .get(&proc.name)
-            .map(|api| api.sample_oversample_factor)
-            .unwrap_or(1)
-            .max(1);
         def_sample_oversample_factors.insert(step_fn_name.clone(), proc_sample_oversample_factor);
         if proc_sample_oversample_factor > 1 {
             let stage_count = proc_os_sinc_stage_count(proc_sample_oversample_factor);

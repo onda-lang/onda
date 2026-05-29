@@ -319,6 +319,52 @@ pub(super) trait SharedUserCallSpecialCaseBackend {
     ) -> Result<OrcValue, Diagnostic>;
 }
 
+fn proc_instance_oversample_key_for_arg(
+    expr: &Expr,
+    factors: &HashMap<String, usize>,
+) -> Option<String> {
+    match expr {
+        Expr::Var { name, .. } => factors.contains_key(name).then(|| name.clone()),
+        Expr::Index { base, index, .. } => {
+            if let Expr::Int { value, .. } = index.as_ref() {
+                let slot_key = format!("{base}[{value}]");
+                if factors.contains_key(&slot_key) {
+                    return Some(slot_key);
+                }
+            }
+            factors.contains_key(base).then(|| base.clone())
+        }
+        _ => None,
+    }
+}
+
+fn proc_instance_call_sample_rate(
+    registry: &UserFnRegistry,
+    name: &str,
+    args: &[CallArg],
+    caller_sample_rate: f32,
+) -> f32 {
+    if !is_proc_glue_function_name(name) {
+        return caller_sample_rate;
+    }
+    let Some(self_arg) = args.first() else {
+        return caller_sample_rate;
+    };
+    let Some(key) = proc_instance_oversample_key_for_arg(
+        &self_arg.expr,
+        &registry.proc_instance_oversample_factors,
+    ) else {
+        return caller_sample_rate;
+    };
+    let factor = registry
+        .proc_instance_oversample_factors
+        .get(&key)
+        .copied()
+        .unwrap_or(1)
+        .max(1);
+    registry.host_sample_rate * factor as f32
+}
+
 fn prepend_receiver_arg(base: &str, args: &[CallArg]) -> Vec<CallArg> {
     let mut method_args = Vec::with_capacity(args.len().saturating_add(1));
     method_args.push(CallArg {
@@ -336,10 +382,10 @@ pub(super) unsafe fn try_lower_user_call_special_case_common<
     name: &str,
     args: &[CallArg],
 ) -> Option<Result<OrcValue, Diagnostic>> {
-    if name == "__onda_buffer_read2" {
+    if name == INTERNAL_BUFFER_READ2_FN {
         return Some(backend.lower_buffer_read2_call(args, true));
     }
-    if name == "__onda_buffer_write2" {
+    if name == INTERNAL_BUFFER_WRITE2_FN {
         return Some(backend.lower_buffer_write2_call(args, true));
     }
     if let Some(base) = parse_unsafe_read2_instance_base(name) {
@@ -354,10 +400,10 @@ pub(super) unsafe fn try_lower_user_call_special_case_common<
             return Some(backend.lower_buffer_write2_call(&method_args, false));
         }
     }
-    if name == "unsafe_read2" {
+    if name == UNSAFE_READ2_FN {
         return Some(backend.lower_buffer_read2_call(args, false));
     }
-    if name == "unsafe_write2" {
+    if name == UNSAFE_WRITE2_FN {
         return Some(backend.lower_buffer_write2_call(args, false));
     }
     if let Some(base) = parse_array_len_instance_base(name) {
@@ -387,10 +433,10 @@ pub(super) unsafe fn try_lower_user_call_special_case_common<
             return Some(backend.lower_unsafe_data_write_call(&method_args));
         }
     }
-    if name == "unsafe_read" {
+    if name == UNSAFE_READ_FN {
         return Some(backend.lower_unsafe_data_read_call(args));
     }
-    if name == "unsafe_write" {
+    if name == UNSAFE_WRITE_FN {
         return Some(backend.lower_unsafe_data_write_call(args));
     }
     None
@@ -451,6 +497,12 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
             param_kinds.len()
         )));
     }
+    let call_sample_rate = proc_instance_call_sample_rate(
+        &*(user_registry as *const UserFnRegistry),
+        name,
+        args,
+        sample_rate,
+    );
     let forbid_self_named = param_names.first().map(String::as_str) == Some("self");
     let resolved = resolve_call_args_codegen(
         args,
@@ -483,7 +535,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
                             ))
                         })?;
                     let default_value =
-                        eval_const_default_expr_typed(default_expr, sample_rate, block_size)?;
+                        eval_const_default_expr_typed(default_expr, call_sample_rate, block_size)?;
                     let default_ty = infer_const_default_expr_type(default_expr)?;
                     OrcValue {
                         value: llvm_const_from_const_default_value(
@@ -595,7 +647,7 @@ pub(super) unsafe fn prepare_user_call_common<'a>(
         context,
         &mut *user_registry,
         struct_fields,
-        sample_rate,
+        call_sample_rate,
         block_size as usize,
         fast_math,
         name,

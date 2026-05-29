@@ -18,10 +18,16 @@ namespace std::gain:
     outs<T> 1
 
     params<T>:
-      db = 0.0
+      db = 0.0 => update_gain
+
+    init<T>:
+      linear_gain = 1.0
+
+    def update_gain():
+      linear_gain = exp(db * T(DB_TO_GAIN_SCALE))
 
     sample:
-      out1 = in1 * exp(db * T(DB_TO_GAIN_SCALE))
+      out1 = in1 * linear_gain
 
   proc Smoothed<T>:
     ins<T> 1
@@ -29,13 +35,15 @@ namespace std::gain:
 
     params<T>:
       gain = 1.0
-      time_s = 0.05
+      time_s = 0.05 => update_time
 
     init<T>:
       smooth = std::smoothing::Lag<T>(time_s = time_s)
 
-    sample:
+    def update_time():
       smooth.time_s = time_s
+
+    sample:
       out1 = in1 * smooth(gain)
 
   proc SmoothedDb<T>:
@@ -43,12 +51,18 @@ namespace std::gain:
     outs<T> 1
 
     params<T>:
-      db = 0.0
-      time_s = 0.05
+      db = 0.0 => update_gain
+      time_s = 0.05 => update_time
 
     init<T>:
       smooth = std::smoothing::Lag<T>(time_s = time_s)
+      target_gain = 1.0
+
+    def update_gain():
+      target_gain = exp(db * T(DB_TO_GAIN_SCALE))
+
+    def update_time():
+      smooth.time_s = time_s
 
     sample:
-      smooth.time_s = time_s
-      out1 = in1 * smooth(exp(db * T(DB_TO_GAIN_SCALE)))
+      out1 = in1 * smooth(target_gain)

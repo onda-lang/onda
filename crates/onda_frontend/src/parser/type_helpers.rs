@@ -105,18 +105,8 @@ pub(super) fn parse_int(text: &str) -> Result<i32, Vec<Diagnostic>> {
 }
 
 pub(super) fn parse_primitive_type(text: &str) -> Result<PrimitiveType, Diagnostic> {
-    match text {
-        "f32" => Ok(PrimitiveType::F32),
-        "f64" => Ok(PrimitiveType::F64),
-        "i32" => Ok(PrimitiveType::I32),
-        "i64" => Ok(PrimitiveType::I64),
-        "bool" => Ok(PrimitiveType::Bool),
-        _ => Err(Diagnostic::syntax(
-            format!("unsupported primitive type '{text}'"),
-            0,
-            0,
-        )),
-    }
+    PrimitiveType::from_name(text)
+        .ok_or_else(|| Diagnostic::syntax(format!("unsupported primitive type '{text}'"), 0, 0))
 }
 
 pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diagnostic>> {
@@ -172,27 +162,7 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
 }
 
 pub(super) fn parse_builtin_fn(name: &str) -> Option<BuiltinFn> {
-    match name {
-        "sin" => Some(BuiltinFn::Sin),
-        "cos" => Some(BuiltinFn::Cos),
-        "tan" => Some(BuiltinFn::Tan),
-        "tanh" => Some(BuiltinFn::Tanh),
-        "atan" => Some(BuiltinFn::Atan),
-        "atan2" => Some(BuiltinFn::Atan2),
-        "exp" => Some(BuiltinFn::Exp),
-        "log" => Some(BuiltinFn::Log),
-        "sqrt" => Some(BuiltinFn::Sqrt),
-        "pow" => Some(BuiltinFn::Pow),
-        "abs" | "fabs" => Some(BuiltinFn::Abs),
-        "floor" => Some(BuiltinFn::Floor),
-        "ceil" => Some(BuiltinFn::Ceil),
-        "round" => Some(BuiltinFn::Round),
-        "trunc" => Some(BuiltinFn::Trunc),
-        "min" => Some(BuiltinFn::Min),
-        "max" => Some(BuiltinFn::Max),
-        "fma" => Some(BuiltinFn::Fma),
-        _ => None,
-    }
+    BuiltinFn::from_name(name)
 }
 
 pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, Vec<Diagnostic>> {
@@ -384,6 +354,11 @@ pub(super) fn parse_event_param_type(
         Rule::type_name => Ok(EventParamType::Scalar(
             parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?,
         )),
+        Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+            Ok(EventParamType::GenericScalar {
+                name: inner.as_str().trim().to_owned(),
+            })
+        }
         Rule::fn_typed_array_param => {
             let Some(elem_pair) = inner.into_inner().next() else {
                 return Err(vec![syntax_at_loc(
@@ -423,9 +398,15 @@ pub(super) fn parse_event_param_type(
                     elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
                     size: parse_expr_inner(size_pair),
                 }),
+                Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+                    Ok(EventParamType::GenericArray {
+                        elem: elem_pair.as_str().trim().to_owned(),
+                        size: parse_expr_inner(size_pair),
+                    })
+                }
                 _ => Err(vec![syntax_at_loc(
                     loc.as_ref(),
-                    "event array parameters require primitive element type",
+                    "event array parameters require primitive or generic primitive element type",
                 )]),
             }
         }
@@ -531,10 +512,6 @@ pub(super) fn parse_array_elem_type(text: &str) -> ArrayElemType {
     }
 }
 
-fn is_primitive_type_name(text: &str) -> bool {
-    matches!(text, "f32" | "f64" | "i32" | "i64" | "bool")
-}
-
 pub(super) fn parse_array_type_spec(
     pair: Pair<'_, Rule>,
 ) -> Result<ArrayTypeSpec, Vec<Diagnostic>> {
@@ -569,7 +546,7 @@ pub(super) fn parse_array_type_spec(
     };
     let size = parse_expr_inner(size_pair);
     if matches!(elem, ArrayElemType::Struct(_))
-        && matches!(&size, Expr::Var { name, .. } if is_primitive_type_name(name))
+        && matches!(&size, Expr::Var { name, .. } if PrimitiveType::is_name(name))
     {
         return Err(vec![syntax_at_loc(
             loc.as_ref(),

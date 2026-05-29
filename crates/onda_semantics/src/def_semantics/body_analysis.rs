@@ -138,6 +138,15 @@ pub(crate) fn analyze_def_stmt(
                     if !matches!(expr, Expr::Index { .. }) {
                         local_proc_aliases.remove(name);
                     }
+                    if !validate_block_bound_surface_var_name(
+                        name,
+                        target_loc.as_ref().into(),
+                        scope_expr_env!(ScopeKind::Def),
+                        errors,
+                    ) {
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
+                        return;
+                    }
                     let declared_ty = *decl_ty;
                     if let Expr::ArrayCtor { spec, init, .. } = expr {
                         if *is_typed_decl {
@@ -379,6 +388,24 @@ pub(crate) fn analyze_def_stmt(
                         base, start, end, ..
                     } = expr
                     {
+                        if let Some(surface) =
+                            dynamic_param_surface_name(base, scope_expr_env!(ScopeKind::Def))
+                        {
+                            push_semantic(
+                                target_diag,
+                                errors,
+                                format!(
+                                    "dynamic param array '{surface}' is not a first-class value; use '{surface}[i]' directly in block or sample"
+                                ),
+                            );
+                            if let Some(start) = start {
+                                validate_expr(start, scope_expr_env!(ScopeKind::Def), errors);
+                            }
+                            if let Some(end) = end {
+                                validate_expr(end, scope_expr_env!(ScopeKind::Def), errors);
+                            }
+                            return;
+                        }
                         if declared_ty.is_some() || *is_typed_decl {
                             push_semantic(
                                 target_diag,
@@ -777,6 +804,26 @@ pub(crate) fn analyze_def_stmt(
                             "typed declaration is only supported for plain scalar variables",
                         );
                     }
+                    if let Some(name) = io_surface_name(base, scope_expr_env!(ScopeKind::Def)) {
+                        push_io_surface_scope_error(errors, target_loc.as_ref().into(), name);
+                        validate_expr(index, scope_expr_env!(ScopeKind::Def), errors);
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
+                        return;
+                    }
+                    if let Some(name) =
+                        dynamic_param_surface_name(base, scope_expr_env!(ScopeKind::Def))
+                    {
+                        push_semantic(
+                            target_diag,
+                            errors,
+                            format!(
+                                "dynamic param indexing '{name}[...]' is only allowed in block or sample"
+                            ),
+                        );
+                        validate_expr(index, scope_expr_env!(ScopeKind::Def), errors);
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
+                        return;
+                    }
                     if let Some(alias) = local_array_aliases.get(base) {
                         if !alias.writable {
                             push_semantic(
@@ -1095,6 +1142,36 @@ pub(crate) fn analyze_def_stmt(
                             "typed declaration is only supported for plain scalar variables",
                         );
                     }
+                    if let Some(name) = io_surface_name(base, scope_expr_env!(ScopeKind::Def)) {
+                        push_io_surface_scope_error(errors, target_loc.as_ref().into(), name);
+                        if let Some(start) = start {
+                            validate_expr(start, scope_expr_env!(ScopeKind::Def), errors);
+                        }
+                        if let Some(end) = end {
+                            validate_expr(end, scope_expr_env!(ScopeKind::Def), errors);
+                        }
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
+                        return;
+                    }
+                    if let Some(name) =
+                        dynamic_param_surface_name(base, scope_expr_env!(ScopeKind::Def))
+                    {
+                        push_semantic(
+                            target_diag,
+                            errors,
+                            format!(
+                                "dynamic param array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
+                            ),
+                        );
+                        if let Some(start) = start {
+                            validate_expr(start, scope_expr_env!(ScopeKind::Def), errors);
+                        }
+                        if let Some(end) = end {
+                            validate_expr(end, scope_expr_env!(ScopeKind::Def), errors);
+                        }
+                        validate_expr(expr, scope_expr_env!(ScopeKind::Def), errors);
+                        return;
+                    }
                     let Some(target_info) = infer_def_slice_alias_info(
                         base,
                         start.as_ref(),
@@ -1206,6 +1283,15 @@ pub(crate) fn analyze_def_stmt(
                 AssignTarget::Tuple(targets) => {
                     // Validate the RHS expression
                     analyze_stmt_expr(expr, stmt_expr_env!(ScopeKind::Def), errors);
+                    let mut targets_ok = true;
+                    for target_name in targets {
+                        targets_ok &= validate_block_bound_surface_var_name(
+                            target_name,
+                            target_loc.as_ref().into(),
+                            scope_expr_env!(ScopeKind::Def),
+                            errors,
+                        );
+                    }
                     // Validate destructuring arity against the RHS tuple length
                     let rhs_arity = infer_tracked_tuple_arity(expr, tuple_vars, def_return_types);
                     if let Some(expected) = rhs_arity {
@@ -1220,6 +1306,9 @@ pub(crate) fn analyze_def_stmt(
                                 0,
                             ));
                         }
+                    }
+                    if !targets_ok {
+                        return;
                     }
                     clear_tuple_var_bindings(tuple_vars, targets.iter());
                     // Register each destructured target as a known scalar

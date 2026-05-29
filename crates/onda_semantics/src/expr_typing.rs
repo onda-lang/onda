@@ -225,7 +225,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
             }
         }
         Expr::Index { base, .. } => {
-            // Port index access: ins[i], outs[i], params[i]
+            // Port index access: ins[i], outs[i], kouts[i], params[i], kins[i]
             // These are validated upstream; here we just return the uniform type.
             // The fallback at the end of this arm returns F32 which covers the common case,
             // but for completeness we check input/output/param types explicitly.
@@ -236,10 +236,10 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     .unwrap_or(PrimitiveType::F32);
                 return Some(ty);
             }
-            if base == "outs" {
+            if base == "outs" || base == "kouts" {
                 return Some(PrimitiveType::F32);
             }
-            if base == "params" {
+            if base == "params" || base == "kins" {
                 let ty = param_names
                     .iter()
                     .find_map(|n| declared_symbol_scalar_type(declared_symbols, n))

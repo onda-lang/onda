@@ -2,6 +2,7 @@ namespace std::filter:
   namespace mode:
     const ONE_POLE_LOWPASS: i32 = 0
     const ONE_POLE_HIGHPASS: i32 = 1
+
     const SVF_LOWPASS: i32 = 0
     const SVF_HIGHPASS: i32 = 1
     const SVF_BANDPASS: i32 = 2
@@ -14,24 +15,26 @@ namespace std::filter:
     outs<T> 1
 
     params<T>:
-      cutoff = 1000.0
+      cutoff = 1000.0 => update_cutoff
       mode: i32 = mode::ONE_POLE_LOWPASS
 
     init<T>:
       z = 0.0
+      a = 0.0
 
-    block:
+    def update_cutoff():
       c: T = clamp(cutoff, T(0.0), T(SR * 0.48))
-      a: T = 1.0 - exp(-TWO_PI * c / SR)
-      sample:
-        z = z + a * (in1 - z)
-        low: T = z
-        high: T = in1 - low
+      a = 1.0 - exp(-TWO_PI * c / SR)
 
-        if (mode == mode::ONE_POLE_HIGHPASS):
-          out1 = high
-        else:
-          out1 = low
+    sample:
+      z = z + a * (in1 - z)
+      low: T = z
+      high: T = in1 - low
+
+      if (mode == mode::ONE_POLE_HIGHPASS):
+        out1 = high
+      else:
+        out1 = low
 
   proc DCBlock<T>:
     ins<T> 1
@@ -41,55 +44,64 @@ namespace std::filter:
       x1 = 0.0
       y1 = 0.0
 
-    block:
+    sample:
       r: T = 0.995
-      sample:
-        y = in1 - x1 + r * y1
-        x1 = in1
-        y1 = y
-        out1 = y
+      y = in1 - x1 + r * y1
+      x1 = in1
+      y1 = y
+      out1 = y
 
   proc Svf<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      cutoff = 1000.0
-      q = 0.707107
+      pin cutoff = 1000.0
+      pin q = 0.707107
       mode: i32 = 0
 
     init<T>:
       z1 = 0.0
       z2 = 0.0
+      f = 0.0
+      inv_q = 0.0
+      d = 0.0
+      g1 = 0.0
+      compute_coeffs()
 
-    block:
+    event update_coeffs(cutoff_v: T, q_v: T):
+      cutoff = cutoff_v
+      q = q_v
+      compute_coeffs()
+
+    def compute_coeffs():
       c: T = clamp(cutoff, T(0.0), T(SR * 0.48))
       qv: T = max(q, T(0.01))
-      f: T = tan(PI * c / SR)
-      inv_q: T = 1.0 / qv
-      d: T = 1.0 / (1.0 + inv_q * f + f * f)
-      g1: T = f + inv_q
+      f = tan(PI * c / SR)
+      inv_q = 1.0 / qv
+      d = 1.0 / (1.0 + inv_q * f + f * f)
+      g1 = f + inv_q
 
-      sample:
-        high: T = (in1 - g1 * z1 - z2) * d
-        band: T = f * high + z1
-        low: T = f * band + z2
-        notch: T = low + high
-        peak: T = low - high
-        allpass: T = notch - inv_q * band
+    sample:
+      high: T = (in1 - g1 * z1 - z2) * d
+      band: T = f * high + z1
+      low: T = f * band + z2
+      notch: T = low + high
+      peak: T = low - high
+      allpass: T = notch - inv_q * band
 
-        z1 = f * high + band
-        z2 = f * band + low
+      z1 = f * high + band
+      z2 = f * band + low
 
-        if (mode <= mode::SVF_LOWPASS):
-          out1 = low
-        elif (mode == mode::SVF_HIGHPASS):
-          out1 = high
-        elif (mode == mode::SVF_BANDPASS):
-          out1 = band
-        elif (mode == mode::SVF_NOTCH):
-          out1 = notch
-        elif (mode == mode::SVF_PEAK):
-          out1 = peak
-        else:
-          out1 = allpass
+      if (mode <= mode::SVF_LOWPASS):
+        out1 = low
+      elif (mode == mode::SVF_HIGHPASS):
+        out1 = high
+      elif (mode == mode::SVF_BANDPASS):
+        out1 = band
+      elif (mode == mode::SVF_NOTCH):
+        out1 = notch
+      elif (mode == mode::SVF_PEAK):
+        out1 = peak
+      else:
+        out1 = allpass

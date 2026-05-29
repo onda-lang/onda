@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallTypeArg,
     ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
-    FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, NamespaceItem, PrimitiveType, Stmt,
+    FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, NamespaceItem, OutputTiming,
+    PrimitiveType, Stmt,
 };
 
 use super::{
@@ -937,6 +938,23 @@ sample {
 }
 
 #[test]
+fn rejects_pin_keyword_as_identifier() {
+    let cases = [
+        "params:\n  pin = 1.0\n",
+        "params:\n  pin gain = 1.0\n",
+        "sample:\n  pin = 1.0\n",
+        "proc Voice:\n  params:\n    pin = 1.0\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
+    ];
+
+    for src in cases {
+        assert!(
+            parse_program(src).is_err(),
+            "'pin' should be reserved as a keyword, source parsed: {src}"
+        );
+    }
+}
+
+#[test]
 fn parses_def_and_call() {
     let src = r#"
 outs { out1 }
@@ -1438,7 +1456,7 @@ sample { out1 = 0.0 }
 }
 
 #[test]
-fn rejects_proc_block_without_nested_sample() {
+fn parses_proc_block_without_nested_sample_for_semantic_validation() {
     let src = r#"
 proc Wrapped {
   outs { out1 }
@@ -1448,11 +1466,21 @@ proc Wrapped {
 }
 sample { out1 = 0.0 }
 "#;
-    let result = parse_program(src);
-    assert!(
-        result.is_err(),
-        "proc block without nested sample should error"
-    );
+    let program = parse_program(src).expect("parse_program should succeed");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("expected a proc block");
+
+    assert!(proc.has_block_block);
+    assert!(!proc.has_sample_block);
+    assert_eq!(proc.block_pre.len(), 1);
+    assert!(proc.sample.is_empty());
+    assert!(proc.block_post.is_empty());
 }
 
 #[test]
@@ -1684,6 +1712,146 @@ sample { out1 = in1 + in2 + in3 + param1 + param2 + param3 + param4; out2 = 0.0 
         .expect("params block");
     assert!(params.is_empty());
     assert_deferred_int_count(&params.deferred_count, 4);
+}
+
+#[test]
+fn parses_kouts_count_shorthand_with_section_default_type() {
+    let src = r#"
+kouts<f32> 2
+block { kout1 = 0.0; kout2 = 1.0 }
+"#;
+    let program = parse_program(src).expect("parse_program should succeed");
+    let kouts = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::KOuts(v) => Some(v),
+            _ => None,
+        })
+        .expect("kouts block");
+    assert_eq!(kouts.output_timing, OutputTiming::Block);
+    assert_eq!(kouts.deferred_prefix, "kout");
+    assert_deferred_int_count(&kouts.deferred_count, 2);
+    assert_eq!(
+        kouts.deferred_default_ty,
+        Some(DeclType::Scalar(PrimitiveType::F32))
+    );
+}
+
+#[test]
+fn parses_indented_kouts_declarations() {
+    let src = r#"
+kouts:
+  meter: f32
+  peak
+block:
+  meter = 1.0
+  peak = 0.5
+"#;
+    let program = parse_program(src).expect("parse_program should succeed");
+    let kouts = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::KOuts(v) => Some(v),
+            _ => None,
+        })
+        .expect("kouts block");
+
+    assert_eq!(kouts.output_timing, OutputTiming::Block);
+    assert_eq!(kouts.decls.len(), 2);
+    assert_eq!(kouts[0].name, "meter");
+    assert_eq!(kouts[0].output_timing, None);
+    assert_eq!(kouts[0].ty, Some(DeclType::Scalar(PrimitiveType::F32)));
+    assert_eq!(kouts[1].name, "peak");
+    assert_eq!(kouts[1].output_timing, None);
+}
+
+#[test]
+fn parses_top_level_kins_alias_as_params() {
+    let src = r#"
+kins<f64>:
+  freq = 440.0
+  mix: f32 = 0.25
+"#;
+    let program = parse_program(src).expect("parse_program should succeed");
+    let params = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Params(v) => Some(v),
+            _ => None,
+        })
+        .expect("params block");
+
+    assert_eq!(params.decls.len(), 2);
+    assert_eq!(params.deferred_prefix, "kin");
+    assert_eq!(params[0].name, "freq");
+    assert_eq!(params[0].ty, Some(DeclType::Scalar(PrimitiveType::F64)));
+    assert_eq!(params[1].name, "mix");
+    assert_eq!(params[1].ty, Some(DeclType::Scalar(PrimitiveType::F32)));
+}
+
+#[test]
+fn rejects_proc_kins_alias() {
+    let errors = parse_program(
+        r#"
+proc P {
+  kins {
+    freq = 1.0
+  }
+  outs 1
+  sample { out1 = freq }
+}
+"#,
+    )
+    .expect_err("kins should be top-level only");
+    assert!(!errors.is_empty());
+}
+
+#[test]
+fn rejects_empty_proc_output_block_followed_by_another_output_block() {
+    let errors = parse_program(
+        r#"
+proc P {
+  outs {}
+  kouts { meter }
+  block { meter = 1.0 }
+}
+"#,
+    )
+    .expect_err("proc cannot declare two output blocks");
+
+    assert!(errors
+        .iter()
+        .any(|diag| diag.message.contains("duplicate proc output block")));
+}
+
+#[test]
+fn rejects_legacy_outs_rate_syntax() {
+    let section_word_errors = parse_program(
+        r#"
+outs block {
+  meter
+}
+block { meter = 1.0 }
+"#,
+    )
+    .expect_err("outs block should be rejected");
+    assert!(section_word_errors
+        .iter()
+        .any(|diag| diag.message.contains("use kouts for control-rate outputs")));
+
+    let marker_errors = parse_program(
+        r#"
+outs {
+  @block meter
+}
+block { meter = 1.0 }
+"#,
+    )
+    .expect_err("per-output timing marker should be rejected");
+    assert!(!marker_errors.is_empty());
 }
 
 #[test]
@@ -2847,6 +3015,72 @@ sample:
     };
     assert_eq!(call_name, "D::Data");
     assert!(call_name.ends_with("::Data"));
+}
+
+#[test]
+fn parses_top_level_use_declarations() {
+    let src = r#"
+use std::math
+use std::fft<512> as fft512
+use std::fft<1024>::FFT as FFT1024
+pub use std::random::Rng as Random
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("use declarations should parse");
+    let uses = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Use(use_decl) => Some(use_decl),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(uses.len(), 4);
+    assert_eq!(uses[0].target[0].name, "std");
+    assert_eq!(uses[0].target[1].name, "math");
+    assert_eq!(uses[0].alias, None);
+    assert!(!uses[0].public);
+    assert_eq!(uses[1].target[1].name, "fft");
+    assert_eq!(uses[1].target[1].args.as_ref().map(Vec::len), Some(1));
+    assert_eq!(uses[1].alias.as_deref(), Some("fft512"));
+    assert!(!uses[1].public);
+    assert_eq!(uses[2].target[2].name, "FFT");
+    assert_eq!(uses[2].alias.as_deref(), Some("FFT1024"));
+    assert!(!uses[2].public);
+    assert_eq!(uses[3].target[2].name, "Rng");
+    assert_eq!(uses[3].alias.as_deref(), Some("Random"));
+    assert!(uses[3].public);
+}
+
+#[test]
+fn parses_namespace_local_use_declarations() {
+    let src = r#"
+namespace DSP:
+  use std::math
+  def run(x):
+    return clamp(x, 0.0, 1.0)
+
+sample:
+  out1 = DSP::run(0.5)
+"#;
+    let program = parse_program(src).expect("namespace-local use declaration should parse");
+    let ns = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Namespace(ns) if ns.name == "DSP" => Some(ns),
+            _ => None,
+        })
+        .expect("DSP namespace");
+    assert!(ns.items.iter().any(|item| matches!(
+        item,
+        NamespaceItem::Use(use_decl)
+            if use_decl.target.len() == 2
+                && use_decl.target[0].name == "std"
+                && use_decl.target[1].name == "math"
+    )));
 }
 
 #[test]
@@ -4601,6 +4835,91 @@ sample:
         EventParamType::GenericSlice { elem } => assert_eq!(elem, "T"),
         other => panic!("expected generic proc event slice param, got {other:?}"),
     }
+}
+
+#[test]
+fn parses_generic_proc_event_scalar_param_defaults() {
+    let src = r#"
+proc Filter<T>:
+  events:
+    set(freqv: T = 1200.0, rqv: T = 1.0):
+      freq = freqv
+      rq = rqv
+  init:
+    freq = 0.0
+    rq = 0.0
+  sample:
+    out1 = f32(freq + rq)
+outs 1
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("generic proc event scalar defaults should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    assert_eq!(proc.type_params, vec!["T".to_owned()]);
+    assert_eq!(proc.events[0].params.len(), 2);
+    match &proc.events[0].params[0].ty {
+        EventParamType::GenericScalar { name } => assert_eq!(name, "T"),
+        other => panic!("expected generic scalar proc event param, got {other:?}"),
+    }
+    assert!(matches!(
+        proc.events[0].params[0].default,
+        Some(Expr::Number { value, .. }) if (value - 1200.0).abs() < f64::EPSILON
+    ));
+    match &proc.events[0].params[1].ty {
+        EventParamType::GenericScalar { name } => assert_eq!(name, "T"),
+        other => panic!("expected generic scalar proc event param, got {other:?}"),
+    }
+    assert!(matches!(
+        proc.events[0].params[1].default,
+        Some(Expr::Number { value, .. }) if (value - 1.0).abs() < f64::EPSILON
+    ));
+}
+
+#[test]
+fn parses_generic_proc_event_fixed_array_param_defaults() {
+    let src = r#"
+proc Loader<T>:
+  events:
+    load(values: T[2] = [1.0, 2.0]):
+      last = f32(values[0] + values[1])
+  init:
+    last = 0.0
+  sample:
+    out1 = last
+outs 1
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("generic proc event fixed-array defaults should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Proc(p) => Some(p),
+            _ => None,
+        })
+        .expect("proc block");
+    match &proc.events[0].params[0].ty {
+        EventParamType::GenericArray { elem, size } => {
+            assert_eq!(elem, "T");
+            assert!(matches!(size, Expr::Int { value: 2, .. }));
+        }
+        other => panic!("expected generic fixed-array proc event param, got {other:?}"),
+    }
+    assert!(matches!(
+        proc.events[0].params[0].default.as_ref(),
+        Some(Expr::ArrayLiteral { values, .. }) if values.len() == 2
+    ));
 }
 
 #[test]
@@ -6420,6 +6739,66 @@ fn declaration_locations_capture_param_ranges() {
     assert_eq!(loc.column, 3);
     assert_eq!(loc.end_line(), 2);
     assert_eq!(loc.end_column, 13);
+}
+
+#[test]
+fn parses_proc_param_bind_hook() {
+    let src = r#"
+proc Voice:
+  params:
+    freq = 440.0 {20.0, 20000.0} => update_freq
+  outs:
+    out1
+  sample:
+    out1 = freq
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("processor param bind should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Proc(proc) if proc.name == "Voice" => Some(proc),
+            _ => None,
+        })
+        .expect("Voice proc");
+
+    assert_eq!(proc.params[0].name, "freq");
+    assert_eq!(proc.params[0].bind.as_deref(), Some("update_freq"));
+}
+
+#[test]
+fn parses_proc_pinned_params() {
+    let src = r#"
+proc Voice:
+  params:
+    pin cutoff = 1000.0
+    pin coeffs: f32[2] = [0.5, 0.25]
+  outs:
+    out1
+  sample:
+    out1 = cutoff + coeffs[0]
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("pinned processor params should parse");
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Proc(proc) if proc.name == "Voice" => Some(proc),
+            _ => None,
+        })
+        .expect("Voice proc");
+
+    assert_eq!(proc.params[0].name, "cutoff");
+    assert!(proc.params[0].pinned);
+    assert_eq!(proc.params[1].name, "coeffs");
+    assert!(proc.params[1].pinned);
+    assert_eq!(proc.params.len(), 2);
 }
 
 #[test]

@@ -62,6 +62,21 @@ fn repo_source(rel: &str) -> (PathBuf, String) {
 fn reserved_words_include_singular_event_keyword() {
     assert!(is_reserved_word("event"));
     assert!(is_reserved_word("events"));
+    assert!(is_reserved_word("pin"));
+}
+
+#[test]
+fn builtin_host_sample_rate_alias_is_semantic_constant() {
+    let source = "sample:\n  out1 = HOST_SR\n";
+    let tokens = semantic_tokens_for_document(source, None);
+    let host_tokens = find_tokens_named(&tokens, source, "HOST_SR");
+
+    assert!(
+        host_tokens
+            .iter()
+            .any(|token| token.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+        "HOST_SR should use the shared builtin constant catalog: {host_tokens:?}"
+    );
 }
 
 #[test]
@@ -656,6 +671,81 @@ fn semantic_tokens_mark_proc_section_declarations() {
 }
 
 #[test]
+fn semantic_tokens_mark_pin_as_keyword() {
+    let source = concat!(
+        "proc Filter:\n",
+        "  params:\n",
+        "    pin cutoff = 1000.0\n",
+        "    pin coeffs: f32[2] = [0.5, 0.25]\n",
+        "  sample:\n",
+        "    out1 = cutoff + coeffs[0]\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    assert!(
+        has_token(&tokens, 2, 4, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "pinned proc scalar param keyword should be highlighted: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 3, 4, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "pinned proc array param keyword should be highlighted: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 5, 11, 6, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "proc code should still resolve the pinned scalar param name: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 5, 20, 6, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "proc code should still resolve the pinned array param name: {tokens:?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_mark_pin_keyword_in_incomplete_proc_params() {
+    let source = concat!(
+        "proc Filter:\n",
+        "  params:\n",
+        "    pin cutoff =\n",
+        "  sample:\n",
+        "    out1 = cutoff + pin\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    assert!(
+        has_token(&tokens, 2, 4, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "source fallback should highlight pin as a keyword: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 4, 11, 6, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "source fallback should register the pinned param name, not 'pin': {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 4, 20, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "reserved pin usage should stay a keyword in expressions: {tokens:?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_do_not_register_top_level_pin_param_fallback() {
+    let source = concat!(
+        "params:\n",
+        "  pin gain = 1.0\n",
+        "sample:\n",
+        "  out1 = gain\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    assert!(
+        has_token(&tokens, 1, 2, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "source fallback should highlight top-level pin as a keyword: {tokens:?}"
+    );
+    assert!(
+        !has_token(&tokens, 3, 9, 4, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "invalid top-level pinned params should not register a fallback param: {tokens:?}"
+    );
+}
+
+#[test]
 fn semantic_tokens_mark_proc_output_in_else_branch() {
     let source = concat!(
         "proc Svf:\n",
@@ -672,6 +762,18 @@ fn semantic_tokens_mark_proc_output_in_else_branch() {
     );
     let tokens = semantic_tokens_for_document(source, None);
 
+    assert!(
+        has_token(&tokens, 5, 4, 2, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "if keyword should be highlighted: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 7, 4, 4, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "elif keyword should be highlighted: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 9, 4, 4, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "else keyword should be highlighted: {tokens:?}"
+    );
     assert!(
         has_token(&tokens, 10, 6, 4, SEMANTIC_TOKEN_TYPE_PORT),
         "else-branch proc output should be highlighted as port: {tokens:?}"
@@ -971,7 +1073,7 @@ fn semantic_tokens_mark_graph_symbols_in_incomplete_file() {
 }
 
 #[test]
-fn semantic_tokens_mark_proc_block_locals_in_nested_sample_for_std_osc() {
+fn semantic_tokens_mark_proc_state_and_hook_state_for_std_osc() {
     let (path, source) = repo_source("stdlib/std/osc.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
 
@@ -979,28 +1081,40 @@ fn semantic_tokens_mark_proc_block_locals_in_nested_sample_for_std_osc() {
     assert!(
         incr_tokens
             .iter()
-            .any(|t| t.line == 11 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc block local 'incr' should be highlighted in block: {incr_tokens:?}"
+            .any(|t| t.line == 9 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+        "proc init state 'incr' should be highlighted in init: {incr_tokens:?}"
     );
     assert!(
         incr_tokens
             .iter()
-            .any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc block local 'incr' should carry into nested sample: {incr_tokens:?}"
+            .any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+        "proc init state 'incr' should carry into hook defs: {incr_tokens:?}"
+    );
+    assert!(
+        incr_tokens
+            .iter()
+            .any(|t| t.line == 15 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+        "proc init state 'incr' should carry into sample: {incr_tokens:?}"
     );
 
     let dt_tokens = find_tokens_named(&tokens, &source, "dt");
     assert!(
         dt_tokens
             .iter()
-            .any(|t| t.line == 58 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc block local 'dt' should be highlighted in block: {dt_tokens:?}"
+            .any(|t| t.line == 55 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+        "proc init state 'dt' should be highlighted in init: {dt_tokens:?}"
     );
     assert!(
         dt_tokens
             .iter()
-            .any(|t| t.line == 62 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
-        "proc block local 'dt' should carry into nested sample: {dt_tokens:?}"
+            .any(|t| t.line == 58 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+        "proc init state 'dt' should carry into hook defs: {dt_tokens:?}"
+    );
+    assert!(
+        dt_tokens
+            .iter()
+            .any(|t| t.line == 63 && t.token_type == SEMANTIC_TOKEN_TYPE_STATE),
+        "proc init state 'dt' should carry into sample: {dt_tokens:?}"
     );
 }
 

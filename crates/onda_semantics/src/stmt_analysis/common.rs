@@ -68,6 +68,10 @@ pub(crate) struct ScopeAnalysisCtx<'a> {
     pub(crate) policy: ScopePolicy,
     pub(crate) input_names: &'a HashSet<String>,
     pub(crate) output_names: &'a HashSet<String>,
+    pub(crate) output_array_names: &'a HashSet<String>,
+    pub(crate) io_surface_names: &'a HashSet<String>,
+    pub(crate) io_surface_array_names: &'a HashSet<String>,
+    pub(crate) dynamic_param_array_names: &'a HashSet<String>,
     pub(crate) param_names: &'a HashSet<String>,
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
@@ -76,6 +80,8 @@ pub(crate) struct ScopeAnalysisCtx<'a> {
     pub(crate) port_index_ins: Option<PortIndexInfo>,
     pub(crate) port_index_outs: Option<PortIndexInfo>,
     pub(crate) port_index_params: Option<PortIndexInfo>,
+    pub(crate) port_index_kins: Option<PortIndexInfo>,
+    pub(crate) proc_event_names: &'a HashSet<String>,
 }
 
 impl<'a> ScopeAnalysisCtx<'a> {
@@ -102,6 +108,12 @@ pub(crate) fn build_scope_analysis_expr_inputs<'a>(
         struct_instances,
         input_names: common.input_names,
         output_names: common.output_names,
+        output_array_names: common.output_array_names,
+        io_surface_names: common.io_surface_names,
+        io_surface_array_names: common.io_surface_array_names,
+        io_surface_access_allowed: matches!(common.policy, ScopePolicy::Runtime(_)),
+        dynamic_param_array_names: common.dynamic_param_array_names,
+        dynamic_param_indexing_allowed: matches!(common.policy, ScopePolicy::Runtime(_)),
         param_names: common.param_names,
         struct_defs: common.struct_defs,
         fn_signatures: common.fn_signatures,
@@ -109,6 +121,8 @@ pub(crate) fn build_scope_analysis_expr_inputs<'a>(
         port_index_ins: common.port_index_ins,
         port_index_outs: common.port_index_outs,
         port_index_params: common.port_index_params,
+        port_index_kins: common.port_index_kins,
         proc_array_roots,
+        proc_event_names: common.proc_event_names,
     }
 }

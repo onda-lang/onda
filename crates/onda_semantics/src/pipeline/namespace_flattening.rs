@@ -1,4 +1,5 @@
 use super::*;
+use crate::processor_lowering::validate_generic_proc_template_forwarded_type_args;
 
 #[derive(Debug, Clone)]
 struct NamespaceTemplateRecord {
@@ -13,10 +14,30 @@ struct NamespaceAliasRecord {
     target: Vec<NamespaceRefSegment>,
 }
 
+#[derive(Debug, Clone)]
+struct UseBinding {
+    target: String,
+}
+
+#[derive(Debug, Clone)]
+struct NamespaceUseBinding {
+    target: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UseScope {
+    symbols: HashMap<String, Vec<UseBinding>>,
+    namespaces: Vec<NamespaceUseBinding>,
+}
+
 #[derive(Debug, Default)]
 struct NamespaceFlattenState {
     templates: HashMap<String, NamespaceTemplateRecord>,
     aliases: HashMap<String, NamespaceAliasRecord>,
+    private_aliases: HashMap<(String, String), NamespaceAliasRecord>,
+    public_uses: HashMap<String, UseScope>,
+    private_uses: HashMap<(String, String), UseScope>,
+    global_value_names: HashSet<String>,
     members: HashSet<String>,
     const_array_names: HashSet<String>,
     scalar_const_names: HashSet<String>,
@@ -34,6 +55,8 @@ pub(super) fn flatten_namespaces_for_semantics(
     let mut errors = Vec::<Diagnostic>::new();
     let mut out = Vec::<Block>::new();
     let template_consts = HashMap::<String, Expr>::new();
+
+    state.global_value_names = collect_global_value_names(&program.blocks);
 
     for block in std::mem::take(&mut program.blocks) {
         process_top_level_block(
@@ -139,6 +162,136 @@ fn format_call_args_as_type_suffix(args: &[NamespaceCallArg]) -> String {
     format!("<{}>", parts.join(", "))
 }
 
+fn namespace_segments_key(segments: &[NamespaceRefSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| segment.name.as_str())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+fn strip_type_args_from_path(path: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0usize;
+    for ch in path.trim().chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ' ' | '\t' | '\r' if depth > 0 => {}
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone, Default)]
+struct RewriteNameScope {
+    names: HashSet<String>,
+}
+
+impl RewriteNameScope {
+    fn from_names(names: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            names: names.into_iter().collect(),
+        }
+    }
+
+    fn contains_value_name(&self, name: &str) -> bool {
+        if name.is_empty() || name.contains("::") || name.contains('.') {
+            return false;
+        }
+        let (base, _) = split_named_type_base_and_suffix(name);
+        self.names.contains(base)
+    }
+
+    fn insert_plain(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        if !name.is_empty() && !name.contains("::") && !name.contains('.') {
+            self.names.insert(name);
+        }
+    }
+
+    fn extend(&mut self, names: impl IntoIterator<Item = String>) {
+        for name in names {
+            self.insert_plain(name);
+        }
+    }
+}
+
+fn assignment_target_plain_names(target: &AssignTarget) -> Vec<String> {
+    match target {
+        AssignTarget::Var(name) => vec![name.clone()],
+        AssignTarget::Tuple(names) => names.clone(),
+        AssignTarget::Index { .. } | AssignTarget::Slice { .. } => Vec::new(),
+    }
+}
+
+fn collect_top_level_assignment_target_names(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        if let Stmt::Assign { target, .. } = stmt {
+            for name in assignment_target_plain_names(target) {
+                if !name.contains("::") && !name.contains('.') {
+                    out.insert(name);
+                }
+            }
+        }
+    }
+}
+
+fn collect_global_value_names(blocks: &[Block]) -> HashSet<String> {
+    let mut names = HashSet::<String>::new();
+    for block in blocks {
+        match block {
+            Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
+                names.extend(ports.decls.iter().map(|decl| decl.name.clone()));
+            }
+            Block::Params(params) => {
+                names.extend(params.decls.iter().map(|decl| decl.name.clone()));
+            }
+            Block::Buffers(buffers) => {
+                names.extend(buffers.decls.iter().map(|decl| decl.name.clone()));
+            }
+            Block::Events(events) => {
+                names.extend(events.events.iter().map(|event| event.name.clone()));
+            }
+            Block::Init(init) => {
+                collect_top_level_assignment_target_names(&init.body, &mut names);
+            }
+            Block::Block(exec) => {
+                collect_top_level_assignment_target_names(&exec.pre, &mut names);
+                collect_top_level_assignment_target_names(&exec.post, &mut names);
+            }
+            Block::Namespace(_)
+            | Block::NamespaceAlias(_)
+            | Block::Use(_)
+            | Block::Const(_)
+            | Block::Assert(_)
+            | Block::Proc(_)
+            | Block::Struct(_)
+            | Block::Def(_)
+            | Block::Sample(_)
+            | Block::Graph(_) => {}
+        }
+    }
+    names
+}
+
+fn proc_value_name_scope(proc: &ProcessorDef) -> RewriteNameScope {
+    let mut scope = RewriteNameScope::default();
+    scope.extend(proc.type_params.iter().cloned());
+    scope.extend(proc.consts.iter().map(|decl| decl.name.clone()));
+    scope.extend(proc.ins.iter().map(|decl| decl.name.clone()));
+    scope.extend(proc.outs.iter().map(|decl| decl.name.clone()));
+    scope.extend(proc.params.iter().map(|decl| decl.name.clone()));
+    scope.extend(proc.buffers.iter().map(|decl| decl.name.clone()));
+    scope.extend(proc.events.iter().map(|event| event.name.clone()));
+    scope.extend(proc.local_defs.iter().map(|def| def.name.clone()));
+    collect_top_level_assignment_target_names(&proc.init.body, &mut scope.names);
+    collect_top_level_assignment_target_names(&proc.block_pre, &mut scope.names);
+    scope
+}
+
 fn typed_const_value_key(value: TypedConstValue) -> String {
     match value {
         TypedConstValue::F32(v) => format!("f32({v})"),
@@ -173,7 +326,10 @@ fn register_member_for_item(
                 state.scalar_const_names.insert(full_name);
             }
         }
-        NamespaceItem::Assert(_) | NamespaceItem::Namespace(_) | NamespaceItem::Alias(_) => {}
+        NamespaceItem::Assert(_)
+        | NamespaceItem::Namespace(_)
+        | NamespaceItem::Alias(_)
+        | NamespaceItem::Use(_) => {}
     }
 }
 
@@ -281,7 +437,6 @@ fn merge_generated_namespace_artifacts(
     namespace: &str,
 ) {
     let prefix = format!("{namespace}::");
-
     let mut generated_defs = emitted
         .const_defs
         .into_iter()
@@ -331,7 +486,11 @@ fn process_top_level_block(
         Block::NamespaceAlias(alias) => {
             register_namespace_alias("", alias, state, errors);
         }
+        Block::Use(use_decl) => {
+            register_use_decl("", &use_decl, template_consts, options, state, out, errors);
+        }
         mut block => {
+            register_top_level_member_for_block(&block, state);
             let current_ns = match &block {
                 Block::Struct(s) => namespace_of_symbol(&s.name),
                 Block::Def(d) => namespace_of_symbol(&d.name),
@@ -383,6 +542,8 @@ fn process_namespace_decl(
             ));
             return;
         }
+        let validation_scope = namespace_template_validation_scope(&decl, None);
+        validate_namespace_template_proc_refs(&decl, &full_ns, state, &validation_scope, errors);
         state.templates.insert(
             full_ns,
             NamespaceTemplateRecord {
@@ -392,6 +553,1010 @@ fn process_namespace_decl(
             },
         );
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct NamespaceTemplateValidationScope {
+    static_names: HashSet<String>,
+}
+
+fn namespace_template_validation_scope(
+    decl: &NamespaceDecl,
+    parent: Option<&NamespaceTemplateValidationScope>,
+) -> NamespaceTemplateValidationScope {
+    let mut scope = parent.cloned().unwrap_or_default();
+    scope
+        .static_names
+        .extend(decl.params.iter().map(|param| param.name.clone()));
+    for item in &decl.items {
+        match item {
+            NamespaceItem::Const(decl) => {
+                scope.static_names.insert(decl.name.clone());
+            }
+            NamespaceItem::Def(def) if def.is_const => {
+                scope.static_names.insert(def.name.clone());
+            }
+            NamespaceItem::Assert(_)
+            | NamespaceItem::Struct(_)
+            | NamespaceItem::Def(_)
+            | NamespaceItem::Proc(_)
+            | NamespaceItem::Namespace(_)
+            | NamespaceItem::Alias(_)
+            | NamespaceItem::Use(_) => {}
+        }
+    }
+    scope
+}
+
+fn validate_namespace_template_proc_refs(
+    decl: &NamespaceDecl,
+    namespace: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for item in &decl.items {
+        match item {
+            NamespaceItem::Proc(proc) => {
+                let mut proc = proc.clone();
+                proc.name = namespace_join(namespace, &proc.name);
+                validate_generic_proc_template_forwarded_type_args(&proc, errors);
+                validate_template_proc_refs(&proc, namespace, state, scope, errors);
+            }
+            NamespaceItem::Namespace(child) => {
+                let child_namespace = namespace_join(namespace, &child.name);
+                let child_scope = namespace_template_validation_scope(child, Some(scope));
+                validate_namespace_template_proc_refs(
+                    child,
+                    &child_namespace,
+                    state,
+                    &child_scope,
+                    errors,
+                );
+            }
+            NamespaceItem::Const(decl) => {
+                validate_template_expr_refs(
+                    &decl.expr,
+                    namespace,
+                    state,
+                    scope,
+                    "namespace template const",
+                    errors,
+                );
+            }
+            NamespaceItem::Assert(assert_decl) => {
+                validate_template_static_expr_refs(
+                    &assert_decl.expr,
+                    namespace,
+                    state,
+                    scope,
+                    "namespace template assert",
+                    errors,
+                );
+            }
+            NamespaceItem::Struct(struct_def) => {
+                for field in &struct_def.fields {
+                    if let Some(default) = &field.default {
+                        validate_template_expr_refs(
+                            default,
+                            namespace,
+                            state,
+                            scope,
+                            "namespace template struct field default",
+                            errors,
+                        );
+                    }
+                }
+                for method in &struct_def.methods {
+                    let mut method_scope = scope.clone();
+                    method_scope
+                        .static_names
+                        .extend(method.type_params.iter().cloned());
+                    validate_template_stmt_list_refs(
+                        &method.body,
+                        namespace,
+                        state,
+                        &method_scope,
+                        &format!("method '{}'", method.name),
+                        errors,
+                    );
+                }
+            }
+            NamespaceItem::Def(def) => {
+                let mut def_scope = scope.clone();
+                def_scope
+                    .static_names
+                    .extend(def.type_params.iter().cloned());
+                validate_template_stmt_list_refs(
+                    &def.body,
+                    namespace,
+                    state,
+                    &def_scope,
+                    &format!("def '{}'", def.name),
+                    errors,
+                );
+            }
+            NamespaceItem::Alias(alias) => {
+                validate_template_namespace_ref_args(
+                    &alias.target,
+                    namespace,
+                    state,
+                    scope,
+                    "namespace alias target",
+                    alias.loc.as_ref().copied().unwrap_or_default(),
+                    errors,
+                );
+            }
+            NamespaceItem::Use(use_decl) => {
+                validate_template_namespace_ref_args(
+                    &use_decl.target,
+                    namespace,
+                    state,
+                    scope,
+                    "use target",
+                    use_decl.loc.as_ref().copied().unwrap_or_default(),
+                    errors,
+                );
+            }
+        }
+    }
+}
+
+fn validate_template_proc_refs(
+    proc: &ProcessorDef,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut proc_scope = scope.clone();
+    proc_scope
+        .static_names
+        .extend(proc.type_params.iter().cloned());
+    proc_scope
+        .static_names
+        .extend(proc.consts.iter().map(|decl| decl.name.clone()));
+
+    for decl in &proc.ins {
+        validate_template_optional_expr_refs(
+            decl.default.as_ref(),
+            current_ns,
+            state,
+            &proc_scope,
+            "processor input default",
+            errors,
+        );
+        validate_template_range_refs(
+            decl.range.as_ref(),
+            current_ns,
+            state,
+            &proc_scope,
+            "processor input range",
+            errors,
+        );
+    }
+    for decl in &proc.outs {
+        validate_template_range_refs(
+            decl.range.as_ref(),
+            current_ns,
+            state,
+            &proc_scope,
+            "processor output range",
+            errors,
+        );
+    }
+    for decl in &proc.params {
+        validate_template_optional_expr_refs(
+            decl.default.as_ref(),
+            current_ns,
+            state,
+            &proc_scope,
+            "processor parameter default",
+            errors,
+        );
+        validate_template_range_refs(
+            decl.range.as_ref(),
+            current_ns,
+            state,
+            &proc_scope,
+            "processor parameter range",
+            errors,
+        );
+    }
+    for decl in &proc.consts {
+        validate_template_expr_refs(
+            &decl.expr,
+            current_ns,
+            state,
+            &proc_scope,
+            "processor const",
+            errors,
+        );
+    }
+    if let Some(factor) = &proc.sample_oversample_factor {
+        validate_template_static_expr_refs(
+            factor,
+            current_ns,
+            state,
+            &proc_scope,
+            "processor oversample factor",
+            errors,
+        );
+    }
+    validate_template_stmt_list_refs(
+        &proc.init.body,
+        current_ns,
+        state,
+        &proc_scope,
+        "processor init",
+        errors,
+    );
+    validate_template_stmt_list_refs(
+        &proc.block_pre,
+        current_ns,
+        state,
+        &proc_scope,
+        "processor block",
+        errors,
+    );
+    validate_template_stmt_list_refs(
+        &proc.sample,
+        current_ns,
+        state,
+        &proc_scope,
+        "processor sample",
+        errors,
+    );
+    validate_template_stmt_list_refs(
+        &proc.block_post,
+        current_ns,
+        state,
+        &proc_scope,
+        "processor block",
+        errors,
+    );
+    for event in &proc.events {
+        let context = format!("event '{}'", event.name);
+        for param in &event.params {
+            validate_template_optional_expr_refs(
+                param.default.as_ref(),
+                current_ns,
+                state,
+                &proc_scope,
+                &format!("{context} parameter default"),
+                errors,
+            );
+        }
+        validate_template_stmt_list_refs(
+            &event.body,
+            current_ns,
+            state,
+            &proc_scope,
+            &context,
+            errors,
+        );
+    }
+    for def in &proc.local_defs {
+        let mut def_scope = proc_scope.clone();
+        def_scope
+            .static_names
+            .extend(def.type_params.iter().cloned());
+        validate_template_stmt_list_refs(
+            &def.body,
+            current_ns,
+            state,
+            &def_scope,
+            &format!("local def '{}'", def.name),
+            errors,
+        );
+    }
+}
+
+fn validate_template_range_refs(
+    range: Option<&DeclRange>,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some(range) = range else {
+        return;
+    };
+    validate_template_optional_expr_refs(
+        range.min.as_ref(),
+        current_ns,
+        state,
+        scope,
+        context,
+        errors,
+    );
+    validate_template_expr_refs(&range.max, current_ns, state, scope, context, errors);
+}
+
+fn validate_template_optional_expr_refs(
+    expr: Option<&Expr>,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(expr) = expr {
+        validate_template_expr_refs(expr, current_ns, state, scope, context, errors);
+    }
+}
+
+fn validate_template_stmt_list_refs(
+    stmts: &[Stmt],
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut local_scope = scope.clone();
+    for stmt in stmts {
+        validate_template_stmt_refs(stmt, current_ns, state, &mut local_scope, context, errors);
+    }
+}
+
+fn validate_template_stmt_refs(
+    stmt: &Stmt,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &mut NamespaceTemplateValidationScope,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match stmt {
+        Stmt::Const { decl, .. } => {
+            if let Some(ConstType::Array { size, .. }) = &decl.ty {
+                validate_template_static_expr_refs(
+                    size,
+                    current_ns,
+                    state,
+                    scope,
+                    &format!("{context} const array size"),
+                    errors,
+                );
+            }
+            validate_template_expr_refs(&decl.expr, current_ns, state, scope, context, errors);
+            scope.static_names.insert(decl.name.clone());
+        }
+        Stmt::Assign {
+            target,
+            generic_decl_ty,
+            expr,
+            ..
+        } => {
+            validate_template_assign_target_refs(target, current_ns, state, scope, context, errors);
+            if let Some(name) = generic_decl_ty {
+                validate_template_named_ref(
+                    name,
+                    current_ns,
+                    state,
+                    scope,
+                    &format!("{context} typed declaration"),
+                    stmt.loc().span(),
+                    errors,
+                );
+            }
+            validate_template_expr_refs(expr, current_ns, state, scope, context, errors);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
+            validate_template_expr_refs(expr, current_ns, state, scope, context, errors);
+        }
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            validate_template_expr_refs(cond, current_ns, state, scope, context, errors);
+            validate_template_stmt_list_refs(
+                then_branch,
+                current_ns,
+                state,
+                scope,
+                context,
+                errors,
+            );
+            validate_template_stmt_list_refs(
+                else_branch,
+                current_ns,
+                state,
+                scope,
+                context,
+                errors,
+            );
+        }
+        Stmt::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            validate_template_expr_refs(start, current_ns, state, scope, context, errors);
+            validate_template_expr_refs(end, current_ns, state, scope, context, errors);
+            validate_template_optional_expr_refs(
+                step.as_ref(),
+                current_ns,
+                state,
+                scope,
+                context,
+                errors,
+            );
+            validate_template_stmt_list_refs(body, current_ns, state, scope, context, errors);
+        }
+        Stmt::While { cond, body, .. } => {
+            validate_template_expr_refs(cond, current_ns, state, scope, context, errors);
+            validate_template_stmt_list_refs(body, current_ns, state, scope, context, errors);
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn validate_template_assign_target_refs(
+    target: &AssignTarget,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match target {
+        AssignTarget::Var(name) => {
+            validate_template_named_ref(
+                name,
+                current_ns,
+                state,
+                scope,
+                context,
+                Span::default(),
+                errors,
+            );
+        }
+        AssignTarget::Index { base, index } => {
+            validate_template_named_ref(
+                base,
+                current_ns,
+                state,
+                scope,
+                context,
+                index.loc().span(),
+                errors,
+            );
+            validate_template_expr_refs(index, current_ns, state, scope, context, errors);
+        }
+        AssignTarget::Slice { base, start, end } => {
+            validate_template_named_ref(
+                base,
+                current_ns,
+                state,
+                scope,
+                context,
+                start
+                    .as_ref()
+                    .map(|expr| expr.loc().span())
+                    .unwrap_or_default(),
+                errors,
+            );
+            validate_template_optional_expr_refs(
+                start.as_ref(),
+                current_ns,
+                state,
+                scope,
+                context,
+                errors,
+            );
+            validate_template_optional_expr_refs(
+                end.as_ref(),
+                current_ns,
+                state,
+                scope,
+                context,
+                errors,
+            );
+        }
+        AssignTarget::Tuple(_) => {}
+    }
+}
+
+fn validate_template_expr_refs(
+    expr: &Expr,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::Var { name, .. } => {
+            validate_template_named_ref(
+                name,
+                current_ns,
+                state,
+                scope,
+                context,
+                expr.loc().span(),
+                errors,
+            );
+        }
+        Expr::UserCall { name, args, .. } => {
+            validate_template_named_ref(
+                name,
+                current_ns,
+                state,
+                scope,
+                context,
+                expr.loc().span(),
+                errors,
+            );
+            for arg in args {
+                validate_template_expr_refs(&arg.expr, current_ns, state, scope, context, errors);
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            if let ArrayElemType::Struct(name) = &spec.elem {
+                validate_template_named_ref(
+                    name,
+                    current_ns,
+                    state,
+                    scope,
+                    &format!("{context} array element type"),
+                    expr.loc().span(),
+                    errors,
+                );
+            }
+            validate_template_static_expr_refs(
+                &spec.size,
+                current_ns,
+                state,
+                scope,
+                &format!("{context} array size"),
+                errors,
+            );
+            if let Some(values) = init {
+                for value in values {
+                    validate_template_expr_refs(value, current_ns, state, scope, context, errors);
+                }
+            }
+        }
+        Expr::Index { base, index, .. } => {
+            validate_template_named_ref(
+                base,
+                current_ns,
+                state,
+                scope,
+                context,
+                expr.loc().span(),
+                errors,
+            );
+            validate_template_expr_refs(index, current_ns, state, scope, context, errors);
+        }
+        Expr::Slice {
+            base, start, end, ..
+        } => {
+            validate_template_named_ref(
+                base,
+                current_ns,
+                state,
+                scope,
+                context,
+                expr.loc().span(),
+                errors,
+            );
+            validate_template_optional_expr_refs(
+                start.as_deref(),
+                current_ns,
+                state,
+                scope,
+                context,
+                errors,
+            );
+            validate_template_optional_expr_refs(
+                end.as_deref(),
+                current_ns,
+                state,
+                scope,
+                context,
+                errors,
+            );
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            validate_template_expr_refs(lhs, current_ns, state, scope, context, errors);
+            validate_template_expr_refs(rhs, current_ns, state, scope, context, errors);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                validate_template_expr_refs(arg, current_ns, state, scope, context, errors);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            validate_template_expr_refs(expr, current_ns, state, scope, context, errors);
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                validate_template_expr_refs(value, current_ns, state, scope, context, errors);
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+    }
+}
+
+fn validate_template_optional_static_expr_refs(
+    expr: Option<&Expr>,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(expr) = expr {
+        validate_template_static_expr_refs(expr, current_ns, state, scope, context, errors);
+    }
+}
+
+fn validate_template_static_expr_refs(
+    expr: &Expr,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::Var { name, .. } => {
+            if looks_like_namespace_ref(name) {
+                validate_template_named_ref(
+                    name,
+                    current_ns,
+                    state,
+                    scope,
+                    context,
+                    expr.loc().span(),
+                    errors,
+                );
+            } else if !static_name_known(name, current_ns, state, scope) {
+                errors.push(Diagnostic::semantic_span(
+                    format!("{context}: unknown constant '{name}'"),
+                    expr.loc(),
+                ));
+            }
+        }
+        Expr::UserCall { name, args, .. } => {
+            validate_template_named_ref(
+                name,
+                current_ns,
+                state,
+                scope,
+                context,
+                expr.loc().span(),
+                errors,
+            );
+            for arg in args {
+                validate_template_static_expr_refs(
+                    &arg.expr, current_ns, state, scope, context, errors,
+                );
+            }
+        }
+        Expr::ArrayCtor { spec, init, .. } => {
+            validate_template_static_expr_refs(
+                &spec.size, current_ns, state, scope, context, errors,
+            );
+            if let Some(values) = init {
+                for value in values {
+                    validate_template_static_expr_refs(
+                        value, current_ns, state, scope, context, errors,
+                    );
+                }
+            }
+        }
+        Expr::Index { base, index, .. } => {
+            validate_template_named_ref(
+                base,
+                current_ns,
+                state,
+                scope,
+                context,
+                expr.loc().span(),
+                errors,
+            );
+            validate_template_static_expr_refs(index, current_ns, state, scope, context, errors);
+        }
+        Expr::Slice {
+            base, start, end, ..
+        } => {
+            validate_template_named_ref(
+                base,
+                current_ns,
+                state,
+                scope,
+                context,
+                expr.loc().span(),
+                errors,
+            );
+            validate_template_optional_static_expr_refs(
+                start.as_deref(),
+                current_ns,
+                state,
+                scope,
+                context,
+                errors,
+            );
+            validate_template_optional_static_expr_refs(
+                end.as_deref(),
+                current_ns,
+                state,
+                scope,
+                context,
+                errors,
+            );
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            validate_template_static_expr_refs(lhs, current_ns, state, scope, context, errors);
+            validate_template_static_expr_refs(rhs, current_ns, state, scope, context, errors);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                validate_template_static_expr_refs(arg, current_ns, state, scope, context, errors);
+            }
+        }
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            validate_template_static_expr_refs(expr, current_ns, state, scope, context, errors);
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+            for value in values {
+                validate_template_static_expr_refs(
+                    value, current_ns, state, scope, context, errors,
+                );
+            }
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+    }
+}
+
+fn validate_template_named_ref(
+    name: &str,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    span: Span,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if looks_like_namespace_ref(name) {
+        validate_template_namespace_ref_exists(
+            name, current_ns, state, scope, context, span, errors,
+        );
+    }
+}
+
+fn validate_template_namespace_ref_args(
+    segments: &[NamespaceRefSegment],
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    span: Span,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for segment in segments {
+        if let Some(args) = &segment.args {
+            for arg in args {
+                validate_template_static_expr_refs(
+                    &arg.expr, current_ns, state, scope, context, errors,
+                );
+            }
+        }
+    }
+    let clean = segments
+        .iter()
+        .map(|segment| segment.name.clone())
+        .collect::<Vec<_>>()
+        .join("::");
+    if !clean.is_empty() {
+        validate_template_namespace_ref_exists(
+            &clean, current_ns, state, scope, context, span, errors,
+        );
+    }
+}
+
+fn validate_template_namespace_ref_exists(
+    name: &str,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+    context: &str,
+    span: Span,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let segments = match onda_frontend::parse_namespace_ref_text_ast(name) {
+        Ok(segments) => segments,
+        Err(_) => return,
+    };
+    for segment in &segments {
+        if let Some(args) = &segment.args {
+            for arg in args {
+                validate_template_static_expr_refs(
+                    &arg.expr, current_ns, state, scope, context, errors,
+                );
+            }
+        }
+    }
+
+    let clean = strip_type_args_from_path(name);
+    for candidate in namespace_ref_candidates(&clean, current_ns, state) {
+        if template_or_member_path_exists(&candidate, state) {
+            return;
+        }
+    }
+
+    let (namespace, symbol) = existing_template_namespace_parent(&clean, current_ns, state)
+        .or_else(|| {
+            clean
+                .rsplit_once("::")
+                .map(|(ns, symbol)| (ns.to_owned(), symbol.to_owned()))
+        })
+        .unwrap_or_default();
+    if namespace.is_empty() {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context}: unknown symbol '{clean}'"),
+            span,
+        ));
+    } else {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context}: unknown symbol '{symbol}' in namespace '{namespace}'"),
+            span,
+        ));
+    }
+}
+
+fn namespace_ref_candidates(
+    clean: &str,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+) -> Vec<String> {
+    let mut candidates = Vec::<String>::new();
+    if let Some(target) = state.aliases.get(clean) {
+        push_unique_template_candidate(&mut candidates, namespace_segments_key(&target.target));
+    }
+    if let Some((head, tail)) = clean.split_once("::") {
+        for candidate_ns in namespace_candidates(current_ns) {
+            let head_candidate = namespace_join(&candidate_ns, head);
+            if let Some(alias) = state.aliases.get(&head_candidate) {
+                push_unique_template_candidate(
+                    &mut candidates,
+                    namespace_join(&namespace_segments_key(&alias.target), tail),
+                );
+            }
+            push_unique_template_candidate(&mut candidates, namespace_join(&head_candidate, tail));
+        }
+    } else {
+        for candidate_ns in namespace_candidates(current_ns) {
+            let candidate = namespace_join(&candidate_ns, clean);
+            if let Some(alias) = state.aliases.get(&candidate) {
+                push_unique_template_candidate(
+                    &mut candidates,
+                    namespace_segments_key(&alias.target),
+                );
+            }
+            push_unique_template_candidate(&mut candidates, candidate);
+        }
+    }
+    push_unique_template_candidate(&mut candidates, clean.to_owned());
+    candidates
+}
+
+fn push_unique_template_candidate(candidates: &mut Vec<String>, candidate: String) {
+    if !candidates.contains(&candidate) {
+        candidates.push(candidate);
+    }
+}
+
+fn template_or_member_path_exists(path: &str, state: &NamespaceFlattenState) -> bool {
+    state.members.contains(path)
+        || state.templates.contains_key(path)
+        || state.aliases.contains_key(path)
+        || template_decl_path_exists(path, state)
+}
+
+fn template_decl_path_exists(path: &str, state: &NamespaceFlattenState) -> bool {
+    let mut prefix = path.to_owned();
+    loop {
+        if let Some(record) = state.templates.get(&prefix) {
+            let suffix = path
+                .strip_prefix(&prefix)
+                .unwrap_or_default()
+                .strip_prefix("::")
+                .unwrap_or_default();
+            if suffix.is_empty() {
+                return true;
+            }
+            let parts = suffix.split("::").collect::<Vec<_>>();
+            return namespace_item_path_exists(&record.decl.items, &parts);
+        }
+        let Some((parent, _)) = prefix.rsplit_once("::") else {
+            return false;
+        };
+        prefix = parent.to_owned();
+    }
+}
+
+fn namespace_item_path_exists(items: &[NamespaceItem], parts: &[&str]) -> bool {
+    let Some((first, rest)) = parts.split_first() else {
+        return true;
+    };
+    for item in items {
+        match item {
+            NamespaceItem::Const(decl) if decl.name == *first && rest.is_empty() => return true,
+            NamespaceItem::Def(def) if def.name == *first && rest.is_empty() => return true,
+            NamespaceItem::Proc(proc) if proc.name == *first && rest.is_empty() => return true,
+            NamespaceItem::Struct(def) if def.name == *first && rest.is_empty() => return true,
+            NamespaceItem::Alias(alias) if alias.name == *first && rest.is_empty() => return true,
+            NamespaceItem::Namespace(child) if child.name == *first => {
+                return rest.is_empty() || namespace_item_path_exists(&child.items, rest);
+            }
+            NamespaceItem::Assert(_)
+            | NamespaceItem::Const(_)
+            | NamespaceItem::Def(_)
+            | NamespaceItem::Proc(_)
+            | NamespaceItem::Struct(_)
+            | NamespaceItem::Namespace(_)
+            | NamespaceItem::Alias(_)
+            | NamespaceItem::Use(_) => {}
+        }
+    }
+    false
+}
+
+fn existing_template_namespace_parent(
+    clean: &str,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+) -> Option<(String, String)> {
+    let (parent, symbol) = clean.rsplit_once("::")?;
+    for candidate in namespace_ref_candidates(parent, current_ns, state) {
+        if template_or_member_path_exists(&candidate, state)
+            || has_visible_namespace_prefix(&candidate, state)
+        {
+            return Some((candidate, symbol.to_owned()));
+        }
+    }
+    None
+}
+
+fn static_name_known(
+    name: &str,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    scope: &NamespaceTemplateValidationScope,
+) -> bool {
+    if name.is_empty()
+        || scope.static_names.contains(name)
+        || is_builtin_constant_name(name)
+        || PrimitiveType::is_name(name)
+    {
+        return true;
+    }
+    for candidate_ns in namespace_candidates(current_ns) {
+        let candidate = namespace_join(&candidate_ns, name);
+        if matches!(
+            state.artifacts.const_values.get(&candidate),
+            Some(ConstValue::Scalar(_))
+        ) || state.artifacts.const_defs.contains_key(&candidate)
+            || state.scalar_const_names.contains(&candidate)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn emit_namespace_items(
@@ -532,6 +1697,17 @@ fn emit_namespace_items(
                 );
                 register_namespace_alias(namespace, alias, state, errors);
             }
+            NamespaceItem::Use(use_decl) => {
+                register_use_decl(
+                    namespace,
+                    use_decl,
+                    template_consts,
+                    options,
+                    state,
+                    out,
+                    errors,
+                );
+            }
         }
     }
 }
@@ -544,7 +1720,37 @@ fn block_decl_name(block: &Block) -> Option<&str> {
         Block::Proc(p) => Some(p.name.as_str()),
         Block::Namespace(ns) => Some(ns.name.as_str()),
         Block::NamespaceAlias(alias) => Some(alias.name.as_str()),
+        Block::Use(_) => None,
         _ => None,
+    }
+}
+
+fn is_builtin_std_span(loc: Span) -> bool {
+    loc.file()
+        .as_deref()
+        .is_some_and(|file| file.starts_with("<std/"))
+}
+
+fn register_top_level_member_for_block(block: &Block, state: &mut NamespaceFlattenState) {
+    let Some(name) = block_decl_name(block) else {
+        return;
+    };
+    if name.contains("::") || is_builtin_std_span(block.loc().span()) {
+        return;
+    }
+    match block {
+        Block::Const(decl) => {
+            state.members.insert(name.to_owned());
+            if is_const_array_decl(decl) {
+                state.const_array_names.insert(name.to_owned());
+            } else {
+                state.scalar_const_names.insert(name.to_owned());
+            }
+        }
+        Block::Struct(_) | Block::Def(_) | Block::Proc(_) => {
+            state.members.insert(name.to_owned());
+        }
+        _ => {}
     }
 }
 
@@ -571,14 +1777,157 @@ fn register_namespace_alias(
     );
 }
 
+fn register_private_namespace_alias(
+    parent_ns: &str,
+    alias: NamespaceAliasDecl,
+    state: &mut NamespaceFlattenState,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let full_name = namespace_join(parent_ns, &alias.name);
+    let file = alias.loc.file().unwrap_or_default();
+    let key = (full_name.clone(), file);
+    if state.private_aliases.contains_key(&key) || state.aliases.contains_key(&full_name) {
+        errors.push(Diagnostic::semantic_span(
+            format!("duplicate namespace alias '{full_name}'"),
+            alias.loc.as_ref(),
+        ));
+        return;
+    }
+    state.private_aliases.insert(
+        key,
+        NamespaceAliasRecord {
+            declared_ns: parent_ns.to_owned(),
+            target: alias.target,
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn register_use_decl(
+    current_ns: &str,
+    use_decl: &UseDecl,
+    template_consts: &HashMap<String, Expr>,
+    options: AnalysisOptions,
+    state: &mut NamespaceFlattenState,
+    generated: &mut Vec<Block>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some(target) = resolve_namespace_segments_internal(
+        &use_decl.target,
+        current_ns,
+        template_consts,
+        options,
+        state,
+        generated,
+        errors,
+        use_decl.loc.as_ref().copied().unwrap_or_default(),
+        0,
+    ) else {
+        return;
+    };
+
+    if let Some(alias) = &use_decl.alias {
+        if has_visible_namespace_prefix(&target, state) && !state.members.contains(&target) {
+            let alias_decl = NamespaceAliasDecl {
+                loc: use_decl.loc,
+                name: alias.clone(),
+                target: use_decl.target.clone(),
+            };
+            if use_decl.public {
+                register_namespace_alias(current_ns, alias_decl, state, errors);
+            } else {
+                register_private_namespace_alias(current_ns, alias_decl, state, errors);
+            }
+        } else {
+            register_use_symbol(
+                current_ns,
+                use_decl.loc,
+                use_decl.public,
+                alias,
+                target,
+                state,
+            );
+        }
+        return;
+    }
+
+    if state.members.contains(&target) {
+        if let Some(leaf) = target.rsplit("::").next().map(ToOwned::to_owned) {
+            register_use_symbol(
+                current_ns,
+                use_decl.loc,
+                use_decl.public,
+                &leaf,
+                target,
+                state,
+            );
+        }
+    } else {
+        register_use_namespace(current_ns, use_decl.loc, use_decl.public, target, state);
+    }
+}
+
+fn register_use_symbol(
+    current_ns: &str,
+    loc: Span,
+    public: bool,
+    leaf: &str,
+    target: String,
+    state: &mut NamespaceFlattenState,
+) {
+    use_scope_mut(state, current_ns, loc, public)
+        .symbols
+        .entry(leaf.to_owned())
+        .or_default()
+        .push(UseBinding { target });
+}
+
+fn register_use_namespace(
+    current_ns: &str,
+    loc: Span,
+    public: bool,
+    target: String,
+    state: &mut NamespaceFlattenState,
+) {
+    let scope = use_scope_mut(state, current_ns, loc, public);
+    if !scope
+        .namespaces
+        .iter()
+        .any(|binding| binding.target == target)
+    {
+        scope.namespaces.push(NamespaceUseBinding { target });
+    }
+}
+
+fn use_scope_mut<'a>(
+    state: &'a mut NamespaceFlattenState,
+    current_ns: &str,
+    loc: Span,
+    public: bool,
+) -> &'a mut UseScope {
+    if public {
+        return state.public_uses.entry(current_ns.to_owned()).or_default();
+    }
+    let file = loc.file().unwrap_or_default();
+    state
+        .private_uses
+        .entry((current_ns.to_owned(), file))
+        .or_default()
+}
+
 fn resolve_visible_alias(
     alias_leaf: &str,
     current_ns: &str,
     state: &NamespaceFlattenState,
+    use_site_span: Span,
 ) -> Option<NamespaceAliasRecord> {
+    let file = use_site_span.file().unwrap_or_default();
     for ns in namespace_candidates(current_ns) {
         let candidate = namespace_join(&ns, alias_leaf);
         if let Some(alias) = state.aliases.get(&candidate) {
+            return Some(alias.clone());
+        }
+        if let Some(alias) = state.private_aliases.get(&(candidate, file.clone())) {
             return Some(alias.clone());
         }
     }
@@ -619,6 +1968,146 @@ fn qualify_local_namespace_member_name(
         }
     }
     None
+}
+
+fn resolve_visible_unqualified_member_name(
+    name: &str,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    loc: impl Into<SourceLoc>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    if name.is_empty() || name.contains("::") || name.contains('.') {
+        return None;
+    }
+
+    let loc = loc.into();
+    let (base, suffix) = split_named_type_base_and_suffix(name);
+    let mut candidates = Vec::<String>::new();
+
+    if let Some(local) = qualify_local_namespace_member_name(base, current_ns, state) {
+        candidates.push(local);
+    }
+
+    let file = loc.file().unwrap_or_default();
+    for ns in namespace_candidates(current_ns) {
+        if let Some(scope) = state.public_uses.get(&ns) {
+            collect_use_scope_candidates(base, scope, state, &mut candidates);
+        }
+        if let Some(scope) = state.private_uses.get(&(ns.clone(), file.clone())) {
+            collect_use_scope_candidates(base, scope, state, &mut candidates);
+        }
+    }
+
+    candidates.sort();
+    candidates.dedup();
+    match candidates.as_slice() {
+        [] => None,
+        [only] => Some(format!("{only}{suffix}")),
+        many => {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "ambiguous unqualified symbol '{base}' from explicit use declarations; qualify the call or type as one of: {}",
+                    many.join(", ")
+                ),
+                loc.span(),
+            ));
+            None
+        }
+    }
+}
+
+fn resolve_visible_unqualified_const_name(
+    name: &str,
+    current_ns: &str,
+    state: &NamespaceFlattenState,
+    loc: impl Into<SourceLoc>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    if name.is_empty() || name.contains("::") || name.contains('.') {
+        return None;
+    }
+
+    let loc = loc.into();
+    let (base, suffix) = split_named_type_base_and_suffix(name);
+    let mut candidates = Vec::<String>::new();
+
+    for ns in namespace_candidates(current_ns) {
+        let candidate = namespace_join(&ns, base);
+        if is_const_member_name(&candidate, state) {
+            candidates.push(candidate);
+        }
+    }
+
+    let file = loc.file().unwrap_or_default();
+    for ns in namespace_candidates(current_ns) {
+        if let Some(scope) = state.public_uses.get(&ns) {
+            collect_use_scope_const_candidates(base, scope, state, &mut candidates);
+        }
+        if let Some(scope) = state.private_uses.get(&(ns.clone(), file.clone())) {
+            collect_use_scope_const_candidates(base, scope, state, &mut candidates);
+        }
+    }
+
+    candidates.sort();
+    candidates.dedup();
+    match candidates.as_slice() {
+        [] => None,
+        [only] => Some(format!("{only}{suffix}")),
+        many => {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "ambiguous unqualified symbol '{base}' from explicit use declarations; qualify the assignment target as one of: {}",
+                    many.join(", ")
+                ),
+                loc.span(),
+            ));
+            None
+        }
+    }
+}
+
+fn collect_use_scope_const_candidates(
+    base: &str,
+    scope: &UseScope,
+    state: &NamespaceFlattenState,
+    candidates: &mut Vec<String>,
+) {
+    if let Some(bindings) = scope.symbols.get(base) {
+        candidates.extend(
+            bindings
+                .iter()
+                .filter(|binding| is_const_member_name(&binding.target, state))
+                .map(|binding| binding.target.clone()),
+        );
+    }
+    for binding in &scope.namespaces {
+        let target = namespace_join(&binding.target, base);
+        if is_const_member_name(&target, state) {
+            candidates.push(target);
+        }
+    }
+}
+
+fn is_const_member_name(name: &str, state: &NamespaceFlattenState) -> bool {
+    state.scalar_const_names.contains(name) || state.const_array_names.contains(name)
+}
+
+fn collect_use_scope_candidates(
+    base: &str,
+    scope: &UseScope,
+    state: &NamespaceFlattenState,
+    candidates: &mut Vec<String>,
+) {
+    if let Some(bindings) = scope.symbols.get(base) {
+        candidates.extend(bindings.iter().map(|binding| binding.target.clone()));
+    }
+    for binding in &scope.namespaces {
+        let target = namespace_join(&binding.target, base);
+        if state.members.contains(&target) {
+            candidates.push(target);
+        }
+    }
 }
 
 fn resolve_namespace_symbol_name(
@@ -686,7 +2175,9 @@ fn resolve_namespace_segments_internal(
     let empty_call_args = Vec::<NamespaceCallArg>::new();
 
     if segments[0].args.is_none() {
-        if let Some(alias) = resolve_visible_alias(&segments[0].name, current_ns, state) {
+        if let Some(alias) =
+            resolve_visible_alias(&segments[0].name, current_ns, state, use_site_span)
+        {
             path = resolve_namespace_segments_internal(
                 &alias.target,
                 &alias.declared_ns,
@@ -1044,15 +2535,20 @@ fn rewrite_named_type_ref_name(
     errors: &mut Vec<Diagnostic>,
     use_site_loc: impl Into<SourceLoc>,
 ) {
-    let use_site_span = use_site_loc.into().span();
-    if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+    let use_site_loc = use_site_loc.into();
+    let use_site_span = use_site_loc.span();
+    if let Some(qualified) =
+        resolve_visible_unqualified_member_name(name, current_ns, state, use_site_loc, errors)
+    {
         *name = qualified;
         return;
     }
 
     let (base, suffix) = split_named_type_base_and_suffix(name);
     if !suffix.is_empty() {
-        if let Some(qualified) = qualify_local_namespace_member_name(base, current_ns, state) {
+        if let Some(qualified) =
+            resolve_visible_unqualified_member_name(base, current_ns, state, use_site_loc, errors)
+        {
             *name = format!("{qualified}{suffix}");
             return;
         }
@@ -1100,7 +2596,10 @@ fn qualify_or_resolve_symbol_name(
     errors: &mut Vec<Diagnostic>,
     loc: impl Into<SourceLoc>,
 ) -> Option<String> {
-    if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+    let loc = loc.into();
+    if let Some(qualified) =
+        resolve_visible_unqualified_member_name(name, current_ns, state, loc, errors)
+    {
         return Some(qualified);
     }
     if looks_like_namespace_ref(name) {
@@ -1112,7 +2611,7 @@ fn qualify_or_resolve_symbol_name(
             state,
             generated,
             errors,
-            loc.into().span(),
+            loc.span(),
         );
     }
     None
@@ -1128,10 +2627,14 @@ fn qualify_instance_method_call_name(
     generated: &mut Vec<Block>,
     errors: &mut Vec<Diagnostic>,
     loc: impl Into<SourceLoc>,
+    local_scope: &RewriteNameScope,
 ) {
     let Some((base, method)) = name.rsplit_once('.') else {
         return;
     };
+    if local_scope.contains_value_name(base) {
+        return;
+    }
     if let Some(resolved) = qualify_or_resolve_symbol_name(
         base,
         current_ns,
@@ -1157,7 +2660,7 @@ fn rewrite_block_namespace_refs(
     errors: &mut Vec<Diagnostic>,
 ) {
     match block {
-        Block::Ins(port_block) | Block::Outs(port_block) => {
+        Block::Ins(port_block) | Block::Outs(port_block) | Block::KOuts(port_block) => {
             rewrite_deferred_port_count(
                 port_block,
                 current_ns,
@@ -1256,8 +2759,9 @@ fn rewrite_block_namespace_refs(
             );
         }
         Block::Events(events) => {
+            let global_scope = RewriteNameScope::from_names(state.global_value_names.clone());
             for event in events {
-                rewrite_event_def(
+                rewrite_event_def_with_scope(
                     event,
                     current_ns,
                     template_consts,
@@ -1265,6 +2769,7 @@ fn rewrite_block_namespace_refs(
                     state,
                     generated,
                     errors,
+                    &global_scope,
                 );
             }
         }
@@ -1315,6 +2820,7 @@ fn rewrite_block_namespace_refs(
         ),
         Block::Proc(p) => {
             let proc_template_consts = template_consts.clone();
+            let proc_scope = proc_value_name_scope(p);
             for decl in &mut p.consts {
                 if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
                     rewrite_expr(
@@ -1409,7 +2915,7 @@ fn rewrite_block_namespace_refs(
                 errors,
             );
             for event in &mut p.events {
-                rewrite_event_def(
+                rewrite_event_def_with_scope(
                     event,
                     current_ns,
                     &proc_template_consts,
@@ -1417,6 +2923,7 @@ fn rewrite_block_namespace_refs(
                     state,
                     generated,
                     errors,
+                    &proc_scope,
                 );
             }
             for decl in &mut p.buffers {
@@ -1445,7 +2952,8 @@ fn rewrite_block_namespace_refs(
                     p.init.default_ty_loc.as_ref().or(p.init.loc.as_ref()),
                 );
             }
-            rewrite_stmts(
+            let mut init_scope = proc_scope.clone();
+            rewrite_stmts_scoped(
                 &mut p.init.body,
                 current_ns,
                 &proc_template_consts,
@@ -1453,8 +2961,10 @@ fn rewrite_block_namespace_refs(
                 state,
                 generated,
                 errors,
+                &mut init_scope,
             );
-            rewrite_stmts(
+            let mut block_scope = init_scope.clone();
+            rewrite_stmts_scoped(
                 &mut p.block_pre,
                 current_ns,
                 &proc_template_consts,
@@ -1462,6 +2972,7 @@ fn rewrite_block_namespace_refs(
                 state,
                 generated,
                 errors,
+                &mut block_scope,
             );
             if let Some(os) = &mut p.sample_oversample_factor {
                 rewrite_expr(
@@ -1474,7 +2985,8 @@ fn rewrite_block_namespace_refs(
                     errors,
                 );
             }
-            rewrite_stmts(
+            let mut sample_scope = block_scope.clone();
+            rewrite_stmts_scoped(
                 &mut p.sample,
                 current_ns,
                 &proc_template_consts,
@@ -1482,8 +2994,10 @@ fn rewrite_block_namespace_refs(
                 state,
                 generated,
                 errors,
+                &mut sample_scope,
             );
-            rewrite_stmts(
+            let mut post_scope = block_scope;
+            rewrite_stmts_scoped(
                 &mut p.block_post,
                 current_ns,
                 &proc_template_consts,
@@ -1491,6 +3005,7 @@ fn rewrite_block_namespace_refs(
                 state,
                 generated,
                 errors,
+                &mut post_scope,
             );
             if let Some(graph) = &mut p.graph {
                 rewrite_graph_block(
@@ -1504,7 +3019,7 @@ fn rewrite_block_namespace_refs(
                 );
             }
             for def in &mut p.local_defs {
-                rewrite_function_def(
+                rewrite_function_def_with_scope(
                     def,
                     current_ns,
                     &proc_template_consts,
@@ -1512,6 +3027,7 @@ fn rewrite_block_namespace_refs(
                     state,
                     generated,
                     errors,
+                    &proc_scope,
                 );
             }
         }
@@ -1528,7 +3044,8 @@ fn rewrite_block_namespace_refs(
                     init.default_ty_loc.as_ref().or(init.loc.as_ref()),
                 );
             }
-            rewrite_stmts(
+            let mut global_scope = RewriteNameScope::from_names(state.global_value_names.clone());
+            rewrite_stmts_scoped(
                 &mut init.body,
                 current_ns,
                 template_consts,
@@ -1536,10 +3053,12 @@ fn rewrite_block_namespace_refs(
                 state,
                 generated,
                 errors,
+                &mut global_scope,
             );
         }
         Block::Block(exec) => {
-            rewrite_stmts(
+            let mut block_scope = RewriteNameScope::from_names(state.global_value_names.clone());
+            rewrite_stmts_scoped(
                 &mut exec.pre,
                 current_ns,
                 template_consts,
@@ -1547,6 +3066,7 @@ fn rewrite_block_namespace_refs(
                 state,
                 generated,
                 errors,
+                &mut block_scope,
             );
             if let Some(sample) = &mut exec.sample {
                 if let Some(os) = &mut sample.oversample_factor {
@@ -1560,7 +3080,8 @@ fn rewrite_block_namespace_refs(
                         errors,
                     );
                 }
-                rewrite_stmts(
+                let mut sample_scope = block_scope.clone();
+                rewrite_stmts_scoped(
                     &mut sample.body,
                     current_ns,
                     template_consts,
@@ -1568,9 +3089,10 @@ fn rewrite_block_namespace_refs(
                     state,
                     generated,
                     errors,
+                    &mut sample_scope,
                 );
             }
-            rewrite_stmts(
+            rewrite_stmts_scoped(
                 &mut exec.post,
                 current_ns,
                 template_consts,
@@ -1578,6 +3100,7 @@ fn rewrite_block_namespace_refs(
                 state,
                 generated,
                 errors,
+                &mut block_scope,
             );
         }
         Block::Sample(sample) => {
@@ -1592,7 +3115,8 @@ fn rewrite_block_namespace_refs(
                     errors,
                 );
             }
-            rewrite_stmts(
+            let mut global_scope = RewriteNameScope::from_names(state.global_value_names.clone());
+            rewrite_stmts_scoped(
                 &mut sample.body,
                 current_ns,
                 template_consts,
@@ -1600,6 +3124,7 @@ fn rewrite_block_namespace_refs(
                 state,
                 generated,
                 errors,
+                &mut global_scope,
             );
         }
         Block::Graph(graph) => {
@@ -1613,7 +3138,7 @@ fn rewrite_block_namespace_refs(
                 errors,
             );
         }
-        Block::Namespace(_) | Block::NamespaceAlias(_) => {}
+        Block::Namespace(_) | Block::NamespaceAlias(_) | Block::Use(_) => {}
     }
 }
 
@@ -1991,6 +3516,29 @@ fn rewrite_function_def(
     generated: &mut Vec<Block>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    rewrite_function_def_with_scope(
+        def,
+        current_ns,
+        template_consts,
+        options,
+        state,
+        generated,
+        errors,
+        &RewriteNameScope::default(),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rewrite_function_def_with_scope(
+    def: &mut FunctionDef,
+    current_ns: &str,
+    template_consts: &HashMap<String, Expr>,
+    options: AnalysisOptions,
+    state: &mut NamespaceFlattenState,
+    generated: &mut Vec<Block>,
+    errors: &mut Vec<Diagnostic>,
+    parent_scope: &RewriteNameScope,
+) {
     for param in &mut def.params {
         if let Some(ty) = &mut param.ty {
             rewrite_fn_param_type(
@@ -2028,7 +3576,10 @@ fn rewrite_function_def(
             def.return_ty_loc.as_ref().or(def.loc.as_ref()),
         );
     }
-    rewrite_stmts(
+    let mut local_scope = parent_scope.clone();
+    local_scope.extend(def.type_params.iter().cloned());
+    local_scope.extend(def.params.iter().map(|param| param.name.clone()));
+    rewrite_stmts_scoped(
         &mut def.body,
         current_ns,
         template_consts,
@@ -2036,11 +3587,12 @@ fn rewrite_function_def(
         state,
         generated,
         errors,
+        &mut local_scope,
     );
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rewrite_event_def(
+fn rewrite_event_def_with_scope(
     event: &mut EventDef,
     current_ns: &str,
     template_consts: &HashMap<String, Expr>,
@@ -2048,6 +3600,7 @@ fn rewrite_event_def(
     state: &mut NamespaceFlattenState,
     generated: &mut Vec<Block>,
     errors: &mut Vec<Diagnostic>,
+    parent_scope: &RewriteNameScope,
 ) {
     for param in &mut event.params {
         match &mut param.ty {
@@ -2060,6 +3613,39 @@ fn rewrite_event_def(
                     state,
                     generated,
                     errors,
+                );
+            }
+            EventParamType::GenericArray { elem, size } => {
+                rewrite_named_type_ref_name(
+                    elem,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    param.ty_loc.as_ref().or(param.loc.as_ref()),
+                );
+                rewrite_expr(
+                    size,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                );
+            }
+            EventParamType::GenericScalar { name } => {
+                rewrite_named_type_ref_name(
+                    name,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    param.ty_loc.as_ref().or(param.loc.as_ref()),
                 );
             }
             EventParamType::GenericSlice { elem } => {
@@ -2088,7 +3674,9 @@ fn rewrite_event_def(
             );
         }
     }
-    rewrite_stmts(
+    let mut local_scope = parent_scope.clone();
+    local_scope.extend(event.params.iter().map(|param| param.name.clone()));
+    rewrite_stmts_scoped(
         &mut event.body,
         current_ns,
         template_consts,
@@ -2096,6 +3684,7 @@ fn rewrite_event_def(
         state,
         generated,
         errors,
+        &mut local_scope,
     );
 }
 
@@ -2375,7 +3964,7 @@ fn rewrite_buffer_type(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rewrite_stmts(
+fn rewrite_stmts_scoped(
     stmts: &mut Vec<Stmt>,
     current_ns: &str,
     template_consts: &HashMap<String, Expr>,
@@ -2383,9 +3972,10 @@ fn rewrite_stmts(
     state: &mut NamespaceFlattenState,
     generated: &mut Vec<Block>,
     errors: &mut Vec<Diagnostic>,
+    local_scope: &mut RewriteNameScope,
 ) {
     for stmt in stmts {
-        rewrite_stmt(
+        rewrite_stmt_scoped(
             stmt,
             current_ns,
             template_consts,
@@ -2393,12 +3983,13 @@ fn rewrite_stmts(
             state,
             generated,
             errors,
+            local_scope,
         );
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rewrite_stmt(
+fn rewrite_stmt_scoped(
     stmt: &mut Stmt,
     current_ns: &str,
     template_consts: &HashMap<String, Expr>,
@@ -2406,11 +3997,12 @@ fn rewrite_stmt(
     state: &mut NamespaceFlattenState,
     generated: &mut Vec<Block>,
     errors: &mut Vec<Diagnostic>,
+    local_scope: &mut RewriteNameScope,
 ) {
     match stmt {
         Stmt::Const { decl, .. } => {
             if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
-                rewrite_expr(
+                rewrite_expr_scoped(
                     size,
                     current_ns,
                     template_consts,
@@ -2418,9 +4010,10 @@ fn rewrite_stmt(
                     state,
                     generated,
                     errors,
+                    local_scope,
                 );
             }
-            rewrite_expr(
+            rewrite_expr_scoped(
                 &mut decl.expr,
                 current_ns,
                 template_consts,
@@ -2428,7 +4021,9 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
+            local_scope.insert_plain(decl.name.clone());
         }
         Stmt::Assign {
             target,
@@ -2440,7 +4035,15 @@ fn rewrite_stmt(
         } => {
             match target {
                 AssignTarget::Var(name) => {
-                    if looks_like_namespace_ref(name) {
+                    if let Some(qualified) = resolve_visible_unqualified_const_name(
+                        name,
+                        current_ns,
+                        state,
+                        target_loc.as_ref().map(SourceLoc::from).unwrap_or_default(),
+                        errors,
+                    ) {
+                        *name = qualified;
+                    } else if looks_like_namespace_ref(name) {
                         if let Some(resolved) = resolve_namespace_symbol_name(
                             name,
                             current_ns,
@@ -2460,7 +4063,15 @@ fn rewrite_stmt(
                     }
                 }
                 AssignTarget::Index { base, index } => {
-                    if looks_like_namespace_ref(base) {
+                    if let Some(qualified) = resolve_visible_unqualified_const_name(
+                        base,
+                        current_ns,
+                        state,
+                        target_loc.as_ref().map(SourceLoc::from).unwrap_or_default(),
+                        errors,
+                    ) {
+                        *base = qualified;
+                    } else if looks_like_namespace_ref(base) {
                         if let Some(resolved) = resolve_namespace_symbol_name(
                             base,
                             current_ns,
@@ -2478,7 +4089,7 @@ fn rewrite_stmt(
                             *base = resolved;
                         }
                     }
-                    rewrite_expr(
+                    rewrite_expr_scoped(
                         index,
                         current_ns,
                         template_consts,
@@ -2486,10 +4097,19 @@ fn rewrite_stmt(
                         state,
                         generated,
                         errors,
+                        local_scope,
                     );
                 }
                 AssignTarget::Slice { base, start, end } => {
-                    if looks_like_namespace_ref(base) {
+                    if let Some(qualified) = resolve_visible_unqualified_const_name(
+                        base,
+                        current_ns,
+                        state,
+                        target_loc.as_ref().map(SourceLoc::from).unwrap_or_default(),
+                        errors,
+                    ) {
+                        *base = qualified;
+                    } else if looks_like_namespace_ref(base) {
                         if let Some(resolved) = resolve_namespace_symbol_name(
                             base,
                             current_ns,
@@ -2508,7 +4128,7 @@ fn rewrite_stmt(
                         }
                     }
                     if let Some(start) = start {
-                        rewrite_expr(
+                        rewrite_expr_scoped(
                             start,
                             current_ns,
                             template_consts,
@@ -2516,10 +4136,11 @@ fn rewrite_stmt(
                             state,
                             generated,
                             errors,
+                            local_scope,
                         );
                     }
                     if let Some(end) = end {
-                        rewrite_expr(
+                        rewrite_expr_scoped(
                             end,
                             current_ns,
                             template_consts,
@@ -2527,6 +4148,7 @@ fn rewrite_stmt(
                             state,
                             generated,
                             errors,
+                            local_scope,
                         );
                     }
                 }
@@ -2548,7 +4170,7 @@ fn rewrite_stmt(
                         .unwrap_or_default(),
                 );
             }
-            rewrite_expr(
+            rewrite_expr_scoped(
                 expr,
                 current_ns,
                 template_consts,
@@ -2556,10 +4178,12 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
+            local_scope.extend(assignment_target_plain_names(target));
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_expr(
+            rewrite_expr_scoped(
                 expr,
                 current_ns,
                 template_consts,
@@ -2567,6 +4191,7 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
         }
         Stmt::If {
@@ -2575,7 +4200,7 @@ fn rewrite_stmt(
             else_branch,
             ..
         } => {
-            rewrite_expr(
+            rewrite_expr_scoped(
                 cond,
                 current_ns,
                 template_consts,
@@ -2583,8 +4208,10 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
-            rewrite_stmts(
+            let mut then_scope = local_scope.clone();
+            rewrite_stmts_scoped(
                 then_branch,
                 current_ns,
                 template_consts,
@@ -2592,8 +4219,10 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                &mut then_scope,
             );
-            rewrite_stmts(
+            let mut else_scope = local_scope.clone();
+            rewrite_stmts_scoped(
                 else_branch,
                 current_ns,
                 template_consts,
@@ -2601,9 +4230,17 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                &mut else_scope,
             );
+            let merged = then_scope
+                .names
+                .intersection(&else_scope.names)
+                .cloned()
+                .collect::<Vec<_>>();
+            local_scope.extend(merged);
         }
         Stmt::For {
+            var,
             step,
             start,
             end,
@@ -2611,7 +4248,7 @@ fn rewrite_stmt(
             ..
         } => {
             if let Some(step) = step {
-                rewrite_expr(
+                rewrite_expr_scoped(
                     step,
                     current_ns,
                     template_consts,
@@ -2619,9 +4256,10 @@ fn rewrite_stmt(
                     state,
                     generated,
                     errors,
+                    local_scope,
                 );
             }
-            rewrite_expr(
+            rewrite_expr_scoped(
                 start,
                 current_ns,
                 template_consts,
@@ -2629,8 +4267,9 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
-            rewrite_expr(
+            rewrite_expr_scoped(
                 end,
                 current_ns,
                 template_consts,
@@ -2638,8 +4277,11 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
-            rewrite_stmts(
+            let mut loop_scope = local_scope.clone();
+            loop_scope.insert_plain(var.clone());
+            rewrite_stmts_scoped(
                 body,
                 current_ns,
                 template_consts,
@@ -2647,10 +4289,11 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                &mut loop_scope,
             );
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_expr(
+            rewrite_expr_scoped(
                 cond,
                 current_ns,
                 template_consts,
@@ -2658,8 +4301,10 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
-            rewrite_stmts(
+            let mut loop_scope = local_scope.clone();
+            rewrite_stmts_scoped(
                 body,
                 current_ns,
                 template_consts,
@@ -2667,6 +4312,7 @@ fn rewrite_stmt(
                 state,
                 generated,
                 errors,
+                &mut loop_scope,
             );
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -2683,6 +4329,30 @@ fn rewrite_expr(
     generated: &mut Vec<Block>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let local_scope = RewriteNameScope::default();
+    rewrite_expr_scoped(
+        expr,
+        current_ns,
+        template_consts,
+        options,
+        state,
+        generated,
+        errors,
+        &local_scope,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rewrite_expr_scoped(
+    expr: &mut Expr,
+    current_ns: &str,
+    template_consts: &HashMap<String, Expr>,
+    options: AnalysisOptions,
+    state: &mut NamespaceFlattenState,
+    generated: &mut Vec<Block>,
+    errors: &mut Vec<Diagnostic>,
+    local_scope: &RewriteNameScope,
+) {
     let use_site_loc = expr.loc();
     if let Expr::Var { name, .. } = expr {
         if let Some(value) = template_consts.get(name).cloned() {
@@ -2693,7 +4363,18 @@ fn rewrite_expr(
 
     match expr {
         Expr::Var { name, .. } => {
-            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+            let qualified = if local_scope.contains_value_name(name) {
+                None
+            } else {
+                resolve_visible_unqualified_member_name(
+                    name,
+                    current_ns,
+                    state,
+                    use_site_loc,
+                    errors,
+                )
+            };
+            if let Some(qualified) = qualified {
                 *name = qualified;
             } else if looks_like_namespace_ref(name) {
                 if let Some(resolved) = resolve_namespace_symbol_name(
@@ -2711,7 +4392,18 @@ fn rewrite_expr(
             }
         }
         Expr::Index { base, index, .. } => {
-            if let Some(qualified) = qualify_local_namespace_member_name(base, current_ns, state) {
+            let qualified = if local_scope.contains_value_name(base) {
+                None
+            } else {
+                resolve_visible_unqualified_member_name(
+                    base,
+                    current_ns,
+                    state,
+                    use_site_loc,
+                    errors,
+                )
+            };
+            if let Some(qualified) = qualified {
                 *base = qualified;
             } else if looks_like_namespace_ref(base) {
                 if let Some(resolved) = resolve_namespace_symbol_name(
@@ -2727,7 +4419,7 @@ fn rewrite_expr(
                     *base = resolved;
                 }
             }
-            rewrite_expr(
+            rewrite_expr_scoped(
                 index,
                 current_ns,
                 template_consts,
@@ -2735,12 +4427,24 @@ fn rewrite_expr(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
         }
         Expr::Slice {
             base, start, end, ..
         } => {
-            if let Some(qualified) = qualify_local_namespace_member_name(base, current_ns, state) {
+            let qualified = if local_scope.contains_value_name(base) {
+                None
+            } else {
+                resolve_visible_unqualified_member_name(
+                    base,
+                    current_ns,
+                    state,
+                    use_site_loc,
+                    errors,
+                )
+            };
+            if let Some(qualified) = qualified {
                 *base = qualified;
             } else if looks_like_namespace_ref(base) {
                 if let Some(resolved) = resolve_namespace_symbol_name(
@@ -2757,7 +4461,7 @@ fn rewrite_expr(
                 }
             }
             if let Some(start) = start {
-                rewrite_expr(
+                rewrite_expr_scoped(
                     start,
                     current_ns,
                     template_consts,
@@ -2765,10 +4469,11 @@ fn rewrite_expr(
                     state,
                     generated,
                     errors,
+                    local_scope,
                 );
             }
             if let Some(end) = end {
-                rewrite_expr(
+                rewrite_expr_scoped(
                     end,
                     current_ns,
                     template_consts,
@@ -2776,6 +4481,7 @@ fn rewrite_expr(
                     state,
                     generated,
                     errors,
+                    local_scope,
                 );
             }
         }
@@ -2792,7 +4498,7 @@ fn rewrite_expr(
                     loc.as_ref(),
                 );
             }
-            rewrite_expr(
+            rewrite_expr_scoped(
                 &mut spec.size,
                 current_ns,
                 template_consts,
@@ -2800,10 +4506,11 @@ fn rewrite_expr(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
             if let Some(values) = init {
                 for value in values {
-                    rewrite_expr(
+                    rewrite_expr_scoped(
                         value,
                         current_ns,
                         template_consts,
@@ -2811,6 +4518,7 @@ fn rewrite_expr(
                         state,
                         generated,
                         errors,
+                        local_scope,
                     );
                 }
             }
@@ -2818,7 +4526,7 @@ fn rewrite_expr(
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_expr(
+            rewrite_expr_scoped(
                 lhs,
                 current_ns,
                 template_consts,
@@ -2826,8 +4534,9 @@ fn rewrite_expr(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
-            rewrite_expr(
+            rewrite_expr_scoped(
                 rhs,
                 current_ns,
                 template_consts,
@@ -2835,11 +4544,12 @@ fn rewrite_expr(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                rewrite_expr(
+                rewrite_expr_scoped(
                     arg,
                     current_ns,
                     template_consts,
@@ -2847,6 +4557,7 @@ fn rewrite_expr(
                     state,
                     generated,
                     errors,
+                    local_scope,
                 );
             }
         }
@@ -2860,8 +4571,20 @@ fn rewrite_expr(
                 generated,
                 errors,
                 use_site_loc,
+                local_scope,
             );
-            if let Some(qualified) = qualify_local_namespace_member_name(name, current_ns, state) {
+            let qualified = if local_scope.contains_value_name(name) {
+                None
+            } else {
+                resolve_visible_unqualified_member_name(
+                    name,
+                    current_ns,
+                    state,
+                    use_site_loc,
+                    errors,
+                )
+            };
+            if let Some(qualified) = qualified {
                 *name = qualified;
             } else if looks_like_namespace_ref(name) {
                 if let Some(resolved) = resolve_namespace_symbol_name(
@@ -2878,7 +4601,7 @@ fn rewrite_expr(
                 }
             }
             for arg in args {
-                rewrite_expr(
+                rewrite_expr_scoped(
                     &mut arg.expr,
                     current_ns,
                     template_consts,
@@ -2886,11 +4609,12 @@ fn rewrite_expr(
                     state,
                     generated,
                     errors,
+                    local_scope,
                 );
             }
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            rewrite_expr(
+            rewrite_expr_scoped(
                 expr,
                 current_ns,
                 template_consts,
@@ -2898,11 +4622,12 @@ fn rewrite_expr(
                 state,
                 generated,
                 errors,
+                local_scope,
             );
         }
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
-                rewrite_expr(
+                rewrite_expr_scoped(
                     value,
                     current_ns,
                     template_consts,
@@ -2910,6 +4635,7 @@ fn rewrite_expr(
                     state,
                     generated,
                     errors,
+                    local_scope,
                 );
             }
         }

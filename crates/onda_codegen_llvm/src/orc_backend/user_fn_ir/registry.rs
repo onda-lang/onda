@@ -187,8 +187,11 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
     let mut registry = UserFnRegistry {
         defs,
         struct_fields: struct_fields.clone(),
+        host_sample_rate: sample_rate,
+        host_block_size: block_size,
         sample_oversample_factors: typed.def_sample_oversample_factors.clone(),
         proc_step_oversample_meta: typed.proc_step_oversample_meta.clone(),
+        proc_instance_oversample_factors: typed.proc_instance_oversample_factors.clone(),
         refs,
         base_return_tys,
         mono_refs: HashMap::new(),
@@ -234,13 +237,21 @@ pub(in crate::orc_backend) unsafe fn build_user_functions_ir(
 }
 
 fn effective_callee_sample_rate(registry: &UserFnRegistry, name: &str, sample_rate: f32) -> f32 {
-    let oversample_factor = registry
-        .sample_oversample_factors
-        .get(name)
-        .copied()
-        .unwrap_or(1)
-        .max(1) as f32;
-    sample_rate * oversample_factor
+    if let Some(oversample_factor) = registry.sample_oversample_factors.get(name).copied() {
+        let oversample_factor = oversample_factor.max(1);
+        if oversample_factor > 1 {
+            return registry.host_sample_rate * oversample_factor as f32;
+        }
+        return sample_rate;
+    }
+    sample_rate
+}
+
+fn effective_callee_block_size(registry: &UserFnRegistry, name: &str, block_size: usize) -> usize {
+    if registry.sample_oversample_factors.contains_key(name) {
+        return registry.host_block_size;
+    }
+    block_size
 }
 
 pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
@@ -258,6 +269,7 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
     generic_type_args: &[PrimitiveType],
 ) -> Result<(LLVMValueRef, LLVMTypeRef, ReturnType), Diagnostic> {
     let effective_sample_rate = effective_callee_sample_rate(registry, name, sample_rate);
+    let effective_block_size = effective_callee_block_size(registry, name, block_size);
     let def = registry
         .defs
         .get(name)
@@ -283,7 +295,7 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
     let context_suffix = format!(
         "__sr_{:08x}__bs_{:08x}",
         effective_sample_rate.to_bits(),
-        (block_size as u32)
+        (effective_block_size as u32)
     );
     let key = format!("{base_key}{context_suffix}");
     if let (Some(fn_ref), Some(fn_ty), Some(ret_ty)) = (
@@ -443,7 +455,7 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
         buffer_types,
         generic_type_args,
         effective_sample_rate,
-        block_size,
+        effective_block_size,
     )?;
     let fn_ref = LLVMAddFunction(module, symbol.as_ptr(), fn_ty);
     if fn_ref.is_null() {
@@ -467,7 +479,7 @@ pub(in crate::orc_backend) unsafe fn ensure_user_fn_specialization(
             registry,
             struct_fields,
             effective_sample_rate,
-            block_size,
+            effective_block_size,
             fast_math,
             fn_ref,
             ret_ty.clone(),

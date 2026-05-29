@@ -1,81 +1,220 @@
-use onda_frontend::{BinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr, LogicalOp, PrimitiveType};
+use onda_frontend::{
+    BinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr, LogicalOp, PrimitiveType,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN,
+};
 
 use crate::AnalysisOptions;
 
-pub(crate) fn is_builtin_constant_name(name: &str) -> bool {
-    matches!(
-        name,
-        "PI" | "TWO_PI"
-            | "TWOPI"
-            | "pi"
-            | "two_pi"
-            | "twopi"
-            | "SAMPLE_RATE"
-            | "SAMPLERATE"
-            | "SR"
-            | "sample_rate"
-            | "samplerate"
-            | "BLOCK_SIZE"
-            | "BLOCKSIZE"
-            | "BS"
-            | "block_size"
-            | "blocksize"
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinConstantValue {
+    Pi,
+    TwoPi,
+    SampleRate,
+    HostSampleRate,
+    BlockSize,
 }
 
-pub(crate) fn builtin_constant_type(name: &str) -> Option<PrimitiveType> {
-    match name {
-        "PI" | "pi" | "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => Some(PrimitiveType::F64),
-        "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
-            Some(PrimitiveType::F32)
-        }
-        "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => Some(PrimitiveType::I32),
-        _ => None,
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinConstant {
+    pub name: &'static str,
+    pub ty: PrimitiveType,
+    pub value: BuiltinConstantValue,
 }
 
-pub(crate) fn is_builtin_function_name(name: &str) -> bool {
-    matches!(
-        name,
-        "sin"
-            | "cos"
-            | "tan"
-            | "tanh"
-            | "atan"
-            | "atan2"
-            | "exp"
-            | "log"
-            | "sqrt"
-            | "pow"
-            | "abs"
-            | "fabs"
-            | "floor"
-            | "ceil"
-            | "round"
-            | "trunc"
-            | "min"
-            | "max"
-            | "fma"
-            | "unsafe_read"
-            | "unsafe_write"
-            | "unsafe_read2"
-            | "unsafe_write2"
-    )
+pub const BUILTIN_CONSTANTS: &[BuiltinConstant] = &[
+    BuiltinConstant {
+        name: "PI",
+        ty: PrimitiveType::F64,
+        value: BuiltinConstantValue::Pi,
+    },
+    BuiltinConstant {
+        name: "pi",
+        ty: PrimitiveType::F64,
+        value: BuiltinConstantValue::Pi,
+    },
+    BuiltinConstant {
+        name: "TWO_PI",
+        ty: PrimitiveType::F64,
+        value: BuiltinConstantValue::TwoPi,
+    },
+    BuiltinConstant {
+        name: "TWOPI",
+        ty: PrimitiveType::F64,
+        value: BuiltinConstantValue::TwoPi,
+    },
+    BuiltinConstant {
+        name: "two_pi",
+        ty: PrimitiveType::F64,
+        value: BuiltinConstantValue::TwoPi,
+    },
+    BuiltinConstant {
+        name: "twopi",
+        ty: PrimitiveType::F64,
+        value: BuiltinConstantValue::TwoPi,
+    },
+    BuiltinConstant {
+        name: "SAMPLE_RATE",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::SampleRate,
+    },
+    BuiltinConstant {
+        name: "SAMPLERATE",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::SampleRate,
+    },
+    BuiltinConstant {
+        name: "SR",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::SampleRate,
+    },
+    BuiltinConstant {
+        name: "sample_rate",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::SampleRate,
+    },
+    BuiltinConstant {
+        name: "samplerate",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::SampleRate,
+    },
+    BuiltinConstant {
+        name: "HOST_SR",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::HostSampleRate,
+    },
+    BuiltinConstant {
+        name: "HOST_SAMPLE_RATE",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::HostSampleRate,
+    },
+    BuiltinConstant {
+        name: "HOST_SAMPLERATE",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::HostSampleRate,
+    },
+    BuiltinConstant {
+        name: "host_sample_rate",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::HostSampleRate,
+    },
+    BuiltinConstant {
+        name: "host_samplerate",
+        ty: PrimitiveType::F32,
+        value: BuiltinConstantValue::HostSampleRate,
+    },
+    BuiltinConstant {
+        name: "BLOCK_SIZE",
+        ty: PrimitiveType::I32,
+        value: BuiltinConstantValue::BlockSize,
+    },
+    BuiltinConstant {
+        name: "BLOCKSIZE",
+        ty: PrimitiveType::I32,
+        value: BuiltinConstantValue::BlockSize,
+    },
+    BuiltinConstant {
+        name: "BS",
+        ty: PrimitiveType::I32,
+        value: BuiltinConstantValue::BlockSize,
+    },
+    BuiltinConstant {
+        name: "block_size",
+        ty: PrimitiveType::I32,
+        value: BuiltinConstantValue::BlockSize,
+    },
+    BuiltinConstant {
+        name: "blocksize",
+        ty: PrimitiveType::I32,
+        value: BuiltinConstantValue::BlockSize,
+    },
+];
+
+pub fn builtin_constant(name: &str) -> Option<&'static BuiltinConstant> {
+    BUILTIN_CONSTANTS
+        .iter()
+        .find(|constant| constant.name == name)
 }
 
-pub(crate) fn is_builtin_unsafe_data_fn(name: &str) -> bool {
-    matches!(name, "unsafe_read" | "unsafe_write")
+pub fn builtin_constant_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN_CONSTANTS.iter().map(|constant| constant.name)
 }
 
-pub(crate) fn is_builtin_buffer_2d_unsafe_fn(name: &str) -> bool {
-    matches!(
-        name,
-        "unsafe_read2" | "unsafe_write2" | "__onda_buffer_read2" | "__onda_buffer_write2"
-    )
+pub(crate) fn host_sample_rate_constant_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN_CONSTANTS
+        .iter()
+        .filter(|constant| constant.value == BuiltinConstantValue::HostSampleRate)
+        .map(|constant| constant.name)
 }
 
-pub(crate) fn is_internal_buffer_2d_fn(name: &str) -> bool {
-    matches!(name, "__onda_buffer_read2" | "__onda_buffer_write2")
+pub fn is_builtin_constant_name(name: &str) -> bool {
+    builtin_constant(name).is_some()
+}
+
+pub fn builtin_constant_type(name: &str) -> Option<PrimitiveType> {
+    builtin_constant(name).map(|constant| constant.ty)
+}
+
+pub const UNSAFE_READ_FN: &str = "unsafe_read";
+pub const UNSAFE_WRITE_FN: &str = "unsafe_write";
+pub const UNSAFE_READ2_FN: &str = "unsafe_read2";
+pub const UNSAFE_WRITE2_FN: &str = "unsafe_write2";
+
+const BUILTIN_UNSAFE_DATA_FUNCTION_NAMES: &[&str] = &[UNSAFE_READ_FN, UNSAFE_WRITE_FN];
+const BUILTIN_BUFFER_2D_UNSAFE_FUNCTION_NAMES: &[&str] = &[UNSAFE_READ2_FN, UNSAFE_WRITE2_FN];
+const INTERNAL_BUFFER_2D_FUNCTION_NAMES: &[&str] =
+    &[INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_WRITE2_FN];
+
+pub fn public_builtin_function_names() -> impl Iterator<Item = &'static str> {
+    BuiltinFn::ALL
+        .into_iter()
+        .map(BuiltinFn::name)
+        .chain(BUILTIN_UNSAFE_DATA_FUNCTION_NAMES.iter().copied())
+        .chain(BUILTIN_BUFFER_2D_UNSAFE_FUNCTION_NAMES.iter().copied())
+}
+
+pub fn is_builtin_function_name(name: &str) -> bool {
+    BuiltinFn::from_name(name).is_some()
+        || BUILTIN_UNSAFE_DATA_FUNCTION_NAMES.contains(&name)
+        || BUILTIN_BUFFER_2D_UNSAFE_FUNCTION_NAMES.contains(&name)
+}
+
+pub fn is_builtin_unsafe_data_fn(name: &str) -> bool {
+    BUILTIN_UNSAFE_DATA_FUNCTION_NAMES.contains(&name)
+}
+
+pub fn is_builtin_buffer_2d_unsafe_fn(name: &str) -> bool {
+    BUILTIN_BUFFER_2D_UNSAFE_FUNCTION_NAMES.contains(&name)
+        || INTERNAL_BUFFER_2D_FUNCTION_NAMES.contains(&name)
+}
+
+pub fn is_internal_buffer_2d_fn(name: &str) -> bool {
+    INTERNAL_BUFFER_2D_FUNCTION_NAMES.contains(&name)
+}
+
+pub fn is_builtin_buffer_write_function_name(name: &str) -> bool {
+    matches!(name, UNSAFE_WRITE_FN | UNSAFE_WRITE2_FN) || name == INTERNAL_BUFFER_WRITE2_FN
+}
+
+pub const ARRAY_LEN_METHOD: &str = "len";
+pub const BUFFER_CHANS_METHOD: &str = "chans";
+pub const BUFFER_SAMPLERATE_METHOD: &str = "samplerate";
+
+pub const BUILTIN_INSTANCE_METHOD_NAMES: &[&str] = &[
+    ARRAY_LEN_METHOD,
+    BUFFER_CHANS_METHOD,
+    BUFFER_SAMPLERATE_METHOD,
+    UNSAFE_READ_FN,
+    UNSAFE_WRITE_FN,
+    UNSAFE_READ2_FN,
+    UNSAFE_WRITE2_FN,
+];
+
+pub fn builtin_instance_method_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN_INSTANCE_METHOD_NAMES.iter().copied()
+}
+
+pub fn is_builtin_instance_method_name(name: &str) -> bool {
+    BUILTIN_INSTANCE_METHOD_NAMES.contains(&name)
 }
 
 fn split_instance_method_path(name: &str) -> Option<(&str, &str)> {
@@ -86,63 +225,63 @@ fn split_instance_method_path(name: &str) -> Option<(&str, &str)> {
     Some((base, method))
 }
 
-pub(crate) fn parse_array_len_instance_base(name: &str) -> Option<&str> {
+pub fn parse_array_len_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
-    if method == "len" {
+    if method == ARRAY_LEN_METHOD {
         Some(base)
     } else {
         None
     }
 }
 
-pub(crate) fn parse_buffer_chans_instance_base(name: &str) -> Option<&str> {
+pub fn parse_buffer_chans_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
-    if method == "chans" {
+    if method == BUFFER_CHANS_METHOD {
         Some(base)
     } else {
         None
     }
 }
 
-pub(crate) fn parse_buffer_samplerate_instance_base(name: &str) -> Option<&str> {
+pub fn parse_buffer_samplerate_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
-    if method == "samplerate" {
+    if method == BUFFER_SAMPLERATE_METHOD {
         Some(base)
     } else {
         None
     }
 }
 
-pub(crate) fn parse_unsafe_read_instance_base(name: &str) -> Option<&str> {
+pub fn parse_unsafe_read_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
-    if method == "unsafe_read" {
+    if method == UNSAFE_READ_FN {
         Some(base)
     } else {
         None
     }
 }
 
-pub(crate) fn parse_unsafe_write_instance_base(name: &str) -> Option<&str> {
+pub fn parse_unsafe_write_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
-    if method == "unsafe_write" {
+    if method == UNSAFE_WRITE_FN {
         Some(base)
     } else {
         None
     }
 }
 
-pub(crate) fn parse_unsafe_read2_instance_base(name: &str) -> Option<&str> {
+pub fn parse_unsafe_read2_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
-    if method == "unsafe_read2" {
+    if method == UNSAFE_READ2_FN {
         Some(base)
     } else {
         None
     }
 }
 
-pub(crate) fn parse_unsafe_write2_instance_base(name: &str) -> Option<&str> {
+pub fn parse_unsafe_write2_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
-    if method == "unsafe_write2" {
+    if method == UNSAFE_WRITE2_FN {
         Some(base)
     } else {
         None
@@ -150,46 +289,11 @@ pub(crate) fn parse_unsafe_write2_instance_base(name: &str) -> Option<&str> {
 }
 
 pub(crate) fn builtin_arity(func: BuiltinFn) -> usize {
-    match func {
-        BuiltinFn::Sin
-        | BuiltinFn::Cos
-        | BuiltinFn::Tan
-        | BuiltinFn::Tanh
-        | BuiltinFn::Atan
-        | BuiltinFn::Exp
-        | BuiltinFn::Log
-        | BuiltinFn::Sqrt
-        | BuiltinFn::Abs
-        | BuiltinFn::Floor
-        | BuiltinFn::Ceil
-        | BuiltinFn::Round
-        | BuiltinFn::Trunc => 1,
-        BuiltinFn::Pow | BuiltinFn::Atan2 | BuiltinFn::Min | BuiltinFn::Max => 2,
-        BuiltinFn::Fma => 3,
-    }
+    func.arity()
 }
 
 pub(crate) fn builtin_name(func: BuiltinFn) -> &'static str {
-    match func {
-        BuiltinFn::Sin => "sin",
-        BuiltinFn::Cos => "cos",
-        BuiltinFn::Tan => "tan",
-        BuiltinFn::Tanh => "tanh",
-        BuiltinFn::Atan => "atan",
-        BuiltinFn::Atan2 => "atan2",
-        BuiltinFn::Exp => "exp",
-        BuiltinFn::Log => "log",
-        BuiltinFn::Sqrt => "sqrt",
-        BuiltinFn::Pow => "pow",
-        BuiltinFn::Abs => "abs",
-        BuiltinFn::Floor => "floor",
-        BuiltinFn::Ceil => "ceil",
-        BuiltinFn::Round => "round",
-        BuiltinFn::Trunc => "trunc",
-        BuiltinFn::Min => "min",
-        BuiltinFn::Max => "max",
-        BuiltinFn::Fma => "fma",
-    }
+    func.name()
 }
 
 pub(crate) fn is_float_type(ty: PrimitiveType) -> bool {
@@ -197,16 +301,13 @@ pub(crate) fn is_float_type(ty: PrimitiveType) -> bool {
 }
 
 pub(crate) fn builtin_constant_value_f64(name: &str, options: AnalysisOptions) -> Option<f64> {
-    match name {
-        "PI" | "pi" => Some(std::f64::consts::PI),
-        "TWO_PI" | "TWOPI" | "two_pi" | "twopi" => Some(2.0 * std::f64::consts::PI),
-        "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
+    match builtin_constant(name)?.value {
+        BuiltinConstantValue::Pi => Some(std::f64::consts::PI),
+        BuiltinConstantValue::TwoPi => Some(2.0 * std::f64::consts::PI),
+        BuiltinConstantValue::SampleRate | BuiltinConstantValue::HostSampleRate => {
             Some(options.sample_rate as f64)
         }
-        "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => {
-            Some(options.block_size as f64)
-        }
-        _ => None,
+        BuiltinConstantValue::BlockSize => Some(options.block_size as f64),
     }
 }
 

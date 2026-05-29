@@ -1,7 +1,7 @@
 use super::*;
 use crate::ast::{
     NamespaceAliasDecl, NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment,
-    NamespaceTemplateParam,
+    NamespaceTemplateParam, UseDecl,
 };
 
 pub(super) fn parse_namespace_decl_ast(
@@ -35,6 +35,9 @@ pub(super) fn parse_namespace_decl_ast(
             }
             Rule::namespace_alias_decl => {
                 items.push(NamespaceItem::Alias(parse_namespace_alias_decl_ast(item)?));
+            }
+            Rule::use_decl => {
+                items.push(NamespaceItem::Use(parse_use_decl_ast(item)?));
             }
             _ => {}
         }
@@ -156,6 +159,38 @@ pub(super) fn parse_namespace_alias_decl_ast(
         )]);
     };
     Ok(NamespaceAliasDecl { loc, name, target })
+}
+
+pub(super) fn parse_use_decl_ast(pair: Pair<'_, Rule>) -> Result<UseDecl, Vec<Diagnostic>> {
+    if pair.as_rule() != Rule::use_decl {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            "internal parser error: expected use declaration",
+        )]);
+    }
+    let loc = stmt_loc_from_pair(&pair);
+    let mut target = None::<Vec<NamespaceRefSegment>>;
+    let mut alias = None::<String>;
+    let mut public = false;
+    for part in pair.into_inner() {
+        match part.as_rule() {
+            Rule::use_pub => public = true,
+            Rule::namespace_any_ref | Rule::namespace_ref => {
+                target = Some(parse_namespace_ref_pair(part)?);
+            }
+            Rule::ident => alias = Some(part.as_str().to_owned()),
+            _ => {}
+        }
+    }
+    let Some(target) = target else {
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing use target")]);
+    };
+    Ok(UseDecl {
+        loc,
+        target,
+        alias,
+        public,
+    })
 }
 
 fn parse_namespace_ref_pair(

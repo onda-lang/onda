@@ -2,13 +2,7 @@ use onda_frontend::PrimitiveType;
 use onda_semantics::TypedConstValue;
 
 pub(crate) fn primitive_type_name(ty: PrimitiveType) -> &'static str {
-    match ty {
-        PrimitiveType::F32 => "f32",
-        PrimitiveType::F64 => "f64",
-        PrimitiveType::I32 => "i32",
-        PrimitiveType::I64 => "i64",
-        PrimitiveType::Bool => "bool",
-    }
+    ty.name()
 }
 
 pub(crate) fn primitive_type_bytes(ty: PrimitiveType) -> usize {
