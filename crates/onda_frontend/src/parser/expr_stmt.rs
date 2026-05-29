@@ -550,7 +550,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         loc,
                         expr: Expr::UserCall {
                             loc: Span::ZERO,
-                            name: BUFFER_WRITE2_INTERNAL_FN.to_owned(),
+                            name: INTERNAL_BUFFER_WRITE2_FN.to_owned(),
                             type_args: Vec::new(),
                             args: vec![
                                 CallArg {
@@ -1184,7 +1184,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
             if let Some(idx_second_pair) = inner.next() {
                 Expr::UserCall {
                     loc,
-                    name: BUFFER_READ2_INTERNAL_FN.to_owned(),
+                    name: INTERNAL_BUFFER_READ2_FN.to_owned(),
                     type_args: Vec::new(),
                     args: vec![
                         CallArg {

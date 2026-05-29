@@ -348,6 +348,28 @@ pub(crate) fn validate_data_like_value_expr(
     env: StmtExprAnalysisEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if let Some(name) = dynamic_param_surface_value_name(expr, env.expr_env) {
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "dynamic param array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
+            ),
+            expr.loc(),
+        ));
+        return;
+    }
+    if let Some(name) = io_surface_value_name(expr, env.expr_env) {
+        if env.expr_env.io_surface_access_allowed {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "I/O array '{name}' is not a first-class value; use '{name}[i]' directly in block or sample"
+                ),
+                expr.loc(),
+            ));
+        } else {
+            push_io_surface_scope_error(errors, expr.loc(), name);
+        }
+        return;
+    }
     if is_bare_array_ref_expr(expr, env) {
         return;
     }

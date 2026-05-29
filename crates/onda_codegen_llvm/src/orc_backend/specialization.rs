@@ -353,14 +353,7 @@ pub(super) fn merge_inferred_def_return_types(
 }
 
 fn builtin_constant_symbol_type(name: &str) -> Option<PrimitiveType> {
-    match name {
-        "PI" | "TWO_PI" | "TWOPI" | "pi" | "two_pi" | "twopi" => Some(PrimitiveType::F64),
-        "SAMPLE_RATE" | "SAMPLERATE" | "SR" | "sample_rate" | "samplerate" => {
-            Some(PrimitiveType::F32)
-        }
-        "BLOCK_SIZE" | "BLOCKSIZE" | "BS" | "block_size" | "blocksize" => Some(PrimitiveType::I32),
-        _ => None,
-    }
+    builtin_constant_type(name)
 }
 
 /// For untyped scalar param inference from call-site arguments, use the
@@ -468,15 +461,7 @@ pub(super) fn infer_specialized_expr_return_type(
             if parse_buffer_samplerate_instance_base(name).is_some() {
                 return Ok(Some(PrimitiveType::F32));
             }
-            if matches!(
-                name.as_str(),
-                "__onda_buffer_read2"
-                    | "__onda_buffer_write2"
-                    | "unsafe_read"
-                    | "unsafe_write"
-                    | "unsafe_read2"
-                    | "unsafe_write2"
-            ) {
+            if is_builtin_unsafe_data_fn(name) || is_builtin_buffer_2d_unsafe_fn(name) {
                 if let Some(CallArg {
                     expr: Expr::Var { name: base, .. },
                     ..

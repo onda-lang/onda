@@ -157,7 +157,7 @@ pub(super) fn expand_graph_bundle_source(
         return Ok(None);
     };
 
-    let output_slots = &surface.api.outs;
+    let output_slots = &surface.api.outputs.names;
     if output_slots.is_empty() {
         push_semantic(
             diag,
@@ -337,7 +337,13 @@ fn resolve_graph_proc_dest(
             ty,
         ));
     }
-    if surface.api.outs.iter().any(|out| out == resolved_out) {
+    if surface
+        .api
+        .outputs
+        .names
+        .iter()
+        .any(|out| out == resolved_out)
+    {
         push_graph_error(
             errors,
             loc,
@@ -1420,7 +1426,25 @@ fn validate_graph_proc_field_source(
     };
     let resolved_out = resolve_graph_proc_output_name(surface, field);
     let resolved_in = resolve_graph_proc_input_name(surface, field);
-    if surface.api.outs.iter().any(|out| out == resolved_out) {
+    if surface
+        .api
+        .outputs
+        .names
+        .iter()
+        .any(|out| out == resolved_out)
+    {
+        if surface.api.outputs.timing == OutputTiming::Block {
+            push_graph_error(
+                errors,
+                loc,
+                format!(
+                    "{owner_context} graph source cannot read block-rate processor output '{}.{}'",
+                    node_ref_name(key),
+                    field
+                ),
+            );
+            return;
+        }
         if block_safe_only {
             graph_block_source_error(
                 format!(
@@ -1438,6 +1462,18 @@ fn validate_graph_proc_field_source(
         return;
     }
     if surface.out_array_slots.contains_key(resolved_out) {
+        if surface.api.outputs.timing == OutputTiming::Block {
+            push_graph_error(
+                errors,
+                loc,
+                format!(
+                    "{owner_context} graph source cannot read block-rate processor output '{}.{}'",
+                    node_ref_name(key),
+                    field
+                ),
+            );
+            return;
+        }
         if block_safe_only {
             graph_block_source_error(
                 format!(

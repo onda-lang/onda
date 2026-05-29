@@ -54,6 +54,7 @@ pub struct AotRuntimeInfo {
 pub struct AotProgramMetadata {
     pub inputs: Vec<AotIoMetadata>,
     pub outputs: Vec<AotIoMetadata>,
+    pub control_outputs: Vec<AotIoMetadata>,
     pub params: Vec<AotIoMetadata>,
     pub buffers: Vec<AotBufferMetadata>,
     pub events: Vec<AotEventMetadata>,
@@ -66,6 +67,7 @@ pub struct AotIoMetadata {
     pub array_len: usize,
     pub slot_offset: usize,
     pub byte_offset: usize,
+    pub state_byte_offset: Option<usize>,
     pub byte_size: usize,
     pub default_repr: Option<String>,
     pub range_min_repr: Option<String>,
@@ -139,6 +141,11 @@ pub(crate) fn build_aot_metadata(
         metadata: AotProgramMetadata {
             inputs: metadata.inputs.iter().map(map_io_metadata).collect(),
             outputs: metadata.outputs.iter().map(map_io_metadata).collect(),
+            control_outputs: metadata
+                .control_outputs
+                .iter()
+                .map(map_io_metadata)
+                .collect(),
             params: metadata.params.iter().map(map_io_metadata).collect(),
             buffers: metadata.buffers.iter().map(map_buffer_metadata).collect(),
             events: metadata.events.iter().map(map_event_metadata).collect(),
@@ -153,6 +160,7 @@ fn map_io_metadata(io: &crate::DeclaredIo) -> AotIoMetadata {
         array_len: io.array_len(),
         slot_offset: io.slot_offset(),
         byte_offset: io.byte_offset(),
+        state_byte_offset: io.state_byte_offset(),
         byte_size: io.byte_size(),
         default_repr: io.default().map(format_const_value),
         range_min_repr: io.range().map(|range| format_const_value(range.min)),

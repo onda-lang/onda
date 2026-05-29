@@ -4,15 +4,16 @@ use std::path::Path;
 use onda_frontend::{
     AssignTarget, Block, BlockExec, EventDef, FunctionDef, ProcessorDef, Program, Span, Stmt,
 };
+use onda_semantics::builtins::builtin_constant_names;
 
-use super::{SemanticScope, SemanticScopeIndex, BUILTIN_CONSTS};
+use super::{SemanticScope, SemanticScopeIndex};
 
 pub(super) fn build_semantic_scope_index(
     program: &Program,
     current_file_key: Option<&str>,
 ) -> SemanticScopeIndex {
     let mut index = SemanticScopeIndex::default();
-    for &name in BUILTIN_CONSTS {
+    for name in builtin_constant_names() {
         index.document_scope.consts.insert(name.to_owned());
     }
 
@@ -143,7 +144,7 @@ fn collect_top_level_runtime_sections<'a>(blocks: &[&'a Block]) -> TopLevelRunti
 
     for block in blocks {
         match block {
-            Block::Ins(ports) | Block::Outs(ports) => {
+            Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
                 extend_runtime_owner_span(&mut sections.span, block.loc().span());
                 sections
                     .ports
@@ -497,7 +498,7 @@ fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
         Block::Const(decl) => {
             scope.consts.insert(decl.name.clone());
         }
-        Block::Ins(ports) | Block::Outs(ports) => {
+        Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
             for decl in &ports.decls {
                 scope.ports.insert(decl.name.clone());
             }

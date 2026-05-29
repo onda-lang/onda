@@ -439,15 +439,174 @@ fn remap_proc_ctor_assign_for_array_slot(
     stmt
 }
 
+fn top_level_sample_oversample_factor(program: &Program, options: AnalysisOptions) -> usize {
+    let factor_expr = program.blocks.iter().find_map(|block| match block {
+        Block::Sample(sample) => sample.oversample_factor.as_ref(),
+        Block::Block(exec) => exec
+            .sample
+            .as_ref()
+            .and_then(|sample| sample.oversample_factor.as_ref()),
+        _ => None,
+    });
+    let mut ignored_errors = Vec::<Diagnostic>::new();
+    validated_sample_oversample_factor(factor_expr, options, "sample block", &mut ignored_errors)
+        .max(1)
+}
+
+fn record_proc_instance_oversample_factor(
+    instance_name: &str,
+    call_oversample_factor: usize,
+    global_proc_instances: &HashMap<String, ProcCallInstance>,
+    proc_api: &HashMap<String, ProcApi>,
+    out: &mut HashMap<String, usize>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some(instance) = global_proc_instances.get(instance_name) else {
+        return;
+    };
+    let Some(api) = proc_api.get(&instance.proc_name) else {
+        return;
+    };
+    let proc_oversample_factor = api.sample_oversample_factor.max(1);
+    if call_oversample_factor > 1 && proc_oversample_factor > 1 {
+        push_semantic(
+            DiagCtx::default(),
+            errors,
+            format!(
+                "cannot call explicitly oversampled processor '{}' (sample {}) from oversampled context (sample {}); use a non-oversampled child processor in oversampled code",
+                instance.proc_name, proc_oversample_factor, call_oversample_factor
+            ),
+        );
+    }
+
+    let effective_factor = if proc_oversample_factor > 1 {
+        proc_oversample_factor
+    } else {
+        call_oversample_factor.max(1)
+    };
+    if effective_factor <= 1 {
+        return;
+    }
+    if let Some(previous) = out.get(instance_name).copied() {
+        if previous != effective_factor {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
+                format!(
+                    "processor instance '{}' is required at both sample {} and sample {}; a physical processor instance can only have one effective oversampling rate",
+                    instance_name, previous, effective_factor
+                ),
+            );
+        }
+        return;
+    }
+    out.insert(instance_name.to_owned(), effective_factor);
+}
+
+fn propagate_uniform_proc_array_oversample_factors(
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    factors: &mut HashMap<String, usize>,
+) {
+    for (base, slots) in proc_array_slots {
+        let mut slot_factors = slots.iter().filter_map(|slot| factors.get(slot).copied());
+        let Some(first) = slot_factors.next() else {
+            continue;
+        };
+        if slots
+            .iter()
+            .all(|slot| factors.get(slot).copied() == Some(first))
+        {
+            factors.insert(base.clone(), first);
+        }
+    }
+}
+
+fn reject_explicit_oversampled_child_calls_in_context(
+    proc_name: &str,
+    context_oversample_factor: usize,
+    proc_defs_by_name: &HashMap<String, ProcessorDef>,
+    lowering_shapes: &HashMap<String, ProcLoweringShape>,
+    proc_api: &HashMap<String, ProcApi>,
+    visiting: &mut HashSet<(String, usize)>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if context_oversample_factor <= 1 {
+        return;
+    }
+    if !visiting.insert((proc_name.to_owned(), context_oversample_factor)) {
+        return;
+    }
+    let Some(proc) = proc_defs_by_name.get(proc_name) else {
+        return;
+    };
+    let Some(shape) = lowering_shapes.get(proc_name) else {
+        return;
+    };
+    let nested_instances = shape
+        .state
+        .nested_procs
+        .iter()
+        .map(|(name, nested)| {
+            (
+                name.clone(),
+                ProcCallInstance {
+                    proc_name: nested.proc_name.clone(),
+                    buffer_args: Vec::new(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let called_nested = collect_called_proc_instances_in_stmts(
+        &proc.sample,
+        &nested_instances,
+        &shape.nested_proc_array_slots,
+    );
+    for nested_name in called_nested {
+        let Some(instance) = nested_instances.get(&nested_name) else {
+            continue;
+        };
+        let Some(api) = proc_api.get(&instance.proc_name) else {
+            continue;
+        };
+        let child_oversample_factor = api.sample_oversample_factor.max(1);
+        if child_oversample_factor > 1 {
+            push_semantic(
+                DiagCtx::new(proc.loc),
+                errors,
+                format!(
+                    "processor '{}' runs at sample {} and cannot call explicitly oversampled child '{}' of type '{}' (sample {}); remove the child's explicit oversampling or call it from base-rate code",
+                    proc_name,
+                    context_oversample_factor,
+                    nested_name,
+                    instance.proc_name,
+                    child_oversample_factor
+                ),
+            );
+            continue;
+        }
+        reject_explicit_oversampled_child_calls_in_context(
+            &instance.proc_name,
+            context_oversample_factor,
+            proc_defs_by_name,
+            lowering_shapes,
+            proc_api,
+            visiting,
+            errors,
+        );
+    }
+}
+
 pub(super) fn rewrite_top_level_proc_calls(
     program: &mut Program,
     options: AnalysisOptions,
+    proc_defs_by_name: &HashMap<String, ProcessorDef>,
     lowering_shapes: &HashMap<String, ProcLoweringShape>,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> TopLevelProcRewriteMeta {
     let mut global_proc_instances = HashMap::<String, ProcCallInstance>::new();
     let mut global_proc_array_slots = HashMap::<String, Vec<String>>::new();
+    let mut global_proc_instance_oversample_factors = HashMap::<String, usize>::new();
     let mut global_proc_array_broadcast_slots = HashMap::<String, (usize, usize)>::new();
     let mut runtime_managed_arrays = HashMap::<String, RuntimeManagedProcArray>::new();
     let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
@@ -457,6 +616,7 @@ pub(super) fn rewrite_top_level_proc_calls(
         .find(|b| b.kind() == BlockKind::Init)
     {
         let mut rewritten_init = Vec::<Stmt>::new();
+        let mut constructor_setup_indices = HashSet::<usize>::new();
         for stmt in init.body.clone() {
             let mut pending_stmts = vec![stmt];
             if let Some(Stmt::Assign {
@@ -710,7 +870,10 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     })
                                     .collect::<Vec<_>>();
                             }
-                            rewritten_init.extend(ctor_assigns);
+                            for assign in ctor_assigns {
+                                constructor_setup_indices.insert(rewritten_init.len());
+                                rewritten_init.push(assign);
+                            }
                             rewritten_init.push(Stmt::Expr {
                                 loc: Default::default(),
                                 expr: Expr::UserCall {
@@ -750,12 +913,21 @@ pub(super) fn rewrite_top_level_proc_calls(
             }
         }
         init.body = rewritten_init;
-        rewrite_proc_calls_in_stmts(
+        rewrite_proc_calls_in_stmts_without_hooks(
             &mut init.body,
             &global_proc_instances,
             &global_proc_array_slots,
             &proc_api,
             errors,
+        );
+        inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
+            None,
+            &mut init.body,
+            &global_proc_instances,
+            &global_proc_array_slots,
+            &proc_api,
+            errors,
+            &constructor_setup_indices,
         );
     }
 
@@ -806,6 +978,45 @@ pub(super) fn rewrite_top_level_proc_calls(
     if !called_proc_instances.is_empty() {
         let mut called_order = called_proc_instances.into_iter().collect::<Vec<_>>();
         called_order.sort();
+        let sample_oversample_factor = top_level_sample_oversample_factor(program, options);
+        for instance_name in &called_order {
+            record_proc_instance_oversample_factor(
+                instance_name,
+                sample_oversample_factor,
+                &global_proc_instances,
+                &proc_api,
+                &mut global_proc_instance_oversample_factors,
+                errors,
+            );
+        }
+        propagate_uniform_proc_array_oversample_factors(
+            &global_proc_array_slots,
+            &mut global_proc_instance_oversample_factors,
+        );
+        let mut rate_validation_visiting = HashSet::<(String, usize)>::new();
+        for instance_name in &called_order {
+            let Some(instance) = global_proc_instances.get(instance_name) else {
+                continue;
+            };
+            let Some(api) = proc_api.get(&instance.proc_name) else {
+                continue;
+            };
+            let explicit_factor = api.sample_oversample_factor.max(1);
+            let effective_factor = if explicit_factor > 1 {
+                explicit_factor
+            } else {
+                sample_oversample_factor
+            };
+            reject_explicit_oversampled_child_calls_in_context(
+                &instance.proc_name,
+                effective_factor,
+                proc_defs_by_name,
+                lowering_shapes,
+                proc_api,
+                &mut rate_validation_visiting,
+                errors,
+            );
+        }
         let mut injected_block_pre = Vec::<Stmt>::new();
         let mut injected_block_post = Vec::<Stmt>::new();
         for instance_name in called_order {
@@ -1131,6 +1342,7 @@ pub(super) fn rewrite_top_level_proc_calls(
     TopLevelProcRewriteMeta {
         global_proc_instances,
         global_proc_array_slots,
+        global_proc_instance_oversample_factors,
     }
 }
 

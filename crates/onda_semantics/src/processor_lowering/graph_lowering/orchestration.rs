@@ -5,10 +5,45 @@ pub(crate) fn lower_graph_blocks(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let error_count = errors.len();
     synthesize_graph_port_decls(program);
+    reject_block_timed_graph_outputs(program, errors);
+    if errors.len() != error_count {
+        return;
+    }
     let proc_surfaces = build_graph_proc_surfaces(program, options, errors);
     lower_proc_graph_blocks(program, &proc_surfaces, options, errors);
     lower_top_level_graph_block(program, &proc_surfaces, options, errors);
+}
+
+fn reject_block_timed_graph_outputs(program: &Program, errors: &mut Vec<Diagnostic>) {
+    let has_top_level_graph = program.block(BlockKind::Graph).is_some();
+    if has_top_level_graph {
+        if let Some(Block::KOuts(ports)) = program.block(BlockKind::KOuts) {
+            errors.push(Diagnostic::semantic_span(
+                "top-level graph block does not support kouts",
+                ports.loc.as_ref(),
+            ));
+        }
+    }
+
+    for block in &program.blocks {
+        let Block::Proc(proc) = block else {
+            continue;
+        };
+        if proc.graph.is_some() && proc.outs_timing == OutputTiming::Block {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "processor '{}' graph block does not support kouts",
+                    proc.name
+                ),
+                proc.outs_timing_loc
+                    .as_ref()
+                    .or_else(|| proc.graph.as_ref().and_then(|graph| graph.loc.as_ref()))
+                    .or(proc.loc.as_ref()),
+            ));
+        }
+    }
 }
 
 fn lower_proc_graph_blocks(

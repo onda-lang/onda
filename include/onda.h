@@ -203,6 +203,16 @@ int onda_instance_restore_state(
   const void* bytes,
   int byte_count
 );
+/*
+ * Copies the latest held value for one top-level kouts/control-output entry.
+ * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is returned.
+ */
+int onda_control_output_read_bytes(
+  const onda_instance_t* instance,
+  int index,
+  void* out_bytes,
+  int out_capacity
+);
 /* Validates all required domains (buffers, inputs, outputs); returns 0 on success. */
 int onda_validate_bindings(onda_instance_t* instance);
 /* Validates input bindings only; returns 0 on success. */
@@ -229,6 +239,8 @@ int onda_process_unchecked_segment(
 int onda_input_count(const onda_program_t* program);
 /* Returns declared output entry count, or -1 on invalid program handle. */
 int onda_output_count(const onda_program_t* program);
+/* Returns declared kouts/control-output entry count, or -1 on invalid program handle. */
+int onda_control_output_count(const onda_program_t* program);
 /* Returns declared parameter entry count, or -1 on invalid program handle. */
 int onda_param_count(const onda_program_t* program);
 /* Returns declared buffer entry count, or -1 on invalid program handle. */
@@ -242,6 +254,8 @@ int onda_state_count(const onda_program_t* program);
 const char* onda_input_name(const onda_program_t* program, int index);
 /* Returns output name by index, or NULL if index/program is invalid. */
 const char* onda_output_name(const onda_program_t* program, int index);
+/* Returns kouts/control-output name by index, or NULL if index/program is invalid. */
+const char* onda_control_output_name(const onda_program_t* program, int index);
 /* Returns parameter name by index, or NULL if index/program is invalid. */
 const char* onda_param_name(const onda_program_t* program, int index);
 /* Returns buffer name by index, or NULL if index/program is invalid. */
@@ -259,6 +273,8 @@ const char* onda_event_param_name(const onda_program_t* program, int event_index
 int onda_input_index(const onda_program_t* program, const char* name);
 /* Returns output index for a name, or -1 if not found/invalid. */
 int onda_output_index(const onda_program_t* program, const char* name);
+/* Returns kouts/control-output index for a name, or -1 if not found/invalid. */
+int onda_control_output_index(const onda_program_t* program, const char* name);
 /* Returns parameter index for a name, or -1 if not found/invalid. */
 int onda_param_index(const onda_program_t* program, const char* name);
 /* Returns buffer index for a name, or -1 if not found/invalid. */
@@ -270,6 +286,8 @@ int onda_event_index(const onda_program_t* program, const char* name);
 const char* onda_input_type(const onda_program_t* program, int index);
 /* Returns output type text (for example "f32"), or NULL if invalid. */
 const char* onda_output_type(const onda_program_t* program, int index);
+/* Returns kouts/control-output type text (for example "f32"), or NULL if invalid. */
+const char* onda_control_output_type(const onda_program_t* program, int index);
 /* Returns parameter type text, or NULL if invalid. */
 const char* onda_param_type(const onda_program_t* program, int index);
 /* Returns buffer type text (for example "buffer[f32[2]]"), or NULL if invalid. */
@@ -281,6 +299,8 @@ const char* onda_state_type(const onda_program_t* program, int index);
 int onda_input_type_bytes(const onda_program_t* program, int index);
 /* Returns output entry byte width, or -1 if invalid. */
 int onda_output_type_bytes(const onda_program_t* program, int index);
+/* Returns kouts/control-output entry byte width, or -1 if invalid. */
+int onda_control_output_type_bytes(const onda_program_t* program, int index);
 /* Returns parameter entry byte width, or -1 if invalid. */
 int onda_param_type_bytes(const onda_program_t* program, int index);
 /* Returns state entry byte width, or -1 if invalid. */
@@ -324,6 +344,8 @@ int onda_buffer_may_write(const onda_program_t* program, int index);
 int onda_input_elem_type(const onda_program_t* program, int index);
 /* Returns output element primitive type id, or -1 if invalid. */
 int onda_output_elem_type(const onda_program_t* program, int index);
+/* Returns kouts/control-output element primitive type id, or -1 if invalid. */
+int onda_control_output_elem_type(const onda_program_t* program, int index);
 /* Returns parameter element primitive type id, or -1 if invalid. */
 int onda_param_elem_type(const onda_program_t* program, int index);
 /* Returns state entry element primitive type id, or -1 if invalid. */
@@ -332,6 +354,8 @@ int onda_state_elem_type(const onda_program_t* program, int index);
 int onda_input_array_len(const onda_program_t* program, int index);
 /* Returns output array length in channels/slots, or -1 if invalid. */
 int onda_output_array_len(const onda_program_t* program, int index);
+/* Returns kouts/control-output array length in slots, or -1 if invalid. */
+int onda_control_output_array_len(const onda_program_t* program, int index);
 /* Returns parameter array length in slots, or -1 if invalid. */
 int onda_param_array_len(const onda_program_t* program, int index);
 /* Returns state entry array length in slots, or -1 if invalid. */
@@ -340,12 +364,16 @@ int onda_state_array_len(const onda_program_t* program, int index);
 int onda_input_slot_offset(const onda_program_t* program, int index);
 /* Returns output slot offset in flattened channel order, or -1 if invalid. */
 int onda_output_slot_offset(const onda_program_t* program, int index);
+/* Returns kouts/control-output slot offset in flattened control-output order, or -1 if invalid. */
+int onda_control_output_slot_offset(const onda_program_t* program, int index);
 /* Returns parameter slot offset in flattened param order, or -1 if invalid. */
 int onda_param_slot_offset(const onda_program_t* program, int index);
 /* Returns input byte offset within packed entry layout, or -1 if invalid. */
 int onda_input_byte_offset(const onda_program_t* program, int index);
 /* Returns output byte offset within packed entry layout, or -1 if invalid. */
 int onda_output_byte_offset(const onda_program_t* program, int index);
+/* Returns kouts/control-output byte offset within packed entry layout, or -1 if invalid. */
+int onda_control_output_byte_offset(const onda_program_t* program, int index);
 /* Returns parameter byte offset within packed param layout, or -1 if invalid. */
 int onda_param_byte_offset(const onda_program_t* program, int index);
 /* Returns state entry byte offset within the full instance state layout, or -1 if invalid. */
@@ -359,6 +387,17 @@ int onda_input_has_default(const onda_program_t* program, int index);
 int onda_output_has_default(const onda_program_t* program, int index);
 /* Returns 1 if parameter default exists, 0 if not, -1 if invalid. */
 int onda_param_has_default(const onda_program_t* program, int index);
+/*
+ * Returns the byte count for the parameter default, 0 if no default exists, or -1 if invalid.
+ * If out_bytes is non-NULL and out_capacity is large enough, the packed default bytes are copied.
+ * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is returned.
+ */
+int onda_param_default_bytes(
+  const onda_program_t* program,
+  int index,
+  void* out_bytes,
+  int out_capacity
+);
 /* Returns input default as f64, or NaN if missing/invalid. */
 double onda_input_default_f64(const onda_program_t* program, int index);
 /* Returns output default as f64, or NaN if missing/invalid. */

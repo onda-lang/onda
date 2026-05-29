@@ -1,10 +1,6 @@
 use super::*;
 use onda_frontend::ArrayTypeSpec;
 
-fn is_primitive_type_name(name: &str) -> bool {
-    matches!(name, "f32" | "f64" | "i32" | "i64" | "bool")
-}
-
 fn reinterpret_scalar_specialized_struct_field(
     spec: &ArrayTypeSpec,
     type_param_set: &HashSet<String>,
@@ -15,7 +11,7 @@ fn reinterpret_scalar_specialized_struct_field(
     let Expr::Var { name: type_arg, .. } = spec.size.as_ref() else {
         return None;
     };
-    if !type_param_set.contains(type_arg) && !is_primitive_type_name(type_arg.as_str()) {
+    if !type_param_set.contains(type_arg) && !PrimitiveType::is_name(type_arg) {
         return None;
     }
     Some(format!("{base}<{type_arg}>"))
@@ -470,6 +466,24 @@ pub(crate) fn coerce_params(
                 param_loc,
             ));
             continue;
+        }
+        if let Some(bind) = &param.bind {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "param '{}' uses bind hook '=> {bind}', but binds are only supported on processor params",
+                    param.name
+                ),
+                param_loc,
+            ));
+        }
+        if param.pinned {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "param '{}' uses 'pin', but pinned params are only supported on processor params",
+                    param.name
+                ),
+                param_loc,
+            ));
         }
         if !seen.insert(param.name.as_str()) {
             errors.push(Diagnostic::semantic_span(

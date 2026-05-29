@@ -102,7 +102,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
         } else {
             None
         };
-        let port_index_outs = if typed.outs_explicit && !typed.outs.is_empty() {
+        let sample_port_index_outs = if typed.audio_outs_explicit && !typed.outs.is_empty() {
             let first_ty = *typed
                 .out_types
                 .values()
@@ -111,6 +111,24 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             if typed.out_types.values().all(|t| *t == first_ty) {
                 Some(PortIndexMeta {
                     count: typed.outs.len(),
+                    elem_ty: first_ty,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let block_port_index_outs = if typed.control_outs_explicit && !typed.control_outs.is_empty()
+        {
+            let first_ty = *typed
+                .control_out_types
+                .values()
+                .next()
+                .unwrap_or(&PrimitiveType::F32);
+            if typed.control_out_types.values().all(|t| *t == first_ty) {
+                Some(PortIndexMeta {
+                    count: typed.control_outs.len(),
                     elem_ty: first_ty,
                 })
             } else {
@@ -274,7 +292,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             );
         }
         // Build an array of pointers to out_slots for dynamic outs[i] indexing.
-        let out_slot_ptr_array = if port_index_outs.is_some() && !typed.outs.is_empty() {
+        let out_slot_ptr_array = if sample_port_index_outs.is_some() && !typed.outs.is_empty() {
             let ptr_ty = LLVMPointerType(float_ty, 0);
             let arr = build_local_array_slot(builder, ptr_ty, typed.outs.len(), "out_slot_ptrs")?;
             for (idx, name) in typed.outs.iter().enumerate() {
@@ -294,6 +312,82 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
         } else {
             None
         };
+
+        let mut control_out_slots = HashMap::new();
+        let mut control_out_array_base_ptrs = HashMap::new();
+        let mut control_out_array_names =
+            typed.control_out_arrays.keys().cloned().collect::<Vec<_>>();
+        control_out_array_names.sort();
+        for array_name in control_out_array_names {
+            let array_info = typed
+                .control_out_arrays
+                .get(&array_name)
+                .ok_or_else(|| Diagnostic::internal("missing control output array metadata"))?;
+            let base_ptr = *storage.array_base_ptrs.get(&array_name).ok_or_else(|| {
+                Diagnostic::internal(format!(
+                    "missing control output array storage for '{array_name}'"
+                ))
+            })?;
+            control_out_array_base_ptrs.insert(array_name.clone(), base_ptr);
+            for idx in 0..array_info.len {
+                let idx_v = LLVMConstInt(i32_ty, idx as u64, 0);
+                let elem_ptr = build_f32_ptr_offset(
+                    builder,
+                    llvm_ty_for_primitive(context, array_info.elem_ty),
+                    base_ptr,
+                    idx_v,
+                    b"control_out_arr_elem_ptr\0",
+                );
+                control_out_slots.insert(
+                    format!("{array_name}[{idx}]"),
+                    OutSlot {
+                        ptr: elem_ptr,
+                        ty: array_info.elem_ty,
+                    },
+                );
+            }
+        }
+        for name in &typed.control_outs {
+            if control_out_slots.contains_key(name) {
+                continue;
+            }
+            let slot = storage.state_slots.get(name).ok_or_else(|| {
+                Diagnostic::internal(format!("missing control output state slot for '{name}'"))
+            })?;
+            control_out_slots.insert(
+                name.clone(),
+                OutSlot {
+                    ptr: slot.ptr,
+                    ty: slot.ty,
+                },
+            );
+        }
+        let control_out_slot_ptr_array =
+            if block_port_index_outs.is_some() && !typed.control_outs.is_empty() {
+                let ptr_ty = LLVMPointerType(float_ty, 0);
+                let arr = build_local_array_slot(
+                    builder,
+                    ptr_ty,
+                    typed.control_outs.len(),
+                    "control_out_slot_ptrs",
+                )?;
+                for (idx, name) in typed.control_outs.iter().enumerate() {
+                    if let Some(slot) = control_out_slots.get(name) {
+                        let gep = LLVMBuildGEP2(
+                            builder,
+                            ptr_ty,
+                            arr,
+                            [LLVMConstInt(i32_ty, idx as u64, 0)].as_mut_ptr(),
+                            1,
+                            b"control_out_slot_ptr_gep\0".as_ptr().cast(),
+                        );
+                        LLVMBuildStore(builder, slot.ptr, gep);
+                    }
+                }
+                Some(arr)
+            } else {
+                None
+            };
 
         let sample_oversample_factor = typed.sample_oversample_factor.max(1);
         let oversampled_sample_rate = sample_rate * sample_oversample_factor as f32;
@@ -381,12 +475,9 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
         }
 
         let null_in_ptrs = LLVMConstPointerNull(float_ptr_ptr_ty);
-        let empty_out_slots = HashMap::<String, OutSlot>::new();
-        let empty_out_array_base_ptrs = HashMap::<String, LLVMValueRef>::new();
         let empty_input_index = HashMap::<String, u32>::new();
         let empty_input_types = HashMap::<String, PrimitiveType>::new();
         let empty_input_arrays = HashMap::<String, TypedArrayInfo>::new();
-        let empty_output_arrays = HashMap::<String, TypedArrayInfo>::new();
 
         // Run optional block-level code once per logical block, not once per
         // segmented process call.
@@ -431,8 +522,8 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 frame_idx: zero_i32,
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,
-                out_slots: &empty_out_slots,
-                out_array_base_ptrs: &empty_out_array_base_ptrs,
+                out_slots: &control_out_slots,
+                out_array_base_ptrs: &control_out_array_base_ptrs,
                 input_index: &empty_input_index,
                 input_types: &empty_input_types,
                 input_arrays: &empty_input_arrays,
@@ -446,7 +537,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 param_byte_offset: &shared.param_byte_offset,
                 param_types: &shared.param_types,
                 param_arrays: &typed.param_arrays,
-                output_arrays: &empty_output_arrays,
+                output_arrays: &typed.control_out_arrays,
                 array_len: &storage.array_len,
                 array_len_values: HashMap::new(),
                 array_elem_ty: &storage.array_elem_ty,
@@ -462,9 +553,9 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 oversample_input_cache: None,
                 loop_stack: Vec::new(),
                 port_index_ins: None,
-                port_index_outs: None,
+                port_index_outs: block_port_index_outs,
                 port_index_params,
-                out_slot_ptr_array: None,
+                out_slot_ptr_array: control_out_slot_ptr_array,
             };
             let mut block_locals = HashMap::new();
             let mut block_aliases = HashMap::new();
@@ -563,7 +654,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 oversample_input_cache: None,
                 loop_stack: Vec::new(),
                 port_index_ins,
-                port_index_outs,
+                port_index_outs: sample_port_index_outs,
                 port_index_params,
                 out_slot_ptr_array,
             };
@@ -825,7 +916,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 array_len_values: HashMap::new(),
                 loop_stack: Vec::new(),
                 port_index_ins,
-                port_index_outs,
+                port_index_outs: sample_port_index_outs,
                 port_index_params,
                 out_slot_ptr_array,
             };
@@ -1011,7 +1102,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
             oversample_input_cache: None,
             loop_stack: Vec::new(),
             port_index_ins,
-            port_index_outs,
+            port_index_outs: sample_port_index_outs,
             port_index_params,
             out_slot_ptr_array: None,
         };
@@ -1117,8 +1208,8 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 frame_idx: zero_i32,
                 state_slots: &storage.state_slots,
                 array_base_ptrs: &storage.array_base_ptrs,
-                out_slots: &empty_out_slots,
-                out_array_base_ptrs: &empty_out_array_base_ptrs,
+                out_slots: &control_out_slots,
+                out_array_base_ptrs: &control_out_array_base_ptrs,
                 input_index: &empty_input_index,
                 input_types: &empty_input_types,
                 input_arrays: &empty_input_arrays,
@@ -1132,7 +1223,7 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 param_byte_offset: &shared.param_byte_offset,
                 param_types: &shared.param_types,
                 param_arrays: &typed.param_arrays,
-                output_arrays: &empty_output_arrays,
+                output_arrays: &typed.control_out_arrays,
                 array_len: &storage.array_len,
                 array_len_values: HashMap::new(),
                 array_elem_ty: &storage.array_elem_ty,
@@ -1148,9 +1239,9 @@ pub(in crate::orc_backend) unsafe fn build_process_ir(
                 oversample_input_cache: None,
                 loop_stack: Vec::new(),
                 port_index_ins: None,
-                port_index_outs: None,
+                port_index_outs: block_port_index_outs,
                 port_index_params,
-                out_slot_ptr_array: None,
+                out_slot_ptr_array: control_out_slot_ptr_array,
             };
             let mut block_locals = HashMap::new();
             let mut block_aliases = HashMap::new();

@@ -2,6 +2,7 @@
 use std::collections::HashSet;
 
 use super::{SemanticScope, SemanticScopeIndex};
+use onda_semantics::builtins::builtin_constant_names;
 
 pub(super) struct SourceFallbackIndex {
     proc_index: SemanticScopeIndex,
@@ -48,45 +49,7 @@ pub(super) fn identifier_is_in_import_path(source_lines: &[&str], line: u32, sta
 }
 
 pub(super) fn is_reserved_word(name: &str) -> bool {
-    matches!(
-        name,
-        "if" | "elif"
-            | "else"
-            | "for"
-            | "in"
-            | "while"
-            | "loop"
-            | "break"
-            | "continue"
-            | "return"
-            | "assert"
-            | "true"
-            | "false"
-            | "f32"
-            | "f64"
-            | "i32"
-            | "i64"
-            | "bool"
-            | "buffer"
-            | "proc"
-            | "processor"
-            | "struct"
-            | "def"
-            | "const"
-            | "namespace"
-            | "import"
-            | "include"
-            | "ins"
-            | "outs"
-            | "params"
-            | "buffers"
-            | "init"
-            | "event"
-            | "events"
-            | "sample"
-            | "block"
-            | "graph"
-    )
+    onda_frontend::is_reserved_word(name)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -208,7 +171,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                         }
                     }
                     SourceProcSectionKind::Params => {
-                        if let Some(name) = extract_leading_ident(trimmed) {
+                        if let Some(name) = extract_param_decl_name(trimmed, true) {
                             index.scopes[proc_owner_idx]
                                 .scope
                                 .parameters
@@ -428,7 +391,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                         }
                     }
                     SourceTopLevelSectionKind::Params => {
-                        if let Some(name) = extract_leading_ident(trimmed) {
+                        if let Some(name) = extract_param_decl_name(trimmed, false) {
                             index.scopes[section.owner_idx]
                                 .scope
                                 .parameters
@@ -642,7 +605,7 @@ impl SectionOwner for SourceTopLevelSection {
 }
 
 pub(super) fn collect_source_declaration_symbols(source: &str, scope: &mut SemanticScope) {
-    for &name in super::BUILTIN_CONSTS {
+    for name in builtin_constant_names() {
         scope.consts.insert(name.to_owned());
     }
 
@@ -809,6 +772,27 @@ fn source_assignment_target_name(trimmed: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn extract_param_decl_name(trimmed: &str, allow_pin: bool) -> Option<&str> {
+    let name = extract_leading_ident(trimmed)?;
+    if name != "pin" {
+        return Some(name);
+    }
+    if !allow_pin {
+        return None;
+    }
+    let rest = trimmed[name.len()..].trim_start();
+    let pinned_name = extract_leading_ident(rest)?;
+    if is_reserved_identifier(pinned_name) {
+        None
+    } else {
+        Some(pinned_name)
+    }
+}
+
+fn is_reserved_identifier(name: &str) -> bool {
+    onda_frontend::is_reserved_identifier(name)
 }
 
 fn collect_source_local_symbols(index: &mut SemanticScopeIndex, scope_idx: usize, trimmed: &str) {

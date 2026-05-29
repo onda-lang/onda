@@ -428,7 +428,7 @@ unsafe fn lower_orc_index_expr(
             );
         }
     }
-    if base == "outs" {
+    if base == "outs" || base == "kouts" {
         if let Some(meta) = ctx.port_index_outs {
             return lower_port_index_outs_read(
                 ctx,
@@ -441,7 +441,7 @@ unsafe fn lower_orc_index_expr(
             );
         }
     }
-    if base == "params" {
+    if base == "params" || base == "kins" {
         if let Some(meta) = ctx.port_index_params {
             return lower_port_index_params_read(
                 ctx,

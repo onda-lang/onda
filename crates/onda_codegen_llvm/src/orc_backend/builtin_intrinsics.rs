@@ -1,23 +1,7 @@
 use super::*;
 
 pub(super) fn builtin_arity(func: BuiltinFn) -> usize {
-    match func {
-        BuiltinFn::Sin
-        | BuiltinFn::Cos
-        | BuiltinFn::Tan
-        | BuiltinFn::Tanh
-        | BuiltinFn::Atan
-        | BuiltinFn::Exp
-        | BuiltinFn::Log
-        | BuiltinFn::Sqrt
-        | BuiltinFn::Abs
-        | BuiltinFn::Floor
-        | BuiltinFn::Ceil
-        | BuiltinFn::Round
-        | BuiltinFn::Trunc => 1,
-        BuiltinFn::Pow | BuiltinFn::Atan2 | BuiltinFn::Min | BuiltinFn::Max => 2,
-        BuiltinFn::Fma => 3,
-    }
+    func.arity()
 }
 
 pub(super) fn builtin_intrinsic_name(func: BuiltinFn, use_f64: bool) -> &'static str {

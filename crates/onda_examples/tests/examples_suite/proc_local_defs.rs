@@ -840,7 +840,9 @@ proc Bank {
 
   def run_selected() {
 
-    return voices[idx]().out1 + 0.0
+    voices[idx]()
+
+    return 0.0
 
   }
 

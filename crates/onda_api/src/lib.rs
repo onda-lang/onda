@@ -10,9 +10,9 @@ use onda_frontend::{parse_program, parse_program_file, DiagCode, Diagnostic, Pri
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
     prepare_unchecked_process, process_checked, process_checked_segment, process_unchecked,
-    process_unchecked_segment, reset_instance_state, set_param_by_index, trigger_event_by_index,
-    trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
-    validate_outputs, Instance, InstanceConfig,
+    process_unchecked_segment, read_control_output_bytes, reset_instance_state, set_param_by_index,
+    trigger_event_by_index, trigger_event_by_index_unchecked, validate_bindings, validate_buffers,
+    validate_inputs, validate_outputs, Instance, InstanceConfig,
 };
 use onda_semantics::{analyze_with_options, AnalysisOptions};
 
@@ -60,6 +60,8 @@ pub struct onda_program {
     input_types: Vec<CString>,
     output_names: Vec<CString>,
     output_types: Vec<CString>,
+    control_output_names: Vec<CString>,
+    control_output_types: Vec<CString>,
     param_names: Vec<CString>,
     param_types: Vec<CString>,
     buffer_names: Vec<CString>,
@@ -430,6 +432,30 @@ unsafe fn onda_compile_impl(
             return ptr::null_mut();
         }
     };
+    let control_output_names = match build_cstring_cache(
+        (0..jit.control_output_count())
+            .filter_map(|idx| jit.control_output_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "control output name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let control_output_types = match build_cstring_cache(
+        (0..jit.control_output_count())
+            .filter_map(|idx| jit.control_output_type(idx))
+            .collect(),
+        "control output type",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
     let param_names = match build_cstring_cache(
         (0..jit.param_count())
             .filter_map(|idx| jit.param_name(idx).map(ToOwned::to_owned))
@@ -543,6 +569,8 @@ unsafe fn onda_compile_impl(
         input_types,
         output_names,
         output_types,
+        control_output_names,
+        control_output_types,
         param_names,
         param_types,
         buffer_names,
@@ -738,6 +766,30 @@ unsafe fn onda_compile_file_impl(
             return ptr::null_mut();
         }
     };
+    let control_output_names = match build_cstring_cache(
+        (0..jit.control_output_count())
+            .filter_map(|idx| jit.control_output_name(idx).map(ToOwned::to_owned))
+            .collect(),
+        "control output name",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let control_output_types = match build_cstring_cache(
+        (0..jit.control_output_count())
+            .filter_map(|idx| jit.control_output_type(idx))
+            .collect(),
+        "control output type",
+    ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
     let param_names = match build_cstring_cache(
         (0..jit.param_count())
             .filter_map(|idx| jit.param_name(idx).map(ToOwned::to_owned))
@@ -851,6 +903,8 @@ unsafe fn onda_compile_file_impl(
         input_types,
         output_names,
         output_types,
+        control_output_names,
+        control_output_types,
         param_names,
         param_types,
         buffer_names,
@@ -916,7 +970,7 @@ unsafe fn onda_instance_create_impl(
         return ptr::null_mut();
     }
 
-    if in_channels < 0 || out_channels <= 0 {
+    if in_channels < 0 || out_channels < 0 {
         write_diag(
             out_diag,
             static_runtime_diag(b"invalid instance configuration\0"),
@@ -989,6 +1043,33 @@ pub unsafe extern "C" fn onda_set_param_by_index(
     match set_param_by_index(&mut (*instance).inner, index as usize, bytes) {
         Ok(_) => 0,
         Err(_) => -3,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_control_output_read_bytes(
+    instance: *const onda_instance,
+    index: i32,
+    out_bytes: *mut c_void,
+    out_capacity: i32,
+) -> i32 {
+    if instance.is_null() || index < 0 || out_capacity < 0 {
+        return -1;
+    }
+    let Some(required_usize) = (*instance).inner.control_output_type_bytes(index as usize) else {
+        return -1;
+    };
+    let required = match i32::try_from(required_usize) {
+        Ok(value) => value,
+        Err(_) => return -1,
+    };
+    if out_bytes.is_null() || out_capacity < required {
+        return required;
+    }
+    let out_slice = std::slice::from_raw_parts_mut(out_bytes.cast::<u8>(), required as usize);
+    match read_control_output_bytes(&(*instance).inner, index as usize, out_slice) {
+        Ok(_) => required,
+        Err(_) => -2,
     }
 }
 
@@ -1303,6 +1384,14 @@ pub unsafe extern "C" fn onda_output_count(program: *const onda_program) -> i32 
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_control_output_count(program: *const onda_program) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    saturating_usize_to_i32((*program).jit.control_output_count())
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_param_count(program: *const onda_program) -> i32 {
     if program.is_null() {
         return -1;
@@ -1496,6 +1585,17 @@ pub unsafe extern "C" fn onda_output_name(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_control_output_name(
+    program: *const onda_program,
+    index: i32,
+) -> *const c_char {
+    if program.is_null() {
+        return ptr::null();
+    }
+    cstr_ptr_at(&(*program).control_output_names, index)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_param_name(
     program: *const onda_program,
     index: i32,
@@ -1591,6 +1691,17 @@ pub unsafe extern "C" fn onda_output_index(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_control_output_index(
+    program: *const onda_program,
+    name: *const c_char,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    index_from_name(name, |key| (*program).jit.control_output_index(key))
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_param_index(
     program: *const onda_program,
     name: *const c_char,
@@ -1646,6 +1757,17 @@ pub unsafe extern "C" fn onda_output_type(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_control_output_type(
+    program: *const onda_program,
+    index: i32,
+) -> *const c_char {
+    if program.is_null() {
+        return ptr::null();
+    }
+    cstr_ptr_at(&(*program).control_output_types, index)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_param_type(
     program: *const onda_program,
     index: i32,
@@ -1692,6 +1814,17 @@ pub unsafe extern "C" fn onda_output_type_bytes(program: *const onda_program, in
         return -1;
     }
     bytes_from_index(index, |idx| (*program).jit.output_type_bytes(idx))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_control_output_type_bytes(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    bytes_from_index(index, |idx| (*program).jit.control_output_type_bytes(idx))
 }
 
 #[no_mangle]
@@ -1918,6 +2051,23 @@ pub unsafe extern "C" fn onda_output_elem_type(program: *const onda_program, ind
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_control_output_elem_type(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    i32_from_index_or(index, -1, |idx| {
+        (*program)
+            .jit
+            .control_outputs()
+            .get(idx)
+            .map(|d| primitive_type_to_i32(d.elem_ty()))
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_param_elem_type(program: *const onda_program, index: i32) -> i32 {
     if program.is_null() {
         return -1;
@@ -1959,6 +2109,23 @@ pub unsafe extern "C" fn onda_output_array_len(program: *const onda_program, ind
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_control_output_array_len(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    usize_from_index(index, |idx| {
+        (*program)
+            .jit
+            .control_outputs()
+            .get(idx)
+            .map(|d| d.array_len())
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_param_array_len(program: *const onda_program, index: i32) -> i32 {
     if program.is_null() {
         return -1;
@@ -1996,6 +2163,23 @@ pub unsafe extern "C" fn onda_output_slot_offset(program: *const onda_program, i
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_control_output_slot_offset(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    usize_from_index(index, |idx| {
+        (*program)
+            .jit
+            .control_outputs()
+            .get(idx)
+            .map(|d| d.slot_offset())
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_param_slot_offset(program: *const onda_program, index: i32) -> i32 {
     if program.is_null() {
         return -1;
@@ -2022,6 +2206,23 @@ pub unsafe extern "C" fn onda_output_byte_offset(program: *const onda_program, i
     }
     usize_from_index(index, |idx| {
         (*program).jit.outputs().get(idx).map(|d| d.byte_offset())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_control_output_byte_offset(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    usize_from_index(index, |idx| {
+        (*program)
+            .jit
+            .control_outputs()
+            .get(idx)
+            .map(|d| d.byte_offset())
     })
 }
 
@@ -2078,6 +2279,37 @@ pub unsafe extern "C" fn onda_param_has_default(program: *const onda_program, in
     bool_flag_from_index(index, |idx| {
         (*program).jit.params().get(idx).map(|d| d.has_default())
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_param_default_bytes(
+    program: *const onda_program,
+    index: i32,
+    out_bytes: *mut c_void,
+    out_capacity: i32,
+) -> i32 {
+    if program.is_null() || index < 0 || out_capacity < 0 {
+        return -1;
+    }
+    let Some(param) = (*program).jit.params().get(index as usize) else {
+        return -1;
+    };
+    let Some(default_bytes) = param.default_bytes() else {
+        return 0;
+    };
+    let required = match i32::try_from(default_bytes.len()) {
+        Ok(value) => value,
+        Err(_) => return -1,
+    };
+    if out_bytes.is_null() || out_capacity < required {
+        return required;
+    }
+    ptr::copy_nonoverlapping(
+        default_bytes.as_ptr(),
+        out_bytes.cast::<u8>(),
+        default_bytes.len(),
+    );
+    required
 }
 
 #[no_mangle]

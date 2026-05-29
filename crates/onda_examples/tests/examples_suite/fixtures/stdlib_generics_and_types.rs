@@ -114,9 +114,9 @@ sample {
 const BUILTIN_INTRINSICS_EXAMPLE: &str = r#"
 outs { out1 }
 sample {
-  out1 = abs(-0.5) + cos(0.0) + sqrt(4.0) + exp(0.0) + log(exp(1.0))
-  out1 = out1 + pow(2.0, 3.0) + min(3.0, 4.0) + max(3.0, 4.0) + fma(2.0, 3.0, 4.0)
-  out1 = out1 + floor(1.8) + ceil(1.2) + round(1.6) + trunc(1.6)
+  acc = abs(-0.5) + cos(0.0) + sqrt(4.0) + exp(0.0) + log(exp(1.0))
+  acc = acc + pow(2.0, 3.0) + min(3.0, 4.0) + max(3.0, 4.0) + fma(2.0, 3.0, 4.0)
+  out1 = acc + floor(1.8) + ceil(1.2) + round(1.6) + trunc(1.6)
 }
 "#;
 

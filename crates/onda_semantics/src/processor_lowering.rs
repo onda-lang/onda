@@ -12,10 +12,11 @@ mod nested_proc_lowering;
 mod proc_local_defs;
 mod shape_helpers;
 use generated_blocks::*;
+pub(crate) use generic_proc_rewrite::validate_generic_proc_template_forwarded_type_args;
 use generic_proc_rewrite::*;
 use global_proc_rewrite::*;
 pub(crate) use graph_lowering::*;
-use nested_paths::*;
+pub(crate) use nested_paths::*;
 use nested_proc_lowering::*;
 use proc_local_defs::*;
 use shape_helpers::*;
@@ -24,6 +25,18 @@ const BUILTIN_PROC_INIT_EVENT_NAME: &str = "init";
 
 fn is_builtin_proc_init_event_name(name: &str) -> bool {
     name == BUILTIN_PROC_INIT_EVENT_NAME
+}
+
+pub(crate) fn proc_local_bind_hidden_def_name(owner_proc: &str, local_name: &str) -> String {
+    proc_local_defs::proc_local_hidden_def_name(owner_proc, local_name)
+}
+
+pub(crate) fn proc_local_nested_bind_hidden_def_name(
+    owner_proc: &str,
+    nested_path: &str,
+    local_name: &str,
+) -> String {
+    proc_local_defs::nested_wrapper_local_def_name(owner_proc, nested_path, local_name)
 }
 
 fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagnostic>) {
@@ -168,12 +181,28 @@ fn validate_proc_event_default_expr(
             coerce_scalar_event_default(default_expr, *ty, context, options, errors)?;
             Some(default_expr.clone())
         }
+        EventParamType::GenericScalar { .. } => {
+            push_semantic(
+                DiagCtx::new(default_expr.loc()),
+                errors,
+                format!("{context} default cannot be checked before generic specialization"),
+            );
+            None
+        }
         EventParamType::Array { elem, .. } => {
             let Some(len) = len else {
                 return None;
             };
             coerce_fixed_array_event_default(default_expr, *elem, len, context, options, errors)?;
             Some(default_expr.clone())
+        }
+        EventParamType::GenericArray { .. } => {
+            push_semantic(
+                DiagCtx::new(default_expr.loc()),
+                errors,
+                format!("{context} default cannot be checked before generic specialization"),
+            );
+            None
         }
         EventParamType::Slice { .. } | EventParamType::GenericSlice { .. } => {
             push_semantic(
@@ -237,12 +266,14 @@ struct ProcLoweringEnv {
 pub(crate) struct TopLevelProcRewriteMeta {
     pub(crate) global_proc_instances: HashMap<String, ProcCallInstance>,
     pub(crate) global_proc_array_slots: HashMap<String, Vec<String>>,
+    pub(crate) global_proc_instance_oversample_factors: HashMap<String, usize>,
 }
 
 pub(crate) struct ProcessorDesugarResult {
     pub(crate) program: Program,
     pub(crate) def_sample_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
+    pub(crate) proc_instance_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_api: HashMap<String, ProcApi>,
     pub(crate) lowering_shapes: HashMap<String, ProcLoweringShape>,
     pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
@@ -292,6 +323,16 @@ pub(crate) fn validated_sample_oversample_factor(
             ),
         );
         1
+    }
+}
+
+pub(crate) fn proc_runtime_analysis_options(
+    host_options: AnalysisOptions,
+    sample_oversample_factor: usize,
+) -> AnalysisOptions {
+    AnalysisOptions {
+        sample_rate: host_options.sample_rate * sample_oversample_factor as f32,
+        block_size: host_options.block_size,
     }
 }
 
@@ -384,6 +425,17 @@ pub(crate) fn coerce_typed_events(
             }
             let typed = match &param.ty {
                 EventParamType::Scalar(ty) => TypedEventParamType::Scalar(*ty),
+                EventParamType::GenericScalar { name } => {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "{event_owner_desc} event parameter '{}.{}' has unresolved generic scalar type '{}'; generic event params must be specialized before lowering",
+                            event.name, param.name, name
+                        ),
+                    );
+                    TypedEventParamType::Scalar(PrimitiveType::F32)
+                }
                 EventParamType::Array { elem, size } => {
                     let context = format!("event '{}.{}' array size", event.name, param.name);
                     let len = eval_data_size_expr(size, options, &context, errors).unwrap_or(1);
@@ -398,6 +450,22 @@ pub(crate) fn coerce_typed_events(
                         );
                     }
                     TypedEventParamType::Array { elem: *elem, len }
+                }
+                EventParamType::GenericArray { elem, size } => {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "{event_owner_desc} event parameter '{}.{}' has unresolved generic array element type '{}'; generic event params must be specialized before lowering",
+                            event.name, param.name, elem
+                        ),
+                    );
+                    let context = format!("event '{}.{}' array size", event.name, param.name);
+                    let len = eval_data_size_expr(size, options, &context, errors).unwrap_or(1);
+                    TypedEventParamType::Array {
+                        elem: PrimitiveType::F32,
+                        len,
+                    }
                 }
                 EventParamType::Slice { elem } => {
                     if !allow_slices {
@@ -547,6 +615,27 @@ fn expand_proc_event_specs(
                         errors,
                     ),
                 }),
+                EventParamType::GenericScalar { name } => {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "processor '{}.{}' event parameter '{}' has unresolved generic scalar type '{}'; generic event params must be specialized before processor lowering",
+                            proc.name, event.name, param.name, name
+                        ),
+                    );
+                    params.push(ProcEventParamSpec {
+                        name: param.name.clone(),
+                        slots: vec![ProcEventParamSlotSpec {
+                            name: param.name.clone(),
+                            ty: PrimitiveType::F32,
+                        }],
+                        ty: ProcEventParamTypeSpec::Scalar {
+                            ty: PrimitiveType::F32,
+                        },
+                        default: None,
+                    });
+                }
                 EventParamType::Array { elem, size } => {
                     let context = format!(
                         "processor '{}.{}' event parameter '{}'",
@@ -577,6 +666,30 @@ fn expand_proc_event_specs(
                             options,
                             errors,
                         ),
+                    });
+                }
+                EventParamType::GenericArray { elem, size } => {
+                    push_semantic(
+                        param_diag,
+                        errors,
+                        format!(
+                            "processor '{}.{}' event parameter '{}' has unresolved generic array element type '{}'; generic event params must be specialized before processor lowering",
+                            proc.name, event.name, param.name, elem
+                        ),
+                    );
+                    let context = format!(
+                        "processor '{}.{}' event parameter '{}'",
+                        proc.name, event.name, param.name
+                    );
+                    let len = eval_data_size_expr(size, options, &context, errors).unwrap_or(1);
+                    params.push(ProcEventParamSpec {
+                        name: param.name.clone(),
+                        slots: Vec::new(),
+                        ty: ProcEventParamTypeSpec::FixedArray {
+                            elem_ty: PrimitiveType::F32,
+                            len,
+                        },
+                        default: None,
                     });
                 }
                 EventParamType::Slice { elem } => {
@@ -822,6 +935,68 @@ fn build_proc_lowering_env(
             &callable_symbols_for_method_sugar,
         );
     }
+    for proc in &mut proc_defs {
+        let sample_inferred = infer_numbered_io_from_sample(&proc.sample);
+        let mut owner_inferred = IoInference::default();
+        for stmt in &proc.init.body {
+            infer_io_from_stmt(stmt, &mut owner_inferred);
+        }
+        for stmt in &proc.block_pre {
+            infer_io_from_stmt(stmt, &mut owner_inferred);
+        }
+        for stmt in &proc.sample {
+            infer_io_from_stmt(stmt, &mut owner_inferred);
+        }
+        for stmt in &proc.block_post {
+            infer_io_from_stmt(stmt, &mut owner_inferred);
+        }
+        for event in &proc.events {
+            for stmt in &event.body {
+                infer_io_from_stmt(stmt, &mut owner_inferred);
+            }
+        }
+        for def in &proc.local_defs {
+            for stmt in &def.body {
+                infer_io_from_stmt(stmt, &mut owner_inferred);
+            }
+        }
+        if owner_inferred.max_kout > 0 {
+            if proc.outs_timing == OutputTiming::Sample && proc.outs.is_empty() {
+                if sample_inferred.max_out == 0 {
+                    proc.outs_timing = OutputTiming::Block;
+                    proc.outs_timing_loc = proc.loc;
+                } else {
+                    push_semantic(
+                        DiagCtx::new(proc.loc),
+                        errors,
+                        format!(
+                            "processor '{}' cannot mix inferred audio outN and control koutN outputs",
+                            proc.name
+                        ),
+                    );
+                }
+            } else if proc.outs_timing == OutputTiming::Sample {
+                push_semantic(
+                    DiagCtx::new(proc.loc),
+                    errors,
+                    format!(
+                        "processor '{}' cannot mix outs and inferred control koutN outputs",
+                        proc.name
+                    ),
+                );
+            }
+        }
+        if proc.outs_timing == OutputTiming::Block && sample_inferred.max_out > 0 {
+            push_semantic(
+                DiagCtx::new(proc.loc),
+                errors,
+                format!(
+                    "processor '{}' with kouts cannot also infer audio outN outputs",
+                    proc.name
+                ),
+            );
+        }
+    }
     let mut proc_defs_by_name = proc_defs
         .iter()
         .map(|p| (p.name.clone(), p.clone()))
@@ -832,12 +1007,47 @@ fn build_proc_lowering_env(
     let mut proc_order = Vec::<String>::new();
     for proc in &mut proc_defs {
         let proc_diag = DiagCtx::new(proc.loc);
-        if !proc.has_sample_block {
-            push_semantic(
-                proc_diag,
-                errors,
-                format!("processor '{}' must declare sample block", proc.name),
-            );
+        match proc.outs_timing {
+            OutputTiming::Sample => {
+                if !proc.has_sample_block {
+                    push_semantic(
+                        proc_diag,
+                        errors,
+                        format!("processor '{}' must declare sample block", proc.name),
+                    );
+                }
+            }
+            OutputTiming::Block => {
+                check_control_output_reserved_audio_names(
+                    &proc.outs,
+                    &format!("processor '{}' control output", proc.name),
+                    errors,
+                );
+                if !proc.has_block_block || proc.has_sample_block {
+                    push_semantic(
+                        proc_diag,
+                        errors,
+                        format!(
+                            "processor '{}' with kouts must declare a block section without nested sample",
+                            proc.name
+                        ),
+                    );
+                }
+                if !proc.ins.is_empty() || proc.ins_deferred_count.is_some() {
+                    push_semantic(
+                        proc_diag,
+                        errors,
+                        format!("processor '{}' with kouts cannot declare ins", proc.name),
+                    );
+                }
+                if proc.has_graph_block {
+                    push_semantic(
+                        proc_diag,
+                        errors,
+                        format!("processor '{}' with kouts cannot declare graph", proc.name),
+                    );
+                }
+            }
         }
         if base_shapes.contains_key(&proc.name) {
             push_semantic(
@@ -859,6 +1069,7 @@ fn build_proc_lowering_env(
             &ctor_symbols,
             &pre_desugar_def_return_types,
             &pre_desugar_fn_signatures,
+            &pre_desugar_defs,
             &proc_defs_by_name,
             const_arrays,
             errors,
@@ -868,23 +1079,29 @@ fn build_proc_lowering_env(
                 proc_diag,
                 errors,
                 format!(
-                    "processor '{}' must declare outs block or assign to outN in sample",
+                    "processor '{}' must declare outs/kouts block, assign to outN in sample, or assign to koutN in block",
                     proc.name
                 ),
             );
             continue;
         }
+        let params = shape
+            .param_specs
+            .iter()
+            .flat_map(|spec| spec.slots.iter().cloned())
+            .map(|slot| (slot.name.clone(), slot))
+            .collect::<HashMap<_, _>>();
+        let has_bound_params = params.values().any(|slot| slot.bind.is_some());
         proc_api.insert(
             proc.name.clone(),
             ProcApi {
                 ins: shape.in_ports.clone(),
-                params: shape
-                    .param_specs
-                    .iter()
-                    .flat_map(|spec| spec.slots.iter().cloned())
-                    .map(|slot| (slot.name.clone(), slot))
-                    .collect::<HashMap<_, _>>(),
-                outs: shape.outs.clone(),
+                params,
+                has_bound_params,
+                outputs: ProcOutputs {
+                    names: shape.outs.clone(),
+                    timing: proc.outs_timing,
+                },
                 events: expand_proc_event_specs(proc, &shape.param_specs, options, errors),
                 buffers: shape.buffer_specs.clone(),
                 has_block: proc.has_block_block,
@@ -1023,6 +1240,7 @@ pub(crate) fn desugar_processors(
             program,
             def_sample_oversample_factors: HashMap::new(),
             proc_step_oversample_meta: HashMap::new(),
+            proc_instance_oversample_factors: HashMap::new(),
             proc_api: HashMap::new(),
             lowering_shapes: HashMap::new(),
             top_level_proc_rewrite: TopLevelProcRewriteMeta::default(),
@@ -1063,12 +1281,22 @@ pub(crate) fn desugar_processors(
     program.blocks.extend(generated_structs);
     program.blocks.extend(generated_defs);
 
-    let top_level_proc_rewrite =
-        rewrite_top_level_proc_calls(&mut program, options, &lowering_shapes, &proc_api, errors);
+    let top_level_proc_rewrite = rewrite_top_level_proc_calls(
+        &mut program,
+        options,
+        &proc_defs_by_name,
+        &lowering_shapes,
+        &proc_api,
+        errors,
+    );
+    let proc_instance_oversample_factors = top_level_proc_rewrite
+        .global_proc_instance_oversample_factors
+        .clone();
     ProcessorDesugarResult {
         program,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
+        proc_instance_oversample_factors,
         proc_api,
         lowering_shapes,
         top_level_proc_rewrite,
@@ -2173,6 +2401,31 @@ graph:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("indexed proc-array output array graph should analyze");
+        let proc_out_tmp = typed.sample.iter().find_map(|stmt| match stmt {
+            Stmt::Assign {
+                target: AssignTarget::Var(tmp),
+                expr: Expr::UserCall { name, args, .. },
+                ..
+            } if name == "Voice.__proc_call_out1"
+                && args.iter().any(|inner| {
+                    matches!(
+                        inner.expr,
+                        Expr::Index { ref base, ref index, .. }
+                            if base == "voices"
+                                && matches!(**index, Expr::Int { value: 0, .. })
+                    )
+                }) =>
+            {
+                Some(tmp.as_str())
+            }
+            _ => None,
+        });
+        let Some(proc_out_tmp) = proc_out_tmp else {
+            panic!(
+                "expected lowered sample to hoist proc-array output slot voices[0].pair[1]: {:?}",
+                typed.sample
+            );
+        };
         assert!(
             typed.sample.iter().any(|stmt| matches!(
                 stmt,
@@ -2182,17 +2435,10 @@ graph:
                 } if name == "Take.__proc_step"
                     && args.iter().any(|arg| matches!(
                         arg.expr,
-                        Expr::UserCall { ref name, ref args, .. }
-                            if name == "Voice.__proc_call_out1"
-                                && args.iter().any(|inner| matches!(
-                                    inner.expr,
-                                    Expr::Index { ref base, ref index, .. }
-                                        if base == "voices"
-                                            && matches!(**index, Expr::Int { value: 0, .. })
-                                ))
+                        Expr::Var { ref name, .. } if name == proc_out_tmp
                     ))
             )),
-            "expected lowered sample call to read proc-array output slot voices[0].pair[1]: {:?}",
+            "expected lowered sample call to read hoisted proc-array output slot voices[0].pair[1]: {:?}",
             typed.sample
         );
     }

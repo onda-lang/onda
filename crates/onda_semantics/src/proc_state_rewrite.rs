@@ -17,18 +17,23 @@ pub(crate) const PROC_BLOCK_POST_FN_SUFFIX: &str = ".__proc_block_post";
 pub(crate) const PROC_STEP_FN_SUFFIX: &str = ".__proc_step";
 pub(crate) const PROC_CALL_OUT_FN_PREFIX: &str = ".__proc_call_out";
 pub(crate) const PROC_EVENT_FN_PREFIX: &str = ".__proc_event_";
-pub(crate) const INTERNAL_BUFFER_READ2_FN: &str = "__onda_buffer_read2";
-pub(crate) const INTERNAL_BUFFER_WRITE2_FN: &str = "__onda_buffer_write2";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProcApi {
     pub(crate) ins: Vec<ProcPortSpec>,
     pub(crate) params: HashMap<String, ProcParamSlotSpec>,
-    pub(crate) outs: Vec<String>,
+    pub(crate) has_bound_params: bool,
+    pub(crate) outputs: ProcOutputs,
     pub(crate) events: HashMap<String, ProcEventSpec>,
     pub(crate) buffers: Vec<ProcBufferSpec>,
     pub(crate) has_block: bool,
     pub(crate) sample_oversample_factor: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProcOutputs {
+    pub(crate) names: Vec<String>,
+    pub(crate) timing: OutputTiming,
 }
 
 #[derive(Debug, Clone)]
@@ -42,15 +47,23 @@ pub(crate) struct ProcPortSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct ProcParamSlotSpec {
     pub(crate) name: String,
+    pub(crate) pinned: bool,
     pub(crate) ty: PrimitiveType,
     pub(crate) default: Option<Expr>,
     pub(crate) range: Option<TypedValueRange>,
+    pub(crate) bind: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProcParamSpec {
     pub(crate) name: String,
     pub(crate) slots: Vec<ProcParamSlotSpec>,
+}
+
+impl ProcParamSpec {
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.slots.iter().any(|slot| slot.pinned)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -729,7 +742,7 @@ pub(crate) fn rewrite_proc_expr_symbols(
                             expr: Expr::var(receiver),
                         });
                         rewritten_args.extend(args.clone());
-                        *name = "unsafe_read".to_owned();
+                        *name = UNSAFE_READ_FN.to_owned();
                         *args = rewritten_args;
                     }
                 }
@@ -757,11 +770,11 @@ pub(crate) fn rewrite_proc_expr_symbols(
                             expr: Expr::var(receiver),
                         });
                         rewritten_args.extend(args.clone());
-                        *name = "unsafe_write".to_owned();
+                        *name = UNSAFE_WRITE_FN.to_owned();
                         *args = rewritten_args;
                     }
                 }
-                if name == "unsafe_read" && args.len() == 2 {
+                if name == UNSAFE_READ_FN && args.len() == 2 {
                     if let Expr::Var { name: base, .. } = &args[0].expr {
                         if let Some(slots) = field_array_slots.get(base.as_str()) {
                             if slots.is_empty() {
@@ -1207,7 +1220,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     errors,
                 );
                 if let Expr::UserCall { name, args, .. } = &expr_rewritten {
-                    if name == "unsafe_write" && args.len() == 3 {
+                    if name == UNSAFE_WRITE_FN && args.len() == 3 {
                         if let Expr::Var { name: base, .. } = &args[0].expr {
                             if let Some(slots) = in_array_slots.get(base) {
                                 push_semantic(

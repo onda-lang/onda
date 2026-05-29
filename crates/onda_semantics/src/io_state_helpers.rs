@@ -96,6 +96,9 @@ pub(crate) fn check_unique_set(
 pub(crate) struct IoInference {
     pub(crate) max_in: usize,
     pub(crate) max_out: usize,
+    pub(crate) max_param: usize,
+    pub(crate) max_kin: usize,
+    pub(crate) max_kout: usize,
 }
 
 pub(crate) fn infer_numbered_io_from_sample(sample: &[Stmt]) -> IoInference {
@@ -112,20 +115,14 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
         Stmt::Assign { target, expr, .. } => {
             match target {
                 AssignTarget::Var(name) => {
-                    acc.max_out = acc
-                        .max_out
-                        .max(parse_numbered_port_index(name, "out").unwrap_or(0));
+                    infer_numbered_base_name(name, acc);
                 }
                 AssignTarget::Index { base, index } => {
-                    acc.max_out = acc
-                        .max_out
-                        .max(parse_numbered_port_index(base, "out").unwrap_or(0));
+                    infer_numbered_base_name(base, acc);
                     infer_io_from_expr(index, acc);
                 }
                 AssignTarget::Slice { base, start, end } => {
-                    acc.max_out = acc
-                        .max_out
-                        .max(parse_numbered_port_index(base, "out").unwrap_or(0));
+                    infer_numbered_base_name(base, acc);
                     if let Some(start) = start {
                         infer_io_from_expr(start, acc);
                     }
@@ -135,9 +132,7 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                 }
                 AssignTarget::Tuple(names) => {
                     for name in names {
-                        acc.max_out = acc
-                            .max_out
-                            .max(parse_numbered_port_index(name, "out").unwrap_or(0));
+                        infer_numbered_base_name(name, acc);
                     }
                 }
             }
@@ -177,31 +172,16 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::ArrayCtor { .. } => {}
         Expr::Var { name, .. } => {
-            acc.max_in = acc
-                .max_in
-                .max(parse_numbered_port_index(name, "in").unwrap_or(0));
-            acc.max_out = acc
-                .max_out
-                .max(parse_numbered_port_index(name, "out").unwrap_or(0));
+            infer_numbered_base_name(name, acc);
         }
         Expr::Index { base, index, .. } => {
-            acc.max_in = acc
-                .max_in
-                .max(parse_numbered_port_index(base, "in").unwrap_or(0));
-            acc.max_out = acc
-                .max_out
-                .max(parse_numbered_port_index(base, "out").unwrap_or(0));
+            infer_numbered_base_name(base, acc);
             infer_io_from_expr(index, acc);
         }
         Expr::Slice {
             base, start, end, ..
         } => {
-            acc.max_in = acc
-                .max_in
-                .max(parse_numbered_port_index(base, "in").unwrap_or(0));
-            acc.max_out = acc
-                .max_out
-                .max(parse_numbered_port_index(base, "out").unwrap_or(0));
+            infer_numbered_base_name(base, acc);
             if let Some(start) = start {
                 infer_io_from_expr(start, acc);
             }
@@ -236,6 +216,24 @@ pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
             }
         }
     }
+}
+
+fn infer_numbered_base_name(name: &str, acc: &mut IoInference) {
+    acc.max_in = acc
+        .max_in
+        .max(parse_numbered_port_index(name, "in").unwrap_or(0));
+    acc.max_out = acc
+        .max_out
+        .max(parse_numbered_port_index(name, "out").unwrap_or(0));
+    acc.max_param = acc
+        .max_param
+        .max(parse_numbered_port_index(name, "param").unwrap_or(0));
+    acc.max_kin = acc
+        .max_kin
+        .max(parse_numbered_port_index(name, "kin").unwrap_or(0));
+    acc.max_kout = acc
+        .max_kout
+        .max(parse_numbered_port_index(name, "kout").unwrap_or(0));
 }
 
 pub(crate) fn parse_numbered_port_index(name: &str, prefix: &str) -> Option<usize> {
@@ -414,10 +412,40 @@ pub(crate) fn normalize_numbered_port_decls(
             explicit_map.get(&name).cloned().unwrap_or(PortDecl {
                 loc: Default::default(),
                 name,
+                output_timing: None,
+                output_timing_loc: Default::default(),
                 ty: None,
                 ty_loc: Default::default(),
                 default: None,
                 range: None,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn normalize_numbered_param_decls(
+    explicit: &[ParamDecl],
+    prefix: &str,
+    inferred_max: usize,
+) -> Vec<ParamDecl> {
+    let explicit_names = explicit.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+    let ordered_names = normalize_numbered_ports(&explicit_names, prefix, inferred_max);
+    let explicit_map = explicit
+        .iter()
+        .map(|p| (p.name.clone(), p.clone()))
+        .collect::<HashMap<_, _>>();
+    ordered_names
+        .into_iter()
+        .map(|name| {
+            explicit_map.get(&name).cloned().unwrap_or(ParamDecl {
+                loc: Default::default(),
+                name,
+                pinned: false,
+                ty: None,
+                ty_loc: Default::default(),
+                default: None,
+                range: None,
+                bind: None,
             })
         })
         .collect()
@@ -433,6 +461,61 @@ pub(crate) fn check_local_port_duplicates(
         if !seen.insert(port.name.clone()) {
             errors.push(Diagnostic::semantic_span(
                 format!("duplicate {kind} '{}'", port.name),
+                port.loc.as_ref(),
+            ));
+        }
+    }
+}
+
+pub(crate) fn check_local_param_duplicates(params: &[ParamDecl], errors: &mut Vec<Diagnostic>) {
+    let mut seen = HashSet::new();
+    for param in params {
+        if !seen.insert(param.name.clone()) {
+            errors.push(Diagnostic::semantic_span(
+                format!("duplicate param '{}'", param.name),
+                param.loc.as_ref(),
+            ));
+        }
+    }
+}
+
+pub(crate) fn check_control_output_reserved_audio_names(
+    ports: &[PortDecl],
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for port in ports {
+        if parse_numbered_port_index(&port.name, "out").is_some() {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "{context} '{}' uses audio output prefix 'outN'; use 'koutN' for control outputs",
+                    port.name
+                ),
+                port.loc.as_ref(),
+            ));
+        }
+    }
+}
+
+pub(crate) fn check_port_name_conflicts(
+    existing_ports: &[PortDecl],
+    existing_kind: &str,
+    candidate_ports: &[PortDecl],
+    candidate_kind: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let existing_names = existing_ports
+        .iter()
+        .map(|port| port.name.clone())
+        .collect::<HashSet<_>>();
+    let mut reported = HashSet::new();
+    for port in candidate_ports {
+        if existing_names.contains(&port.name) && reported.insert(port.name.clone()) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "{candidate_kind} '{}' conflicts with {existing_kind} '{}'",
+                    port.name, port.name
+                ),
                 port.loc.as_ref(),
             ));
         }

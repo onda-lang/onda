@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashSet};
 
-use onda_frontend::ast::PortBlock;
+use onda_frontend::ast::{OutputTiming, PortBlock};
 
 use super::*;
 
@@ -91,6 +91,8 @@ fn upsert_top_level_port_block(blocks: &mut Vec<Block>, kind: BlockKind, ports: 
                     deferred_count: None,
                     deferred_default_ty: None,
                     deferred_prefix: String::new(),
+                    output_timing: existing.output_timing,
+                    output_timing_loc: existing.output_timing_loc,
                 }
             }
             _ => {}
@@ -104,6 +106,8 @@ fn upsert_top_level_port_block(blocks: &mut Vec<Block>, kind: BlockKind, ports: 
             deferred_count: None,
             deferred_default_ty: None,
             deferred_prefix: String::new(),
+            output_timing: OutputTiming::Sample,
+            output_timing_loc: Default::default(),
         })),
         BlockKind::Outs => blocks.push(Block::Outs(PortBlock {
             loc: Default::default(),
@@ -111,6 +115,8 @@ fn upsert_top_level_port_block(blocks: &mut Vec<Block>, kind: BlockKind, ports: 
             deferred_count: None,
             deferred_default_ty: None,
             deferred_prefix: String::new(),
+            output_timing: OutputTiming::Sample,
+            output_timing_loc: Default::default(),
         })),
         _ => {}
     }
@@ -137,6 +143,8 @@ fn merge_graph_inferred_port_decls(
             out.push(PortDecl {
                 loc: Default::default(),
                 name: alias,
+                output_timing: None,
+                output_timing_loc: Default::default(),
                 ty: None,
                 ty_loc: Default::default(),
                 default: None,
@@ -152,6 +160,8 @@ fn merge_graph_inferred_port_decls(
             out.push(PortDecl {
                 loc: Default::default(),
                 name: name.clone(),
+                output_timing: None,
+                output_timing_loc: Default::default(),
                 ty: None,
                 ty_loc: Default::default(),
                 default: None,

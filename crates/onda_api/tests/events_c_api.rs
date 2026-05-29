@@ -243,6 +243,206 @@ sample { out1 = amp }
 }
 
 #[test]
+fn c_api_param_default_bytes_preserve_declared_types_and_arrays() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params {
+  gain: f32 = 0.25
+  ratio: f64 = 0.5
+  mode: i32 = 7
+  wide: i64 = 1099511627776
+  gate: bool = true
+  curve: f32[2] = [0.25, 0.75]
+}
+outs { out1 }
+sample { out1 = gain }
+"#,
+        );
+
+        assert_eq!(onda_param_count(program.0), 6);
+
+        assert_eq!(onda_param_type_bytes(program.0, 0), 4);
+        assert_eq!(
+            onda_param_default_bytes(program.0, 0, std::ptr::null_mut(), 0),
+            4
+        );
+        let mut gain = [0_u8; 4];
+        assert_eq!(
+            onda_param_default_bytes(
+                program.0,
+                0,
+                gain.as_mut_ptr().cast::<c_void>(),
+                gain.len() as i32,
+            ),
+            4
+        );
+        assert_eq!(f32::from_ne_bytes(gain), 0.25);
+
+        let mut ratio = [0_u8; 8];
+        assert_eq!(
+            onda_param_default_bytes(
+                program.0,
+                1,
+                ratio.as_mut_ptr().cast::<c_void>(),
+                ratio.len() as i32,
+            ),
+            8
+        );
+        assert_eq!(f64::from_ne_bytes(ratio), 0.5);
+
+        let mut mode = [0_u8; 4];
+        assert_eq!(
+            onda_param_default_bytes(
+                program.0,
+                2,
+                mode.as_mut_ptr().cast::<c_void>(),
+                mode.len() as i32,
+            ),
+            4
+        );
+        assert_eq!(i32::from_ne_bytes(mode), 7);
+
+        let mut wide = [0_u8; 8];
+        assert_eq!(
+            onda_param_default_bytes(
+                program.0,
+                3,
+                wide.as_mut_ptr().cast::<c_void>(),
+                wide.len() as i32,
+            ),
+            8
+        );
+        assert_eq!(i64::from_ne_bytes(wide), 1_099_511_627_776);
+
+        let mut gate = [0_u8; 1];
+        assert_eq!(
+            onda_param_default_bytes(
+                program.0,
+                4,
+                gate.as_mut_ptr().cast::<c_void>(),
+                gate.len() as i32,
+            ),
+            1
+        );
+        assert_eq!(gate[0], 1);
+
+        assert_eq!(onda_param_array_len(program.0, 5), 2);
+        assert_eq!(
+            onda_param_default_bytes(program.0, 5, std::ptr::null_mut(), 0),
+            8
+        );
+        let mut curve = [0_u8; 8];
+        assert_eq!(
+            onda_param_default_bytes(
+                program.0,
+                5,
+                curve.as_mut_ptr().cast::<c_void>(),
+                curve.len() as i32,
+            ),
+            8
+        );
+        assert_eq!(f32::from_ne_bytes(curve[0..4].try_into().unwrap()), 0.25);
+        assert_eq!(f32::from_ne_bytes(curve[4..8].try_into().unwrap()), 0.75);
+
+        let mut too_small = [0_u8; 1];
+        assert_eq!(
+            onda_param_default_bytes(
+                program.0,
+                5,
+                too_small.as_mut_ptr().cast::<c_void>(),
+                too_small.len() as i32,
+            ),
+            8
+        );
+        assert_eq!(too_small, [0]);
+        assert_eq!(
+            onda_param_default_bytes(program.0, -1, std::ptr::null_mut(), 0),
+            -1
+        );
+    }
+}
+
+#[test]
+fn c_api_control_outputs_metadata_and_readback_work() {
+    unsafe {
+        let frames = 512_i32;
+        let program = compile_program(
+            r#"
+kouts {
+  meter: f32
+  flags: bool[2]
+}
+
+block {
+  meter = 3.5
+  flags[0] = true
+  flags[1] = false
+}
+"#,
+        );
+
+        assert_eq!(onda_output_count(program.0), 0);
+        assert_eq!(onda_control_output_count(program.0), 2);
+
+        let meter_name = CStr::from_ptr(onda_control_output_name(program.0, 0))
+            .to_string_lossy()
+            .into_owned();
+        let flags_name = CStr::from_ptr(onda_control_output_name(program.0, 1))
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(meter_name, "meter");
+        assert_eq!(flags_name, "flags");
+
+        let flags_key = CString::new("flags").expect("name contains no NUL bytes");
+        assert_eq!(onda_control_output_index(program.0, flags_key.as_ptr()), 1);
+        assert_eq!(onda_control_output_elem_type(program.0, 0), 0);
+        assert_eq!(onda_control_output_type_bytes(program.0, 0), 4);
+        assert_eq!(onda_control_output_array_len(program.0, 0), 1);
+        assert_eq!(onda_control_output_elem_type(program.0, 1), 4);
+        assert_eq!(onda_control_output_type_bytes(program.0, 1), 2);
+        assert_eq!(onda_control_output_array_len(program.0, 1), 2);
+        assert!(onda_control_output_slot_offset(program.0, 1) >= 0);
+        assert!(onda_control_output_byte_offset(program.0, 1) >= 0);
+
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 0, 0, &mut diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+
+        assert_eq!(onda_process_checked(instance.0, frames), 0);
+
+        let mut meter = [0_u8; 4];
+        assert_eq!(
+            onda_control_output_read_bytes(
+                instance.0,
+                0,
+                meter.as_mut_ptr().cast::<c_void>(),
+                meter.len() as i32,
+            ),
+            4
+        );
+        assert!((f32::from_ne_bytes(meter) - 3.5).abs() < 1e-6);
+
+        let mut flags = [0_u8; 2];
+        assert_eq!(
+            onda_control_output_read_bytes(
+                instance.0,
+                1,
+                flags.as_mut_ptr().cast::<c_void>(),
+                flags.len() as i32,
+            ),
+            2
+        );
+        assert_eq!(flags, [1, 0]);
+    }
+}
+
+#[test]
 fn c_api_trigger_event_by_index_validates_and_dispatches() {
     unsafe {
         let frames = 512_i32;

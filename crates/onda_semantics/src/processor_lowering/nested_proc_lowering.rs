@@ -1,4 +1,5 @@
 use super::*;
+use crate::proc_call_rewrite::lower_named_proc_param_calls_in_stmts;
 
 pub(super) fn rewrite_nested_proc_calls_in_expr(
     expr: &mut Expr,
@@ -148,15 +149,16 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                             );
                             return;
                         };
-                        if api.outs.len() != 1 {
+                        if api.outputs.names.len() != 1 {
                             push_semantic(
                                 expr_diag,
                                 errors,
                                 format!(
-                                    "processor call '{}(...)' has {} outputs; use '{}(...).<endpoint>'/outN",
+                                    "processor call '{}(...)' has {} outputs; use '{}(...).<endpoint>'/{}",
                                     resolved_slot,
-                                    api.outs.len(),
-                                    resolved_slot
+                                    api.outputs.names.len(),
+                                    resolved_slot,
+                                    proc_output_alias_label(api.outputs.timing)
                                 ),
                             );
                             return;
@@ -196,15 +198,16 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         else {
                             return;
                         };
-                        if api.outs.len() != 1 {
+                        if api.outputs.names.len() != 1 {
                             push_semantic(
                                 expr_diag,
                                 errors,
                                 format!(
-                                    "processor call '{}[...]' has {} outputs; use '{}[...]().<endpoint>'/outN",
+                                    "processor call '{}[...]' has {} outputs; use '{}[...]().<endpoint>'/{}",
                                     array_base,
-                                    api.outs.len(),
-                                    array_base
+                                    api.outputs.names.len(),
+                                    array_base,
+                                    proc_output_alias_label(api.outputs.timing)
                                 ),
                             );
                             return;
@@ -366,15 +369,16 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     );
                     return;
                 };
-                if api.outs.len() != 1 {
+                if api.outputs.names.len() != 1 {
                     push_semantic(
                         expr_diag,
                         errors,
                         format!(
-                            "processor call '{}(...)' has {} outputs; use '{}(...).<endpoint>'/outN",
+                            "processor call '{}(...)' has {} outputs; use '{}(...).<endpoint>'/{}",
                             name,
-                            api.outs.len(),
-                            name
+                            api.outputs.names.len(),
+                            name,
+                            proc_output_alias_label(api.outputs.timing)
                         ),
                     );
                     return;
@@ -1070,6 +1074,49 @@ pub(super) fn rewrite_owner_proc_stmt(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn rewrite_owner_proc_stmts(
+    mut stmts: Vec<Stmt>,
+    owner_proc: &str,
+    field_names: &HashSet<String>,
+    array_field_names: &HashSet<String>,
+    ins_names: &HashSet<String>,
+    field_array_slots: &HashMap<String, Vec<String>>,
+    in_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    nested_fields: &HashMap<String, HashSet<String>>,
+    nested_instances: &HashMap<String, ProcCallInstance>,
+    proc_api: &HashMap<String, ProcApi>,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<Stmt> {
+    lower_named_proc_param_calls_in_stmts(
+        &mut stmts,
+        nested_instances,
+        proc_array_slots,
+        proc_api,
+        errors,
+    );
+    stmts
+        .into_iter()
+        .filter_map(|stmt| {
+            rewrite_owner_proc_stmt(
+                stmt,
+                owner_proc,
+                field_names,
+                array_field_names,
+                ins_names,
+                field_array_slots,
+                in_array_slots,
+                proc_array_slots,
+                nested_fields,
+                nested_instances,
+                proc_api,
+                errors,
+            )
+        })
+        .collect()
+}
+
 pub(super) fn expand_nested_struct_ctor_assign(
     instance_var: &str,
     ctor_name: &str,
@@ -1580,18 +1627,8 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
             errors,
         );
 
-        let mapped_field_array_slots = callee_field_array_slots
-            .iter()
-            .map(|(base, slots)| {
-                (
-                    base.clone(),
-                    slots
-                        .iter()
-                        .map(|slot| nested_field_name(nested_path, slot))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let mapped_field_array_slots =
+            mapped_nested_wrapper_field_array_slots(callee_field_array_slots, nested_path, &remap);
 
         let lowered = rewrite_proc_stmt_symbols(
             &stmt,
@@ -1607,6 +1644,49 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
         prefix_self_fields_in_stmt(&mut lowered, nested_path, &callee_shape.field_names);
         Some(lowered)
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn lower_callee_stmts_for_nested_wrapper(
+    mut stmts: Vec<Stmt>,
+    owner_proc: &str,
+    callee_proc: &str,
+    nested_path: &str,
+    callee_shape: &ProcLoweringShape,
+    callee_nested_instances: &HashMap<String, ProcCallInstance>,
+    callee_ins_names: &HashSet<String>,
+    callee_field_array_slots: &HashMap<String, Vec<String>>,
+    callee_in_array_slots: &HashMap<String, Vec<String>>,
+    callee_proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<Stmt> {
+    lower_named_proc_param_calls_in_stmts(
+        &mut stmts,
+        callee_nested_instances,
+        callee_proc_array_slots,
+        proc_api,
+        errors,
+    );
+    stmts
+        .iter()
+        .filter_map(|stmt| {
+            lower_callee_stmt_for_nested_wrapper(
+                stmt,
+                owner_proc,
+                callee_proc,
+                nested_path,
+                callee_shape,
+                callee_nested_instances,
+                callee_ins_names,
+                callee_field_array_slots,
+                callee_in_array_slots,
+                callee_proc_array_slots,
+                proc_api,
+                errors,
+            )
+        })
+        .collect()
 }
 
 pub(super) fn lower_callee_expr_for_nested_wrapper(
@@ -1675,18 +1755,8 @@ pub(super) fn lower_callee_expr_for_nested_wrapper(
         errors,
     );
 
-    let mapped_field_array_slots = callee_field_array_slots
-        .iter()
-        .map(|(base, slots)| {
-            (
-                base.clone(),
-                slots
-                    .iter()
-                    .map(|slot| nested_field_name(nested_path, slot))
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
+    let mapped_field_array_slots =
+        mapped_nested_wrapper_field_array_slots(callee_field_array_slots, nested_path, &remap);
     rewrite_proc_expr_symbols(
         &mut expr,
         owner_proc,
@@ -1697,4 +1767,32 @@ pub(super) fn lower_callee_expr_for_nested_wrapper(
     );
     prefix_self_fields_in_expr(&mut expr, nested_path, &callee_shape.field_names);
     expr
+}
+
+fn mapped_nested_wrapper_field_array_slots(
+    field_array_slots: &HashMap<String, Vec<String>>,
+    nested_path: &str,
+    remap: &HashMap<String, String>,
+) -> HashMap<String, Vec<String>> {
+    field_array_slots
+        .iter()
+        .map(|(base, slots)| {
+            (
+                remap_nested_wrapper_array_base(base, remap),
+                slots
+                    .iter()
+                    .map(|slot| nested_field_name(nested_path, slot))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+fn remap_nested_wrapper_array_base(base: &str, remap: &HashMap<String, String>) -> String {
+    if let Some((root, field)) = split_root_field_path(base) {
+        if let Some(mapped) = remap.get(root) {
+            return format!("{mapped}.{field}");
+        }
+    }
+    remap.get(base).cloned().unwrap_or_else(|| base.to_owned())
 }

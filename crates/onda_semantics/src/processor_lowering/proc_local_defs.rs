@@ -6,7 +6,7 @@ use onda_frontend::{DiagCtx, Diagnostic};
 
 pub(super) const PROC_LOCAL_DEF_FN_PREFIX: &str = ".__proc_local__";
 
-pub(super) fn proc_local_hidden_def_name(owner_proc: &str, local_name: &str) -> String {
+pub(crate) fn proc_local_hidden_def_name(owner_proc: &str, local_name: &str) -> String {
     format!("{owner_proc}{PROC_LOCAL_DEF_FN_PREFIX}{local_name}")
 }
 
