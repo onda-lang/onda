@@ -2,7 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use onda_frontend::{
-    AssignTarget, Block, BlockExec, EventDef, FunctionDef, ProcessorDef, Program, Span, Stmt,
+    AssignTarget, Block, BlockExec, EventDef, FunctionDef, NamespaceDecl, NamespaceItem,
+    ProcessorDef, Program, Span, Stmt,
 };
 use onda_semantics::builtins::builtin_constant_names;
 
@@ -48,6 +49,7 @@ pub(super) fn build_semantic_scope_index(
         }
     }
 
+    index.rebuild_scope_line_index();
     index
 }
 
@@ -96,7 +98,54 @@ pub(super) fn collect_document_scope_symbols(block: &Block, scope: &mut Semantic
                 scope.functions.insert(method.name.clone());
             }
         }
+        Block::Namespace(ns) => {
+            collect_namespace_symbols(ns, scope);
+        }
+        Block::NamespaceAlias(alias) => {
+            scope.namespaces.insert(alias.name.clone());
+        }
         _ => {}
+    }
+}
+
+fn collect_namespace_symbols(ns: &NamespaceDecl, scope: &mut SemanticScope) {
+    for segment in ns.name.split("::") {
+        let segment = segment.trim();
+        if !segment.is_empty() {
+            scope.namespaces.insert(segment.to_owned());
+        }
+    }
+    for param in &ns.params {
+        scope.consts.insert(param.name.clone());
+    }
+    for item in &ns.items {
+        match item {
+            NamespaceItem::Const(decl) => {
+                scope.consts.insert(decl.name.clone());
+            }
+            NamespaceItem::Def(def) => {
+                scope.functions.insert(def.name.clone());
+            }
+            NamespaceItem::Proc(proc_def) => {
+                scope.types.insert(proc_def.name.clone());
+            }
+            NamespaceItem::Struct(struct_def) => {
+                scope.types.insert(struct_def.name.clone());
+                for tp in &struct_def.type_params {
+                    scope.types.insert(tp.clone());
+                }
+                for method in &struct_def.methods {
+                    scope.functions.insert(method.name.clone());
+                }
+            }
+            NamespaceItem::Namespace(child) => {
+                collect_namespace_symbols(child, scope);
+            }
+            NamespaceItem::Alias(alias) => {
+                scope.namespaces.insert(alias.name.clone());
+            }
+            NamespaceItem::Use(_) | NamespaceItem::Assert(_) => {}
+        }
     }
 }
 
@@ -552,6 +601,12 @@ fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
                 scope.functions.insert(method.name.clone());
                 collect_def_symbols(method, scope);
             }
+        }
+        Block::Namespace(ns) => {
+            collect_namespace_symbols(ns, scope);
+        }
+        Block::NamespaceAlias(alias) => {
+            scope.namespaces.insert(alias.name.clone());
         }
         _ => {}
     }

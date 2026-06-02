@@ -2110,6 +2110,160 @@ fn collect_use_scope_candidates(
     }
 }
 
+fn resolve_visible_unqualified_namespace_root(
+    base: &str,
+    current_ns: &str,
+    require_template: bool,
+    template_consts: &HashMap<String, Expr>,
+    options: AnalysisOptions,
+    state: &mut NamespaceFlattenState,
+    generated: &mut Vec<Block>,
+    use_site_span: Span,
+    errors: &mut Vec<Diagnostic>,
+    depth: usize,
+) -> Option<String> {
+    let file = use_site_span.file().unwrap_or_default();
+    let mut candidates = Vec::<String>::new();
+    for ns in namespace_candidates(current_ns) {
+        if let Some(scope) = state.public_uses.get(&ns) {
+            collect_use_scope_namespace_root_candidates(
+                base,
+                scope,
+                require_template,
+                state,
+                use_site_span,
+                &mut candidates,
+            );
+        }
+        if let Some(scope) = state.private_uses.get(&(ns.clone(), file.clone())) {
+            collect_use_scope_namespace_root_candidates(
+                base,
+                scope,
+                require_template,
+                state,
+                use_site_span,
+                &mut candidates,
+            );
+        }
+    }
+
+    let mut resolved_candidates = Vec::<String>::new();
+    for candidate in candidates {
+        if let Some(alias_target) = resolve_namespace_alias_path(
+            &candidate,
+            template_consts,
+            options,
+            state,
+            generated,
+            errors,
+            use_site_span,
+            depth + 1,
+        ) {
+            let Some(alias_target) = alias_target else {
+                return None;
+            };
+            resolved_candidates.push(alias_target);
+        } else {
+            resolved_candidates.push(candidate);
+        }
+    }
+
+    resolved_candidates.sort();
+    resolved_candidates.dedup();
+    match resolved_candidates.as_slice() {
+        [] => None,
+        [only] => Some(only.clone()),
+        many => {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "ambiguous unqualified namespace '{base}' from explicit use declarations; qualify the reference as one of: {}",
+                    many.join(", ")
+                ),
+                use_site_span,
+            ));
+            None
+        }
+    }
+}
+
+fn collect_use_scope_namespace_root_candidates(
+    base: &str,
+    scope: &UseScope,
+    require_template: bool,
+    state: &NamespaceFlattenState,
+    use_site_span: Span,
+    candidates: &mut Vec<String>,
+) {
+    if let Some(bindings) = scope.symbols.get(base) {
+        candidates.extend(bindings.iter().filter_map(|binding| {
+            namespace_root_candidate(&binding.target, require_template, state, use_site_span)
+        }));
+    }
+    for binding in &scope.namespaces {
+        let target = namespace_join(&binding.target, base);
+        if let Some(candidate) =
+            namespace_root_candidate(&target, require_template, state, use_site_span)
+        {
+            candidates.push(candidate);
+        }
+    }
+}
+
+fn namespace_root_candidate(
+    target: &str,
+    require_template: bool,
+    state: &NamespaceFlattenState,
+    use_site_span: Span,
+) -> Option<String> {
+    if require_template {
+        state
+            .templates
+            .contains_key(target)
+            .then(|| target.to_owned())
+    } else {
+        (has_visible_namespace_prefix(target, state)
+            || visible_namespace_alias_record(target, state, use_site_span).is_some())
+        .then(|| target.to_owned())
+    }
+}
+
+fn visible_namespace_alias_record(
+    path: &str,
+    state: &NamespaceFlattenState,
+    use_site_span: Span,
+) -> Option<NamespaceAliasRecord> {
+    if let Some(alias) = state.aliases.get(path) {
+        return Some(alias.clone());
+    }
+    let file = use_site_span.file().unwrap_or_default();
+    state.private_aliases.get(&(path.to_owned(), file)).cloned()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_namespace_alias_path(
+    path: &str,
+    template_consts: &HashMap<String, Expr>,
+    options: AnalysisOptions,
+    state: &mut NamespaceFlattenState,
+    generated: &mut Vec<Block>,
+    errors: &mut Vec<Diagnostic>,
+    use_site_span: Span,
+    depth: usize,
+) -> Option<Option<String>> {
+    let alias = visible_namespace_alias_record(path, state, use_site_span)?;
+    Some(resolve_namespace_segments_internal(
+        &alias.target,
+        &alias.declared_ns,
+        template_consts,
+        options,
+        state,
+        generated,
+        errors,
+        use_site_span,
+        depth,
+    ))
+}
+
 fn resolve_namespace_symbol_name(
     name: &str,
     current_ns: &str,
@@ -2214,6 +2368,46 @@ fn resolve_namespace_segments_internal(
                     break;
                 }
             }
+            if errors.len() == before_errors {
+                if let Some(candidate) = resolve_visible_unqualified_namespace_root(
+                    &segments[0].name,
+                    current_ns,
+                    true,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    use_site_span,
+                    errors,
+                    depth,
+                ) {
+                    let used_resolved = instantiate_namespace_template(
+                        &candidate,
+                        args,
+                        current_ns,
+                        template_consts,
+                        options,
+                        state,
+                        generated,
+                        errors,
+                        use_site_span,
+                    );
+                    match (resolved.as_ref(), used_resolved) {
+                        (Some(local), Some(used)) if local != &used => {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "ambiguous unqualified namespace '{}' from explicit use declarations; qualify the reference as either {local} or {used}",
+                                    segments[0].name
+                                ),
+                                use_site_span,
+                            ));
+                            return None;
+                        }
+                        (None, used) => resolved = used,
+                        _ => {}
+                    }
+                }
+            }
             let Some(found) = resolved else {
                 if errors.len() > before_errors {
                     return None;
@@ -2227,6 +2421,7 @@ fn resolve_namespace_segments_internal(
             path = found;
         } else {
             let mut resolved = None::<String>;
+            let before_errors = errors.len();
             for candidate_ns in namespace_candidates(current_ns) {
                 let candidate = namespace_join(&candidate_ns, &segments[0].name);
                 if state.templates.contains_key(&candidate) {
@@ -2248,7 +2443,64 @@ fn resolve_namespace_segments_internal(
                     break;
                 }
             }
+            if let Some(candidate) = resolve_visible_unqualified_namespace_root(
+                &segments[0].name,
+                current_ns,
+                false,
+                template_consts,
+                options,
+                state,
+                generated,
+                use_site_span,
+                errors,
+                depth,
+            ) {
+                let used_resolved = if state.templates.contains_key(&candidate) {
+                    instantiate_namespace_template(
+                        &candidate,
+                        &empty_call_args,
+                        current_ns,
+                        template_consts,
+                        options,
+                        state,
+                        generated,
+                        errors,
+                        use_site_span,
+                    )
+                } else {
+                    Some(candidate)
+                };
+                match (resolved.as_ref(), used_resolved) {
+                    (Some(local), Some(used)) if local != &used => {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "ambiguous unqualified namespace '{}' from explicit use declarations; qualify the reference as either {local} or {used}",
+                                segments[0].name
+                            ),
+                            use_site_span,
+                        ));
+                        return None;
+                    }
+                    (None, used) => resolved = used,
+                    _ => {}
+                }
+            }
+            if resolved.is_none() && errors.len() > before_errors {
+                return None;
+            }
             path = resolved.unwrap_or_else(|| segments[0].name.clone());
+            if let Some(alias_target) = resolve_namespace_alias_path(
+                &path,
+                template_consts,
+                options,
+                state,
+                generated,
+                errors,
+                use_site_span,
+                depth + 1,
+            ) {
+                path = alias_target?;
+            }
         }
         idx = 1;
     }
@@ -2286,6 +2538,18 @@ fn resolve_namespace_segments_internal(
             )?;
         } else {
             path = candidate;
+            if let Some(alias_target) = resolve_namespace_alias_path(
+                &path,
+                template_consts,
+                options,
+                state,
+                generated,
+                errors,
+                use_site_span,
+                depth + 1,
+            ) {
+                path = alias_target?;
+            }
         }
     }
     Some(path)

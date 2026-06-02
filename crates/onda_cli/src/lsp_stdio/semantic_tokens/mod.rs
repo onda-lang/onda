@@ -7,7 +7,10 @@ mod ast_index;
 mod source_fallback;
 
 use ast_index::{build_semantic_scope_index, collect_all_symbols, normalize_file_key_for_path};
-use source_fallback::{build_source_scope_index, identifier_is_in_import_path, scan_identifiers};
+use source_fallback::{
+    build_source_scope_index, identifier_is_in_import_path, identifier_is_in_use_namespace_name,
+    scan_identifiers,
+};
 
 pub(super) const SEMANTIC_TOKEN_TYPE_ENUM_MEMBER: u32 = 0;
 pub(super) const SEMANTIC_TOKEN_TYPE_VARIABLE: u32 = 1;
@@ -42,6 +45,7 @@ pub(super) struct SemanticToken {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SemanticScope {
+    namespaces: HashSet<String>,
     consts: HashSet<String>,
     types: HashSet<String>,
     functions: HashSet<String>,
@@ -53,7 +57,9 @@ pub(super) struct SemanticScope {
 
 impl SemanticScope {
     pub(super) fn token_type_for(&self, name: &str) -> Option<u32> {
-        if self.consts.contains(name) {
+        if self.namespaces.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_NAMESPACE)
+        } else if self.consts.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
         } else if self.types.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_TYPE)
@@ -103,7 +109,9 @@ impl SemanticScope {
     }
 
     pub(super) fn imported_token_type_for(&self, name: &str) -> Option<u32> {
-        if self.consts.contains(name) {
+        if self.namespaces.contains(name) {
+            Some(SEMANTIC_TOKEN_TYPE_NAMESPACE)
+        } else if self.consts.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER)
         } else if self.types.contains(name) {
             Some(SEMANTIC_TOKEN_TYPE_TYPE)
@@ -119,6 +127,7 @@ impl SemanticScope {
 pub(super) struct SemanticScopeIndex {
     document_scope: SemanticScope,
     scopes: Vec<ScopedSemanticScope>,
+    scopes_by_line: Vec<Vec<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,9 +168,27 @@ impl SemanticScopeIndex {
         Some(self.scopes.len() - 1)
     }
 
-    fn innermost_scope_index(&self, line: u32, column: u32) -> Option<usize> {
-        let mut best: Option<usize> = None;
+    pub(super) fn rebuild_scope_line_index(&mut self) {
+        self.scopes_by_line.clear();
+        let Some(max_line) = self.scopes.iter().map(|scope| scope.end_line).max() else {
+            return;
+        };
+        self.scopes_by_line
+            .resize_with(max_line.saturating_add(1) as usize, Vec::new);
         for (idx, scope) in self.scopes.iter().enumerate() {
+            for line in scope.start_line..=scope.end_line {
+                if let Some(line_scopes) = self.scopes_by_line.get_mut(line as usize) {
+                    line_scopes.push(idx);
+                }
+            }
+        }
+    }
+
+    fn innermost_scope_index(&self, line: u32, column: u32) -> Option<usize> {
+        let scopes_on_line = self.scopes_by_line.get(line as usize)?;
+        let mut best: Option<usize> = None;
+        for &idx in scopes_on_line {
+            let scope = &self.scopes[idx];
             if !scope.contains(line, column) {
                 continue;
             }
@@ -247,24 +274,53 @@ pub(super) fn semantic_token_legend() -> &'static [&'static str] {
     SEMANTIC_TOKEN_LEGEND
 }
 
+#[cfg(test)]
 pub(super) fn semantic_tokens_for_document(
     source: &str,
     path: Option<&Path>,
 ) -> Vec<SemanticToken> {
-    let parsed_program = match path {
-        Some(path) => parse_program_with_path(source, path).ok(),
-        None => parse_program(source).ok(),
+    semantic_tokens_for_document_with_optional_parse(source, path, None, true)
+}
+
+pub(super) fn semantic_tokens_for_document_with_parsed(
+    source: &str,
+    path: Option<&Path>,
+    parsed_program: Option<&onda_frontend::Program>,
+) -> Vec<SemanticToken> {
+    semantic_tokens_for_document_with_optional_parse(source, path, parsed_program, true)
+}
+
+pub(super) fn semantic_tokens_for_document_source_only(
+    source: &str,
+    path: Option<&Path>,
+) -> Vec<SemanticToken> {
+    semantic_tokens_for_document_with_optional_parse(source, path, None, false)
+}
+
+fn semantic_tokens_for_document_with_optional_parse(
+    source: &str,
+    path: Option<&Path>,
+    parsed_program: Option<&onda_frontend::Program>,
+    parse_if_missing: bool,
+) -> Vec<SemanticToken> {
+    let parsed_owned;
+    let parsed_program = if let Some(program) = parsed_program {
+        Some(program)
+    } else if !parse_if_missing {
+        None
+    } else {
+        parsed_owned = match path {
+            Some(path) => parse_program_with_path(source, path).ok(),
+            None => parse_program(source).ok(),
+        };
+        parsed_owned.as_ref()
     };
-    let imported_scope = parsed_program
-        .as_ref()
-        .map(collect_all_symbols)
-        .unwrap_or_default();
+    let imported_scope = parsed_program.map(collect_all_symbols).unwrap_or_default();
     let current_file_key = match path {
         Some(path) => normalize_file_key_for_path(path),
         None => Some(ast_index::normalize_file_key("<memory>")),
     };
     let scope_index = parsed_program
-        .as_ref()
         .map(|program| build_semantic_scope_index(program, current_file_key.as_deref()));
     let source_scope_index = build_source_scope_index(source);
     let mut source_decl_scope = SemanticScope::default();
@@ -286,6 +342,16 @@ pub(super) fn semantic_tokens_for_document(
                     start,
                     length,
                     token_type,
+                    token_modifiers: 0,
+                });
+                return;
+            }
+            if name != "as" && identifier_is_in_use_namespace_name(&source_lines, line, start) {
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type: SEMANTIC_TOKEN_TYPE_NAMESPACE,
                     token_modifiers: 0,
                 });
                 return;
@@ -394,6 +460,9 @@ pub(super) fn semantic_tokens_for_document(
 }
 
 fn is_semantic_keyword(name: &str, source_lines: &[&str], line: u32, start: u32) -> bool {
+    if name == "as" {
+        return true;
+    }
     if name == "pin" {
         return true;
     }

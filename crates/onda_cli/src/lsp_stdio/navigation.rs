@@ -8,9 +8,8 @@ use std::path::{Path, PathBuf};
 use onda_frontend::{
     is_language_type_name, parse_program, parse_program_file_with_overlays, ArrayElemType,
     AssignTarget, Block, BlockExec, BufferDecl, ConstDecl, EventDef, EventParamDecl, Expr,
-    FnParamDecl, FunctionDef, NamespaceAliasDecl, NamespaceDecl, NamespaceItem,
-    NamespaceRefSegment, ParamDecl, PortDecl, ProcessorDef, Program, Span, Stmt, StructDef,
-    StructField, UseDecl,
+    FnParamDecl, FunctionDef, NamespaceAliasDecl, NamespaceDecl, NamespaceItem, ParamDecl,
+    PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, StructField, UseDecl,
 };
 use onda_semantics::builtins::{
     builtin_constant_type, builtin_instance_method_names, is_builtin_function_name,
@@ -23,6 +22,13 @@ use crate::formatting::{
     format_fn_param_type,
 };
 
+use super::namespace_resolution::{
+    namespace_join, namespace_parent_of, namespace_segments_key,
+    qualified_path_candidates as namespace_qualified_path_candidates,
+    resolve_use_target as resolve_namespace_use_target, strip_type_args_from_path,
+    visible_uses_in_namespace, AliasTargetPolicy, NamespaceAliasInfo, NamespaceResolutionContext,
+    UseInfo,
+};
 use super::path_utils::path_to_file_uri;
 use super::position::{
     byte_index_for_lsp_character, byte_offset_for_lsp_position, fallback_span_end_position,
@@ -45,15 +51,22 @@ pub(super) struct NavigationPosition {
     pub(super) character: u32,
 }
 
-pub(super) fn hover_for_document(
+pub(super) fn hover_for_document_with_parsed(
     source: &str,
     path: Option<&Path>,
     overlays: &HashMap<PathBuf, String>,
+    parsed: Option<&Program>,
     position: NavigationPosition,
 ) -> Option<Value> {
     let token = source_token_at_position(source, position)?;
-    let parsed = parse_for_navigation(source, path, overlays, Some(position));
-    let index = NavigationIndex::build(parsed.as_ref(), source, path, Some(position));
+    let parsed_owned;
+    let parsed = if let Some(parsed) = parsed {
+        Some(parsed)
+    } else {
+        parsed_owned = parse_for_navigation(source, path, overlays, Some(position));
+        parsed_owned.as_ref()
+    };
+    let index = NavigationIndex::build(parsed, source, path, Some(position));
     let hover = index
         .callable_hover_for_token(source, &token)
         .or_else(|| {
@@ -72,10 +85,11 @@ pub(super) fn hover_for_document(
     }))
 }
 
-pub(super) fn definition_for_document(
+pub(super) fn definition_for_document_with_parsed(
     source: &str,
     path: Option<&Path>,
     overlays: &HashMap<PathBuf, String>,
+    parsed: Option<&Program>,
     position: NavigationPosition,
 ) -> Option<Value> {
     let token = source_token_at_position(source, position)?;
@@ -83,22 +97,36 @@ pub(super) fn definition_for_document(
         return Some(location);
     }
 
-    let parsed = parse_for_navigation(source, path, overlays, Some(position));
-    let index = NavigationIndex::build(parsed.as_ref(), source, path, Some(position));
+    let parsed_owned;
+    let parsed = if let Some(parsed) = parsed {
+        Some(parsed)
+    } else {
+        parsed_owned = parse_for_navigation(source, path, overlays, Some(position));
+        parsed_owned.as_ref()
+    };
+    let index = NavigationIndex::build(parsed, source, path, Some(position));
     let definition = index.resolve_token(source, &token)?;
     definition.location_json(path, source, overlays)
 }
 
-pub(super) fn document_symbols_for_document(
+pub(super) fn document_symbols_for_document_with_parsed(
     source: &str,
     path: Option<&Path>,
     overlays: &HashMap<PathBuf, String>,
+    parsed: Option<&Program>,
 ) -> Vec<Value> {
-    let Some(program) = parse_for_navigation(source, path, overlays, None) else {
-        return Vec::new();
+    let parsed_owned;
+    let program = if let Some(parsed) = parsed {
+        parsed
+    } else {
+        parsed_owned = parse_for_navigation(source, path, overlays, None);
+        let Some(program) = parsed_owned.as_ref() else {
+            return Vec::new();
+        };
+        program
     };
     let current_file_key = path.map(normalize_file_key_for_path);
-    document_symbols_for_program(&program, current_file_key.as_deref(), source)
+    document_symbols_for_program(program, current_file_key.as_deref(), source)
 }
 
 fn parse_for_navigation(
@@ -242,15 +270,6 @@ struct InstanceInfo {
 }
 
 #[derive(Debug, Clone)]
-struct UseInfo {
-    namespace: String,
-    target: String,
-    alias: Option<String>,
-    public: bool,
-    file_key: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 struct NavigationScope {
     parent: Option<usize>,
     namespace_member_scope: bool,
@@ -272,9 +291,10 @@ struct NavigationIndex {
     definitions: Vec<DefinitionInfo>,
     by_full_name: HashMap<String, usize>,
     namespace_members: HashMap<String, HashMap<String, usize>>,
-    namespace_aliases: HashMap<String, String>,
+    namespace_aliases: HashMap<String, NamespaceAliasInfo>,
     uses: Vec<UseInfo>,
     scopes: Vec<NavigationScope>,
+    scopes_by_line: Vec<Vec<usize>>,
     procs: HashMap<String, ProcInfo>,
     structs: HashMap<String, StructInfo>,
     function_params: HashMap<String, HashMap<String, usize>>,
@@ -302,6 +322,7 @@ impl NavigationIndex {
             }
             index.rebuild_namespace_members();
             index.collect_scopes(program);
+            index.rebuild_scope_line_index();
         } else {
             index.collect_source_instances(source);
         }
@@ -377,8 +398,13 @@ impl NavigationIndex {
     fn collect_namespace_alias(&mut self, namespace: &str, alias: &NamespaceAliasDecl) {
         let full_name = namespace_join(namespace, &alias.name);
         let target = namespace_segments_key(&alias.target);
-        self.namespace_aliases
-            .insert(full_name.clone(), target.clone());
+        self.namespace_aliases.insert(
+            full_name.clone(),
+            NamespaceAliasInfo {
+                namespace: namespace.to_owned(),
+                target: target.clone(),
+            },
+        );
         self.add_definition(DefinitionInfo {
             name: alias.name.clone(),
             full_name,
@@ -1578,8 +1604,10 @@ impl NavigationIndex {
     }
 
     fn innermost_scope_index(&self, line: u32, column: u32) -> Option<usize> {
+        let scopes_on_line = self.scopes_by_line.get(line as usize)?;
         let mut best = None::<usize>;
-        for (idx, scope) in self.scopes.iter().enumerate() {
+        for &idx in scopes_on_line {
+            let scope = &self.scopes[idx];
             if !scope.contains(line, column) {
                 continue;
             }
@@ -1596,6 +1624,22 @@ impl NavigationIndex {
             }
         }
         best
+    }
+
+    fn rebuild_scope_line_index(&mut self) {
+        self.scopes_by_line.clear();
+        let Some(max_line) = self.scopes.iter().map(|scope| scope.end_line).max() else {
+            return;
+        };
+        self.scopes_by_line
+            .resize_with(max_line.saturating_add(1) as usize, Vec::new);
+        for (idx, scope) in self.scopes.iter().enumerate() {
+            for line in scope.start_line..=scope.end_line {
+                if let Some(line_scopes) = self.scopes_by_line.get_mut(line as usize) {
+                    line_scopes.push(idx);
+                }
+            }
+        }
     }
 
     fn resolve_top_level(&self, name: &str, current_file_only: bool) -> Option<usize> {
@@ -1632,7 +1676,7 @@ impl NavigationIndex {
     fn resolve_visible_use_candidates(&self, name: &str, line: u32, column: u32) -> Vec<usize> {
         let current_namespace = self.current_namespace(line, column);
         let mut candidates = Vec::<usize>::new();
-        for use_info in self.uses_in_namespace(current_namespace) {
+        for use_info in visible_uses_in_namespace(self, current_namespace) {
             let target = self.resolve_use_target(use_info);
             if let Some(alias) = &use_info.alias {
                 if alias != name {
@@ -1732,111 +1776,18 @@ impl NavigationIndex {
     }
 
     fn qualified_path_candidates(&self, path: &str, namespace: &str) -> Vec<String> {
-        let clean = strip_type_args_from_path(path);
-        if clean.is_empty() {
-            return Vec::new();
-        }
-
-        let mut candidates = Vec::<String>::new();
-        candidates.extend(self.path_candidates_with_namespace_aliases(&clean, namespace));
-
-        if let Some((head, tail)) = clean.split_once("::") {
-            for use_info in self.uses_in_namespace(namespace) {
-                if use_info.alias.as_deref() != Some(head) {
-                    continue;
-                }
-                let target = self.resolve_use_target(use_info);
-                if self.namespace_exists(&target) {
-                    push_unique_candidate(&mut candidates, namespace_join(&target, tail));
-                }
-            }
-        } else {
-            for use_info in self.uses_in_namespace(namespace) {
-                let target = self.resolve_use_target(use_info);
-                match use_info.alias.as_deref() {
-                    Some(alias) if alias == clean => {
-                        push_unique_candidate(&mut candidates, target);
-                    }
-                    None => {
-                        if self.namespace_exists(&target) {
-                            let member = namespace_join(&target, &clean);
-                            if self.definition_index_for_qualified_name(&member).is_some() {
-                                push_unique_candidate(&mut candidates, member);
-                            }
-                        }
-                        if target.rsplit("::").next() == Some(clean.as_str())
-                            && self.definition_index_for_qualified_name(&target).is_some()
-                        {
-                            push_unique_candidate(&mut candidates, target);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        candidates
-    }
-
-    fn path_candidates_with_namespace_aliases(
-        &self,
-        path: &str,
-        current_namespace: &str,
-    ) -> Vec<String> {
-        let clean = strip_type_args_from_path(path);
-        if clean.is_empty() {
-            return Vec::new();
-        }
-
-        let mut candidates = Vec::<String>::new();
-
-        if let Some((head, tail)) = clean.split_once("::") {
-            for candidate_namespace in namespace_candidates(current_namespace) {
-                let head_candidate = namespace_join(&candidate_namespace, head);
-                if let Some(alias_target) = self.namespace_aliases.get(&head_candidate) {
-                    push_unique_candidate(&mut candidates, namespace_join(alias_target, tail));
-                }
-                push_unique_candidate(&mut candidates, namespace_join(&head_candidate, tail));
-            }
-        } else {
-            for candidate_namespace in namespace_candidates(current_namespace) {
-                let candidate = namespace_join(&candidate_namespace, &clean);
-                if let Some(alias_target) = self.namespace_aliases.get(&candidate) {
-                    push_unique_candidate(&mut candidates, alias_target.clone());
-                }
-                push_unique_candidate(&mut candidates, candidate);
-            }
-        }
-
-        push_unique_candidate(&mut candidates, clean);
-        candidates
-    }
-
-    fn uses_in_namespace<'a>(
-        &'a self,
-        current_namespace: &'a str,
-    ) -> impl Iterator<Item = &'a UseInfo> + 'a {
-        self.uses.iter().filter(move |use_info| {
-            self.use_visible(use_info)
-                && namespace_candidates(current_namespace)
-                    .iter()
-                    .any(|namespace| namespace == &use_info.namespace)
-        })
+        namespace_qualified_path_candidates(
+            self,
+            path,
+            namespace,
+            |ctx, candidate| ctx.has_symbol(candidate),
+            |ctx, candidate| ctx.has_symbol(candidate),
+            AliasTargetPolicy::Always,
+        )
     }
 
     fn resolve_use_target(&self, use_info: &UseInfo) -> String {
-        for candidate in
-            self.path_candidates_with_namespace_aliases(&use_info.target, &use_info.namespace)
-        {
-            if self.namespace_exists(&candidate)
-                || self
-                    .definition_index_for_qualified_name(&candidate)
-                    .is_some()
-            {
-                return candidate;
-            }
-        }
-        strip_type_args_from_path(&use_info.target)
+        resolve_namespace_use_target(self, use_info)
     }
 
     fn namespace_exists(&self, namespace: &str) -> bool {
@@ -1895,11 +1846,7 @@ impl NavigationIndex {
             if member == "init" {
                 return proc_info.init.and_then(|idx| self.definitions.get(idx));
             }
-            if let Some(idx) = proc_info
-                .events
-                .get(member)
-                .or_else(|| proc_info.local_defs.get(member))
-            {
+            if let Some(idx) = proc_info.events.get(member) {
                 return self.definitions.get(*idx);
             }
         } else if let Some(struct_info) = self.structs.get(&instance.type_name) {
@@ -1984,10 +1931,6 @@ impl NavigationIndex {
                 let event = self.definitions.get(*idx)?;
                 return self.resolve_event_param(&event.full_name, arg);
             }
-            if let Some(idx) = proc_info.local_defs.get(member) {
-                let def = self.definitions.get(*idx)?;
-                return self.resolve_function_param(&def.full_name, arg);
-            }
         } else if let Some(struct_info) = self.structs.get(&instance.type_name) {
             if let Some(idx) = struct_info.methods.get(member) {
                 let method = self.definitions.get(*idx)?;
@@ -2046,6 +1989,29 @@ impl NavigationIndex {
             (None, _) => true,
             _ => false,
         }
+    }
+}
+
+impl NamespaceResolutionContext for NavigationIndex {
+    fn namespace_alias(&self, full_name: &str) -> Option<&NamespaceAliasInfo> {
+        self.namespace_aliases.get(full_name)
+    }
+
+    fn has_namespace(&self, namespace: &str) -> bool {
+        self.namespace_exists(namespace)
+    }
+
+    fn has_symbol(&self, full_name: &str) -> bool {
+        self.definition_index_for_qualified_name(full_name)
+            .is_some()
+    }
+
+    fn uses(&self) -> &[UseInfo] {
+        &self.uses
+    }
+
+    fn use_visible(&self, use_info: &UseInfo) -> bool {
+        NavigationIndex::use_visible(self, use_info)
     }
 }
 
@@ -3124,74 +3090,14 @@ fn assign_target_names(target: &AssignTarget) -> Vec<&str> {
     }
 }
 
-fn namespace_segments_key(segments: &[NamespaceRefSegment]) -> String {
-    segments
-        .iter()
-        .map(|segment| segment.name.clone())
-        .collect::<Vec<_>>()
-        .join("::")
-}
-
-fn namespace_join(parent: &str, child: &str) -> String {
-    if parent.is_empty() {
-        child.to_owned()
-    } else if child.is_empty() {
-        parent.to_owned()
-    } else {
-        format!("{parent}::{child}")
-    }
-}
-
-fn namespace_candidates(namespace: &str) -> Vec<String> {
-    if namespace.is_empty() {
-        return vec![String::new()];
-    }
-
-    let mut out = Vec::new();
-    let mut current = namespace.to_owned();
-    while !current.is_empty() {
-        out.push(current.clone());
-        current = namespace_parent_of(&current);
-    }
-    out.push(String::new());
-    out
-}
-
-fn push_unique_candidate(candidates: &mut Vec<String>, candidate: String) {
-    if !candidates.contains(&candidate) {
-        candidates.push(candidate);
-    }
-}
-
 fn push_unique_index(candidates: &mut Vec<usize>, candidate: usize) {
     if !candidates.contains(&candidate) {
         candidates.push(candidate);
     }
 }
 
-fn namespace_parent_of(name: &str) -> String {
-    name.rsplit_once("::")
-        .map(|(parent, _)| parent.to_owned())
-        .unwrap_or_default()
-}
-
 fn namespace_leaf(name: &str) -> &str {
     name.rsplit("::").next().unwrap_or(name)
-}
-
-fn strip_type_args_from_path(path: &str) -> String {
-    let mut out = String::new();
-    let mut depth = 0usize;
-    for ch in path.trim().chars() {
-        match ch {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            ' ' | '\t' | '\r' if depth > 0 => {}
-            _ if depth == 0 => out.push(ch),
-            _ => {}
-        }
-    }
-    out
 }
 
 fn normalize_call_callee(callee: &str) -> String {
@@ -3237,4 +3143,89 @@ fn normalize_file_key(path: &str) -> String {
         .or_else(|| normalized.strip_prefix("\\\\?\\"))
         .unwrap_or(&normalized);
     normalized.to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn position_at(source: &str, needle: &str, token_offset: usize) -> NavigationPosition {
+        let byte = source
+            .find(needle)
+            .map(|idx| idx + token_offset)
+            .expect("test needle should exist");
+        let line = source[..byte].bytes().filter(|byte| *byte == b'\n').count() as u32;
+        let line_start = source[..byte].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+        NavigationPosition {
+            line,
+            character: (byte - line_start) as u32,
+        }
+    }
+
+    fn definition_at(source: &str, needle: &str, token_offset: usize) -> Option<Value> {
+        let parsed = parse_program(source).expect("test source should parse");
+        definition_for_document_with_parsed(
+            source,
+            None,
+            &HashMap::new(),
+            Some(&parsed),
+            position_at(source, needle, token_offset),
+        )
+    }
+
+    #[test]
+    fn hides_proc_local_defs_from_external_member_navigation() {
+        let source = r#"proc Voice:
+  outs:
+    out1
+  def helper(x):
+    return x
+  sample:
+    out1 = helper(0.0)
+
+outs:
+  out1
+init:
+  voice = Voice()
+sample:
+  out1 = voice.helper(0.0)
+"#;
+
+        assert!(
+            definition_at(source, "voice.helper", "voice.".len() + 1).is_none(),
+            "external member access should not resolve private proc-local defs"
+        );
+        assert!(
+            definition_at(source, "helper(0.0)", 1).is_some(),
+            "proc-local def should still resolve inside its owning proc"
+        );
+    }
+
+    #[test]
+    fn hides_pinned_params_from_external_member_navigation() {
+        let source = r#"proc Voice:
+  params:
+    pin cutoff = 1000.0
+  outs:
+    out1
+  sample:
+    out1 = cutoff
+
+outs:
+  out1
+init:
+  voice = Voice()
+sample:
+  out1 = voice.cutoff
+"#;
+
+        assert!(
+            definition_at(source, "voice.cutoff", "voice.".len() + 1).is_none(),
+            "external member access should not resolve pinned params"
+        );
+        assert!(
+            definition_at(source, "out1 = cutoff", "out1 = ".len() + 1).is_some(),
+            "pinned params should still resolve inside their owning proc"
+        );
+    }
 }

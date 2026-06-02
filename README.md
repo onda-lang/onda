@@ -230,7 +230,7 @@ onda lsp
 
 Current LSP support includes:
 - open, change, save, and close document tracking
-- diagnostics on open and save
+- immediate diagnostics on open/save and debounced diagnostics while editing
 - semantic tokens for constants, params, ports, and init-scoped variables
 
 ## C API

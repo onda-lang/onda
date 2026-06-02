@@ -1,57 +1,101 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
-use onda_daemon::{DaemonSession, DocumentVersion};
-use onda_frontend::Diagnostic;
+use onda_daemon::{AnalysisSession, DaemonSession, DocumentVersion};
+use onda_frontend::{parse_program_file_with_overlays, Diagnostic, Program};
+use onda_semantics::AnalysisOptions;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 mod completion;
 mod diagnostics;
+mod namespace_resolution;
 mod navigation;
 mod path_utils;
 mod position;
 mod semantic_tokens;
 
 use completion::{
-    completion_items_for_document, completion_trigger_characters, CompletionPosition,
+    completion_items_for_document_with_index, completion_trigger_characters,
+    CompletionIndexSnapshot, CompletionPosition,
 };
 use diagnostics::{diagnostic_to_lsp, diagnostic_uri};
 use navigation::{
-    definition_for_document, document_symbols_for_document, hover_for_document, NavigationPosition,
+    definition_for_document_with_parsed, document_symbols_for_document_with_parsed,
+    hover_for_document_with_parsed, NavigationPosition,
 };
 use path_utils::{lsp_document_path, normalize_path, path_to_file_uri};
 use semantic_tokens::{
-    encode_semantic_tokens, semantic_token_legend, semantic_tokens_for_document,
+    encode_semantic_tokens, semantic_token_legend, semantic_tokens_for_document_source_only,
+    semantic_tokens_for_document_with_parsed,
 };
 
 const JSONRPC_VERSION: &str = "2.0";
 const INVALID_PARAMS: i64 = -32602;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INTERNAL_ERROR: i64 = -32603;
+const ONDA_SOURCE_EXTENSIONS: &[&str] = &["onda", "on"];
+const CHANGE_DIAGNOSTIC_DEBOUNCE: Duration = Duration::from_millis(400);
+const IMMEDIATE_DIAGNOSTICS: Duration = Duration::from_millis(0);
 
 pub fn run_stdio_loop() -> Result<(), String> {
-    let stdin = io::stdin();
+    let (core_tx, core_rx) = mpsc::channel::<CoreEvent>();
+    spawn_lsp_reader(core_tx.clone());
+
+    let (immediate_diagnostic_tx, immediate_diagnostic_rx) = mpsc::channel::<DiagnosticJob>();
+    let (background_diagnostic_tx, background_diagnostic_rx) = mpsc::channel::<DiagnosticJob>();
+    spawn_diagnostic_worker(immediate_diagnostic_rx, core_tx.clone());
+    spawn_diagnostic_worker(background_diagnostic_rx, core_tx);
+
     let stdout = io::stdout();
-    let mut reader = BufReader::new(stdin.lock());
     let mut writer = BufWriter::new(stdout.lock());
-    let mut server = LspServer::default();
+    let mut core = LspCore::new(immediate_diagnostic_tx, background_diagnostic_tx);
+    core.run(core_rx, &mut writer)
+}
 
-    loop {
-        let Some(message) = read_lsp_message(&mut reader)? else {
-            return Ok(());
-        };
-
-        match server.handle_message(message, &mut writer)? {
-            LoopControl::Continue => {}
-            LoopControl::ExitSuccess => return Ok(()),
-            LoopControl::ExitFailure => {
-                return Err("lsp exit received before shutdown".to_owned());
+fn spawn_lsp_reader(core_tx: mpsc::Sender<CoreEvent>) {
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        let mut reader = BufReader::new(stdin.lock());
+        loop {
+            match read_lsp_message(&mut reader) {
+                Ok(Some(message)) => {
+                    if core_tx.send(CoreEvent::ClientMessage(message)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    let _ = core_tx.send(CoreEvent::ReaderClosed);
+                    break;
+                }
+                Err(err) => {
+                    let _ = core_tx.send(CoreEvent::ReaderError(err));
+                    break;
+                }
             }
         }
-    }
+    });
+}
+
+fn spawn_diagnostic_worker(
+    diagnostic_rx: mpsc::Receiver<DiagnosticJob>,
+    core_tx: mpsc::Sender<CoreEvent>,
+) {
+    thread::spawn(move || {
+        while let Ok(job) = diagnostic_rx.recv() {
+            let result = run_diagnostic_job(job);
+            if core_tx.send(CoreEvent::DiagnosticsReady(result)).is_err() {
+                break;
+            }
+        }
+    });
 }
 
 enum LoopControl {
@@ -60,13 +104,287 @@ enum LoopControl {
     ExitFailure,
 }
 
+enum CoreEvent {
+    ClientMessage(Value),
+    DiagnosticsReady(DiagnosticJobResult),
+    ReaderClosed,
+    ReaderError(String),
+}
+
+#[derive(Debug, Clone)]
+struct DiagnosticJob {
+    entry_path: PathBuf,
+    generation: u64,
+    open_documents: Vec<DiagnosticOpenDocument>,
+}
+
+#[derive(Debug, Clone)]
+struct DiagnosticOpenDocument {
+    path: PathBuf,
+    version: DocumentVersion,
+    text: String,
+}
+
+#[derive(Debug)]
+struct DiagnosticJobResult {
+    entry_path: PathBuf,
+    generation: u64,
+    diagnostics: Vec<Diagnostic>,
+    parsed: Option<Program>,
+    parse_fingerprint: Option<DocumentFingerprint>,
+    completion_index_snapshot: Option<CompletionIndexSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DiagnosticDelay {
+    Immediate,
+    Debounced,
+}
+
+impl DiagnosticDelay {
+    fn duration(self) -> Duration {
+        match self {
+            DiagnosticDelay::Immediate => IMMEDIATE_DIAGNOSTICS,
+            DiagnosticDelay::Debounced => CHANGE_DIAGNOSTIC_DEBOUNCE,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum DiagnosticScheduleRequest {
+    Affected {
+        changed_path: PathBuf,
+        delay: DiagnosticDelay,
+    },
+    Entries {
+        entries: Vec<PathBuf>,
+        delay: DiagnosticDelay,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct ScheduledDiagnostic {
+    generation: u64,
+    due_at: Instant,
+    delay: DiagnosticDelay,
+}
+
+struct LspCore {
+    server: LspServer,
+    immediate_diagnostic_tx: mpsc::Sender<DiagnosticJob>,
+    background_diagnostic_tx: mpsc::Sender<DiagnosticJob>,
+    pending_diagnostics: HashMap<PathBuf, ScheduledDiagnostic>,
+    diagnostic_generations: HashMap<PathBuf, u64>,
+}
+
+impl LspCore {
+    fn new(
+        immediate_diagnostic_tx: mpsc::Sender<DiagnosticJob>,
+        background_diagnostic_tx: mpsc::Sender<DiagnosticJob>,
+    ) -> Self {
+        let mut server = LspServer::default();
+        server.defer_diagnostics = true;
+        Self {
+            server,
+            immediate_diagnostic_tx,
+            background_diagnostic_tx,
+            pending_diagnostics: HashMap::new(),
+            diagnostic_generations: HashMap::new(),
+        }
+    }
+
+    fn run(
+        &mut self,
+        core_rx: mpsc::Receiver<CoreEvent>,
+        writer: &mut impl Write,
+    ) -> Result<(), String> {
+        loop {
+            self.dispatch_due_diagnostics();
+            let event = match self.next_diagnostic_timeout() {
+                Some(timeout) => match core_rx.recv_timeout(timeout) {
+                    Ok(event) => event,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+                },
+                None => match core_rx.recv() {
+                    Ok(event) => event,
+                    Err(_) => return Ok(()),
+                },
+            };
+
+            match event {
+                CoreEvent::ClientMessage(message) => {
+                    match self.server.handle_message(message, writer)? {
+                        LoopControl::Continue => {}
+                        LoopControl::ExitSuccess => return Ok(()),
+                        LoopControl::ExitFailure => {
+                            return Err("lsp exit received before shutdown".to_owned());
+                        }
+                    }
+                    self.drain_diagnostic_requests();
+                    self.dispatch_due_diagnostics();
+                }
+                CoreEvent::DiagnosticsReady(result) => {
+                    self.publish_diagnostic_result(result, writer)?;
+                }
+                CoreEvent::ReaderClosed => return Ok(()),
+                CoreEvent::ReaderError(err) => return Err(err),
+            }
+        }
+    }
+
+    fn next_diagnostic_timeout(&self) -> Option<Duration> {
+        let due_at = self
+            .pending_diagnostics
+            .values()
+            .map(|scheduled| scheduled.due_at)
+            .min()?;
+        Some(due_at.saturating_duration_since(Instant::now()))
+    }
+
+    fn drain_diagnostic_requests(&mut self) {
+        for request in self.server.take_diagnostic_requests() {
+            match request {
+                DiagnosticScheduleRequest::Affected {
+                    changed_path,
+                    delay,
+                } => {
+                    let entries = self
+                        .server
+                        .diagnostic_entries_affected_by_change(&changed_path);
+                    self.schedule_diagnostic_entries(entries, delay);
+                }
+                DiagnosticScheduleRequest::Entries { entries, delay } => {
+                    self.schedule_diagnostic_entries(entries, delay);
+                }
+            }
+        }
+    }
+
+    fn schedule_diagnostic_entries(&mut self, entries: Vec<PathBuf>, delay: DiagnosticDelay) {
+        let due_at = Instant::now() + delay.duration();
+        for entry in entries {
+            let entry = normalize_path(&entry);
+            let generation = self
+                .diagnostic_generations
+                .entry(entry.clone())
+                .and_modify(|generation| *generation += 1)
+                .or_insert(1);
+            self.pending_diagnostics.insert(
+                entry,
+                ScheduledDiagnostic {
+                    generation: *generation,
+                    due_at,
+                    delay,
+                },
+            );
+        }
+    }
+
+    fn dispatch_due_diagnostics(&mut self) {
+        let now = Instant::now();
+        let due_entries = self
+            .pending_diagnostics
+            .iter()
+            .filter_map(|(entry, scheduled)| {
+                (scheduled.due_at <= now).then(|| (entry.clone(), scheduled.generation))
+            })
+            .collect::<Vec<_>>();
+        for (entry, generation) in due_entries {
+            let Some(scheduled) = self.pending_diagnostics.remove(&entry) else {
+                continue;
+            };
+            let job = self.server.diagnostic_job_for_entry(&entry, generation);
+            let tx = match scheduled.delay {
+                DiagnosticDelay::Immediate => &self.immediate_diagnostic_tx,
+                DiagnosticDelay::Debounced => &self.background_diagnostic_tx,
+            };
+            if tx.send(job).is_err() {
+                break;
+            }
+        }
+    }
+
+    fn publish_diagnostic_result(
+        &mut self,
+        result: DiagnosticJobResult,
+        writer: &mut impl Write,
+    ) -> Result<(), String> {
+        let current_generation = self
+            .diagnostic_generations
+            .get(&result.entry_path)
+            .copied()
+            .unwrap_or_default();
+        if current_generation != result.generation {
+            return Ok(());
+        }
+        if self
+            .server
+            .session
+            .analysis()
+            .document(&result.entry_path)
+            .is_none()
+        {
+            return Ok(());
+        }
+        self.server.publish_diagnostic_result(result, writer)
+    }
+}
+
 #[derive(Default)]
 struct LspServer {
     session: DaemonSession,
     shutdown_requested: bool,
+    defer_diagnostics: bool,
+    diagnostic_requests: Vec<DiagnosticScheduleRequest>,
     completion_snippets: bool,
+    semantic_tokens_refresh: bool,
+    next_server_request_id: u64,
     document_uris: HashMap<PathBuf, String>,
     published_by_entry: HashMap<PathBuf, HashSet<String>>,
+    parse_cache: HashMap<PathBuf, CachedParsedDocument>,
+    completion_index_cache: HashMap<PathBuf, CachedCompletionIndex>,
+    semantic_token_cache: HashMap<PathBuf, CachedSemanticTokens>,
+    dependency_fingerprint_cache: DependencyFingerprintCache,
+}
+
+struct CachedParsedDocument {
+    fingerprint: DocumentFingerprint,
+    parsed: Option<Arc<Program>>,
+}
+
+struct CachedSemanticTokens {
+    fingerprint: DocumentFingerprint,
+    encoded: Vec<u32>,
+}
+
+struct CachedCompletionIndex {
+    fingerprint: DocumentFingerprint,
+    snapshot: CompletionIndexSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct DocumentFingerprint {
+    source_hash: u64,
+    dependency_hash: u64,
+}
+
+#[derive(Default)]
+struct DependencyFingerprintCache {
+    disk_files: HashMap<PathBuf, CachedDependencyFile>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedDependencyFile {
+    stamp: DependencyFileStamp,
+    source_hash: u64,
+    dependencies: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct DependencyFileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
 }
 
 impl LspServer {
@@ -127,10 +445,28 @@ impl LspServer {
                 let params = parse_params::<InitializeParams>(envelope.params)?;
                 self.completion_snippets =
                     client_supports_completion_snippets(params.capabilities.as_ref());
+                self.semantic_tokens_refresh =
+                    client_supports_semantic_tokens_refresh(params.capabilities.as_ref());
                 let result = initialize_result(params.process_id);
                 write_result(writer, envelope.id.unwrap_or(Value::Null), result)?;
             }
             "initialized" | "$/cancelRequest" | "workspace/didChangeConfiguration" => {}
+            "workspace/didChangeWatchedFiles" => {
+                let params = parse_params::<DidChangeWatchedFilesParams>(envelope.params)?;
+                self.note_watched_files_changed(&params.changes);
+                let open_paths = self
+                    .session
+                    .analysis()
+                    .open_documents()
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                self.publish_or_schedule_diagnostics_for_entries(
+                    open_paths,
+                    DiagnosticDelay::Immediate,
+                    writer,
+                )?;
+            }
             "shutdown" => {
                 self.shutdown_requested = true;
                 write_result(writer, envelope.id.unwrap_or(Value::Null), Value::Null)?;
@@ -154,9 +490,14 @@ impl LspServer {
                     DocumentVersion(params.text_document.version),
                     params.text_document.text,
                 );
+                self.note_document_changed(&normalized);
                 self.document_uris
                     .insert(normalized.clone(), path_to_file_uri(&normalized));
-                self.publish_diagnostics_for_entry(&normalized, writer)?;
+                self.publish_or_schedule_diagnostics_for_affected_entries(
+                    &normalized,
+                    DiagnosticDelay::Immediate,
+                    writer,
+                )?;
             }
             "textDocument/didChange" => {
                 let params = parse_params::<DidChangeTextDocumentParams>(envelope.params)?;
@@ -173,8 +514,14 @@ impl LspServer {
                     DocumentVersion(params.text_document.version),
                     text,
                 );
+                self.note_document_changed(&normalized);
                 self.document_uris
                     .insert(normalized.clone(), path_to_file_uri(&normalized));
+                self.publish_or_schedule_diagnostics_for_affected_entries(
+                    &normalized,
+                    DiagnosticDelay::Debounced,
+                    writer,
+                )?;
             }
             "textDocument/didSave" => {
                 let params = parse_params::<DidSaveTextDocumentParams>(envelope.params)?;
@@ -191,10 +538,17 @@ impl LspServer {
                         .map(|doc| doc.version)
                         .unwrap_or(DocumentVersion(0));
                     let normalized = self.session.update_document(&path, version, text);
+                    self.note_document_changed(&normalized);
                     self.document_uris
                         .insert(normalized.clone(), path_to_file_uri(&normalized));
+                } else {
+                    self.note_document_changed(&path);
                 }
-                self.publish_diagnostics_for_entry(&path, writer)?;
+                self.publish_or_schedule_diagnostics_for_affected_entries(
+                    &path,
+                    DiagnosticDelay::Immediate,
+                    writer,
+                )?;
             }
             "textDocument/didClose" => {
                 let params = parse_params::<DidCloseTextDocumentParams>(envelope.params)?;
@@ -204,8 +558,15 @@ impl LspServer {
                     return Ok(LoopControl::Continue);
                 };
                 self.session.close_document(&path);
-                self.document_uris.remove(&path);
-                self.clear_entry_diagnostics(&path, writer)?;
+                let normalized = normalize_path(&path);
+                self.note_document_closed(&normalized);
+                self.document_uris.remove(&normalized);
+                self.clear_entry_diagnostics(&normalized, writer)?;
+                self.publish_or_schedule_diagnostics_for_affected_entries(
+                    &normalized,
+                    DiagnosticDelay::Immediate,
+                    writer,
+                )?;
             }
             "textDocument/semanticTokens/full" => {
                 let params = parse_params::<SemanticTokensParams>(envelope.params)?;
@@ -214,8 +575,11 @@ impl LspServer {
             }
             "textDocument/completion" => {
                 let params = parse_params::<CompletionParams>(envelope.params)?;
-                let result =
-                    self.completions_for_uri(&params.text_document.uri, params.position)?;
+                let result = self.completions_for_uri(
+                    &params.text_document.uri,
+                    params.position,
+                    params.context.as_ref(),
+                )?;
                 write_result(writer, envelope.id.unwrap_or(Value::Null), result)?;
             }
             "textDocument/hover" => {
@@ -248,18 +612,85 @@ impl LspServer {
         Ok(LoopControl::Continue)
     }
 
-    fn semantic_tokens_for_uri(&self, uri: &str) -> Result<Value, String> {
+    fn semantic_tokens_for_uri(&mut self, uri: &str) -> Result<Value, String> {
         let Some(path) = lsp_document_path(uri).map_err(invalid_params)? else {
             return Ok(json!({ "data": [] }));
         };
         let source = self.source_text_for_path(&path)?;
-        let tokens = semantic_tokens_for_document(&source, Some(&path));
+        let normalized = normalize_path(&path);
+        if self.session.analysis().document(&normalized).is_some() {
+            return self.semantic_tokens_for_open_document(&normalized, &source);
+        }
+
+        let overlays = self.session.analysis().overlay_map();
+        let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
+        if let Some(cached) = self.semantic_token_cache.get(&normalized) {
+            if cached.fingerprint == fingerprint {
+                return Ok(json!({
+                    "data": cached.encoded.clone(),
+                }));
+            }
+        }
+
+        let parsed = self.parsed_program_for_path(&normalized, &overlays, fingerprint);
+        let tokens =
+            semantic_tokens_for_document_with_parsed(&source, Some(&normalized), parsed.as_deref());
+        let encoded = encode_semantic_tokens(&tokens);
+        self.semantic_token_cache.insert(
+            normalized,
+            CachedSemanticTokens {
+                fingerprint,
+                encoded: encoded.clone(),
+            },
+        );
         Ok(json!({
-            "data": encode_semantic_tokens(&tokens),
+            "data": encoded,
         }))
     }
 
-    fn completions_for_uri(&self, uri: &str, position: Position) -> Result<Value, String> {
+    fn semantic_tokens_for_open_document(
+        &mut self,
+        normalized: &Path,
+        source: &str,
+    ) -> Result<Value, String> {
+        let source_hash = hash_source(source);
+        let fingerprint = DocumentFingerprint {
+            source_hash,
+            dependency_hash: 0,
+        };
+        if let Some(cached) = self.semantic_token_cache.get(normalized) {
+            if cached.fingerprint == fingerprint {
+                return Ok(json!({
+                    "data": cached.encoded.clone(),
+                }));
+            }
+        }
+
+        let parsed = self.cached_parsed_program_for_source(normalized, source_hash);
+        let tokens = if let Some(parsed) = parsed.as_deref() {
+            semantic_tokens_for_document_with_parsed(source, Some(normalized), Some(parsed))
+        } else {
+            semantic_tokens_for_document_source_only(source, Some(normalized))
+        };
+        let encoded = encode_semantic_tokens(&tokens);
+        self.semantic_token_cache.insert(
+            normalized.to_path_buf(),
+            CachedSemanticTokens {
+                fingerprint,
+                encoded: encoded.clone(),
+            },
+        );
+        Ok(json!({
+            "data": encoded,
+        }))
+    }
+
+    fn completions_for_uri(
+        &mut self,
+        uri: &str,
+        position: Position,
+        context: Option<&CompletionRequestContext>,
+    ) -> Result<Value, String> {
         let Some(path) = lsp_document_path(uri).map_err(invalid_params)? else {
             return Ok(json!({
                 "isIncomplete": false,
@@ -267,16 +698,38 @@ impl LspServer {
             }));
         };
         let source = self.source_text_for_path(&path)?;
+        if colon_trigger_is_single_colon(&source, position, context) {
+            return Ok(json!({
+                "isIncomplete": false,
+                "items": [],
+            }));
+        }
         let overlays = self.session.analysis().overlay_map();
-        let items = completion_items_for_document(
+        let snippets = self.completion_snippets;
+        let normalized = normalize_path(&path);
+        let open_document = self.session.analysis().document(&normalized).is_some();
+        let parsed = if self.session.analysis().document(&normalized).is_some() {
+            self.fast_parsed_program_for_open_request(&normalized, &source)
+        } else {
+            let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
+            self.best_effort_parsed_program_for_path(&normalized, &overlays, fingerprint)
+        };
+        let allow_stale_index =
+            open_document && !dependency_paths_for_source(&normalized, &source).is_empty();
+        let index_snapshot = parsed.as_deref().and_then(|program| {
+            self.completion_index_snapshot_for_path(&normalized, program, allow_stale_index)
+        });
+        let items = completion_items_for_document_with_index(
             &source,
-            Some(&path),
+            Some(&normalized),
             &overlays,
+            parsed.as_deref(),
+            index_snapshot,
             CompletionPosition {
                 line: position.line,
                 character: position.character,
             },
-            self.completion_snippets,
+            snippets,
         );
         Ok(json!({
             "isIncomplete": false,
@@ -284,16 +737,24 @@ impl LspServer {
         }))
     }
 
-    fn hover_for_uri(&self, uri: &str, position: Position) -> Result<Value, String> {
+    fn hover_for_uri(&mut self, uri: &str, position: Position) -> Result<Value, String> {
         let Some(path) = lsp_document_path(uri).map_err(invalid_params)? else {
             return Ok(Value::Null);
         };
         let source = self.source_text_for_path(&path)?;
         let overlays = self.session.analysis().overlay_map();
-        Ok(hover_for_document(
+        let normalized = normalize_path(&path);
+        let parsed = if self.session.analysis().document(&normalized).is_some() {
+            self.fast_parsed_program_for_open_request(&normalized, &source)
+        } else {
+            let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
+            self.parsed_program_for_path(&normalized, &overlays, fingerprint)
+        };
+        Ok(hover_for_document_with_parsed(
             &source,
-            Some(&path),
+            Some(&normalized),
             &overlays,
+            parsed.as_deref(),
             NavigationPosition {
                 line: position.line,
                 character: position.character,
@@ -302,16 +763,24 @@ impl LspServer {
         .unwrap_or(Value::Null))
     }
 
-    fn definition_for_uri(&self, uri: &str, position: Position) -> Result<Value, String> {
+    fn definition_for_uri(&mut self, uri: &str, position: Position) -> Result<Value, String> {
         let Some(path) = lsp_document_path(uri).map_err(invalid_params)? else {
             return Ok(Value::Null);
         };
         let source = self.source_text_for_path(&path)?;
         let overlays = self.session.analysis().overlay_map();
-        Ok(definition_for_document(
+        let normalized = normalize_path(&path);
+        let parsed = if self.session.analysis().document(&normalized).is_some() {
+            self.fast_parsed_program_for_open_request(&normalized, &source)
+        } else {
+            let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
+            self.parsed_program_for_path(&normalized, &overlays, fingerprint)
+        };
+        Ok(definition_for_document_with_parsed(
             &source,
-            Some(&path),
+            Some(&normalized),
             &overlays,
+            parsed.as_deref(),
             NavigationPosition {
                 line: position.line,
                 character: position.character,
@@ -320,16 +789,24 @@ impl LspServer {
         .unwrap_or(Value::Null))
     }
 
-    fn document_symbols_for_uri(&self, uri: &str) -> Result<Value, String> {
+    fn document_symbols_for_uri(&mut self, uri: &str) -> Result<Value, String> {
         let Some(path) = lsp_document_path(uri).map_err(invalid_params)? else {
             return Ok(json!([]));
         };
         let source = self.source_text_for_path(&path)?;
         let overlays = self.session.analysis().overlay_map();
-        Ok(json!(document_symbols_for_document(
+        let normalized = normalize_path(&path);
+        let parsed = if self.session.analysis().document(&normalized).is_some() {
+            self.fast_parsed_program_for_open_request(&normalized, &source)
+        } else {
+            let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
+            self.parsed_program_for_path(&normalized, &overlays, fingerprint)
+        };
+        Ok(json!(document_symbols_for_document_with_parsed(
             &source,
-            Some(&path),
+            Some(&normalized),
             &overlays,
+            parsed.as_deref(),
         )))
     }
 
@@ -341,22 +818,369 @@ impl LspServer {
             .map_err(|err| format!("failed to read source '{}': {err}", path.display()))
     }
 
-    fn publish_diagnostics_for_entry(
+    fn note_document_changed(&mut self, path: &Path) {
+        let normalized = normalize_path(path);
+        self.semantic_token_cache.remove(&normalized);
+        self.dependency_fingerprint_cache.remove(&normalized);
+    }
+
+    fn note_document_closed(&mut self, path: &Path) {
+        self.note_document_changed(path);
+        let normalized = normalize_path(path);
+        self.parse_cache.remove(&normalized);
+        self.completion_index_cache.remove(&normalized);
+    }
+
+    fn note_watched_files_changed(&mut self, changes: &[FileEvent]) {
+        if changes.is_empty() {
+            self.semantic_token_cache.clear();
+            self.dependency_fingerprint_cache.clear();
+            self.parse_cache.clear();
+            self.completion_index_cache.clear();
+            return;
+        }
+        for change in changes {
+            match lsp_document_path(&change.uri) {
+                Ok(Some(path)) => self.note_document_changed(&path),
+                _ => {
+                    self.semantic_token_cache.clear();
+                    self.dependency_fingerprint_cache.clear();
+                    self.parse_cache.clear();
+                    self.completion_index_cache.clear();
+                    break;
+                }
+            }
+        }
+        self.semantic_token_cache.clear();
+        self.parse_cache.clear();
+        self.completion_index_cache.clear();
+    }
+
+    fn parsed_program_for_path(
         &mut self,
-        entry_path: &Path,
+        path: &Path,
+        overlays: &HashMap<PathBuf, String>,
+        fingerprint: DocumentFingerprint,
+    ) -> Option<Arc<Program>> {
+        let normalized = normalize_path(path);
+        if let Some(parsed) = self
+            .parse_cache
+            .get(&normalized)
+            .filter(|cached| cached.fingerprint == fingerprint)
+            .map(|cached| cached.parsed.clone())
+        {
+            return parsed;
+        }
+
+        let parsed = parse_program_file_with_overlays(&normalized, overlays)
+            .ok()
+            .map(Arc::new)?;
+        self.parse_cache.insert(
+            normalized,
+            CachedParsedDocument {
+                fingerprint,
+                parsed: Some(parsed.clone()),
+            },
+        );
+        Some(parsed)
+    }
+
+    fn best_effort_parsed_program_for_path(
+        &mut self,
+        path: &Path,
+        overlays: &HashMap<PathBuf, String>,
+        fingerprint: DocumentFingerprint,
+    ) -> Option<Arc<Program>> {
+        let normalized = normalize_path(path);
+        if let Some(parsed) = self
+            .parse_cache
+            .get(&normalized)
+            .filter(|cached| cached.fingerprint == fingerprint)
+            .map(|cached| cached.parsed.clone())
+        {
+            return parsed;
+        }
+
+        let stale = self
+            .parse_cache
+            .get(&normalized)
+            .and_then(|cached| cached.parsed.clone());
+        match parse_program_file_with_overlays(&normalized, overlays) {
+            Ok(program) => {
+                let parsed = Arc::new(program);
+                self.parse_cache.insert(
+                    normalized,
+                    CachedParsedDocument {
+                        fingerprint,
+                        parsed: Some(parsed.clone()),
+                    },
+                );
+                Some(parsed)
+            }
+            Err(_) => stale,
+        }
+    }
+
+    fn fast_parsed_program_for_open_request(
+        &mut self,
+        path: &Path,
+        source: &str,
+    ) -> Option<Arc<Program>> {
+        let normalized = normalize_path(path);
+        let source_hash = hash_source(source);
+        if let Some(parsed) = self
+            .parse_cache
+            .get(&normalized)
+            .filter(|cached| cached.fingerprint.source_hash == source_hash)
+            .and_then(|cached| cached.parsed.clone())
+        {
+            return Some(parsed);
+        }
+        if dependency_paths_for_source(&normalized, source).is_empty() {
+            if let Ok(program) = parse_program_file_with_overlays(
+                &normalized,
+                &self.session.analysis().overlay_map(),
+            ) {
+                let parsed = Some(Arc::new(program));
+                self.store_parsed_program_for_path(
+                    &normalized,
+                    DocumentFingerprint {
+                        source_hash,
+                        dependency_hash: 0,
+                    },
+                    parsed.clone(),
+                );
+                return parsed;
+            }
+        }
+        self.parse_cache
+            .get(&normalized)
+            .and_then(|cached| cached.parsed.clone())
+    }
+
+    fn cached_parsed_program_for_source(
+        &self,
+        path: &Path,
+        source_hash: u64,
+    ) -> Option<Arc<Program>> {
+        self.parse_cache
+            .get(&normalize_path(path))
+            .filter(|cached| cached.fingerprint.source_hash == source_hash)
+            .and_then(|cached| cached.parsed.clone())
+    }
+
+    fn document_fingerprint_for_path(
+        &mut self,
+        path: &Path,
+        source: &str,
+        overlays: &HashMap<PathBuf, String>,
+    ) -> DocumentFingerprint {
+        self.dependency_fingerprint_cache
+            .document_fingerprint(path, source, overlays)
+    }
+
+    fn cache_parsed_program_for_path(
+        &mut self,
+        path: &Path,
+        fingerprint: DocumentFingerprint,
+        parsed: Option<Program>,
+    ) {
+        if let Some(parsed) = parsed {
+            self.store_parsed_program_for_path(path, fingerprint, Some(Arc::new(parsed)));
+        }
+    }
+
+    fn store_parsed_program_for_path(
+        &mut self,
+        path: &Path,
+        fingerprint: DocumentFingerprint,
+        parsed: Option<Arc<Program>>,
+    ) {
+        let normalized = normalize_path(path);
+        self.parse_cache.insert(
+            normalized.clone(),
+            CachedParsedDocument {
+                fingerprint,
+                parsed,
+            },
+        );
+        self.semantic_token_cache.remove(&normalized);
+    }
+
+    fn completion_index_snapshot_for_path(
+        &mut self,
+        path: &Path,
+        program: &Program,
+        allow_stale: bool,
+    ) -> Option<&CompletionIndexSnapshot> {
+        let normalized = normalize_path(path);
+        let fingerprint = self.parse_cache.get(&normalized)?.fingerprint;
+        if allow_stale && self.completion_index_cache.contains_key(&normalized) {
+            return self
+                .completion_index_cache
+                .get(&normalized)
+                .map(|cached| &cached.snapshot);
+        }
+        let stale = self
+            .completion_index_cache
+            .get(&normalized)
+            .map(|cached| cached.fingerprint != fingerprint)
+            .unwrap_or(true);
+        if stale {
+            self.completion_index_cache.insert(
+                normalized.clone(),
+                CachedCompletionIndex {
+                    fingerprint,
+                    snapshot: CompletionIndexSnapshot::build(program, Some(&normalized)),
+                },
+            );
+        }
+        self.completion_index_cache
+            .get(&normalized)
+            .map(|cached| &cached.snapshot)
+    }
+
+    fn publish_or_schedule_diagnostics_for_entries(
+        &mut self,
+        entries: Vec<PathBuf>,
+        delay: DiagnosticDelay,
         writer: &mut impl Write,
     ) -> Result<(), String> {
-        let snapshot = self.session.analyze_document(entry_path);
+        if self.defer_diagnostics {
+            self.diagnostic_requests
+                .push(DiagnosticScheduleRequest::Entries { entries, delay });
+            return Ok(());
+        }
+        for entry_path in entries {
+            self.publish_diagnostics_for_entry(&entry_path, writer)?;
+        }
+        Ok(())
+    }
+
+    fn publish_or_schedule_diagnostics_for_affected_entries(
+        &mut self,
+        changed_path: &Path,
+        delay: DiagnosticDelay,
+        writer: &mut impl Write,
+    ) -> Result<(), String> {
+        if self.defer_diagnostics {
+            self.diagnostic_requests
+                .push(DiagnosticScheduleRequest::Affected {
+                    changed_path: normalize_path(changed_path),
+                    delay,
+                });
+            return Ok(());
+        }
+        self.publish_diagnostics_for_affected_entries(changed_path, writer)
+    }
+
+    fn take_diagnostic_requests(&mut self) -> Vec<DiagnosticScheduleRequest> {
+        std::mem::take(&mut self.diagnostic_requests)
+    }
+
+    fn diagnostic_job_for_entry(&mut self, entry_path: &Path, generation: u64) -> DiagnosticJob {
         let entry_path = normalize_path(entry_path);
+        let open_documents = self
+            .session
+            .analysis()
+            .open_documents()
+            .iter()
+            .map(|(path, document)| DiagnosticOpenDocument {
+                path: path.clone(),
+                version: document.version,
+                text: document.text.clone(),
+            })
+            .collect();
+        DiagnosticJob {
+            entry_path,
+            generation,
+            open_documents,
+        }
+    }
+
+    fn publish_diagnostic_result(
+        &mut self,
+        result: DiagnosticJobResult,
+        writer: &mut impl Write,
+    ) -> Result<(), String> {
+        let entry_path = result.entry_path;
+        let should_refresh_semantic_tokens =
+            self.semantic_tokens_refresh && result.parsed.is_some();
+        if let Some(fingerprint) = result.parse_fingerprint {
+            self.cache_parsed_program_for_path(&entry_path, fingerprint, result.parsed);
+            if let Some(snapshot) = result.completion_index_snapshot {
+                self.completion_index_cache.insert(
+                    normalize_path(&entry_path),
+                    CachedCompletionIndex {
+                        fingerprint,
+                        snapshot,
+                    },
+                );
+            }
+        }
         let default_uri = self
             .document_uris
             .get(&entry_path)
             .cloned()
             .unwrap_or_else(|| path_to_file_uri(&entry_path));
+        self.publish_diagnostics_for_entry_data(
+            &entry_path,
+            &default_uri,
+            result.diagnostics.iter(),
+            writer,
+        )?;
+        if should_refresh_semantic_tokens {
+            self.request_semantic_tokens_refresh(writer)?;
+        }
+        Ok(())
+    }
+
+    fn publish_diagnostics_for_entry(
+        &mut self,
+        entry_path: &Path,
+        writer: &mut impl Write,
+    ) -> Result<(), String> {
+        let entry_path = normalize_path(entry_path);
+
+        let source = self.source_text_for_path(&entry_path).ok();
+        let overlays = self.session.analysis().overlay_map();
+        let parse_fingerprint = source
+            .as_deref()
+            .map(|source| self.document_fingerprint_for_path(&entry_path, source, &overlays));
+        let snapshot = self.session.analyze_document(&entry_path);
+        let should_refresh_semantic_tokens =
+            self.semantic_tokens_refresh && snapshot.parsed.is_some();
+        if let Some(fingerprint) = parse_fingerprint {
+            self.cache_parsed_program_for_path(&entry_path, fingerprint, snapshot.parsed.clone());
+        }
+        let default_uri = self
+            .document_uris
+            .get(&entry_path)
+            .cloned()
+            .unwrap_or_else(|| path_to_file_uri(&entry_path));
+        self.publish_diagnostics_for_entry_data(
+            &entry_path,
+            &default_uri,
+            snapshot.diagnostics.iter(),
+            writer,
+        )?;
+        if should_refresh_semantic_tokens {
+            self.request_semantic_tokens_refresh(writer)?;
+        }
+        Ok(())
+    }
+
+    fn publish_diagnostics_for_entry_data<'a>(
+        &mut self,
+        entry_path: &Path,
+        default_uri: &str,
+        diagnostics: impl Iterator<Item = &'a Diagnostic>,
+        writer: &mut impl Write,
+    ) -> Result<(), String> {
         let mut grouped: HashMap<String, Vec<Value>> = HashMap::new();
 
-        for diagnostic in &snapshot.diagnostics {
-            let uri = diagnostic_uri(diagnostic, &default_uri)?;
+        for diagnostic in diagnostics {
+            let uri = diagnostic_uri(diagnostic, default_uri)?;
             grouped
                 .entry(uri)
                 .or_default()
@@ -365,47 +1189,50 @@ impl LspServer {
 
         let previous = self
             .published_by_entry
-            .remove(&entry_path)
+            .remove(entry_path)
             .unwrap_or_default();
-        let mut current = HashSet::new();
-
-        for (uri, diagnostics) in grouped {
-            write_notification(
-                writer,
-                "textDocument/publishDiagnostics",
-                json!({
-                    "uri": uri,
-                    "diagnostics": diagnostics,
-                }),
-            )?;
-            current.insert(uri);
+        let (notifications, current) =
+            diagnostic_publish_notifications(grouped, default_uri.to_owned(), previous);
+        for params in notifications {
+            write_notification(writer, "textDocument/publishDiagnostics", params)?;
         }
-
-        if !current.contains(&default_uri) {
-            write_notification(
-                writer,
-                "textDocument/publishDiagnostics",
-                json!({
-                    "uri": default_uri,
-                    "diagnostics": [],
-                }),
-            )?;
-            current.insert(default_uri);
-        }
-
-        for uri in previous.difference(&current) {
-            write_notification(
-                writer,
-                "textDocument/publishDiagnostics",
-                json!({
-                    "uri": uri,
-                    "diagnostics": [],
-                }),
-            )?;
-        }
-
-        self.published_by_entry.insert(entry_path, current);
+        self.published_by_entry
+            .insert(normalize_path(entry_path), current);
         Ok(())
+    }
+
+    fn publish_diagnostics_for_affected_entries(
+        &mut self,
+        changed_path: &Path,
+        writer: &mut impl Write,
+    ) -> Result<(), String> {
+        for entry_path in self.diagnostic_entries_affected_by_change(changed_path) {
+            self.publish_diagnostics_for_entry(&entry_path, writer)?;
+        }
+        Ok(())
+    }
+
+    fn diagnostic_entries_affected_by_change(&mut self, changed_path: &Path) -> Vec<PathBuf> {
+        let changed_path = normalize_path(changed_path);
+        let overlays = self.session.analysis().overlay_map();
+        let mut out = Vec::<PathBuf>::new();
+        let mut seen = HashSet::<PathBuf>::new();
+
+        for (entry_path, document) in self.session.analysis().open_documents() {
+            let entry_path = normalize_path(entry_path);
+            let affected = entry_path == changed_path
+                || self.dependency_fingerprint_cache.source_depends_on_path(
+                    &entry_path,
+                    &document.text,
+                    &changed_path,
+                    &overlays,
+                );
+            if affected && seen.insert(entry_path.clone()) {
+                out.push(entry_path);
+            }
+        }
+
+        out
     }
 
     fn clear_entry_diagnostics(
@@ -430,6 +1257,18 @@ impl LspServer {
             )?;
         }
         Ok(())
+    }
+
+    fn request_semantic_tokens_refresh(&mut self, writer: &mut impl Write) -> Result<(), String> {
+        self.next_server_request_id = self.next_server_request_id.saturating_add(1);
+        write_request(
+            writer,
+            json!(format!(
+                "onda-semantic-tokens-refresh-{}",
+                self.next_server_request_id
+            )),
+            "workspace/semanticTokens/refresh",
+        )
     }
 }
 
@@ -502,6 +1341,17 @@ struct DidCloseTextDocumentParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DidChangeWatchedFilesParams {
+    changes: Vec<FileEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileEvent {
+    uri: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct TextDocumentIdentifier {
     uri: String,
 }
@@ -517,6 +1367,15 @@ struct SemanticTokensParams {
 struct CompletionParams {
     text_document: TextDocumentIdentifier,
     position: Position,
+    #[serde(default)]
+    context: Option<CompletionRequestContext>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompletionRequestContext {
+    #[serde(default)]
+    trigger_character: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -551,6 +1410,475 @@ fn latest_full_text(changes: &[TextDocumentContentChangeEvent]) -> Option<String
         .rev()
         .find(|change| change.range.is_none())
         .map(|change| change.text.clone())
+}
+
+fn colon_trigger_is_single_colon(
+    source: &str,
+    position: Position,
+    context: Option<&CompletionRequestContext>,
+) -> bool {
+    if context.and_then(|ctx| ctx.trigger_character.as_deref()) != Some(":") {
+        return false;
+    }
+    let offset = position::byte_offset_for_lsp_position(
+        source,
+        position::LspPosition::new(position.line, position.character),
+    );
+    !source[..offset.min(source.len())].ends_with("::")
+}
+
+fn diagnostic_publish_notifications(
+    grouped: HashMap<String, Vec<Value>>,
+    default_uri: String,
+    previous: HashSet<String>,
+) -> (Vec<Value>, HashSet<String>) {
+    let mut notifications = Vec::new();
+    let mut current = HashSet::new();
+
+    for (uri, diagnostics) in grouped {
+        notifications.push(json!({
+            "uri": uri,
+            "diagnostics": diagnostics,
+        }));
+        current.insert(uri);
+    }
+
+    if !current.contains(&default_uri) {
+        notifications.push(json!({
+            "uri": default_uri,
+            "diagnostics": [],
+        }));
+        current.insert(default_uri);
+    }
+
+    for uri in previous.difference(&current) {
+        notifications.push(json!({
+            "uri": uri,
+            "diagnostics": [],
+        }));
+    }
+
+    (notifications, current)
+}
+
+fn run_diagnostic_job(job: DiagnosticJob) -> DiagnosticJobResult {
+    let mut session = AnalysisSession::new();
+    for document in job.open_documents {
+        session.open_document(document.path, document.version, document.text);
+    }
+    let overlays = session.overlay_map();
+    let source = overlays
+        .get(&job.entry_path)
+        .cloned()
+        .or_else(|| fs::read_to_string(&job.entry_path).ok());
+    let parse_fingerprint = source.as_deref().map(|source| {
+        DependencyFingerprintCache::default().document_fingerprint(
+            &job.entry_path,
+            source,
+            &overlays,
+        )
+    });
+    let snapshot = session.analyze_document(&job.entry_path, AnalysisOptions::default());
+    let completion_index_snapshot = snapshot
+        .parsed
+        .as_ref()
+        .map(|program| CompletionIndexSnapshot::build(program, Some(&job.entry_path)));
+    DiagnosticJobResult {
+        entry_path: job.entry_path,
+        generation: job.generation,
+        diagnostics: snapshot.diagnostics,
+        parsed: snapshot.parsed,
+        parse_fingerprint,
+        completion_index_snapshot,
+    }
+}
+
+fn hash_source(source: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(test)]
+fn source_fingerprint(source: &str) -> DocumentFingerprint {
+    DocumentFingerprint {
+        source_hash: hash_source(source),
+        dependency_hash: 0,
+    }
+}
+
+impl DependencyFingerprintCache {
+    fn document_fingerprint(
+        &mut self,
+        path: &Path,
+        source: &str,
+        overlays: &HashMap<PathBuf, String>,
+    ) -> DocumentFingerprint {
+        let mut dependency_hasher = DefaultHasher::new();
+        let mut visited = HashSet::<PathBuf>::new();
+        self.collect_dependency_fingerprint_from_source(
+            &normalize_path(path),
+            source,
+            overlays,
+            &mut visited,
+            &mut dependency_hasher,
+            0,
+        );
+        DocumentFingerprint {
+            source_hash: hash_source(source),
+            dependency_hash: dependency_hasher.finish(),
+        }
+    }
+
+    fn remove(&mut self, path: &Path) {
+        self.disk_files.remove(&normalize_path(path));
+    }
+
+    fn clear(&mut self) {
+        self.disk_files.clear();
+    }
+
+    fn source_depends_on_path(
+        &mut self,
+        path: &Path,
+        source: &str,
+        target: &Path,
+        overlays: &HashMap<PathBuf, String>,
+    ) -> bool {
+        let mut visited = HashSet::<PathBuf>::new();
+        self.source_depends_on_path_from_source(
+            &normalize_path(path),
+            source,
+            &normalize_path(target),
+            overlays,
+            &mut visited,
+            0,
+        )
+    }
+
+    fn collect_dependency_fingerprint_from_source(
+        &mut self,
+        path: &Path,
+        source: &str,
+        overlays: &HashMap<PathBuf, String>,
+        visited: &mut HashSet<PathBuf>,
+        hasher: &mut DefaultHasher,
+        depth: usize,
+    ) {
+        self.collect_dependency_fingerprint_from_dependencies(
+            path,
+            dependency_paths_for_source(path, source),
+            overlays,
+            visited,
+            hasher,
+            depth,
+        );
+    }
+
+    fn collect_dependency_fingerprint_from_dependencies(
+        &mut self,
+        path: &Path,
+        dependencies: Vec<PathBuf>,
+        overlays: &HashMap<PathBuf, String>,
+        visited: &mut HashSet<PathBuf>,
+        hasher: &mut DefaultHasher,
+        depth: usize,
+    ) {
+        if depth > 64 {
+            "dependency-depth-limit".hash(hasher);
+            return;
+        }
+        let normalized = normalize_path(path);
+        if !visited.insert(normalized.clone()) {
+            return;
+        }
+        normalized.hash(hasher);
+
+        for dependency in dependencies {
+            let dependency = normalize_path(&dependency);
+            dependency.hash(hasher);
+            if let Some(overlay_source) = overlay_source_for_path(&dependency, overlays) {
+                "overlay".hash(hasher);
+                overlay_source.hash(hasher);
+                self.collect_dependency_fingerprint_from_source(
+                    &dependency,
+                    overlay_source,
+                    overlays,
+                    visited,
+                    hasher,
+                    depth + 1,
+                );
+                continue;
+            }
+
+            match self.disk_file_summary(&dependency) {
+                Ok(summary) => {
+                    "disk".hash(hasher);
+                    summary.source_hash.hash(hasher);
+                    self.collect_dependency_fingerprint_from_dependencies(
+                        &dependency,
+                        summary.dependencies,
+                        overlays,
+                        visited,
+                        hasher,
+                        depth + 1,
+                    );
+                }
+                Err(kind) => {
+                    "missing".hash(hasher);
+                    kind.hash(hasher);
+                }
+            }
+        }
+    }
+
+    fn source_depends_on_path_from_source(
+        &mut self,
+        path: &Path,
+        source: &str,
+        target: &Path,
+        overlays: &HashMap<PathBuf, String>,
+        visited: &mut HashSet<PathBuf>,
+        depth: usize,
+    ) -> bool {
+        self.source_depends_on_path_from_dependencies(
+            path,
+            dependency_paths_for_source(path, source),
+            target,
+            overlays,
+            visited,
+            depth,
+        )
+    }
+
+    fn source_depends_on_path_from_dependencies(
+        &mut self,
+        path: &Path,
+        dependencies: Vec<PathBuf>,
+        target: &Path,
+        overlays: &HashMap<PathBuf, String>,
+        visited: &mut HashSet<PathBuf>,
+        depth: usize,
+    ) -> bool {
+        if depth > 64 {
+            return false;
+        }
+        let normalized = normalize_path(path);
+        if !visited.insert(normalized) {
+            return false;
+        }
+
+        for dependency in dependencies {
+            let dependency = normalize_path(&dependency);
+            if dependency == target {
+                return true;
+            }
+            if let Some(overlay_source) = overlay_source_for_path(&dependency, overlays) {
+                if self.source_depends_on_path_from_source(
+                    &dependency,
+                    overlay_source,
+                    target,
+                    overlays,
+                    visited,
+                    depth + 1,
+                ) {
+                    return true;
+                }
+                continue;
+            }
+            if let Ok(summary) = self.disk_file_summary(&dependency) {
+                if self.source_depends_on_path_from_dependencies(
+                    &dependency,
+                    summary.dependencies,
+                    target,
+                    overlays,
+                    visited,
+                    depth + 1,
+                ) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn disk_file_summary(&mut self, path: &Path) -> Result<CachedDependencyFile, io::ErrorKind> {
+        let normalized = normalize_path(path);
+        let metadata = match fs::metadata(&normalized) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                self.disk_files.remove(&normalized);
+                return Err(err.kind());
+            }
+        };
+        let stamp = DependencyFileStamp {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        };
+        if let Some(cached) = self.disk_files.get(&normalized) {
+            if cached.stamp == stamp {
+                return Ok(cached.clone());
+            }
+        }
+
+        let source = match fs::read_to_string(&normalized) {
+            Ok(source) => source,
+            Err(err) => {
+                self.disk_files.remove(&normalized);
+                return Err(err.kind());
+            }
+        };
+        let summary = CachedDependencyFile {
+            stamp,
+            source_hash: hash_source(&source),
+            dependencies: dependency_paths_for_source(&normalized, &source),
+        };
+        self.disk_files.insert(normalized, summary.clone());
+        Ok(summary)
+    }
+}
+
+fn overlay_source_for_path<'a>(
+    path: &Path,
+    overlays: &'a HashMap<PathBuf, String>,
+) -> Option<&'a str> {
+    overlays
+        .get(path)
+        .or_else(|| overlays.get(&normalize_path(path)))
+        .map(String::as_str)
+}
+
+fn dependency_paths_for_source(path: &Path, source: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let line = strip_line_comment(line);
+        for statement in statement_slices(line) {
+            let statement = statement.trim();
+            if let Some(module) = statement.strip_prefix("import ").map(str::trim) {
+                out.extend(import_dependency_paths(path, module));
+                continue;
+            }
+            if let Some(rest) = statement.strip_prefix("include ").map(str::trim) {
+                if let Some(path) = include_dependency_path(path, rest) {
+                    out.push(path);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn import_dependency_paths(current_file: &Path, module: &str) -> Vec<PathBuf> {
+    let module = module
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(';');
+    if module.is_empty()
+        || module.starts_with("std/")
+        || module.contains('"')
+        || module.contains('\\')
+        || ONDA_SOURCE_EXTENSIONS
+            .iter()
+            .any(|ext| module.ends_with(&format!(".{ext}")))
+    {
+        return Vec::new();
+    }
+    let base = if Path::new(module).is_absolute() {
+        PathBuf::from(module)
+    } else {
+        current_file
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(module)
+    };
+    let mut out = Vec::new();
+    for ext in ONDA_SOURCE_EXTENSIONS {
+        let candidate = base.with_extension(ext);
+        if candidate.exists() {
+            return vec![candidate];
+        }
+        out.push(candidate);
+    }
+    out
+}
+
+fn include_dependency_path(current_file: &Path, rest: &str) -> Option<PathBuf> {
+    let include = quoted_prefix(rest)?;
+    let include = PathBuf::from(include);
+    if include.is_absolute() {
+        Some(include)
+    } else {
+        Some(
+            current_file
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(include),
+        )
+    }
+}
+
+fn statement_slices(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            ';' if !in_string => {
+                out.push(&line[start..idx]);
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&line[start..]);
+    out
+}
+
+fn quoted_prefix(rest: &str) -> Option<String> {
+    let rest = rest.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut escaped = false;
+    for ch in rest.chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(out),
+            _ => out.push(ch),
+        }
+    }
+    None
+}
+
+fn strip_line_comment(line: &str) -> &str {
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            '#' if !in_string => return &line[..idx],
+            _ => {}
+        }
+    }
+    line
 }
 
 fn parse_params<T>(params: Option<Value>) -> Result<T, String>
@@ -599,6 +1927,16 @@ fn client_supports_completion_snippets(capabilities: Option<&Value>) -> bool {
         .and_then(|value| {
             value
                 .pointer("/textDocument/completion/completionItem/snippetSupport")
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false)
+}
+
+fn client_supports_semantic_tokens_refresh(capabilities: Option<&Value>) -> bool {
+    capabilities
+        .and_then(|value| {
+            value
+                .pointer("/workspace/semanticTokens/refreshSupport")
                 .and_then(Value::as_bool)
         })
         .unwrap_or(false)
@@ -687,6 +2025,17 @@ fn write_notification(writer: &mut impl Write, method: &str, params: Value) -> R
     )
 }
 
+fn write_request(writer: &mut impl Write, id: Value, method: &str) -> Result<(), String> {
+    write_lsp_message(
+        writer,
+        &json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": id,
+            "method": method,
+        }),
+    )
+}
+
 fn write_lsp_message(writer: &mut impl Write, message: &Value) -> Result<(), String> {
     let payload = serde_json::to_vec(message)
         .map_err(|err| format!("failed to encode lsp message: {err}"))?;
@@ -710,15 +2059,16 @@ mod tests {
     use super::diagnostics::diagnostic_message;
     use super::path_utils::file_uri_to_path;
     use super::{
-        initialize_result, latest_full_text, lsp_document_path, path_to_file_uri, LspServer,
-        Position, TextDocumentContentChangeEvent,
+        initialize_result, latest_full_text, lsp_document_path, path_to_file_uri, DiagnosticDelay,
+        DiagnosticJobResult, DiagnosticScheduleRequest, LspCore, LspServer, Position,
+        TextDocumentContentChangeEvent,
     };
     use onda_frontend::{DiagCode, Diagnostic};
     use serde_json::json;
     use std::fs;
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::{mpsc, Mutex, MutexGuard};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn mk_temp_dir(prefix: &str) -> PathBuf {
@@ -826,12 +2176,32 @@ mod tests {
         source: &str,
         needle: &str,
     ) -> Vec<serde_json::Value> {
+        completion_items_for_with_context(server, path, source, needle, None)
+    }
+
+    fn completion_items_for_with_context(
+        server: &mut LspServer,
+        path: &Path,
+        source: &str,
+        needle: &str,
+        context: Option<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
         let normalized =
             server
                 .session
                 .open_document(path, onda_daemon::DocumentVersion(1), source.to_owned());
         let uri = path_to_file_uri(&normalized);
         let position = position_after(source, needle);
+        let mut params = json!({
+            "textDocument": { "uri": uri },
+            "position": {
+                "line": position.line,
+                "character": position.character,
+            }
+        });
+        if let Some(context) = context {
+            params["context"] = context;
+        }
         let mut writer = Vec::new();
         server
             .handle_message(
@@ -839,13 +2209,7 @@ mod tests {
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "textDocument/completion",
-                    "params": {
-                        "textDocument": { "uri": uri },
-                        "position": {
-                            "line": position.line,
-                            "character": position.character,
-                        }
-                    }
+                    "params": params
                 }),
                 &mut writer,
             )
@@ -952,6 +2316,18 @@ mod tests {
             .expect("document symbol response")
     }
 
+    fn semantic_token_data_for(server: &mut LspServer, path: &Path) -> Vec<u32> {
+        let uri = path_to_file_uri(path);
+        server
+            .semantic_tokens_for_uri(&uri)
+            .expect("semantic tokens should succeed")["data"]
+            .as_array()
+            .expect("semantic token data")
+            .iter()
+            .map(|value| value.as_u64().expect("semantic token integer") as u32)
+            .collect()
+    }
+
     #[test]
     fn latest_full_text_prefers_last_full_document_change() {
         let changes = vec![
@@ -968,6 +2344,832 @@ mod tests {
     }
 
     #[test]
+    fn parsed_document_cache_reparses_after_document_change() {
+        let dir = mk_temp_dir("parse_cache_reparse");
+        let main = dir.join("main.onda");
+        let old_source = r#"
+namespace Old:
+  const X = 1
+"#;
+        let new_source = r#"
+namespace New:
+  const X = 1
+"#;
+        write_file(&main, old_source);
+
+        let mut server = LspServer::default();
+        let old_symbols = document_symbols_for(&mut server, &main, old_source);
+        let new_symbols = document_symbols_for(&mut server, &main, new_source);
+        let old_names = old_symbols
+            .iter()
+            .filter_map(|symbol| symbol["name"].as_str())
+            .collect::<Vec<_>>();
+        let new_names = new_symbols
+            .iter()
+            .filter_map(|symbol| symbol["name"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(old_names.contains(&"Old"), "old symbols: {old_symbols:?}");
+        assert!(new_names.contains(&"New"), "new symbols: {new_symbols:?}");
+        assert!(
+            !new_names.contains(&"Old"),
+            "new symbols should not come from stale parse cache: {new_symbols:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parsed_open_document_cache_refreshes_importing_document_after_diagnostics() {
+        let dir = mk_temp_dir("parse_cache_open_importing_reparse");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let old_source = r#"
+include "lib.onda"
+
+namespace Old:
+  const X = 1
+"#;
+        let new_source = r#"
+include "lib.onda"
+
+namespace New:
+  const X = 1
+"#;
+        write_file(&lib, "namespace Imported:\n  const X = 1\n");
+        write_file(&main, old_source);
+
+        let mut server = LspServer::default();
+        let old_symbols = document_symbols_for(&mut server, &main, old_source);
+        let normalized = server.session.update_document(
+            &main,
+            onda_daemon::DocumentVersion(2),
+            new_source.to_owned(),
+        );
+        server
+            .publish_diagnostics_for_entry(&normalized, &mut Vec::new())
+            .expect("diagnostics should refresh parsed snapshot");
+        let new_symbols = document_symbols_for(&mut server, &main, new_source);
+        let old_names = old_symbols
+            .iter()
+            .filter_map(|symbol| symbol["name"].as_str())
+            .collect::<Vec<_>>();
+        let new_names = new_symbols
+            .iter()
+            .filter_map(|symbol| symbol["name"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(old_names.contains(&"Old"), "old symbols: {old_symbols:?}");
+        assert!(new_names.contains(&"New"), "new symbols: {new_symbols:?}");
+        assert!(
+            !new_names.contains(&"Old"),
+            "changed importing source should refresh after diagnostics: {new_symbols:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_reparses_after_valid_document_change() {
+        let dir = mk_temp_dir("completion_cache_reparse");
+        let main = dir.join("main.onda");
+        let old_source = r#"
+namespace Old:
+  const X = 1
+
+sample:
+  out1 = O
+"#;
+        let new_source = r#"
+namespace New:
+  const X = 1
+
+sample:
+  out1 = N
+"#;
+        write_file(&main, old_source);
+
+        let mut server = LspServer::default();
+        let old_labels = completion_labels_for(&mut server, &main, old_source, "O");
+        let new_labels = completion_labels_for(&mut server, &main, new_source, "N");
+
+        assert!(
+            old_labels.contains(&"Old".to_owned()),
+            "old completion should see old AST: {old_labels:?}"
+        );
+        assert!(
+            new_labels.contains(&"New".to_owned()),
+            "completion should reparse valid changed text: {new_labels:?}"
+        );
+        assert!(
+            !new_labels.contains(&"Old".to_owned()),
+            "completion should not use stale parse when changed text parses: {new_labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parsed_document_cache_refreshes_after_dependency_diagnostics() {
+        let dir = mk_temp_dir("parse_cache_dependency_reparse");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let source = r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = Lib::target()
+"#;
+        write_file(
+            &lib,
+            r#"
+namespace Lib:
+  def target():
+    return 0.0
+"#,
+        );
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let old_definition = definition_for(&mut server, &main, source, "Lib::target");
+
+        write_file(
+            &lib,
+            r#"
+namespace Lib:
+  const Spacer = 1
+
+  def target():
+    return 0.0
+	"#,
+        );
+        server
+            .publish_diagnostics_for_entry(&main, &mut Vec::new())
+            .expect("diagnostics should refresh imported definition snapshot");
+        let new_definition = definition_for(&mut server, &main, source, "Lib::target");
+
+        assert_ne!(
+            old_definition["range"]["start"]["line"],
+            new_definition["range"]["start"]["line"],
+            "definition should reflect changed imported file after diagnostics, old={old_definition:?}, new={new_definition:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parsed_document_cache_tracks_on_import_dependencies_after_diagnostics() {
+        let dir = mk_temp_dir("parse_cache_on_dependency_reparse");
+        let lib = dir.join("lib.on");
+        let main = dir.join("main.onda");
+        let source = r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = Lib::target()
+"#;
+        write_file(
+            &lib,
+            r#"
+namespace Lib:
+  def target():
+    return 0.0
+"#,
+        );
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let old_definition = definition_for(&mut server, &main, source, "Lib::target");
+
+        write_file(
+            &lib,
+            r#"
+namespace Lib:
+  const Spacer = 1
+
+  def target():
+    return 0.0
+	"#,
+        );
+        server
+            .publish_diagnostics_for_entry(&main, &mut Vec::new())
+            .expect("diagnostics should refresh .on imported definition snapshot");
+        let new_definition = definition_for(&mut server, &main, source, "Lib::target");
+
+        assert_ne!(
+            old_definition["range"]["start"]["line"],
+            new_definition["range"]["start"]["line"],
+            "definition should reflect changed .on imported file after diagnostics, old={old_definition:?}, new={new_definition:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn semantic_token_cache_reparses_after_dependency_change() {
+        let dir = mk_temp_dir("semantic_token_cache_dependency_reparse");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let source = r#"
+import lib
+
+sample:
+  out1 = target()
+"#;
+        write_file(
+            &lib,
+            r#"
+def target():
+  return 0.0
+"#,
+        );
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let old_data = semantic_token_data_for(&mut server, &main);
+
+        write_file(
+            &lib,
+            r#"
+const target = 0.0
+"#,
+        );
+        let new_data = semantic_token_data_for(&mut server, &main);
+
+        assert_ne!(
+            old_data, new_data,
+            "semantic token cache should account for imported file changes"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn diagnostics_refresh_requests_semantic_tokens_after_parsed_importer_update() {
+        let dir = mk_temp_dir("semantic_token_cache_diagnostic_refresh");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let main_source = r#"
+import lib
+use sc
+
+sample:
+  out1 = 0.0
+"#;
+        let old_lib_source = r#"
+def sc():
+  return 0.0
+"#;
+        let new_lib_source = r#"
+namespace sc:
+  namespace SinOsc:
+    const A = 1
+"#;
+        write_file(&lib, old_lib_source);
+        write_file(&main, main_source);
+
+        let mut server = LspServer::default();
+        server.semantic_tokens_refresh = true;
+        let main_path =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), main_source);
+        let lib_path =
+            server
+                .session
+                .open_document(&lib, onda_daemon::DocumentVersion(1), old_lib_source);
+
+        server
+            .publish_diagnostics_for_entry(&main_path, &mut Vec::new())
+            .expect("initial diagnostics should publish");
+        let old_data = semantic_token_data_for(&mut server, &main_path);
+        assert!(
+            !old_data.is_empty(),
+            "initial semantic token data should be non-empty"
+        );
+
+        server
+            .session
+            .update_document(&lib_path, onda_daemon::DocumentVersion(2), new_lib_source);
+        server.note_document_changed(&lib_path);
+        let mut writer = Vec::new();
+        server
+            .publish_diagnostics_for_entry(&main_path, &mut writer)
+            .expect("refreshed diagnostics should publish");
+        let messages = decode_lsp_messages(writer);
+
+        assert!(
+            messages.iter().any(|message| {
+                message["method"]
+                    .as_str()
+                    .map(|method| method == "workspace/semanticTokens/refresh")
+                    .unwrap_or(false)
+            }),
+            "parsed diagnostic refresh should request semantic-token refresh: {messages:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn semantic_tokens_for_open_document_do_not_scan_import_dependencies() {
+        let dir = mk_temp_dir("semantic_tokens_open_no_dependency_scan");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let source = r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = target()
+"#;
+        write_file(
+            &lib,
+            r#"
+def target():
+  return 0.0
+"#,
+        );
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let normalized =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), source);
+        let data = semantic_token_data_for(&mut server, &normalized);
+
+        assert!(
+            !data.is_empty(),
+            "open document should produce semantic tokens"
+        );
+        assert!(
+            server.dependency_fingerprint_cache.disk_files.is_empty(),
+            "open-document semantic tokens should not walk imported files"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_uses_cached_parse_after_unsaved_edit() {
+        let dir = mk_temp_dir("completion_cached_parse_after_edit");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace sc:
+  namespace SinOsc:
+    proc ar:
+      outs:
+        out1
+      sample:
+        out1 = 0.0
+
+use sc
+
+init:
+  b = Sin
+
+sample:
+  out1 = 0.0
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let normalized =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), source);
+        let fingerprint = super::source_fingerprint(source);
+        let parsed = onda_frontend::parse_program_file_with_overlays(
+            &normalized,
+            &server.session.analysis().overlay_map(),
+        )
+        .expect("source should parse");
+        server.cache_parsed_program_for_path(&normalized, fingerprint, Some(parsed));
+        server.note_document_changed(&normalized);
+
+        let labels = completion_labels_for(&mut server, &main, source, "Sin");
+
+        assert!(
+            labels.contains(&"SinOsc".to_owned()),
+            "completion should reuse cached namespace index after edit: {labels:?}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_for_open_document_reuses_cached_imported_symbols_without_dependency_scan() {
+        let dir = mk_temp_dir("completion_open_reparse_no_dependency_scan");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let initial_source = r#"
+include "lib.onda"
+
+use sc
+
+init:
+  a = SinOsc::ar()
+
+sample:
+  out1 = a()
+"#;
+        let edited_source = r#"
+include "lib.onda"
+
+use sc
+
+init:
+  a = SinOsc::ar()
+  d = S
+
+sample:
+  out1 = a()
+"#;
+        write_file(
+            &lib,
+            r#"
+namespace sc:
+  namespace SinOsc:
+    proc ar:
+      outs:
+        out1
+      sample:
+        out1 = 0.0
+"#,
+        );
+        write_file(&main, initial_source);
+
+        let mut server = LspServer::default();
+        let normalized =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), initial_source);
+        let parsed = onda_frontend::parse_program_file_with_overlays(
+            &normalized,
+            &server.session.analysis().overlay_map(),
+        )
+        .expect("initial source should parse");
+        server.cache_parsed_program_for_path(
+            &normalized,
+            super::source_fingerprint(initial_source),
+            Some(parsed),
+        );
+        server
+            .session
+            .update_document(&main, onda_daemon::DocumentVersion(2), edited_source);
+        server.dependency_fingerprint_cache.clear();
+
+        let labels = completion_labels_for(&mut server, &main, edited_source, "d = S");
+
+        assert!(
+            labels.contains(&"SinOsc".to_owned()),
+            "completion should keep imported namespace symbols from the cached parse: {labels:?}"
+        );
+        assert!(
+            server.dependency_fingerprint_cache.disk_files.is_empty(),
+            "open-document completion should not walk imported files"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn diagnostics_do_not_clear_cached_parse_after_syntax_error() {
+        let dir = mk_temp_dir("diagnostic_error_keeps_parse_cache");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let initial_source = r#"
+include "lib.onda"
+
+use sc
+
+init:
+  t = 0.0
+
+sample:
+  out1 = 0.0
+"#;
+        let invalid_source = r#"
+include "lib.onda"
+
+use sc
+
+init:
+  t =
+
+sample:
+  out1 = 0.0
+"#;
+        let completion_source = r#"
+include "lib.onda"
+
+use sc
+
+init:
+  t = Si
+
+sample:
+  out1 = 0.0
+"#;
+        write_file(
+            &lib,
+            r#"
+namespace sc:
+  namespace SinOsc:
+    const A = 1
+"#,
+        );
+        write_file(&main, initial_source);
+
+        let mut server = LspServer::default();
+        let normalized =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), initial_source);
+        server
+            .publish_diagnostics_for_entry(&normalized, &mut Vec::new())
+            .expect("initial diagnostics should cache parsed snapshot");
+        assert!(
+            server
+                .parse_cache
+                .get(&normalized)
+                .and_then(|cached| cached.parsed.as_ref())
+                .is_some(),
+            "initial successful diagnostics should cache a parsed snapshot"
+        );
+
+        server
+            .session
+            .update_document(&main, onda_daemon::DocumentVersion(2), invalid_source);
+        server.note_document_changed(&main);
+        server
+            .publish_diagnostics_for_entry(&normalized, &mut Vec::new())
+            .expect("syntax diagnostics should publish");
+        assert!(
+            server
+                .parse_cache
+                .get(&normalized)
+                .and_then(|cached| cached.parsed.as_ref())
+                .is_some(),
+            "failed diagnostics should keep the last successful parsed snapshot"
+        );
+
+        server
+            .session
+            .update_document(&main, onda_daemon::DocumentVersion(3), completion_source);
+        server.note_document_changed(&main);
+        let labels = completion_labels_for(&mut server, &main, completion_source, "Si");
+        assert!(
+            labels.contains(&"SinOsc".to_owned()),
+            "completion should reuse the last successful parsed snapshot after an error: {labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_keeps_ready_index_when_parse_cache_changes_without_prebuilt_index() {
+        let dir = mk_temp_dir("completion_keeps_ready_index");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let source = r#"
+include "lib.onda"
+
+use sc
+
+init:
+  d = S
+
+sample:
+  out1 = 0.0
+"#;
+        write_file(
+            &lib,
+            r#"
+namespace sc:
+  namespace SinOsc:
+    const A = 1
+"#,
+        );
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let old_parsed = onda_frontend::parse_program_file_with_overlays(
+            &super::normalize_path(&main),
+            &server.session.analysis().overlay_map(),
+        )
+        .expect("initial source should parse");
+        server.cache_parsed_program_for_path(
+            &main,
+            super::source_fingerprint(source),
+            Some(old_parsed),
+        );
+        let labels = completion_labels_for(&mut server, &main, source, "d = S");
+        assert!(
+            labels.contains(&"SinOsc".to_owned()),
+            "initial completion should build ready index: {labels:?}"
+        );
+
+        write_file(
+            &lib,
+            r#"
+namespace sc:
+  namespace SawOsc:
+    const A = 1
+"#,
+        );
+        let parsed = onda_frontend::parse_program_file_with_overlays(
+            &super::normalize_path(&main),
+            &server.session.analysis().overlay_map(),
+        )
+        .expect("changed dependency should parse");
+        server.cache_parsed_program_for_path(
+            &main,
+            super::source_fingerprint(source),
+            Some(parsed),
+        );
+
+        let labels = completion_labels_for(&mut server, &main, source, "d = S");
+        assert!(
+            labels.contains(&"SinOsc".to_owned()),
+            "request-time completion should keep the ready index until a replacement is prepared: {labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn namespace_completion_for_open_document_reuses_cached_imported_symbols_without_dependency_scan(
+    ) {
+        let dir = mk_temp_dir("completion_open_namespace_reparse_no_dependency_scan");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let initial_source = r#"
+include "lib.onda"
+
+use sc
+
+init:
+  a = SinOsc::ar()
+
+sample:
+  out1 = a()
+"#;
+        let edited_source = r#"
+include "lib.onda"
+
+use sc
+
+init:
+  a = SinOsc::ar()
+  d = SinOsc::
+
+sample:
+  out1 = a()
+"#;
+        write_file(
+            &lib,
+            r#"
+namespace sc:
+  namespace SinOsc:
+    proc ar:
+      outs:
+        out1
+      sample:
+        out1 = 0.0
+"#,
+        );
+        write_file(&main, initial_source);
+
+        let mut server = LspServer::default();
+        let normalized =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), initial_source);
+        let parsed = onda_frontend::parse_program_file_with_overlays(
+            &normalized,
+            &server.session.analysis().overlay_map(),
+        )
+        .expect("initial source should parse");
+        server.cache_parsed_program_for_path(
+            &normalized,
+            super::source_fingerprint(initial_source),
+            Some(parsed),
+        );
+        server
+            .session
+            .update_document(&main, onda_daemon::DocumentVersion(2), edited_source);
+        server.dependency_fingerprint_cache.clear();
+
+        let labels = completion_labels_for(&mut server, &main, edited_source, "SinOsc::");
+
+        assert!(
+            labels.contains(&"ar".to_owned()),
+            "namespace completion should keep imported namespace members from the cached parse: {labels:?}"
+        );
+        assert!(
+            server.dependency_fingerprint_cache.disk_files.is_empty(),
+            "open-document namespace completion should not walk imported files"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dependency_scanner_tracks_semicolon_imports() {
+        let dir = mk_temp_dir("dependency_scanner_semicolon_imports");
+        let main = dir.join("main.onda");
+        let deps = super::dependency_paths_for_source(&main, "import first; import second\n");
+
+        assert!(
+            deps.contains(&dir.join("first.onda")),
+            "first import should be tracked: {deps:?}"
+        );
+        assert!(
+            deps.contains(&dir.join("second.onda")),
+            "second import should be tracked: {deps:?}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dependency_scanner_uses_frontend_import_extension_order() {
+        let dir = mk_temp_dir("dependency_scanner_import_extension_order");
+        let main = dir.join("main.onda");
+        let onda = dir.join("lib.onda");
+        let on = dir.join("lib.on");
+        write_file(&onda, "namespace Lib:\n  const A = 1\n");
+        write_file(&on, "namespace Lib:\n  const A = 2\n");
+
+        let deps = super::dependency_paths_for_source(&main, "import lib\n");
+
+        assert!(
+            deps.contains(&onda),
+            ".onda import candidate should be tracked first: {deps:?}"
+        );
+        assert!(
+            !deps.contains(&on),
+            ".on sibling should not invalidate an import resolved to .onda: {deps:?}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dependency_scanner_tracks_on_import_when_onda_is_absent() {
+        let dir = mk_temp_dir("dependency_scanner_on_import");
+        let main = dir.join("main.onda");
+        let on = dir.join("lib.on");
+        write_file(&on, "namespace Lib:\n  const A = 1\n");
+
+        let deps = super::dependency_paths_for_source(&main, "import lib\n");
+
+        assert!(
+            deps.contains(&on),
+            ".on import should be tracked when no .onda file exists: {deps:?}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn diagnostic_entries_include_open_importers_after_dependency_change() {
+        let dir = mk_temp_dir("diagnostic_dependency_importers");
+        let lib = dir.join("lib.onda");
+        let main = dir.join("main.onda");
+        let main_source = "import lib\nouts:\n  out1\nsample:\n  out1 = Lib::target()\n";
+        write_file(&lib, "namespace Lib:\n  def target():\n    return 0.0\n");
+        write_file(&main, main_source);
+
+        let mut server = LspServer::default();
+        let main_path =
+            server
+                .session
+                .open_document(&main, onda_daemon::DocumentVersion(1), main_source);
+        let lib_path = server.session.open_document(
+            &lib,
+            onda_daemon::DocumentVersion(2),
+            "namespace Lib:\n  def target():\n    return invalid\n",
+        );
+
+        let affected = server.diagnostic_entries_affected_by_change(&lib_path);
+        assert!(
+            affected.contains(&main_path),
+            "importing entry should be re-diagnosed after dependency change: {affected:?}"
+        );
+        assert!(
+            affected.contains(&lib_path),
+            "changed open document should be diagnosed: {affected:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn completion_triggers_include_call_argument_contexts() {
         let result = initialize_result(None);
         let triggers = result["capabilities"]["completionProvider"]["triggerCharacters"]
@@ -979,6 +3181,63 @@ mod tests {
 
         assert!(triggers.contains(&"("), "triggers: {triggers:?}");
         assert!(triggers.contains(&","), "triggers: {triggers:?}");
+    }
+
+    #[test]
+    fn completion_colon_trigger_ignores_single_colon() {
+        let dir = mk_temp_dir("completion_single_colon_trigger");
+        let main = dir.join("main.onda");
+        let source = "namespace Foo:\n  const A = 1\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let items = completion_items_for_with_context(
+            &mut server,
+            &main,
+            source,
+            "Foo:",
+            Some(json!({
+                "triggerKind": 2,
+                "triggerCharacter": ":",
+            })),
+        );
+
+        assert!(
+            items.is_empty(),
+            "single colon trigger should not produce completions: {items:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_colon_trigger_allows_double_colon() {
+        let dir = mk_temp_dir("completion_double_colon_trigger");
+        let main = dir.join("main.onda");
+        let source = "namespace Foo:\n  const A = 1\n\nsample:\n  out1 = Foo::\n";
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_items_for_with_context(
+            &mut server,
+            &main,
+            source,
+            "Foo::",
+            Some(json!({
+                "triggerKind": 2,
+                "triggerCharacter": ":",
+            })),
+        )
+        .iter()
+        .filter_map(|item| item["label"].as_str().map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+
+        assert!(
+            labels.contains(&"A".to_owned()),
+            "double colon trigger should produce namespace completions: {labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1369,6 +3628,319 @@ init:
                     .unwrap_or(false)
             }),
             "expected didOpen to publish diagnostics: {notifications:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn did_save_publishes_diagnostics_immediately() {
+        let dir = mk_temp_dir("did_save_publish");
+        let main = dir.join("main.onda");
+        let valid_source = "sample:\n  out1 = 0.0\n";
+        let invalid_source = "init:\n  sat = Saturat()\n";
+        write_file(&main, valid_source);
+
+        let mut server = LspServer::default();
+        let uri = path_to_file_uri(&main);
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "version": 1,
+                            "text": valid_source,
+                        }
+                    }
+                }),
+                &mut Vec::new(),
+            )
+            .expect("didOpen should succeed");
+
+        let mut writer = Vec::new();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didSave",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                        },
+                        "text": invalid_source,
+                    }
+                }),
+                &mut writer,
+            )
+            .expect("didSave should succeed");
+
+        let notifications = decode_lsp_messages(writer)
+            .into_iter()
+            .filter(|message| {
+                message["method"]
+                    .as_str()
+                    .map(|method| method == "textDocument/publishDiagnostics")
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            notifications.iter().any(|message| {
+                message["params"]["diagnostics"]
+                    .as_array()
+                    .map(|diagnostics| !diagnostics.is_empty())
+                    .unwrap_or(false)
+            }),
+            "expected didSave to publish diagnostics: {notifications:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn did_change_publishes_diagnostics_in_synchronous_mode() {
+        let dir = mk_temp_dir("did_change_publish_sync");
+        let main = dir.join("main.onda");
+        let valid_source = "sample:\n  out1 = 0.0\n";
+        let invalid_source = "init:\n  sat = Saturat()\n";
+        write_file(&main, valid_source);
+
+        let mut server = LspServer::default();
+        let uri = path_to_file_uri(&main);
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "version": 1,
+                            "text": valid_source,
+                        }
+                    }
+                }),
+                &mut Vec::new(),
+            )
+            .expect("didOpen should succeed");
+
+        let mut writer = Vec::new();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "version": 2,
+                        },
+                        "contentChanges": [
+                            {
+                                "text": invalid_source,
+                            }
+                        ],
+                    }
+                }),
+                &mut writer,
+            )
+            .expect("didChange should succeed");
+
+        let notifications = decode_lsp_messages(writer)
+            .into_iter()
+            .filter(|message| {
+                message["method"]
+                    .as_str()
+                    .map(|method| method == "textDocument/publishDiagnostics")
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            notifications.iter().any(|message| {
+                message["params"]["diagnostics"]
+                    .as_array()
+                    .map(|diagnostics| !diagnostics.is_empty())
+                    .unwrap_or(false)
+            }),
+            "didChange should publish diagnostics in synchronous mode: {notifications:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn did_change_defers_diagnostics_in_deferred_mode() {
+        let dir = mk_temp_dir("did_change_deferred");
+        let main = dir.join("main.onda");
+        let valid_source = "sample:\n  out1 = 0.0\n";
+        let invalid_source = "init:\n  sat = Saturat()\n";
+        write_file(&main, valid_source);
+
+        let mut server = LspServer {
+            defer_diagnostics: true,
+            ..LspServer::default()
+        };
+        let uri = path_to_file_uri(&main);
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "version": 1,
+                            "text": valid_source,
+                        }
+                    }
+                }),
+                &mut Vec::new(),
+            )
+            .expect("didOpen should succeed");
+        server.take_diagnostic_requests();
+
+        let mut writer = Vec::new();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didChange",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "version": 2,
+                        },
+                        "contentChanges": [
+                            {
+                                "text": invalid_source,
+                            }
+                        ],
+                    }
+                }),
+                &mut writer,
+            )
+            .expect("didChange should succeed");
+
+        let notifications = decode_lsp_messages(writer)
+            .into_iter()
+            .filter(|message| {
+                message["method"]
+                    .as_str()
+                    .map(|method| method == "textDocument/publishDiagnostics")
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            notifications.is_empty(),
+            "deferred didChange should not write diagnostics on the request path: {notifications:?}"
+        );
+
+        let requests = server.take_diagnostic_requests();
+        assert!(
+            matches!(
+                requests.as_slice(),
+                [DiagnosticScheduleRequest::Affected {
+                    delay: DiagnosticDelay::Debounced,
+                    ..
+                }]
+            ),
+            "deferred didChange should queue debounced affected-entry diagnostics: {requests:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deferred_diagnostics_drop_stale_generations() {
+        let dir = mk_temp_dir("diagnostic_stale_generation");
+        let main = dir.join("main.onda");
+        write_file(&main, "sample:\n  out1 = 0.0\n");
+        let main = super::normalize_path(&main);
+
+        let (immediate_tx, _immediate_rx) = mpsc::channel();
+        let (background_tx, _background_rx) = mpsc::channel();
+        let mut core = LspCore::new(immediate_tx, background_tx);
+        core.diagnostic_generations.insert(main.clone(), 2);
+
+        let mut writer = Vec::new();
+        core.publish_diagnostic_result(
+            DiagnosticJobResult {
+                entry_path: main,
+                generation: 1,
+                diagnostics: Vec::new(),
+                parsed: None,
+                parse_fingerprint: None,
+                completion_index_snapshot: None,
+            },
+            &mut writer,
+        )
+        .expect("stale diagnostics should be accepted and ignored");
+
+        assert!(
+            decode_lsp_messages(writer).is_empty(),
+            "stale diagnostics should not publish notifications"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deferred_diagnostics_drop_closed_entries() {
+        let dir = mk_temp_dir("diagnostic_closed_entry");
+        let main = dir.join("main.onda");
+        write_file(&main, "sample:\n  out1 = 0.0\n");
+        let main = super::normalize_path(&main);
+
+        let (immediate_tx, _immediate_rx) = mpsc::channel();
+        let (background_tx, _background_rx) = mpsc::channel();
+        let mut core = LspCore::new(immediate_tx, background_tx);
+        core.diagnostic_generations.insert(main.clone(), 1);
+
+        let mut writer = Vec::new();
+        core.publish_diagnostic_result(
+            DiagnosticJobResult {
+                entry_path: main,
+                generation: 1,
+                diagnostics: Vec::new(),
+                parsed: None,
+                parse_fingerprint: None,
+                completion_index_snapshot: None,
+            },
+            &mut writer,
+        )
+        .expect("closed-entry diagnostics should be accepted and ignored");
+
+        assert!(
+            decode_lsp_messages(writer).is_empty(),
+            "closed-entry diagnostics should not publish notifications"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn immediate_diagnostics_use_immediate_worker_lane() {
+        let dir = mk_temp_dir("diagnostic_immediate_lane");
+        let main = super::normalize_path(&dir.join("main.onda"));
+        write_file(&main, "sample:\n  out1 = 0.0\n");
+
+        let (immediate_tx, immediate_rx) = mpsc::channel();
+        let (background_tx, background_rx) = mpsc::channel();
+        let mut core = LspCore::new(immediate_tx, background_tx);
+        core.schedule_diagnostic_entries(vec![main.clone()], DiagnosticDelay::Immediate);
+        core.dispatch_due_diagnostics();
+
+        let job = immediate_rx
+            .try_recv()
+            .expect("immediate diagnostics should dispatch to immediate lane");
+        assert_eq!(job.entry_path, main);
+        assert!(
+            background_rx.try_recv().is_err(),
+            "immediate diagnostics should not wait in the background lane"
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -1950,6 +4522,177 @@ namespace DSP:
         assert!(labels.contains(&"Voice".to_owned()), "labels: {labels:?}");
         assert!(labels.contains(&"Inner".to_owned()), "labels: {labels:?}");
         assert!(labels.contains(&"shape".to_owned()), "labels: {labels:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_lists_child_namespaces_from_single_namespace_use() {
+        let dir = mk_temp_dir("completion_single_namespace_use_children");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace sc:
+  namespace SinOsc:
+    proc ar:
+      outs:
+        out1
+      sample:
+        out1 = 0.0
+
+use sc
+
+init:
+  a = SinO
+
+sample:
+  out1 = 0.0
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_labels_for(&mut server, &main, source, "SinO");
+
+        assert!(labels.contains(&"SinOsc".to_owned()), "labels: {labels:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_walks_child_namespace_from_single_namespace_use() {
+        let dir = mk_temp_dir("completion_single_namespace_use_walk");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace sc:
+  namespace SinOsc:
+    proc ar:
+      outs:
+        out1
+      sample:
+        out1 = 0.0
+    proc kr:
+      kouts:
+        kout1
+      block:
+        kout1 = 0.0
+
+use sc
+
+init:
+  a = SinOsc::a
+
+sample:
+  out1 = 0.0
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let all_labels = completion_labels_for(&mut server, &main, source, "SinOsc::");
+        let ar_labels = completion_labels_for(&mut server, &main, source, "SinOsc::a");
+
+        assert!(
+            all_labels.contains(&"ar".to_owned()),
+            "labels: {all_labels:?}"
+        );
+        assert!(
+            all_labels.contains(&"kr".to_owned()),
+            "labels: {all_labels:?}"
+        );
+        assert!(
+            ar_labels.contains(&"ar".to_owned()),
+            "labels: {ar_labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_walks_child_namespace_alias_from_single_namespace_use() {
+        let dir = mk_temp_dir("completion_single_namespace_use_alias_walk");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace ugens:
+  namespace LocalOsc:
+    def ar():
+      return 0.0
+    def kr():
+      return 0.0
+
+  namespace Osc = LocalOsc
+
+use ugens
+
+init:
+  a = Osc::a
+
+sample:
+  out1 = 0.0
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let labels = completion_labels_for(&mut server, &main, source, "Osc::a");
+
+        assert!(labels.contains(&"ar".to_owned()), "labels: {labels:?}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn definition_walks_child_namespace_from_single_namespace_use() {
+        let dir = mk_temp_dir("definition_single_namespace_use_walk");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace sc:
+  namespace SinOsc:
+    def ar():
+      return 0.0
+
+use sc
+
+sample:
+  out1 = SinOsc::ar()
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let definition = definition_for(&mut server, &main, source, "SinOsc::ar");
+
+        assert_ne!(
+            definition,
+            json!(null),
+            "definition should resolve through single namespace use"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn definition_walks_child_namespace_alias_from_single_namespace_use() {
+        let dir = mk_temp_dir("definition_single_namespace_use_alias_walk");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace ugens:
+  namespace LocalOsc:
+    def ar():
+      return 0.0
+
+  namespace Osc = LocalOsc
+
+use ugens
+
+sample:
+  out1 = Osc::ar()
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let definition = definition_for(&mut server, &main, source, "Osc::ar");
+
+        assert_ne!(
+            definition,
+            json!(null),
+            "definition should resolve through namespace alias from single namespace use"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

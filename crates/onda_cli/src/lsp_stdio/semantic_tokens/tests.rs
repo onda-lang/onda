@@ -628,6 +628,81 @@ fn semantic_tokens_work_inside_namespace() {
 }
 
 #[test]
+fn semantic_tokens_mark_use_namespace_targets_as_namespaces() {
+    let source = concat!(
+        "namespace sc:\n",
+        "  namespace SinOsc:\n",
+        "    const A = 1\n",
+        "\n",
+        "use sc\n",
+        "use sc::SinOsc\n",
+        "use sc::SinOsc as Sine\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    assert!(
+        has_token(&tokens, 0, 10, 2, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "namespace declaration should mark sc as namespace: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 4, 4, 2, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "use target should mark sc as namespace: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 5, 8, 6, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "qualified use target should mark SinOsc as namespace: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 6, 15, 2, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "use alias as should be highlighted as a keyword: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 6, 18, 4, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "use alias should be highlighted as a namespace: {tokens:?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_mark_use_namespace_targets_in_source_fallback() {
+    let source = concat!(
+        "use sc\n",
+        "use dsp::Osc\n",
+        "pub use fx::Delay\n",
+        "use ugens::Saw as Saw\n",
+    );
+    let tokens = semantic_tokens_for_document_source_only(source, None);
+
+    assert!(
+        has_token(&tokens, 0, 4, 2, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "source fallback should mark single use target as namespace: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 1, 4, 3, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "source fallback should mark qualified use root as namespace: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 1, 9, 3, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "source fallback should mark qualified use leaf as namespace: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 2, 8, 2, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "source fallback should mark pub use root as namespace: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 3, 4, 5, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "source fallback should mark aliased use target root as namespace: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 3, 15, 2, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "source fallback should mark as as keyword: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 3, 18, 3, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "source fallback should mark alias name as namespace: {tokens:?}"
+    );
+}
+
+#[test]
 fn semantic_tokens_mark_proc_section_declarations() {
     let source = concat!(
         "proc Loop:\n",

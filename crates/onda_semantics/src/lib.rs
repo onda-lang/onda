@@ -2008,6 +2008,116 @@ sample:
     }
 
     #[test]
+    fn use_single_namespace_brings_child_namespaces_into_unqualified_scope() {
+        let src = r#"
+namespace sc:
+  namespace SinOsc:
+    def ar():
+      return 0.25
+
+use sc
+
+outs:
+  out1
+
+sample:
+  out1 = SinOsc::ar()
+"#;
+        let program = parse_program(src).expect("parse should preserve single namespace use");
+        analyze(program).expect("single namespace use should analyze child namespace prefix");
+    }
+
+    #[test]
+    fn use_single_namespace_resolves_child_namespace_templates() {
+        let src = r#"
+namespace dsp:
+  namespace Table<N = 2>:
+    const Size = N
+
+use dsp
+
+outs:
+  out1
+
+sample:
+  out1 = f32(Table<4>::Size)
+"#;
+        let program =
+            parse_program(src).expect("parse should preserve single namespace template use");
+        analyze(program).expect("single namespace use should analyze child namespace template");
+    }
+
+    #[test]
+    fn use_single_namespace_resolves_child_namespace_aliases() {
+        let src = r#"
+namespace ugens:
+  namespace LocalOsc:
+    def ar():
+      return 0.5
+
+  namespace Osc = LocalOsc
+
+use ugens
+
+outs:
+  out1
+
+sample:
+  out1 = Osc::ar()
+"#;
+        let program =
+            parse_program(src).expect("parse should preserve child namespace alias through use");
+        analyze(program).expect("single namespace use should analyze child namespace alias");
+    }
+
+    #[test]
+    fn use_single_namespace_child_collision_requires_qualified_namespace_root() {
+        let src = r#"
+namespace imported:
+  namespace Osc:
+    def ar():
+      return 0.5
+
+namespace Osc:
+  def ar():
+    return 0.25
+
+use imported
+
+outs:
+  out1
+
+sample:
+  out1 = Osc::ar()
+"#;
+        assert_analyze_error_contains(src, "ambiguous unqualified namespace 'Osc'");
+    }
+
+    #[test]
+    fn use_single_namespace_child_collision_allows_qualified_namespace_root() {
+        let src = r#"
+namespace imported:
+  namespace Osc:
+    def ar():
+      return 0.5
+
+namespace Osc:
+  def ar():
+    return 0.25
+
+use imported
+
+outs:
+  out1
+
+sample:
+  out1 = imported::Osc::ar()
+"#;
+        let program = parse_program(src).expect("parse should preserve qualified namespace root");
+        analyze(program).expect("qualified namespace root should avoid use ambiguity");
+    }
+
+    #[test]
     fn use_symbol_brings_one_member_into_unqualified_scope() {
         let src = r#"
 import std/random

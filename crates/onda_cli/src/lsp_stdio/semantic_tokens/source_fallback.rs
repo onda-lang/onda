@@ -48,6 +48,42 @@ pub(super) fn identifier_is_in_import_path(source_lines: &[&str], line: u32, sta
         .all(|b| is_ident_continue_char(b) || b == b'/')
 }
 
+pub(super) fn identifier_is_in_use_namespace_name(
+    source_lines: &[&str],
+    line: u32,
+    start: u32,
+) -> bool {
+    let line_text = match source_lines.get(line as usize) {
+        Some(line_text) => *line_text,
+        None => return false,
+    };
+    let start = start as usize;
+    if start > line_text.len() {
+        return false;
+    }
+
+    let trimmed = line_text.trim_start();
+    let indent = line_text.len().saturating_sub(trimmed.len());
+    let Some((prefix_len, rest)) = trimmed
+        .strip_prefix("use ")
+        .map(|rest| ("use ".len(), rest))
+        .or_else(|| {
+            trimmed
+                .strip_prefix("pub use ")
+                .map(|rest| ("pub use ".len(), rest))
+        })
+    else {
+        return false;
+    };
+    let target_start = indent + prefix_len;
+    if start < target_start {
+        return false;
+    }
+
+    let decl_end = rest.find(';').unwrap_or(rest.len());
+    start < target_start + decl_end
+}
+
 pub(super) fn is_reserved_word(name: &str) -> bool {
     onda_frontend::is_reserved_word(name)
 }
@@ -285,6 +321,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
         close_line_scope(&mut index, open_scope.idx, end_line);
     }
 
+    index.rebuild_scope_line_index();
     index
 }
 
@@ -505,6 +542,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
         close_line_scope(&mut index, owner_idx, end_line);
     }
 
+    index.rebuild_scope_line_index();
     index
 }
 
@@ -624,7 +662,7 @@ pub(super) fn collect_source_declaration_symbols(source: &str, scope: &mut Seman
             for segment in path.split("::") {
                 let segment = segment.trim();
                 if let Some(name) = extract_leading_ident(segment) {
-                    scope.types.insert(name.to_owned());
+                    scope.namespaces.insert(name.to_owned());
                 }
             }
             extract_namespace_generic_consts(trimmed, scope);

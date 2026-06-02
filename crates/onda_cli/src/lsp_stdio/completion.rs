@@ -6,9 +6,8 @@ use onda_frontend::{
     is_reserved_word, language_type_names, parse_program, parse_program_file_with_overlays,
     stdlib_module_names, ArrayElemType, Block, BufferBlock, BufferDecl, ConstDecl, EventDef,
     EventParamDecl, Expr, FnParamDecl, FunctionDef, InitBlock, NamespaceAliasDecl, NamespaceDecl,
-    NamespaceItem, NamespaceRefSegment, NamespaceTemplateParam, OutputTiming, ParamBlock,
-    ParamDecl, PortBlock, PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, UseDecl,
-    LANGUAGE_KEYWORDS,
+    NamespaceItem, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamDecl, PortBlock,
+    PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, UseDecl, LANGUAGE_KEYWORDS,
 };
 use onda_semantics::builtins::{
     builtin_constant_names, public_builtin_function_names, ARRAY_LEN_METHOD,
@@ -20,6 +19,13 @@ use crate::formatting::{
     format_fn_param_type,
 };
 
+use super::namespace_resolution::{
+    expand_namespace_alias_path, namespace_join, namespace_parent_of, namespace_segments_key,
+    qualified_path_candidates as namespace_qualified_path_candidates,
+    resolve_use_target as resolve_namespace_use_target, strip_type_args_from_path,
+    visible_uses_in_namespace, AliasTargetPolicy, NamespaceAliasInfo, NamespaceResolutionContext,
+    UseInfo,
+};
 use super::position::{
     byte_index_for_lsp_character, byte_offset_for_lsp_position, span_end_position,
     span_start_position, LspPosition,
@@ -53,10 +59,12 @@ pub(super) fn completion_trigger_characters() -> &'static [&'static str] {
     &[".", ":", "/", " ", "(", ","]
 }
 
-pub(super) fn completion_items_for_document(
+pub(super) fn completion_items_for_document_with_index(
     source: &str,
     path: Option<&Path>,
     overlays: &HashMap<PathBuf, String>,
+    parsed: Option<&Program>,
+    index_snapshot: Option<&CompletionIndexSnapshot>,
     position: CompletionPosition,
     snippets: bool,
 ) -> Vec<Value> {
@@ -70,8 +78,17 @@ pub(super) fn completion_items_for_document(
         return filter_and_encode(import_completion_items(path, typed), "", snippets);
     }
 
-    let parsed = parse_for_completion(source, path, overlays, offset);
-    let index = CompletionIndex::build(parsed.as_ref(), source, path, position);
+    let parsed_owned;
+    let parsed = if let Some(parsed) = parsed {
+        Some(parsed)
+    } else {
+        parsed_owned = parse_for_completion(source, path, overlays, offset);
+        parsed_owned.as_ref()
+    };
+    let index = match (parsed, index_snapshot) {
+        (Some(program), Some(snapshot)) => snapshot.for_request(program, source, position),
+        _ => CompletionIndex::build(parsed, source, path, position),
+    };
     let items = match &context.kind {
         CompletionContextKind::Member { receiver } => index.member_items(receiver, &context.prefix),
         CompletionContextKind::Namespace { namespace } => {
@@ -83,6 +100,35 @@ pub(super) fn completion_items_for_document(
     };
 
     filter_and_encode(items, &context.prefix, snippets)
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CompletionIndexSnapshot {
+    index: CompletionIndex,
+}
+
+impl CompletionIndexSnapshot {
+    pub(super) fn build(program: &Program, path: Option<&Path>) -> Self {
+        Self {
+            index: CompletionIndex::build_global(program, path),
+        }
+    }
+
+    fn for_request(
+        &self,
+        program: &Program,
+        source: &str,
+        position: CompletionPosition,
+    ) -> CompletionIndex {
+        let mut index = self.index.clone();
+        index.source = source.to_owned();
+        index.position = position;
+        index.scopes.clear();
+        index.scope_at_position = None;
+        index.collect_scopes(program);
+        index.rebuild_scope_lookup();
+        index
+    }
 }
 
 fn parse_for_completion(
@@ -401,7 +447,6 @@ struct ProcInfo {
     params: Vec<ProcParamInfo>,
     events: Vec<EventInfo>,
     buffers: Vec<ProcBufferInfo>,
-    local_defs: Vec<FunctionInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -448,15 +493,6 @@ struct InstanceInfo {
 }
 
 #[derive(Debug, Clone)]
-struct UseInfo {
-    namespace: String,
-    target: String,
-    alias: Option<String>,
-    public: bool,
-    file_key: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 struct CompletionScope {
     parent: Option<usize>,
     namespace: String,
@@ -469,15 +505,16 @@ struct CompletionScope {
     instances: HashMap<String, InstanceInfo>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct CompletionIndex {
     current_file_key: Option<String>,
     source: String,
     position: CompletionPosition,
     symbols: Vec<SymbolInfo>,
+    symbols_by_full_name: HashMap<String, usize>,
     members_by_namespace: HashMap<String, Vec<SymbolInfo>>,
     namespaces_by_parent: HashMap<String, BTreeSet<String>>,
-    namespace_aliases: HashMap<String, String>,
+    namespace_aliases: HashMap<String, NamespaceAliasInfo>,
     uses: Vec<UseInfo>,
     procs: HashMap<String, ProcInfo>,
     structs: HashMap<String, StructInfo>,
@@ -485,9 +522,23 @@ struct CompletionIndex {
     instances: HashMap<String, InstanceInfo>,
     source_variables: BTreeSet<String>,
     scopes: Vec<CompletionScope>,
+    scope_at_position: Option<usize>,
 }
 
 impl CompletionIndex {
+    fn build_global(program: &Program, path: Option<&Path>) -> Self {
+        let mut index = Self {
+            current_file_key: path.map(normalize_file_key_for_path),
+            ..Self::default()
+        };
+        index.collect_builtin_symbols();
+        for block in &program.blocks {
+            index.collect_block(block, "");
+        }
+        index.rebuild_namespace_member_maps();
+        index
+    }
+
     fn build(
         program: Option<&Program>,
         source: &str,
@@ -500,8 +551,25 @@ impl CompletionIndex {
             position,
             ..Self::default()
         };
+        index.collect_builtin_symbols();
+
+        if let Some(program) = program {
+            for block in &program.blocks {
+                index.collect_block(block, "");
+            }
+            index.rebuild_namespace_member_maps();
+            index.collect_scopes(program);
+            index.rebuild_scope_lookup();
+        } else {
+            index.collect_source_variables(source);
+            index.rebuild_namespace_member_maps();
+        }
+        index
+    }
+
+    fn collect_builtin_symbols(&mut self) {
         for name in builtin_constant_names() {
-            index.symbols.push(SymbolInfo {
+            self.push_symbol(SymbolInfo {
                 label: name.to_owned(),
                 full_name: name.to_owned(),
                 namespace: String::new(),
@@ -519,8 +587,8 @@ impl CompletionIndex {
                 signature: "...".to_owned(),
                 is_const: false,
             };
-            index.functions.insert(name.to_owned(), info);
-            index.symbols.push(SymbolInfo {
+            self.functions.insert(name.to_owned(), info);
+            self.push_symbol(SymbolInfo {
                 label: name.to_owned(),
                 full_name: name.to_owned(),
                 namespace: String::new(),
@@ -530,20 +598,6 @@ impl CompletionIndex {
                 detail: Some(format!("built-in call {name}(...)")),
             });
         }
-
-        if let Some(program) = program {
-            for block in &program.blocks {
-                index.collect_block(block, "");
-            }
-            index.rebuild_namespace_member_maps();
-            index.collect_scopes(program);
-        }
-
-        if program.is_none() {
-            index.collect_source_variables(source);
-        }
-        index.rebuild_namespace_member_maps();
-        index
     }
 
     fn collect_block(&mut self, block: &Block, namespace: &str) {
@@ -630,11 +684,6 @@ impl CompletionIndex {
                     proc_def.buffers_deferred_count.as_ref(),
                 ))
                 .collect(),
-            local_defs: proc_def
-                .local_defs
-                .iter()
-                .map(function_info_from_def)
-                .collect(),
         };
         self.procs.insert(full_name.clone(), info.clone());
         self.push_symbol(SymbolInfo {
@@ -704,8 +753,13 @@ impl CompletionIndex {
     fn collect_namespace_alias(&mut self, namespace: &str, alias: &NamespaceAliasDecl) {
         let full_name = namespace_join(namespace, &alias.name);
         let target = namespace_segments_key(&alias.target);
-        self.namespace_aliases
-            .insert(full_name.clone(), target.clone());
+        self.namespace_aliases.insert(
+            full_name.clone(),
+            NamespaceAliasInfo {
+                namespace: namespace.to_owned(),
+                target,
+            },
+        );
         self.push_namespace(namespace, &alias.name, "namespace alias", Vec::new());
     }
 
@@ -733,6 +787,10 @@ impl CompletionIndex {
     }
 
     fn push_symbol(&mut self, symbol: SymbolInfo) {
+        let idx = self.symbols.len();
+        self.symbols_by_full_name
+            .entry(symbol.full_name.clone())
+            .or_insert(idx);
         self.symbols.push(symbol);
     }
 
@@ -823,6 +881,9 @@ impl CompletionIndex {
         let top_level_scope = self.collect_top_level_runtime_scope(&program.blocks);
 
         for block in &program.blocks {
+            if !self.span_belongs_to_current_file(block.loc().span()) {
+                continue;
+            }
             match block {
                 Block::Def(def) => {
                     self.collect_function_scope(None, "", def, "def");
@@ -1496,10 +1557,19 @@ impl CompletionIndex {
         out
     }
 
+    fn rebuild_scope_lookup(&mut self) {
+        self.scope_at_position =
+            self.find_innermost_scope_index(self.position.line, self.position.character);
+    }
+
     fn innermost_scope_index(&self) -> Option<usize> {
+        self.scope_at_position
+    }
+
+    fn find_innermost_scope_index(&self, line: u32, character: u32) -> Option<usize> {
         let mut best = None::<usize>;
         for (idx, scope) in self.scopes.iter().enumerate() {
-            if !scope.contains(self.position.line, self.position.character) {
+            if !scope.contains(line, character) {
                 continue;
             }
             let replace = match best {
@@ -1678,22 +1748,6 @@ impl CompletionIndex {
                     .snippet("init($1)")
                     .sort_text(completion_sort_text(CompletionSortGroup::Event, "init")),
             );
-            for def in &proc_info.local_defs {
-                out.push(
-                    CompletionItem::new(def.name.clone(), COMPLETION_ITEM_KIND_METHOD)
-                        .maybe_label_detail(Some(callable_label_detail(
-                            &def.type_params,
-                            &def.signature,
-                        )))
-                        .detail(format_function_detail("proc-local def", def))
-                        .insert_text(format!("{}(", def.name))
-                        .snippet(format!("{}($1)", def.name))
-                        .sort_text(completion_sort_text(
-                            CompletionSortGroup::ScopeDef,
-                            &def.name,
-                        )),
-                );
-            }
         } else if let Some(struct_info) = self.structs.get(&instance.type_name) {
             for field in &struct_info.fields {
                 out.push(
@@ -1756,17 +1810,6 @@ impl CompletionIndex {
                             .param_names
                             .iter()
                             .map(|param| named_arg_item(param, "event parameter"))
-                            .collect();
-                    }
-                    if let Some(function) = proc_info
-                        .local_defs
-                        .iter()
-                        .find(|function| function.name == member)
-                    {
-                        return function
-                            .params
-                            .iter()
-                            .map(|param| named_arg_item(param, "argument"))
                             .collect();
                     }
                 }
@@ -1847,7 +1890,7 @@ impl CompletionIndex {
         }
 
         if self.namespace_exists(&target) {
-            return self
+            let mut items = self
                 .members_by_namespace
                 .get(&target)
                 .into_iter()
@@ -1856,7 +1899,15 @@ impl CompletionIndex {
                     symbol.kind != SymbolKind::Namespace && self.symbol_visible(symbol)
                 })
                 .map(|symbol| symbol_completion_item(symbol, false))
-                .collect();
+                .collect::<Vec<_>>();
+            if let Some(children) = self.namespaces_by_parent.get(&target) {
+                items.extend(children.iter().map(|name| {
+                    CompletionItem::new(name.clone(), COMPLETION_ITEM_KIND_MODULE)
+                        .detail("namespace")
+                        .sort_text(declaration_sort_text(SymbolKind::Namespace, name))
+                }));
+            }
+            return items;
         }
 
         self.symbol_by_full_name(&target)
@@ -1867,7 +1918,7 @@ impl CompletionIndex {
     fn visible_use_items(&self) -> Vec<CompletionItem> {
         let mut out = Vec::new();
         let current_namespace = self.current_namespace();
-        for use_info in self.uses_in_namespace(current_namespace) {
+        for use_info in visible_uses_in_namespace(self, current_namespace) {
             let target = self.resolve_use_target(use_info);
             if let Some(alias) = &use_info.alias {
                 if self.namespace_exists(&target) {
@@ -1896,6 +1947,15 @@ impl CompletionIndex {
                         if symbol.kind != SymbolKind::Namespace && self.symbol_visible(symbol) {
                             out.push(symbol_completion_item(symbol, false));
                         }
+                    }
+                }
+                if let Some(children) = self.namespaces_by_parent.get(&target) {
+                    for name in children {
+                        out.push(
+                            CompletionItem::new(name.clone(), COMPLETION_ITEM_KIND_MODULE)
+                                .detail("namespace")
+                                .sort_text(declaration_sort_text(SymbolKind::Namespace, name)),
+                        );
                     }
                 }
             } else if let Some(symbol) = self.symbol_by_full_name(&target) {
@@ -1965,77 +2025,25 @@ impl CompletionIndex {
     }
 
     fn qualified_name_candidates(&self, name: &str, current_namespace: &str) -> Vec<String> {
-        let clean = strip_type_args_from_path(name);
-        if clean.is_empty() {
-            return Vec::new();
-        }
-
-        let mut candidates = self.path_candidates_with_namespace_aliases(&clean, current_namespace);
-        if let Some((head, tail)) = clean.split_once("::") {
-            for use_info in self.uses_in_namespace(current_namespace) {
-                if use_info.alias.as_deref() != Some(head) {
-                    continue;
-                }
-                let target = self.resolve_use_target(use_info);
-                if self.namespace_exists(&target) {
-                    push_unique_candidate(&mut candidates, namespace_join(&target, tail));
-                }
-            }
-        } else {
-            for use_info in self.uses_in_namespace(current_namespace) {
-                let target = self.resolve_use_target(use_info);
-                match use_info.alias.as_deref() {
-                    Some(alias) if alias == clean => {
-                        push_unique_candidate(&mut candidates, target);
-                    }
-                    None => {
-                        if self.namespace_exists(&target) {
-                            let member = namespace_join(&target, &clean);
-                            if self.symbol_by_full_name(&member).is_some() {
-                                push_unique_candidate(&mut candidates, member);
-                            }
-                        }
-                        if target.rsplit("::").next() == Some(clean.as_str())
-                            && self.symbol_by_full_name(&target).is_some()
-                        {
-                            push_unique_candidate(&mut candidates, target);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        candidates
-    }
-
-    fn uses_in_namespace<'a>(
-        &'a self,
-        current_namespace: &'a str,
-    ) -> impl Iterator<Item = &'a UseInfo> + 'a {
-        self.uses.iter().filter(move |use_info| {
-            self.use_visible(use_info)
-                && namespace_candidates(current_namespace)
-                    .iter()
-                    .any(|namespace| namespace == &use_info.namespace)
-        })
+        namespace_qualified_path_candidates(
+            self,
+            name,
+            current_namespace,
+            |ctx, candidate| ctx.has_namespace(candidate) || ctx.has_symbol(candidate),
+            |ctx, candidate| ctx.has_symbol(candidate),
+            AliasTargetPolicy::Always,
+        )
     }
 
     fn resolve_use_target(&self, use_info: &UseInfo) -> String {
-        for candidate in
-            self.path_candidates_with_namespace_aliases(&use_info.target, &use_info.namespace)
-        {
-            if self.namespace_exists(&candidate) || self.symbol_by_full_name(&candidate).is_some() {
-                return candidate;
-            }
-        }
-        strip_type_args_from_path(&use_info.target)
+        resolve_namespace_use_target(self, use_info)
     }
 
     fn resolve_namespace_key_at_current_position(&self, namespace: &str) -> String {
         let current_namespace = self.current_namespace();
         for candidate in self.namespace_key_candidates(namespace, current_namespace) {
             if self.namespace_exists(&candidate) {
-                return candidate;
+                return expand_namespace_alias_path(self, &candidate).unwrap_or(candidate);
             }
         }
         strip_type_args_from_path(namespace)
@@ -2049,66 +2057,14 @@ impl CompletionIndex {
     }
 
     fn namespace_key_candidates(&self, namespace: &str, current_namespace: &str) -> Vec<String> {
-        let clean = strip_type_args_from_path(namespace);
-        let mut candidates = self.path_candidates_with_namespace_aliases(&clean, current_namespace);
-
-        if let Some((head, tail)) = clean.split_once("::") {
-            for use_info in self.uses_in_namespace(current_namespace) {
-                if use_info.alias.as_deref() != Some(head) {
-                    continue;
-                }
-                let target = self.resolve_use_target(use_info);
-                if self.namespace_exists(&target) {
-                    push_unique_candidate(&mut candidates, namespace_join(&target, tail));
-                }
-            }
-        } else {
-            for use_info in self.uses_in_namespace(current_namespace) {
-                if use_info.alias.as_deref() != Some(clean.as_str()) {
-                    continue;
-                }
-                let target = self.resolve_use_target(use_info);
-                if self.namespace_exists(&target) {
-                    push_unique_candidate(&mut candidates, target);
-                }
-            }
-        }
-
-        candidates
-    }
-
-    fn path_candidates_with_namespace_aliases(
-        &self,
-        path: &str,
-        current_namespace: &str,
-    ) -> Vec<String> {
-        let clean = strip_type_args_from_path(path);
-        if clean.is_empty() {
-            return Vec::new();
-        }
-
-        let mut candidates = Vec::<String>::new();
-
-        if let Some((head, tail)) = clean.split_once("::") {
-            for candidate_namespace in namespace_candidates(current_namespace) {
-                let head_candidate = namespace_join(&candidate_namespace, head);
-                if let Some(alias_target) = self.namespace_aliases.get(&head_candidate) {
-                    push_unique_candidate(&mut candidates, namespace_join(alias_target, tail));
-                }
-                push_unique_candidate(&mut candidates, namespace_join(&head_candidate, tail));
-            }
-        } else {
-            for candidate_namespace in namespace_candidates(current_namespace) {
-                let candidate = namespace_join(&candidate_namespace, &clean);
-                if let Some(alias_target) = self.namespace_aliases.get(&candidate) {
-                    push_unique_candidate(&mut candidates, alias_target.clone());
-                }
-                push_unique_candidate(&mut candidates, candidate);
-            }
-        }
-
-        push_unique_candidate(&mut candidates, clean);
-        candidates
+        namespace_qualified_path_candidates(
+            self,
+            namespace,
+            current_namespace,
+            |ctx, candidate| ctx.has_namespace(candidate),
+            |ctx, candidate| ctx.has_namespace(candidate),
+            AliasTargetPolicy::Accepted,
+        )
     }
 
     fn namespace_exists(&self, namespace: &str) -> bool {
@@ -2118,7 +2074,9 @@ impl CompletionIndex {
     }
 
     fn symbol_by_full_name(&self, name: &str) -> Option<&SymbolInfo> {
-        self.symbols.iter().find(|symbol| symbol.full_name == name)
+        self.symbols_by_full_name
+            .get(name)
+            .and_then(|idx| self.symbols.get(*idx))
     }
 
     fn collect_stmt_items(
@@ -2211,6 +2169,28 @@ impl CompletionIndex {
 
     fn current_lsp_position(&self) -> LspPosition {
         LspPosition::new(self.position.line, self.position.character)
+    }
+}
+
+impl NamespaceResolutionContext for CompletionIndex {
+    fn namespace_alias(&self, full_name: &str) -> Option<&NamespaceAliasInfo> {
+        self.namespace_aliases.get(full_name)
+    }
+
+    fn has_namespace(&self, namespace: &str) -> bool {
+        self.namespace_exists(namespace)
+    }
+
+    fn has_symbol(&self, full_name: &str) -> bool {
+        self.symbol_by_full_name(full_name).is_some()
+    }
+
+    fn uses(&self) -> &[UseInfo] {
+        &self.uses
+    }
+
+    fn use_visible(&self, use_info: &UseInfo) -> bool {
+        CompletionIndex::use_visible(self, use_info)
     }
 }
 
@@ -2802,11 +2782,6 @@ fn proc_info_from_def(name: &str, proc_def: &ProcessorDef) -> ProcInfo {
                 proc_def.buffers_deferred_count.as_ref(),
             ))
             .collect(),
-        local_defs: proc_def
-            .local_defs
-            .iter()
-            .map(function_info_from_def)
-            .collect(),
     }
 }
 
@@ -3061,14 +3036,6 @@ fn source_for_loop_var(line: &str) -> Option<&str> {
     }
 }
 
-fn namespace_segments_key(segments: &[NamespaceRefSegment]) -> String {
-    segments
-        .iter()
-        .map(|segment| segment.name.clone())
-        .collect::<Vec<_>>()
-        .join("::")
-}
-
 fn use_info_from_decl(namespace: &str, use_decl: &UseDecl) -> UseInfo {
     UseInfo {
         namespace: namespace.to_owned(),
@@ -3077,62 +3044,6 @@ fn use_info_from_decl(namespace: &str, use_decl: &UseDecl) -> UseInfo {
         public: use_decl.public,
         file_key: file_key_for_span(use_decl.loc),
     }
-}
-
-fn namespace_join(parent: &str, child: &str) -> String {
-    if parent.is_empty() {
-        child.to_owned()
-    } else if child.is_empty() {
-        parent.to_owned()
-    } else {
-        format!("{parent}::{child}")
-    }
-}
-
-fn namespace_parent_of(name: &str) -> String {
-    name.rsplit_once("::")
-        .map(|(parent, _)| parent.to_owned())
-        .unwrap_or_default()
-}
-
-fn namespace_parent(name: &str) -> Option<&str> {
-    name.rsplit_once("::").map(|(parent, _)| parent)
-}
-
-fn namespace_candidates(current_namespace: &str) -> Vec<String> {
-    if current_namespace.is_empty() {
-        return vec![String::new()];
-    }
-
-    let mut out = Vec::<String>::new();
-    let mut current = Some(current_namespace);
-    while let Some(namespace) = current {
-        out.push(namespace.to_owned());
-        current = namespace_parent(namespace);
-    }
-    out.push(String::new());
-    out
-}
-
-fn push_unique_candidate(candidates: &mut Vec<String>, candidate: String) {
-    if !candidates.contains(&candidate) {
-        candidates.push(candidate);
-    }
-}
-
-fn strip_type_args_from_path(path: &str) -> String {
-    let mut out = String::new();
-    let mut depth = 0usize;
-    for ch in path.trim().chars() {
-        match ch {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            ' ' | '\t' | '\r' if depth > 0 => {}
-            _ if depth == 0 => out.push(ch),
-            _ => {}
-        }
-    }
-    out
 }
 
 fn normalize_call_callee(callee: &str) -> String {
@@ -3425,4 +3336,131 @@ fn normalize_file_key(path: &str) -> String {
         .or_else(|| normalized.strip_prefix("\\\\?\\"))
         .unwrap_or(&normalized);
     normalized.to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn position_at(source: &str, needle: &str, token_offset: usize) -> CompletionPosition {
+        let byte = source
+            .find(needle)
+            .map(|idx| idx + token_offset)
+            .expect("test needle should exist");
+        let line = source[..byte].bytes().filter(|byte| *byte == b'\n').count() as u32;
+        let line_start = source[..byte].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+        CompletionPosition {
+            line,
+            character: (byte - line_start) as u32,
+        }
+    }
+
+    fn index_at(source: &str, needle: &str, token_offset: usize) -> CompletionIndex {
+        let parsed = parse_program(source).expect("test source should parse");
+        CompletionIndex::build(
+            Some(&parsed),
+            source,
+            None,
+            position_at(source, needle, token_offset),
+        )
+    }
+
+    fn labels(items: Vec<CompletionItem>) -> Vec<String> {
+        items.into_iter().map(|item| item.label).collect()
+    }
+
+    #[test]
+    fn member_completion_hides_proc_private_members_from_outside() {
+        let source = r#"proc Voice:
+  params:
+    pin cutoff = 1000.0
+    gain = 1.0
+  outs:
+    out1
+  def helper(x):
+    return x
+  sample:
+    out1 = helper(cutoff) * gain
+
+outs:
+  out1
+init:
+  voice = Voice()
+sample:
+  out1 = voice(gain = 0.5)
+"#;
+        let index = index_at(source, "voice(gain", "voice".len());
+        let member_labels = labels(index.member_items("voice", ""));
+
+        assert!(
+            !member_labels.iter().any(|label| label == "helper"),
+            "external member completion should not include proc-local defs: {member_labels:?}"
+        );
+        assert!(
+            !member_labels.iter().any(|label| label == "cutoff"),
+            "external member completion should not include pinned params: {member_labels:?}"
+        );
+        assert!(
+            member_labels.iter().any(|label| label == "gain"),
+            "public params should remain externally visible: {member_labels:?}"
+        );
+    }
+
+    #[test]
+    fn general_completion_keeps_proc_private_members_inside_owner() {
+        let source = r#"proc Voice:
+  params:
+    pin cutoff = 1000.0
+  outs:
+    out1
+  def helper(x):
+    return x
+  sample:
+    out1 = helper(cutoff)
+
+outs:
+  out1
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#;
+        let index = index_at(source, "helper(cutoff)", 1);
+        let general_labels = labels(index.general_items(""));
+
+        assert!(
+            general_labels.iter().any(|label| label == "helper"),
+            "proc-local defs should complete inside their owning proc: {general_labels:?}"
+        );
+        assert!(
+            general_labels.iter().any(|label| label == "cutoff"),
+            "pinned params should complete inside their owning proc: {general_labels:?}"
+        );
+    }
+
+    #[test]
+    fn call_arg_completion_hides_external_proc_local_def_params() {
+        let source = r#"proc Voice:
+  outs:
+    out1
+  def helper(x):
+    return x
+  sample:
+    out1 = helper(x = 0.0)
+
+outs:
+  out1
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#;
+        let index = index_at(source, "voice()", "voice".len());
+        let arg_labels = labels(index.call_arg_items("voice.helper"));
+
+        assert!(
+            arg_labels.is_empty(),
+            "external proc-local def calls should not expose argument completions: {arg_labels:?}"
+        );
+    }
 }

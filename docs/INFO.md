@@ -441,9 +441,9 @@
 - A hand-rolled JSON-RPC 2.0 LSP server over stdio, backed by the daemon analysis session.
 - Supported methods:
   - `initialize` / `initialized` / `shutdown` / `exit`
-  - `textDocument/didOpen` — opens document in session, publishes diagnostics.
-  - `textDocument/didChange` — full-text sync only (range changes ignored). Does not re-publish diagnostics on every keystroke.
-  - `textDocument/didSave` — updates and publishes diagnostics.
+  - `textDocument/didOpen` — opens document in session and publishes diagnostics immediately.
+  - `textDocument/didChange` — full-text sync only (range changes ignored), updates overlays/caches and schedules debounced diagnostics for affected open files.
+  - `textDocument/didSave` — updates and publishes diagnostics immediately for the file and affected open importers.
   - `textDocument/didClose` — closes document, clears diagnostics for the file and its transitive dependencies.
   - `textDocument/semanticTokens/full` — full semantic tokens (no incremental support).
   - `textDocument/completion` — symbols, namespace members, receiver members, and named arguments.
@@ -462,8 +462,8 @@
     - `port` — `ins`/`outs`/`buffers` port names.
     - `parameter` — `params` parameter names.
   - References, code actions, rename, formatting, and incremental semantic tokens are not implemented.
-- Diagnostics are published per-file on open and save, grouped by URI across transitive imports. Stale diagnostics from previously-erroring files are cleared.
-- Semantic tokens are computed from the parsed AST (not the typed AST), so they work even when the file has semantic errors. A regex-based fallback provides `const` highlighting when parsing fails entirely.
+- Diagnostics are published per-file on open, debounced edit, and save, grouped by URI across transitive imports. Open/save diagnostics publish immediately; edit diagnostics run off the request path. Stale diagnostics from previously-erroring files are cleared.
+- Semantic tokens for saved/on-disk files are computed from the parsed AST (not the typed AST), so they work even when the file has semantic errors. Open-document completion, hover, definition, and symbols stay on a fast path by reusing cached parsed symbols for importing files while edits are pending; debounced diagnostics refresh the parsed overlay snapshot. Semantic tokens fall back to a lightweight source-scope scanner until a matching parsed snapshot is available.
 
 ### Run transport
 - `onda run <file>` opens the standalone run window.
