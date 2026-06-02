@@ -5423,6 +5423,20 @@ sample:
     }
 
     #[test]
+    fn duplicate_generated_generic_struct_specialization_is_deduped() {
+        let src = "namespace sc:\n  struct CyclePhase<T>:\n    phase: T\n\n    def tick(self):\n      self.phase = self.phase + T(1.0)\n      return self.phase\n\n  namespace Sine:\n    proc ar<T>:\n      outs:\n        out1: T\n      init<T>:\n        core = sc::CyclePhase<T>()\n      sample:\n        out1 = core.tick()\n\nouts:\n  out1\ninit:\n  a = sc::Sine::ar()\n  z = sc::CyclePhase<f32>()\n\nsample:\n  out1 = a()\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program)
+            .expect("duplicate generated generic struct specialization should be deduped");
+        let generated = typed
+            .structs
+            .iter()
+            .filter(|s| s.name == "sc::CyclePhase.__gen__f32")
+            .count();
+        assert_eq!(generated, 1);
+    }
+
+    #[test]
     fn proc_local_def_return_annotation_lowers_and_validates() {
         let src = "proc Voice:\n  outs:\n    out1\n\n  def pair(x: f32) -> (f32, i32):\n    return (x, 1)\n\n  sample:\n    vals = pair(0.5)\n    out1 = vals[0] + f32(vals[1])\n\ninit:\n  voice = Voice()\n\nsample:\n  out1 = voice()\n";
         let program = parse_program(src).expect("parse should succeed");

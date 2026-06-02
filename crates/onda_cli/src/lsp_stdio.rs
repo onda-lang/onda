@@ -4698,6 +4698,384 @@ sample:
     }
 
     #[test]
+    fn definition_resolves_struct_fields_through_lsp_server_path() {
+        let dir = mk_temp_dir("definition_struct_fields_lsp");
+        let main = dir.join("main.onda");
+        let source = r#"import std/math
+
+struct Box:
+  value: f32 = 0.0
+
+  def set(self, target):
+    self.value = 0.0
+
+  def get(self):
+    return self.value
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let field_definition = definition_for(&mut server, &main, source, "  value");
+        let self_definition = definition_for(&mut server, &main, source, "self.value");
+
+        assert_eq!(
+            field_definition["range"]["start"]["line"],
+            json!(3),
+            "field declaration should resolve through server path: {field_definition:?}"
+        );
+        assert_eq!(
+            self_definition["range"]["start"]["line"],
+            json!(3),
+            "self.field should resolve through server path: {self_definition:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hover_resolves_struct_fields_through_lsp_server_path() {
+        let dir = mk_temp_dir("hover_struct_fields_lsp");
+        let main = dir.join("main.onda");
+        let source = r#"import std/math
+
+struct Box:
+  value: f32 = 0.0
+
+  def set(self, target):
+    self.value = 0.0
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let field_hover =
+            hover_markdown_for(&mut server, &main, source, "  value").unwrap_or_default();
+        let self_hover =
+            hover_markdown_for(&mut server, &main, source, "self.value").unwrap_or_default();
+
+        assert!(
+            field_hover.contains("field value"),
+            "field declaration hover should resolve through server path: {field_hover:?}"
+        );
+        assert!(
+            self_hover.contains("field value"),
+            "self.field hover should resolve through server path: {self_hover:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn navigation_resolves_current_struct_fields_with_stale_parse_cache() {
+        let dir = mk_temp_dir("navigation_struct_fields_stale_parse");
+        let main = super::normalize_path(&dir.join("main.onda"));
+        let old_source = r#"import std/math
+
+struct Box:
+  old_value: f32 = 0.0
+
+  def get(self):
+    return self.old_value
+"#;
+        let current_source = r#"import std/math
+
+struct Box:
+  value: f32 = 0.0
+
+  def get(self):
+    return self.value
+"#;
+        write_file(&main, old_source);
+
+        let mut server = LspServer::default();
+        let old_parsed = onda_frontend::parse_program_file_with_overlays(
+            &main,
+            &server.session.analysis().overlay_map(),
+        )
+        .expect("old source should parse");
+        server.cache_parsed_program_for_path(
+            &main,
+            super::source_fingerprint(old_source),
+            Some(old_parsed),
+        );
+        write_file(&main, current_source);
+
+        let field_definition = definition_for(&mut server, &main, current_source, "  value");
+        let self_definition = definition_for(&mut server, &main, current_source, "self.value");
+        let self_hover = hover_markdown_for(&mut server, &main, current_source, "self.value")
+            .unwrap_or_default();
+
+        assert_eq!(
+            field_definition["range"]["start"]["line"],
+            json!(3),
+            "current field declaration should resolve despite stale parse: {field_definition:?}"
+        );
+        assert_eq!(
+            self_definition["range"]["start"]["line"],
+            json!(3),
+            "current self.field should resolve despite stale parse: {self_definition:?}"
+        );
+        assert!(
+            self_hover.contains("field value"),
+            "current self.field hover should resolve despite stale parse: {self_hover:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn navigation_resolves_struct_methods_and_typed_param_members_through_lsp_server_path() {
+        let dir = mk_temp_dir("navigation_struct_methods_lsp");
+        let main = dir.join("main.onda");
+        let source = r#"
+struct Box:
+  value: f32 = 0.0
+
+  def set(self, target):
+    self.value = 0.0
+
+  def get(self):
+    return self.value
+
+  def bump(self, amount):
+    self.set(target = amount)
+
+def read(item: Box):
+  return item.value + item.get()
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let self_method = definition_for(&mut server, &main, source, "self.set");
+        let self_method_arg = definition_for(&mut server, &main, source, "target");
+        let param_field = definition_for(&mut server, &main, source, "item.value");
+        let param_method = definition_for(&mut server, &main, source, "item.get");
+
+        assert_eq!(self_method["range"]["start"]["line"], json!(4));
+        assert_eq!(self_method_arg["range"]["start"]["line"], json!(4));
+        assert_eq!(param_field["range"]["start"]["line"], json!(2));
+        assert_eq!(param_method["range"]["start"]["line"], json!(7));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn navigation_resolves_struct_constructor_field_args_through_lsp_server_path() {
+        let dir = mk_temp_dir("navigation_struct_ctor_args_lsp");
+        let main = dir.join("main.onda");
+        let source = r#"
+struct Pair:
+  left: f32 = 0.0
+  right: f32 = 0.0
+
+init:
+  p = Pair(left = 1.0, right = 2.0)
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let left = definition_for(&mut server, &main, source, "left");
+        let right = definition_for(&mut server, &main, source, "right");
+
+        assert_eq!(left["range"]["start"]["line"], json!(2));
+        assert_eq!(right["range"]["start"]["line"], json!(3));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn navigation_resolves_namespace_local_const_use_through_lsp_server_path() {
+        let dir = mk_temp_dir("navigation_namespace_local_const_use_lsp");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace DSP:
+  const Bias = 0.5
+
+  def shape(x):
+    return x + Bias
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let definition = definition_for(&mut server, &main, source, "return x + Bias");
+        let hover =
+            hover_markdown_for(&mut server, &main, source, "return x + Bias").unwrap_or_default();
+
+        assert_eq!(definition["range"]["start"]["line"], json!(2));
+        assert!(
+            hover.contains("const Bias"),
+            "namespace-local const hover should resolve at use site: {hover:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn navigation_resolves_namespace_local_const_in_generic_def_through_lsp_server_path() {
+        let dir = mk_temp_dir("navigation_namespace_generic_const_use_lsp");
+        let main = dir.join("main.onda");
+        let source = r#"
+namespace sc:
+  const TEST = 10
+  
+  def sampleDuration<T>():
+    return T(1.0) / T(SR)
+
+  def blockDuration<T>():
+    return T(BS) / T(SR) * TEST
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let definition = definition_for(&mut server, &main, source, "* TEST");
+        let hover = hover_markdown_for(&mut server, &main, source, "* TEST").unwrap_or_default();
+
+        assert_eq!(
+            definition["range"]["start"]["line"],
+            json!(2),
+            "namespace-local const in generic def should resolve through server path: {definition:?}"
+        );
+        assert!(
+            hover.contains("const TEST"),
+            "namespace-local const hover should resolve in generic def: {hover:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn navigation_resolves_current_namespace_const_with_stale_parse_cache() {
+        let dir = mk_temp_dir("navigation_namespace_const_stale_parse");
+        let main = super::normalize_path(&dir.join("main.onda"));
+        let old_source = r#"
+namespace sc:
+  def blockDuration<T>():
+    return T(BS) / T(SR)
+"#;
+        let current_source = r#"
+namespace sc:
+  const TEST = 10
+  
+  def sampleDuration<T>():
+    return T(1.0) / T(SR)
+
+  def blockDuration<T>():
+    return T(BS) / T(SR) * TEST
+"#;
+        write_file(&main, old_source);
+
+        let mut server = LspServer::default();
+        let old_parsed = onda_frontend::parse_program_file_with_overlays(
+            &main,
+            &server.session.analysis().overlay_map(),
+        )
+        .expect("old source should parse");
+        server.cache_parsed_program_for_path(
+            &main,
+            super::source_fingerprint(old_source),
+            Some(old_parsed),
+        );
+        write_file(&main, current_source);
+
+        let definition = definition_for(&mut server, &main, current_source, "* TEST");
+        let hover =
+            hover_markdown_for(&mut server, &main, current_source, "* TEST").unwrap_or_default();
+
+        assert_eq!(
+            definition["range"]["start"]["line"],
+            json!(2),
+            "current namespace const should resolve despite stale parse: {definition:?}"
+        );
+        assert!(
+            hover.contains("const TEST"),
+            "current namespace const hover should resolve despite stale parse: {hover:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn completion_lists_struct_self_members_typed_param_members_and_constructor_args() {
+        let dir = mk_temp_dir("completion_struct_members_args");
+        let main = dir.join("main.onda");
+        let self_source = r#"
+struct Box:
+  value: f32 = 0.0
+
+  def set(self, x):
+    self.value = x
+
+  def get(self):
+    return self.value
+
+  def complete_self(self):
+    self.
+"#;
+        let self_arg_source = r#"
+struct Box:
+  value: f32 = 0.0
+
+  def set(self, x):
+    self.value = x
+
+  def complete_self_args(self):
+    self.set(
+"#;
+        let typed_param_source = r#"
+struct Box:
+  value: f32 = 0.0
+
+  def get(self):
+    return self.value
+
+def read(item: Box):
+  return item.
+"#;
+        let ctor_source = r#"
+struct Box:
+  value: f32 = 0.0
+
+init:
+  b = Box(
+"#;
+        write_file(&main, self_source);
+
+        let mut server = LspServer::default();
+        let self_labels = completion_labels_for(&mut server, &main, self_source, "self.");
+        assert!(
+            self_labels.contains(&"value".to_owned()),
+            "labels: {self_labels:?}"
+        );
+        assert!(
+            self_labels.contains(&"set".to_owned()),
+            "labels: {self_labels:?}"
+        );
+
+        let arg_labels = completion_labels_for(&mut server, &main, self_arg_source, "self.set(");
+        assert!(
+            arg_labels.contains(&"x".to_owned()),
+            "labels: {arg_labels:?}"
+        );
+
+        let param_labels = completion_labels_for(&mut server, &main, typed_param_source, "item.");
+        assert!(
+            param_labels.contains(&"value".to_owned()),
+            "labels: {param_labels:?}"
+        );
+        assert!(
+            param_labels.contains(&"get".to_owned()),
+            "labels: {param_labels:?}"
+        );
+
+        let ctor_labels = completion_labels_for(&mut server, &main, ctor_source, "Box(");
+        assert!(
+            ctor_labels.contains(&"value".to_owned()),
+            "labels: {ctor_labels:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn completion_orders_namespace_members_by_declaration_kind() {
         let dir = mk_temp_dir("completion_namespace_member_order");
         let main = dir.join("main.onda");

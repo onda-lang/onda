@@ -7392,6 +7392,7 @@ pub fn analyze_with_options(
     );
 
     let mut struct_defs = HashMap::new();
+    let mut seen_struct_defs = HashMap::<String, StructDef>::new();
     let mut typed_structs = Vec::new();
     let mut method_self_struct = HashMap::<String, String>::new();
     let mut callable_symbols_for_method_sugar =
@@ -7405,6 +7406,16 @@ pub fn analyze_with_options(
         if is_builtin_constant_name(&s.name) {
             errors.push(Diagnostic::semantic_span(
                 format!("struct name '{}' is reserved as a builtin constant", s.name),
+                s.loc,
+            ));
+            continue;
+        }
+        if let Some(existing) = seen_struct_defs.get(&s.name) {
+            if existing == s {
+                continue;
+            }
+            errors.push(Diagnostic::semantic_span(
+                format!("duplicate struct '{}'", s.name),
                 s.loc,
             ));
             continue;
@@ -7437,6 +7448,7 @@ pub fn analyze_with_options(
             fields: typed_fields,
         });
         all_declared.insert(s.name.clone());
+        seen_struct_defs.insert(s.name.clone(), s.clone());
 
         for method in &s.methods {
             for tp in &method.type_params {

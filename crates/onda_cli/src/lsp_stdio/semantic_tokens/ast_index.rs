@@ -41,6 +41,12 @@ pub(super) fn build_semantic_scope_index(
                 for tp in &struct_def.type_params {
                     index.scopes[owner_idx].scope.types.insert(tp.clone());
                 }
+                for field in &struct_def.fields {
+                    index.scopes[owner_idx]
+                        .scope
+                        .state_variables
+                        .insert(field.name.clone());
+                }
                 for method in &struct_def.methods {
                     build_function_scope(&mut index, Some(owner_idx), method);
                 }

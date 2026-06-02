@@ -369,17 +369,37 @@ fn semantic_tokens_for_document_with_optional_parse(
             if is_named_arg_label {
                 return;
             }
+            if identifier_is_struct_field_declaration(&source_lines, line, start) {
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type: SEMANTIC_TOKEN_TYPE_STATE,
+                    token_modifiers: 0,
+                });
+                return;
+            }
             if name == "self" {
                 tokens.push(SemanticToken {
                     line,
                     start,
                     length,
-                    token_type: SEMANTIC_TOKEN_TYPE_PARAMETER,
+                    token_type: SEMANTIC_TOKEN_TYPE_KEYWORD,
                     token_modifiers: 0,
                 });
                 return;
             }
             if after_dot {
+                if identifier_is_after_self_dot(&source_lines, line, start) {
+                    tokens.push(SemanticToken {
+                        line,
+                        start,
+                        length,
+                        token_type: SEMANTIC_TOKEN_TYPE_STATE,
+                        token_modifiers: 0,
+                    });
+                    return;
+                }
                 tokens.push(SemanticToken {
                     line,
                     start,
@@ -483,6 +503,93 @@ fn is_semantic_keyword(name: &str, source_lines: &[&str], line: u32, start: u32)
         || before_trimmed.ends_with('{')
         || before_trimmed.ends_with('}')
         || before_trimmed.ends_with(';')
+}
+
+fn identifier_is_after_self_dot(source_lines: &[&str], line: u32, start: u32) -> bool {
+    let Some(line_text) = source_lines.get(line as usize) else {
+        return false;
+    };
+    let start = start as usize;
+    let Some(before_dot) = line_text
+        .get(..start)
+        .and_then(|before| before.strip_suffix('.'))
+    else {
+        return false;
+    };
+    let receiver_end = before_dot.trim_end().len();
+    let receiver = &before_dot[..receiver_end];
+    let receiver_start = receiver
+        .rfind(|ch: char| !is_identifier_continue_char(ch))
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    receiver.get(receiver_start..) == Some("self")
+}
+
+fn identifier_is_struct_field_declaration(source_lines: &[&str], line: u32, start: u32) -> bool {
+    let Some(line_text) = source_lines.get(line as usize) else {
+        return false;
+    };
+    let start = start as usize;
+    if start != leading_indent_len(line_text) {
+        return false;
+    }
+    let Some(rest) = line_text.get(start..) else {
+        return false;
+    };
+    let Some(name_end) = leading_identifier_len(rest) else {
+        return false;
+    };
+    let after_name = rest[name_end..].trim_start();
+    if !after_name.starts_with(':') || after_name.starts_with("::") {
+        return false;
+    }
+    let field_indent = start;
+    if field_indent == 0 {
+        return false;
+    }
+
+    let mut idx = line as usize;
+    while idx > 0 {
+        idx -= 1;
+        let Some(prev_line) = source_lines.get(idx) else {
+            break;
+        };
+        let trimmed = prev_line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let prev_indent = leading_indent_len(prev_line);
+        if prev_indent >= field_indent {
+            continue;
+        }
+        return trimmed.starts_with("struct ");
+    }
+    false
+}
+
+fn leading_indent_len(line: &str) -> usize {
+    line.len().saturating_sub(line.trim_start().len())
+}
+
+fn leading_identifier_len(text: &str) -> Option<usize> {
+    let mut chars = text.char_indices();
+    let (_, first) = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    let mut end = first.len_utf8();
+    for (idx, ch) in chars {
+        if is_identifier_continue_char(ch) {
+            end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    Some(end)
+}
+
+fn is_identifier_continue_char(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
 }
 
 pub(super) fn encode_semantic_tokens(tokens: &[SemanticToken]) -> Vec<u32> {

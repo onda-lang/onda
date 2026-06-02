@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use onda_frontend::{
     is_language_type_name, parse_program, parse_program_file_with_overlays, ArrayElemType,
     AssignTarget, Block, BlockExec, BufferDecl, ConstDecl, EventDef, EventParamDecl, Expr,
-    FnParamDecl, FunctionDef, NamespaceAliasDecl, NamespaceDecl, NamespaceItem, ParamDecl,
-    PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, StructField, UseDecl,
+    FnParamDecl, FnParamType, FunctionDef, NamespaceAliasDecl, NamespaceDecl, NamespaceItem,
+    ParamDecl, PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, StructField, UseDecl,
 };
 use onda_semantics::builtins::{
     builtin_constant_type, builtin_instance_method_names, is_builtin_function_name,
@@ -59,6 +59,26 @@ pub(super) fn hover_for_document_with_parsed(
     position: NavigationPosition,
 ) -> Option<Value> {
     let token = source_token_at_position(source, position)?;
+    if let Some(field) = source_struct_field_definition(source, &token) {
+        let hover = field.hover_markdown();
+        return Some(json!({
+            "contents": {
+                "kind": "markdown",
+                "value": hover,
+            },
+            "range": token.range_json(),
+        }));
+    }
+    if let Some(definition) = source_namespace_const_definition(source, &token) {
+        let hover = definition.hover_markdown();
+        return Some(json!({
+            "contents": {
+                "kind": "markdown",
+                "value": hover,
+            },
+            "range": token.range_json(),
+        }));
+    }
     let parsed_owned;
     let parsed = if let Some(parsed) = parsed {
         Some(parsed)
@@ -94,6 +114,16 @@ pub(super) fn definition_for_document_with_parsed(
 ) -> Option<Value> {
     let token = source_token_at_position(source, position)?;
     if let Some(location) = import_location_at_token(source, path, &token) {
+        return Some(location);
+    }
+    if let Some(location) =
+        source_struct_field_definition(source, &token).and_then(|field| field.location_json(path))
+    {
+        return Some(location);
+    }
+    if let Some(location) =
+        source_namespace_const_definition(source, &token).and_then(|def| def.location_json(path))
+    {
         return Some(location);
     }
 
@@ -183,6 +213,76 @@ impl SourceToken {
 
     fn line_slice<'a>(&self, source: &'a str) -> &'a str {
         &source[self.line_start..self.line_end]
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SourceStructFieldDefinition {
+    name: String,
+    line: u32,
+    start_character: u32,
+    end_character: u32,
+}
+
+impl SourceStructFieldDefinition {
+    fn hover_markdown(&self) -> String {
+        format!("```onda\nfield {}\n```", self.name)
+    }
+
+    fn location_json(&self, path: Option<&Path>) -> Option<Value> {
+        let path = path?;
+        Some(json!({
+            "uri": path_to_file_uri(path),
+            "range": self.range_json(),
+        }))
+    }
+
+    fn range_json(&self) -> Value {
+        json!({
+            "start": {
+                "line": self.line,
+                "character": self.start_character,
+            },
+            "end": {
+                "line": self.line,
+                "character": self.end_character,
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SourceConstDefinition {
+    name: String,
+    line: u32,
+    start_character: u32,
+    end_character: u32,
+}
+
+impl SourceConstDefinition {
+    fn hover_markdown(&self) -> String {
+        format!("```onda\nconst {}\n```", self.name)
+    }
+
+    fn location_json(&self, path: Option<&Path>) -> Option<Value> {
+        let path = path?;
+        Some(json!({
+            "uri": path_to_file_uri(path),
+            "range": self.range_json(),
+        }))
+    }
+
+    fn range_json(&self) -> Value {
+        json!({
+            "start": {
+                "line": self.line,
+                "character": self.start_character,
+            },
+            "end": {
+                "line": self.line,
+                "character": self.end_character,
+            },
+        })
     }
 }
 
@@ -1005,6 +1105,14 @@ impl NavigationIndex {
     ) -> Option<usize> {
         let owner = namespace_join(namespace, &struct_def.name);
         let mut definitions = HashMap::<String, usize>::new();
+        let mut instances = HashMap::<String, InstanceInfo>::new();
+        instances.insert(
+            "self".to_owned(),
+            InstanceInfo {
+                type_name: owner.clone(),
+                is_array: false,
+            },
+        );
         for type_param in &struct_def.type_params {
             let idx = self.add_type_param_definition(&owner, type_param, struct_def.loc);
             definitions.insert(type_param.clone(), idx);
@@ -1023,7 +1131,7 @@ impl NavigationIndex {
             namespace,
             span_for_struct_scope(struct_def),
             definitions,
-            HashMap::new(),
+            instances,
         )?;
         for method in &struct_def.methods {
             self.collect_function_scope(Some(owner_idx), &owner, method, "method");
@@ -1152,6 +1260,11 @@ impl NavigationIndex {
         self.collect_stmt_definitions(&function_owner, &def.body, false, &mut definitions);
         let mut instances = HashMap::<String, InstanceInfo>::new();
         let scope_namespace = self.child_scope_namespace(parent, owner);
+        for param in &def.params {
+            if let Some(instance) = self.instance_from_fn_param(param, &scope_namespace) {
+                instances.insert(param.name.clone(), instance);
+            }
+        }
         self.collect_stmt_scope_instances(&def.body, &scope_namespace, false, &mut instances);
         let scope_idx = self.push_scope(
             parent,
@@ -1503,6 +1616,13 @@ impl NavigationIndex {
 
     fn resolve_token(&self, source: &str, token: &SourceToken) -> Option<&DefinitionInfo> {
         if let Some((receiver, member)) = member_access_at_token(source, token) {
+            if receiver_root(&receiver) == "self" {
+                if let Some(definition) =
+                    self.resolve_self_field(&member, token.line, token.start_character)
+                {
+                    return Some(definition);
+                }
+            }
             return self.resolve_member(&receiver, &member, token.line, token.start_character);
         }
         if named_arg_label_at_token(source, token) {
@@ -1565,6 +1685,21 @@ impl NavigationIndex {
             if let Some(def_idx) = scope.definitions.get(name) {
                 if !scope.namespace_member_scope {
                     return Some(*def_idx);
+                }
+            }
+            current = scope.parent;
+        }
+        None
+    }
+
+    fn resolve_self_field(&self, name: &str, line: u32, column: u32) -> Option<&DefinitionInfo> {
+        let mut current = self.innermost_scope_index(line, column);
+        while let Some(idx) = current {
+            let scope = &self.scopes[idx];
+            if let Some(def_idx) = scope.definitions.get(name) {
+                let definition = self.definitions.get(*def_idx)?;
+                if definition.kind == DefinitionKind::Field {
+                    return Some(definition);
                 }
             }
             current = scope.parent;
@@ -1901,6 +2036,12 @@ impl NavigationIndex {
                 }
                 return None;
             }
+            if let Some(struct_info) = self.structs.get(&proc_name) {
+                if let Some(idx) = struct_info.fields.get(arg) {
+                    return self.definitions.get(*idx);
+                }
+                return None;
+            }
         }
         let Some(function) = self.resolve_qualified_at(&callee, line, column) else {
             return None;
@@ -1978,6 +2119,35 @@ impl NavigationIndex {
                 None
             }
         })
+    }
+
+    fn instance_from_fn_param(&self, param: &FnParamDecl, namespace: &str) -> Option<InstanceInfo> {
+        let ty = param.ty.as_ref()?;
+        match ty {
+            FnParamType::Struct(name) => {
+                self.resolve_type_name_in_namespace(name, namespace)
+                    .map(|type_name| InstanceInfo {
+                        type_name,
+                        is_array: false,
+                    })
+            }
+            FnParamType::ArrayGeneric(name) => self
+                .resolve_type_name_in_namespace(name, namespace)
+                .map(|type_name| InstanceInfo {
+                    type_name,
+                    is_array: true,
+                }),
+            FnParamType::SizedArray {
+                generic_name: Some(name),
+                ..
+            } => self
+                .resolve_type_name_in_namespace(name, namespace)
+                .map(|type_name| InstanceInfo {
+                    type_name,
+                    is_array: true,
+                }),
+            _ => None,
+        }
     }
 
     fn use_visible(&self, use_info: &UseInfo) -> bool {
@@ -2715,6 +2885,323 @@ fn member_access_at_token(source: &str, token: &SourceToken) -> Option<(String, 
     Some((receiver, token.name.clone()))
 }
 
+fn source_struct_field_definition(
+    source: &str,
+    token: &SourceToken,
+) -> Option<SourceStructFieldDefinition> {
+    let lines = source.lines().collect::<Vec<_>>();
+    if let Some(field) = source_struct_field_declaration_at_token(&lines, token) {
+        return Some(field);
+    }
+
+    let (receiver, member) = member_access_at_token(source, token)?;
+    if receiver_root(&receiver) != "self" || member != token.name {
+        return None;
+    }
+    let struct_line = enclosing_source_struct_line(&lines, token.line as usize)?;
+    let child_indent = source_struct_child_indent(&lines, struct_line)?;
+    find_source_struct_field(&lines, struct_line, child_indent, &member)
+}
+
+fn source_namespace_const_definition(
+    source: &str,
+    token: &SourceToken,
+) -> Option<SourceConstDefinition> {
+    let lines = source.lines().collect::<Vec<_>>();
+    if let Some(definition) = source_const_declaration_at_token(&lines, token) {
+        return Some(definition);
+    }
+    let namespace_line = enclosing_source_namespace_line(&lines, token.line as usize)?;
+    let namespace_indent = source_line_indent(*lines.get(namespace_line)?);
+    let child_indent = source_namespace_child_indent(&lines, namespace_line)?;
+    find_source_namespace_const(
+        &lines,
+        namespace_line,
+        namespace_indent,
+        child_indent,
+        &token.name,
+    )
+}
+
+fn source_const_declaration_at_token(
+    lines: &[&str],
+    token: &SourceToken,
+) -> Option<SourceConstDefinition> {
+    let line_idx = token.line as usize;
+    let line_text = *lines.get(line_idx)?;
+    let token_start = token.byte_start.checked_sub(token.line_start)?;
+    let token_end = token.byte_end.checked_sub(token.line_start)?;
+    let const_def = source_const_from_line(lines, line_idx, None, Some(&token.name))?;
+    if token_start >= const_def.start_byte && token_end <= const_def.end_byte {
+        Some(const_def.into_definition(line_text, line_idx))
+    } else {
+        None
+    }
+}
+
+fn find_source_namespace_const(
+    lines: &[&str],
+    namespace_line: usize,
+    namespace_indent: usize,
+    child_indent: usize,
+    name: &str,
+) -> Option<SourceConstDefinition> {
+    for line_idx in (namespace_line + 1)..lines.len() {
+        let line_text = lines[line_idx];
+        let trimmed = line_text.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = source_line_indent(line_text);
+        if indent <= namespace_indent {
+            break;
+        }
+        if indent != child_indent {
+            continue;
+        }
+        if let Some(definition) =
+            source_const_from_line(lines, line_idx, Some(child_indent), Some(name))
+        {
+            return Some(definition.into_definition(line_text, line_idx));
+        }
+    }
+    None
+}
+
+struct SourceConstCandidate {
+    name: String,
+    start_byte: usize,
+    end_byte: usize,
+}
+
+impl SourceConstCandidate {
+    fn into_definition(self, line_text: &str, line: usize) -> SourceConstDefinition {
+        SourceConstDefinition {
+            name: self.name,
+            line: line as u32,
+            start_character: lsp_character_for_byte(line_text, self.start_byte),
+            end_character: lsp_character_for_byte(line_text, self.end_byte),
+        }
+    }
+}
+
+fn source_const_from_line(
+    lines: &[&str],
+    line_idx: usize,
+    expected_indent: Option<usize>,
+    expected_name: Option<&str>,
+) -> Option<SourceConstCandidate> {
+    let line_text = *lines.get(line_idx)?;
+    let indent = source_line_indent(line_text);
+    if expected_indent.is_some_and(|expected| indent != expected) {
+        return None;
+    }
+    let rest = line_text.get(indent..)?;
+    let name_start = rest.strip_prefix("const ").map(|_| "const ".len())?;
+    let name_rest = &rest[name_start..];
+    let name_len = source_leading_ident_len(name_rest)?;
+    let name = &name_rest[..name_len];
+    if expected_name.is_some_and(|expected| name != expected) {
+        return None;
+    }
+    let after_name = name_rest[name_len..].trim_start();
+    if !(after_name.starts_with('=') || after_name.starts_with(':')) {
+        return None;
+    }
+    Some(SourceConstCandidate {
+        name: name.to_owned(),
+        start_byte: indent + name_start,
+        end_byte: indent + name_start + name_len,
+    })
+}
+
+fn enclosing_source_namespace_line(lines: &[&str], line_idx: usize) -> Option<usize> {
+    let current_indent = source_line_indent(*lines.get(line_idx)?);
+    let mut idx = line_idx;
+    while idx > 0 {
+        idx -= 1;
+        let line_text = *lines.get(idx)?;
+        let trimmed = line_text.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = source_line_indent(line_text);
+        if indent >= current_indent {
+            continue;
+        }
+        if trimmed.starts_with("namespace ") && trimmed.ends_with(':') {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn source_namespace_child_indent(lines: &[&str], namespace_line: usize) -> Option<usize> {
+    let namespace_indent = source_line_indent(*lines.get(namespace_line)?);
+    let mut best = None::<usize>;
+    for line_text in lines.iter().skip(namespace_line + 1) {
+        let trimmed = line_text.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = source_line_indent(line_text);
+        if indent <= namespace_indent {
+            break;
+        }
+        best = Some(best.map(|current| current.min(indent)).unwrap_or(indent));
+    }
+    best
+}
+
+fn source_struct_field_declaration_at_token(
+    lines: &[&str],
+    token: &SourceToken,
+) -> Option<SourceStructFieldDefinition> {
+    let line_idx = token.line as usize;
+    let line_text = *lines.get(line_idx)?;
+    let token_start = token.byte_start.checked_sub(token.line_start)?;
+    let token_end = token.byte_end.checked_sub(token.line_start)?;
+    let field = source_struct_field_from_line(lines, line_idx, None, Some(&token.name))?;
+    if token_start >= field.start_byte && token_end <= field.end_byte {
+        Some(field.into_definition(line_text, line_idx))
+    } else {
+        None
+    }
+}
+
+fn find_source_struct_field(
+    lines: &[&str],
+    struct_line: usize,
+    child_indent: usize,
+    name: &str,
+) -> Option<SourceStructFieldDefinition> {
+    let struct_indent = source_line_indent(*lines.get(struct_line)?);
+    for line_idx in (struct_line + 1)..lines.len() {
+        let line_text = lines[line_idx];
+        let trimmed = line_text.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = source_line_indent(line_text);
+        if indent <= struct_indent {
+            break;
+        }
+        if indent != child_indent {
+            continue;
+        }
+        if let Some(field) =
+            source_struct_field_from_line(lines, line_idx, Some(child_indent), Some(name))
+        {
+            return Some(field.into_definition(line_text, line_idx));
+        }
+    }
+    None
+}
+
+struct SourceStructFieldCandidate {
+    name: String,
+    start_byte: usize,
+    end_byte: usize,
+}
+
+impl SourceStructFieldCandidate {
+    fn into_definition(self, line_text: &str, line: usize) -> SourceStructFieldDefinition {
+        SourceStructFieldDefinition {
+            name: self.name,
+            line: line as u32,
+            start_character: lsp_character_for_byte(line_text, self.start_byte),
+            end_character: lsp_character_for_byte(line_text, self.end_byte),
+        }
+    }
+}
+
+fn source_struct_field_from_line(
+    lines: &[&str],
+    line_idx: usize,
+    expected_indent: Option<usize>,
+    expected_name: Option<&str>,
+) -> Option<SourceStructFieldCandidate> {
+    let line_text = *lines.get(line_idx)?;
+    let indent = source_line_indent(line_text);
+    if expected_indent.is_some_and(|expected| indent != expected) {
+        return None;
+    }
+    let rest = line_text.get(indent..)?;
+    let name_len = source_leading_ident_len(rest)?;
+    let name = &rest[..name_len];
+    if expected_name.is_some_and(|expected| name != expected) {
+        return None;
+    }
+    let after_name = rest[name_len..].trim_start();
+    if !after_name.starts_with(':') || after_name.starts_with("::") {
+        return None;
+    }
+    let struct_line = enclosing_source_struct_line(lines, line_idx)?;
+    let child_indent = source_struct_child_indent(lines, struct_line)?;
+    if indent != child_indent {
+        return None;
+    }
+    Some(SourceStructFieldCandidate {
+        name: name.to_owned(),
+        start_byte: indent,
+        end_byte: indent + name_len,
+    })
+}
+
+fn enclosing_source_struct_line(lines: &[&str], line_idx: usize) -> Option<usize> {
+    let mut idx = line_idx;
+    while idx > 0 {
+        idx -= 1;
+        let line_text = *lines.get(idx)?;
+        let trimmed = line_text.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with("struct ") {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn source_struct_child_indent(lines: &[&str], struct_line: usize) -> Option<usize> {
+    let struct_indent = source_line_indent(*lines.get(struct_line)?);
+    let mut best = None::<usize>;
+    for line_text in lines.iter().skip(struct_line + 1) {
+        let trimmed = line_text.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = source_line_indent(line_text);
+        if indent <= struct_indent {
+            break;
+        }
+        best = Some(best.map(|current| current.min(indent)).unwrap_or(indent));
+    }
+    best
+}
+
+fn source_line_indent(line: &str) -> usize {
+    line.len().saturating_sub(line.trim_start().len())
+}
+
+fn source_leading_ident_len(text: &str) -> Option<usize> {
+    let mut chars = text.char_indices();
+    let (_, first) = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    let mut end = first.len_utf8();
+    for (idx, ch) in chars {
+        if ch == '_' || ch.is_ascii_alphanumeric() {
+            end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    Some(end)
+}
+
 fn named_arg_label_at_token(source: &str, token: &SourceToken) -> bool {
     let after = &source[token.byte_end..token.line_end];
     after.trim_start().starts_with('=')
@@ -3173,6 +3660,17 @@ mod tests {
         )
     }
 
+    fn hover_at(source: &str, needle: &str, token_offset: usize) -> Option<Value> {
+        let parsed = parse_program(source).expect("test source should parse");
+        hover_for_document_with_parsed(
+            source,
+            None,
+            &HashMap::new(),
+            Some(&parsed),
+            position_at(source, needle, token_offset),
+        )
+    }
+
     #[test]
     fn hides_proc_local_defs_from_external_member_navigation() {
         let source = r#"proc Voice:
@@ -3226,6 +3724,204 @@ sample:
         assert!(
             definition_at(source, "out1 = cutoff", "out1 = ".len() + 1).is_some(),
             "pinned params should still resolve inside their owning proc"
+        );
+    }
+
+    #[test]
+    fn resolves_struct_field_declaration_navigation() {
+        let source = r#"struct Box:
+  value: f32 = 0.0
+
+  def get(self):
+    return self.value
+"#;
+
+        let definition = definition_at(source, "value: f32", 1)
+            .expect("field declaration should resolve to itself");
+        assert_eq!(
+            definition["range"]["start"]["line"],
+            json!(1),
+            "field declaration should goto its own definition: {definition:?}"
+        );
+
+        let hover = hover_at(source, "value: f32", 1).expect("field hover should resolve");
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .is_some_and(|value| value.contains("field value")),
+            "field hover should describe the field: {hover:?}"
+        );
+    }
+
+    #[test]
+    fn resolves_self_struct_field_navigation() {
+        let source = r#"struct Box:
+  value: f32 = 0.0
+
+  def set(self, x):
+    self.value = x
+
+  def get(self):
+    return self.value
+"#;
+
+        let write_definition = definition_at(source, "self.value", "self.".len() + 1)
+            .expect("self.field write should resolve");
+        assert_eq!(
+            write_definition["range"]["start"]["line"],
+            json!(1),
+            "self.field write should goto the field declaration: {write_definition:?}"
+        );
+
+        let read_definition = definition_at(source, "return self.value", "return self.".len() + 1)
+            .expect("self.field read should resolve");
+        assert_eq!(
+            read_definition["range"]["start"]["line"],
+            json!(1),
+            "self.field read should goto the field declaration: {read_definition:?}"
+        );
+
+        let hover = hover_at(source, "self.value", "self.".len() + 1)
+            .expect("self.field hover should resolve");
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .is_some_and(|value| value.contains("field value")),
+            "self.field hover should describe the field: {hover:?}"
+        );
+    }
+
+    #[test]
+    fn resolves_self_struct_method_and_named_argument_navigation() {
+        let source = r#"struct Box:
+  value: f32 = 0.0
+
+  def set(self, x):
+    self.value = x
+
+  def bump(self, amount):
+    self.set(x = amount)
+"#;
+
+        let method_definition = definition_at(source, "self.set", "self.".len() + 1)
+            .expect("self.method should resolve");
+        assert_eq!(
+            method_definition["range"]["start"]["line"],
+            json!(3),
+            "self.method should goto the method declaration: {method_definition:?}"
+        );
+
+        let arg_definition =
+            definition_at(source, "x = amount", 1).expect("method named arg should resolve");
+        assert_eq!(
+            arg_definition["range"]["start"]["line"],
+            json!(3),
+            "self.method named arg should goto the method parameter: {arg_definition:?}"
+        );
+    }
+
+    #[test]
+    fn resolves_struct_constructor_field_named_arguments() {
+        let source = r#"struct Pair:
+  left: f32 = 0.0
+  right: f32 = 0.0
+
+init:
+  p = Pair(left = 1.0, right = 2.0)
+"#;
+
+        let left_definition =
+            definition_at(source, "left = 1.0", 1).expect("constructor field arg should resolve");
+        assert_eq!(
+            left_definition["range"]["start"]["line"],
+            json!(1),
+            "struct constructor arg should goto the field declaration: {left_definition:?}"
+        );
+    }
+
+    #[test]
+    fn resolves_explicit_struct_typed_def_param_members() {
+        let source = r#"struct Box:
+  value: f32 = 0.0
+
+  def get(self):
+    return self.value
+
+def read(box: Box):
+  return box.value + box.get()
+"#;
+
+        let field_definition = definition_at(source, "box.value", "box.".len() + 1)
+            .expect("typed struct param field should resolve");
+        assert_eq!(
+            field_definition["range"]["start"]["line"],
+            json!(1),
+            "typed struct param field should goto the field declaration: {field_definition:?}"
+        );
+
+        let method_definition = definition_at(source, "box.get", "box.".len() + 1)
+            .expect("typed struct param method should resolve");
+        assert_eq!(
+            method_definition["range"]["start"]["line"],
+            json!(3),
+            "typed struct param method should goto the method declaration: {method_definition:?}"
+        );
+    }
+
+    #[test]
+    fn resolves_namespace_local_const_use_navigation() {
+        let source = r#"namespace DSP:
+  const Bias = 0.5
+
+  def shape(x):
+    return x + Bias
+"#;
+
+        let definition = definition_at(source, "return x + Bias", "return x + ".len() + 1)
+            .expect("namespace-local const use should resolve");
+        assert_eq!(
+            definition["range"]["start"]["line"],
+            json!(1),
+            "namespace-local const use should goto the const declaration: {definition:?}"
+        );
+
+        let hover = hover_at(source, "return x + Bias", "return x + ".len() + 1)
+            .expect("namespace-local const hover should resolve");
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .is_some_and(|value| value.contains("const Bias")),
+            "namespace-local const hover should describe the const: {hover:?}"
+        );
+    }
+
+    #[test]
+    fn resolves_namespace_local_const_in_generic_def_expression() {
+        let source = r#"namespace sc:
+  const TEST = 10
+  
+  def sampleDuration<T>():
+    return T(1.0) / T(SR)
+
+  def blockDuration<T>():
+    return T(BS) / T(SR) * TEST
+"#;
+
+        let definition = definition_at(source, "* TEST", "* ".len() + 1)
+            .expect("namespace-local const in generic def should resolve");
+        assert_eq!(
+            definition["range"]["start"]["line"],
+            json!(1),
+            "namespace-local generic-def const use should goto the const declaration: {definition:?}"
+        );
+
+        let hover = hover_at(source, "* TEST", "* ".len() + 1)
+            .expect("namespace-local const hover should resolve in generic def");
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .is_some_and(|value| value.contains("const TEST")),
+            "namespace-local generic-def const hover should describe the const: {hover:?}"
         );
     }
 }

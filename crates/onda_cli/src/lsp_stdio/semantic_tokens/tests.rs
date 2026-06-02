@@ -467,6 +467,49 @@ fn semantic_tokens_do_not_bleed_between_struct_methods() {
 }
 
 #[test]
+fn semantic_tokens_mark_self_and_self_fields_distinctly() {
+    let source = concat!(
+        "struct Box:\n",
+        "  value: f32 = 0.0\n",
+        "\n",
+        "  def set(self, x):\n",
+        "    self.value = x\n",
+        "    tmp = self.value\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+    let source_only_tokens = semantic_tokens_for_document_source_only(source, None);
+
+    assert!(
+        has_token(&tokens, 1, 2, 5, SEMANTIC_TOKEN_TYPE_STATE),
+        "struct field declaration should use state coloring: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 3, 10, 4, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "self in method params should be highlighted as a keyword: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 4, 4, 4, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        "self receiver should be highlighted as a keyword: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 4, 9, 5, SEMANTIC_TOKEN_TYPE_STATE),
+        "self.value field write should use state coloring: {tokens:?}"
+    );
+    assert!(
+        has_token(&tokens, 5, 15, 5, SEMANTIC_TOKEN_TYPE_STATE),
+        "self.value field read should use state coloring: {tokens:?}"
+    );
+    assert!(
+        has_token(&source_only_tokens, 1, 2, 5, SEMANTIC_TOKEN_TYPE_STATE),
+        "source-only struct field declaration should use state coloring: {source_only_tokens:?}"
+    );
+    assert!(
+        has_token(&source_only_tokens, 4, 9, 5, SEMANTIC_TOKEN_TYPE_STATE),
+        "source-only self.value should use state coloring: {source_only_tokens:?}"
+    );
+}
+
+#[test]
 fn semantic_tokens_keep_proc_runtime_scope_but_not_proc_local_def_locals() {
     let source = concat!(
         "proc Reader:\n",

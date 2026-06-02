@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use onda_frontend::{
     is_reserved_word, language_type_names, parse_program, parse_program_file_with_overlays,
     stdlib_module_names, ArrayElemType, Block, BufferBlock, BufferDecl, ConstDecl, EventDef,
-    EventParamDecl, Expr, FnParamDecl, FunctionDef, InitBlock, NamespaceAliasDecl, NamespaceDecl,
-    NamespaceItem, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamDecl, PortBlock,
-    PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, UseDecl, LANGUAGE_KEYWORDS,
+    EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef, InitBlock, NamespaceAliasDecl,
+    NamespaceDecl, NamespaceItem, NamespaceTemplateParam, OutputTiming, ParamBlock, ParamDecl,
+    PortBlock, PortDecl, ProcessorDef, Program, Span, Stmt, StructDef, UseDecl, LANGUAGE_KEYWORDS,
 };
 use onda_semantics::builtins::{
     builtin_constant_names, public_builtin_function_names, ARRAY_LEN_METHOD,
@@ -97,6 +97,19 @@ pub(super) fn completion_items_for_document_with_index(
         CompletionContextKind::CallArgs { callee } => index.call_arg_items(callee),
         CompletionContextKind::General => index.general_items(&context.prefix),
         CompletionContextKind::ImportPath { .. } => Vec::new(),
+    };
+    let items = if items.is_empty() {
+        match &context.kind {
+            CompletionContextKind::Member { receiver } if receiver_root(receiver) == "self" => {
+                source_self_member_items(source, offset, &context.prefix)
+            }
+            CompletionContextKind::CallArgs { callee } => {
+                source_self_call_arg_items(source, offset, callee)
+            }
+            _ => items,
+        }
+    } else {
+        items
     };
 
     filter_and_encode(items, &context.prefix, snippets)
@@ -1095,6 +1108,16 @@ impl CompletionIndex {
         struct_def: &StructDef,
     ) -> Option<usize> {
         let mut items = Vec::<CompletionItem>::new();
+        let scope_namespace = self.child_scope_namespace(parent, namespace);
+        let owner = namespace_join(&scope_namespace, &struct_def.name);
+        let mut instances = HashMap::<String, InstanceInfo>::new();
+        instances.insert(
+            "self".to_owned(),
+            InstanceInfo {
+                type_name: owner,
+                is_array: false,
+            },
+        );
         for type_param in &struct_def.type_params {
             items.push(type_param_item(type_param));
         }
@@ -1112,13 +1135,12 @@ impl CompletionIndex {
             let info = function_info_from_def(method);
             items.push(function_item(&info, "method", COMPLETION_ITEM_KIND_METHOD));
         }
-        let scope_namespace = self.child_scope_namespace(parent, namespace);
         let owner_idx = self.push_scope(
             parent,
             &scope_namespace,
             span_for_struct_scope(struct_def),
             items,
-            HashMap::new(),
+            instances,
         )?;
         for method in &struct_def.methods {
             self.collect_function_scope(Some(owner_idx), &scope_namespace, method, "method");
@@ -1242,6 +1264,11 @@ impl CompletionIndex {
         self.collect_stmt_items(&def.body, detail, false, &mut items);
         let mut instances = HashMap::<String, InstanceInfo>::new();
         let scope_namespace = self.child_scope_namespace(parent, namespace);
+        for param in &def.params {
+            if let Some(instance) = self.instance_from_fn_param(param, &scope_namespace) {
+                instances.insert(param.name.clone(), instance);
+            }
+        }
         self.collect_stmt_scope_instances(&def.body, &scope_namespace, false, &mut instances);
         let scope_idx = self.push_scope(
             parent,
@@ -1840,6 +1867,13 @@ impl CompletionIndex {
                 }
                 return out;
             }
+            if let Some(struct_info) = self.structs.get(&proc_name) {
+                return struct_info
+                    .fields
+                    .iter()
+                    .map(|field| named_arg_item(field, "struct field"))
+                    .collect();
+            }
         }
         if let Some(function) = self.resolve_function(&callee) {
             return function
@@ -2005,6 +2039,35 @@ impl CompletionIndex {
                 None
             }
         })
+    }
+
+    fn instance_from_fn_param(&self, param: &FnParamDecl, namespace: &str) -> Option<InstanceInfo> {
+        let ty = param.ty.as_ref()?;
+        match ty {
+            FnParamType::Struct(name) => {
+                self.resolve_type_name_in_namespace(name, namespace)
+                    .map(|type_name| InstanceInfo {
+                        type_name,
+                        is_array: false,
+                    })
+            }
+            FnParamType::ArrayGeneric(name) => self
+                .resolve_type_name_in_namespace(name, namespace)
+                .map(|type_name| InstanceInfo {
+                    type_name,
+                    is_array: true,
+                }),
+            FnParamType::SizedArray {
+                generic_name: Some(name),
+                ..
+            } => self
+                .resolve_type_name_in_namespace(name, namespace)
+                .map(|type_name| InstanceInfo {
+                    type_name,
+                    is_array: true,
+                }),
+            _ => None,
+        }
     }
 
     fn resolve_function(&self, name: &str) -> Option<&FunctionInfo> {
@@ -2600,6 +2663,232 @@ fn named_arg_item(name: &str, detail: &str) -> CompletionItem {
         .detail(detail)
         .insert_text(format!("{name} = "))
         .snippet(format!("{name} = $1"))
+}
+
+#[derive(Debug, Clone, Default)]
+struct SourceStructMembers {
+    fields: Vec<String>,
+    methods: Vec<SourceStructMethod>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceStructMethod {
+    name: String,
+    params: Vec<String>,
+}
+
+fn source_self_member_items(source: &str, offset: usize, prefix: &str) -> Vec<CompletionItem> {
+    let Some(members) = source_enclosing_struct_members(source, offset) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for field in members.fields {
+        if prefix.is_empty() || field.starts_with(prefix) {
+            out.push(
+                CompletionItem::new(field.clone(), COMPLETION_ITEM_KIND_FIELD)
+                    .detail("struct field")
+                    .sort_text(completion_sort_text(
+                        CompletionSortGroup::ScopeVariable,
+                        &field,
+                    )),
+            );
+        }
+    }
+    for method in members.methods {
+        if prefix.is_empty() || method.name.starts_with(prefix) {
+            out.push(
+                CompletionItem::new(method.name.clone(), COMPLETION_ITEM_KIND_METHOD)
+                    .detail("method")
+                    .insert_text(format!("{}(", method.name))
+                    .snippet(format!("{}($1)", method.name))
+                    .sort_text(completion_sort_text(
+                        CompletionSortGroup::ScopeDef,
+                        &method.name,
+                    )),
+            );
+        }
+    }
+    out
+}
+
+fn source_self_call_arg_items(source: &str, offset: usize, callee: &str) -> Vec<CompletionItem> {
+    let callee = normalize_call_callee(callee);
+    let Some((receiver, method_name)) = split_member_callee(&callee) else {
+        return Vec::new();
+    };
+    if receiver_root(receiver) != "self" {
+        return Vec::new();
+    }
+    let Some(members) = source_enclosing_struct_members(source, offset) else {
+        return Vec::new();
+    };
+    members
+        .methods
+        .into_iter()
+        .find(|method| method.name == method_name)
+        .map(|method| {
+            method
+                .params
+                .into_iter()
+                .filter(|param| param != "self")
+                .map(|param| named_arg_item(&param, "argument"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn source_enclosing_struct_members(source: &str, offset: usize) -> Option<SourceStructMembers> {
+    let offset = offset.min(source.len());
+    let current_line = source[..offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count();
+    let lines = source.lines().collect::<Vec<_>>();
+    let current_indent = lines
+        .get(current_line)
+        .map(|line| source_line_indent(line))
+        .unwrap_or(usize::MAX);
+    for struct_line in (0..=current_line.min(lines.len().saturating_sub(1))).rev() {
+        let line = lines[struct_line];
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("struct ") || !trimmed.ends_with(':') {
+            continue;
+        }
+        let struct_indent = source_line_indent(line);
+        if current_indent <= struct_indent {
+            continue;
+        }
+        if !source_line_range_stays_inside_block(
+            &lines,
+            struct_line + 1,
+            current_line,
+            struct_indent,
+        ) {
+            continue;
+        }
+        return Some(source_struct_members_from_lines(
+            &lines,
+            struct_line,
+            struct_indent,
+        ));
+    }
+    None
+}
+
+fn source_struct_members_from_lines(
+    lines: &[&str],
+    struct_line: usize,
+    struct_indent: usize,
+) -> SourceStructMembers {
+    let mut members = SourceStructMembers::default();
+    let child_indent = lines
+        .iter()
+        .skip(struct_line + 1)
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            let indent = source_line_indent(line);
+            (indent > struct_indent).then_some(indent)
+        })
+        .min();
+    let Some(child_indent) = child_indent else {
+        return members;
+    };
+    for line in lines.iter().skip(struct_line + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = source_line_indent(line);
+        if indent <= struct_indent {
+            break;
+        }
+        if indent != child_indent {
+            continue;
+        }
+        if let Some(method) = source_struct_method_from_line(trimmed) {
+            members.methods.push(method);
+        } else if let Some(field) = source_struct_field_from_line(trimmed) {
+            members.fields.push(field);
+        }
+    }
+    members
+}
+
+fn source_line_range_stays_inside_block(
+    lines: &[&str],
+    start: usize,
+    end: usize,
+    block_indent: usize,
+) -> bool {
+    lines
+        .iter()
+        .take(end.saturating_add(1))
+        .skip(start)
+        .all(|line| {
+            let trimmed = line.trim_start();
+            trimmed.is_empty()
+                || trimmed.starts_with('#')
+                || source_line_indent(line) > block_indent
+        })
+}
+
+fn source_struct_method_from_line(trimmed: &str) -> Option<SourceStructMethod> {
+    let rest = trimmed.strip_prefix("def ")?;
+    let open = rest.find('(')?;
+    let close = rest[open + 1..].find(')').map(|idx| open + 1 + idx)?;
+    let name = rest[..open].trim();
+    if name.is_empty() || !is_ident_text(name) {
+        return None;
+    }
+    let params = rest[open + 1..close]
+        .split(',')
+        .filter_map(|param| {
+            let name = param.split([':', '=']).next().unwrap_or_default().trim();
+            (!name.is_empty() && is_ident_text(name)).then(|| name.to_owned())
+        })
+        .collect();
+    Some(SourceStructMethod {
+        name: name.to_owned(),
+        params,
+    })
+}
+
+fn source_struct_field_from_line(trimmed: &str) -> Option<String> {
+    if trimmed.starts_with("def ") {
+        return None;
+    }
+    let name_end = trimmed
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .unwrap_or(trimmed.len());
+    let name = &trimmed[..name_end];
+    if name.is_empty() || !is_ident_text(name) {
+        return None;
+    }
+    let rest = trimmed[name_end..].trim_start();
+    if rest.starts_with(':') || rest.starts_with('=') || rest.is_empty() {
+        Some(name.to_owned())
+    } else {
+        None
+    }
+}
+
+fn source_line_indent(line: &str) -> usize {
+    line.chars()
+        .take_while(|ch| *ch == ' ' || *ch == '\t')
+        .map(|ch| if ch == '\t' { 4 } else { 1 })
+        .sum()
+}
+
+fn is_ident_text(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn import_completion_items(path: Option<&Path>, typed: &str) -> Vec<CompletionItem> {
