@@ -3,7 +3,7 @@
 </h1>
 
 `onda` is a DSL for low-level audio programming.
-This repository provides the compiler, runtime, CLI, language server, run tooling and a C API for embedding the JIT compiler.
+This repository provides the compiler, runtime, CLI, LSP and a C API for embedding the JIT compiler.
 
 ## Short example
 
@@ -34,7 +34,7 @@ Take a look at the `examples/` folder for more usage examples.
 - `onda` CLI for compile, run, diagnostics, and language-server workflows
 - LLVM-backed compiler and JIT runtime for Onda programs
 - stdio LSP server for diagnostics and semantic tokens
-- run tooling for offline render and real-time playback
+- tooling for offline render and real-time playback
 - editor integrations for VSCode and Neovim
 - C API in `include/onda.h` for non-Rust hosts
 
