@@ -493,11 +493,7 @@ impl LspServer {
                 self.note_document_changed(&normalized);
                 self.document_uris
                     .insert(normalized.clone(), path_to_file_uri(&normalized));
-                self.publish_or_schedule_diagnostics_for_affected_entries(
-                    &normalized,
-                    DiagnosticDelay::Immediate,
-                    writer,
-                )?;
+                self.publish_diagnostics_for_affected_entries(&normalized, writer)?;
             }
             "textDocument/didChange" => {
                 let params = parse_params::<DidChangeTextDocumentParams>(envelope.params)?;
@@ -745,7 +741,7 @@ impl LspServer {
         let overlays = self.session.analysis().overlay_map();
         let normalized = normalize_path(&path);
         let parsed = if self.session.analysis().document(&normalized).is_some() {
-            self.fast_parsed_program_for_open_request(&normalized, &source)
+            self.parsed_program_for_open_navigation_request(&normalized, &source)
         } else {
             let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
             self.parsed_program_for_path(&normalized, &overlays, fingerprint)
@@ -771,7 +767,7 @@ impl LspServer {
         let overlays = self.session.analysis().overlay_map();
         let normalized = normalize_path(&path);
         let parsed = if self.session.analysis().document(&normalized).is_some() {
-            self.fast_parsed_program_for_open_request(&normalized, &source)
+            self.parsed_program_for_open_navigation_request(&normalized, &source)
         } else {
             let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
             self.parsed_program_for_path(&normalized, &overlays, fingerprint)
@@ -797,7 +793,7 @@ impl LspServer {
         let overlays = self.session.analysis().overlay_map();
         let normalized = normalize_path(&path);
         let parsed = if self.session.analysis().document(&normalized).is_some() {
-            self.fast_parsed_program_for_open_request(&normalized, &source)
+            self.parsed_program_for_open_navigation_request(&normalized, &source)
         } else {
             let fingerprint = self.document_fingerprint_for_path(&normalized, &source, &overlays);
             self.parsed_program_for_path(&normalized, &overlays, fingerprint)
@@ -956,6 +952,39 @@ impl LspServer {
         self.parse_cache
             .get(&normalized)
             .and_then(|cached| cached.parsed.clone())
+    }
+
+    fn parsed_program_for_open_navigation_request(
+        &mut self,
+        path: &Path,
+        source: &str,
+    ) -> Option<Arc<Program>> {
+        let normalized = normalize_path(path);
+        let source_hash = hash_source(source);
+        let overlays = self.session.analysis().overlay_map();
+        let fingerprint = self.document_fingerprint_for_path(&normalized, source, &overlays);
+        if let Some(parsed) = self
+            .parse_cache
+            .get(&normalized)
+            .filter(|cached| cached.fingerprint == fingerprint)
+            .and_then(|cached| cached.parsed.clone())
+        {
+            return Some(parsed);
+        }
+
+        let stale = self
+            .parse_cache
+            .get(&normalized)
+            .filter(|cached| cached.fingerprint.source_hash == source_hash)
+            .and_then(|cached| cached.parsed.clone());
+        match parse_program_file_with_overlays(&normalized, &overlays) {
+            Ok(program) => {
+                let parsed = Some(Arc::new(program));
+                self.store_parsed_program_for_path(&normalized, fingerprint, parsed.clone());
+                parsed
+            }
+            Err(_) => stale,
+        }
     }
 
     fn cached_parsed_program_for_source(
@@ -2521,6 +2550,103 @@ namespace Lib:
     }
 
     #[test]
+    fn definition_for_open_importing_document_parses_before_diagnostics() {
+        let dir = mk_temp_dir("definition_open_importing_before_diagnostics");
+        let main = dir.join("main.onda");
+        let source = r#"
+import std/delay
+
+proc CyberCell<T>:
+  ins<T>:
+    src
+    fb
+
+  outs<T> 1
+
+  params<T>:
+    drive = 1.0
+    bias = 0.0
+
+  sample 32:
+    x = (src + fb + bias) * drive
+    out1 = x
+
+init:
+  smear = std::delay::Delay<f64>()
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        for (needle, expected_line) in [("src", 5), ("fb", 6), ("bias", 12), ("drive", 11)] {
+            let definition = definition_for(&mut server, &main, source, needle);
+            assert_ne!(
+                definition,
+                json!(null),
+                "{needle} should resolve before diagnostics populate the parse cache"
+            );
+            assert_eq!(
+                definition["range"]["start"]["line"],
+                json!(expected_line),
+                "{needle} should resolve to its proc-local declaration: {definition:?}"
+            );
+        }
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn definition_for_open_importing_document_resolves_stdlib_proc_before_diagnostics() {
+        let dir = mk_temp_dir("definition_open_importing_stdlib_before_diagnostics");
+        let cache = dir.join("cache");
+        let _env_lock = stdlib_cache_env_lock();
+        let _guard = EnvVarGuard::set_path("ONDA_STDLIB_CACHE_DIR", &cache);
+        let main = dir.join("main.onda");
+        let source = r#"
+import std/delay
+
+init:
+  smear = std::delay::Delay<f64>()
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let definition = definition_for(&mut server, &main, source, "Delay");
+
+        assert_ne!(
+            definition,
+            json!(null),
+            "stdlib proc should resolve before diagnostics populate the parse cache"
+        );
+        let uri = definition["uri"].as_str().expect("stdlib proc uri");
+        let path = file_uri_to_path(uri).expect("stdlib proc should be a file uri");
+        assert!(
+            path.starts_with(&cache),
+            "stdlib proc should materialize inside cache: {}",
+            path.display()
+        );
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("delay.onda")
+        );
+        let line = definition["range"]["start"]["line"]
+            .as_u64()
+            .expect("proc line") as usize;
+        let materialized = fs::read_to_string(&path).expect("read materialized stdlib");
+        let target_line = materialized
+            .lines()
+            .nth(line)
+            .expect("definition line should exist");
+        assert!(
+            target_line.contains("proc Delay"),
+            "definition should target std::delay::Delay, got line: {target_line}"
+        );
+
+        drop(_guard);
+        clear_readonly_recursive(&dir);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn parsed_document_cache_tracks_on_import_dependencies_after_diagnostics() {
         let dir = mk_temp_dir("parse_cache_on_dependency_reparse");
         let lib = dir.join("lib.on");
@@ -3628,6 +3754,85 @@ init:
                     .unwrap_or(false)
             }),
             "expected didOpen to publish diagnostics: {notifications:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn did_open_runs_diagnostics_even_when_diagnostics_are_deferred() {
+        let dir = mk_temp_dir("did_open_deferred_runs_now");
+        let main = dir.join("main.onda");
+        let source = r#"
+import std/delay
+
+proc CyberCell<T>:
+  ins<T>:
+    src
+    fb
+
+  outs<T> 1
+
+  params<T>:
+    drive = 1.0
+    bias = 0.0
+
+  sample:
+    out1 = (src + fb + bias) * drive
+
+init:
+  smear = std::delay::Delay<f64>()
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer {
+            defer_diagnostics: true,
+            ..LspServer::default()
+        };
+        let uri = path_to_file_uri(&main);
+        let mut writer = Vec::new();
+        server
+            .handle_message(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": {
+                        "textDocument": {
+                            "uri": uri,
+                            "version": 1,
+                            "text": source,
+                        }
+                    }
+                }),
+                &mut writer,
+            )
+            .expect("didOpen should succeed");
+
+        assert!(
+            server.diagnostic_requests.is_empty(),
+            "didOpen should run diagnostics instead of scheduling them"
+        );
+        let normalized = server
+            .session
+            .analysis()
+            .open_documents()
+            .keys()
+            .next()
+            .expect("opened document path")
+            .clone();
+        assert!(
+            server
+                .parse_cache
+                .get(&normalized)
+                .and_then(|cached| cached.parsed.as_ref())
+                .is_some(),
+            "didOpen diagnostics should populate the parsed snapshot"
+        );
+        let definition = definition_for(&mut server, &main, source, "Delay");
+        assert_ne!(
+            definition,
+            json!(null),
+            "definition should use the didOpen-populated parsed snapshot"
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -5729,6 +5934,115 @@ sample:
     }
 
     #[test]
+    fn navigation_treats_first_qualified_segment_as_namespace() {
+        let dir = mk_temp_dir("navigation_qualified_namespace_segment");
+        let main = dir.join("main.onda");
+        let source = concat!(
+            "namespace mode:\n",
+            "  const LOW = 0\n",
+            "\n",
+            "proc Filter:\n",
+            "  params:\n",
+            "    mode: i32 = mode::LOW\n",
+            "\n",
+            "  outs:\n",
+            "    out1\n",
+            "    out2\n",
+            "\n",
+            "  sample:\n",
+            "    out1 = mode::LOW\n",
+            "    out2 = mode\n",
+        );
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let qualified_definition = definition_for(&mut server, &main, source, "out1 = mode");
+        let bare_definition = definition_for(&mut server, &main, source, "out2 = mode");
+        let qualified_hover =
+            hover_markdown_for(&mut server, &main, source, "out1 = mode").unwrap_or_default();
+        let bare_hover =
+            hover_markdown_for(&mut server, &main, source, "out2 = mode").unwrap_or_default();
+
+        assert_ne!(
+            qualified_definition,
+            json!(null),
+            "qualified namespace segment should resolve"
+        );
+        assert_eq!(qualified_definition["range"]["start"]["line"], json!(0));
+        assert_ne!(
+            bare_definition,
+            json!(null),
+            "bare param reference should resolve"
+        );
+        assert_eq!(bare_definition["range"]["start"]["line"], json!(5));
+        assert!(
+            qualified_hover.contains("namespace mode"),
+            "hover: {qualified_hover}"
+        );
+        assert!(
+            bare_hover.contains("proc param mode"),
+            "hover: {bare_hover}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn navigation_qualified_namespace_segment_ignores_value_symbols() {
+        let dir = mk_temp_dir("navigation_qualified_namespace_segment_ignores_values");
+        let main = dir.join("main.onda");
+        let source = concat!(
+            "namespace mode:\n",
+            "  const LOW = 0\n",
+            "\n",
+            "namespace outer:\n",
+            "  const mode = 1\n",
+            "\n",
+            "  proc Filter:\n",
+            "    params:\n",
+            "      mode: i32 = 0\n",
+            "\n",
+            "    outs:\n",
+            "      out1\n",
+            "      out2\n",
+            "\n",
+            "    sample:\n",
+            "      out1 = mode::LOW\n",
+            "      out2 = mode\n",
+        );
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let qualified_definition = definition_for(&mut server, &main, source, "out1 = mode");
+        let bare_definition = definition_for(&mut server, &main, source, "out2 = mode");
+        let qualified_hover =
+            hover_markdown_for(&mut server, &main, source, "out1 = mode").unwrap_or_default();
+
+        assert_ne!(
+            qualified_definition,
+            json!(null),
+            "qualified namespace segment should resolve"
+        );
+        assert_eq!(
+            qualified_definition["range"]["start"]["line"],
+            json!(0),
+            "qualified segment should resolve to the namespace, not outer::mode const"
+        );
+        assert_ne!(
+            bare_definition,
+            json!(null),
+            "bare param reference should resolve"
+        );
+        assert_eq!(bare_definition["range"]["start"]["line"], json!(8));
+        assert!(
+            qualified_hover.contains("namespace mode"),
+            "hover: {qualified_hover}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn definition_resolves_runtime_scope_consts() {
         let dir = mk_temp_dir("definition_runtime_const");
         let main = dir.join("main.onda");
@@ -6161,6 +6475,51 @@ namespace Test<FFTSize = 64, MaxImpulseLen = 1024>:
             target_line.contains("set_impulse"),
             "definition should target set_impulse, got line: {target_line}"
         );
+
+        drop(_guard);
+        clear_readonly_recursive(&dir);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn definition_resolves_materialized_stdlib_proc_state_inside_local_def() {
+        let dir = mk_temp_dir("definition_materialized_stdlib_proc_state_local_def");
+        let cache = dir.join("cache");
+        let _env_lock = stdlib_cache_env_lock();
+        let _guard = EnvVarGuard::set_path("ONDA_STDLIB_CACHE_DIR", &cache);
+        let main = dir.join("main.onda");
+        let source = r#"
+import std/delay
+
+init:
+  smear = std::delay::Delay<f64>()
+"#;
+        write_file(&main, source);
+
+        let mut server = LspServer::default();
+        let definition = definition_for(&mut server, &main, source, "Delay");
+        let uri = definition["uri"].as_str().expect("stdlib proc uri");
+        let delay_path = file_uri_to_path(uri).expect("stdlib proc should be a file uri");
+        let delay_source = fs::read_to_string(&delay_path).expect("read materialized delay");
+
+        for (needle, expected_line) in [
+            ("T(max_d", 14),
+            ("\n      di0", 15),
+            ("T(di0", 15),
+            ("\n      frac", 16),
+        ] {
+            let state_definition = definition_for(&mut server, &delay_path, &delay_source, needle);
+            assert_ne!(
+                state_definition,
+                json!(null),
+                "{needle:?} should resolve inside materialized stdlib local def"
+            );
+            assert_eq!(
+                state_definition["range"]["start"]["line"],
+                json!(expected_line),
+                "{needle:?} should goto the init declaration: {state_definition:?}"
+            );
+        }
 
         drop(_guard);
         clear_readonly_recursive(&dir);

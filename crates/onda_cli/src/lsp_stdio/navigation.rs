@@ -69,16 +69,6 @@ pub(super) fn hover_for_document_with_parsed(
             "range": token.range_json(),
         }));
     }
-    if let Some(definition) = source_namespace_const_definition(source, &token) {
-        let hover = definition.hover_markdown();
-        return Some(json!({
-            "contents": {
-                "kind": "markdown",
-                "value": hover,
-            },
-            "range": token.range_json(),
-        }));
-    }
     let parsed_owned;
     let parsed = if let Some(parsed) = parsed {
         Some(parsed)
@@ -92,6 +82,10 @@ pub(super) fn hover_for_document_with_parsed(
         .or_else(|| {
             index
                 .resolve_token(source, &token)
+                .map(|definition| definition.hover_markdown())
+        })
+        .or_else(|| {
+            source_namespace_const_definition(source, &token)
                 .map(|definition| definition.hover_markdown())
         })
         .or_else(|| builtin_hover(&token.name))?;
@@ -121,11 +115,6 @@ pub(super) fn definition_for_document_with_parsed(
     {
         return Some(location);
     }
-    if let Some(location) =
-        source_namespace_const_definition(source, &token).and_then(|def| def.location_json(path))
-    {
-        return Some(location);
-    }
 
     let parsed_owned;
     let parsed = if let Some(parsed) = parsed {
@@ -135,8 +124,10 @@ pub(super) fn definition_for_document_with_parsed(
         parsed_owned.as_ref()
     };
     let index = NavigationIndex::build(parsed, source, path, Some(position));
-    let definition = index.resolve_token(source, &token)?;
-    definition.location_json(path, source, overlays)
+    if let Some(definition) = index.resolve_token(source, &token) {
+        return definition.location_json(path, source, overlays);
+    }
+    source_namespace_const_definition(source, &token).and_then(|def| def.location_json(path))
 }
 
 pub(super) fn document_symbols_for_document_with_parsed(
@@ -621,10 +612,46 @@ impl NavigationIndex {
                 self.add_port_definition(&full_name, decl, DefinitionKind::Port, "proc input");
             info.ins.insert(decl.name.clone(), idx);
         }
+        if let Some(count) = literal_count_expr_value(proc_def.ins_deferred_count.as_ref()) {
+            let span = proc_def
+                .ins_deferred_count
+                .as_ref()
+                .map(|expr| expr.loc().span())
+                .unwrap_or(proc_def.loc);
+            for index in 1..=count {
+                let name = format!("in{index}");
+                let idx = self.add_synthetic_port_definition(
+                    &full_name,
+                    &name,
+                    DefinitionKind::Port,
+                    "proc input",
+                    span,
+                );
+                info.ins.insert(name, idx);
+            }
+        }
         for decl in &proc_def.outs {
             let idx =
                 self.add_port_definition(&full_name, decl, DefinitionKind::Port, "proc output");
             info.outs.insert(decl.name.clone(), idx);
+        }
+        if let Some(count) = literal_count_expr_value(proc_def.outs_deferred_count.as_ref()) {
+            let span = proc_def
+                .outs_deferred_count
+                .as_ref()
+                .map(|expr| expr.loc().span())
+                .unwrap_or(proc_def.loc);
+            for index in 1..=count {
+                let name = format!("out{index}");
+                let idx = self.add_synthetic_port_definition(
+                    &full_name,
+                    &name,
+                    DefinitionKind::Port,
+                    "proc output",
+                    span,
+                );
+                info.outs.insert(name, idx);
+            }
         }
         for decl in &proc_def.params {
             let idx = self.add_param_definition(&full_name, decl, "proc param");
@@ -699,6 +726,45 @@ impl NavigationIndex {
             file_key: file_key_for_span(decl.loc),
             pinned: false,
         })
+    }
+
+    fn add_synthetic_port_definition(
+        &mut self,
+        owner: &str,
+        name: &str,
+        kind: DefinitionKind,
+        detail: &str,
+        span: Span,
+    ) -> usize {
+        self.add_definition_once(DefinitionInfo {
+            name: name.to_owned(),
+            full_name: namespace_join(owner, name),
+            kind,
+            detail: format!("{detail} {name}"),
+            span,
+            file_key: file_key_for_span(span),
+            pinned: false,
+        })
+    }
+
+    fn add_deferred_port_definitions(
+        &mut self,
+        owner: &str,
+        prefix: &str,
+        count: Option<&Expr>,
+        span: Span,
+        kind: DefinitionKind,
+        detail: &str,
+        out: &mut HashMap<String, usize>,
+    ) {
+        let Some(count) = literal_count_expr_value(count) else {
+            return;
+        };
+        for index in 1..=count {
+            let name = format!("{prefix}{index}");
+            let idx = self.add_synthetic_port_definition(owner, &name, kind, detail, span);
+            out.entry(name).or_insert(idx);
+        }
     }
 
     fn add_param_definition(&mut self, owner: &str, decl: &ParamDecl, detail: &str) -> usize {
@@ -965,6 +1031,15 @@ impl NavigationIndex {
                         let idx = self.add_port_definition("", decl, DefinitionKind::Port, "port");
                         definitions.insert(decl.name.clone(), idx);
                     }
+                    self.add_deferred_port_definitions(
+                        "",
+                        &ports.deferred_prefix,
+                        ports.deferred_count.as_ref(),
+                        ports.loc,
+                        DefinitionKind::Port,
+                        "port",
+                        &mut definitions,
+                    );
                 }
                 Block::Params(params) => {
                     extend_span(&mut span, params.loc);
@@ -1009,8 +1084,13 @@ impl NavigationIndex {
         }
 
         for (_, stmts, state_only) in &stmt_regions {
-            self.collect_stmt_definitions("", stmts, *state_only, &mut definitions);
-            self.collect_stmt_scope_instances(stmts, "", *state_only, &mut instances);
+            if *state_only {
+                self.collect_stmt_definitions_unfiltered("", stmts, true, &mut definitions);
+                self.collect_stmt_scope_instances_unfiltered(stmts, "", true, &mut instances);
+            } else {
+                self.collect_stmt_definitions("", stmts, false, &mut definitions);
+                self.collect_stmt_scope_instances(stmts, "", false, &mut instances);
+            }
         }
         let owner_idx = self.push_scope(None, "", span?, definitions, instances)?;
         for (span, stmts, _) in stmt_regions {
@@ -1040,10 +1120,36 @@ impl NavigationIndex {
             let idx = self.add_port_definition(&owner, decl, DefinitionKind::Port, "proc input");
             definitions.insert(decl.name.clone(), idx);
         }
+        self.add_deferred_port_definitions(
+            &owner,
+            "in",
+            proc_def.ins_deferred_count.as_ref(),
+            proc_def
+                .ins_deferred_count
+                .as_ref()
+                .map(|expr| expr.loc().span())
+                .unwrap_or(proc_def.loc),
+            DefinitionKind::Port,
+            "proc input",
+            &mut definitions,
+        );
         for decl in &proc_def.outs {
             let idx = self.add_port_definition(&owner, decl, DefinitionKind::Port, "proc output");
             definitions.insert(decl.name.clone(), idx);
         }
+        self.add_deferred_port_definitions(
+            &owner,
+            "out",
+            proc_def.outs_deferred_count.as_ref(),
+            proc_def
+                .outs_deferred_count
+                .as_ref()
+                .map(|expr| expr.loc().span())
+                .unwrap_or(proc_def.loc),
+            DefinitionKind::Port,
+            "proc output",
+            &mut definitions,
+        );
         for decl in &proc_def.params {
             let idx = self.add_param_definition(&owner, decl, "proc param");
             definitions.insert(decl.name.clone(), idx);
@@ -1061,10 +1167,30 @@ impl NavigationIndex {
                 self.add_function_definition(&owner, def, DefinitionKind::Method, "proc-local def");
             definitions.insert(def.name.clone(), idx);
         }
-        self.collect_stmt_definitions(&owner, &proc_def.init.body, true, &mut definitions);
-        self.collect_stmt_definitions(&owner, &proc_def.block_pre, true, &mut definitions);
-        self.collect_stmt_scope_instances(&proc_def.init.body, namespace, true, &mut instances);
-        self.collect_stmt_scope_instances(&proc_def.block_pre, namespace, true, &mut instances);
+        self.collect_stmt_definitions_unfiltered(
+            &owner,
+            &proc_def.init.body,
+            true,
+            &mut definitions,
+        );
+        self.collect_stmt_definitions_unfiltered(
+            &owner,
+            &proc_def.block_pre,
+            true,
+            &mut definitions,
+        );
+        self.collect_stmt_scope_instances_unfiltered(
+            &proc_def.init.body,
+            namespace,
+            true,
+            &mut instances,
+        );
+        self.collect_stmt_scope_instances_unfiltered(
+            &proc_def.block_pre,
+            namespace,
+            true,
+            &mut instances,
+        );
 
         let owner_idx = self.push_scope(
             parent,
@@ -1257,7 +1383,14 @@ impl NavigationIndex {
             let idx = self.add_fn_param_definition(&function_owner, param);
             definitions.insert(param.name.clone(), idx);
         }
-        self.collect_stmt_definitions(&function_owner, &def.body, false, &mut definitions);
+        let inherited_names = self.inherited_runtime_definition_names(parent);
+        self.collect_stmt_definitions_with_inherited(
+            &function_owner,
+            &def.body,
+            false,
+            &inherited_names,
+            &mut definitions,
+        );
         let mut instances = HashMap::<String, InstanceInfo>::new();
         let scope_namespace = self.child_scope_namespace(parent, owner);
         for param in &def.params {
@@ -1289,7 +1422,14 @@ impl NavigationIndex {
             let idx = self.add_event_param_definition(&event_owner, param);
             definitions.insert(param.name.clone(), idx);
         }
-        self.collect_stmt_definitions(&event_owner, &event.body, false, &mut definitions);
+        let inherited_names = self.inherited_runtime_definition_names(Some(parent));
+        self.collect_stmt_definitions_with_inherited(
+            &event_owner,
+            &event.body,
+            false,
+            &inherited_names,
+            &mut definitions,
+        );
         let mut instances = HashMap::<String, InstanceInfo>::new();
         let scope_namespace = self.child_scope_namespace(Some(parent), owner);
         self.collect_stmt_scope_instances(&event.body, &scope_namespace, false, &mut instances);
@@ -1330,7 +1470,14 @@ impl NavigationIndex {
         mut definitions: HashMap<String, usize>,
         mut instances: HashMap<String, InstanceInfo>,
     ) -> Option<usize> {
-        self.collect_stmt_definitions(owner, stmts, false, &mut definitions);
+        let inherited_names = self.inherited_runtime_definition_names(parent);
+        self.collect_stmt_definitions_with_inherited(
+            owner,
+            stmts,
+            false,
+            &inherited_names,
+            &mut definitions,
+        );
         let scope_namespace = self.child_scope_namespace(parent, owner);
         self.collect_stmt_scope_instances(stmts, &scope_namespace, false, &mut instances);
         let scope_idx = self.push_scope(parent, &scope_namespace, span, definitions, instances)?;
@@ -1390,6 +1537,21 @@ impl NavigationIndex {
             .unwrap_or_else(|| fallback.to_owned())
     }
 
+    fn inherited_runtime_definition_names(&self, parent: Option<usize>) -> HashSet<String> {
+        let mut names = HashSet::new();
+        let mut current = parent;
+        while let Some(idx) = current {
+            let Some(scope) = self.scopes.get(idx) else {
+                break;
+            };
+            if !scope.namespace_member_scope {
+                names.extend(scope.definitions.keys().cloned());
+            }
+            current = scope.parent;
+        }
+        names
+    }
+
     fn collect_stmt_scope_instances(
         &self,
         stmts: &[Stmt],
@@ -1397,7 +1559,17 @@ impl NavigationIndex {
         top_level_assigns_only: bool,
         out: &mut HashMap<String, InstanceInfo>,
     ) {
-        self.collect_visible_stmt_instances(stmts, namespace, top_level_assigns_only, out);
+        self.collect_visible_stmt_instances(stmts, namespace, top_level_assigns_only, true, out);
+    }
+
+    fn collect_stmt_scope_instances_unfiltered(
+        &self,
+        stmts: &[Stmt],
+        namespace: &str,
+        top_level_assigns_only: bool,
+        out: &mut HashMap<String, InstanceInfo>,
+    ) {
+        self.collect_visible_stmt_instances(stmts, namespace, top_level_assigns_only, false, out);
     }
 
     fn collect_visible_stmt_instances(
@@ -1405,6 +1577,7 @@ impl NavigationIndex {
         stmts: &[Stmt],
         namespace: &str,
         top_level_assigns_only: bool,
+        respect_position: bool,
         out: &mut HashMap<String, InstanceInfo>,
     ) {
         for stmt in stmts {
@@ -1415,7 +1588,7 @@ impl NavigationIndex {
                     expr,
                     ..
                 } => {
-                    if self.span_start_is_visible(*target_loc) {
+                    if !respect_position || self.span_start_is_visible(*target_loc) {
                         if let Some(name) = assign_target_name(target) {
                             if let Some(instance) = self.instance_from_expr(expr, namespace) {
                                 out.insert(name.to_owned(), instance);
@@ -1429,12 +1602,15 @@ impl NavigationIndex {
                     else_branch,
                     ..
                 } => {
-                    if !top_level_assigns_only && self.span_end_is_visible(*loc) {
+                    if !top_level_assigns_only
+                        && (!respect_position || self.span_end_is_visible(*loc))
+                    {
                         let mut then_instances = out.clone();
                         self.collect_visible_stmt_instances(
                             then_branch,
                             namespace,
                             false,
+                            respect_position,
                             &mut then_instances,
                         );
                         let mut else_instances = out.clone();
@@ -1442,6 +1618,7 @@ impl NavigationIndex {
                             else_branch,
                             namespace,
                             false,
+                            respect_position,
                             &mut else_instances,
                         );
                         let base_names = out.keys().cloned().collect::<HashSet<_>>();
@@ -1469,7 +1646,49 @@ impl NavigationIndex {
         top_level_assigns_only: bool,
         out: &mut HashMap<String, usize>,
     ) {
-        self.collect_visible_stmt_definitions(owner, stmts, top_level_assigns_only, out);
+        self.collect_visible_stmt_definitions(
+            owner,
+            stmts,
+            top_level_assigns_only,
+            true,
+            None,
+            out,
+        );
+    }
+
+    fn collect_stmt_definitions_with_inherited(
+        &mut self,
+        owner: &str,
+        stmts: &[Stmt],
+        top_level_assigns_only: bool,
+        inherited_names: &HashSet<String>,
+        out: &mut HashMap<String, usize>,
+    ) {
+        self.collect_visible_stmt_definitions(
+            owner,
+            stmts,
+            top_level_assigns_only,
+            true,
+            Some(inherited_names),
+            out,
+        );
+    }
+
+    fn collect_stmt_definitions_unfiltered(
+        &mut self,
+        owner: &str,
+        stmts: &[Stmt],
+        top_level_assigns_only: bool,
+        out: &mut HashMap<String, usize>,
+    ) {
+        self.collect_visible_stmt_definitions(
+            owner,
+            stmts,
+            top_level_assigns_only,
+            false,
+            None,
+            out,
+        );
     }
 
     fn collect_visible_stmt_definitions(
@@ -1477,12 +1696,14 @@ impl NavigationIndex {
         owner: &str,
         stmts: &[Stmt],
         top_level_assigns_only: bool,
+        respect_position: bool,
+        inherited_names: Option<&HashSet<String>>,
         out: &mut HashMap<String, usize>,
     ) {
         for stmt in stmts {
             match stmt {
                 Stmt::Const { loc, decl, .. } => {
-                    if self.span_start_is_visible(*loc) {
+                    if !respect_position || self.span_start_is_visible(*loc) {
                         let idx = self.add_const_definition(owner, decl);
                         out.entry(decl.name.clone()).or_insert(idx);
                     }
@@ -1490,8 +1711,11 @@ impl NavigationIndex {
                 Stmt::Assign {
                     target, target_loc, ..
                 } => {
-                    if self.span_start_is_visible(*target_loc) {
+                    if !respect_position || self.span_start_is_visible(*target_loc) {
                         for name in assign_target_names(target) {
+                            if inherited_names.is_some_and(|names| names.contains(name)) {
+                                continue;
+                            }
                             let idx = self.add_local_variable_definition(owner, name, *target_loc);
                             out.entry(name.to_owned()).or_insert(idx);
                         }
@@ -1503,12 +1727,16 @@ impl NavigationIndex {
                     else_branch,
                     ..
                 } => {
-                    if !top_level_assigns_only && self.span_end_is_visible(*loc) {
+                    if !top_level_assigns_only
+                        && (!respect_position || self.span_end_is_visible(*loc))
+                    {
                         let mut then_defs = out.clone();
                         self.collect_visible_stmt_definitions(
                             owner,
                             then_branch,
                             false,
+                            respect_position,
+                            inherited_names,
                             &mut then_defs,
                         );
                         let mut else_defs = out.clone();
@@ -1516,6 +1744,8 @@ impl NavigationIndex {
                             owner,
                             else_branch,
                             false,
+                            respect_position,
+                            inherited_names,
                             &mut else_defs,
                         );
                         let base_names = out.keys().cloned().collect::<HashSet<_>>();
@@ -1635,6 +1865,13 @@ impl NavigationIndex {
             }
         }
         if let Some(path) = qualified_path_at_token(source, token) {
+            if token_is_followed_by_namespace_separator(source, token) {
+                return self.resolve_namespace_qualified_at(
+                    &path,
+                    token.line,
+                    token.start_character,
+                );
+            }
             if let Some(definition) =
                 self.resolve_qualified_at(&path, token.line, token.start_character)
             {
@@ -1881,6 +2118,21 @@ impl NavigationIndex {
     fn resolve_qualified_at(&self, path: &str, line: u32, column: u32) -> Option<&DefinitionInfo> {
         let namespace = self.current_namespace(line, column);
         self.resolve_qualified_in_namespace(path, namespace)
+    }
+
+    fn resolve_namespace_qualified_at(
+        &self,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> Option<&DefinitionInfo> {
+        let namespace = self.current_namespace(line, column);
+        self.qualified_path_candidates(path, namespace)
+            .into_iter()
+            .find_map(|candidate| {
+                self.namespace_definition_index(&candidate)
+                    .and_then(|idx| self.definitions.get(idx))
+            })
     }
 
     fn resolve_qualified_in_namespace(
@@ -2907,6 +3159,9 @@ fn source_namespace_const_definition(
     source: &str,
     token: &SourceToken,
 ) -> Option<SourceConstDefinition> {
+    if token_is_followed_by_namespace_separator(source, token) {
+        return None;
+    }
     let lines = source.lines().collect::<Vec<_>>();
     if let Some(definition) = source_const_declaration_at_token(&lines, token) {
         return Some(definition);
@@ -3207,6 +3462,11 @@ fn named_arg_label_at_token(source: &str, token: &SourceToken) -> bool {
     after.trim_start().starts_with('=')
 }
 
+fn token_is_followed_by_namespace_separator(source: &str, token: &SourceToken) -> bool {
+    let after = &source[token.byte_end..token.line_end];
+    after.trim_start().starts_with("::")
+}
+
 fn qualified_path_at_token(source: &str, token: &SourceToken) -> Option<String> {
     let line = token.line_slice(source);
     let token_start = token.byte_start - token.line_start;
@@ -3219,6 +3479,9 @@ fn qualified_path_at_token(source: &str, token: &SourceToken) -> Option<String> 
         };
         let segment_start = scan_path_segment_start(before_colons)?;
         start = segment_start;
+    }
+    if token_is_followed_by_namespace_separator(source, token) {
+        return Some(strip_type_args_from_path(&line[start..token_end]));
     }
     let raw = &line[start..token_end];
     if raw.contains("::") {
@@ -3577,6 +3840,13 @@ fn assign_target_names(target: &AssignTarget) -> Vec<&str> {
     }
 }
 
+fn literal_count_expr_value(expr: Option<&Expr>) -> Option<usize> {
+    match expr? {
+        Expr::Int { value, .. } if *value > 0 => usize::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
 fn push_unique_index(candidates: &mut Vec<usize>, candidate: usize) {
     if !candidates.contains(&candidate) {
         candidates.push(candidate);
@@ -3724,6 +3994,78 @@ sample:
         assert!(
             definition_at(source, "out1 = cutoff", "out1 = ".len() + 1).is_some(),
             "pinned params should still resolve inside their owning proc"
+        );
+    }
+
+    #[test]
+    fn resolves_proc_init_state_from_local_defs_and_events() {
+        let source = r#"proc Voice:
+  outs:
+    out1
+
+  event before_event():
+    event_before = state
+
+  def before_def():
+    def_before = state
+
+  init:
+    state = 0.0
+
+  def after_def():
+    def_after = state
+
+  event after_event():
+    event_after = state
+
+  sample:
+    out1 = state
+"#;
+
+        for needle in [
+            "event_before = state",
+            "def_before = state",
+            "def_after = state",
+            "event_after = state",
+            "out1 = state",
+        ] {
+            let definition = definition_at(source, needle, needle.find("state").unwrap() + 1)
+                .unwrap_or_else(|| panic!("{needle} should resolve to init state"));
+            assert_eq!(
+                definition["range"]["start"]["line"],
+                json!(11),
+                "{needle} should goto init state declaration: {definition:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hover_resolves_count_shorthand_proc_ports() {
+        let source = r#"proc Delay<T>:
+  ins<T> 1
+  outs<T> 1
+
+  sample:
+    out1 = in1
+"#;
+
+        let input_hover = hover_at(source, "in1", 1).expect("count-shorthand input should hover");
+        let output_hover =
+            hover_at(source, "out1", 1).expect("count-shorthand output should hover");
+        let input = input_hover["contents"]["value"]
+            .as_str()
+            .unwrap_or_default();
+        let output = output_hover["contents"]["value"]
+            .as_str()
+            .unwrap_or_default();
+
+        assert!(
+            input.contains("proc input in1"),
+            "input hover should describe generated input port: {input:?}"
+        );
+        assert!(
+            output.contains("proc output out1"),
+            "output hover should describe generated output port: {output:?}"
         );
     }
 

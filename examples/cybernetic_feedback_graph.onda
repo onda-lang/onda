@@ -23,9 +23,12 @@ proc CyberCell<T>:
   params<T>:
     drive = 1.0
     bias = 0.0
+    
+  init:
+    testy = 0
 
   sample 32:
-    x = (src + fb + bias) * drive
+    x = (src + fb + bias) * drive + testy
     y = x - x * x * x * 0.18
     out1 = clamp(y, -1.0, 1.0)
 

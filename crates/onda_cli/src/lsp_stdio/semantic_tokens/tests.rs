@@ -50,6 +50,49 @@ fn has_token_text_at_line(
     })
 }
 
+fn token_type_at_text_on_line(
+    tokens: &[SemanticToken],
+    source: &str,
+    line_no: usize,
+    needle: &str,
+) -> Option<u32> {
+    token_type_at_nth_text_on_line(tokens, source, line_no, needle, 0)
+}
+
+fn token_type_at_nth_text_on_line(
+    tokens: &[SemanticToken],
+    source: &str,
+    line_no: usize,
+    needle: &str,
+    occurrence: usize,
+) -> Option<u32> {
+    let line = source
+        .lines()
+        .nth(line_no)
+        .expect("expected source line for token lookup");
+    let start = nth_match_start(line, needle, occurrence).expect("expected token text on line");
+    tokens
+        .iter()
+        .find(|t| {
+            t.line as usize == line_no
+                && t.start as usize == start
+                && t.length as usize == needle.len()
+        })
+        .map(|t| t.token_type)
+}
+
+fn nth_match_start(line: &str, needle: &str, occurrence: usize) -> Option<usize> {
+    let mut offset = 0;
+    for current in 0..=occurrence {
+        let found = line.get(offset..)?.find(needle)? + offset;
+        if current == occurrence {
+            return Some(found);
+        }
+        offset = found + needle.len();
+    }
+    None
+}
+
 fn repo_source(rel: &str) -> (PathBuf, String) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -219,6 +262,53 @@ fn semantic_tokens_mark_onda_params_as_parameters() {
     assert!(
         has_token(&tokens, 3, 9, 4, SEMANTIC_TOKEN_TYPE_PARAMETER),
         "tokens: {tokens:?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_runtime_symbols_shadow_namespace_names_in_std_filter() {
+    let (path, source) = repo_source("stdlib/std/filter.onda");
+    let tokens = semantic_tokens_for_document(&source, Some(&path));
+
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 1, "mode"),
+        Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "mode namespace declaration should remain a namespace"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 18, "mode"),
+        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "OnePole param declaration should be a parameter"
+    );
+    assert_eq!(
+        token_type_at_nth_text_on_line(&tokens, &source, 18, "mode", 1),
+        Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "OnePole default should keep mode:: as namespace"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 33, "mode"),
+        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "OnePole mode read should be a parameter"
+    );
+    assert_eq!(
+        token_type_at_nth_text_on_line(&tokens, &source, 33, "mode", 1),
+        Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "OnePole qualified mode:: use should be namespace"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 60, "mode"),
+        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "Svf param declaration should be a parameter"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 95, "mode"),
+        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
+        "Svf mode read should be a parameter"
+    );
+    assert_eq!(
+        token_type_at_nth_text_on_line(&tokens, &source, 95, "mode", 1),
+        Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        "Svf qualified mode:: use should be namespace"
     );
 }
 

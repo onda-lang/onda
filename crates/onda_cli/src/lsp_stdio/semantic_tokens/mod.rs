@@ -436,6 +436,11 @@ fn semantic_tokens_for_document_with_optional_parse(
                     .or(source_scope_resolution)
                     .or_else(|| imported_scope.imported_token_type_for(name))
                     .or_else(|| source_decl_scope.imported_token_type_for(name)),
+                Some((Some(SEMANTIC_TOKEN_TYPE_NAMESPACE), false)) => source_scope_resolution
+                    .or(Some(SEMANTIC_TOKEN_TYPE_NAMESPACE))
+                    .or_else(|| imported_scope.imported_token_type_for(name))
+                    .or_else(|| source_decl_scope.imported_token_type_for(name))
+                    .or_else(|| source_decl_scope.token_type_for_source_fallback(name)),
                 Some((token_type, false)) => token_type
                     .or(source_scope_resolution)
                     .or_else(|| imported_scope.imported_token_type_for(name))
