@@ -178,13 +178,13 @@ fn semantic_tokens_do_not_expose_top_level_runtime_via_source_scope_fallback() {
     assert!(
         !gain_tokens
             .iter()
-            .any(|t| t.line == 8 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            .any(|t| t.line == 8 && t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
         "top-level def should not see runtime param via source fallback: {gain_tokens:?}"
     );
     assert!(
         gain_tokens
             .iter()
-            .any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            .any(|t| t.line == 12 && t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
         "sample should still see top-level runtime param: {gain_tokens:?}"
     );
 
@@ -251,16 +251,16 @@ fn semantic_tokens_mark_local_variable_uses_in_sample_blocks() {
 }
 
 #[test]
-fn semantic_tokens_mark_onda_params_as_parameters() {
+fn semantic_tokens_mark_onda_params_as_ports() {
     let source = "params:\n  gain = 0.5\nsample:\n  out1 = gain\n";
     let tokens = semantic_tokens_for_document(source, None);
 
     assert!(
-        has_token(&tokens, 1, 2, 4, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        has_token(&tokens, 1, 2, 4, SEMANTIC_TOKEN_TYPE_PORT),
         "tokens: {tokens:?}"
     );
     assert!(
-        has_token(&tokens, 3, 9, 4, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        has_token(&tokens, 3, 9, 4, SEMANTIC_TOKEN_TYPE_PORT),
         "tokens: {tokens:?}"
     );
 }
@@ -277,8 +277,8 @@ fn semantic_tokens_runtime_symbols_shadow_namespace_names_in_std_filter() {
     );
     assert_eq!(
         token_type_at_text_on_line(&tokens, &source, 18, "mode"),
-        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
-        "OnePole param declaration should be a parameter"
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "OnePole param declaration should be a port"
     );
     assert_eq!(
         token_type_at_nth_text_on_line(&tokens, &source, 18, "mode", 1),
@@ -287,8 +287,8 @@ fn semantic_tokens_runtime_symbols_shadow_namespace_names_in_std_filter() {
     );
     assert_eq!(
         token_type_at_text_on_line(&tokens, &source, 33, "mode"),
-        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
-        "OnePole mode read should be a parameter"
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "OnePole mode read should be a port"
     );
     assert_eq!(
         token_type_at_nth_text_on_line(&tokens, &source, 33, "mode", 1),
@@ -297,13 +297,13 @@ fn semantic_tokens_runtime_symbols_shadow_namespace_names_in_std_filter() {
     );
     assert_eq!(
         token_type_at_text_on_line(&tokens, &source, 60, "mode"),
-        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
-        "Svf param declaration should be a parameter"
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "Svf param declaration should be a port"
     );
     assert_eq!(
         token_type_at_text_on_line(&tokens, &source, 95, "mode"),
-        Some(SEMANTIC_TOKEN_TYPE_PARAMETER),
-        "Svf mode read should be a parameter"
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "Svf mode read should be a port"
     );
     assert_eq!(
         token_type_at_nth_text_on_line(&tokens, &source, 95, "mode", 1),
@@ -472,7 +472,7 @@ fn semantic_tokens_do_not_expose_top_level_runtime_scope_inside_top_level_defs()
     assert!(
         find_tokens_named(&tokens, source, "gain")
             .iter()
-            .any(|t| t.line == 14 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            .any(|t| t.line == 14 && t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
         "top-level param should still be highlighted in sample"
     );
 }
@@ -571,31 +571,31 @@ fn semantic_tokens_mark_self_and_self_fields_distinctly() {
 
     assert!(
         has_token(&tokens, 1, 2, 5, SEMANTIC_TOKEN_TYPE_STATE),
-        "struct field declaration should use state coloring: {tokens:?}"
+        "struct field declaration should use the state token: {tokens:?}"
     );
     assert!(
-        has_token(&tokens, 3, 10, 4, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "self in method params should be highlighted as a keyword: {tokens:?}"
+        has_token(&tokens, 3, 10, 4, SEMANTIC_TOKEN_TYPE_PORT),
+        "self in method params should use the port token: {tokens:?}"
     );
     assert!(
-        has_token(&tokens, 4, 4, 4, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "self receiver should be highlighted as a keyword: {tokens:?}"
+        has_token(&tokens, 4, 4, 4, SEMANTIC_TOKEN_TYPE_PORT),
+        "self receiver should use the port token: {tokens:?}"
     );
     assert!(
         has_token(&tokens, 4, 9, 5, SEMANTIC_TOKEN_TYPE_STATE),
-        "self.value field write should use state coloring: {tokens:?}"
+        "self.value field write should use the state token: {tokens:?}"
     );
     assert!(
         has_token(&tokens, 5, 15, 5, SEMANTIC_TOKEN_TYPE_STATE),
-        "self.value field read should use state coloring: {tokens:?}"
+        "self.value field read should use the state token: {tokens:?}"
     );
     assert!(
         has_token(&source_only_tokens, 1, 2, 5, SEMANTIC_TOKEN_TYPE_STATE),
-        "source-only struct field declaration should use state coloring: {source_only_tokens:?}"
+        "source-only struct field declaration should use the state token: {source_only_tokens:?}"
     );
     assert!(
         has_token(&source_only_tokens, 4, 9, 5, SEMANTIC_TOKEN_TYPE_STATE),
-        "source-only self.value should use state coloring: {source_only_tokens:?}"
+        "source-only self.value should use the state token: {source_only_tokens:?}"
     );
 }
 
@@ -645,7 +645,7 @@ fn semantic_tokens_keep_proc_runtime_scope_but_not_proc_local_def_locals() {
     assert!(
         find_tokens_named(&tokens, source, "gain")
             .iter()
-            .any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            .any(|t| t.line == 13 && t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
         "proc param should be highlighted inside proc-local def"
     );
     assert!(
@@ -786,10 +786,6 @@ fn semantic_tokens_mark_use_namespace_targets_as_namespaces() {
         "qualified use target should mark SinOsc as namespace: {tokens:?}"
     );
     assert!(
-        has_token(&tokens, 6, 15, 2, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "use alias as should be highlighted as a keyword: {tokens:?}"
-    );
-    assert!(
         has_token(&tokens, 6, 18, 4, SEMANTIC_TOKEN_TYPE_NAMESPACE),
         "use alias should be highlighted as a namespace: {tokens:?}"
     );
@@ -824,10 +820,6 @@ fn semantic_tokens_mark_use_namespace_targets_in_source_fallback() {
     assert!(
         has_token(&tokens, 3, 4, 5, SEMANTIC_TOKEN_TYPE_NAMESPACE),
         "source fallback should mark aliased use target root as namespace: {tokens:?}"
-    );
-    assert!(
-        has_token(&tokens, 3, 15, 2, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "source fallback should mark as as keyword: {tokens:?}"
     );
     assert!(
         has_token(&tokens, 3, 18, 3, SEMANTIC_TOKEN_TYPE_NAMESPACE),
@@ -865,7 +857,7 @@ fn semantic_tokens_mark_proc_section_declarations() {
         "wet decl: {tokens:?}"
     );
     assert!(
-        has_token(&tokens, 6, 4, 4, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        has_token(&tokens, 6, 4, 4, SEMANTIC_TOKEN_TYPE_PORT),
         "rate decl: {tokens:?}"
     );
     assert!(
@@ -879,7 +871,7 @@ fn semantic_tokens_mark_proc_section_declarations() {
 }
 
 #[test]
-fn semantic_tokens_mark_pin_as_keyword() {
+fn semantic_tokens_keep_pinned_params_registered() {
     let source = concat!(
         "proc Filter:\n",
         "  params:\n",
@@ -891,25 +883,17 @@ fn semantic_tokens_mark_pin_as_keyword() {
     let tokens = semantic_tokens_for_document(source, None);
 
     assert!(
-        has_token(&tokens, 2, 4, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "pinned proc scalar param keyword should be highlighted: {tokens:?}"
-    );
-    assert!(
-        has_token(&tokens, 3, 4, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "pinned proc array param keyword should be highlighted: {tokens:?}"
-    );
-    assert!(
-        has_token(&tokens, 5, 11, 6, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        has_token(&tokens, 5, 11, 6, SEMANTIC_TOKEN_TYPE_PORT),
         "proc code should still resolve the pinned scalar param name: {tokens:?}"
     );
     assert!(
-        has_token(&tokens, 5, 20, 6, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        has_token(&tokens, 5, 20, 6, SEMANTIC_TOKEN_TYPE_PORT),
         "proc code should still resolve the pinned array param name: {tokens:?}"
     );
 }
 
 #[test]
-fn semantic_tokens_mark_pin_keyword_in_incomplete_proc_params() {
+fn semantic_tokens_register_pinned_param_in_incomplete_proc_params() {
     let source = concat!(
         "proc Filter:\n",
         "  params:\n",
@@ -920,16 +904,8 @@ fn semantic_tokens_mark_pin_keyword_in_incomplete_proc_params() {
     let tokens = semantic_tokens_for_document(source, None);
 
     assert!(
-        has_token(&tokens, 2, 4, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "source fallback should highlight pin as a keyword: {tokens:?}"
-    );
-    assert!(
-        has_token(&tokens, 4, 11, 6, SEMANTIC_TOKEN_TYPE_PARAMETER),
+        has_token(&tokens, 4, 11, 6, SEMANTIC_TOKEN_TYPE_PORT),
         "source fallback should register the pinned param name, not 'pin': {tokens:?}"
-    );
-    assert!(
-        has_token(&tokens, 4, 20, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "reserved pin usage should stay a keyword in expressions: {tokens:?}"
     );
 }
 
@@ -943,10 +919,6 @@ fn semantic_tokens_do_not_register_top_level_pin_param_fallback() {
     );
     let tokens = semantic_tokens_for_document(source, None);
 
-    assert!(
-        has_token(&tokens, 1, 2, 3, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "source fallback should highlight top-level pin as a keyword: {tokens:?}"
-    );
     assert!(
         !has_token(&tokens, 3, 9, 4, SEMANTIC_TOKEN_TYPE_PARAMETER),
         "invalid top-level pinned params should not register a fallback param: {tokens:?}"
@@ -970,18 +942,6 @@ fn semantic_tokens_mark_proc_output_in_else_branch() {
     );
     let tokens = semantic_tokens_for_document(source, None);
 
-    assert!(
-        has_token(&tokens, 5, 4, 2, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "if keyword should be highlighted: {tokens:?}"
-    );
-    assert!(
-        has_token(&tokens, 7, 4, 4, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "elif keyword should be highlighted: {tokens:?}"
-    );
-    assert!(
-        has_token(&tokens, 9, 4, 4, SEMANTIC_TOKEN_TYPE_KEYWORD),
-        "else keyword should be highlighted: {tokens:?}"
-    );
     assert!(
         has_token(&tokens, 10, 6, 4, SEMANTIC_TOKEN_TYPE_PORT),
         "else-branch proc output should be highlighted as port: {tokens:?}"
@@ -1007,8 +967,8 @@ fn semantic_tokens_mark_top_level_init_vars_in_buffer_looper_read() {
     assert!(
         rate_tokens
             .iter()
-            .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
-        "rate should be parameter everywhere: {rate_tokens:?}"
+            .all(|t| t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
+        "rate should be port everywhere: {rate_tokens:?}"
     );
 
     let src_tokens = find_tokens_named(&tokens, &source, "src");
@@ -1092,33 +1052,33 @@ fn semantic_tokens_do_not_mark_import_path_segments_as_init_state_in_polyphonic_
 }
 
 #[test]
-fn semantic_tokens_do_not_highlight_named_argument_labels_in_polyphonic_saw() {
+fn semantic_tokens_mark_named_argument_labels_as_state_in_polyphonic_saw() {
     let (path, source) = repo_source("examples/polyphonic_saw.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
 
     assert!(
-        !has_token_text_at_line(&tokens, &source, 16, "freq"),
-        "named arg label 'freq =' should not be highlighted"
+        has_token(&tokens, 16, 24, 4, SEMANTIC_TOKEN_TYPE_PORT),
+        "proc constructor label 'freq =' should use the port token"
     );
     assert!(
-        !has_token_text_at_line(&tokens, &source, 17, "cutoff"),
-        "named arg label 'cutoff =' should not be highlighted"
+        has_token(&tokens, 17, 31, 6, SEMANTIC_TOKEN_TYPE_PORT),
+        "proc constructor label 'cutoff =' should use the port token"
     );
     assert!(
-        !has_token_text_at_line(&tokens, &source, 18, "decay_s"),
-        "named arg label 'decay_s =' should not be highlighted"
+        has_token(&tokens, 18, 29, 7, SEMANTIC_TOKEN_TYPE_PORT),
+        "proc constructor label 'decay_s =' should use the port token"
     );
     assert!(
-        !has_token_text_at_line(&tokens, &source, 18, "trigger"),
-        "named arg label 'trigger =' should not be highlighted"
+        has_token(&tokens, 18, 48, 7, SEMANTIC_TOKEN_TYPE_PORT),
+        "proc constructor label 'trigger =' should use the port token"
     );
     assert!(
-        !has_token_text_at_line(&tokens, &source, 65, "freq_hz"),
-        "event call named arg label 'freq_hz =' should not be highlighted"
+        has_token(&tokens, 65, 4, 7, SEMANTIC_TOKEN_TYPE_STATE),
+        "event call named arg label 'freq_hz =' should use the state token"
     );
     assert!(
-        !has_token_text_at_line(&tokens, &source, 66, "cutoff_hz"),
-        "event call named arg label 'cutoff_hz =' should not be highlighted"
+        has_token(&tokens, 66, 4, 9, SEMANTIC_TOKEN_TYPE_STATE),
+        "event call named arg label 'cutoff_hz =' should use the state token"
     );
 }
 
@@ -1167,7 +1127,7 @@ fn semantic_tokens_do_not_mark_nested_init_locals_as_state() {
 }
 
 #[test]
-fn semantic_tokens_do_not_highlight_named_argument_labels_in_calls() {
+fn semantic_tokens_mark_named_argument_labels_as_state_in_calls() {
     let source = concat!(
         "def foo(a = 0.0, b = 0.0):\n",
         "  return a + b\n",
@@ -1181,12 +1141,12 @@ fn semantic_tokens_do_not_highlight_named_argument_labels_in_calls() {
     let tokens = semantic_tokens_for_document(source, None);
 
     assert!(
-        !has_token_text_at_line(&tokens, source, 7, "a"),
-        "named arg label 'a =' should not be highlighted: {tokens:?}"
+        has_token(&tokens, 7, 13, 1, SEMANTIC_TOKEN_TYPE_STATE),
+        "named arg label 'a =' should use the state token: {tokens:?}"
     );
     assert!(
-        !has_token_text_at_line(&tokens, source, 7, "b"),
-        "named arg label 'b =' should not be highlighted: {tokens:?}"
+        has_token(&tokens, 7, 22, 1, SEMANTIC_TOKEN_TYPE_STATE),
+        "named arg label 'b =' should use the state token: {tokens:?}"
     );
 }
 
@@ -1275,8 +1235,89 @@ fn semantic_tokens_mark_graph_symbols_in_incomplete_file() {
     assert!(
         gain_tokens
             .iter()
-            .any(|t| t.line == 5 && t.token_type == SEMANTIC_TOKEN_TYPE_PARAMETER),
+            .any(|t| t.line == 5 && t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
         "incomplete graph fallback should keep params visible: {gain_tokens:?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_mark_graph_instance_endpoints_as_ports() {
+    let (path, source) = repo_source("examples/cybernetic_feedback_graph.onda");
+    let tokens = semantic_tokens_for_document(&source, Some(&path));
+
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 38, "delay_s"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "proc constructor param label delay_s should use the port token"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 38, "feedback"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "proc constructor param label feedback should use the port token"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 38, "mix"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "proc constructor param label mix should use the port token"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 41, "cutoff"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "proc constructor param label cutoff should use the port token"
+    );
+    assert_eq!(
+        token_type_at_nth_text_on_line(&tokens, &source, 47, "drive", 0),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "standalone graph param reads should use the port token"
+    );
+    assert_eq!(
+        token_type_at_nth_text_on_line(&tokens, &source, 47, "drive", 1),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "proc param endpoint cell_a.drive should use the port token"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 55, "out1"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "proc output endpoint tone_b.out1 should use the port token"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 58, "delay_s"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "imported proc param endpoint smear_a.delay_s should use the port token"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 63, "in1"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "imported proc input endpoint smear_a.in1 should use the port token"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, &source, 66, "cutoff"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "imported proc param endpoint tone_a.cutoff should use the port token"
+    );
+}
+
+#[test]
+fn semantic_tokens_mark_named_instance_params_as_ports() {
+    let source = concat!(
+        "proc Osc:\n",
+        "  params:\n",
+        "    freq = 440.0\n",
+        "  sample:\n",
+        "    out1 = freq\n",
+        "\n",
+        "init:\n",
+        "  osc = Osc()\n",
+        "\n",
+        "graph:\n",
+        "  osc.freq >> out1\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 10, "freq"),
+        Some(SEMANTIC_TOKEN_TYPE_PORT),
+        "declared instance param endpoint osc.freq should use the port token"
     );
 }
 

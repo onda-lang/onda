@@ -366,7 +366,32 @@ fn semantic_tokens_for_document_with_optional_parse(
                 });
                 return;
             }
+            if onda_frontend::is_language_type_name(name) {
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type: SEMANTIC_TOKEN_TYPE_TYPE,
+                    token_modifiers: 0,
+                });
+                return;
+            }
             if is_named_arg_label {
+                let token_type = named_arg_label_token_type(
+                    source,
+                    &source_lines,
+                    line,
+                    start,
+                    &source_decl_scope,
+                    &imported_scope,
+                );
+                tokens.push(SemanticToken {
+                    line,
+                    start,
+                    length,
+                    token_type,
+                    token_modifiers: 0,
+                });
                 return;
             }
             if identifier_is_struct_field_declaration(&source_lines, line, start) {
@@ -384,7 +409,7 @@ fn semantic_tokens_for_document_with_optional_parse(
                     line,
                     start,
                     length,
-                    token_type: SEMANTIC_TOKEN_TYPE_KEYWORD,
+                    token_type: SEMANTIC_TOKEN_TYPE_PORT,
                     token_modifiers: 0,
                 });
                 return;
@@ -400,15 +425,16 @@ fn semantic_tokens_for_document_with_optional_parse(
                     });
                     return;
                 }
+                let token_type = if is_call {
+                    SEMANTIC_TOKEN_TYPE_FUNCTION
+                } else {
+                    SEMANTIC_TOKEN_TYPE_PORT
+                };
                 tokens.push(SemanticToken {
                     line,
                     start,
                     length,
-                    token_type: if is_call {
-                        SEMANTIC_TOKEN_TYPE_FUNCTION
-                    } else {
-                        SEMANTIC_TOKEN_TYPE_VARIABLE
-                    },
+                    token_type,
                     token_modifiers: 0,
                 });
                 return;
@@ -508,6 +534,7 @@ fn is_semantic_keyword(name: &str, source_lines: &[&str], line: u32, start: u32)
         || before_trimmed.ends_with('{')
         || before_trimmed.ends_with('}')
         || before_trimmed.ends_with(';')
+        || (name == "use" && before_trimmed == "pub")
 }
 
 fn identifier_is_after_self_dot(source_lines: &[&str], line: u32, start: u32) -> bool {
@@ -570,6 +597,103 @@ fn identifier_is_struct_field_declaration(source_lines: &[&str], line: u32, star
         return trimmed.starts_with("struct ");
     }
     false
+}
+
+fn named_arg_label_token_type(
+    source: &str,
+    source_lines: &[&str],
+    line: u32,
+    start: u32,
+    source_decl_scope: &SemanticScope,
+    imported_scope: &SemanticScope,
+) -> u32 {
+    let Some(callee) = named_arg_enclosing_callee(source, source_lines, line, start) else {
+        return SEMANTIC_TOKEN_TYPE_STATE;
+    };
+    if callee_is_proc_endpoint_target(&callee, source_decl_scope, imported_scope) {
+        SEMANTIC_TOKEN_TYPE_PORT
+    } else {
+        SEMANTIC_TOKEN_TYPE_STATE
+    }
+}
+
+fn named_arg_enclosing_callee(
+    source: &str,
+    source_lines: &[&str],
+    line: u32,
+    start: u32,
+) -> Option<String> {
+    let label_offset = source_offset_for_position(source_lines, line, start)?;
+    let open_paren = enclosing_open_paren(source, label_offset)?;
+    let callee_end = source[..open_paren].trim_end().len();
+    let callee_start = source[..callee_end]
+        .rfind(|ch: char| !is_callee_path_char(ch))
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let callee = source[callee_start..callee_end].trim();
+    (!callee.is_empty()).then(|| callee.to_owned())
+}
+
+fn source_offset_for_position(source_lines: &[&str], line: u32, start: u32) -> Option<usize> {
+    let line_idx = line as usize;
+    let start = start as usize;
+    let line_text = source_lines.get(line_idx)?;
+    if start > line_text.len() {
+        return None;
+    }
+    let preceding_len = source_lines
+        .iter()
+        .take(line_idx)
+        .map(|line| line.len() + 1)
+        .sum::<usize>();
+    Some(preceding_len + start)
+}
+
+fn enclosing_open_paren(source: &str, before_offset: usize) -> Option<usize> {
+    let mut depth = 0_u32;
+    for (idx, ch) in source[..before_offset].char_indices().rev() {
+        match ch {
+            ')' => depth = depth.saturating_add(1),
+            '(' if depth == 0 => return Some(idx),
+            '(' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_callee_path_char(ch: char) -> bool {
+    ch == '_'
+        || ch == ':'
+        || ch == '.'
+        || ch == '<'
+        || ch == '>'
+        || ch == '['
+        || ch == ']'
+        || ch.is_ascii_alphanumeric()
+}
+
+fn callee_is_proc_endpoint_target(
+    callee: &str,
+    source_decl_scope: &SemanticScope,
+    imported_scope: &SemanticScope,
+) -> bool {
+    let callee = strip_type_args_from_callee(callee);
+    if callee.ends_with(".init") || callee.ends_with("::init") {
+        return true;
+    }
+    let leaf = callee
+        .rsplit([':', '.'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(callee)
+        .trim();
+    source_decl_scope.types.contains(leaf)
+        || imported_scope.types.contains(leaf)
+        || leaf.chars().next().is_some_and(char::is_uppercase)
+}
+
+fn strip_type_args_from_callee(callee: &str) -> &str {
+    callee.find('<').map(|idx| &callee[..idx]).unwrap_or(callee)
 }
 
 fn leading_indent_len(line: &str) -> usize {

@@ -184,7 +184,7 @@ fn build_top_level_runtime_scope(
             owner.ports.insert(name);
         }
         for name in sections.parameters {
-            owner.parameters.insert(name);
+            owner.ports.insert(name);
         }
     }
     build_runtime_stmt_regions(index, owner_idx, &sections.stmt_regions);
@@ -315,7 +315,7 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
             owner.ports.insert(decl.name.clone());
         }
         for decl in &proc_def.params {
-            owner.parameters.insert(decl.name.clone());
+            owner.ports.insert(decl.name.clone());
         }
         for buffer in &proc_def.buffers {
             owner.ports.insert(buffer.name.clone());
@@ -560,7 +560,7 @@ fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
         }
         Block::Params(params) => {
             for decl in &params.decls {
-                scope.parameters.insert(decl.name.clone());
+                scope.ports.insert(decl.name.clone());
             }
         }
         Block::Buffers(buffers) => {
@@ -629,7 +629,7 @@ fn collect_proc_symbols(proc_def: &ProcessorDef, scope: &mut SemanticScope) {
         scope.ports.insert(decl.name.clone());
     }
     for decl in &proc_def.params {
-        scope.parameters.insert(decl.name.clone());
+        scope.ports.insert(decl.name.clone());
     }
     for buffer in &proc_def.buffers {
         scope.ports.insert(buffer.name.clone());

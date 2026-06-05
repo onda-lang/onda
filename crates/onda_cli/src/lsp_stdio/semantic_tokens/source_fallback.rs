@@ -210,7 +210,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                         if let Some(name) = extract_param_decl_name(trimmed, true) {
                             index.scopes[proc_owner_idx]
                                 .scope
-                                .parameters
+                                .ports
                                 .insert(name.to_owned());
                         }
                     }
@@ -431,7 +431,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                         if let Some(name) = extract_param_decl_name(trimmed, false) {
                             index.scopes[section.owner_idx]
                                 .scope
-                                .parameters
+                                .ports
                                 .insert(name.to_owned());
                         }
                     }
@@ -972,6 +972,7 @@ pub(super) fn scan_identifiers(
     let mut prev_prev_char = '\0';
     let mut call_paren_stack: Vec<bool> = Vec::new();
     let mut next_lparen_is_call = false;
+    let mut pending_call_type_args = false;
 
     while index < chars.len() {
         let ch = chars[index];
@@ -1009,10 +1010,12 @@ pub(super) fn scan_identifiers(
         if ch == '(' {
             call_paren_stack.push(next_lparen_is_call);
             next_lparen_is_call = false;
+            pending_call_type_args = false;
         } else if ch == ')' {
             call_paren_stack.pop();
             next_lparen_is_call = false;
-        } else if !ch.is_whitespace() && ch != '<' && ch != '>' {
+            pending_call_type_args = false;
+        } else if !pending_call_type_args && !ch.is_whitespace() && ch != '<' && ch != '>' {
             next_lparen_is_call = false;
         }
         if is_identifier_start_char(ch) {
@@ -1038,7 +1041,9 @@ pub(super) fn scan_identifiers(
             let mut call_paren_index = if is_call { Some(peek) } else { None };
             let mut followed_by_colons =
                 peek + 1 < chars.len() && chars[peek] == ':' && chars[peek + 1] == ':';
+            let mut saw_type_args_before_call = false;
             if !is_call && !followed_by_colons && peek < chars.len() && chars[peek] == '<' {
+                saw_type_args_before_call = true;
                 let mut depth = 1;
                 peek += 1;
                 while peek < chars.len() && depth > 0 {
@@ -1076,7 +1081,12 @@ pub(super) fn scan_identifiers(
                 && assign_peek < chars.len()
                 && chars[assign_peek] == '='
                 && (assign_peek + 1 >= chars.len() || chars[assign_peek + 1] != '=');
-            next_lparen_is_call = opens_call_arg_list;
+            if opens_call_arg_list {
+                next_lparen_is_call = true;
+                pending_call_type_args = saw_type_args_before_call;
+            } else if !pending_call_type_args {
+                next_lparen_is_call = false;
+            }
             f(
                 &name,
                 start_line,
