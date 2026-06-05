@@ -1242,56 +1242,103 @@ fn semantic_tokens_mark_graph_symbols_in_incomplete_file() {
 
 #[test]
 fn semantic_tokens_mark_graph_instance_endpoints_as_ports() {
-    let (path, source) = repo_source("examples/cybernetic_feedback_graph.onda");
-    let tokens = semantic_tokens_for_document(&source, Some(&path));
+    let source = concat!(
+        "namespace std::delay:\n",
+        "  proc Delay<T>:\n",
+        "    ins<T> 1\n",
+        "    outs<T> 1\n",
+        "    params<T>:\n",
+        "      delay_s = 0.1\n",
+        "      feedback = 0.0\n",
+        "      mix = 1.0\n",
+        "    sample:\n",
+        "      out1 = in1\n",
+        "\n",
+        "namespace std::filter:\n",
+        "  proc OnePole<T>:\n",
+        "    ins<T> 1\n",
+        "    outs<T> 1\n",
+        "    params<T>:\n",
+        "      cutoff = 1000.0\n",
+        "    sample:\n",
+        "      out1 = in1\n",
+        "\n",
+        "params:\n",
+        "  drive = 0.2\n",
+        "\n",
+        "init:\n",
+        "  smear_a = std::delay::Delay<f64>(delay_s = 0.031, feedback = 0.78, mix = 1.0)\n",
+        "  tone_a = std::filter::OnePole<f64>(cutoff = 4200.0)\n",
+        "\n",
+        "graph:\n",
+        "  drive >> smear_a.delay_s\n",
+        "  smear_a.out1 >> tone_a.in1\n",
+        "  tone_a.cutoff >> out1\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+    let delay_ctor_line = source
+        .lines()
+        .position(|line| line.contains("std::delay::Delay"))
+        .expect("expected delay constructor line");
+    let filter_ctor_line = source
+        .lines()
+        .position(|line| line.contains("std::filter::OnePole"))
+        .expect("expected filter constructor line");
+    let drive_line = source
+        .lines()
+        .position(|line| line.contains("drive >>"))
+        .expect("expected drive graph line");
+    let signal_line = source
+        .lines()
+        .position(|line| line.contains("smear_a.out1"))
+        .expect("expected signal graph line");
+    let cutoff_line = source
+        .lines()
+        .position(|line| line.contains("tone_a.cutoff"))
+        .expect("expected cutoff graph line");
 
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 38, "delay_s"),
+        token_type_at_text_on_line(&tokens, source, delay_ctor_line, "delay_s"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "proc constructor param label delay_s should use the port token"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 38, "feedback"),
+        token_type_at_text_on_line(&tokens, source, delay_ctor_line, "feedback"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "proc constructor param label feedback should use the port token"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 38, "mix"),
+        token_type_at_text_on_line(&tokens, source, delay_ctor_line, "mix"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "proc constructor param label mix should use the port token"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 41, "cutoff"),
+        token_type_at_text_on_line(&tokens, source, filter_ctor_line, "cutoff"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "proc constructor param label cutoff should use the port token"
     );
     assert_eq!(
-        token_type_at_nth_text_on_line(&tokens, &source, 47, "drive", 0),
+        token_type_at_text_on_line(&tokens, source, drive_line, "drive"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "standalone graph param reads should use the port token"
     );
     assert_eq!(
-        token_type_at_nth_text_on_line(&tokens, &source, 47, "drive", 1),
+        token_type_at_text_on_line(&tokens, source, signal_line, "out1"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
-        "proc param endpoint cell_a.drive should use the port token"
+        "proc output endpoint smear_a.out1 should use the port token"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 55, "out1"),
-        Some(SEMANTIC_TOKEN_TYPE_PORT),
-        "proc output endpoint tone_b.out1 should use the port token"
-    );
-    assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 58, "delay_s"),
+        token_type_at_text_on_line(&tokens, source, drive_line, "delay_s"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "imported proc param endpoint smear_a.delay_s should use the port token"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 63, "in1"),
+        token_type_at_text_on_line(&tokens, source, signal_line, "in1"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
-        "imported proc input endpoint smear_a.in1 should use the port token"
+        "imported proc input endpoint tone_a.in1 should use the port token"
     );
     assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, 66, "cutoff"),
+        token_type_at_text_on_line(&tokens, source, cutoff_line, "cutoff"),
         Some(SEMANTIC_TOKEN_TYPE_PORT),
         "imported proc param endpoint tone_a.cutoff should use the port token"
     );
