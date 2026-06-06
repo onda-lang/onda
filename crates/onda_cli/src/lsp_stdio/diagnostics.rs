@@ -1,4 +1,5 @@
 use super::*;
+use onda_frontend::DiagCode;
 
 pub(super) fn diagnostic_uri(diagnostic: &Diagnostic, default_uri: &str) -> Result<String, String> {
     let Some(file) = diagnostic.file.as_deref() else {
@@ -15,9 +16,18 @@ pub(super) fn diagnostic_to_lsp(diagnostic: &Diagnostic) -> Value {
         "range": diagnostic_range(diagnostic),
         "severity": 1,
         "source": "onda",
-        "code": diagnostic.code as i32,
+        "code": diagnostic_code(diagnostic),
         "message": diagnostic_message(diagnostic),
     })
+}
+
+fn diagnostic_code(diagnostic: &Diagnostic) -> &'static str {
+    match diagnostic.code {
+        DiagCode::Syntax => "syntax",
+        DiagCode::Semantic => "semantic",
+        DiagCode::Runtime => "runtime",
+        DiagCode::Internal => "internal",
+    }
 }
 
 fn diagnostic_range(diagnostic: &Diagnostic) -> Value {

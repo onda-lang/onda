@@ -2085,7 +2085,7 @@ fn invalid_params(message: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::diagnostics::diagnostic_message;
+    use super::diagnostics::{diagnostic_message, diagnostic_to_lsp};
     use super::path_utils::file_uri_to_path;
     use super::{
         initialize_result, latest_full_text, lsp_document_path, path_to_file_uri, DiagnosticDelay,
@@ -3629,6 +3629,23 @@ init:
         assert!(message.contains("trace:"));
         assert!(message.contains("- higher"));
         assert!(message.contains("- deep"));
+    }
+
+    #[test]
+    fn diagnostic_to_lsp_uses_descriptive_code() {
+        let diagnostic = Diagnostic {
+            code: DiagCode::Syntax,
+            message: "expected graph arrow".to_owned(),
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 2,
+            file: None,
+            trace: Vec::new(),
+        };
+
+        let lsp = diagnostic_to_lsp(&diagnostic);
+        assert_eq!(lsp["code"], json!("syntax"));
     }
 
     #[test]

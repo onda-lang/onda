@@ -4173,6 +4173,16 @@ graph:
         .expect("missing expected expr diagnostic");
 
     assert_eq!((diag.line, diag.column), (15, 10));
+    assert!(
+        !diag.message.contains("-->"),
+        "diagnostic message should not include preprocessed-source location: {}",
+        diag.message
+    );
+    assert!(
+        !diag.message.contains("\n15 |"),
+        "diagnostic message should not include a source snippet: {}",
+        diag.message
+    );
 }
 
 #[test]

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use pest::error::LineColLocation;
+use pest::error::{ErrorVariant, LineColLocation};
 use pest::iterators::Pair;
 use pest::pratt_parser::{Assoc, Op, PrattParser};
 use pest::Parser;
@@ -140,7 +140,47 @@ fn diag_from_pest_error(err: pest::error::Error<Rule>) -> Diagnostic {
         LineColLocation::Span((line, col), (end_line, end_col)) => (line, col, end_line, end_col),
     };
     let loc = parse_loc_from_raw(line, column, end_line, end_column);
-    Diagnostic::syntax_at(err.to_string(), &loc)
+    Diagnostic::syntax_at(format_pest_error_message(&err), &loc)
+}
+
+fn format_pest_error_message(err: &pest::error::Error<Rule>) -> String {
+    match &err.variant {
+        ErrorVariant::ParsingError {
+            positives,
+            negatives,
+        } => {
+            let mut parts = Vec::new();
+            if !negatives.is_empty() {
+                parts.push(format!("unexpected {}", format_rule_list(negatives)));
+            }
+            if !positives.is_empty() {
+                parts.push(format!("expected {}", format_rule_list(positives)));
+            }
+            if parts.is_empty() {
+                "parse error".to_owned()
+            } else {
+                parts.join("; ")
+            }
+        }
+        ErrorVariant::CustomError { message } => message.clone(),
+    }
+}
+
+fn format_rule_list(rules: &[Rule]) -> String {
+    match rules {
+        [] => String::new(),
+        [rule] => format!("{rule:?}"),
+        [first, second] => format!("{first:?} or {second:?}"),
+        [head @ .., last] => {
+            let mut text = head
+                .iter()
+                .map(|rule| format!("{rule:?}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            text.push_str(&format!(", or {last:?}"));
+            text
+        }
+    }
 }
 
 pub(super) fn syntax_at_pair(pair: &Pair<'_, Rule>, message: impl Into<String>) -> Diagnostic {
