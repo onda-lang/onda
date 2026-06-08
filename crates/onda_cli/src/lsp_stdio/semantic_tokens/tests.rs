@@ -34,22 +34,6 @@ fn has_token(
     })
 }
 
-fn has_token_text_at_line(
-    tokens: &[SemanticToken],
-    source: &str,
-    line_no: usize,
-    needle: &str,
-) -> bool {
-    let line = source
-        .lines()
-        .nth(line_no)
-        .expect("expected source line for token lookup");
-    let start = line.find(needle).expect("expected token text on line");
-    tokens.iter().any(|t| {
-        t.line as usize == line_no && t.start as usize == start && t.length as usize == needle.len()
-    })
-}
-
 fn token_type_at_text_on_line(
     tokens: &[SemanticToken],
     source: &str,
@@ -1237,6 +1221,35 @@ fn semantic_tokens_mark_graph_symbols_in_incomplete_file() {
             .iter()
             .any(|t| t.line == 5 && t.token_type == SEMANTIC_TOKEN_TYPE_PORT),
         "incomplete graph fallback should keep params visible: {gain_tokens:?}"
+    );
+}
+
+#[test]
+fn semantic_tokens_keep_graph_delay_identifiers_semantic() {
+    let source = concat!(
+        "const N = 1\n",
+        "outs:\n",
+        "  out1\n",
+        "graph:\n",
+        "  in1 >>[N] out1\n",
+        "  in1 >>[2] out1\n",
+    );
+    let tokens = semantic_tokens_for_document(source, None);
+
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 0, "N"),
+        Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+        "const declaration should keep const highlighting"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 4, "N"),
+        Some(SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+        "graph delay const should keep const highlighting"
+    );
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 5, "2"),
+        Some(SEMANTIC_TOKEN_TYPE_NUMBER),
+        "graph delay literal should be supplied as a number token"
     );
 }
 

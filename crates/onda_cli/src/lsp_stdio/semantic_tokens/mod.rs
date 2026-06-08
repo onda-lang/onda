@@ -1,12 +1,17 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use onda_frontend::{parse_program, parse_program_with_path};
+use onda_frontend::{
+    parse_program, parse_program_with_path, Block, Expr, NamespaceItem, ProcessorDef, Program, Span,
+};
 
 mod ast_index;
 mod source_fallback;
 
-use ast_index::{build_semantic_scope_index, collect_all_symbols, normalize_file_key_for_path};
+use ast_index::{
+    build_semantic_scope_index, collect_all_symbols, normalize_file_key,
+    normalize_file_key_for_path,
+};
 use source_fallback::{
     build_source_scope_index, identifier_is_in_import_path, identifier_is_in_use_namespace_name,
     scan_identifiers,
@@ -21,6 +26,7 @@ pub(super) const SEMANTIC_TOKEN_TYPE_TYPE: u32 = 5;
 pub(super) const SEMANTIC_TOKEN_TYPE_NAMESPACE: u32 = 6;
 pub(super) const SEMANTIC_TOKEN_TYPE_STATE: u32 = 7;
 pub(super) const SEMANTIC_TOKEN_TYPE_KEYWORD: u32 = 8;
+pub(super) const SEMANTIC_TOKEN_TYPE_NUMBER: u32 = 9;
 
 const SEMANTIC_TOKEN_LEGEND: &[&str] = &[
     "enumMember",
@@ -32,6 +38,7 @@ const SEMANTIC_TOKEN_LEGEND: &[&str] = &[
     "namespace",
     "state",
     "keyword",
+    "number",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -325,6 +332,9 @@ fn semantic_tokens_for_document_with_optional_parse(
     let source_scope_index = build_source_scope_index(source);
     let mut source_decl_scope = SemanticScope::default();
     let source_lines = source.lines().collect::<Vec<_>>();
+    let graph_delay_ranges = parsed_program
+        .map(|program| collect_graph_delay_ranges(program, current_file_key.as_deref()))
+        .unwrap_or_default();
 
     source_fallback::collect_source_declaration_symbols(source, &mut source_decl_scope);
 
@@ -498,6 +508,7 @@ fn semantic_tokens_for_document_with_optional_parse(
             }
         },
     );
+    add_graph_delay_number_literals(source, &graph_delay_ranges, &mut tokens);
 
     tokens.sort_by_key(|t| (t.line, t.start, t.length, t.token_type, t.token_modifiers));
     tokens.dedup_by(|a, b| {
@@ -508,6 +519,214 @@ fn semantic_tokens_for_document_with_optional_parse(
             && a.token_modifiers == b.token_modifiers
     });
     tokens
+}
+
+#[derive(Clone, Copy)]
+struct SourceRange {
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+}
+
+impl SourceRange {
+    fn from_span(span: Span) -> Option<Self> {
+        if span.is_zero() {
+            return None;
+        }
+        Some(Self {
+            start_line: span.line.saturating_sub(1),
+            start_column: u32::from(span.column.saturating_sub(1)),
+            end_line: span.end_line().saturating_sub(1),
+            end_column: u32::from(span.end_column.saturating_sub(1)),
+        })
+    }
+
+    fn line_bounds(&self, line: u32, line_len: u32) -> Option<(u32, u32)> {
+        if line < self.start_line || line > self.end_line {
+            return None;
+        }
+        let start = if line == self.start_line {
+            self.start_column
+        } else {
+            0
+        };
+        let end = if line == self.end_line {
+            self.end_column
+        } else {
+            line_len
+        };
+        (start < end).then_some((start, end))
+    }
+}
+
+fn collect_graph_delay_ranges(
+    program: &Program,
+    current_file_key: Option<&str>,
+) -> Vec<SourceRange> {
+    let mut ranges = Vec::new();
+    for block in &program.blocks {
+        collect_block_graph_delay_ranges(block, current_file_key, &mut ranges);
+    }
+    ranges
+}
+
+fn collect_block_graph_delay_ranges(
+    block: &Block,
+    current_file_key: Option<&str>,
+    ranges: &mut Vec<SourceRange>,
+) {
+    match block {
+        Block::Graph(graph) => {
+            for edge in &graph.edges {
+                collect_graph_delay_expr_range(edge.delay.as_ref(), current_file_key, ranges);
+            }
+        }
+        Block::Proc(proc_def) => {
+            collect_proc_graph_delay_ranges(proc_def, current_file_key, ranges)
+        }
+        Block::Namespace(ns) => {
+            for item in &ns.items {
+                collect_namespace_item_graph_delay_ranges(item, current_file_key, ranges);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_namespace_item_graph_delay_ranges(
+    item: &NamespaceItem,
+    current_file_key: Option<&str>,
+    ranges: &mut Vec<SourceRange>,
+) {
+    match item {
+        NamespaceItem::Proc(proc_def) => {
+            collect_proc_graph_delay_ranges(proc_def, current_file_key, ranges);
+        }
+        NamespaceItem::Namespace(ns) => {
+            for item in &ns.items {
+                collect_namespace_item_graph_delay_ranges(item, current_file_key, ranges);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_proc_graph_delay_ranges(
+    proc_def: &ProcessorDef,
+    current_file_key: Option<&str>,
+    ranges: &mut Vec<SourceRange>,
+) {
+    let Some(graph) = &proc_def.graph else {
+        return;
+    };
+    for edge in &graph.edges {
+        collect_graph_delay_expr_range(edge.delay.as_ref(), current_file_key, ranges);
+    }
+}
+
+fn collect_graph_delay_expr_range(
+    delay: Option<&Expr>,
+    current_file_key: Option<&str>,
+    ranges: &mut Vec<SourceRange>,
+) {
+    let Some(delay) = delay else {
+        return;
+    };
+    let span = Span::from(delay.loc());
+    if !span_belongs_to_current_file(span, current_file_key) {
+        return;
+    }
+    if let Some(range) = SourceRange::from_span(span) {
+        ranges.push(range);
+    }
+}
+
+fn span_belongs_to_current_file(span: Span, current_file_key: Option<&str>) -> bool {
+    match current_file_key {
+        Some(expected) => span
+            .file()
+            .map(|file| normalize_file_key(&file) == expected)
+            .unwrap_or(false),
+        None => true,
+    }
+}
+
+fn add_graph_delay_number_literals(
+    source: &str,
+    ranges: &[SourceRange],
+    tokens: &mut Vec<SemanticToken>,
+) {
+    if ranges.is_empty() {
+        return;
+    }
+    for (line_no, line_text) in source.lines().enumerate() {
+        let line_no = line_no as u32;
+        let line_len = line_text
+            .chars()
+            .map(|ch| ch.len_utf16() as u32)
+            .sum::<u32>();
+        for range in ranges {
+            let Some((start, end)) = range.line_bounds(line_no, line_len) else {
+                continue;
+            };
+            scan_number_literals_on_line(line_no, line_text, start, end, tokens);
+        }
+    }
+}
+
+fn scan_number_literals_on_line(
+    line_no: u32,
+    line_text: &str,
+    start: u32,
+    end: u32,
+    tokens: &mut Vec<SemanticToken>,
+) {
+    let chars = line_text.chars().collect::<Vec<_>>();
+    let mut idx = start as usize;
+    let end = end as usize;
+    while idx < chars.len() && idx < end {
+        let ch = chars[idx];
+        let starts_dot_number =
+            ch == '.' && idx + 1 < chars.len() && chars[idx + 1].is_ascii_digit();
+        if !ch.is_ascii_digit() && !starts_dot_number {
+            idx += 1;
+            continue;
+        }
+        if idx > 0 && is_identifier_continue_char(chars[idx - 1]) {
+            idx += 1;
+            continue;
+        }
+
+        let literal_start = idx;
+        if ch == '.' {
+            idx += 1;
+            while idx < chars.len() && idx < end && chars[idx].is_ascii_digit() {
+                idx += 1;
+            }
+        } else {
+            while idx < chars.len() && idx < end && chars[idx].is_ascii_digit() {
+                idx += 1;
+            }
+            if idx < chars.len() && idx < end && chars[idx] == '.' {
+                idx += 1;
+                while idx < chars.len() && idx < end && chars[idx].is_ascii_digit() {
+                    idx += 1;
+                }
+            }
+        }
+
+        if idx < chars.len() && is_identifier_continue_char(chars[idx]) {
+            continue;
+        }
+        tokens.push(SemanticToken {
+            line: line_no,
+            start: literal_start as u32,
+            length: (idx - literal_start) as u32,
+            token_type: SEMANTIC_TOKEN_TYPE_NUMBER,
+            token_modifiers: 0,
+        });
+    }
 }
 
 fn is_semantic_keyword(name: &str, source_lines: &[&str], line: u32, start: u32) -> bool {
