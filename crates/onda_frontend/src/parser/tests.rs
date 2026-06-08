@@ -4690,6 +4690,35 @@ sample { out1 = gate }
 }
 
 #[test]
+fn parses_multiline_event_param_list_in_indentation_syntax() {
+    let src = r#"
+events:
+  test(
+    a: f32,
+    b: f32,
+  ):
+    value = a + b
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(src).expect("multiline event params should parse");
+    let events = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Events(v) => Some(v),
+            _ => None,
+        })
+        .expect("events block");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].name, "test");
+    assert_eq!(events[0].params.len(), 2);
+    assert_eq!(events[0].params[0].name, "a");
+    assert_eq!(events[0].params[1].name, "b");
+}
+
+#[test]
 fn parses_top_level_individual_event_syntax_and_merges_with_events_block() {
     let src = r#"
 outs { out1 }
@@ -5481,6 +5510,164 @@ sample:
                     FnReturnScalarType::Primitive(PrimitiveType::I32),
                 ]
     ));
+}
+
+#[test]
+fn parses_multiline_delimiters_across_core_constructs() {
+    let src = r#"
+namespace Math<
+  N = (
+    1 + 1
+  ),
+>:
+  const Size = N
+
+def mix<
+  T,
+>(
+  a: T,
+  b: T,
+) -> (
+  T,
+  T,
+):
+  pair = (
+    a,
+    b,
+  )
+  return pair
+
+params:
+  freq = 440.0 {
+    20.0,
+    20000.0,
+  }
+
+init:
+  arr: f32[
+    Math<
+      N = 2,
+    >::Size
+  ] = [
+    0.0,
+    1.0,
+  ]
+  x = arr[
+    (
+      0
+    )
+  ]
+
+sample:
+  out1 = mix<
+    f32,
+  >(
+    arr[
+      0
+    ],
+    x,
+  )
+"#;
+
+    parse_program(src).expect("multiline delimiter forms should parse");
+}
+
+#[test]
+fn parses_multiline_section_defaults_and_buffer_delimiters() {
+    let src = r#"
+outs<
+  f32
+>:
+  out1
+
+buffers[
+  f32
+]:
+  line: buffer[
+    f32[
+      2
+    ]
+  ]
+  taps: f32[
+    4
+  ]
+
+sample:
+  out1 = 0.0
+"#;
+
+    parse_program(src).expect("multiline section defaults and buffer delimiters should parse");
+}
+
+#[test]
+fn parses_multiline_graph_delay_and_endpoint_sets() {
+    let src = r#"
+outs:
+  out1
+  out2
+
+graph:
+  0.5 >>[
+    2
+  ] out1
+  0.25 >> {
+    out1,
+    out2,
+  }
+  {
+    out1,
+    out2,
+  } << 0.125
+"#;
+
+    parse_program(src).expect("multiline graph bracket forms should parse");
+}
+
+#[test]
+fn parses_multiline_method_params_slices_and_indexes() {
+    let src = r#"
+struct Store:
+  value: f32
+
+  def set(
+    self,
+    value: f32,
+  ):
+    self.value = value
+
+init:
+  data: f32[
+    4
+  ] = [
+    0.0,
+    1.0,
+    2.0,
+    3.0,
+  ]
+  dst: f32[
+    2
+  ]
+  s = Store()
+
+sample:
+  dst[
+    0:
+    2
+  ] = data[
+    1:
+    3
+  ]
+  s.set(
+    dst[
+      0
+    ],
+  )
+  out1 = data[
+    0
+  ]
+"#;
+
+    parse_program(src).expect("multiline method, slice, and index delimiters should parse");
 }
 
 #[test]

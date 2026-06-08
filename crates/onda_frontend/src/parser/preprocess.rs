@@ -64,8 +64,9 @@ pub(super) fn preprocess_indentation_blocks(
             }
         }
 
+        let next_continuation_depth = apply_continuation_delta(continuation_depth, code_part);
         let trimmed_code = code_part.trim_end();
-        if trimmed_code.ends_with(':') {
+        if next_continuation_depth == 0 && trimmed_code.ends_with(':') {
             let header = trimmed_code[..trimmed_code.len() - 1].trim_end();
             if header.is_empty() {
                 return Err(vec![Diagnostic::syntax(
@@ -84,7 +85,7 @@ pub(super) fn preprocess_indentation_blocks(
             push_mapped_line(&mut out, &mut line_map, line, line_no);
         }
 
-        continuation_depth = apply_continuation_delta(continuation_depth, code_part);
+        continuation_depth = next_continuation_depth;
     }
 
     if let Some(pending_block) = pending {
@@ -124,12 +125,59 @@ fn leading_indent_width(line: &str) -> usize {
 }
 
 fn apply_continuation_delta(mut depth: usize, line: &str) -> usize {
-    for ch in line.chars() {
+    let line_trimmed = line.trim_end();
+    for (idx, ch) in line.char_indices() {
         match ch {
             '(' | '[' => depth = depth.saturating_add(1),
-            ')' | ']' => depth = depth.saturating_sub(1),
+            '{' if is_continuation_opening_brace(line, idx) => {
+                depth = depth.saturating_add(1);
+            }
+            '<' if is_multiline_angle_open(line_trimmed, idx) => depth = depth.saturating_add(1),
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '>' if is_multiline_angle_close(line_trimmed, idx) => depth = depth.saturating_sub(1),
             _ => {}
         }
     }
     depth
+}
+
+fn is_continuation_opening_brace(line: &str, brace_idx: usize) -> bool {
+    let before = line[..brace_idx].trim_end();
+    if before.trim().is_empty() {
+        return true;
+    }
+    if before.contains(">>") || before.contains("<<") {
+        return true;
+    }
+    if contains_assignment_operator(before) {
+        return true;
+    }
+    before
+        .chars()
+        .next_back()
+        .is_some_and(|ch| matches!(ch, ',' | '(' | '[' | '{'))
+}
+
+fn contains_assignment_operator(text: &str) -> bool {
+    let mut chars = text.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        if ch != '=' {
+            continue;
+        }
+        let prev = text[..idx].chars().next_back();
+        let next = chars.peek().map(|(_, next)| *next);
+        if !matches!(prev, Some('!' | '<' | '>' | '=')) && !matches!(next, Some('=' | '>')) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_multiline_angle_open(line_trimmed: &str, angle_idx: usize) -> bool {
+    line_trimmed[angle_idx + '<'.len_utf8()..].trim().is_empty()
+}
+
+fn is_multiline_angle_close(line_trimmed: &str, angle_idx: usize) -> bool {
+    line_trimmed[..angle_idx].trim().is_empty()
+        && !line_trimmed[angle_idx + '>'.len_utf8()..].starts_with('>')
 }
