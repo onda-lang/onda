@@ -47,7 +47,7 @@ The CLI can also emit LLVM IR and native object files for AOT compilation.
 - `crates/onda_semantics`: semantic analysis and lowering rewrites
 - `crates/onda_codegen_llvm`: LLVM lowering and ORC JIT backend
 - `crates/onda_runtime`: runtime instance and processing APIs
-- `crates/onda_api`: C ABI
+- `crates/onda_api`: C API
 - `crates/onda_daemon`: analysis and run session engine
 - `crates/onda_run`: shared run controller/runtime
 - `crates/onda_cli`: CLI, LSP adapter, and run control transport
