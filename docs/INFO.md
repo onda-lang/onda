@@ -1,583 +1,173 @@
 # onda Project Info
 
-## Overview
-`onda` is a Rust compiler/runtime for an Onda-syntax audio DSL, targeting LLVM ORC JIT for host embedding (C ABI first-class).
+This document describes the architecture of `onda` and where each piece of the project lives.
+For language syntax and semantics, see [SYNTAX.md](SYNTAX.md).
+For build, CLI usage, and editor integrations, see [README.md](../README.md).
 
-### Code navigation
+## Workspace layout
 
-- Always use `ripgrep` (via `rg`) to navigate the repository whenever possible.
+`onda` is a Cargo workspace. The crates live under `crates/`:
 
-### Module map: semantics (`crates/onda_semantics/src`)
-- Entry:
-  - `lib.rs` (public types + orchestration wiring)
-- Key analysis/lowering modules:
-  - `processor_lowering.rs` + `processor_lowering/*` (proc desugaring and lowering pipeline)
-  - `proc_call_rewrite.rs` (proc call lowering/rewrite)
-  - `stmt_analysis/*` (init/runtime/def statement analysis)
-  - `expr_validation.rs`, `expr_typing.rs`, `port_coercion.rs`, `namespacing.rs`
-- Recently split helpers:
-  - `proc_state_rewrite.rs` (proc state discovery + symbol rewrite helpers + proc metadata structs/constants)
-  - `declaration_coercion.rs` (`coerce_struct_fields`, `coerce_params`, `coerce_buffers`, `split_field_path`)
-  - `io_state_helpers.rs`
-  - `def_inference/call_inference.rs`, `def_inference/return_inference.rs`
-  - `generic_specialization/proc_specialization.rs`
-  - `processor_lowering/generic_proc_rewrite.rs`
-  - `processor_lowering/global_proc_rewrite.rs`
-  - `processor_lowering/generated_blocks.rs`
+| Crate | Role |
+| --- | --- |
+| `onda_frontend` | Parser, AST, diagnostics. PEG grammar (`grammar.pest`) driving an iterative parser. |
+| `onda_semantics` | Semantic analysis and lowering rewrites: typing, overload resolution, generic specialization, proc/graph lowering, name resolution. |
+| `onda_codegen_llvm` | LLVM lowering and ORC JIT backend, plus AOT IR/object emission and metadata extraction. |
+| `onda_runtime` | Runtime instance model and processing APIs (process / segment / reset). |
+| `onda_api` | C ABI surface exposed through `include/onda.h`. |
+| `onda_daemon` | Stateful session engine: in-memory analysis overlays and live run sessions. |
+| `onda_run` | Shared run controller / real-time playback transport used by the CLI and run hosts. |
+| `onda_cli` | `onda` binary: argument parsing, `compile`/`run`/`daemon`/`lsp` commands, and the LSP adapter. |
+| `onda_egui` | Native egui run host (default `onda run` UI). |
+| `onda_webview` | Native webview run host (opt-in via `--webview`). |
+| `onda_examples` | Example `.onda` programs surfaced through `examples/`. |
 
-### Module map: codegen (`crates/onda_codegen_llvm/src`)
-- Entry:
-  - `lib.rs` (public JIT API + metadata extraction)
-  - `orc_backend.rs` (backend assembly/wiring)
-- ORC backend modules:
-  - `proc_ir.rs`, `user_fn_ir.rs`, `specialization.rs`, `data_access.rs`, `call_helpers.rs`
-  - `builtin_intrinsics.rs`, `layout.rs`, `jit_utils.rs`, `llvm_helpers.rs`, `pointer_helpers.rs`, `orc_locals.rs`
-- Recently split helpers:
-  - `orc_backend/orc_expr_stmt.rs` as thin wrapper +:
-    - `orc_backend/orc_expr_stmt/expr_lowering.rs`
-    - `orc_backend/orc_expr_stmt/stmt_lowering.rs`
-  - `orc_backend/def_lowering.rs` as orchestrator +:
-    - `orc_backend/def_lowering/expr_lowering.rs`
-    - `orc_backend/def_lowering/stmt_lowering.rs`
-    - `orc_backend/def_lowering/struct_helpers.rs`
+Non-crate directories of note:
 
-### Practical navigation entrypoints
-- Language/front-end behavior: `onda_frontend/src/parser/*`, `onda_semantics/src/lib.rs`
-- Proc lowering path: `processor_lowering.rs` -> `processor_lowering/*` -> `proc_call_rewrite.rs`
-- ORC lowering path: `orc_backend.rs` -> `{proc_ir,user_fn_ir}` -> `{orc_expr_stmt,def_lowering}` -> `{data_access,call_helpers}`
-- Runtime API usage: `onda_runtime/src/lib.rs`
-- C ABI surface: `onda_api/src/lib.rs`
+- `stdlib/` — built-in `std/...` modules imported by Onda source.
+- `include/` — public C header `onda.h`.
+- `targets/` — checked-in AOT codegen presets for `onda compile --target-spec`.
+- `deps/llvm-bootstrap` — git submodule used to bootstrap LLVM from source.
+- `scripts/` — LLVM bootstrap and env-selection helpers.
+- `docs/`, `examples/`, `assets/`, `ui/`, `sc/` — supporting material.
 
-## Current implementation snapshot (2026-03)
+## Module map
 
-### Language and parser
-- Top-level and proc blocks: `ins`, `outs`, `params`, `events` / `event`, `const`, `buffers`, `init`, `block`, `sample`, `graph`, `def`, `struct`, `proc`/`processor`, `namespace`.
-- Both brace and indentation syntaxes are supported.
-- Statement separators support both newline and `;`.
-- Import system is implemented:
-  - `include "path.onda"` (quoted, `.onda` suffix required).
-  - `import module/path` (resolved as `module/path.onda`, imported once, declaration-only files limited to `const` / `struct` / `def` / `proc` / `namespace` / `use`).
-  - Built-in std modules via `import std/...` are supported from both file and in-memory source compilation paths.
-- Namespaces with `::` are supported.
-- Namespace templates are supported (`namespace Name<S = ...>: ...`) with compile-time int args, inline instantiation (`Name<...>::...`), and namespace aliases (`namespace Alias = Name<...>`).
-- `use` declarations are supported at top level and inside namespaces:
-  - `use NS` brings direct namespace members into unqualified lookup.
-  - `use NS::Symbol` brings one declaration into unqualified lookup.
-  - `use Target as Alias` aliases the whole target as either a namespace alias or symbol alias.
-  - Plain top-level `use` is private to its source file; `pub use` re-exports through imports.
-  - Explicit-use collisions are diagnosed at unqualified use sites; qualified names remain valid.
-- Surface syntax split:
-  - `<>` is used for namespace instantiation, generic type specialization, and section default type modifiers on `ins` / `outs` / `params` / `init`.
-  - `[]` is reserved for arrays, indexing, slices, and buffer/channel forms.
-- Compile-time assertions are supported via `assert(expr)` inside namespaces.
-  - `expr` must be compile-time evaluable.
-  - `expr` must evaluate to `bool`.
-  - a `false` condition is a compile-time error.
+### `onda_frontend` (`crates/onda_frontend/src`)
+- `lib.rs` — public AST types and diagnostic context.
+- `ast.rs` — AST node definitions.
+- `diagnostics.rs` — diagnostic construction.
+- `parser.rs`, `parser/` — parser entry plus submodules:
+  - `parser/block_parsing.rs`, `parser/expr_stmt.rs` — block and expression/statement parsing.
+  - `parser/preprocess.rs` — source preprocessing.
+  - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution.
+  - `parser/type_helpers.rs` — type-syntax helpers.
+  - `parser/tests.rs` — parser tests.
+- `grammar.pest` — the PEG grammar.
 
-### Declaration shorthand
-- Count shorthand is supported for all IO/param/buffer sections:
-  - `ins N` -> `in1..inN`
-  - `outs N` -> `out1..outN`
-  - `params N` -> `param1..paramN`
-  - top-level `kins N` -> `kin1..kinN`
-  - `kouts N` -> `kout1..koutN`
-  - `buffers N` -> `buf1..bufN`
-- For `ins` / `outs` / `params`, count prefix + explicit list is supported (`ins 2: ...`) and must match the explicit declaration count.
-- For `buffers`, explicit declarations and count shorthand still cannot be mixed in the same block.
-- Count shorthand for `ins` / `outs` / `params` / `buffers` also accepts compile-time constant expressions and namespace template parameters:
-  - `const N = 4; ins N` expands to `in1..in4`.
-  - `outs (N + 1)` supports parenthesized arithmetic.
-  - Namespace template params work inside proc definitions: `namespace Synth<Num = 2>: proc Voice: ins Num`.
-- Dynamic port indexing is supported for `ins`, `outs`, `kouts`, `params`, and
-  top-level `kins` when declared with an explicit block:
-  - `ins[i]`, `outs[i]`, `params[i]` use runtime 0-based integer indices.
-  - `kins[i]` indexes explicit top-level `kins` declarations.
-  - `kouts[i]` indexes explicit block-rate control output declarations.
-  - Indices are clamped to the valid range at runtime.
-  - `outs[i] = expr` and `kouts[i] = expr` are writes; `ins[i]`, `params[i]`,
-    and `kins[i]` are reads.
-  - Input/output surfaces are block/sample-bound. `inN`, `outN`, `koutN`,
-    declared input/output arrays, and synthetic `ins` / `outs` / `kouts`
-    views cannot be read, written, passed, returned, or stored from `init`,
-    `event`, or `def` bodies.
-  - I/O array surfaces are not first-class array values: use direct indexed
-    access in block/sample code instead of assigning, slicing, or passing
-    `ins`, `outs`, `kouts`, or declared input/output arrays.
-  - Dynamic param surfaces are not first-class array values: `params`, `kins`,
-    and child proc views such as `child.params` cannot be assigned to locals,
-    sliced, passed to functions/events, returned, or stored.
-  - Dynamic param indexing is only valid as a direct `params[i]` / `kins[i]` /
-    `child.params[i]` access in block or sample code.
-  - Port indexing requires an explicit declaration block; implicit ports cannot be indexed.
-  - `outs[i]` / `kouts[i]` additionally require all indexed output slots to
-    have one scalar type and the matching timing.
-  - `ins` / `outs` / `kouts` / `params` indexing works at both top-level and
-    inside processors where those sections are valid; `kins` is top-level only.
-- Section default type shorthand is supported for IO/param/buffer sections:
-  - `ins<T>: ...`, `outs<f64>: ...`, `params<i32>: ...`, top-level `kins<i32>: ...`, `buffers[T]: ...`
-  - Also works with count shorthand (`ins<f64> 2`, `buffers[T] 4`).
-  - Per-entry explicit types override the section default.
-- Top-level `kins` is an alias for `params`; declare either `params` or `kins`, not both. Proc parameter sections are always spelled `params`.
-- Top-level `kinN` and `paramN`, and proc-local `paramN`, can be inferred from
-  usage the same way `inN` / `outN` are inferred.
-- Audio and control outputs:
-  - `outs` declares sample-rate audio outputs.
-  - `kouts` declares block-rate control outputs.
-  - Top-level programs may declare both `outs` and `kouts`.
-  - Top-level audio and control output names must be disjoint.
-  - Numbered audio outputs use `outN`; numbered control outputs use `koutN`.
-  - Top-level and proc `koutN` outputs can be inferred from usage.
-  - Top-level `kouts` use separate `onda_control_output_*` metadata/read APIs.
-  - A proc declares either `outs` or `kouts`, not both.
-- `init` section default scalar type shorthand is supported:
-  - `init<f64>: ...`, `init<T>: ...`
-  - Applies to untyped scalar declarations in `init`.
-  - Explicit declaration types still override the section default.
+### `onda_semantics` (`crates/onda_semantics/src`)
+- `lib.rs` — public types and orchestration wiring; re-exports `pipeline::analyze`.
+- `pipeline.rs`, `pipeline/` — top-level analysis pipeline and `namespace_flattening`.
+- Analysis cores:
+  - `expr_validation.rs`, `expr_typing.rs`, `expr_analysis/` — expression validation, typing, and environment construction.
+  - `stmt_analysis/` — init / runtime / alias / indexed-binding statement analysis.
+  - `port_coercion.rs` — port and parameter coercion.
+  - `declaration_coercion.rs` — struct field, param, and buffer coercion.
+  - `namespacing.rs` — namespace, `use`, and qualified-path resolution.
+  - `io_state_helpers.rs` — input/output/state surface helpers.
+  - `executable_owner_analysis.rs` — executable-scope owner scoping.
+  - `builtins.rs` — builtin functions and compile-time constants.
+  - `array_structs.rs` — array/struct helpers.
+  - `decl_symbols.rs` — declaration symbol tables.
+- `def`/generic machinery:
+  - `def_semantics/` — `def` body analysis, `inference/` (call + return), `monomorphization`, `overloads`.
+  - `generic_specialization.rs`, `generic_specialization/proc_specialization.rs` — generic owner specialization.
+- Processor lowering:
+  - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.
+  - `processor_lowering/graph_lowering/` — graph inference/planning/emission/resolution/rewriting/surface/topology/validation/orchestration.
+  - `proc_call_rewrite.rs`, `proc_call_support.rs`, `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, aliasing, and state symbol rewriting.
+- `internal_names.rs` — internal symbol naming.
 
-### Types and semantics
-- Primitive types: `f32`, `f64`, `i32`, `i64`, `bool`.
-- Generic primitive specialization is supported for `struct` and `proc` via type parameters (for example `Name<T>`).
-- Specialization is monomorphized at use sites with explicit type args (`Name<f64>(...)`) or inferred type args from constructor arguments/defaults where possible.
-- Inside specialized generic owners, `T(expr)` is rewritten to the bound primitive cast, and method/`def` params can use `T[]` in addition to the existing scalar generic forms.
-- In typed `init` struct declarations, declaration-only form is supported (`x: Type`) and desugars to default constructor initialization.
-- Typed `init` struct declarations support namespace-instantiated owner paths (for example `x: std::data<SR, 1>::Data`).
-- Unresolved generic type parameters in declaration/type positions produce an error (no implicit default there).
-- For untyped constructor assignments (`x = Type()` / `p = Proc()`), unresolved constructor type parameters default to `f32`.
-- Generic type arguments are restricted to numeric primitives (`f32`, `f64`, `i32`, `i64`); `bool` is rejected.
-- Array type syntax: `T[N]` across declarations (with current scope rules enforced in semantics).
-- Typed primitive array declarations with inline array-literal initializers are supported in `init` / `sample` / `def` (for example `a: f32[2] = [0.5, 0.8]`).
-- Untyped array literal declarations are supported for local/state array declarations in executable blocks (`init` top-level + proc init, `sample`/`block`, `def`, and event handlers), with first-element type inference (for example `a = [0.5, 0.8]`, `a = [f64(0.0), 1.0]`, `a = [0, 1]`, `a = [i64(0), 1]`).
-- Data-struct arrays support one inline field-access dot:
-  - `base[idx].field`
-  - `base[idx].field[fidx]`
-  - Works in `init`, `sample`, `block`, and `def` bodies when the root is a real data-struct array.
-  - Deeper inline chains are still rejected (`base[idx].field.other`, `base[idx].field[fidx].other`).
-- Scalar `ins` and scalar `params` support optional declaration ranges and defaults:
-  - `in1 = 440 {0.01, 22000}` (min+max)
-  - `in1 = 440 {22000}` (max-only)
-  - `freq: i32 = 500 {20, 8000}` (min+max)
-  - `freq: i32 = 500 {8000}` (max-only)
-  - Integer-typed declarations require integer defaults/min/max constant expressions.
-  - Ranges on array declarations are rejected.
-- Fixed-size `ins` and `params` arrays support compile-time defaults.
-  - Array-literal defaults must match the declared element count exactly.
-  - Element values are coerced with the normal scalar casting rules.
-- Fixed-size arrays are supported for stateful storage, including typed forms and compile-time capacity expressions.
-- Primitive array and buffer slice syntax is supported with Python-style two-bound forms:
-  - `a[:]`
-  - `a[start:]`
-  - `a[:end]`
-  - `a[start:end]`
-  - negative slice bounds such as `a[:-1]` and `a[1:-2]`
-- Slice expressions lower to normal primitive `T[]` views.
-- Writable slice assignment is supported for mutable primitive array/buffer targets:
-  - scalar fill: `a[1:-1] = 0.0`
-  - slice copy: `dst[:] = src[:]`
-  - slice copy writes `min(dst_len, src_len)` elements and preserves overlap semantics via temporary-copy lowering.
-- Scalar assignment typing follows first-assignment inference by default; explicit declaration typing (`x: i64 = ...`) pins the symbol type.
-- Executable-scope scoping/storage is now unified more explicitly across top-level code and procs:
-  - `init`: fresh top-level scalar assignments introduce owner state; nested control-flow assignments stay local to `init` flow
-  - `sample`: fresh assignments are locals only
-  - `block`: fresh top-level assignments in `block pre` carry into later `sample` / `block post`; nested control-flow assignments stay local
-  - `if` merges locals outward only when definitely assigned on all branches
-  - loop-created locals do not escape the loop unless the name already existed before the loop
-- Integer bitwise operators are supported in expressions: unary `~`, binary `&`, `|`, `^`, `<<`, `>>`.
-  - Bitwise operators accept `i32`/`i64` operands only.
-  - Mixed `i32`/`i64` operands widen to `i64`.
-  - `>>` lowers as arithmetic right shift.
-  - Graph routing/composition is implemented at top-level and proc-local scope:
-  - `graph` is mutually exclusive with `sample` and `block` in the same owner.
-  - Edges support send and receiver forms (`src >> dst`, `dst << src`), destination-set fanout (`src >> { a, b }`, `{ a, b } << src`), proc-bundle destination-set routing (`proc >> { a, b }`, `proc_array[idx] >> { a, b }`), explicit rates (`@block`, `@sample`), and sample delays (`>>[expr]`, `<<[expr]`) where `expr` is a compile-time nonnegative integer expression (including consts and namespace template/const expressions).
-  - Proc-array slot references with static indices are supported for graph sources and destinations.
-  - Strict scalar/array shape checking is enforced on graph edges, with one narrow convenience rule: scalar-to-fixed-array broadcast expands element-wise.
-  - Whole-array routing and element-wise array expressions are supported where shapes match exactly.
-  - Cycles are rejected unless broken by positive sample delay.
-  - Graph lowering rewrites into generated `init` / `block pre` / `sample` code before proc desugaring.
-- Constants available in compile-time expressions and runtime code paths: `PI`/`pi`, `TWO_PI`/`TWOPI`/`two_pi`/`twopi`, `SAMPLE_RATE`/`SAMPLERATE`/`SR`/`sample_rate`/`samplerate`, `HOST_SR`/`HOST_SAMPLE_RATE`/`HOST_SAMPLERATE`/`host_sample_rate`/`host_samplerate`, `BLOCK_SIZE`/`BLOCKSIZE`/`BS`/`block_size`/`blocksize`.
-  - Default constant types: `PI`/`TWO_PI` are `f64`; `SAMPLE_RATE` and host sample-rate aliases are `f32`; `BLOCK_SIZE` is `i32`.
-- User-defined compile-time constants are supported via `const NAME = expr`, optional scalar typed form `const NAME: T = expr`, fixed-array form `const NAME: T[N] = expr`, and inferred-length array form `const NAME: T[] = expr`.
-  - Scalar `const` declarations are supported in top-level, namespace, and executable scopes (`init`, `block`, `sample`, `events`, `def`).
-  - Primitive-array `const` declarations are supported at top-level and namespace scope.
-  - Namespace consts can be referenced from outside with qualified paths and namespace instantiation, for example `NS::VALUE` or `std::convolution<8, 8>::HopSize`.
-  - Initializers must be compile-time evaluable.
-  - Scalar-returning and fixed-array-returning `const def` helpers are supported at top level and namespace scope for later const-array initializers.
-  - Top-level and namespace scalar `const` declarations can be initialized from scalar-returning `const def` calls, and semantic scalar const values fold into later compile-time and runtime uses.
-  - Untyped semantic scalar const declarations preserve full `f64` / `i64` value precision until the eventual use site applies its normal type rules.
-  - `const def` params support primitive scalars, fixed-size primitive arrays, and read-only primitive array slice forms (`T[]` or untyped `[]`) over compile-time arrays of any length.
-  - Every `const def` must declare an explicit return type, and every `return` is evaluated against that type; scalar returns are coerced/validated as that primitive type, while fixed-array returns must match the declared element type and length exactly.
-  - Fixed-array-returning `const def` bodies support local mutable primitive arrays, indexed local-array reads/writes, `if`, compile-time `for` / `loop`, pure builtin math, and calls to earlier visible const defs.
-  - `const def` calls are lexical: forward references, recursion, and mutual recursion are rejected.
-  - Const arrays and const slices can be passed to ordinary array parameters when semantic analysis infers the callee parameter is read-only; mutable callees still reject immutable const data.
-  - Visibility is lexical; forward references and cycles are rejected.
-  - Reassignment is rejected.
-- `std/prelude` is auto-imported during semantic analysis.
-- `std/prelude` currently imports `std/math`, `std/lookup`, and `std/random`.
-- Local symbols with the same name take precedence over auto-imported unqualified std helpers; qualified calls remain available via `std::math::...`, `std::lookup::...`, and `std::random::...`.
-- `std/export_math` is available as `import std/export_math` and provides namespace-qualified pure-Onda approximations for freestanding/export-oriented transcendental math (`sin`, `cos`, `tan`, `tanh`, `atan`, `atan2`, `exp`, `log`, `pow`).
-  - It is opt-in and does not replace the existing builtin math lowering path.
-- `std/lookup` exposes duck-typed overloaded helpers `read`, `write`, `readL`, and `readC` (mono and channel-explicit forms) that specialize from both primitive arrays and buffers.
-- `std/random` provides a generic `std::random::Rng<T>` helper for stateful pseudo-random streams.
-- `std/complex` is available as `import std/complex` and provides `std::complex::Complex<T>` for method-based complex arithmetic in Onda code.
-  - Intended `T` specializations are `f32` and `f64`.
-  - Current surface includes `real`, `imag`, `set`, `clear`, `copy`, `set_polar`, `add_assign`, `add_parts`, `sub_assign`, `sub_parts`, `mul_assign`, `mul_parts`, `scale_assign`, `conjugate`, `power`, `magnitude`, and `phase`.
-- `std/fft` is available as `import std/fft` and currently provides `std::fft<N>::FFT<T>`, an internal-buffer complex FFT specialized by namespace integer `N` and numeric type `T`.
-  - Namespace contract: `N > 0` and `N` must be a power of two.
-  - Intended `T` specializations are `f32` and `f64`.
-  - Storage and results use parallel `re` / `im` `T[N]` arrays.
-  - Introspection helpers:
-    - `size()`
-    - `real_bin_count()` (`N / 2 + 1` unique bins for real-input spectra)
-  - Real-spectrum helpers are included via packed `N`-scalar wrappers:
-    - `forward_real_packed(input, packed)`
-    - `inverse_real_packed(packed, output)`
-    - `store_real_packed(output)`
-    - `load_real_packed(input)`
-  - Packed layout is `real[0..N/2]` followed by `imag[1..N/2-1]`.
-  - Current surface also includes `forward_real`, `forward_real_magnitude`, `forward_real_power`, `forward_real_phase`, `forward_complex`, `forward`, `inverse`, `store_real`, `store_imag`, `store_power`, `store_magnitude`, `store_phase`, `store_real_spectrum_magnitude`, `store_real_spectrum_power`, `store_real_spectrum_phase`, plus per-bin accessors `real`, `imag`, `power`, `magnitude`, and `phase`.
-  - Streaming struct wrappers:
-    - `std::fft<N>::RealFFT<T>` is a Hann-windowed streaming forward wrapper with `N / 2` hop. It accumulates one real sample at a time via `push(x) -> bool`, updates `fft`/`packed` every hop after the first full frame, exposes `ready: bool`, and reports the current hop with `hop_size()`.
-    - `std::fft<N>::RealIFFT<T>` is the matching Hann-windowed overlap-add inverse wrapper. It accepts either packed or complex spectra via `load_packed(...)` / `load_complex(...)`, streams reconstructed samples via `tick()`, reports pending output via `is_active()`, and reports the current hop with `hop_size()`.
-- Control flow and calls:
-  - `if`, `for`, `loop N`, `while`, `break`, `continue`, `return`, call statements.
-  - `for` syntax supports:
-    - `for i in A..B` (exclusive end)
-    - `for i in A..=B` (inclusive end)
-    - `for i @ STEP in A..B` (`@ STEP` optional, defaults to `1`; use negative step for descending)
-- Events:
-  - Top-level and proc-level `events` blocks are supported.
-  - Singular event-declaration sugar is also supported at both levels:
-    `event name(...): ...` is equivalent to adding that handler inside `events:`.
-- Top-level event params support primitive scalars and fixed-size primitive arrays.
-- Event params support read-only primitive slice forms such as `f32[]` for both top-level and proc events.
-- Proc events also support generic primitive placeholders such as `T`, `T[N]`, and `T[]` when `T` is a proc generic type parameter that specializes to a primitive.
-- Event array/slice params are passed as read-only references.
-- Fixed-array event params are lowered internally as array-typed params rather than one scalar arg per element.
-  - Event params without explicit type default to `f32`.
-  - Event defaults support both primitive scalars and fixed-size arrays, including generic proc event forms after specialization.
-  - Event handlers can declare local fixed-size primitive arrays via untyped literals (for example `b = [1, 2, 3]`).
-  - Event handlers can write init-root state only (plus local symbols); output/input/event-param writes are rejected.
-  - Top-level handlers are host-triggered and run immediately on the audio thread.
-  - Unknown host event indices are ignored; payload-size mismatches are runtime errors.
-  - Proc events are receiver-only synchronous proc commands reached through explicit calls/forwarding (for example `voice.note_on(...)`).
-  - Every proc also gets a reserved builtin `init(...)` event synthesized after proc specialization.
-    - Its arguments mirror the proc params in declaration order, using the concrete specialized types.
-    - It cannot be redefined inside the proc `events` block.
-    - Its generated body assigns the provided argument values into the proc params, reusing existing default/clamp behavior, then reruns that proc instance's lowered `init` block.
-    - This lets proc params drive derived init state during in-place reinitialization, including nested proc state and fixed setup values.
-  - Proc-event calls are statement-only; unqualified calls never resolve to proc events. A proc cannot use its own event handler as an internal subroutine; put shared internal logic in a proc-local `def` and have the event call that helper.
-  - A proc cannot directly instantiate its own proc type as state.
-- Functions (`def`):
-  - positional + named args, default values, early return.
-  - explicit return annotations are supported with Python-style `->` syntax on top-level defs, struct methods, and proc-local defs.
-  - return types: a `def` can return a primitive scalar (`f32`, `f64`, `i32`, `i64`, `bool`) or a tuple of primitives. Returning structs, arrays, or buffers is not supported.
-  - explicit annotations may name those same supported return shapes, including generic primitive placeholders that specialize to them (for example `-> T`, `-> (T, i32)`).
-  - annotated returns use ordinary assignment compatibility rules: exact match and implicit widening are allowed; narrowing requires an explicit cast in the returned expression.
-  - Top-level `def` bodies are lexical-local: top-level runtime symbols (`ins`/`outs`/`params`/`buffers`/`init` state) are not in scope unless passed as parameters.
-  - Proc-local `def` blocks have implicit access to proc state (init-declared variables, params, nested procs) without `self`. They are private to the enclosing processor and are inlined at call sites during semantic analysis.
-  - top-level overloads and struct-method overloads are supported (same symbol with different arity and/or parameter types); proc-local defs are excluded.
-  - overload resolution prefers exact typed matches; if no exact match exists, numeric widening candidates can be used.
-  - untyped parameters participate with lower priority than typed parameters.
-  - defaults participate in overload matching.
-  - ambiguous matches are semantic errors.
-  - overloads currently apply to top-level `def` and struct methods; proc-local defs with the same name are still rejected.
-  - explicit `def` type parameters (`def fn<T>`) are intentionally unsupported; polymorphism is through typed/untyped parameters and call-site monomorphization.
-  - explicit struct-typed params are nominal.
-  - typed and duck-typed buffer params are supported; duck-typed buffer calls specialize by caller shape/type.
-  - untyped indexable params (`x[i]`, `x[ch][i]`) infer as a shared indexable/buffer ABI and can specialize from both primitive arrays and buffers at call sites.
-  - explicit struct-array params such as `xs: Voice[]` are supported as by-reference array-of-struct parameters and allow the same one-dot inline reads inside the def body (`xs[idx].field`, `xs[idx].field[j]`).
-  - generic def parameter types are supported with call-site monomorphization:
-    - typed array params (`arr: f32[]`, `arr: i64[]`) — no monomorphization needed.
-    - untyped array params (`arr: []`) — monomorphized per call site by element type.
-    - bare buffer params (`buf: buffer`) — monomorphized per call site by buffer type.
-    - generic struct/proc params (`v: Voice` where `Voice<T>`) — monomorphized per call site by concrete specialization.
-    - tuple params (`p: (f32, i32)`) — explicit typed tuple parameter.
-    - inferred tuple params — untyped params (`def foo(p)`) called with a tuple literal are monomorphized per call site with inferred element types.
-  - overload priority: explicit type > generic/duck-typed > untyped.
-  - tuple types are supported as anonymous fixed-length heterogeneous compound types:
-    - tuple literals: `(1.0, 2.0)`, `(1.0, 2, true)` — up to 16 elements.
-    - element access via integer-constant index: `pair[0]`, `triple[2]`.
-    - dynamic index and out-of-bounds index are compile-time errors.
-    - tuple destructuring: `(a, b) = (1.0, 2.0)`, `(x, y) = getTuple()`, `(a, b) = existingTuple`.
-    - tuple variables in state (`init`), `sample`, `block`, `def`, and event scopes.
-    - tuple-returning functions: `def makePair(): return (1.0, 2.0)`. Return value can be a tuple literal, a tuple-returning call, or a tuple variable.
-    - tuple parameters: `def swap(p: (f32, f32)): return (p[1], p[0])`.
-    - tuple fields in structs: `struct Foo { pair: (f32, i32) }`.
-    - tuples use a flattened ABI: each element becomes an individual scalar LLVM parameter/return value.
-    - tuples in state are stored as flattened scalar fields (`name.__0`, `name.__1`, ...).
-  - function and method call argument lists may span multiple lines, and a trailing comma is allowed.
-- Structs:
-  - field defaults and methods supported.
-  - generic structs are supported; methods can use owner generic parameters and are specialized with the struct.
-  - method `self` rules enforced.
-  - constructors restricted to valid semantic contexts (init-time state construction rules enforced).
+### `onda_codegen_llvm` (`crates/onda_codegen_llvm/src`)
+- `lib.rs` — public JIT/AOT API (`CompileOptions`, `ExecutionBackend`, metadata extraction).
+- `metadata.rs` — runtime metadata extraction (params, buffers, events, state layout).
+- `state_layout.rs` — instance state byte layout.
+- `runtime_validation.rs` — runtime binding validation.
+- `target_config.rs` — target triple / CPU / features / reloc / code-model / opt-level config.
+- `primitives.rs` — LLVM primitive helpers.
+- `aot_artifact.rs` — AOT object + sidecar emission.
+- `orc_backend.rs`, `orc_backend/` — ORC backend assembly and lowering:
+  - `pipeline.rs`, `contexts.rs`, `value_model.rs`, `process_handle.rs` — backend wiring and process handle.
+  - `proc_ir.rs`, `proc_ir/{common,event_ir,init_ir,process_ir}.rs` — proc IR emission.
+  - `user_fn_ir.rs`, `user_fn_ir/{lowering,registry}.rs` — top-level `def` IR emission and registry.
+  - `specialization.rs` — generic specialization at IR level.
+  - `def_lowering.rs`, `def_lowering/{expr_lowering,stmt_lowering,struct_helpers}.rs` — def-body lowering.
+  - `orc_expr_stmt.rs`, `orc_expr_stmt/{expr_lowering,stmt_lowering}.rs` — owner-scope expr/stmt lowering.
+  - `lowering_common/{mod,expr,stmt}.rs` — shared lowering helpers.
+  - `expr_common.rs`, `stmt_common.rs` — shared expr/stmt primitives.
+  - `call_helpers.rs`, `call_helpers/{common,data_views,struct_args}.rs` — call argument lowering.
+  - `array_access.rs`, `data_access`-style helpers via `pointer_helpers.rs` — array, buffer, and pointer access.
+  - `layout.rs` — LLVM type layout helpers.
+  - `llvm_helpers.rs`, `jit_utils.rs`, `orc_locals.rs`, `oversampling.rs`, `proc_buffer_refs.rs`, `builtin_intrinsics.rs` — assorted backend support.
 
-### Processors (`proc`)
-- `proc`/`processor` declarations lower to internal struct + helper defs.
-- generic processors are supported and specialized/monomorphized on constructor use.
-- `sample` is required; `init` is optional (top-level `init` is also optional).
-- `events` is optional inside `proc`, and singular `event ...` declarations can be mixed with it.
-- In addition to user-declared proc events, every proc gets the builtin reserved `init(...)` event.
-  - The builtin event is created after generic specialization, so `Filter<i64>().init(...)` uses `i64` arguments instead of unresolved generic placeholders.
-- proc-local `def` blocks are supported inside `proc` bodies. They act as private helper subroutines with implicit state access (no `self`), callable from `init`, `sample`, `block`, `events`, and other proc-local defs. They support parameters, return values, and transitive calls. Recursive/mutually recursive calls are rejected. Implementation lowers them to hidden ordinary defs with an implicit proc receiver, so argument binding/defaults/return behavior follow the normal `def` pipeline rather than a bespoke inline-only model.
-- generic typed local declarations (`x: T = ...`) are supported in all executable scopes of a generic owner (`init`, `sample`, `block`, `def` methods, `events`).
-- Processor call forms:
-  - `p(...)` (scalar/control return for single-output procs; sugar for the first endpoint)
-  - direct endpoint call read: `p(...).<endpointName>` (also supports the timing-specific ordinal alias: `.outN` for `outs`, `.koutN` for `kouts`)
-  - endpoint reads: `p.<endpointName>`
-  - ordinal reads: `p.outN` / `p.koutN` (1-based aliases to the Nth declared audio/control endpoint)
-  - statement call + field reads is supported for stateful updates + explicit output access
-- Nested processor state/composition is supported, including deep nesting.
-- Processor constructor arguments for params/buffers are enforced as named-only.
-- Proc params can be marked with the reserved `pin` keyword to keep them out of
-  external live-modulation surfaces. Pinned params may be passed to the
-  constructor or builtin `init(...)`, and may be read/written by owner proc
-  code, but external `child.param`, `child.param = ...`, live named proc call
-  args, graph param edges, and dynamic `child.params[...]` access are rejected.
-  Top-level params do not have a `pin` concept.
-- Named proc call arguments can bind params, but named param arguments are
-  rejected inside logical `&&` / `||` expressions and `while` conditions; use an
-  explicit param assignment before the proc call there.
-- Bound proc-param hooks (`=> hook_name`) are immediate per-param reactions and
-  are not batched or coalesced across multiple assignments. Use them for
-  single-param derived state or child-param cascades; use an explicit proc event
-  or setter for coupled params that should rebuild shared state once after
-  several values change.
-- The builtin proc `init(...)` event is positional/named like any other proc event call and is useful for proc arrays or post-construction reconfiguration:
-  - `voices[idx].init(i, i * 2, i * 3)`
-- Processor instance arrays are supported in `init` (top-level and proc-level) via typed declarations such as:
-  - `voices: Voice<N_EXPR> = [Voice(...), ...]`
-  - `voices: Voice<N_EXPR> = Voice(...)` (broadcast constructor sugar)
-  - `N_EXPR` can be any compile-time constant expression (not only integer literals).
-  - Top-level lowering preserves proc arrays as real state arrays and uses direct indexed instance access (`voices[idx]`) for dynamic calls.
-  - Nested proc-wrapper lowering still models proc arrays internally as per-slot nested instances.
-  - Nested-wrapper constructor arg remapping now resolves callee-local symbols through the correct nested slot path (so deeper chains like `racks[idx].banks[idx].voices[idx]` keep slot-local ctor semantics).
-  - For broadcast constructor sugar, constructor args can be mixed:
-    - scalar expression: broadcast to every slot (`gain = 0.5`)
-    - array literal: per-slot value (`gain = [0.5, 0.8]`, `buf = [buf1, buf2]`)
-    - array symbol for non-buffer args: per-slot indexed read (`g: f32[2] = [...]`, then `gain = g`)
-  - Indexed proc-array dispatch supports both literal and runtime indices:
-    - `voices[idx](...)`
-    - `voices[idx](...).outN` / `voices[idx](...).koutN` / named output endpoint
-    - statement call form: `voices[idx](...)`
-    - indexed param/field access: `voices[idx].gain`
-    - indexed scalar field assignment: `voices[idx].gain = value`
-    - proc-event forwarding: `voices[idx].note_on(...)`
-    - proc aliasing is supported (`a = voices[idx]`), and call/output access on the alias lowers to the same slot dispatch semantics.
-  - Runtime indices are clamped to the valid slot range (`0..len-1`).
-  - Buffer ctor bindings are resolved to symbols in `init`; dynamic indexed calls read per-slot buffer refs from runtime state.
-  - Dynamic indexed block-hook semantics (`proc` with `block`):
-    - Trigger point is proc `()` call evaluation (not plain slot retrieval).
-    - `block pre` executes lazily once per active slot per block, on first `()` call to that slot.
-    - `block post` executes once at block end for each slot that was called in that block.
-    - Runtime segment processing preserves logical block semantics: pre hooks
-      run only on `ONDA_PROCESS_BEGIN_BLOCK`, post hooks run only on
-      `ONDA_PROCESS_END_BLOCK`, and proc active-slot state spans the segments
-      between those flags.
-    - Dynamic index handling is active-slot based (no conservative "run hooks for all slots" fallback).
-    - Applies in top-level and nested/proc-lowered paths.
-  - Non-`block` procs do not allocate/use active-slot hook tracking and keep the lower-overhead call path.
-  - Proc-slot buffer refs (`ptr`/`frames`/`channels`) are refreshed on the safe `process_checked` path; `process_unchecked` does not perform hidden refresh.
-- Sample oversampling is implemented for both top-level and proc sample blocks:
-  - syntax: `sample N:` where `N` is any compile-time integer constant expression that resolves to one of `{1,2,4,8,16,32,64,128,256,512}`.
-  - oversampling path is compiler-managed (audio input interpolation, held params, filtered decimation).
-  - top-level `ins` and proc `ins` are audio-rate boundaries. When an
-    oversampled proc is called from a lower-rate scope, the caller supplies one
-    input value and the proc interpolates that input across its internal
-    substeps.
-  - params are control-rate boundaries and are held across oversample substeps
-    unless the expression assigning them is itself evaluated in an oversampled
-    scope.
-  - generated signal code runs at the rate of the scope that evaluates it. A
-    host-rate oscillator feeding an oversampled distortion proc is evaluated at
-    host rate and then interpolated into the proc; an oscillator evaluated
-    inside the oversampled scope runs at the oversampled rate.
-  - proc-level oversampling uses the same codegen-rate specialization model as top-level oversampling (unified behavior model, no source-level `SR` rewrite hack).
-  - inside a proc, every proc-owned `SR` reference uses that proc's runtime sample rate, including proc-local consts, params/ports/state sizes, child proc-array sizes, `init`, `block`, `sample`, events, proc-local defs, bind hooks, and typed local arrays.
-  - `sample:` and `sample 1:` use the host sample rate; `sample N:` uses `SR = host SR * N`.
-  - `BS` remains the logical host block size.
-  - `HOST_SR` and its aliases (`HOST_SAMPLE_RATE`, `HOST_SAMPLERATE`, `host_sample_rate`, `host_samplerate`) are always the host sample rate, including inside oversampled procs.
+### `onda_runtime` (`crates/onda_runtime/src`)
+- `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants, reset, param hoisting/clamping, event dispatch.
 
-### External buffers
-- Implemented in language, semantics, runtime, and C API.
-- Buffer types:
-  - `buffer[T]`, `buffer[T[2]]`, `buffer[T[]]` where `T` is `f32`, `f64`, `i32`, `i64`, or `bool`
-  - In `buffers { ... }`, shorthand forms like `buf: f32` and `buf: f64[2]` are accepted.
-- Access:
-  - mono: `buf[i]`
-  - multi-channel: `buf[ch][i]`
-  - `.len()` and `.chans()`
-  - `.samplerate()` returns the per-buffer sample rate as `f32` (bound from the host via C API).
-  - `unsafe_read` / `unsafe_write` for unchecked access (UB on OOB), via both
-    `unsafe_read(buf, i)` / `unsafe_write(buf, i, v)` and method-style
-    `buf.unsafe_read(i)` / `buf.unsafe_write(i, v)`.
-  - `unsafe_read2` / `unsafe_write2` provide the same unchecked access for
-    multi-channel buffers via `unsafe_read2(buf, ch, i)` /
-    `unsafe_write2(buf, ch, i, v)` and method-style
-    `buf.unsafe_read2(ch, i)` / `buf.unsafe_write2(ch, i, v)`.
-- Semantics:
-  - `buf.len()` is frame count, not interleaved scalar count.
-  - `buf.chans()` is the runtime channel count for dynamic buffers and the declared channel count for static buffers.
-  - `buf.samplerate()` is the per-buffer sample rate (may differ from the compile-time `SR` constant).
-  - There is currently no public `total_len` / flattened-length method on arrays or buffers.
-- Runtime binding validates element type and channel constraints.
+### `onda_api` (`crates/onda_api/src`)
+- `lib.rs` — C ABI surface (compile/create/process/destroy, bind/set, metadata queries, event trigger, state snapshot/restore).
 
-### Daemon (`crates/onda_daemon`)
-- The daemon is a stateful session manager between the CLI/LSP and the compiler/runtime. It manages two session types:
-- **Analysis sessions**:
-  - In-memory document overlays (`open` / `update` / `close`) for open files.
-  - `analyze_document` parses and type-checks via the overlay (substituting in-memory content for any file in the overlay, including transitive imports), returning an `AnalysisSnapshot` with diagnostics, parsed AST, and optional typed program.
-- **Run sessions**:
-  - Build a live JIT-compiled instance from an analyzed document.
-  - Bind input/output audio buffers (zero-filled), bind placeholder zero buffers for declared `buffer[...]` params.
-  - `param_info()` and `buffer_info()` return metadata (names, types, ranges, defaults, channel layout).
-  - `set_param_f64(name, value)` updates scalar params at runtime.
-  - `render_block()` calls `process_checked` and returns per-channel output.
-  - `reset()` resets instance state.
-  - `bind_buffer_wav_path(name, path)` loads a WAV file (f32/i8/i16/i24/i32) and rebinds, rebuilding the instance from scratch (reapplies all buffers and params).
-  - `clear_buffer(name)` replaces a buffer binding with a zero-filled placeholder.
-  - Configurable: `sample_rate`, `block_size`, `fast_math`, `backend`.
+### `onda_daemon` (`crates/onda_daemon/src`)
+- `lib.rs` — session manager and transport entry points.
+- `analysis_session.rs` — in-memory document overlays and `analyze_document` snapshots.
+- `run_session.rs` — live JIT instance lifecycle, param/buffer binding, `render_block`.
 
-### LSP (`onda lsp`)
-- A hand-rolled JSON-RPC 2.0 LSP server over stdio, backed by the daemon analysis session.
-- Supported methods:
-  - `initialize` / `initialized` / `shutdown` / `exit`
-  - `textDocument/didOpen` — opens document in session and publishes diagnostics immediately.
-  - `textDocument/didChange` — full-text sync only (range changes ignored), updates overlays/caches and schedules debounced diagnostics for affected open files.
-  - `textDocument/didSave` — updates and publishes diagnostics immediately for the file and affected open importers.
-  - `textDocument/didClose` — closes document, clears diagnostics for the file and its transitive dependencies.
-  - `textDocument/semanticTokens/full` — full semantic tokens (no incremental support).
-  - `textDocument/completion` — symbols, namespace members, receiver members, and named arguments.
-  - `textDocument/hover` — user definitions, proc calls, builtins, and language types.
-  - `textDocument/definition` — definitions for symbols, namespace paths, imports, receiver members, and named arguments.
-  - `textDocument/documentSymbol` — outline symbols for top-level and nested declarations.
-- Advertised capabilities:
-  - `textDocumentSync`: open/close + full change sync + save.
-  - `completionProvider`: identifier, namespace, receiver-member, and call-argument completions.
-  - `hoverProvider`
-  - `definitionProvider`
-  - `documentSymbolProvider`
-  - `semanticTokensProvider`: full semantic tokens with four token types:
-    - `enumMember` — `const` names.
-    - `variable` — local variables, state vars.
-    - `port` — `ins`/`outs`/`buffers` port names.
-    - `parameter` — `params` parameter names.
-  - References, code actions, rename, formatting, and incremental semantic tokens are not implemented.
-- Diagnostics are published per-file on open, debounced edit, and save, grouped by URI across transitive imports. Open/save diagnostics publish immediately; edit diagnostics run off the request path. Stale diagnostics from previously-erroring files are cleared.
-- Semantic tokens for saved/on-disk files are computed from the parsed AST (not the typed AST), so they work even when the file has semantic errors. Open-document completion, hover, definition, and symbols stay on a fast path by reusing cached parsed symbols for importing files while edits are pending; debounced diagnostics refresh the parsed overlay snapshot. Semantic tokens fall back to a lightweight source-scope scanner until a matching parsed snapshot is available.
+### `onda_run` (`crates/onda_run/src`)
+- `lib.rs` — run controller wiring real-time audio to a daemon run session.
+- `playback.rs` — `cpal` audio thread, lock-free SPSC ring buffer, optional `--control-json` TCP control server.
 
-### Run transport
-- `onda run <file>` opens the standalone run window.
-  - Internally it launches `onda run play <file> --forever --control-json` and connects the native webview to that control socket.
-- `onda run play` is the real-time run transport on top of the daemon run session.
-  - Audio playback is in-process via `cpal`.
-  - Rendering runs on a background thread, outputting interleaved samples into a lock-free SPSC ring buffer that the cpal audio callback drains.
-  - When `--control-json` is enabled:
-    - Emits a JSON `{"event": "ready", ...}` line on stdout with port, params, buffers, and output channel info.
-    - Binds a localhost TCP server on an ephemeral port.
-    - Clients send newline-delimited JSON requests over TCP:
-      - `getParams` — returns current param descriptors.
-      - `getBuffers` — returns current buffer descriptors.
-      - `setParam {name, value}` — updates a scalar param.
-      - `bindBufferWav {name, path}` — loads a WAV and rebinds a buffer.
-      - `clearBuffer {name}` — zeros a buffer.
-- `onda run render` renders offline to WAV via the daemon run pipeline.
-- `onda daemon stdio` is a JSON-over-stdio daemon transport for non-LSP clients, supporting `ping`, `initialize`, `open`, `update`, `close`, `diagnose`, `run_start`, `run_stop`, `run_params`, `run_set_param`, and `run_render` commands.
+### `onda_cli` (`crates/onda_cli/src`)
+- `main.rs`, `main_tests.rs` — binary entry and integration tests.
+- `args.rs` — CLI argument parsing.
+- `compile_cmd.rs` — `onda compile` (check / IR / obj / `--dump-graph` / cross-target).
+- `run_cmd.rs` — `onda run` / `run play` / `run render` dispatch.
+- `daemon_stdio.rs` — `onda daemon stdio` JSON transport.
+- `lsp_stdio.rs`, `lsp_stdio/` — hand-rolled JSON-RPC LSP server:
+  - `diagnostics.rs`, `completion.rs`, `navigation.rs`, `namespace_resolution.rs`, `position.rs`, `path_utils.rs`.
+  - `semantic_tokens/{mod,ast_index,source_fallback,tests}.rs`.
+- `formatting.rs`, `diag_print.rs` — diagnostic formatting/printing.
 
-### VSCode extension (`onda-lang/onda-vscode`)
-- Language registration with TextMate grammar for syntax highlighting.
-- LSP client wiring: spawns `onda lsp` as a child process over stdio, using `vscode-languageclient`.
-- Semantic-token-backed highlighting for constants, params, ports, and init vars (layered on top of TextMate).
-- Settings:
-  - `onda.server.path` — path to the `onda` binary (default `"onda"`).
-  - `onda.server.args` — extra args prepended before the `lsp` subcommand.
-- Commands:
-  - `Onda: Run File` — compiles and starts `onda run play --forever --control-json` for the active `.onda` file; opens the run panel.
-  - `Onda: Stop File` — stops the running file.
-  - `Onda: Restart Language Server` — stops and restarts the LSP client.
-- **Run panel** (webview):
-  - Header with file path, status, Start/Stop/Reset buttons, and input/output device selectors.
-  - **Buffers section**: one card per `buffer[...]` declaration with "Choose File", loaded file path display, and "Clear" button.
-  - **Params section**: one card per scalar param with:
-    - `bool` params: checkbox toggle.
-    - Numeric params with range: synchronized range slider + number input.
-    - Numeric params without range: number input only.
-  - Param/buffer state is preserved across restarts for the same file.
-  - Auto-restart on `.onda` file save when that file is running.
+### `onda_egui` (`crates/onda_egui/src`)
+- `lib.rs` — native egui run host (param/buffer panels, device selectors, transport controls).
 
-### Neovim runtime (`onda-lang/onda-nvim`)
-- `.onda` and `.on` filetype detection and regex syntax highlighting.
-- builtin LSP client startup via `onda lsp`.
-- `:OndaRunFile` launches `onda run <file>` in the standalone run window.
+### `onda_webview` (`crates/onda_webview/src`)
+- `lib.rs` — webview run host.
+- `ipc.rs` — JSON IPC with the run control socket.
+- `process.rs` — `onda run play` child process management.
+- `watcher.rs` — auto-restart on `.onda` save.
 
-## Runtime and codegen
-- ORC JIT remains the only execution backend (`Auto` routes to ORC).
-- `onda compile` can now emit target-aware LLVM IR and native object files through the shared LLVM lowering path.
-- Optimized LLVM pipeline is used (`default<O3>` style pass pipeline + host-target settings).
-- Fixed compile-time block size per program/instance.
-- No callback-time allocations for compiler-managed DSP state; allocations happen during setup/init.
-- Runtime processing API is bound-buffer based (`process_checked`). Segment
-  variants are available for hosts that split one logical block around
-  sample-accurate events:
+## Practical navigation entrypoints
+
+- Language/front-end behavior: `onda_frontend/src/parser/*`, `onda_semantics/src/lib.rs`.
+- Proc lowering path: `processor_lowering.rs` → `processor_lowering/*` → `proc_call_rewrite.rs`.
+- Graph lowering path: `processor_lowering/graph_lowering.rs` → `graph_lowering/*` (inspect via `onda compile --dump-graph`).
+- ORC lowering path: `orc_backend.rs` → `{proc_ir,user_fn_ir}` → `{orc_expr_stmt,def_lowering}` → `{data_access,call_helpers}`.
+- Runtime API usage: `onda_runtime/src/lib.rs`.
+- C ABI surface: `onda_api/src/lib.rs`, `include/onda.h`.
+- Daemon analysis/run sessions: `onda_daemon/src/{analysis_session,run_session}.rs`.
+- Real-time playback: `onda_run/src/{lib,playback}.rs`.
+- LSP: `onda_cli/src/lsp_stdio.rs` → `lsp_stdio/*`.
+
+## Runtime and codegen architecture
+
+- ORC JIT is the only execution backend (`Auto` routes to ORC). `onda compile` can additionally emit target-aware LLVM IR and native object files through the same lowering path.
+- Optimized LLVM pass pipeline (`default<O3>`-style) with host-target settings.
+- Compile-time block size per program/instance; no callback-time allocations for compiler-managed DSP state (all setup happens during instance creation/init).
+- Runtime processing is bound-buffer based (`process_checked`). Segment variants exist for hosts that split a logical block around sample-accurate events:
   - `process_checked_segment(instance, start_frame, frames, flags)`
-  - `prepare_unchecked_process(instance)`
-  - `process_unchecked_segment(instance, start_frame, frames, flags)`
-  - segment variants keep the input/output bindings as full-block base
-    pointers; the JIT loops local frames `[0, frames)` and addresses bound I/O
-    at `start_frame + local_frame`
-  - flags are `ONDA_PROCESS_BEGIN_BLOCK`, `ONDA_PROCESS_END_BLOCK`, or both;
-    flags control block hooks only and do not imply an implicit runtime cursor.
-- Current runtime behavior:
-  - all declared buffers must be bound before processing.
-  - top-level ranged params are hoisted and clamped once per block in JITed code.
-  - top-level ranged inputs are hoisted and clamped once per sample in JITed code.
-  - host-triggered events execute synchronously via index-based dispatch.
-  - host-triggered slice events use dynamic payload layout: `i32 len` followed by contiguous element bytes.
-
-## C API and CLI
-- C ABI exposes compile/create/process/destroy and bind/set calls:
-  - params: byte-typed `set_param_by_index`
-  - events: `trigger_event_by_index`
-  - instance state lifecycle: `reset_instance_state`, raw state snapshot/restore
-  - inputs/outputs: pointer + byte-size binding
-  - buffers: pointer + frames + channels + sample rate + element type binding
-  - outputs: `bind_output`
-- Metadata queries exposed for names, indices, types, and byte sizes (including events/payload size).
-  - `onda_event_payload_bytes` returns `None`/`-1` for dynamic event layouts such as slice params.
-  - state metadata exposes declared state names, type text, element type, slot count, byte offset, entry byte size, and total instance state bytes.
-- CLI (`onda`) supports:
-  - `compile <file> [--emit check|llvm-ir|obj] [--output] [--meta-out] [--target-triple <triple>] [--target-spec <path>] [--target-cpu <name|host>] [--target-features <csv>] [--target-abi <name>] [--reloc-model <mode>] [--code-model <mode>] [--opt-level <0|1|2|3>] [--sample-rate <hz>] [--block-size <frames>] [--dump-graph] [--ir] [--meta]`
-  - `lsp [--stdio]`
-  - `run <file> [--sr|--sample-rate] [--block-size] [--fast-math] [--input-device <name>] [--output-device <name>]`
-  - `run render <file> [--output] [--dur] [--sr|--sample-rate] [--block-size] [--fast-math] [--meta] [--set name=value]`
-  - `run play <file> [--dur | --forever] [--sr|--sample-rate] [--block-size] [--fast-math] [--meta] [--set name=value] [--control-json]`
-  - `daemon diagnose <file> [--sr|--sample-rate] [--block-size]`
-  - `daemon stdio`
-  - `--dump-graph` prints the program immediately after graph lowering, before proc desugaring/codegen.
-  - `run play` defaults to a `128`-frame render/device block size.
-  - `run render` keeps the offline render default block size (`512`).
-  - `compile --emit obj` writes a native object file plus a JSON metadata sidecar.
-  - `compile` remains host-native by default; cross-target AOT requires `--target-triple` or `--target-spec`.
-  - `compile --target-spec <path>` loads a small TOML codegen preset; direct CLI flags override spec values.
-  - checked-in example target specs live under the repo-root `targets/` folder.
-  - Useful graph examples: `examples/proc_gain_graph.onda`, `examples/proc_split_graph.onda`, `examples/proc_array_stereo_sine_graph.onda`, `examples/std_one_pole_graph.onda`, `examples/stdlib_f32_graph.onda`, `examples/feedback_saturator_graph.onda`, `examples/cybernetic_feedback_graph.onda`, `examples/reverb_graph.onda`.
+  - `prepare_unchecked_process(instance)` / `process_unchecked_segment(...)`
+  - segment variants keep full-block base pointers and JIT-loop local frames `[0, frames)`, addressing bound I/O at `start_frame + local_frame`.
+  - flags `ONDA_PROCESS_BEGIN_BLOCK` / `ONDA_PROCESS_END_BLOCK` drive block hooks only; they do not imply an implicit runtime cursor.
+- Per-block behavior: declared buffers must be bound before processing; top-level ranged params are hoisted/clamped once per block; top-level ranged inputs once per sample; host-triggered events run synchronously via index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous element bytes).
 
 ## LLVM dependency strategy
-- The repo now carries `deps/llvm-bootstrap` as a git submodule.
-- Local developer builds bootstrap LLVM from source on all platforms through that submodule's build recipe.
-- The source-bootstrap wrappers download `llvm-project` source and install into:
-  - static install: `.deps/llvm-src/21.1.2-static` (`scripts/bootstrap-llvm-source.ps1 -Linkage Static` or `scripts/bootstrap-llvm-source.sh --linkage Static`)
-  - shared install: `.deps/llvm-src/21.1.2-shared` (`scripts/bootstrap-llvm-source.ps1 -Linkage Shared` or `scripts/bootstrap-llvm-source.sh --linkage Shared`)
+
+- `deps/llvm-bootstrap` is a git submodule; local developer builds bootstrap LLVM from source on all platforms.
+- Source-bootstrap wrappers download `llvm-project` source and install into:
+  - static install: `.deps/llvm-src/21.1.2-static`
+  - shared install: `.deps/llvm-src/21.1.2-shared`
 - Default source-bootstrap target set is `X86;AArch64;WebAssembly`.
-- CI-oriented prebuilt bootstrap is still available through `scripts/bootstrap-llvm.ps1` / `scripts/bootstrap-llvm.sh` when `CI` is set, downloading release assets from `onda-lang/llvm-bootstrap` into `.deps/llvm/21.1.2`.
-- LLVM env-selection scripts can select flavor (`auto`, `prebuilt`, `source-static`, `source-shared`, `source`):
-  - PowerShell: `scripts/use-llvm-env.ps1`
-  - bash: `scripts/use-llvm-env.sh` (source it in the current shell)
-- `llvm-sys` line is `211.x` (compatible with LLVM 21.1.x C API).
-- ORC path is implemented through `llvm-sys`.
+- CI-oriented prebuilt bootstrap: `scripts/bootstrap-llvm.ps1` / `scripts/bootstrap-llvm.sh` (when `CI` is set) downloads release assets from `onda-lang/llvm-bootstrap` into `.deps/llvm/21.1.2`.
+- LLVM env-selection scripts: `scripts/use-llvm-env.ps1` / `scripts/use-llvm-env.sh` (source the bash one). Flavors: `auto`, `prebuilt`, `source-static`, `source-shared`, `source`.
+- `llvm-sys` line is `211.x` (compatible with LLVM 21.1.x C API). The ORC path is implemented through `llvm-sys`.
 
 ## Major remaining work
-- Graph follow-ups: broader source expressions, optional coercion/broadcasting rules, and richer diagnostics.
-- AOT convenience layers: `--emit wasm`, optional link helpers, and any host-integration polish beyond the current object + sidecar model.
+
+Detailed roadmap notes live under [docs/todo/](todo/) (`language.md`, `runtime.md`, `backends.md`, `tooling.md`).
+
+High-level themes:
+- Graph follow-ups: broader source expressions, optional coercion/broadcasting rules, richer diagnostics.
+- AOT convenience layers: `--emit wasm`, optional link helpers, host-integration polish beyond the current object + sidecar model.
 - C++ single-header backend.
-- Standard library expansion/versioning beyond MVP module set.
+- Richer standard library.
 - RT-safety instrumentation/audit suite and stricter host-facing diagnostics lifecycle.
+

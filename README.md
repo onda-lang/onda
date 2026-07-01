@@ -2,7 +2,7 @@
   onda <img src="assets/svg/onda-logo-dark.svg" alt="onda logo" width="40" align="absmiddle" />
 </h1>
 
-`onda` is a DSL for low-level audio programming.
+Onda is a JIT-compiled audio programming language.
 This repository provides the compiler, runtime, CLI, LSP and a C API for embedding the JIT compiler.
 
 ## Short example
