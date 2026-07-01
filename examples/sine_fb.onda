@@ -1,0 +1,12 @@
+import std/osc
+
+params:
+  freq = 220.0 {20.0, 20000.0}
+  mod = 100.0 {0.0, 1000.0}
+
+init:
+  sine = std::osc::Sine()
+
+graph:
+  @sample freq + sine.out1 * mod >> sine.freq
+  sine.out1 >> out1

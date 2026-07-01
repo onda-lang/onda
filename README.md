@@ -235,17 +235,7 @@ Current LSP support includes:
 
 ## C API
 
-The C API is exposed through `include/onda.h`.
-At a high level the flow is:
-
-1. compile source
-2. create an instance
-3. bind inputs, outputs, params, and buffers
-4. process audio
-5. optionally trigger events
-6. destroy the instance
-
-This is the embedding surface for non-Rust hosts.
+The C API of the JIT compiler is exposed through `include/onda.h`.
 
 ## Editor support
 

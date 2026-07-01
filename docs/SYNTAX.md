@@ -1,11 +1,68 @@
-# Onda Syntax
+# Onda Language Guide
 
-This document describes the syntax currently implemented in `onda`.
-It is organized from the simplest idea in Onda, the block, through reusable abstractions and multi-file programs.
+This guide is the main reference for writing Onda programs. It is organized as
+a learning path: start with a small patch, learn the top-level program shape,
+then move through executable code, data, functions, structs, processors, graphs,
+generics, and modules.
 
-## 1. Reading an Onda file
+## Contents
 
-Onda supports both indentation style and brace style syntax.
+1. [A First Patch](#1-a-first-patch)
+2. [Source Files](#2-source-files)
+3. [Top-Level Program Surface](#3-top-level-program-surface)
+4. [Executable Sections](#4-executable-sections)
+5. [Types and Values](#5-types-and-values)
+6. [Statements and Expressions](#6-statements-and-expressions)
+7. [Constants and Compile-Time Code](#7-constants-and-compile-time-code)
+8. [Functions with `def`](#8-functions-with-def)
+9. [Structs](#9-structs)
+10. [Processors with `proc`](#10-processors-with-proc)
+11. [Graphs](#11-graphs)
+12. [Generics and Compile-Time Parameters](#12-generics-and-compile-time-parameters)
+13. [Modules, Namespaces, and `use`](#13-modules-namespaces-and-use)
+14. [Reference Notes](#14-reference-notes)
+
+## 1. A First Patch
+
+An Onda file describes an audio processor. This patch exposes one host
+parameter, creates persistent state, computes one value per block, and writes
+one output sample at a time.
+
+```onda
+params:
+  freq = 440.0 {20.0, 20000.0}
+
+init:
+  phase = 0.0
+
+block:
+  incr = freq * TWO_PI / SR
+
+  sample:
+    phase = phase + incr
+    if phase > TWO_PI:
+      phase = phase - TWO_PI
+    out1 = sin(phase)
+```
+
+The main parts are:
+
+| Part | Meaning |
+| --- | --- |
+| `params` | Host-visible control values. |
+| `init` | Setup code and persistent state. |
+| `block` | Code that runs once per host block. |
+| nested `sample` | Code that runs once per sample. |
+| `out1` | A numbered audio output. |
+
+The rest of the language grows from this model. You describe a processor's
+surface, write code at the rate where it should run, and use functions,
+structs, processors, and graphs when the patch becomes reusable or larger.
+
+## 2. Source Files
+
+Onda supports indentation syntax and brace syntax. These two programs are
+equivalent:
 
 ```onda
 outs:
@@ -16,105 +73,55 @@ sample:
 ```
 
 ```onda
-outs { 
-  out1 
+outs {
+  out1
 }
 
-sample { 
+sample {
   out1 = 0.0
 }
 ```
 
-Basic syntax rules:
-- statements can be separated by newline or `;`
-- line comments use `#`
-- top-level declarations are read in lexical order
-- names must be introduced before they are used
+Basic source rules:
 
-## 2. What is a block?
+- Statements can be separated by newlines or `;`.
+- Line comments start with `#`.
+- Names are introduced before they are used.
+- Top-level declarations are processed in lexical order.
+- `import module/path` loads `module/path.onda`.
+- `include "path.onda"` or `include "path.on"` inserts another file by quoted path.
 
-An Onda program is mostly a collection of named blocks.
-A block is a section such as `params:`, `init:`, or `sample:` that groups related declarations or executable code.
+Top-level forms:
 
-The main top-level blocks are:
-- `ins`
-- `params`
-- `events`
-- `event`
-- `buffers`
-- `outs`
-- `init`
-- `block`
-- `sample`
-- `graph`
-- `const`
-- `def`
-- `struct`
-- `proc` / `processor`
-- `namespace`
-- `use`
+| Form | Purpose |
+| --- | --- |
+| `ins`, `inputs` | Host input ports. |
+| `params`, `kins` | Host-visible parameters. |
+| `outs`, `outputs` | Audio-rate output ports. |
+| `kouts` | Block-rate control output ports. |
+| `buffers` | External host-bound buffers. |
+| `events`, `event` | Host-triggered event handlers. |
+| `init` | Setup and persistent state. |
+| `block` | Per-block code. |
+| `sample` | Per-sample code. |
+| `graph` | Declarative signal routing. |
+| `const`, `const def` | Compile-time values and helpers. |
+| `def` | Runtime helper functions. |
+| `struct` | Nominal data types. |
+| `proc`, `processor` | Reusable DSP processors. |
+| `namespace` | Qualified declaration groups and integer templates. |
+| `use`, `pub use` | Unqualified lookup imports and re-exports. |
 
-You will also see file-level declarations that are not blocks:
-- `import module/path`
-- `include "path.onda"`
+## 3. Top-Level Program Surface
 
-There are two big categories:
+The program surface is the set of values the host can connect to the processor:
+inputs, params, outputs, buffers, and events. This chapter covers the top-level
+forms. Processor-specific versions of the same ideas are introduced later in
+[Processors with `proc`](#10-processors-with-proc).
 
-- Declaration blocks
-  - `ins`, `params`, `events` / `event`, `buffers`, `outs`, `const`, `def`, `struct`, `proc`, `namespace`, `use`
-- Executable blocks
-  - `init`, `block`, `sample`, `graph`
+### Inputs
 
-The executable model is:
-- `init` runs when an instance is created or reset
-- `block` runs once per host block and can contain a nested `sample`
-- `sample` runs once per sample
-- `graph` is an alternative to `sample` / `block` and lets you describe routing declaratively
-
-The same basic idea applies both at the top level and inside `proc` declarations.
-
-## 3. Types you will see in blocks
-
-Primitive types:
-- `f32`
-- `f64`
-- `i32`
-- `i64`
-- `bool`
-
-Compound types:
-- fixed arrays: `T[N]`
-- tuples: `(T1, T2, ...)`
-- buffers:
-  - `buffer[T]`
-  - `buffer[T[2]]`
-  - `buffer[T[]]`
-
-Examples:
-
-```onda
-ins:
-  audio: f32[2]
-
-params:
-  mode: i32 = 0
-
-init:
-  taps: f32[8]
-  pair = (0.0, 1.0)
-
-buffers:
-  src: [f32]
-  bus: [f32[2]]
-```
-
-## 4. The core blocks
-
-This section walks through the blocks in the order you asked for: `ins`, `params`, `events` / `event`, `buffers`, `outs`, `init`, `block`, `sample`, then `graph`.
-
-### 4.1 `ins`
-
-`ins` declares input ports.
+`ins` declares input ports. `inputs` is an alias.
 
 ```onda
 ins:
@@ -123,23 +130,11 @@ ins:
   stereo: f32[2]
 ```
 
-Count shorthand is supported:
+Shorthand forms:
 
 ```onda
 ins 2
-```
 
-You can also combine a count with explicit declarations:
-
-```onda
-ins 2:
-  left
-  right
-```
-
-Section default types are supported:
-
-```onda
 ins<f64>:
   left
   right
@@ -147,25 +142,17 @@ ins<f64>:
 ```
 
 Rules:
-- omitted input types default to `f32`
-- explicit entry types override the section default type
-- fixed-size array inputs can use defaults such as `freqs: f32[3] = [220, 440, 880]`
-- fixed-size array input defaults must provide exactly the declared element count when written as array literals
-- `ins N` expands to `in1..inN`
-- the count can be a compile-time integer expression
-- if both a count and an explicit declaration list are present, they must match exactly
-- if `inN` is used without an `ins` block, it is implicitly created as `f32`
-- compile-time count expressions can use ordinary `const` values and namespace integer template parameters
 
-Scalar ranges are supported on scalar `ins` only:
+- Omitted input types default to `f32`, or to the section default in `ins<T>`.
+- `ins N` expands to `in1..inN`.
+- `N` can be a compile-time integer expression.
+- If `inN` is used without an `ins` block, that input is implicitly created as `f32`.
+- If a count and explicit list are both present, they must match exactly.
+- Scalar inputs can have defaults and ranges: `freq = 440.0 {20.0, 20000.0}`.
+- A single range value only specifies the max range: `freq = 440.0 {20000.0}`.
+- Fixed-size array inputs can have defaults, and array literal defaults must match the declared length.
 
-```onda
-ins:
-  freq = 440.0 {20.0, 20000.0}
-  drive: i32 = 2 {8}
-```
-
-Dynamic indexed access is supported when the inputs were declared explicitly:
+Explicitly declared homogeneous inputs can be indexed:
 
 ```onda
 const N = 4
@@ -178,24 +165,22 @@ sample:
     outs[i] = ins[i] * 0.5
 ```
 
-Dynamic input indexing rules:
-- `ins[i]` is 0-based
-- runtime indices are clamped to the valid range
-- dynamic indexing requires an explicit `ins` declaration block
-- implicit inputs created by using `in1`, `in2`, and so on cannot be indexed
+`ins[i]` is 0-based and runtime indices are clamped. Implicit inputs created by
+using `in1`, `in2`, and so on cannot be dynamically indexed.
 
-### 4.2 `params`
+### Parameters
 
-`params` declares tweakable parameters.
+`params` declares host-visible control parameters.
 
 ```onda
 params:
   gain = 1.0
   mode: i32 = 0
   spread: f32[2] = [0.25, 0.75]
+  freq = 440.0 {20.0, 20000.0}
 ```
 
-At top level only, `kins` is an alias for `params`:
+At the top level only, `kins` is an alias for `params`.
 
 ```onda
 kins:
@@ -203,152 +188,140 @@ kins:
   resonance = 0.5
 ```
 
-Count shorthand and section default types work the same way as `ins`:
+Rules:
+
+- Omitted param types without defaults become `f32`.
+- Omitted param types with defaults infer from the default.
+- `gain = 0.5` becomes `f32`; `mode = 0` becomes `i32`.
+- Scalar params can have ranges. Array params cannot have ranges.
+- `params N` expands to `param1..paramN`; top-level `kins N` expands to `kin1..kinN`.
+- Top-level code may declare either `params` or `kins`, not both.
+- Top-level `paramN` or `kinN` usage can implicitly create params up to that ordinal.
+- Top-level params are readable in executable code but are not writable from top-level event handlers.
+
+Explicitly declared homogeneous params can be indexed directly:
 
 ```onda
-params 2
-kins 2
+params 4
 
-params<i32>:
-  mode
-  octave = 0
+sample:
+  out1 = params[0] + params[1]
 ```
 
-Scalar ranges are supported:
+`params`, `kins`, and dynamic param views are not first-class arrays. Use direct
+`params[i]` or `kins[i]` access in block or sample code rather than assigning,
+slicing, passing, returning, or storing the whole surface.
+
+### Outputs
+
+`outs` declares sample-rate audio outputs. `outputs` is an alias.
 
 ```onda
-params:
-  freq = 440.0 {20.0, 20000.0}
-  feedback = 0.5 {0.0, 0.99}
-  voices: i32 = 4 {16}
+outs:
+  out1
+  stereo: f32[2]
 ```
 
-Inside a `proc`, a primitive scalar param can bind a proc-local update hook:
+`kouts` declares block-rate control outputs.
 
 ```onda
-proc Voice:
-  params:
-    freq = 440.0 {20.0, 20000.0} => update_freq
+kouts:
+  rms: f32
+  peak: f32
+```
 
-  init:
-    phase_inc = 0.0
+Shorthand forms:
 
-  def update_freq():
-    phase_inc = freq / sample_rate
+```onda
+outs 2
+kouts<f32> 4
 
-  sample:
-    out1 = 0.0
+outs<f64>:
+  left
+  right
 ```
 
 Rules:
-- omitted parameter types without a default value default to `f32`
-- omitted parameter types with a default value infer from the default using the same untyped-literal rules as ordinary assignments:
-  - `gain = 0.5` -> `f32`
-  - `mode = 0` -> `i32`
-  - pure numeric constant expressions also follow the usual untyped-assignment narrowing rules
-- fixed-size array params can use defaults such as `spread: f32[2] = [0.25, 0.75]`
-- fixed-size array param defaults must provide exactly the declared element count when written as array literals
-- ranges are supported only on scalar params
-- arrays are supported, but array params cannot have ranges
-- `params N` expands to `param1..paramN`
-- top-level `kins N` expands to `kin1..kinN`
-- top-level `paramN` or `kinN` usage can implicitly create parameters up to
-  that ordinal, matching the `inN` / `outN` inference style
-- input/output surfaces are block/sample-bound: `inN`, `outN`, `koutN`,
-  declared input/output arrays, and synthetic `ins` / `outs` / `kouts` views
-  cannot be read, written, passed, returned, or stored from `init`, `event`,
-  or `def` bodies
-- I/O arrays are not first-class values; use direct indexed access in
-  block/sample code instead of assigning, slicing, or passing `ins`, `outs`,
-  `kouts`, or declared input/output arrays
-- `params[i]` is supported under the same dynamic-indexing rules as `ins[i]`
-- at top level, `kins[i]` is the matching dynamic-index view for explicit
-  `kins` declarations
-- dynamic param surfaces are not first-class array values: `params`, `kins`,
-  and child proc views such as `child.params` cannot be assigned to locals,
-  sliced, passed to functions/events, returned, or stored
-- dynamic param indexing is only valid as a direct `params[i]` / `kins[i]` /
-  `child.params[i]` access in block or sample code
-- top-level code may declare either `params` or `kins`, not both
-- `kins` is not valid inside a `proc`; proc parameter sections are always
-  spelled `params`
-- top-level params are readable in executable code but are not writable from top-level event handlers
-- proc constructor arguments for params are named-only
-- proc params may be prefixed with `pin` when they should be initialized and
-  updated only through the owning proc's controlled code path:
-  `pin cutoff = 1000.0`
-- `pin` is a reserved keyword. It is only valid as a proc-param prefix, not as
-  an identifier or top-level param modifier, and it applies to scalar params
-  and fixed-size array params
-- pinned params are accepted by processor constructors and the builtin
-  `proc.init(...)` event, and the owning proc may read or assign them from its
-  own `init`, `sample`, `block`, `event`, or proc-local `def` bodies
-- external direct access to pinned params is rejected: `child.cutoff`,
-  `child.cutoff = ...`, `child.coeffs[i]`, `child.coeffs[i] = ...`, and live
-  named proc call arguments such as `child(cutoff = ...)`
-- when a child proc has any pinned params, external dynamic
-  `child.params[i]` access is rejected; use a named live param for public
-  modulation, pass pinned values to the constructor or `init(...)`, or expose an
-  event/setter that preserves the proc's invariants
-- scalar parameter families can use count shorthand such as `params N`, while fixed-size parameter arrays can use types such as `T[N]`
-- `=> hook_name` is only supported on primitive scalar proc params
-- the hook target must be a proc-local `def` in the same proc, with zero parameters, no explicit return type, and no `return`
-- a bound hook runs after the param store and range clamp; construction and builtin `init(...)` run bound hooks after the proc `init` body in param declaration order
-- bound hooks are immediate per-param reactions; the compiler does not batch or coalesce hooks across multiple assignments
-- use bound hooks for single-param derived state, validation, or child-param cascades
-- use an explicit proc event or proc-local setter for coupled params that should rebuild shared state once after several values change
-- bound hooks may read owner params, update init-rooted state, and assign named params on child procs; child param hooks cascade through nested children after each child store and range clamp
-- bound hooks cannot assign owner params, inputs, outputs, child proc inputs/outputs/internal state, or child dynamic `params[i]`, and cannot call child proc receivers/events
-- when a proc has bound params, dynamic `params[i] = ...` assignments are rejected; assign the named param instead
 
-For example, a filter with coupled `cutoff` and `q` coefficients should prefer
-an event/setter over attaching the same hook to both params:
+- Omitted output types default to `f32`, or to the section default.
+- `outs N` expands to `out1..outN`; `kouts N` expands to `kout1..koutN`.
+- Using `outN` without an `outs` block implicitly creates a sample-rate `f32` output.
+- Using `koutN` without a `kouts` block implicitly creates a block-rate `f32` control output.
+- Top-level `outs` and `kouts` names must be disjoint.
+- Numbered `outN` names are audio outputs; use `koutN` for numbered control outputs.
+- `outs[i] = expr` is valid in sample-rate code when explicit outputs form one scalar type.
+- `kouts[i] = expr` is valid in block-rate code when explicit control outputs form one scalar type.
+- Dynamic output indices are 0-based and clamped.
+
+### External Buffers
+
+`buffers` declares host-bound buffers.
 
 ```onda
-proc Filter:
-  params:
-    pin cutoff = 1000.0
-    pin q = 0.707
-
-  init:
-    coeff = 0.0
-    compute_coeffs()
-
-  def compute_coeffs():
-    coeff = cutoff / max(q, 0.01)
-
-  event set_coeffs(cutoff_v, q_v):
-    cutoff = cutoff_v
-    q = q_v
-    compute_coeffs()
+buffers:
+  src: buffer[f32]
+  bus: buffer[f32[2]]
+  any_bus: buffer[f32[]]
 ```
 
-### 4.3 `events`
-
-`events` declares callable event handlers.
-At the top level, events are host-triggered.
-Inside a `proc`, events are receiver-only commands that you call on a proc instance.
-
-There is also singular sugar:
+Inside a `buffers` block, shorthand element forms are accepted:
 
 ```onda
-event note_on(freq_hz = 440.0):
-  gate = true
+buffers:
+  mono: f32
+  stereo: f32[2]
+  dyn: f32[]
 ```
 
-That is exactly equivalent to:
+Shorthand forms:
 
 ```onda
-events:
-  note_on(freq_hz = 440.0):
-    gate = true
+buffers 2
+
+buffers[f32]:
+  delay
+  scratch
 ```
 
-You can mix `event ...` declarations with an `events:` block in the same owner; they are merged into one event set.
-
-Top-level example:
+Buffer access and metadata:
 
 ```onda
+sample:
+  mono0 = src[0]
+  left0 = bus[0][0]
+  n = src.len()
+  c = bus.chans()
+  sr = src.samplerate()
+```
+
+Unchecked access exists as both methods and free functions:
+
+```onda
+sample:
+  a = src.unsafe_read(i)
+  src.unsafe_write(i, a)
+  b = bus.unsafe_read2(ch, i)
+  bus.unsafe_write2(ch, i, b)
+```
+
+Rules:
+
+- `buffers N` expands to `buf1..bufN`.
+- Explicit declarations and count shorthand cannot currently be mixed in one `buffers` block.
+- Runtime binding validates element type and channel constraints.
+- Primitive buffer slices are supported with the same slice syntax as arrays.
+
+### Top-Level Events
+
+Top-level events are host-triggered handlers. They are useful for musical
+gestures, one-shot control changes, and stateful commands.
+
+```onda
+init:
+  freq_state = 440.0
+  amp_state = 0.0
+  gate = false
+
 events:
   note_on(freq_hz = 440.0, amp = 1.0):
     freq_state = freq_hz
@@ -359,203 +332,44 @@ events:
     gate = false
 ```
 
-Proc-level example:
+Singular event sugar:
 
 ```onda
-proc Voice:
-  params:
-    amp = 0.0
-
-  events:
-    note_on(v: f32):
-      amp = v
-
-  sample:
-    out1 = amp
+event bang():
+  gate = true
 ```
 
-Supported event parameter types:
-- primitive scalars
-- fixed-size primitive arrays: `T[N]`
-- read-only primitive slices: `T[]`
-- for proc events only, generic primitive placeholders such as `T`, `T[N]`, and `T[]` when `T` is a proc generic parameter specialized to a primitive
+This is equivalent to an `events:` block with one event. Singular `event ...`
+declarations and an `events:` block can be mixed in the same owner.
+
+Supported top-level event parameter types:
+
+- Primitive scalars.
+- Fixed-size primitive arrays: `T[N]`.
+- Read-only primitive slices: `T[]`.
 
 Rules:
-- event params without an explicit type default to `f32`
-- defaults work for scalar params and fixed-size array params, including generic proc event forms after specialization
-- fixed-array and slice params are read-only in handlers
-- top-level events run immediately on the audio thread
-- proc events are reached through explicit receiver calls such as `voice.note_on(...)`
-- proc-event calls are statement-only, not expressions
-- unqualified calls never resolve to proc events
-- a proc cannot call its own event handler as an internal subroutine; put shared internal logic in a proc-local `def`, and have the event call that helper
-- top-level handlers may write only to existing top-level state rooted in `init`
-- proc handlers may write proc state rooted in `init` declarations and proc params
-- handlers cannot write inputs or outputs
-- top-level event handlers cannot write top-level params
-- unknown top-level event indices are ignored
-- a known top-level event with the wrong payload size is a runtime error
-- for top-level host events with slice params, the payload layout is `i32 len` followed by contiguous element bytes
 
-Every proc also gets a builtin reserved `init(...)` event:
-- it mirrors the proc params in declaration order
-- it uses the concrete specialized param types
-- it cannot be redefined in the proc `events` block
-- it assigns the provided values into the proc params, reruns that proc instance's `init` block, then runs any bound param hooks
-- omitted arguments use the proc parameter defaults
+- Event params without explicit types default to `f32`.
+- Defaults work for scalar and fixed-size array params.
+- Fixed-array and slice params are read-only in handlers.
+- Top-level events run immediately on the audio thread.
+- Handlers cannot write inputs, outputs, or top-level params.
+- Top-level handlers may write only existing top-level state rooted in `init`.
+- Unknown top-level event indices are ignored at runtime.
+- A known top-level event with the wrong payload size is a runtime error.
+- Top-level host events with slice params use payload layout `i32 len` followed by contiguous element bytes.
 
-That makes calls such as these legal:
+## 4. Executable Sections
 
-```onda
-voice.init(0.5)
-voice.init(gain = 0.5)
-voices[i].init(freq = 220.0, amp = 0.1)
-```
+Executable sections determine when code runs. Learn them in this order:
+`init` creates state, `sample` produces or processes audio, and `block` wraps
+sample code with per-block work.
 
-This is useful for reconfiguring and resetting a reused proc instance in place.
-Because params are in scope in `init`, the rerun can rebuild derived state such
-as filter coefficients, phase, nested processor state, or fixed setup arrays
-from the new param values.
+### `init`
 
-### 4.4 `buffers`
-
-`buffers` declares external host-bound buffers.
-
-```onda
-buffers:
-  src: buffer[f32]
-  bus: buffer[f32[2]]
-  any_bus: buffer[f32[]]
-```
-
-Inside a `buffers` block, shorthand forms are accepted:
-
-```onda
-buffers:
-  mono: f32
-  stereo: f32[2]
-  dyn: f32[]
-```
-
-Count shorthand is supported:
-
-```onda
-buffers 2
-```
-
-Section default type shorthand is also supported:
-
-```onda
-buffers[f32]:
-  delay
-  scratch
-```
-
-Buffer access:
-
-```onda
-sample:
-  mono0 = src[0]
-  left0 = bus[0][0]
-  right0 = bus[1][0]
-```
-
-Buffer methods:
-- `buf.len()` returns the frame count
-- `buf.chans()` returns the channel count
-- `buf.samplerate()` returns the bound buffer sample rate as `f32`
-
-There is currently no public flattened-length or `total_len` method.
-
-Other supported operations:
-- method-style and free-function unchecked access:
-  - `buf.unsafe_read(i)`
-  - `buf.unsafe_write(i, v)`
-  - `unsafe_read(buf, i)`
-  - `unsafe_write(buf, i, v)`
-  - `buf.unsafe_read2(ch, i)`
-  - `buf.unsafe_write2(ch, i, v)`
-  - `unsafe_read2(buf, ch, i)`
-  - `unsafe_write2(buf, ch, i, v)`
-- primitive buffer slicing, covered later in the arrays section
-
-Rules:
-- `buffers N` expands to `buf1..bufN`
-- explicit declarations and count shorthand cannot currently be mixed in the same `buffers` block
-- `buffers` count shorthand accepts the same compile-time integer expressions as other section counts, including `const` values and namespace integer template parameters
-- runtime binding validates element type and channel constraints
-
-### 4.5 `outs` and `kouts`
-
-`outs` declares sample-rate audio output ports.
-
-```onda
-outs:
-  out1
-  stereo: f32[2]
-```
-
-`kouts` declares block-rate control output ports.
-
-```onda
-kouts:
-  rms: f32
-  peak: f32
-```
-
-Top-level programs may declare both sections:
-
-```onda
-outs:
-  out1
-  out2
-
-kouts:
-  rms: f32
-  peak: f32
-```
-
-Count shorthand and section default types work the same way as `ins`:
-
-```onda
-outs 2
-kouts 2
-
-outs<f64>:
-  left
-  right
-
-kouts<f32> 4
-```
-
-Rules:
-- omitted output types default to `f32`
-- `outs N` expands to `out1..outN`
-- `kouts N` expands to `kout1..koutN`
-- if `outN` is used without an `outs` block, it is implicitly created as `f32`
-- if `koutN` is used without a `kouts` block, it is implicitly created as `f32`
-- implicit top-level `outN` inference is sample-rate/audio-only
-- numbered `outN` names are reserved for audio outputs; use `koutN` for
-  numbered control outputs
-- top-level `outs` and `kouts` names must be disjoint; one symbol cannot be
-  both an audio output and a control output
-- a processor declares either `outs` or `kouts`, not both
-- `kouts` processors use `block` with no nested `sample`, cannot declare `ins`,
-  and cannot declare `graph`
-- top-level `kouts` are host-visible control outputs and use the
-  `onda_control_output_*` metadata/read APIs
-- `outs[i] = expr` is supported when outputs were declared explicitly, all
-  indexed audio output slots have one scalar type, and the current scope is
-  sample-rate code
-- `kouts[i] = expr` is supported when control outputs were declared explicitly,
-  all indexed control output slots have one scalar type, and the current scope
-  is block-rate code
-- indices use clamped 0-based runtime indexing
-
-### 4.6 `init`
-
-`init` is where persistent state is created and where structs and processors are usually constructed.
-It runs on instance creation and reset.
+`init` runs when an instance is created or reset. It creates persistent state
+and usually constructs structs and processors.
 
 ```onda
 init:
@@ -565,11 +379,12 @@ init:
 ```
 
 Typical uses:
-- create persistent scalar state
-- create arrays and tuples
-- construct structs
-- construct proc instances
-- perform one-time setup
+
+- Create persistent scalar state.
+- Create arrays and tuples.
+- Construct structs.
+- Construct proc instances.
+- Perform one-time setup.
 
 Section default scalar types are supported:
 
@@ -580,13 +395,12 @@ init<f64>:
 ```
 
 Rules:
-- a fresh top-level scalar assignment in `init` introduces persistent owner state
-- a fresh assignment inside nested control flow in `init` is local to that `init` flow, not persistent state
-- assigning to an already visible state symbol updates that state
-- `const` declarations are allowed inside `init`
-- declaration order is lexical
 
-Example:
+- A fresh top-level scalar assignment in `init` introduces persistent owner state.
+- Assigning to an already visible state symbol updates that state.
+- `const` declarations are allowed inside `init`.
+- Declaration order is lexical.
+- A fresh assignment inside nested control flow in `init` is local to that flow, not persistent state.
 
 ```onda
 init:
@@ -597,39 +411,55 @@ init:
   carried = tmp
 ```
 
-`tmp` is local to `init`, but because every branch assigns it, it is available later in the same `init` flow.
-`carried` becomes persistent state.
+Here `tmp` is local to the `init` flow, while `carried` becomes persistent state.
 
-### 4.7 `block`
+### `sample`
 
-`block` is the per-audio-block executable scope.
-It is useful when a value should be computed once per host block rather than once per sample.
-
-Structure:
+`sample` is the per-sample executable scope. It is the most direct way to write
+audio-rate code.
 
 ```onda
-block:
-  precomputed = freq * TWO_PI / SR
-
-  sample:
-    phase = phase + precomputed
-    out1 = sin(phase)
+sample:
+  out1 = in1 * gain
 ```
 
-You can think of it as:
-- `block pre`
-- nested `sample`
-- `block post`
+Rules:
+
+- Fresh assignments in `sample` create locals.
+- `sample` does not introduce new persistent owner state.
+- `return` is valid in `def` bodies, not in top-level `sample`.
+- Input/output surfaces are available in `sample`.
+
+#### Oversampled `sample`
+
+Once a normal `sample` block is clear, you can oversample it with `sample N:`.
+
+```onda
+sample 4:
+  out1 = tanh(in1 * 8.0)
+```
 
 Rules:
-- top-level statements before the nested `sample:` are block-pre code
-- statements after the nested `sample:` are block-post code
-- fresh top-level assignments in block-pre introduce block-carried owner state visible to later `sample` and block-post code
-- fresh top-level assignments in block-post are visible only after that point
-- fresh nested assignments inside `if`, `for`, and `while` stay local
-- `block` and `sample` are mutually exclusive with `graph` in the same owner
 
-This is the common pattern for derived per-block values:
+- Supported factors are `1`, `2`, `4`, `8`, `16`, `32`, `64`, `128`, `256`, and `512`.
+- `sample:` is equivalent to `sample 1:`.
+- The factor can be any compile-time integer expression resolving to a supported factor.
+- Audio input reads are interpolated across oversample substeps.
+- Params are control-rate boundaries and are held within the base sample.
+- Outputs are filtered and decimated back to the base rate.
+- `SR` inside oversampled code is the effective sample rate.
+- `HOST_SR` and its aliases always mean the host sample rate.
+- `BS` remains the logical host block size.
+
+Generated signal code runs at the rate of the scope that evaluates it. For
+example, a host-rate oscillator feeding an oversampled distortion proc is
+evaluated once per host sample, then interpolated into the distortion proc. An
+oscillator evaluated inside the oversampled scope runs at the oversampled rate.
+
+### `block`
+
+`block` runs once per host audio block. It is useful when a value should be
+computed once per block rather than once per sample.
 
 ```onda
 block:
@@ -642,157 +472,164 @@ block:
     out1 = sin(phase)
 ```
 
-### 4.8 `sample`
+You can think of a `block` with audio outputs as three regions:
 
-`sample` is the per-sample executable scope.
+1. Block-pre statements before the nested `sample`.
+2. The nested per-sample `sample`.
+3. Block-post statements after the nested `sample`.
+
+Rules:
+
+- With sample-rate outputs, a `block` section must include a nested `sample`.
+- Top-level statements before nested `sample` are block-pre code.
+- Statements after nested `sample` are block-post code.
+- Fresh top-level assignments in block-pre introduce block-carried owner state visible to later `sample` and block-post code.
+- Fresh top-level assignments in block-post are visible only after that point.
+- Fresh nested assignments inside `if`, `for`, and `while` stay local.
+- `block` and `sample` are mutually exclusive with `graph` in the same owner.
+
+`kouts` programs and processors use `block` without a nested `sample`, because
+control outputs are block-rate values.
+
+## 5. Types and Values
+
+Primitive types:
+
+- `f32`
+- `f64`
+- `i32`
+- `i64`
+- `bool`
+
+Compound types:
+
+| Type | Example | Notes |
+| --- | --- | --- |
+| Fixed array | `f32[8]` | Length is compile-time. |
+| Slice | `f32[]` | Read-only or writable view depending on source and call usage. |
+| Tuple | `(f32, i32)` | Anonymous fixed-length heterogeneous value. |
+| Buffer | `buffer[f32]`, `buffer[f32[2]]`, `buffer[f32[]]` | Host-bound external data. |
+| Struct | `Voice`, `Box<f32>` | Nominal data type declared with `struct`. |
+| Proc | `Gain`, `Sine<f64>` | Stateful processing unit declared with `proc`. |
+
+### Numeric Literals and Casts
+
+Untyped first assignment uses Onda defaults:
 
 ```onda
 sample:
-  out1 = in1 * gain
+  x = 0.5  # f32
+  n = 5    # i32 when it fits, otherwise i64
+```
+
+Pure numeric literal expressions adapt to the surrounding numeric context:
+
+```onda
+init:
+  phase: f32 = 0.0
+
+block:
+  tau = TWO_PI
+  incr = freq * TWO_PI / SR
+```
+
+Although `TWO_PI` is `f64`, pure numeric expressions such as `TWO_PI / SR` can
+be narrowed automatically in an `f32` context. Use explicit casts when you want
+to force a type:
+
+```onda
+sample:
+  wide = f64(PI * 2.0)
+  count = i64(0)
+```
+
+### Builtin Constants and Functions
+
+Builtin constants:
+
+| Constant family | Names | Type |
+| --- | --- | --- |
+| Pi | `PI`, `pi` | `f64` |
+| Two pi | `TWO_PI`, `TWOPI`, `two_pi`, `twopi` | `f64` |
+| Effective sample rate | `SAMPLE_RATE`, `SAMPLERATE`, `SR`, `sample_rate`, `samplerate` | `f32` |
+| Host sample rate | `HOST_SR`, `HOST_SAMPLE_RATE`, `HOST_SAMPLERATE`, `host_sample_rate`, `host_samplerate` | `f32` |
+| Block size | `BLOCK_SIZE`, `BLOCKSIZE`, `BS`, `block_size`, `blocksize` | `i32` |
+
+Builtin functions include:
+
+```text
+sin cos tan tanh atan atan2 exp log sqrt pow abs fabs
+floor ceil round trunc min max fma
+```
+
+### Arrays and Slices
+
+Fixed-size arrays can be state or locals:
+
+```onda
+init:
+  taps: f32[8]
+
+sample:
+  coeffs = [0.5, 0.25, 0.125]
+  out1 = coeffs[0]
+```
+
+Primitive array and buffer slices use Python-style syntax:
+
+```onda
+sample:
+  a = buf[:]
+  b = buf[2:]
+  c = buf[:-1]
+  d = buf[1:-2]
 ```
 
 Rules:
-- fresh assignments in `sample` create locals
-- `sample` does not introduce new persistent owner state
-- `return` is valid in `def` bodies, not in top-level `sample`
 
-Sample oversampling is supported:
+- Slice forms are `a[:]`, `a[start:]`, `a[:end]`, and `a[start:end]`.
+- Negative bounds are supported.
+- Slice expressions lower to primitive slice views of type `T[]`.
+- Buffer slicing also yields `T[]`.
+- Struct-element arrays are not sliceable in the current implementation.
 
-```onda
-sample 4:
-  out1 = tanh(in1 * 8.0)
-```
-
-Rules for oversampled `sample` blocks:
-- allowed factors are `1`, `2`, `4`, `8`, `16`, `32`, `64`, `128`, `256`, `512`
-- `sample:` is equivalent to `sample 1:`
-- the factor can be any compile-time integer constant expression that resolves to one of the supported factors
-- invalid factors are semantic errors
-
-Runtime behavior of oversampling:
-- audio input reads are interpolated across oversample substeps
-- proc `ins` are audio-rate boundaries: when an oversampled proc is called
-  from a lower-rate scope, the caller supplies one input value and the proc
-  interpolates it across its internal substeps
-- params are control-rate boundaries and are held within the base sample
-- generated signal code runs at the rate of the scope that evaluates it. For
-  example, a host-rate oscillator feeding an oversampled distortion proc is
-  evaluated once per host sample, then interpolated into the distortion proc;
-  an oscillator evaluated inside the oversampled scope runs at the oversampled
-  rate.
-- top-level `sample N` code uses the effective sample rate:
-  `SR = host SR * N`
-- inside a proc, every proc-owned `SR` reference uses that proc's runtime
-  sample rate. This includes proc-local consts, params, ports, state arrays,
-  child proc-array sizes, `init`, `block`, `sample`, events, proc-local defs,
-  bind hooks, and typed local arrays.
-- `HOST_SR` and its aliases (`HOST_SAMPLE_RATE`, `HOST_SAMPLERATE`,
-  `host_sample_rate`, `host_samplerate`) always use the host sample rate,
-  including inside oversampled procs
-- `BS` remains the logical host block size
-- outputs are filtered and decimated back to the base rate
-
-Use `HOST_SR` or one of its aliases for host-sized tables inside an
-oversampled proc.
-
-### 4.9 `graph`
-
-`graph` describes routing declaratively.
-Use it when you want the compiler to wire together proc instances and signal flow for you.
+Writable slice assignment is statement-only:
 
 ```onda
-proc GainProc:
-  params:
-    gain = 1.0
-
-  sample:
-    out1 = in1 * gain
-
-init:
-  p = GainProc()
-
-graph:
-  in1 >> p.in1
-  3.0 >> p.gain
-  p.out1 >> out1
+sample:
+  values[1:-1] = 0.5
+  dst[:] = src[:]
 ```
 
-`graph` is supported both at the top level and inside processors.
+Scalar fill writes the full target slice. Slice copy writes
+`min(dst_len, src_len)` elements. Overlapping slice copies behave as if copied
+through a temporary. Event payload arrays and slices are read-only.
 
-Supported edge forms:
+### Tuples
+
+Tuples are anonymous fixed-length heterogeneous values.
 
 ```onda
-src >> dst
-dst << src
-@block src >> dst
-@sample src >> dst
-src >>[expr] dst
-src >> { a, b }
-{ a, b } << src
+sample:
+  pair = (1.0, 2.0)
+  mixed = (1.0, 42, true)
+  out1 = pair[0]
 ```
 
-Important rules:
-- `graph` is mutually exclusive with `sample` and `block` in the same owner
-- `init` may still be used together with `graph`
-- proc instances used as graph nodes are typically created in `init`
-- unannotated edges targeting proc params default to `@block`
-- unannotated edges targeting other destinations default to `@sample`
-- `@sample` can override the default `@block` behavior for proc param destinations
-- delayed edges use `>>[expr]` or `<<[expr]`, where `expr` must be a compile-time nonnegative integer expression
-- delayed edges are sample-rate only
-- `>>[0]` does not break a cycle
+Rules:
 
-Current graph sources include:
-- top-level inputs and params
-- proc outputs
-- proc-array slot outputs
-- array literals such as `[a, b]`
-- indexed reads
-- sliced reads
-- whole-array reads
-- arithmetic and logical expressions built from supported graph sources
-- element-wise array expressions where the final shape matches the destination
+- Type syntax is `(T1, T2, ...)`.
+- Maximum arity is 16.
+- Nested tuples are not currently supported.
+- Tuple element access uses compile-time integer indices.
+- Tuple destructuring is supported: `(a, b) = (10.0, 20.0)`.
+- Tuples can be locals, `init` state, `def` params and returns, and struct fields.
 
-Current legal destinations include:
-- top-level outputs
-- proc inputs
-- proc params
-- proc-array slot inputs and params
+## 6. Statements and Expressions
 
-Type and scheduling rules:
-- graph edges use strict shape matching
-- scalar-to-fixed-array broadcast is allowed
-- each destination has a single writer
-- fan-out is allowed
-- cycles are rejected unless a positive sample delay breaks the cycle
-- proc nodes are stepped implicitly according to graph reachability and topological order
-- graph lowering can be inspected with `onda compile <file> --dump-graph`
+### Assignment and Declarations
 
-Current graph limits:
-- user-defined function calls and proc calls are not supported inside graph source expressions
-- array-constructor expressions such as `f32[2](...)` are not graph sources
-- graph event propagation syntax does not exist; use ordinary `events` blocks or singular `event ...` declarations for event routing
-
-Proc bundles can route directly into destination sets:
-
-```onda
-graph:
-  reverb >> { out1, out2 }
-  voices[0] >> { left, right }
-```
-
-Those forms:
-- zip by output order when the proc has the same number of outputs as the destination set
-- broadcast when the proc has exactly one output
-- otherwise produce a semantic error
-
-## 5. Common syntax inside executable code
-
-Once you know what the major blocks are, the rest of the language is mostly the syntax you use inside `init`, `block`, `sample`, `events`, and `def`.
-
-### 5.1 Variables, assignment, and typing
-
-First assignment infers a type by default:
+First assignment infers a type:
 
 ```onda
 sample:
@@ -807,109 +644,87 @@ sample:
   x: i64 = 0
 ```
 
-Assignment rules:
-- assigning to an existing visible symbol updates it
-- assigning to a new symbol introduces a new symbol according to the storage/scope rules of the current executable scope
-- declaration order is lexical
+Assigning to an existing visible symbol updates it. Assigning to a new symbol
+introduces a symbol according to the storage rules of the current scope.
 
-### 5.2 Operators and builtin constants
+### Operators
 
 Supported operators:
-- arithmetic: `+`, `-`, `*`, `/`, `%`
-- comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
-- logical: `!`, `&&`, `||`
-- bitwise integer ops: `~`, `&`, `|`, `^`, `<<`, `>>`
 
-Bitwise rules:
-- bitwise operators accept `i32` and `i64` only
-- mixed `i32` and `i64` operands widen to `i64`
-- `>>` is an arithmetic right shift
+| Category | Operators |
+| --- | --- |
+| Arithmetic | `+`, `-`, `*`, `/`, `%` |
+| Comparisons | `==`, `!=`, `<`, `<=`, `>`, `>=` |
+| Logical | `!`, `&&`, `||` |
+| Bitwise integer | `~`, `&`, `|`, `^`, `<<`, `>>` |
 
-Builtin compile-time constants:
-- `PI`, `pi`
-- `TWO_PI`, `TWOPI`, `two_pi`, `twopi`
-- `SAMPLE_RATE`, `SAMPLERATE`, `SR`, `sample_rate`, `samplerate`
-- `HOST_SR`, `HOST_SAMPLE_RATE`, `HOST_SAMPLERATE`, `host_sample_rate`, `host_samplerate`
-- `BLOCK_SIZE`, `BLOCKSIZE`, `BS`, `block_size`, `blocksize`
+Bitwise operators accept `i32` and `i64`. Mixed `i32` and `i64` operands widen
+to `i64`. `>>` is an arithmetic right shift.
 
-Default builtin constant types:
-- `PI` and `TWO_PI` are `f64`
-- `SAMPLE_RATE` and host sample-rate aliases are `f32`
-- `BLOCK_SIZE` is `i32`
+### Control Flow
 
-### 5.2.1 Numeric literals, precision, and automatic narrowing
-
-Numeric literals in Onda have two related behaviors:
-- untyped first-assignment inference keeps the language's usual defaults
-- pure numeric literal expressions adapt automatically to the surrounding numeric context
-
-What that means in practice:
-- an untyped decimal literal such as `0.5` defaults to `f32` when it introduces a new symbol
-- an untyped integer literal such as `5` defaults to `i32` when it fits in `i32`, otherwise `i64`
-- builtin constants such as `PI` and `TWO_PI` are `f64`
-- pure numeric expressions such as `0.5 + 0.25`, `PI * 2.0`, or `TWO_PI / SR` can be narrowed automatically when used in an `f32` or `i32` context
-
-Examples:
+Supported forms:
 
 ```onda
-sample:
-  x = 0.5        # x becomes f32
-  n = 5          # n becomes i32
-  wide = f64(PI * 2.0)  # wide becomes f64
+if x > 0.0:
+  y = x
+elif x < 0.0:
+  y = -x
+else:
+  y = 0.0
+
+for i in 0..8:
+  sum = sum + taps[i]
+
+for i in 0..=8:
+  sum = sum + f32(i)
+
+for i @ -1 in 10..0:
+  dst[i] = src[i]
+
+loop 8:
+  sum = sum + taps[_]
+
+while sum < 1.0:
+  sum = sum + 0.1
 ```
 
-```onda
-init:
-  phase: f32 = 0.0
+Rules:
 
-block:
-  tau = TWO_PI          # tau becomes f32 here
-  incr = freq * TWO_PI / SR
-```
+- `for i in A..B` excludes `B`; `for i in A..=B` includes `B`.
+- `@ STEP` defaults to `1`; `@ 0` is invalid.
+- Descending loops use a negative step.
+- `loop N` is shorthand for `for _ in 0..N`.
+- Loop variables are local to the loop body.
+- Fresh symbols created inside loops do not escape the loop.
+- `break` and `continue` are supported in loops.
+- `return` is valid in `def` bodies, not in top-level `sample`.
 
-Because `TWO_PI` is part of a pure numeric literal expression, you usually do not need to write:
+## 7. Constants and Compile-Time Code
 
-```onda
-tau = f32(TWO_PI)
-```
-
-The language already handles that narrowing in the common case.
-
-Explicit casts are still useful when you want to force a particular type on purpose, for example:
-- to pin a declaration as `f64` or `i64`
-- to make a mixed-type expression obvious
-- to disambiguate overload resolution
-- to deliberately opt out of the default literal behavior
-
-For example:
-
-```onda
-sample:
-  a = PI * 2.0        # a becomes f32
-  b = f64(PI * 2.0)   # b becomes f64
-  c = i64(0)          # c becomes i64
-```
-
-User-defined `const` values follow the same general rule:
-- untyped `const X = expr` uses the inferred type of the constant expression
-- typed `const X: T = expr` evaluates `expr` as `T`
-
-That means typed constants preserve the precision of their declared type, while untyped code still gets Onda's normal `f32` / `i32` defaults where appropriate.
-
-User-defined compile-time constants:
+Use `const` for compile-time values:
 
 ```onda
 const MaxVoices = 8
 const Hop: i32 = BLOCK_SIZE / 2
 const Scale: f32[3] = [0.5, 1.0, 2.0]
 const MoreScale: f32[] = [0.25, 0.5, 1.0, 2.0]
+```
 
-const def twice(x: f32) -> f32:
-  return x * 2.0
+Rules:
 
-const TwiceHalf = twice(0.5)
-const Table: f32[2] = [twice(0.25), twice(0.5)]
+- `const NAME = expr` and `const NAME: T = expr` are supported.
+- `expr` must be compile-time evaluable.
+- Primitive const arrays are supported at top level and namespace scope.
+- `const NAME: T[N] = [ ... ]` declares a fixed-size const array.
+- `const NAME: T[] = expr` infers the concrete array length from the initializer.
+- Inferred-length const array initializers can be literals, existing const arrays, const-array slices, or array-returning `const def` calls.
+- Untyped scalar const declarations preserve full `f64` or `i64` precision until the use site applies normal type rules.
+- Reassignment, forward references, recursion, and mutual recursion are rejected.
 
+`const def` declares compile-time helper functions:
+
+```onda
 const def ramp() -> f32[4]:
   values: f32[4]
   for i in 0..4:
@@ -917,192 +732,27 @@ const def ramp() -> f32[4]:
   return values
 
 const Ramp: f32[4] = ramp()
-
-const def scaled(xs: f32[3], gain: f32) -> f32[3]:
-  values: f32[3]
-  for i in 0..3:
-    values[i] = xs[i] * gain
-  return values
-
-const Scaled: f32[3] = scaled(Scale, 0.5)
-
-const def sum_any(xs: f32[]) -> f32:
-  total = 0.0
-  for i in 0..(xs.len()):
-    total = total + xs[i]
-  return total
-
-const def count_any(xs: []) -> i32:
-  return xs.len()
-
-const TotalScale = sum_any(MoreScale)
-const ScaleCount = count_any(MoreScale)
-
-def sum_edges(xs: f32[]):
-  return xs[0] + xs[xs.len() - 1]
-
-const SumSource: f32[3] = [0.25, 0.5, 1.0]
-const SumSourceTail: f32[] = SumSource[1:]
-
-outs:
-  out1
-
-sample:
-  out1 = sum_edges(SumSource)
 ```
 
-Rules:
-- `const NAME = expr` and `const NAME: T = expr` are supported
-- primitive const arrays are supported at top level and namespace scope with fixed-size `const NAME: T[N] = [ ... ]`, inferred-length `const NAME: T[] = expr`, or first-element inference
-- `const NAME: T[] = expr` requires the initializer to evaluate to a compile-time primitive array with element type `T`; the concrete array length is inferred from the initializer
-- inferred-length const array initializers can be array literals, existing const arrays, const-array slices, or array-returning `const def` calls
-- `expr` must be compile-time evaluable
-- `const` is supported at top level, inside namespaces, and inside executable scopes
-- namespace consts can be referenced through qualified paths such as `NS::VALUE`
-- scalar-returning and fixed-array-returning `const def` helpers are supported at top level and namespace scope for later const-array initializers
-- top-level and namespace scalar `const` declarations can call scalar-returning `const def`s, for example `const X = helper(0.5)`
-- untyped scalar const declarations preserve full `f64` / `i64` precision until the value's eventual use site applies its normal type rules
-- `const def` params support primitive scalars, fixed-size primitive arrays, and read-only primitive array slice params such as `f32[]`, `i64[]`, and untyped `[]`
-- typed const-def slice params such as `f32[]` accept compile-time arrays of any length with the matching element type
-- untyped const-def slice params `[]` accept compile-time arrays of any length and any primitive element type
-- const-def slice params support indexed reads and `.len()`, but indexed writes are rejected
-- every `const def` must declare an explicit return type, and every `return` is evaluated against that type; scalar returns are coerced/validated as that primitive type, while fixed-array returns must match the declared element type and length exactly
-- array-returning `const def` bodies can use local fixed primitive arrays, indexed local-array reads/writes, `if`, `for`, `loop`, `return`, pure builtin math, and calls to earlier visible const defs
-- const arrays and const slices can be passed to ordinary runtime `def` array params when the callee param is inferred read-only
-- writes through an array param, writes through its aliases, `unsafe_write`, or forwarding to a mutable callee make the param mutable and reject const-array args
-- reassignment is rejected
-- forward references, recursion, and mutual recursion are rejected
+`const def` rules:
 
-### 5.3 Control flow
+- Every `const def` must declare an explicit return type.
+- Params support primitive scalars, fixed-size primitive arrays, typed primitive slices such as `f32[]`, and untyped slices `[]`.
+- Typed slice params accept compile-time arrays of any length with the matching element type.
+- Untyped slice params accept compile-time arrays of any length and primitive element type.
+- Slice params support indexed reads and `.len()`, but not indexed writes.
+- Array-returning bodies can use local fixed primitive arrays, indexed local-array reads/writes, `if`, `for`, `loop`, `return`, pure builtin math, and calls to earlier visible const defs.
+- Scalar-returning const defs can be used by scalar const declarations.
+- Fixed-array-returning const defs can be used by const array declarations.
 
-Supported forms:
-- `if (...)`
-- `if (...) elif (...) else`
-- `for i in A..B`
-- `for i in A..=B`
-- `for i @ STEP in A..B`
-- `loop N`
-- `while (...)`
-- `break`
-- `continue`
-- `return`
+Const arrays and const slices can be passed to ordinary runtime `def` array
+params when the callee treats the param as read-only. Writes through the param,
+aliases, `unsafe_write`, or forwarding to a mutable callee make the param
+mutable and reject const-array arguments.
 
-Examples:
+## 8. Functions with `def`
 
-```onda
-for i in 0..8:
-  sum = sum + taps[i]
-
-for i @ -1 in 10..0:
-  dst[i] = src[i]
-
-loop 8:
-  sum = sum + taps[_]
-```
-
-Loop rules:
-- `@ STEP` defaults to `1`
-- `@ 0` is invalid
-- descending loops use a negative step
-- `loop N` is shorthand for `for _ in 0..N`
-- inside `loop N`, `_` is the loop index
-- loop variables are local to the loop body
-- a fresh symbol created inside a loop does not escape the loop
-
-### 5.4 Arrays and slices
-
-Fixed-size arrays are supported in state and local scopes:
-
-```onda
-init:
-  taps: f32[8]
-
-sample:
-  coeffs = [0.5, 0.25, 0.125]
-```
-
-Untyped array literals are supported where executable-scope declarations are valid:
-
-```onda
-sample:
-  a = [0.5, 0.8]
-  b = [i64(0), 1]
-```
-
-Primitive array and buffer slices use Python-style syntax:
-
-```onda
-sample:
-  a = buf[:]
-  b = buf[2:]
-  c = buf[:-1]
-  d = buf[1:-2]
-```
-
-Rules:
-- slice forms are `a[:]`, `a[start:]`, `a[:end]`, `a[start:end]`
-- negative bounds are supported
-- slice expressions lower to primitive slice views of type `T[]`
-- buffer slicing also yields `T[]`
-
-Writable slice assignment is supported:
-
-```onda
-sample:
-  values[1:-1] = 0.5
-  dst[:] = src[:]
-```
-
-Rules:
-- slice assignment is statement-only
-- scalar fill writes the full target slice
-- slice copy writes `min(dst_len, src_len)` elements
-- overlapping slice copies behave as if they were copied through a temporary
-- event payload arrays and slices are read-only and cannot be writable slice targets
-- struct-element arrays are not sliceable in the current implementation
-
-### 5.5 Tuples
-
-Tuples are anonymous fixed-length heterogeneous compound values.
-
-```onda
-sample:
-  pair = (1.0, 2.0)
-  triple = (1.0, 42, true)
-```
-
-Tuple syntax and rules:
-- type syntax is `(T1, T2, ...)`
-- maximum arity is 16
-- nested tuples are not currently supported
-- tuple element access uses compile-time integer indices only
-
-```onda
-sample:
-  pair = (3.0, 7.0)
-  out1 = pair[0]
-  out2 = pair[1]
-```
-
-Tuple destructuring is supported:
-
-```onda
-sample:
-  (a, b) = (10.0, 20.0)
-```
-
-Tuples can appear:
-- in local variables
-- in `init` state
-- as `def` parameters
-- as `def` return values
-- as struct fields
-
-Tuples use a flattened ABI internally.
-
-## 6. Functions with `def`
-
-`def` declares reusable functions.
+`def` declares reusable runtime functions.
 
 ```onda
 def wrap_phase(p, upper = TWO_PI):
@@ -1112,18 +762,14 @@ def wrap_phase(p, upper = TWO_PI):
 ```
 
 Supported features:
-- positional arguments
-- named arguments
-- default values
-- early return
-- optional explicit return type annotations with `->`
-- multi-line argument lists with an optional trailing comma
 
-Return types:
-- a `def` can return a primitive scalar
-- a `def` can return a tuple of primitives
-- a `def` may declare that return contract explicitly with `->`
-- returning structs, arrays, or buffers is not supported
+- Positional arguments.
+- Named arguments.
+- Default values.
+- Early return.
+- Optional explicit return type annotations with `->`.
+- Multi-line argument lists with an optional trailing comma.
+- Method-style sugar for ordinary defs: `x.clamp01()` rewrites to `clamp01(x)`.
 
 Examples:
 
@@ -1137,40 +783,60 @@ def pair(x: f32, y: i32) -> (f32, i32):
   return (x, y)
 ```
 
-Rules for explicit return annotations:
-- annotations are optional; omitting `->` keeps the current inference-based behavior
-- supported annotations are primitive scalars such as `f32` and tuples of primitive scalars
-- generic primitive placeholders are also allowed where they belong to the current generic owner, for example `-> T` or `-> (T, i32)`
-- return checking follows ordinary assignment rules: exact match and implicit widening are allowed, but narrowing requires an explicit cast in the returned expression
+Return rules:
 
-Top-level `def` bodies are lexical-local:
-- top-level runtime symbols such as `ins`, `outs`, `params`, `buffers`, and top-level `init` state are not in scope unless passed explicitly
+- A `def` can return a primitive scalar.
+- A `def` can return a tuple of primitive scalars.
+- Explicit annotations can use primitive scalars, tuples of primitive scalars, and generic primitive placeholders belonging to the current generic owner.
+- Returning structs, arrays, or buffers is not supported.
+- Return checking follows ordinary assignment rules: exact match and implicit widening are allowed; narrowing requires an explicit cast.
 
-Method-style sugar is supported for ordinary defs:
+Top-level `def` bodies are lexical-local. Top-level runtime symbols such as
+inputs, outputs, params, buffers, and `init` state are not in scope unless
+passed explicitly.
+
+### Generic Defs
+
+Runtime defs can declare type parameters:
 
 ```onda
-def clamp01(x):
-  return clamp(x, 0.0, 1.0)
+def id<T>(x: T) -> T:
+  return x
 
-sample:
-  out1 = in1.clamp01()
+def pair<T>(x: T, y: i32) -> (T, i32):
+  return (x, y)
 ```
 
-That rewrites to `clamp01(in1)`.
+The compiler monomorphizes generic defs from their call sites. Type arguments
+can often be inferred:
 
-### 6.1 `def` parameter kinds
+```onda
+sample:
+  a = id(0.5)      # T inferred as f32
+  b = id<f64>(1.0) # T provided explicitly
+```
 
-In addition to primitive scalars, `def` parameters support:
-- explicit struct types
-- typed arrays such as `arr: f32[]`
-- untyped arrays such as `arr: []`
-- typed buffers such as `buf: buffer[f32]`
-- bare buffers such as `buf: buffer`
-- generic struct and proc parameters specialized at the call site
-- typed tuple params such as `p: (f32, i32)`
-- untyped tuple params specialized from the call site
+Rules:
 
-Examples:
+- Generic def type args are restricted to `f32`, `f64`, `i32`, and `i64`.
+- `bool` is not allowed as a generic def type arg.
+- Generic type params can appear in scalar params, array params, buffer element params, locals, casts, and supported return annotations.
+- `const def` cannot declare type parameters.
+
+### Parameter Kinds
+
+`def` params support:
+
+- Primitive scalars.
+- Explicit struct types.
+- Typed arrays such as `arr: f32[]`.
+- Untyped arrays such as `arr: []`.
+- Typed buffers such as `buf: buffer[f32]`.
+- Bare buffers such as `buf: buffer`.
+- Generic struct and proc parameters specialized at the call site.
+- Typed tuple params such as `p: (f32, i32)`.
+- Untyped tuple params inferred from the call site.
+- Untyped structural params inferred from field and method use.
 
 ```onda
 def sum(arr: f32[]):
@@ -1186,13 +852,11 @@ def read_first(buf: buffer):
   return buf[0]
 ```
 
-Untyped parameters can also be specialized structurally from how they are used inside the `def`.
-That means a function like this is valid:
+Untyped parameters can be specialized structurally:
 
 ```onda
 struct A:
   x: f32
-  y: f32
 
 struct B:
   x: f32
@@ -1201,19 +865,12 @@ def read_x(s):
   return s.x
 ```
 
-and can be called with both `A` and `B`:
+`read_x` can be called with both `A` and `B`; the compiler specializes it from
+the concrete argument shape and the field access in the body.
 
-```onda
-sample:
-  out1 = read_x(a) + read_x(b)
-```
+### Overloads
 
-The compiler monomorphizes `read_x` from the call sites and the way `s` is used in the body.
-In this example, `s.x` means the argument must provide an `x` field with a compatible type.
-
-### 6.2 Overloads and resolution
-
-Top-level defs and struct methods may be overloaded by arity and parameter types.
+Top-level defs and struct methods can be overloaded by arity and parameter types.
 
 ```onda
 def sat(x: f32):
@@ -1224,23 +881,20 @@ def sat(x: f64):
 ```
 
 Resolution rules:
-- exact typed match wins first
-- if no exact typed match exists, numeric widening candidates may be used
-- explicit typed parameters outrank generic or duck-typed parameters
-- generic or duck-typed parameters outrank untyped parameters
-- default arguments participate in overload matching
-- return type is not part of overload selection
-- equally valid candidates are a semantic error
 
-Current overload support:
-- top-level `def`
-- struct methods
+- Exact typed match wins first.
+- If no exact typed match exists, numeric widening candidates may be used.
+- Explicit typed params outrank generic or duck-typed params.
+- Generic or duck-typed params outrank untyped params.
+- Default arguments participate in overload matching.
+- Return type is not part of overload selection.
+- Equally valid candidates are a semantic error.
 
-Current non-support:
-- proc-local defs are not overloadable
-- explicit `def` type parameter syntax such as `def fn<T>` is intentionally unsupported
+Proc-local defs are not overloadable. Runtime defs may still be generic with
+syntax such as `def id<T>(x: T) -> T`; those generic defs are specialized from
+their call sites.
 
-## 7. Structs
+## 9. Structs
 
 `struct` declares nominal data types with fields and methods.
 
@@ -1255,37 +909,31 @@ struct Voice:
 ```
 
 Supported features:
-- field defaults
-- methods
-- overloaded methods
-- tuple fields
-- generic structs, covered later
 
-Method rules:
-- `self` must be the first method parameter
-- methods can read and write struct fields through `self`
+- Field defaults.
+- Methods.
+- Overloaded methods.
+- Tuple fields.
+- Generic structs.
 
 Construction:
 
 ```onda
 init:
   a = Voice()
+  b: Voice = Voice()
+  c: Voice
 ```
 
-Typed struct declarations are supported in `init`:
+Rules:
 
-```onda
-init:
-  a: Voice = Voice()
-  b: Voice
-```
+- `self` must be the first method parameter.
+- Methods can read and write struct fields through `self`.
+- Typed struct declarations are `init`-only.
+- Declaration-only form such as `c: Voice` desugars to default-constructor initialization.
+- For generic structs, typed declarations require explicit type args when the type is still generic.
 
-Rules for typed `init` declarations:
-- typed struct declarations are `init`-only
-- declaration-only form such as `b: Voice` desugars to default-constructor initialization
-- for generic structs, typed declarations require explicit type args when the type is still generic
-
-### 7.1 Indexed struct-array field access
+### Indexed Struct-Array Field Access
 
 For arrays of data structs, one inline field-access dot is supported:
 
@@ -1296,14 +944,16 @@ sample:
 ```
 
 Accepted forms:
+
 - `base[idx].field`
 - `base[idx].field[fidx]`
 
-Rejected deeper inline chains:
+Deeper inline chains are rejected:
+
 - `base[idx].field.other`
 - `base[idx].field[fidx].other`
 
-Use an intermediate alias when the chain is deeper:
+Use an intermediate alias for deeper access:
 
 ```onda
 sample:
@@ -1311,163 +961,14 @@ sample:
   gain = v.settings.level
 ```
 
-Proc arrays keep their own proc-specific indexed forms such as `voices[i].gain`, `voices[i](...)`, and `voices[i].note_on(...)`.
+Proc arrays use their own indexed forms such as `voices[i].gain`,
+`voices[i](...)`, and `voices[i].note_on(...)`.
 
-## 8. Generics
+## 10. Processors with `proc`
 
-Generics are supported for `struct` and `proc`.
-They are compile-time generics, not runtime generics.
-
-```onda
-struct Pair<T>:
-  a: T
-  b: T
-
-proc OnePole<T>:
-  ins<T> 1
-  outs<T> 1
-
-  init:
-    state: T = 0.0
-
-  sample:
-    state = state + (in1 - state) * 0.1
-    out1 = state
-```
-
-### 8.1 What "monomorphization" means
-
-Onda implements generics by monomorphization.
-That means the compiler creates a concrete specialized copy for each generic type combination that your program actually uses.
-
-For example, if you use both:
-
-```onda
-a = Pair<f32>()
-b = Pair<f64>()
-```
-
-the compiler treats those as two concrete specializations:
-- `Pair<f32>`
-- `Pair<f64>`
-
-Likewise, if you instantiate:
-- `OnePole<f32>()`
-- `OnePole<f64>()`
-
-the compiler lowers them as two separate concrete processors.
-
-There is no runtime generic dispatch layer here.
-By the time code generation happens, the generic owner has been specialized to concrete primitive types.
-
-### 8.2 Specializing generic structs and procs
-
-Type arguments can be:
-- explicit: `Pair<f64>()`
-- inferred in many constructor cases
-
-Rules:
-- generic type arguments are restricted to numeric primitives: `f32`, `f64`, `i32`, `i64`
-- `bool` is not allowed as a generic type argument
-- unresolved generic type parameters in declaration and type positions are errors
-- for untyped constructor assignments only, unresolved constructor type parameters default to `f32`
-
-Examples:
-
-```onda
-init:
-  a = Pair<f32>()
-  b = Pair<f64>()
-```
-
-```onda
-init:
-  lp = OnePole()       # unresolved generic constructor defaults to f32 here
-  hp = OnePole<f64>()  # explicit specialization
-```
-
-### 8.3 What can use the generic type parameter
-
-Inside a specialized generic owner:
-- `T(expr)` rewrites to the bound primitive cast
-- `T[]` is valid for method and `def` array parameters where a primitive slice would be valid
-- typed generic locals such as `x: T = ...` are supported in executable scopes
-
-Generic typed local declarations are supported in:
-- `init`
-- `sample`
-- `block`
-- struct methods
-- event handlers
-
-In other words, `T` must belong to the current generic owner.
-You use it inside the generic `struct` or `proc` that declared it, and after specialization it behaves like an ordinary primitive type.
-
-### 8.4 Generics and `def` monomorphization
-
-Top-level `def` does not use explicit type parameter syntax such as `def fn<T>`.
-Instead, polymorphism comes from call-site monomorphization of certain parameter kinds.
-
-These can be monomorphized at the call site:
-- untyped arrays such as `arr: []`
-- bare buffers such as `buf: buffer`
-- generic struct and proc params where the concrete specialization is supplied by the argument
-- untyped tuple parameters inferred from tuple literals
-- untyped structural params whose bodies access compatible fields or methods
-
-Example:
-
-```onda
-def first(arr: []):
-  return arr[0]
-
-sample:
-  a = [1.0, 2.0]
-  b = [1, 2]
-  x = first(a)
-  y = first(b)
-```
-
-The compiler monomorphizes `first` separately for the concrete argument shapes and element types it sees at the call sites.
-
-The same idea applies when a `def` accepts a generic struct or proc parameter:
-
-```onda
-struct Box<T>:
-  value: T
-
-def read_box(b: Box):
-  return b.value
-```
-
-If `read_box` is called with both `Box<f32>` and `Box<f64>`, Onda generates concrete specialized versions for those uses.
-
-The same idea also applies to structural untyped params:
-
-```onda
-struct A:
-  x: f32
-
-struct B:
-  x: f32
-
-def read_x(s):
-  return s.x
-```
-
-If `read_x` is called with both `A` and `B`, Onda resolves and specializes that `def` from the concrete argument shapes at the call sites.
-
-### 8.5 Practical rules of thumb
-
-In practice:
-- use generics when the same struct or proc should work over multiple numeric primitive types
-- think of each used specialization as its own concrete type
-- use explicit casts only when you want to force a type, not because builtin constants like `TWO_PI` need help
-
-## 9. Reusable processors with `proc`
-
-`proc` is Onda's reusable processing unit.
-Use it when you want stateful, composable DSP building blocks.
+`proc` is Onda's reusable stateful processing unit. `processor` is an alias.
+Everything in this chapter builds on the top-level sections introduced earlier,
+but scoped to a reusable child processor.
 
 ```onda
 proc Gain:
@@ -1484,30 +985,50 @@ proc Gain:
     out1 = in1 * g
 ```
 
-`processor` is an alias for `proc`.
-
-### 9.1 What a proc can contain
-
 A proc can contain:
+
 - `ins`
 - `params`
-- `events`
-- `event`
+- `events` and `event`
 - `buffers`
-- `outs`
+- `outs` or `kouts`
 - `init`
 - `block`
 - `sample`
 - `graph`
-- proc-local `def` helpers
+- Proc-local `def` helpers
 
-In practice:
-- `init` is optional
-- `events` is optional, and singular `event ...` declarations can be mixed with it
-- `block` is optional
-- a proc normally has either `sample`, `block`, or `graph` as its execution body
+In practice, `init` and `events` are optional, and a proc normally has one
+execution body: `sample`, `block`, or `graph`.
 
-### 9.2 Constructing and calling procs
+### Proc Inputs, Params, Outputs, and Buffers
+
+Proc sections use the same surface syntax as the top level, with these
+differences:
+
+- `kins` is not valid inside a proc; proc parameter sections are always `params`.
+- A processor declares either `outs` or `kouts`, not both.
+- `kouts` processors use `block` with no nested `sample`, cannot declare `ins`, and cannot declare `graph`.
+- Proc constructor arguments for params and buffers are named-only.
+- Proc inputs are bound by positional proc call args or named input args.
+
+```onda
+proc StereoGain:
+  ins:
+    in: f32[2]
+
+  params:
+    gain: f32[2] = [1.0, 1.0]
+
+  outs:
+    out: f32[2]
+
+  sample:
+    out[0] = in[0] * gain[0]
+    out[1] = in[1] * gain[1]
+```
+
+### Constructing and Calling Procs
 
 Proc instances are usually created in `init`:
 
@@ -1516,33 +1037,120 @@ init:
   g = Gain(g = 0.5)
 ```
 
-Constructor rules:
-- proc constructor arguments for params and buffers are named-only
-- generic procs specialize on construction
-
 Call and access forms:
-- `p(...)`
-- `p(...).out1` for sample-rate `outs` procs
-- `p(...).kout1` for block-rate `kouts` procs
-- `p(...).endpointName`
-- `p.out1` for sample-rate `outs` procs
-- `p.kout1` for block-rate `kouts` procs
-- `p.endpointName`
-- statement call form: `p(...)`
 
-For single-output procs, `p(...)` is scalar sugar for the first output.
+```onda
+sample:
+  y = g(in1)          # single-output scalar sugar
+  z = g(in1).out1
+  g.g = 0.25
+  out1 = g.out1
+```
 
-Proc call argument rules:
-- positional call arguments bind inputs only
-- named call arguments can bind either inputs or params
-- named param arguments store the clamped param value before the call runs
-- pinned params cannot be set with named proc call arguments; pass them to the
-  constructor or builtin `init(...)`, or expose an event/setter
-- if a bound param hook is attached, the hook runs after that store and before the call
-- multiple proc calls in one expression are evaluated in source order; named param stores happen at the corresponding call-argument position
-- named param arguments are not supported inside logical `&&` / `||` expressions or `while` conditions; assign the param explicitly before the proc call in those cases
+Rules:
 
-### 9.3 Proc-local defs
+- Positional proc call args bind inputs only.
+- Named call args can bind inputs or params.
+- Named param args store the clamped param value before the call runs.
+- Generic procs specialize on construction.
+- Multiple proc calls in one expression are evaluated in source order.
+- Named param args are not supported inside logical `&&` / `||` expressions or `while` conditions.
+- For `kouts` procs, use `kout1` or named control outputs.
+
+### Pinned Params
+
+Use `pin` when a proc param should be initialized and updated only through that
+proc's controlled code path.
+
+```onda
+proc Filter:
+  params:
+    pin cutoff = 1000.0
+    pin q = 0.707
+```
+
+Pinned params:
+
+- Can be set by the constructor.
+- Can be set by the builtin proc `init(...)` event.
+- Can be read or assigned by the owning proc's own `init`, `sample`, `block`, `event`, or proc-local `def` bodies.
+- Cannot be accessed directly from outside through `child.cutoff`, `child.cutoff = ...`, `child.coeffs[i]`, `child.coeffs[i] = ...`, or `child(cutoff = ...)`.
+- Cause external dynamic `child.params[i]` access to be rejected for that child proc.
+
+`pin` is a reserved keyword. It is only valid as a proc-param prefix.
+
+### Param Update Hooks
+
+A primitive scalar proc param can bind a proc-local update hook with
+`=> hook_name`.
+
+```onda
+proc Voice:
+  params:
+    freq = 440.0 {20.0, 20000.0} => update_freq
+
+  init:
+    phase_inc = 0.0
+
+  def update_freq():
+    phase_inc = freq / SR
+
+  sample:
+    out1 = 0.0
+```
+
+Hook rules:
+
+- The hook target must be a zero-parameter proc-local `def` in the same proc.
+- The hook must have no explicit return type and no `return`.
+- Hooks run after the param store and range clamp.
+- Construction and builtin `init(...)` run hooks after the proc `init` body, in param declaration order.
+- Hooks are immediate per-param reactions; they are not batched.
+- Hooks may read owner params, update init-rooted state, and assign named params on child procs.
+- Hooks cannot assign owner params, inputs, outputs, child proc I/O or internal state, child dynamic `params[i]`, or call child events.
+- If a proc has bound params, dynamic `params[i] = ...` assignments are rejected; assign the named param instead.
+
+Use hooks for single-param derived state. Use an explicit proc event or setter
+when several params should rebuild shared state once.
+
+### Proc Events
+
+Proc events are receiver-only commands called on a proc instance. They are
+useful for reset, note, trigger, and setter style APIs.
+
+```onda
+proc Env:
+  params:
+    amp = 0.0
+
+  event note_on(v: f32):
+    amp = v
+
+  sample:
+    out1 = amp
+```
+
+Proc-event rules:
+
+- Calls use receiver syntax such as `voice.note_on(...)`.
+- Proc-event calls are statements, not expressions.
+- Unqualified calls never resolve to proc events.
+- A proc cannot call its own event handler as an internal subroutine; put shared logic in a proc-local `def`.
+- Proc handlers may write proc state rooted in `init` and proc params.
+- Proc handlers cannot write inputs or outputs.
+- Generic proc events can use generic primitive placeholders such as `T`, `T[N]`, and `T[]`.
+
+Every proc also gets a reserved builtin `init(...)` event. It mirrors the proc
+params in declaration order, assigns provided values into params, reruns that
+proc instance's `init`, then runs bound param hooks. Omitted args use defaults.
+
+```onda
+voice.init(0.5)
+voice.init(gain = 0.5)
+voices[i].init(freq = 220.0, amp = 0.1)
+```
+
+### Proc-Local Defs
 
 Processors can declare private helper defs that implicitly see proc state.
 
@@ -1562,23 +1170,23 @@ proc Filter<T>:
     state = state + (x - state) * coeff
     return state
 
-  events:
-    reset():
-      reset_state()
+  event reset():
+    reset_state()
 
   sample:
     out1 = apply(in1)
 ```
 
 Rules:
-- proc-local defs are private to the enclosing proc
-- they can be called from proc `init`, `block`, `sample`, `events`, and other proc-local defs
-- they can read and write proc state directly, without `self`
-- they support parameters, defaults, named arguments, and return values like normal defs
-- recursive and mutually recursive proc-local defs are rejected
-- proc-local defs are not overloadable
 
-### 9.4 Proc arrays
+- Proc-local defs are private to the enclosing proc.
+- They can be called from proc `init`, `block`, `sample`, `events`, and other proc-local defs.
+- They can read and write proc state directly, without `self`.
+- They support params, defaults, named args, and returns like normal defs.
+- Recursive and mutually recursive proc-local defs are rejected.
+- Proc-local defs are not overloadable.
+
+### Proc Arrays
 
 Arrays of proc instances are supported in `init`.
 
@@ -1587,193 +1195,219 @@ init:
   voices: Voice[4] = Voice()
 ```
 
-Supported proc-array forms:
-- literal array construction: `voices: Voice[2] = [Voice(), Voice()]`
-- broadcast constructor sugar: `voices: Voice[4] = Voice()`
-- compile-time capacity expressions in the array length
+Supported forms:
+
+- Literal array construction: `voices: Voice[2] = [Voice(), Voice()]`.
+- Broadcast constructor sugar: `voices: Voice[4] = Voice()`.
+- Compile-time capacity expressions in the array length.
 
 Indexed proc-array operations:
-- `voices[i](...)`
-- `voices[i](...).out1`
-- `voices[i].gain`
-- `voices[i].gain = value`
-- `voices[i].note_on(...)`
-- aliasing such as `v = voices[i]`, then `v(...)`
-
-Rules:
-- runtime indices are clamped to the valid slot range
-- proc-array buffer refs are refreshed on the safe `process_checked` path
-- a proc cannot directly instantiate its own type in its own state
-
-If the proc defines a `block` section, indexed proc-array calls use active-slot block-hook semantics:
-- `block pre` runs lazily on the first `()` call to that slot in the current block
-- `block post` runs once at block end for each slot that was called
-- plain slot retrieval alone does not trigger hooks
-
-### 9.5 Using procs in graphs
-
-Procs become especially powerful when combined with `graph`.
-
-```onda
-import std/osc
-
-proc StereoGain:
-  ins:
-    in: f32[2]
-
-  params:
-    gain: f32[2] = [1.0, 1.0]
-
-  outs:
-    out: f32[2]
-
-  sample:
-    out[0] = in[0] * gain[0]
-    out[1] = in[1] * gain[1]
-
-outs:
-  out: f32[2]
-
-init:
-  osc_l = std::osc::Sine<f32>(freq = 220.0)
-  osc_r = std::osc::Sine<f32>(freq = 330.0)
-  p = StereoGain(gain = [1.0, 0.1])
-
-graph:
-  [osc_l.out1, osc_r.out1] >> p.in
-  p.out >> out
-```
-
-Graph/proc integration rules:
-- proc inputs and params are legal graph destinations
-- proc outputs are legal graph sources
-- proc-array slot inputs, params, and outputs are supported
-- bare proc instances and proc-array slots can route into destination sets, using the zip or broadcast rules described in the graph section
-
-## 10. Modularity: namespaces, modules, and imports
-
-Once the core language is clear, the last big piece is how to split programs across files and build reusable modules.
-
-### 10.1 `import`
-
-Use `import` to load another module by path:
-
-```onda
-import reverb
-import std/osc
-import std/filter
-```
-
-Resolution rules:
-- `import module/path` resolves as `module/path.onda`
-- each imported file is imported once
-- built-in std modules are available under `std/...`
-
-Current built-in std modules include:
-- `std/prelude`
-- `std/math`
-- `std/random`
-- `std/export_math`
-- `std/complex`
-- `std/osc`
-- `std/filter`
-- `std/env`
-- `std/delay`
-- `std/data`
-- `std/lookup`
-- `std/fft`
-- `std/convolution`
-
-`std/prelude` is auto-imported during semantic analysis.
-Today it brings in `std/math`, `std/lookup`, and `std/random`.
-
-Current imported-file restriction:
-- declaration-only files are limited to `const`, `struct`, `def`, `proc`, `namespace`, and `use`
-
-### 10.2 `include`
-
-`include` inserts another `.onda` file by quoted path:
-
-```onda
-include "shared/reverb.onda"
-```
-
-Rules:
-- the path must be quoted
-- the path must end in `.onda`
-
-### 10.3 `namespace`
-
-`namespace` groups declarations under a qualified path.
-
-```onda
-namespace my::dsp:
-  def sat(x):
-    return clamp(x, -1.0, 1.0)
-```
-
-Use sites access declarations with `::`:
 
 ```onda
 sample:
-  out1 = my::dsp::sat(in1)
-```
-
-Namespace-local compile-time constants are also supported:
-
-```onda
-namespace Config:
-  const MaxVoices = 8
-```
-
-### 10.4 Templated namespaces
-
-Namespaces can also take compile-time integer parameters:
-
-```onda
-namespace FFT<N = 256>:
-  assert(N > 0)
-  assert((N & (N - 1)) == 0)
+  voices[i](freq)
+  out1 = voices[i].out1
+  voices[i].gain = 0.5
+  voices[i].note_on(220.0)
 ```
 
 Rules:
-- namespace template params require defaults
-- args support positional and named forms
-- args are normalized as `i32(...)` at compile time
-- namespace-local `assert(expr)` is supported for compile-time checks
 
-Inline instantiation and aliases:
+- Runtime indices are clamped to the valid slot range.
+- Aliasing such as `v = voices[i]`, then `v(...)`, is supported.
+- Proc-array buffer refs are refreshed on the safe `process_checked` path.
+- A proc cannot directly instantiate its own type in its own state.
+
+If the proc defines a `block` section, indexed proc-array calls use active-slot
+block-hook semantics: block-pre runs lazily on the first `()` call to that slot
+in the current block, and block-post runs once at block end for each called slot.
+Plain slot retrieval does not trigger hooks.
+
+## 11. Graphs
+
+`graph` gives you a declarative way to wire processor instances and signal flow.
 
 ```onda
-namespace D = std::data<SR, 1>
+proc GainProc:
+  params:
+    gain = 1.0
+
+  sample:
+    out1 = in1 * gain
 
 init:
-  a = std::data<SR, 1>::Data<f64>()
-  b = D::Data<f64>()
+  p = GainProc()
+
+graph:
+  in1 >> p.in1
+  3.0 >> p.gain
+  p.out1 >> out1
 ```
 
-Syntax split:
-- `<>` is used for namespace instantiation, generic specialization, and section default type modifiers
-- `[]` is used for arrays, indexing, slices, and buffer/channel forms
+```onda
+import std/osc
 
-### 10.5 Integer namespace params for sizes and arity
+params:
+  freq = 220.0 {20.0, 20000.0}
+  mod = 100.0 {0.0, 1000.0}
 
-Namespace template parameters are compile-time integers.
-They are the main way to make Onda libraries generic over counts, lengths, and arity.
+init:
+  sine = std::osc::Sine()
 
-You can use a namespace integer parameter:
-- in fixed array sizes such as `T[N]`
-- in section counts such as `ins N`, `outs N`, `params N`, and `buffers N`
-- in `for` loop bounds
-- in compile-time expressions and namespace `assert(...)` checks
+graph:
+  @sample freq + sine.out1 * mod >> sine.freq
+  sine.out1 >> out1
+```
 
-That means Onda has two complementary generic mechanisms:
-- type generics such as `T` control the numeric scalar type
-- namespace integer generics such as `N` control counts and sizes
+Supported edge forms:
 
-Together they let you build reusable libraries that are generic over both type and channel/input count.
+```onda
+src >> dst
+dst << src
+@block src >> dst
+@sample src >> dst
+src >>[expr] dst
+src >> { a, b }
+{ a, b } << src
+```
 
-Example:
+Rules:
+
+- `graph` is mutually exclusive with `sample` and `block` in the same owner.
+- `init` may be used with `graph`.
+- Proc instances used as graph nodes are typically created in `init`.
+- Unannotated edges targeting proc params default to `@block`.
+- Unannotated edges targeting other destinations default to `@sample`.
+- `@sample` can override the default `@block` behavior for proc param destinations.
+- Delayed edges use `>>[expr]` or `<<[expr]`.
+- Delay expressions must be compile-time nonnegative integers.
+- Delayed edges are sample-rate only.
+- Each destination has one writer.
+- Fan-out is allowed.
+- Cycles are rejected unless a positive sample delay breaks the cycle.
+- Proc nodes are stepped implicitly according to graph reachability and topological order.
+- Inspect lowering with `onda compile <file> --dump-graph`.
+
+Current graph sources include:
+
+- Top-level inputs and params.
+- Proc outputs.
+- Proc-array slot outputs.
+- Array literals such as `[a, b]`.
+- Indexed reads, sliced reads, and whole-array reads.
+- Arithmetic and logical expressions built from supported graph sources.
+- Element-wise array expressions when the final shape matches the destination.
+
+Current legal destinations include:
+
+- Top-level outputs.
+- Proc inputs.
+- Proc params.
+- Proc-array slot inputs and params.
+
+Type and scheduling rules:
+
+- Graph edges use strict shape matching.
+- Scalar-to-fixed-array broadcast is allowed.
+- Proc inputs, params, and outputs are legal graph endpoints.
+- Bare proc instances and proc-array slots can route into destination sets.
+- Destination sets zip by output order when counts match.
+- Single-output procs broadcast to destination sets.
+- Otherwise, mismatched bundles are semantic errors.
+
+Current graph limits:
+
+- User-defined function calls and proc calls are not supported inside graph source expressions.
+- Array-constructor expressions such as `f32[2](...)` are not graph sources.
+- Graph event propagation syntax does not exist; use ordinary `events` or `event` declarations.
+
+Example with proc bundles:
+
+```onda
+graph:
+  reverb >> { out1, out2 }
+  voices[0] >> { left, right }
+```
+
+## 12. Generics and Compile-Time Parameters
+
+Onda has two complementary compile-time generic mechanisms:
+
+- Type generics on `struct` and `proc`, such as `T`.
+- Integer namespace params, such as `N`, for counts, sizes, and arity.
+
+### Type Generics
+
+Generic structs and procs are monomorphized. The compiler creates a concrete
+specialized copy for each type combination your program uses.
+
+```onda
+struct Pair<T>:
+  a: T
+  b: T
+
+proc OnePole<T>:
+  ins<T> 1
+  outs<T> 1
+
+  init:
+    state: T = 0.0
+
+  sample:
+    state = state + (in1 - state) * 0.1
+    out1 = state
+```
+
+Specialization:
+
+```onda
+init:
+  a = Pair<f32>()
+  b = Pair<f64>()
+  lp = OnePole()       # unresolved constructor type params default to f32
+  hp = OnePole<f64>()
+```
+
+Rules:
+
+- Generic type args are restricted to `f32`, `f64`, `i32`, and `i64`.
+- `bool` is not allowed as a generic type arg.
+- Unresolved generic type params in declaration and type positions are errors.
+- For untyped constructor assignments only, unresolved constructor type params default to `f32`.
+- `T(expr)` rewrites to the bound primitive cast.
+- `T[]` is valid for method and `def` array params where a primitive slice is valid.
+- Typed generic locals such as `x: T = ...` are supported in executable scopes.
+
+### Def Monomorphization
+
+Runtime defs are specialized from call sites. This applies both to explicit
+generic defs such as `def id<T>(x: T) -> T` and to polymorphic parameter shapes
+that do not need a named type parameter:
+
+- Untyped arrays such as `arr: []`.
+- Bare buffers such as `buf: buffer`.
+- Generic struct and proc params supplied by concrete arguments.
+- Untyped tuple params inferred from tuple literals.
+- Untyped structural params inferred from field or method usage.
+
+```onda
+def first(arr: []):
+  return arr[0]
+
+def id<T>(x: T) -> T:
+  return x
+
+sample:
+  a = [1.0, 2.0]
+  b = [1, 2]
+  x = first(a)
+  y = first(b)
+  z = id<f64>(1.0)
+```
+
+### Integer Namespace Params
+
+Namespace template params are compile-time integers.
 
 ```onda
 namespace DSP<Channels = 2>:
@@ -1789,28 +1423,14 @@ namespace DSP<Channels = 2>:
         outs[i] = ins[i] * gains[i]
 ```
 
-In that example:
-- `Channels` controls how many inputs and outputs the proc has
-- `Channels` also controls the fixed size of the `gains` parameter array
-- `T` controls the scalar type used by the ports and parameter array
+Use namespace integer params in:
 
-This is the standard pattern for an Onda library that should work for "any `N` channels of `T`".
+- Fixed array sizes such as `T[N]`.
+- Section counts such as `ins N`, `outs N`, `params N`, and `buffers N`.
+- Loop bounds.
+- Compile-time expressions and namespace `assert(...)` checks.
 
-At the top level, you use it by instantiating the namespace and then constructing the proc specialization you want:
-
-```onda
-outs:
-  out: f32[2]
-
-init:
-  g = DSP<2>::Gain<f32>(gains = [0.5, 0.25])
-
-graph:
-  [in1, in2] >> g
-  g.out >> out
-```
-
-You can also use a namespace alias when you want to fix the integer parameters once and reuse them:
+Instantiate inline or through aliases:
 
 ```onda
 namespace Stereo = DSP<2>
@@ -1819,14 +1439,103 @@ init:
   g = Stereo::Gain<f32>(gains = [0.5, 0.25])
 ```
 
-Related notes:
-- ordinary `const` values can also be used in array sizes and section counts
-- namespace consts can be derived from namespace integer params and reused elsewhere
+## 13. Modules, Namespaces, and `use`
 
-### 10.6 `use`
+### Imports
 
-Use declarations bring namespace members into unqualified lookup without changing how modules are loaded.
-Use `import` first when the target lives in another module.
+Use `import` to load another module:
+
+```onda
+import reverb
+import std/osc
+import std/filter
+```
+
+Rules:
+
+- `import module/path` resolves as `module/path.onda`.
+- Each imported file is imported once.
+- Built-in std modules are available under `std/...`.
+- Imported files are declaration-only: `const`, `struct`, `def`, `proc`, `namespace`, and `use`.
+- `std/prelude` is auto-imported during semantic analysis.
+
+Current std modules include:
+
+```text
+std/prelude std/math std/random std/export_math std/complex
+std/osc std/filter std/env std/delay std/data std/lookup
+std/fft std/convolution std/gain std/levels std/mix
+std/noise std/pitch std/smoothing
+```
+
+`std/prelude` currently imports `std/math`, `std/lookup`, and `std/random`.
+
+### Includes
+
+`include` inserts another source file by quoted path:
+
+```onda
+include "shared/reverb.onda"
+include "shared/util.on"
+```
+
+Rules:
+
+- The path must be quoted.
+- The path must end in `.onda` or `.on`.
+- Use `/` path separators.
+
+### Namespaces
+
+`namespace` groups declarations under a qualified path.
+
+```onda
+namespace my::dsp:
+  def sat(x):
+    return clamp(x, -1.0, 1.0)
+
+sample:
+  out1 = my::dsp::sat(in1)
+```
+
+Namespace-local consts and nested namespaces are supported:
+
+```onda
+namespace Config:
+  const MaxVoices = 8
+```
+
+Templated namespaces take compile-time integer params with defaults:
+
+```onda
+namespace FFT<N = 256>:
+  assert(N > 0)
+  assert((N & (N - 1)) == 0)
+```
+
+Rules:
+
+- Namespace template params require defaults.
+- Args support positional and named forms.
+- Args are normalized as `i32(...)` at compile time.
+- Namespace-local `assert(expr)` performs compile-time checks.
+- `<>` is used for namespace instantiation, generic specialization, and section default type modifiers.
+- `[]` is used for arrays, indexing, slices, and buffer/channel forms.
+
+Namespace aliases:
+
+```onda
+namespace D = std::data<SR, 1>
+
+init:
+  a = std::data<SR, 1>::Data<f64>()
+  b = D::Data<f64>()
+```
+
+### Use Declarations
+
+`use` brings namespace members into unqualified lookup. It does not load
+modules; use `import` first when the target lives in another module.
 
 ```onda
 import std/math
@@ -1836,124 +1545,85 @@ import std/fft
 use std::math
 use std::random::Rng
 use std::fft<512> as fft512
-use std::fft<1024> as fft1024
+use std::fft<1024>::FFT as FFT1024
 pub use std::lookup
 
 init:
   rng = Rng<f32>()
   a = fft512::FFT<f32>()
-  b = fft1024::FFT<f32>()
+  b = FFT1024<f32>()
 
 sample:
   out1 = clamp(in1, -1.0, 1.0)
 ```
 
 Forms:
-- `use Namespace` brings all direct declarations in that namespace into unqualified lookup
-- `use Namespace::Symbol` brings one declaration into unqualified lookup
-- `use Namespace as Alias` creates a namespace alias, so use sites keep `Alias::...`
-- `use Namespace::Symbol as Alias` creates a symbol alias
-- `pub use ...` re-exports the use declaration through imports
+
+- `use Namespace` brings direct declarations in that namespace into unqualified lookup.
+- `use Namespace::Symbol` brings one declaration into unqualified lookup.
+- `use Namespace as Alias` creates a namespace alias.
+- `use Namespace::Symbol as Alias` creates a symbol alias.
+- `pub use ...` re-exports the use declaration through imports.
 
 Rules:
-- `as` applies only to the whole `use` declaration
-- `use` is allowed at top level and inside `namespace`
-- plain top-level `use` is private to the source file where it appears
-- imported files expose only `pub use` declarations to the importing file
-- fully qualified paths always keep working
-- explicit `use` collisions are errors at unqualified use sites; qualify the name to disambiguate
+
+- `as` applies only to the whole `use` declaration.
+- `use` is allowed at top level and inside `namespace`.
+- Plain top-level `use` is private to the source file where it appears.
+- Imported files expose only `pub use` declarations to the importing file.
+- Fully qualified paths always work.
+- Explicit `use` collisions are errors at unqualified use sites; qualify the name to disambiguate.
+
+## 14. Reference Notes
+
+### Section Shorthands
+
+| Section | Count shorthand | Default type shorthand | Generated names |
+| --- | --- | --- | --- |
+| `ins` | `ins N` | `ins<f64>:` | `in1..inN` |
+| `params` | `params N` | `params<i32>:` | `param1..paramN` |
+| `kins` | `kins N` | `kins<i32>:` | `kin1..kinN` |
+| `outs` | `outs N` | `outs<f64>:` | `out1..outN` |
+| `kouts` | `kouts N` | `kouts<f32>:` | `kout1..koutN` |
+| `buffers` | `buffers N` | `buffers[f32]:` | `buf1..bufN` |
+
+Section counts can use compile-time integer expressions, ordinary const values,
+and namespace integer template params.
+
+### Dynamic Surfaces
+
+Direct indexed access is supported for explicitly declared homogeneous surfaces:
 
 ```onda
-import std/math
-use std::math
-
-def clamp(x, lo, hi):
-  return x
-
-sample:
-  # clamp(...) is ambiguous here
-  out1 = std::math::clamp(in1, 0.0, 1.0)
+ins[i]
+outs[i] = x
+kouts[i] = x
+params[i]
+kins[i]
+child.params[i]
 ```
 
-## 11. Examples that put it all together
+These views are not first-class arrays. Do not assign, slice, pass, return, or
+store `ins`, `outs`, `kouts`, `params`, `kins`, or child proc dynamic views.
 
-These examples in `examples/` cover the language in progressively richer combinations.
+Input/output surfaces are block/sample-bound. `inN`, `outN`, `koutN`, declared
+I/O arrays, and synthetic I/O views cannot be read, written, passed, returned,
+or stored from `init`, `event`, or top-level `def` bodies.
 
-### 11.1 Small stateful patch
+### Aliases and Reserved Names
 
-`examples/sine.onda`
+- `inputs` aliases `ins`.
+- `outputs` aliases `outs`.
+- `processor` aliases `proc`.
+- Top-level `kins` aliases `params`.
+- `pin` is reserved and only valid as a proc-param prefix.
+- Numbered `outN` names are audio outputs; use `koutN` for numbered control outputs.
 
-Why it is useful:
-- simple `params`
-- persistent `init` state
-- `block` plus nested `sample`
-- direct output writing
+### Common Current Limits
 
-### 11.2 Structs plus reusable defs
-
-`examples/cross_fm.onda`
-
-Why it is useful:
-- top-level `def`
-- `struct` fields and methods
-- stateful objects in `init`
-- per-sample interaction between multiple voices
-
-### 11.3 Proc plus graph wiring
-
-`examples/proc_gain_graph.onda`
-
-Why it is useful:
-- small reusable `proc`
-- proc construction in `init`
-- `graph` routing into proc inputs and params
-- proc output routed to top-level outputs
-
-### 11.4 Proc arrays plus helper defs
-
-`examples/proc_array_init_harmonics.onda`
-
-Why it is useful:
-- arrays of proc instances
-- ordinary top-level defs that operate on proc arrays
-- builtin proc `init(...)`
-- `block` plus nested `sample`
-
-### 11.5 Const arrays plus const defs
-
-`examples/const_harmonic_bank.onda`
-
-Why it is useful:
-- array-returning `const def` helpers
-- fixed-size const arrays derived from other const arrays
-- compile-time table normalization
-- runtime indexing of precomputed const arrays
-
-### 11.6 Modular multi-file patch
-
-`examples/reverb.onda` plus `examples/reverb_graph.onda`
-
-Why it is useful:
-- split code across modules
-- import a local reusable proc from another file
-- combine stdlib imports with local imports
-- drive a larger proc through `graph`
-
-### 11.7 Generic proc in a larger graph
-
-`examples/cybernetic_feedback_graph.onda`
-
-Why it is useful:
-- generic `proc`
-- proc specialization with `f64`
-- delayed graph edges
-- larger graph composition with multiple reusable nodes
-
-### 11.8 Event-driven patch
-
-`examples/run_events.onda`
-
-Why it is useful:
-- top-level `events`
-- persistent state mutation from host events
-- proc use inside a playable patch
+- Graph source expressions cannot call user-defined functions or procs.
+- `graph` has no event-routing syntax.
+- Proc-local defs are not overloadable.
+- Returning structs, arrays, or buffers from runtime `def` is unsupported.
+- Struct-element arrays are not sliceable.
+- Imported files are declaration-only.
