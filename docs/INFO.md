@@ -162,7 +162,7 @@ Non-crate directories of note:
 
 ## Major remaining work
 
-Detailed roadmap notes live under [docs/todo/](todo/) (`language.md`, `runtime.md`, `backends.md`, `tooling.md`).
+Detailed roadmap notes live under [docs/todo/](todo/).
 
 High-level themes:
 - Graph follow-ups: broader source expressions, optional coercion/broadcasting rules, richer diagnostics.
